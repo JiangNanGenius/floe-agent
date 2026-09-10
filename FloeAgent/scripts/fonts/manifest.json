@@ -1,0 +1,361 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-09-10",
+  "outputDir": "FloeApp/Resources/Fonts/Bundled",
+  "families": [
+    {
+      "id": "source-han-sans-sc",
+      "displayName": "思源黑体 简体",
+      "category": "sans",
+      "version": "2.005R",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/adobe-fonts/source-han-sans", "release": "https://github.com/adobe-fonts/source-han-sans/releases/tag/2.005R" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/09_SourceHanSansSC.zip", "archive": "zip", "include": ["*.otf"] }
+      ]
+    },
+    {
+      "id": "source-han-sans-tc",
+      "displayName": "思源黑體 繁體",
+      "category": "sans",
+      "version": "2.005R",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/adobe-fonts/source-han-sans", "release": "https://github.com/adobe-fonts/source-han-sans/releases/tag/2.005R" },
+      "languages": ["zh-Hant", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/10_SourceHanSansTC.zip", "archive": "zip", "include": ["*.otf"] }
+      ]
+    },
+    {
+      "id": "source-han-serif-sc",
+      "displayName": "思源宋体 简体",
+      "category": "serif",
+      "version": "2.003R",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/adobe-fonts/source-han-serif", "release": "https://github.com/adobe-fonts/source-han-serif/releases/tag/2.003R" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/adobe-fonts/source-han-serif/releases/download/2.003R/09_SourceHanSerifSC.zip", "archive": "zip", "include": ["*.otf"] }
+      ]
+    },
+    {
+      "id": "source-han-serif-tc",
+      "displayName": "思源宋體 繁體",
+      "category": "serif",
+      "version": "2.003R",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/adobe-fonts/source-han-serif", "release": "https://github.com/adobe-fonts/source-han-serif/releases/tag/2.003R" },
+      "languages": ["zh-Hant", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/adobe-fonts/source-han-serif/releases/download/2.003R/10_SourceHanSerifTC.zip", "archive": "zip", "include": ["*.otf"] }
+      ]
+    },
+    {
+      "id": "lxgw-wenkai",
+      "displayName": "霞鹜文楷",
+      "category": "kai",
+      "version": "1.522",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/main/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/lxgw/LxgwWenKai", "release": "https://github.com/lxgw/LxgwWenKai/releases/tag/v1.522" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKai-Light.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKai-Regular.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKai-Medium.ttf" }
+      ]
+    },
+    {
+      "id": "lxgw-wenkai-tc",
+      "displayName": "霞鹜文楷 繁體",
+      "category": "kai",
+      "version": "1.522",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/lxgw/LxgwWenkaiTC/main/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/lxgw/LxgwWenkaiTC", "release": "https://github.com/lxgw/LxgwWenkaiTC/releases/tag/v1.522" },
+      "languages": ["zh-Hant", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/lxgw/LxgwWenkaiTC/releases/download/v1.522/LXGWWenKaiTC-Light.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenkaiTC/releases/download/v1.522/LXGWWenKaiTC-Regular.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenkaiTC/releases/download/v1.522/LXGWWenKaiTC-Medium.ttf" }
+      ]
+    },
+    {
+      "id": "lxgw-wenkai-mono",
+      "displayName": "霞鹜文楷等宽",
+      "category": "mono",
+      "version": "1.522",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/main/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/lxgw/LxgwWenKai", "release": "https://github.com/lxgw/LxgwWenKai/releases/tag/v1.522" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKaiMono-Light.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKaiMono-Regular.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKaiMono-Medium.ttf" }
+      ]
+    },
+    {
+      "id": "lxgw-wenkai-mono-tc",
+      "displayName": "霞鹜文楷等寬 繁體",
+      "category": "mono",
+      "version": "1.522",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/lxgw/LxgwWenkaiTC/main/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/lxgw/LxgwWenkaiTC", "release": "https://github.com/lxgw/LxgwWenkaiTC/releases/tag/v1.522" },
+      "languages": ["zh-Hant", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/lxgw/LxgwWenkaiTC/releases/download/v1.522/LXGWWenKaiMonoTC-Light.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenkaiTC/releases/download/v1.522/LXGWWenKaiMonoTC-Regular.ttf" },
+        { "url": "https://github.com/lxgw/LxgwWenkaiTC/releases/download/v1.522/LXGWWenKaiMonoTC-Medium.ttf" }
+      ]
+    },
+    {
+      "id": "zhuque-fangsong",
+      "displayName": "朱雀仿宋",
+      "category": "fangsong",
+      "version": "0.212",
+      "prerelease": true,
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/TrionesType/zhuque/main/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/TrionesType/zhuque", "release": "https://github.com/TrionesType/zhuque/releases/tag/v0.212" },
+      "note": "上游仍为预发布版本，不作为唯一缺字兜底。",
+      "languages": ["zh-Hans", "zh-Hant", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/TrionesType/zhuque/releases/download/v0.212/ZhuqueFangsong-v0.212.zip", "archive": "zip", "include": ["*.ttf", "*.otf"] }
+      ]
+    },
+    {
+      "id": "smiley-sans",
+      "displayName": "得意黑",
+      "category": "display",
+      "version": "2.0.1",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/atelier-anchor/smiley-sans/main/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/atelier-anchor/smiley-sans", "release": "https://github.com/atelier-anchor/smiley-sans/releases/tag/v2.0.1" },
+      "languages": ["zh-Hans", "zh-Hant", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/atelier-anchor/smiley-sans/releases/download/v2.0.1/smiley-sans-v2.0.1.zip", "archive": "zip", "include": ["*.ttf", "*.otf"] }
+      ]
+    },
+    {
+      "id": "alibaba-puhuiti-3",
+      "displayName": "阿里巴巴普惠体 3.0",
+      "category": "sans",
+      "version": "3.0",
+      "license": { "name": "阿里巴巴普惠体授权协议（全球永久免费商用）", "textUrl": "https://fonts.alibabagroup.com/#/law" },
+      "upstream": { "homepage": "https://fonts.alibabagroup.com/", "mirror": "https://github.com/hongzhi725/AlibabaPuHuiTi" },
+      "note": "官方 OSS 链接 2026-09 起 403；改用 GitHub 镜像的 commit 锁定归档（ef70ffb）。",
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/hongzhi725/AlibabaPuHuiTi/archive/ef70ffb8fe4c033425cc5f0f24e47c714eb360d3.zip", "archive": "zip", "include": ["*.ttf"] }
+      ]
+    },
+    {
+      "id": "harmonyos-sans",
+      "displayName": "HarmonyOS Sans（鸿蒙）",
+      "category": "sans",
+      "version": "2022-11",
+      "license": { "name": "HarmonyOS Sans 字体许可（免费可商用）", "textUrl": "https://developer.harmonyos.com/cn/docs/design/des-guides/font-0000001157868583" },
+      "upstream": { "homepage": "https://developer.harmonyos.com/cn/docs/design/des-guides/font-0000001157868583", "mirror": "https://github.com/huawei-fonts/HarmonyOS-Sans" },
+      "note": "developer.harmonyos.com 资源链接 2026 年起 301 失效；改用 huawei-fonts 仓库 commit 锁定（33ab3b8）的 HarmonyOS Sans.zip。",
+      "languages": ["zh-Hans", "zh-Hant", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/huawei-fonts/HarmonyOS-Sans/raw/33ab3b81b92c01f5e340c89960872bee174d8704/HarmonyOS%20Sans.zip", "archive": "zip", "include": ["*SC*.ttf", "*TC*.ttf", "*_SC_*.ttf", "*_TC_*.ttf"] }
+      ]
+    },
+    {
+      "id": "misans",
+      "displayName": "MiSans（小米）",
+      "category": "sans",
+      "version": "2021-12",
+      "license": { "name": "MiSans 字体许可（全社会免费商用）", "textUrl": "https://hyperos.mi.com/font" },
+      "upstream": { "homepage": "https://hyperos.mi.com/font" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://cdn.cnbj1.fds.api.mi-img.com/vipmlmodel/font/MiSans/MiSans.zip", "archive": "zip", "include": ["*.ttf"] }
+      ]
+    },
+    {
+      "id": "xiaolai",
+      "displayName": "小赖字体",
+      "category": "handwriting",
+      "version": "3.126",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/lxgw/kose-font/master/LICENSE.md" },
+      "upstream": { "homepage": "https://github.com/lxgw/kose-font", "release": "https://github.com/lxgw/kose-font/releases/tag/v3.126" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/lxgw/kose-font/releases/download/v3.126/Xiaolai-Regular.ttf" },
+        { "url": "https://github.com/lxgw/kose-font/releases/download/v3.126/XiaolaiMono-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "yozai",
+      "displayName": "悠哉字体",
+      "category": "handwriting",
+      "version": "0.868",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/lxgw/yozai-font/master/LICENSE.txt" },
+      "upstream": { "homepage": "https://github.com/lxgw/yozai-font", "release": "https://github.com/lxgw/yozai-font/releases/tag/v0.868" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/lxgw/yozai-font/releases/download/v0.868/Yozai-Light.ttf" },
+        { "url": "https://github.com/lxgw/yozai-font/releases/download/v0.868/Yozai-Regular.ttf" },
+        { "url": "https://github.com/lxgw/yozai-font/releases/download/v0.868/Yozai-Medium.ttf" }
+      ]
+    },
+    {
+      "id": "jiangxi-zhuokai",
+      "displayName": "江西拙楷",
+      "category": "kai",
+      "version": "2.0",
+      "license": { "name": "免费商用授权声明（黄煜臣）", "textUrl": "https://github.com/jaywcjlove/free-font" },
+      "upstream": { "homepage": "https://www.zcool.com.cn/work/ZMjE4MjUwNDQ=.html", "mirror": "https://github.com/jaywcjlove/free-font" },
+      "note": "仅 2.0 版本免费商用；不得替换为付费的 3.0。",
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/jaywcjlove/free-font/main/docs/fonts/%E5%85%B6%E4%BB%96%E5%AD%97%E4%BD%93/%E6%B1%9F%E8%A5%BF%E6%8B%99%E6%A5%B7.ttf" }
+      ]
+    },
+    {
+      "id": "muyao-softbrush",
+      "displayName": "沐瑶软笔手写体",
+      "category": "handwriting",
+      "version": "1.0",
+      "license": { "name": "免费商用授权声明（春颜秋色）", "textUrl": "https://github.com/jaywcjlove/free-font" },
+      "upstream": { "homepage": "https://www.zcool.com.cn/work/ZMzI5MjY3MjA=.html", "mirror": "https://github.com/jaywcjlove/free-font" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/jaywcjlove/free-font/main/docs/fonts/%E6%B2%90%E7%91%B6%E5%AD%97%E4%BD%93%E7%B3%BB%E5%88%97/%E6%B2%90%E7%91%B6%E8%BD%AF%E7%AC%94%E6%89%8B%E5%86%99%E4%BD%93.ttf" },
+        { "url": "https://raw.githubusercontent.com/jaywcjlove/free-font/main/docs/fonts/%E6%B2%90%E7%91%B6%E5%AD%97%E4%BD%93%E7%B3%BB%E5%88%97/%E6%B2%90%E7%91%B6%E9%9A%8F%E5%BF%83%E6%89%8B%E5%86%99%E4%BD%93.ttf" }
+      ]
+    },
+    {
+      "id": "zcool-kuaile",
+      "displayName": "站酷快乐体",
+      "category": "display",
+      "version": "1.0",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolkuaile/OFL.txt" },
+      "upstream": { "homepage": "https://fonts.google.com/specimen/ZCOOL+KuaiLe" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "zcool-qingke-huangyou",
+      "displayName": "站酷庆科黄油体",
+      "category": "display",
+      "version": "1.0",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolqingkehuangyou/OFL.txt" },
+      "upstream": { "homepage": "https://fonts.google.com/specimen/ZCOOL+QingKe+HuangYou" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "zcool-xiaowei",
+      "displayName": "站酷小薇体",
+      "category": "display",
+      "version": "1.0",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolxiaowei/OFL.txt" },
+      "upstream": { "homepage": "https://fonts.google.com/specimen/ZCOOL+XiaoWei" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "youshe-biaohtihei",
+      "displayName": "优设标题黑",
+      "category": "display",
+      "version": "1.0",
+      "license": { "name": "免费商用授权声明（优设×字由）", "textUrl": "https://www.uisdc.com/uisdc-first-free-font" },
+      "upstream": { "homepage": "https://www.uisdc.com/uisdc-first-free-font", "mirror": "https://github.com/jaywcjlove/free-font" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/jaywcjlove/free-font/main/docs/fonts/%E5%85%B6%E4%BB%96%E5%AD%97%E4%BD%93/%E4%BC%98%E8%AE%BE%E6%A0%87%E9%A2%98%E9%BB%91.ttf" }
+      ]
+    },
+    {
+      "id": "pangmenzhengdao",
+      "displayName": "庞门正道标题体",
+      "category": "display",
+      "version": "1.0",
+      "license": { "name": "免费商用授权声明（庞门正道）", "textUrl": "https://github.com/jaywcjlove/free-font" },
+      "upstream": { "homepage": "https://github.com/jaywcjlove/free-font" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/jaywcjlove/free-font/main/docs/fonts/%E5%BA%9E%E9%97%A8%E6%AD%A3%E9%81%93%E5%AD%97%E4%BD%93%E7%B3%BB%E5%88%97/%E5%BA%9E%E9%97%A8%E6%AD%A3%E9%81%93%E6%A0%87%E9%A2%98%E4%BD%93.ttf" },
+        { "url": "https://raw.githubusercontent.com/jaywcjlove/free-font/main/docs/fonts/%E5%BA%9E%E9%97%A8%E6%AD%A3%E9%81%93%E5%AD%97%E4%BD%93%E7%B3%BB%E5%88%97/%E5%BA%9E%E9%97%A8%E6%AD%A3%E9%81%93%E7%B2%97%E4%B9%A6%E4%BD%93.ttf" }
+      ]
+    },
+    {
+      "id": "ruizi-zhenyan",
+      "displayName": "锐字真言体",
+      "category": "display",
+      "version": "1.0",
+      "license": { "name": "免费商用授权声明（锐字潮牌）", "textUrl": "https://github.com/jaywcjlove/free-font" },
+      "upstream": { "homepage": "https://github.com/jaywcjlove/free-font" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/jaywcjlove/free-font/main/docs/fonts/%E5%85%B6%E4%BB%96%E5%AD%97%E4%BD%93/%E9%94%90%E5%AD%97%E7%9C%9F%E8%A8%80%E4%BD%93.ttf" }
+      ]
+    },
+    {
+      "id": "ma-shan-zheng",
+      "displayName": "马善政毛笔",
+      "category": "calligraphy",
+      "version": "1.0",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/google/fonts/main/ofl/mashanzheng/OFL.txt" },
+      "upstream": { "homepage": "https://fonts.google.com/specimen/Ma+Shan+Zheng" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/mashanzheng/MaShanZheng-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "zhi-mang-xing",
+      "displayName": "钟齐志莽行书",
+      "category": "calligraphy",
+      "version": "1.0",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/google/fonts/main/ofl/zhimangxing/OFL.txt" },
+      "upstream": { "homepage": "https://fonts.google.com/specimen/Zhi+Mang+Xing" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "long-cang",
+      "displayName": "龙藏体",
+      "category": "calligraphy",
+      "version": "1.0",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/google/fonts/main/ofl/longcang/OFL.txt" },
+      "upstream": { "homepage": "https://fonts.google.com/specimen/Long+Cang" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/longcang/LongCang-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "liu-jian-mao-cao",
+      "displayName": "钟齐流江毛草",
+      "category": "calligraphy",
+      "version": "1.0",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/google/fonts/main/ofl/liujianmaocao/OFL.txt" },
+      "upstream": { "homepage": "https://fonts.google.com/specimen/Liu+Jian+Mao+Cao" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf" }
+      ]
+    },
+    {
+      "id": "sarasa-mono-sc",
+      "displayName": "更纱黑体等宽 简体",
+      "category": "mono",
+      "version": "1.0.41",
+      "license": { "name": "SIL Open Font License 1.1", "spdx": "OFL-1.1", "textUrl": "https://raw.githubusercontent.com/be5invis/Sarasa-Gothic/main/LICENSE" },
+      "upstream": { "homepage": "https://github.com/be5invis/Sarasa-Gothic", "release": "https://github.com/be5invis/Sarasa-Gothic/releases/tag/v1.0.41" },
+      "languages": ["zh-Hans", "en", "num"],
+      "sources": [
+        { "url": "https://github.com/be5invis/Sarasa-Gothic/releases/download/v1.0.41/SarasaMonoSC-TTF-1.0.41.7z", "archive": "7z", "include": ["*.ttf"] }
+      ]
+    }
+  ]
+}

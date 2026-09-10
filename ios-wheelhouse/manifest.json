@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "python": "cp313",
+  "cibuildwheel": "4.2.1",
+  "platforms": ["ios_arm64_iphoneos", "ios_arm64_iphonesimulator"],
+  "deploymentTarget": "17.0",
+  "buildDepsIndex": "https://pypi.anaconda.org/beeware/simple",
+  "notes": "每包构建配方。cibuildwheel 4.2.1 交叉构建 cp313-ios 双 slice；sdist 全部 SHA-256 锁定。rust=true 的包需要 rustup 目标，属实验链路，先在 CI 验证。",
+  "packages": {
+    "regex": {
+      "version": "2026.9.10",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/b9/5c/f403115361de25809e8f785686ec7096e30fef73be9ae35aa51da4e80abb/regex-2026.9.10.tar.gz",
+        "sha256": "1e321e2c84f0e52c457f5ea5944f796d6e8e09cb99738ea98dcc1bfe402a128d",
+        "dir": "regex-2026.9.10"
+      },
+      "smoke": "smoke/regex_smoke.py",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/mrabarnett/mrab-regex"
+    },
+    "pyyaml": {
+      "version": "6.0.3",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz",
+        "sha256": "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f",
+        "dir": "pyyaml-6.0.3"
+      },
+      "smoke": "smoke/pyyaml_smoke.py",
+      "env": {"PYYAML_FORCE_LIBYAML": "0"},
+      "license": "MIT",
+      "homepage": "https://pyyaml.org/",
+      "note": "无 libyaml 交叉库，构建纯 Python 形态 wheel（无原生扩展）。"
+    },
+    "markupsafe": {
+      "version": "3.0.3",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/7e/99/7690b6d4034fffd95959cbe0c02de8deb3098cc577c67bb6a24fe5d7caa7/markupsafe-3.0.3.tar.gz",
+        "sha256": "722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698",
+        "dir": "markupsafe-3.0.3"
+      },
+      "smoke": "smoke/markupsafe_smoke.py",
+      "license": "BSD-3-Clause",
+      "homepage": "https://palletsprojects.com/p/markupsafe/"
+    },
+    "orjson": {
+      "version": "3.12.0",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/0f/f3/742fb1f62b825f2c010697eaf4e828004bc2a81e7e806666989c132c7c42/orjson-3.12.0.tar.gz",
+        "sha256": "d14203fb1aae2ad9b3d52f8a0e82aeb10197ef1c9bc61da7f358bd70b00123d5",
+        "dir": "orjson-3.12.0"
+      },
+      "smoke": "smoke/orjson_smoke.py",
+      "rust": true,
+      "license": "Apache-2.0 OR MIT",
+      "homepage": "https://github.com/ijl/orjson",
+      "note": "maturin/Rust 交叉链路，实验项。"
+    },
+    "pydantic-core": {
+      "version": "2.49.0",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/0b/31/2de1e4f86615a3c1f598934dc9d557d473d87820c33c23582c7aaa6e145a/pydantic_core-2.49.0.tar.gz",
+        "sha256": "67440399d87a2c160ddff9dc013d12812785cfde18b648a295d57043f034a9fb",
+        "dir": "pydantic_core-2.49.0"
+      },
+      "smoke": "smoke/pydantic_core_smoke.py",
+      "rust": true,
+      "license": "MIT",
+      "homepage": "https://docs.pydantic.dev/",
+      "note": "maturin/Rust 交叉链路，实验项。"
+    }
+  }
+}

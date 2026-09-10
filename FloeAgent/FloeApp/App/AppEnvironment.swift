@@ -26,6 +26,10 @@ import FloeLocalModels
 import FloeGit
 import FloeTools
 import CloudKit
+import UserNotifications
+#if canImport(FloeOfficeNative)
+import FloeOfficeNative
+#endif
 
 /// Owns the app's long-lived services and stores. Created once at launch and
 /// injected through the SwiftUI environment. All stores are protocol-typed so
@@ -124,6 +128,9 @@ final class AppEnvironment: ObservableObject {
     private lazy var _mcpSettingsCenter = MCPSettingsCenter.shared
 
     var conversationCenter: ConversationCenter { _conversationCenter }
+    /// Set during tool registration; used at launch to reconcile interrupted
+    /// in-process jobs and by UI surfaces that list active background work.
+    private(set) var backgroundJobService: BackgroundJobService?
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
     var filesCenter: FilesCenter { _filesCenter }
     var workspaceCenter: WorkspaceCenter { _workspaceCenter }
@@ -306,6 +313,39 @@ final class AppEnvironment: ObservableObject {
         FloeShortcutsRuntime.shared.install(environment: self)
     }
 
+    /// Terminal-state hook for jobs.* background work. A live run is steered
+    /// with the outcome; a finished run leaves a durable queued input the user
+    /// can see and act on. A local notification always mirrors the outcome.
+    private func handleBackgroundJobTerminal(_ job: BackgroundJob) async {
+        let evidence = job.resultSummary ?? job.lastError ?? job.state.rawValue
+        let content = "[Floe background job \(job.id.uuidString)] \(job.targetTool) finished with state=\(job.state.rawValue). "
+            + "Evidence excerpt: \(String(evidence.prefix(1_000))). "
+            + "Use jobs.result with this jobID for the full output; do not resubmit an unchanged payload."
+        do {
+            try await conversationCenter.submitRunningInput(
+                content: content,
+                in: job.conversationID,
+                expectedRunID: job.runID,
+                mode: .steer,
+                selectedModelID: nil,
+                workspaceID: nil,
+                executionMode: .agent,
+                attachments: []
+            )
+        } catch {
+            FloeLogger(category: .app).info(
+                "backgroundJob terminal steer failed jobID=\(job.id.uuidString) error=\(error.localizedDescription)"
+            )
+        }
+        let notification = UNMutableNotificationContent()
+        notification.title = job.state == .completed ? "后台任务完成" : "后台任务结束：\(job.state.rawValue)"
+        notification.body = "\(job.targetTool) · \(String(evidence.prefix(160)))"
+        notification.userInfo = ["conversationID": job.conversationID.uuidString, "jobID": job.id.uuidString]
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "jobs.\(job.id.uuidString)", content: notification, trigger: nil
+        ))
+    }
+
     /// Registers every tool the agent can see, in one place and in a
     /// deterministic order. This is the single source of truth for the
     /// model's tool catalog.
@@ -419,6 +459,24 @@ final class AppEnvironment: ObservableObject {
             bluetoothSerialService: bluetoothSerialService,
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             includeOnDeviceJavaScript: true
+        )
+        // Background jobs (jobs.*): long downloads and Python data work run
+        // off the run's critical path. Registered after the execution tools so
+        // submit-time availability checks see every supported target runner.
+        let jobDownloads = JobDownloadCoordinator(database: database) { [weak self] job in
+            await self?.handleBackgroundJobTerminal(job)
+        }
+        backgroundJobService = registerBackgroundJobTools(
+            database: database,
+            onTerminal: { [weak self] job in
+                await self?.handleBackgroundJobTerminal(job)
+            },
+            downloadHandler: { job, context in
+                try await jobDownloads.take(job: job, context: context)
+            },
+            downloadCancelHandler: { jobID in
+                await jobDownloads.cancel(jobID: jobID)
+            }
         )
         // Browser automation.
         registerBrowserTools(center: browserCenter)
@@ -688,10 +746,21 @@ final class AppEnvironment: ObservableObject {
         do {
             try await database.migrate()
             try await runningInputStore.recoverTransientInputs()
+            // In-process jobs from the previous process can never resume;
+            // mark them interrupted so the model can resubmit honestly.
+            if let backgroundJobService {
+                _ = try? await backgroundJobService.reconcileInterruptedOnLaunch()
+            }
             let fontActivationFailures = await fontStore.activateManagedFonts()
             if !fontActivationFailures.isEmpty {
                 FloeLogger(category: .tools).warning(
                     "fontActivationFailed count=\(fontActivationFailures.count)"
+                )
+            }
+            let bundledFontFailures = BundledFontRegistrar.activateBundledFonts()
+            if !bundledFontFailures.isEmpty {
+                FloeLogger(category: .tools).warning(
+                    "bundledFontActivationFailed count=\(bundledFontFailures.count)"
                 )
             }
             // Approval/background choices affect the very first task created
@@ -825,6 +894,20 @@ final class AppEnvironment: ObservableObject {
                 persistenceReady = true
                 bootstrapError = nil
             }
+            // Office engine prewarm. cok_init_2 blocks its calling thread for
+            // seconds, so run it at a quiet moment after launch instead of on
+            // the first document open. Device-only framework; skipped in Low
+            // Power Mode and via the office.prewarm.disabled default.
+            #if canImport(FloeOfficeNative)
+            if !ProcessInfo.processInfo.isLowPowerModeEnabled,
+               !UserDefaults.standard.bool(forKey: "office.prewarm.disabled") {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    FloeOfficeNativeRuntime.shared.prepare { _ in }
+                }
+            }
+            #endif
         } catch {
             persistenceReady = false
             bootstrapError = error.localizedDescription

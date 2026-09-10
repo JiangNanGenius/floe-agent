@@ -37,6 +37,9 @@ enum ToolWorkflowGuidance {
         if names.contains("font.list") && names.contains("font.remove") {
             lines.append("Font workflow: font.list returns the digest id required by font.remove; never derive it from a filename.")
         }
+        if names.contains("jobs.submit") {
+            lines.append("Background job workflow: for large downloads or long Python data work, jobs.submit returns a durable jobID immediately — continue other work or finish the reply instead of blocking. Check jobs.status with the jobID, fetch output with jobs.result once completed, and never resubmit an unchanged payload while the job is alive; completion is announced automatically.")
+        }
         return lines
     }
 

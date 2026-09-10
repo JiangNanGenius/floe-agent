@@ -8,6 +8,33 @@ import shutil
 import subprocess
 from bootstrap_office_host import ROOT, LOCK, FRAMEWORK, checked_lock, verify_installed
 
+FONT_EXTENSIONS = {'.ttf', '.otf', '.ttc', '.otc'}
+BUNDLED_FONTS = ROOT / 'FloeApp' / 'Resources' / 'Fonts' / 'Bundled'
+
+
+def embed_bundled_fonts(app):
+    """Populate the engine's app-level Fonts/ directory with Floe's bundled
+    CJK/utility families. The directory is a declared embed output and starts
+    empty upstream; without it the engine renders every CJK glyph as a box
+    because it cannot see iOS system fonts."""
+    fonts_dir = app / 'Fonts'
+    fonts_dir.mkdir(exist_ok=True)
+    if not BUNDLED_FONTS.is_dir():
+        print('warning: bundled fonts not staged; run scripts/fonts/fetch_fonts.py (CI enforces this)')
+        return 0
+    copied = 0
+    for path in sorted(BUNDLED_FONTS.rglob('*')):
+        if path.suffix.lower() not in FONT_EXTENSIONS or not path.is_file():
+            continue
+        target = fonts_dir / path.name
+        if target.exists():
+            # Two families can share a filename; prefix the family directory.
+            target = fonts_dir / f'{path.parent.name}-{path.name}'
+        shutil.copy2(path, target)
+        copied += 1
+    print(f'embedded {copied} bundled fonts into Fonts/')
+    return copied
+
 
 def embed(source, app, lock_path=LOCK, *, signing_identity=None):
     lock, pin = checked_lock(lock_path)
@@ -41,10 +68,12 @@ def embed(source, app, lock_path=LOCK, *, signing_identity=None):
             shutil.copy2(original, target)
     framework = app / 'Frameworks' / FRAMEWORK
     (framework / 'FloeOfficeNative').chmod(0o755)
+    bundled_fonts = embed_bundled_fonts(app)
     if signing_identity:
         subprocess.run(['/usr/bin/codesign', '--force', '--sign', signing_identity,
                         '--timestamp=none', str(framework)], check=True)
     return {**verified, 'embeddedFramework': True, 'signedFramework': bool(signing_identity),
+            'bundledFonts': bundled_fonts,
             'runtimeOpened': False, 'deviceRoundtripPassed': False}
 
 

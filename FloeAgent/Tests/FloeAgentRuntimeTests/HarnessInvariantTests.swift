@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import FloeAgentRuntime
 @testable import FloeModels
+@testable import FloeProviders
 import FloeTestSupport
 
 @Suite("FloeAgentRuntime.HarnessInvariants")
@@ -33,6 +34,66 @@ struct HarnessInvariantTests {
             )]
         )
         #expect(valid.isEmpty)
+    }
+
+    @Test("Provider dispatch rejects malformed, duplicated, or overlapping replayed pairs")
+    func providerBoundaryRejectsInvalidReplayedPairs() throws {
+        let settledCall = try TestFixtures.toolCall(id: "settled")
+        let settledResult = ToolResult(
+            callID: settledCall.id,
+            status: .ok,
+            outputSummary: "done",
+            outputDigest: "digest"
+        )
+        let pendingCall = try TestFixtures.toolCall(id: "pending")
+        let pendingResult = ToolResult(
+            callID: pendingCall.id,
+            status: .ok,
+            outputSummary: "done",
+            outputDigest: "digest"
+        )
+        let lifecycle: [String: AgentToolLifecycleEntry] = [
+            pendingCall.id: AgentToolLifecycleEntry(
+                callID: pendingCall.id,
+                toolName: pendingCall.toolName,
+                phase: .resultCommitted
+            )
+        ]
+
+        let mismatched = ReplayedToolPair(
+            call: settledCall,
+            result: ToolResult(callID: "other", status: .ok, outputSummary: "done", outputDigest: "d")
+        )
+        #expect(HarnessInvariantRegistry.validateProviderBoundary(
+            calls: [pendingCall],
+            results: [pendingResult],
+            lifecycleByCallID: lifecycle,
+            replayedPairs: [mismatched]
+        ).contains { $0.name == "provider.replayPairing" })
+
+        let duplicate = ReplayedToolPair(call: settledCall, result: settledResult)
+        #expect(HarnessInvariantRegistry.validateProviderBoundary(
+            calls: [pendingCall],
+            results: [pendingResult],
+            lifecycleByCallID: lifecycle,
+            replayedPairs: [duplicate, duplicate]
+        ).contains { $0.name == "provider.replayDuplicate" })
+
+        let overlapping = ReplayedToolPair(call: pendingCall, result: pendingResult)
+        #expect(HarnessInvariantRegistry.validateProviderBoundary(
+            calls: [pendingCall],
+            results: [pendingResult],
+            lifecycleByCallID: lifecycle,
+            replayedPairs: [overlapping]
+        ).contains { $0.name == "provider.replayOverlapsPending" })
+
+        // A complete replayed pair disjoint from the pending batch passes.
+        #expect(HarnessInvariantRegistry.validateProviderBoundary(
+            calls: [pendingCall],
+            results: [pendingResult],
+            lifecycleByCallID: lifecycle,
+            replayedPairs: [duplicate]
+        ).isEmpty)
     }
 
     @Test("Checkpoint rejects a result that is not lifecycle committed")

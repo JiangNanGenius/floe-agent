@@ -75,6 +75,17 @@ rows.extend([
 
 rows.append(("FloeDocumentSans (modified Noto Sans SC)", "2.004", "OFL-1.1", "https://github.com/notofonts/noto-cjk/tree/523d033d6cb47f4a80c58a35753646f5c3608a78"))
 
+# Bundled CJK/utility fonts are staged by scripts/fonts/fetch_fonts.py from
+# manifest-pinned sources; every family carries its license in the manifest.
+with open("scripts/fonts/manifest.json") as f:
+    font_manifest = json.load(f)
+for family in font_manifest["families"]:
+    license_name = family["license"].get("spdx") or family["license"]["name"]
+    if license_name in GPL_FAMILY:
+        violations.append(f"font {family['id']}: GPL-family license {license_name}")
+    homepage = family.get("upstream", {}).get("homepage", "")
+    rows.append((f"Font: {family['displayName']}", family["version"], license_name, homepage))
+
 # Offline conversion bundles are checked in with a reproducible npm lock.
 with open("ThirdParty/DocumentConversion/inventory.json") as f:
     conversion = json.load(f)

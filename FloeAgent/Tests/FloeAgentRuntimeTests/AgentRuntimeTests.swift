@@ -1328,7 +1328,254 @@ struct AgentRuntimeTests {
         #expect(state.name == "completed")
     }
 
+    // MARK: Cross-turn tool-pair replay
+
+    @Test("Settled tool pairs replay as ordered history on every later request and wire")
+    func toolPairsReplayAcrossTurns() async throws {
+        let adapter = MockAdapter()
+        let first = try TestFixtures.toolCall(id: "replay-1", arguments: #"{"text":"first"}"#)
+        let second = try TestFixtures.toolCall(id: "replay-2", arguments: #"{"text":"second"}"#)
+        adapter.script = [
+            [.toolRequest(first), .completed(.init(stopReason: .toolUse))],
+            [.toolRequest(second), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.results = [
+            ToolResult(callID: first.id, status: .ok, outputSummary: "alpha-output", outputDigest: "a"),
+            ToolResult(callID: second.id, status: .ok, outputSummary: "beta-output", outputDigest: "b")
+        ]
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "replay settled evidence")
+
+        #expect(adapter.requests.count == 3)
+        #expect(adapter.requests[0].replayedToolPairs.isEmpty)
+        // Turn two carries the first batch through the pending channel only.
+        #expect(adapter.requests[1].replayedToolPairs.isEmpty)
+        #expect(adapter.requests[1].pendingToolCalls.map(\.id) == [first.id])
+        // Turn three replays the first settled pair as history, in settlement
+        // order, while the second batch rides the pending channel once.
+        let replayed = adapter.requests[2].replayedToolPairs
+        #expect(replayed.map { $0.call.id } == [first.id])
+        #expect(replayed.map { $0.result.callID } == [first.id])
+        #expect(replayed.first?.call.argumentsJSON == first.argumentsJSON)
+        #expect(replayed.first?.result.outputSummary.contains("alpha-output") == true)
+        #expect(adapter.requests[2].pendingToolCalls.map(\.id) == [second.id])
+        #expect(adapter.requests[2].toolResults.map(\.callID) == [second.id])
+        // Every settled pair stays model-visible: replay ∪ pending covers both.
+        #expect(Set(replayed.map { $0.call.id } + adapter.requests[2].pendingToolCalls.map(\.id))
+            == Set([first.id, second.id]))
+        #expect(await runtime.state.name == "completed")
+
+        // The runtime-produced request renders the history pair on all wires.
+        let request = try #require(adapter.requests.last)
+        let chatObject = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+        let chatMessages = try #require(chatObject["messages"] as? [[String: Any]])
+        let historyAssistant = try #require(chatMessages.firstIndex {
+            ($0["tool_calls"] as? [[String: Any]])?.first?["id"] as? String == first.id
+        })
+        #expect(chatMessages[historyAssistant]["role"] as? String == "assistant")
+        #expect(chatMessages[historyAssistant + 1]["role"] as? String == "tool")
+        #expect(chatMessages[historyAssistant + 1]["tool_call_id"] as? String == first.id)
+        #expect((chatMessages[historyAssistant + 1]["content"] as? String)?.contains("alpha-output") == true)
+        let pendingAssistant = try #require(chatMessages.firstIndex {
+            ($0["tool_calls"] as? [[String: Any]])?.first?["id"] as? String == second.id
+        })
+        #expect(historyAssistant < pendingAssistant)
+
+        let anthropicObject = try jsonObject(AnthropicMessagesAdapter().buildBody(from: request))
+        let anthropicMessages = try #require(anthropicObject["messages"] as? [[String: Any]])
+        let historyUse = try #require(anthropicMessages.firstIndex { message in
+            (message["content"] as? [[String: Any]])?.contains {
+                $0["type"] as? String == "tool_use" && $0["id"] as? String == first.id
+            } == true
+        })
+        #expect(anthropicMessages[historyUse]["role"] as? String == "assistant")
+        let historyResult = try #require(anthropicMessages[historyUse + 1]["content"] as? [[String: Any]])
+        #expect(historyResult.contains {
+            $0["type"] as? String == "tool_result" && $0["tool_use_id"] as? String == first.id
+        })
+
+        let responsesObject = try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))
+        let input = try #require(responsesObject["input"] as? [[String: Any]])
+        let historyCall = try #require(input.firstIndex {
+            $0["type"] as? String == "function_call" && $0["call_id"] as? String == first.id
+        })
+        #expect(input[historyCall + 1]["type"] as? String == "function_call_output")
+        #expect(input[historyCall + 1]["call_id"] as? String == first.id)
+        #expect((input[historyCall + 1]["output"] as? String)?.contains("alpha-output") == true)
+        let pendingCall = try #require(input.firstIndex {
+            $0["type"] as? String == "function_call" && $0["call_id"] as? String == second.id
+        })
+        #expect(historyCall < pendingCall)
+    }
+
+    @Test("Replay budget drops the oldest whole pairs once history exceeds forty")
+    func toolReplayBudgetDropsOldestPairs() async throws {
+        let adapter = MockAdapter()
+        let batchCount = 45
+        var script: [[AgentEvent]] = try (1...batchCount).map { index in
+            [
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "budget-\(index)",
+                    arguments: #"{"text":"call-\#(index)"}"#
+                )),
+                .completed(.init(stopReason: .toolUse))
+            ]
+        }
+        script.append([.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))])
+        adapter.script = script
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "exercise the replay budget")
+
+        #expect(adapter.requests.count == batchCount + 1)
+        let finalRequest = try #require(adapter.requests.last)
+        let replayedIDs = finalRequest.replayedToolPairs.map { $0.call.id }
+        #expect(replayedIDs.count == ToolReplayPlanner.defaultMaxPairs)
+        // The pending batch (budget-45) is excluded from replay; the oldest
+        // settled pairs were dropped whole, preserving settlement order.
+        #expect(replayedIDs == (5...(batchCount - 1)).map { "budget-\($0)" })
+        #expect(finalRequest.pendingToolCalls.map(\.id) == ["budget-\(batchCount)"])
+        // No dangling half pairs: every replayed item binds call to result.
+        #expect(finalRequest.replayedToolPairs.allSatisfy { $0.call.id == $0.result.callID })
+        #expect(await runtime.state.name == "completed")
+    }
+
+    @Test("Replay trimming honors pair and byte budgets without splitting pairs")
+    func toolReplayPlannerTrimsToBudget() throws {
+        func pair(_ index: Int, summaryBytes: Int = 8) throws -> ReplayedToolPair {
+            ReplayedToolPair(
+                call: try TestFixtures.toolCall(id: "trim-\(index)"),
+                result: ToolResult(
+                    callID: "trim-\(index)",
+                    status: .ok,
+                    outputSummary: String(repeating: "x", count: summaryBytes),
+                    outputDigest: "d"
+                )
+            )
+        }
+        let pairs = try (1...45).map { try pair($0) }
+        let trimmed = ToolReplayPlanner.trimToBudget(pairs)
+        #expect(trimmed.count == ToolReplayPlanner.defaultMaxPairs)
+        #expect(trimmed.map { $0.call.id } == (6...45).map { "trim-\($0)" })
+
+        // Byte budget: 10-byte summaries within 25 bytes keep the newest two.
+        let byteTrimmed = ToolReplayPlanner.trimToBudget(
+            try (1...5).map { try pair($0, summaryBytes: 10) },
+            maxPairs: ToolReplayPlanner.defaultMaxPairs,
+            maxResultBytes: 25
+        )
+        #expect(byteTrimmed.map { $0.call.id } == ["trim-4", "trim-5"])
+
+        // A zero byte budget drops everything rather than splitting a pair.
+        #expect(ToolReplayPlanner.trimToBudget(pairs, maxResultBytes: 0).isEmpty)
+        // Trimming never mutates the source record.
+        #expect(pairs.count == 45)
+    }
+
+    @Test("Replay compaction matches the context-engine truncation contract")
+    func toolReplayCompactionContract() {
+        let short = String(repeating: "s", count: 2_048)
+        #expect(ToolReplayPlanner.compactResultSummary(short) == short)
+
+        let long = (0..<100).map { "line-\($0)-" + String(repeating: "y", count: 40) }
+            .joined(separator: "\n")
+        let compacted = ToolReplayPlanner.compactResultSummary(long)
+        #expect(compacted.hasPrefix(String(long.prefix(1_280))))
+        #expect(compacted.contains("[middle of tool output compacted]"))
+        #expect(compacted.contains(String(long.suffix(640))))
+        #expect(compacted.contains("originalBytes=\(long.utf8.count)"))
+        #expect(compacted.contains("digest="))
+        #expect(compacted.utf8.count < long.utf8.count)
+    }
+
+    @Test("Resume restores replayed tool history without re-dispatching settled calls")
+    func resumeRestoresReplayedToolHistory() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+        let older = ReplayedToolPair(
+            call: try TestFixtures.toolCall(id: "settled-older", arguments: #"{"text":"old"}"#),
+            result: ToolResult(
+                callID: "settled-older",
+                status: .ok,
+                outputSummary: "older-output",
+                outputDigest: "o"
+            )
+        )
+        let pending = try TestFixtures.toolCall(id: "settled-pending", arguments: #"{"text":"pending"}"#)
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "resume replay history")),
+            messages: [ConversationMessage(role: "user", content: "resume replay history")],
+            pendingToolCalls: [pending],
+            pendingToolResults: [ToolResult(
+                callID: pending.id,
+                status: .ok,
+                outputSummary: "pending-output",
+                outputDigest: "p"
+            )],
+            replayedToolPairs: [older]
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        let request = try #require(adapter.requests.first)
+        #expect(request.pendingToolCalls.map(\.id) == [pending.id])
+        #expect(request.toolResults.map(\.callID) == [pending.id])
+        #expect(request.replayedToolPairs.map { $0.call.id } == [older.call.id])
+        #expect(request.replayedToolPairs.first?.result.outputSummary.contains("older-output") == true)
+        // Settled calls are replayed as history, never re-executed.
+        #expect(executor.executedCalls.isEmpty)
+        #expect(await runtime.state.name == "completed")
+    }
+
+    @Test("Checkpoint persists replayed tool pairs and decodes legacy payloads without them")
+    func checkpointReplayedPairsRoundTrip() throws {
+        let pair = ReplayedToolPair(
+            call: try TestFixtures.toolCall(id: "roundtrip-1"),
+            result: ToolResult(callID: "roundtrip-1", status: .ok, outputSummary: "done", outputDigest: "d")
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "roundtrip")),
+            messages: [ConversationMessage(role: "user", content: "roundtrip")],
+            replayedToolPairs: [pair]
+        )
+        let decoded = try AgentCheckpoint.decoded(from: checkpoint.encoded())
+        #expect(decoded.replayedToolPairs == [pair])
+
+        // Legacy v5 payloads predate the field and must still decode.
+        let legacyCheckpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "legacy")),
+            messages: [ConversationMessage(role: "user", content: "legacy")]
+        )
+        var object = try #require(
+            JSONSerialization.jsonObject(with: legacyCheckpoint.encoded()) as? [String: Any]
+        )
+        object.removeValue(forKey: "replayedToolPairs")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let legacyDecoded = try AgentCheckpoint.decoded(from: legacyData)
+        #expect(legacyDecoded.replayedToolPairs == nil)
+    }
+
     // MARK: Helpers
+
+    private func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
 
     private func waitForState(
         _ name: String,

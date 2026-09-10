@@ -180,7 +180,7 @@ struct RequestContractTests {
         )
 
         let body = AnthropicMessagesAdapter().buildBody(from: request)
-        #expect(body.system == "Follow the user intent.")
+        #expect(body.system?.map(\.text) == ["Follow the user intent."])
         #expect(body.messages.count == 1)
         #expect(body.messages.first?.role == "user")
     }
@@ -236,6 +236,131 @@ struct RequestContractTests {
             .first { blocks in blocks.contains { $0["type"] as? String == "tool_result" } }
         #expect(assistantContent?.contains { $0["type"] as? String == "tool_use" && $0["id"] as? String == call.id } == true)
         #expect(userContent?.contains { $0["type"] as? String == "tool_result" && $0["tool_use_id"] as? String == call.id } == true)
+    }
+
+    @Test("Replayed tool pairs render in settlement order on every wire before the pending pair")
+    func replayedToolPairsRenderInOrder() throws {
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com"))
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "deepseek-v4-flash",
+            displayName: "DeepSeek",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192)
+        )
+        let first = try ToolCall(
+            id: "history-1",
+            toolName: "workspace.listDirectory",
+            argumentsJSON: Data(#"{"path":"/tmp"}"#.utf8),
+            scope: .local
+        )
+        let second = try ToolCall(
+            id: "history-2",
+            toolName: "workspace.listDirectory",
+            argumentsJSON: Data(#"{"path":"/var"}"#.utf8),
+            scope: .local
+        )
+        let pending = try ToolCall(
+            id: "pending-1",
+            toolName: "workspace.listDirectory",
+            argumentsJSON: Data(#"{"path":"/etc"}"#.utf8),
+            scope: .local
+        )
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [
+                (role: "system", content: "Follow the user intent."),
+                (role: "user", content: "list directories")
+            ],
+            toolResults: [(callID: pending.id, output: "pending-output")],
+            pendingToolCalls: [pending],
+            replayedToolPairs: [
+                ReplayedToolPair(
+                    call: first,
+                    result: ToolResult(callID: first.id, status: .ok, outputSummary: "first-output", outputDigest: "f")
+                ),
+                ReplayedToolPair(
+                    call: second,
+                    result: ToolResult(callID: second.id, status: .ok, outputSummary: "second-output", outputDigest: "s")
+                )
+            ]
+        )
+
+        // Chat Completions: one assistant tool_calls message plus one role=tool
+        // message per pair, in settlement order, before the pending pair.
+        let chatObject = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+        let chatMessages = try #require(chatObject["messages"] as? [[String: Any]])
+        let chatSequence = chatMessages.map { message -> String in
+            if let calls = message["tool_calls"] as? [[String: Any]],
+               let id = calls.first?["id"] as? String {
+                return "assistant:\(id)"
+            }
+            if message["role"] as? String == "tool", let id = message["tool_call_id"] as? String {
+                return "tool:\(id)"
+            }
+            return message["role"] as? String ?? "?"
+        }
+        #expect(chatSequence == [
+            "system", "user",
+            "assistant:history-1", "tool:history-1",
+            "assistant:history-2", "tool:history-2",
+            "assistant:pending-1", "tool:pending-1"
+        ])
+        // DeepSeek underscore aliasing also covers replayed call names.
+        let historyCalls = try #require(chatMessages[2]["tool_calls"] as? [[String: Any]])
+        #expect((historyCalls[0]["function"] as? [String: Any])?["name"] as? String
+            == "workspace_listDirectory")
+        #expect(chatMessages[3]["content"] as? String == "first-output")
+        #expect(chatMessages[5]["content"] as? String == "second-output")
+
+        // Responses: function_call/function_call_output input items per pair.
+        let responsesObject = try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))
+        let input = try #require(responsesObject["input"] as? [[String: Any]])
+        let inputSequence = input.map { item -> String in
+            let type = item["type"] as? String ?? "message"
+            if let callID = item["call_id"] as? String { return "\(type):\(callID)" }
+            return "\(type):\(item["role"] as? String ?? "")"
+        }
+        #expect(inputSequence == [
+            "message:system", "message:user",
+            "function_call:history-1", "function_call_output:history-1",
+            "function_call:history-2", "function_call_output:history-2",
+            "function_call:pending-1", "function_call_output:pending-1"
+        ])
+        let historyCall = try #require(input[2]["name"] as? String)
+        #expect(historyCall == "workspace.listDirectory")
+
+        // Anthropic: assistant tool_use / user tool_result blocks per pair;
+        // system extraction stays at the top level.
+        let anthropicBody = AnthropicMessagesAdapter().buildBody(from: request)
+        #expect(anthropicBody.system?.map(\.text) == ["Follow the user intent."])
+        let anthropicObject = try jsonObject(anthropicBody)
+        let anthropicMessages = try #require(anthropicObject["messages"] as? [[String: Any]])
+        let anthropicSequence = anthropicMessages.map { message -> String in
+            let blocks = message["content"] as? [[String: Any]] ?? []
+            if let use = blocks.first(where: { $0["type"] as? String == "tool_use" }),
+               let id = use["id"] as? String {
+                return "assistant:\(id)"
+            }
+            if let result = blocks.first(where: { $0["type"] as? String == "tool_result" }),
+               let id = result["tool_use_id"] as? String {
+                return "user:\(id)"
+            }
+            return message["role"] as? String ?? "?"
+        }
+        #expect(anthropicSequence == [
+            "user",
+            "assistant:history-1", "user:history-1",
+            "assistant:history-2", "user:history-2",
+            "assistant:pending-1", "user:pending-1"
+        ])
+        #expect(anthropicMessages.allSatisfy { $0["role"] as? String != "system" })
     }
 
     @Test("DeepSeek tool names are wire-safe without relying on a settings toggle")
@@ -593,6 +718,30 @@ struct RequestContractTests {
             return
         }
         #expect(call.scope == .hostPath(hostID: hostID, path: "/tmp"))
+    }
+
+
+    @Test("Anthropic system splits at the live-state marker with a cache breakpoint")
+    func anthropicSystemCacheBreakpoint() throws {
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .anthropicMessages,
+            baseURL: URL(string: "https://localhost:8443")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "claude", displayName: "Claude",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1024), capabilities: [.tools])
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [
+                (role: "system", content: "Stable contract.\n\n" + ProviderStreamRequest.liveStateMarker + "\n\nCurrent runtime time: now"),
+                (role: "user", content: "Hi")
+            ]
+        )
+        let body = AnthropicMessagesAdapter().buildBody(from: request)
+        let blocks = try #require(body.system)
+        #expect(blocks.count == 2)
+        #expect(blocks[0].text == "Stable contract.")
+        #expect(blocks[0].cacheControl != nil)
+        #expect(blocks[1].cacheControl == nil)
+        #expect(blocks[1].text.contains("Current runtime time"))
     }
 
     private func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {

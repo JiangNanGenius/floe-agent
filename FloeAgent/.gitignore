@@ -51,3 +51,7 @@ Vendor/Python.xcframework/
 Vendor/PythonExtensions/
 Vendor/Office/
 FloeApp/Resources/python/
+
+# Bundled fonts: reproducible build inputs staged by scripts/fonts/fetch_fonts.py
+Vendor/Fonts/
+FloeApp/Resources/Fonts/Bundled/

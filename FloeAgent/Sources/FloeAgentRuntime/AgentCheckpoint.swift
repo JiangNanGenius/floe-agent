@@ -160,6 +160,9 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
     public var messages: [Message]
     public var toolResults: [Result]
     public var pendingToolCalls: [ToolCall]
+    /// Settled pairs the original request replayed as history. Optional so
+    /// snapshots written before cross-turn replay remain decodable.
+    public var replayedToolPairs: [ReplayedToolPair]?
     public var pendingAssistantReasoning: String?
     public var toolSchemas: [Schema]
     public var reasoningDisabled: Bool
@@ -179,6 +182,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
         }
         toolResults = request.toolResults.map { Result(callID: $0.callID, output: $0.output) }
         pendingToolCalls = request.pendingToolCalls
+        replayedToolPairs = request.replayedToolPairs
         pendingAssistantReasoning = request.pendingAssistantReasoning
         toolSchemas = request.toolSchemas.map {
             Schema(name: $0.name, description: $0.description, parametersJSON: $0.parametersJSON)
@@ -202,6 +206,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
             },
             toolResults: toolResults.map { (callID: $0.callID, output: $0.output) },
             pendingToolCalls: pendingToolCalls,
+            replayedToolPairs: replayedToolPairs ?? [],
             pendingAssistantReasoning: pendingAssistantReasoning,
             toolSchemas: toolSchemas.map {
                 ToolSchemaDescriptor(
@@ -262,6 +267,10 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     public var providerDispatchRequest: ProviderDispatchRequestSnapshot?
     /// Reasoning attached to a committed tool batch before its next dispatch.
     public var pendingAssistantReasoning: String?
+    /// Run-level settled tool pairs replayed as provider history on later
+    /// turns. Untrimmed; the dispatch boundary applies the replay budget.
+    /// Optional so checkpoints written before cross-turn replay decode.
+    public var replayedToolPairs: [ReplayedToolPair]?
 
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
@@ -292,7 +301,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         toolLifecycleEntries: [AgentToolLifecycleEntry]? = nil,
         providerDispatchEnvelope: ProviderDispatchEnvelope? = nil,
         providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil,
-        pendingAssistantReasoning: String? = nil
+        pendingAssistantReasoning: String? = nil,
+        replayedToolPairs: [ReplayedToolPair]? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -318,6 +328,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.providerDispatchEnvelope = providerDispatchEnvelope
         self.providerDispatchRequest = providerDispatchRequest
         self.pendingAssistantReasoning = pendingAssistantReasoning
+        self.replayedToolPairs = replayedToolPairs
     }
 
     public func encoded() throws -> Data {

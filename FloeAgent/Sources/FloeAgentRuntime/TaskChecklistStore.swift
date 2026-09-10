@@ -104,7 +104,10 @@ public actor TaskChecklistStore {
             }
             let body = try String.fetchOne(db, sql: "SELECT body_json FROM task_checklist_revisions WHERE conversation_id = ? ORDER BY revision DESC LIMIT 1", arguments: [conversation])
             let previous = try body.map { try JSONDecoder().decode(TaskChecklist.self, from: Data($0.utf8)) }
-            guard update.expectedRevision == (previous?.revision ?? 0) else { throw FloeError.validationFailed("Checklist changed; read its current revision before updating") }
+            let currentRevision = previous?.revision ?? 0
+            guard update.expectedRevision == currentRevision else {
+                throw FloeError.validationFailed("Checklist changed: current revision is \(currentRevision). Do not re-read the plan; retry task.updatePlan with expectedRevision=\(currentRevision) and the same intended changes.")
+            }
             if let previous {
                 if update.startNew {
                     guard previous.isFinished else { throw FloeError.validationFailed("Finish or explicitly cancel the existing steps before starting a new checklist") }

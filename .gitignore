@@ -35,6 +35,7 @@ FloeAgent/FloeApp/Resources/PDFiumLicenses/
 FloeAgent/Vendor/LibArchive/
 FloeAgent/FloeApp/Resources/LibArchiveLicenses/
 pandas-wheelhouse/
+ios-wheelhouse/out/
 
 # Local AI assistant workspace state
 .workbuddy/

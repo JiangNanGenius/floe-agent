@@ -14,23 +14,41 @@ output_root="Vendor/PythonExtensions"
 cache_root="${TMPDIR:-/tmp}/floe-python-binary-packages"
 mkdir -p "$cache_root" "$site_packages" "$output_root"
 
-# package|version|device_wheel_sha256|simulator_wheel_sha256
+# package|version|device_wheel_sha256|simulator_wheel_sha256|url_template|minimum_ios|flatten_subdir_modules
+# url_template placeholders: {name} {name_lower} {version} {arch}
+# New packages land via ios-wheelhouse (build_ios_wheel.sh → reviewed GitHub
+# Release tag runtime-<pkg>-<version>-cp313), then receive their pin here.
 packages=(
-    "numpy|2.5.2.post1|d451e3281b8e2709bb85c6857c83b3c1797f930971b6bbff7f57469d3958e16e|154285250704dd82f8a5b53633eebe381f6eb56d232780291ac180e12a7ea0b1"
-    "Pillow|11.0.0|42543f517e0f888102db194ae34e903786c82bbb062854e7694d227a2044b984|6c7d4fbfb2a3b7b823f8cb8a5af5d91570d597a4385ea11ad0e29ea316e197ff"
-    "pandas|3.0.5|99ac5c6c541a0e24b0b6637e9405e9ae682ea4b188316a090d643edd6bedd92d|d0a9dc857c9d9d38e78d305a3385f51dc04366daf15fda2f17a3a0927d55bd67"
+    "numpy|2.5.2.post1|d451e3281b8e2709bb85c6857c83b3c1797f930971b6bbff7f57469d3958e16e|154285250704dd82f8a5b53633eebe381f6eb56d232780291ac180e12a7ea0b1|https://api.anaconda.org/download/beeware/{name}/{version}/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|13.0|0"
+    "Pillow|11.0.0|42543f517e0f888102db194ae34e903786c82bbb062854e7694d227a2044b984|6c7d4fbfb2a3b7b823f8cb8a5af5d91570d597a4385ea11ad0e29ea316e197ff|https://api.anaconda.org/download/beeware/{name}/{version}/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|13.0|0"
+    "pandas|3.0.5|99ac5c6c541a0e24b0b6637e9405e9ae682ea4b188316a090d643edd6bedd92d|d0a9dc857c9d9d38e78d305a3385f51dc04366daf15fda2f17a3a0927d55bd67|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-pandas-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_17_0_arm64_{arch}.whl|17.0|1"
 )
+
+wheel_url() {
+    local package="$1" version="$2" arch="$3"
+    local spec p v d s template min_os flatten name_lower
+    for spec in "${packages[@]}"; do
+        IFS='|' read -r p v d s template min_os flatten <<< "$spec"
+        if [ "$p" = "$package" ]; then
+            name_lower="$(python3 -c "print('$package'.lower())")"
+            template="${template//\{name\}/$package}"
+            template="${template//\{name_lower\}/$name_lower}"
+            template="${template//\{version\}/$version}"
+            template="${template//\{arch\}/$arch}"
+            printf '%s' "$template"
+            return 0
+        fi
+    done
+    echo "error: no wheel pin registered for $package" >&2
+    return 1
+}
 
 download_wheel() {
     local package="$1" version="$2" arch="$3" expected="$4"
-    local name
-    name="$(python3 -c "print('$package'.lower())")"
     local file="$cache_root/$package-$version-$arch.whl"
     if [ ! -f "$file" ]; then
-        local url="https://api.anaconda.org/download/beeware/$package/$version/$name-$version-cp313-cp313-ios_13_0_arm64_$arch.whl"
-        if [ "$package" = pandas ]; then
-            url="https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-pandas-3.0.5-cp313/pandas-3.0.5-cp313-cp313-ios_17_0_arm64_$arch.whl"
-        fi
+        local url
+        url="$(wheel_url "$package" "$version" "$arch")" || return 1
         local partial
         partial="$(mktemp "$file.partial.XXXXXX")" || return 1
         # This function runs inside command substitution, where Bash does not
@@ -84,7 +102,7 @@ make_framework() {
 project_yml_entries=()
 
 for spec in "${packages[@]}"; do
-    IFS='|' read -r package version device_sha sim_sha <<< "$spec"
+    IFS='|' read -r package version device_sha sim_sha url_template package_min_ios flatten_subdirs <<< "$spec"
     device_wheel="$(download_wheel "$package" "$version" "iphoneos" "$device_sha")"
     sim_wheel="$(download_wheel "$package" "$version" "iphonesimulator" "$sim_sha")"
 
@@ -115,10 +133,9 @@ for spec in "${packages[@]}"; do
             exit 1
         fi
         framework_module="$module"
-        minimum_os=13.0
-        if [ "$package" = pandas ]; then
+        minimum_os="$package_min_ios"
+        if [ "$flatten_subdirs" = "1" ] && [ "$package_dir" != "." ]; then
             framework_module="${package_dir//\//_}_$module"
-            minimum_os=17.0
         fi
         work_dir="$output_root/.work-binpkg-$framework_module"
         rm -rf "$work_dir"

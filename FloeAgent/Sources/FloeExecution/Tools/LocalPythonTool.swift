@@ -59,7 +59,7 @@ public struct LocalPythonTool: AgentTool {
       "properties": {
         "script": {"type": "string", "description": "Python source (max 64 KiB)"},
         "inputJSON": {"type": "string", "description": "Optional JSON value exposed as `input`"},
-        "timeout": {"type": "number", "description": "Cooperative Python bytecode deadline in seconds (default 10, max 30)"},
+        "timeout": {"type": "number", "description": "Cooperative Python bytecode deadline in seconds (default 10, max 30; up to 600 for jobs.submit background jobs)"},
         "maxOutputBytes": {"type": "integer", "description": "Combined output cap (default 65536, max 262144)"}
         ,"packages": {
           "type": "array",
@@ -82,6 +82,9 @@ public struct LocalPythonTool: AgentTool {
     static let maxScriptBytes = 64 * 1024
     static let defaultTimeout: TimeInterval = 10
     static let maxTimeout: TimeInterval = 30
+    /// Background jobs submitted through jobs.submit get a longer cooperative
+    /// deadline because no model turn is blocked waiting on the result.
+    static let maxBackgroundJobTimeout: TimeInterval = 600
     static let defaultMaxOutputBytes = 64 * 1024
     static let maxOutputBytesCap = 256 * 1024
 
@@ -228,10 +231,15 @@ public struct LocalPythonTool: AgentTool {
                 throw FloeError.cancelled
             }
         }
+        // jobs.submit marks background executions with a "jobs." call-ID
+        // prefix; only those get the extended deadline, and the single
+        // interpreter still serializes them against interactive runs.
+        let isBackgroundJob = context.toolCallID?.hasPrefix("jobs.") == true
+        let timeoutCeiling = isBackgroundJob ? Self.maxBackgroundJobTimeout : Self.maxTimeout
         let request = ScriptExecutionRequest(
             script: args.script,
             inputJSON: args.inputJSON,
-            timeout: min(args.timeout ?? Self.defaultTimeout, Self.maxTimeout),
+            timeout: min(args.timeout ?? Self.defaultTimeout, timeoutCeiling),
             maxOutputBytes: min(args.maxOutputBytes ?? Self.defaultMaxOutputBytes, Self.maxOutputBytesCap)
         )
         let outcome = await service.run(request, cancellation: context.cancellation)

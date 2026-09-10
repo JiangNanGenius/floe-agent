@@ -23,22 +23,22 @@ on:
         description: 'Sign and commit official Skill Hub artifacts on the selected trusted branch'
         type: boolean
         default: false
-      build_native_pandas:
-        description: 'Build native CPython 3.13 pandas iOS wheel candidates'
-        type: boolean
-        default: false
+      native_wheels_package:
+        description: "Build native CPython 3.13 iOS wheel candidates: a package name from ios-wheelhouse/manifest.json, 'pandas', or 'all'"
+        type: string
+        default: ''
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  build-native-pandas:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_native_pandas
+  build-native-wheels:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_wheels_package != ''
     # CPython's upstream testbed still uses UIApplicationDelegate rather than
     # UIScene. Build/test this dependency with the compatible stable SDK;
-    # the shipping Floe app and its native pandas smoke test still use Xcode 27.
+    # the shipping Floe app and its native smoke tests still use Xcode 27.
     runs-on: macos-26
-    timeout-minutes: 35
+    timeout-minutes: 120
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
@@ -48,11 +48,23 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install cibuildwheel==4.2.1
       - run: brew install ninja cmake
-      - run: bash FloeAgent/scripts/build_pandas_ios.sh
+      - name: Build wheel candidates
+        run: |
+          if [ "${{ inputs.native_wheels_package }}" = "pandas" ]; then
+            bash FloeAgent/scripts/build_pandas_ios.sh
+            mkdir -p ios-wheelhouse/out/pandas
+            cp pandas-wheelhouse/*.whl ios-wheelhouse/out/pandas/
+          elif [ "${{ inputs.native_wheels_package }}" = "all" ]; then
+            for pkg in $(python3 -c "import json; print(' '.join(json.load(open('ios-wheelhouse/manifest.json')['packages'])))"); do
+              bash FloeAgent/scripts/build_ios_wheel.sh "$pkg"
+            done
+          else
+            bash FloeAgent/scripts/build_ios_wheel.sh "${{ inputs.native_wheels_package }}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: native-pandas-ios-candidates
-          path: pandas-wheelhouse/*.whl
+          name: native-wheels-ios-${{ inputs.native_wheels_package }}
+          path: ios-wheelhouse/out/
           if-no-files-found: error
   publish-skill-hub:
     if: github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub
@@ -86,7 +98,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.publish_skill_hub && !inputs.build_native_pandas }}
+    if: ${{ !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     # Foundation Models is guarded by Swift 6.4. Building on the generic
     # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
     runs-on: xcode-27
@@ -112,6 +124,24 @@ jobs:
         run: |
           swift package resolve
           scripts/pin_check.sh
+
+      # Bundled fonts are gitignored build inputs staged by the fetch script.
+      # A cache hit makes --check instant; a miss re-downloads every pinned
+      # upstream and then re-verifies per-file SHA-256 provenance.
+      - name: Restore bundled font cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            FloeAgent/Vendor/Fonts/downloads
+            FloeAgent/FloeApp/Resources/Fonts/Bundled
+          key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
+
+      - name: Fetch and verify bundled fonts
+        run: |
+          python3 scripts/fonts/fetch_fonts.py --check || {
+            python3 scripts/fonts/fetch_fonts.py
+            python3 scripts/fonts/fetch_fonts.py --check
+          }
 
       - name: Guardian real subprocess cancellation regressions
         run: python3 scripts/test_remote_task_cancel.py
@@ -211,7 +241,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.publish_skill_hub && !inputs.build_native_pandas }}
+    if: ${{ !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
     # the explicit unsupported-Foundation-Models path and the rest of Floe's
@@ -251,7 +281,7 @@ jobs:
             build
 
   spm-linux-build:
-    if: ${{ !inputs.publish_skill_hub && !inputs.build_native_pandas }}
+    if: ${{ !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     runs-on: ubuntu-latest
     # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
     # below do not link MLX. Resolution must therefore use a 6.3 toolchain.

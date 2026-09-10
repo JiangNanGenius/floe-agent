@@ -1,6 +1,7 @@
 import Foundation
 import FloeCore
 import FloeModels
+import FloeProviders
 
 /// Fail-closed consistency checks at the two durable harness boundaries:
 /// checkpoint persistence and provider dispatch. These checks deliberately
@@ -16,7 +17,8 @@ enum HarnessInvariantRegistry {
     static func validateProviderBoundary(
         calls: [ToolCall],
         results: [ToolResult],
-        lifecycleByCallID: [String: AgentToolLifecycleEntry]
+        lifecycleByCallID: [String: AgentToolLifecycleEntry],
+        replayedPairs: [ReplayedToolPair] = []
     ) -> [Violation] {
         var violations = validateCallResultIdentity(calls: calls, results: results)
         guard violations.isEmpty else { return violations }
@@ -41,6 +43,40 @@ enum HarnessInvariantRegistry {
                     detail: "call \(call.id) is \(lifecycle.phase.rawValue), expected resultCommitted"
                 ))
             }
+        }
+        violations.append(contentsOf: validateReplayedPairs(replayedPairs, pendingCalls: calls))
+        return violations
+    }
+
+    /// Replayed history must reach the wire as complete pairs that never
+    /// duplicate the pending batch, otherwise providers reject the turn or
+    /// the model sees the same evidence twice with divergent summaries.
+    private static func validateReplayedPairs(
+        _ pairs: [ReplayedToolPair],
+        pendingCalls: [ToolCall]
+    ) -> [Violation] {
+        var violations: [Violation] = []
+        var seenCallIDs: Set<String> = []
+        for pair in pairs {
+            if pair.call.id.isEmpty || pair.call.id != pair.result.callID {
+                violations.append(Violation(
+                    name: "provider.replayPairing",
+                    detail: "replayed pair must bind one non-empty call identifier to its result"
+                ))
+            }
+            if !seenCallIDs.insert(pair.call.id).inserted {
+                violations.append(Violation(
+                    name: "provider.replayDuplicate",
+                    detail: "replayed call \(pair.call.id) appears more than once"
+                ))
+            }
+        }
+        let pendingIDs = Set(pendingCalls.map(\.id))
+        for callID in seenCallIDs where pendingIDs.contains(callID) {
+            violations.append(Violation(
+                name: "provider.replayOverlapsPending",
+                detail: "replayed call \(callID) is also part of the pending provider pair"
+            ))
         }
         return violations
     }

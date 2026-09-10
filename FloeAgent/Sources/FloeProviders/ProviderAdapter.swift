@@ -68,8 +68,27 @@ public enum ProviderReasoningPolicy: Sendable, Hashable {
     case disabled
 }
 
+/// One settled (call, result) pair from earlier in the run, replayed as wire
+/// history so cross-turn tool evidence stays visible to the model instead of
+/// collapsing into a ledger excerpt. A nominal type (rather than a tuple)
+/// keeps the pair Codable for checkpoints and dispatch snapshots.
+public struct ReplayedToolPair: Sendable, Hashable, Codable {
+    public var call: ToolCall
+    public var result: ToolResult
+
+    public init(call: ToolCall, result: ToolResult) {
+        self.call = call
+        self.result = result
+    }
+}
+
 /// Everything an adapter needs to build one streaming request.
 public struct ProviderStreamRequest: Sendable {
+    /// Marker splitting the system envelope into a run-stable, cacheable
+    /// prefix and a per-turn volatile suffix. The runtime injects it; wire
+    /// adapters may turn the prefix into an explicit cache breakpoint.
+    public static let liveStateMarker = "# Live runtime state (volatile; refreshed every turn)"
+
     public var provider: ProviderProfile
     public var model: ModelProfile
     /// Conversation messages in wire-neutral form: (role, text content).
@@ -81,6 +100,10 @@ public struct ProviderStreamRequest: Sendable {
     public var toolResults: [(callID: String, output: String)]
     /// Pending assistant tool calls awaiting results (for context).
     public var pendingToolCalls: [ToolCall]
+    /// Settled pairs from earlier turns, already budget-trimmed by the
+    /// runtime. Adapters render them after `messages` and before the pending
+    /// pair so tool evidence survives beyond its original follow-up request.
+    public var replayedToolPairs: [ReplayedToolPair]
     /// Provider reasoning emitted immediately before pending tool calls.
     /// DeepSeek requires this exact field on the follow-up request.
     public var pendingAssistantReasoning: String?
@@ -98,6 +121,7 @@ public struct ProviderStreamRequest: Sendable {
         contentMessages: [ProviderMessage] = [],
         toolResults: [(callID: String, output: String)] = [],
         pendingToolCalls: [ToolCall] = [],
+        replayedToolPairs: [ReplayedToolPair] = [],
         pendingAssistantReasoning: String? = nil,
         toolSchemas: [ToolSchemaDescriptor] = [],
         reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
@@ -109,6 +133,7 @@ public struct ProviderStreamRequest: Sendable {
         self.contentMessages = contentMessages
         self.toolResults = toolResults
         self.pendingToolCalls = pendingToolCalls
+        self.replayedToolPairs = replayedToolPairs
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.toolSchemas = toolSchemas
         self.reasoningPolicy = reasoningPolicy
@@ -435,6 +460,17 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                 }
             )
         }
+        for pair in request.replayedToolPairs {
+            input.append(.functionCall(
+                callID: pair.call.id,
+                name: pair.call.toolName,
+                arguments: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
+            ))
+            input.append(.functionCallOutput(
+                callID: pair.result.callID,
+                output: pair.result.outputSummary
+            ))
+        }
         for call in request.pendingToolCalls {
             input.append(.functionCall(
                 callID: call.id,
@@ -611,6 +647,24 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                 reasoningContent: message.role == "assistant" && ReasoningCompatibility.requiresAssistantReasoningReplay(provider: request.provider, model: request.model) ? message.reasoningContent : nil
             )
         }
+        for pair in request.replayedToolPairs {
+            messages.append(ChatRequest.Message(
+                role: "assistant",
+                content: nil,
+                toolCalls: [ChatRequest.Message.ToolCall(
+                    id: pair.call.id,
+                    function: .init(
+                        name: wireToolName(pair.call.toolName, for: request.provider),
+                        arguments: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
+                    )
+                )]
+            ))
+            messages.append(ChatRequest.Message(
+                role: "tool",
+                content: pair.result.outputSummary,
+                toolCallID: pair.result.callID
+            ))
+        }
         if !request.pendingToolCalls.isEmpty {
             messages.append(ChatRequest.Message(
                 role: "assistant",
@@ -779,7 +833,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
     }
 
     func buildBody(from request: ProviderStreamRequest) -> AnthropicRequest {
-        let system = request.effectiveMessages
+        let systemText = request.effectiveMessages
             .filter { $0.role == "system" }
             .flatMap(\.content)
             .compactMap { part -> String? in
@@ -787,6 +841,20 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                 return nil
             }
             .joined(separator: "\n\n")
+        // Split at the live-state marker: the run-stable prefix gets an
+        // explicit ephemeral cache breakpoint, the per-turn tail stays live.
+        let system: [AnthropicRequest.SystemBlock]?
+        if let markerRange = systemText.range(of: ProviderStreamRequest.liveStateMarker) {
+            let prefix = systemText[..<markerRange.lowerBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = String(systemText[markerRange.lowerBound...])
+            var blocks: [AnthropicRequest.SystemBlock] = []
+            if !prefix.isEmpty { blocks.append(.init(text: prefix, cacheable: true)) }
+            blocks.append(.init(text: suffix))
+            system = blocks
+        } else {
+            system = systemText.isEmpty ? nil : [.init(text: systemText)]
+        }
         var messages: [AnthropicRequest.Message] = request.effectiveMessages
             .filter { $0.role != "system" }
             .map { message in
@@ -797,6 +865,24 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                 case .imageURL(let url): return .text("[Image: \(url.absoluteString)]")
                 }
             })
+        }
+        for pair in request.replayedToolPairs {
+            messages.append(AnthropicRequest.Message(
+                role: "assistant",
+                content: [.toolUse(
+                    id: pair.call.id,
+                    name: pair.call.toolName,
+                    inputJSON: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
+                )]
+            ))
+            messages.append(AnthropicRequest.Message(
+                role: "user",
+                content: [.toolResult(
+                    toolUseID: pair.result.callID,
+                    content: pair.result.outputSummary,
+                    isError: false
+                )]
+            ))
         }
         if !request.pendingToolCalls.isEmpty {
             messages.append(AnthropicRequest.Message(
@@ -837,7 +923,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
             maxTokens: request.model.limits.configuredMaxOutputTokens
                 ?? min(8_192, request.model.limits.contextTokens),
             messages: messages,
-            system: system.isEmpty ? nil : system,
+            system: system?.isEmpty == false ? system : nil,
             tools: tools,
             thinking: reasoning.thinkingType.map {
                 AnthropicRequest.Thinking(type: $0, budgetTokens: reasoning.budgetTokens)

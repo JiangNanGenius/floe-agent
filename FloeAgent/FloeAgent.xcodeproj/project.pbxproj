@@ -104,6 +104,7 @@
 		33744B55369D187E0173FB77 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = B1B02F2500B5B465399C11B7 /* FloePersistence */; };
 		338C444A5850EEA55FE92B63 /* HomeOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */; };
 		34485AB274BA660CE72C46D6 /* TaskScheduleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D008574B5C037321A6B5540 /* TaskScheduleSheet.swift */; };
+		355AA35003F049409539C002 /* JobDownloadCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F88A71725F1461BFF49E6BFC /* JobDownloadCoordinator.swift */; };
 		3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */; };
 		362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; };
 		387FBEF01A308524B273A103 /* pandas__libs_tslibs_nattype.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D60F63746F389D3AC1409E9A /* pandas__libs_tslibs_nattype.xcframework */; };
@@ -199,6 +200,7 @@
 		67E0B11F77FD1726248D939B /* ArchiveCompressedBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F760D84DCB71D5B59F7EAB6A /* ArchiveCompressedBridge.swift */; };
 		69CF14FB274EE7CF1A75355B /* pandas__libs_tslib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B32CD3F6C61FCE56B91D237E /* pandas__libs_tslib.xcframework */; };
 		69DBF632867883EE636A76C1 /* select.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8EEDB221C5E3501DEF3F7015 /* select.xcframework */; };
+		6A4EFEB1B24839C707E5B097 /* BundledFontRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17C3D097583898D825656EEA /* BundledFontRegistrar.swift */; };
 		6A87718ACF4469761EF2A023 /* _pickle.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 69539A226361C83F15C72B91 /* _pickle.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6B0D3A07EB93CDB1FF10B326 /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
 		6B7D96617158789027741BA7 /* _common.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DCF2579C6FC7C3307B6747CA /* _common.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -351,6 +353,7 @@
 		BE299593F762EB0243E748A2 /* _pcg64.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BE534C8C1F5C827155E0256E /* HomeLaunchpadViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */; };
 		BEE09DF321378355A79E26BC /* DeviceFontStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D140791C6A26A79F8AB52F7 /* DeviceFontStore.swift */; };
+		BEFDD6EB71B069F44842E36A /* Bundled in Resources */ = {isa = PBXBuildFile; fileRef = 238052542CCEFF5EA4FF6DC3 /* Bundled */; };
 		BF0F2E2F2B4C891C0D179306 /* pandas__libs_algos.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */; };
 		BF5BC698063F29786AAA2C71 /* pandas__libs_tslibs_strptime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */; };
 		BF6E2087DAC07E6A4A903720 /* ScreenShareGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAB44464D488A732056E8D96 /* ScreenShareGuideView.swift */; };
@@ -683,6 +686,7 @@
 		16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _zoneinfo.xcframework; path = Vendor/PythonExtensions/_zoneinfo.xcframework; sourceTree = "<group>"; };
 		16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDreamService.swift; sourceTree = "<group>"; };
 		176A2DE26290AB545E404ADE /* lapack_lite.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lapack_lite.xcframework; path = Vendor/PythonExtensions/lapack_lite.xcframework; sourceTree = "<group>"; };
+		17C3D097583898D825656EEA /* BundledFontRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledFontRegistrar.swift; sourceTree = "<group>"; };
 		17F136474D0FB91E6F810317 /* ThreadDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailView.swift; sourceTree = "<group>"; };
 		183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageInspectToolTests.swift; sourceTree = "<group>"; };
 		18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesCenter.swift; sourceTree = "<group>"; };
@@ -703,6 +707,7 @@
 		213BDC1E4C8F7172D210CA91 /* LibArchiveLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LibArchiveLicenses; path = FloeApp/Resources/LibArchiveLicenses; sourceTree = SOURCE_ROOT; };
 		219CD6341FB443743691F92D /* LocalPreviewServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPreviewServer.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
+		238052542CCEFF5EA4FF6DC3 /* Bundled */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Bundled; path = FloeApp/Resources/Fonts/Bundled; sourceTree = SOURCE_ROOT; };
 		251662A9C6AD6E96E2C40543 /* pandas__libs_tslibs_fields.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_fields.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_fields.xcframework; sourceTree = "<group>"; };
 		26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = RARFixtures.LICENSE.txt; sourceTree = "<group>"; };
 		276A4BD225189F342404A19B /* PDFium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PDFium.xcframework; path = Vendor/PDFium/PDFium.xcframework; sourceTree = "<group>"; };
@@ -987,6 +992,7 @@
 		F5ECABBE2BD25105411AD392 /* _imagingft.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imagingft.xcframework; path = Vendor/PythonExtensions/_imagingft.xcframework; sourceTree = "<group>"; };
 		F760D84DCB71D5B59F7EAB6A /* ArchiveCompressedBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCompressedBridge.swift; sourceTree = "<group>"; };
 		F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_sas.xcframework; path = Vendor/PythonExtensions/pandas__libs_sas.xcframework; sourceTree = "<group>"; };
+		F88A71725F1461BFF49E6BFC /* JobDownloadCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobDownloadCoordinator.swift; sourceTree = "<group>"; };
 		F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTimeline.swift; sourceTree = "<group>"; };
 		F912D5604B202108A44A81E6 /* pandas__libs_tslibs_period.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_period.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_period.xcframework; sourceTree = "<group>"; };
 		FAB44464D488A732056E8D96 /* ScreenShareGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShareGuideView.swift; sourceTree = "<group>"; };
@@ -1194,6 +1200,7 @@
 				FBD2CBE0215EF9478D86E581 /* BackgroundVideoService.swift */,
 				EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */,
 				699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */,
+				F88A71725F1461BFF49E6BFC /* JobDownloadCoordinator.swift */,
 				E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */,
 				2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */,
 			);
@@ -1497,6 +1504,7 @@
 		7742ABB57F0581ADFC5F1AD5 /* Fonts */ = {
 			isa = PBXGroup;
 			children = (
+				17C3D097583898D825656EEA /* BundledFontRegistrar.swift */,
 				8D140791C6A26A79F8AB52F7 /* DeviceFontStore.swift */,
 			);
 			path = Fonts;
@@ -1709,6 +1717,14 @@
 			path = Shortcuts;
 			sourceTree = "<group>";
 		};
+		B52C94351F1E33240FA5A1D5 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				238052542CCEFF5EA4FF6DC3 /* Bundled */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
 		B6AD6399851AAAD8A47979D5 /* VNC */ = {
 			isa = PBXGroup;
 			children = (
@@ -1826,6 +1842,7 @@
 				A6797B7DAA890D6378153058 /* Localizable.xcstrings */,
 				A837399A8DE937C9827D4EFA /* PDFiumLicenses */,
 				926B95CD92D851FFE3BB0DFE /* python */,
+				B52C94351F1E33240FA5A1D5 /* Fonts */,
 				EB3F3DF9DADE5E378FE9D27A /* js-packages */,
 			);
 			path = Resources;
@@ -2091,6 +2108,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */,
+				BEFDD6EB71B069F44842E36A /* Bundled in Resources */,
 				6429C2AE431431EA55322D1E /* DocumentConversion in Resources */,
 				F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */,
 				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
@@ -2176,6 +2194,7 @@
 				64C796E307C77E2774D2761F /* BrowserTools.swift in Sources */,
 				FCC65E363F3009B85F3A5908 /* BrowserURLPolicy.swift in Sources */,
 				4439885B5FEC7EBB773C2D97 /* BrowserView.swift in Sources */,
+				6A4EFEB1B24839C707E5B097 /* BundledFontRegistrar.swift in Sources */,
 				5C43AAAD15BA2B49F67B71D4 /* CPythonLocalRuntime.swift in Sources */,
 				6FC89A1BACBA33278669A2C9 /* CameraPickerView.swift in Sources */,
 				2B89EFA4B10C970A94C681FC /* Canvas3DDirectorView.swift in Sources */,
@@ -2230,6 +2249,7 @@
 				08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */,
 				4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */,
 				D940A535577FE25640F5F5E5 /* InlinePDFReader.swift in Sources */,
+				355AA35003F049409539C002 /* JobDownloadCoordinator.swift in Sources */,
 				C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */,
 				E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */,
 				C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */,

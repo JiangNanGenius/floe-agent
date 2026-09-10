@@ -40,6 +40,7 @@ targets:
           - Resources/PDFiumLicenses
           - Resources/LibArchiveLicenses
           - Resources/DocumentConversion
+          - Resources/Fonts/Bundled
       - path: FloeApp/Resources/python
         type: folder
         buildPhase: resources
@@ -52,6 +53,10 @@ targets:
       - path: FloeApp/Resources/DocumentConversion
         type: folder
         buildPhase: resources
+      - path: FloeApp/Resources/Fonts/Bundled
+        type: folder
+        buildPhase: resources
+        optional: true
       - path: ThirdParty/RoyalVNCKit/LICENSE
         buildPhase: resources
     info:
