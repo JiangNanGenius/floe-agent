@@ -14,6 +14,7 @@
 | [MAIL_CONNECTOR.md](MAIL_CONNECTOR.md) | 邮件连接器 |
 | [CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md)（+zh-CN） | 画布与素材架构 |
 | [INTERNAL_PROMPT_AUDIT.md](INTERNAL_PROMPT_AUDIT.md) | 内部提示词审计 |
+| [HARNESS_TIER3_DESIGN.md](HARNESS_TIER3_DESIGN.md) | 快照回滚/模型 failover/hooks 的 Tier-3 设计（对标 OpenCode/Claude Code/Kimi Code） |
 | [TOOL_CLOSURE_IMPLEMENTATION.md](TOOL_CLOSURE_IMPLEMENTATION.md) | 工具闭环实现 |
 | [../FloeAgent/docs/](../FloeAgent/docs/) | 工程侧架构（HARNESS_PROMPT_PROTOCOL 等） |
 | [../FloeAgent/README.md](../FloeAgent/README.md) | 构建说明与模块图 |

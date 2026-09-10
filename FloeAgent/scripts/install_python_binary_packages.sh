@@ -22,6 +22,12 @@ packages=(
     "numpy|2.5.2.post1|d451e3281b8e2709bb85c6857c83b3c1797f930971b6bbff7f57469d3958e16e|154285250704dd82f8a5b53633eebe381f6eb56d232780291ac180e12a7ea0b1|https://api.anaconda.org/download/beeware/{name}/{version}/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|13.0|0"
     "Pillow|11.0.0|42543f517e0f888102db194ae34e903786c82bbb062854e7694d227a2044b984|6c7d4fbfb2a3b7b823f8cb8a5af5d91570d597a4385ea11ad0e29ea316e197ff|https://api.anaconda.org/download/beeware/{name}/{version}/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|13.0|0"
     "pandas|3.0.5|99ac5c6c541a0e24b0b6637e9405e9ae682ea4b188316a090d643edd6bedd92d|d0a9dc857c9d9d38e78d305a3385f51dc04366daf15fda2f17a3a0927d55bd67|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-pandas-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_17_0_arm64_{arch}.whl|17.0|1"
+    # regex: native _regex extension inside the package dir → flatten=1.
+    "regex|2026.9.10|dea63d24c095ff955569565dd374526415e92ba2d8ad16c9d2023268eae580dd|78a931572c1e8fb96d75cbc9cdc6523b7ea30ff69f208eab6b00403910b01331|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-regex-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|13.0|1"
+    # Pure wheels: one file serves both slices (same sha twice, no {arch}).
+    "pyyaml|6.0.3|425edf1bc97f0adf1c4575191d6b7df7bbd929ac8b57e5a871a964938a2e6bdd|425edf1bc97f0adf1c4575191d6b7df7bbd929ac8b57e5a871a964938a2e6bdd|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-pyyaml-{version}-cp313/{name_lower}-{version}-py3-none-any.whl|13.0|0"
+    # markupsafe: upstream setup degraded to pure (no C speedups on iOS yet).
+    "markupsafe|3.0.3|796bcf8359c369e44d5ced5db1a26a1cf2aca2bcf8929cd0fe4cffac73c98cf0|796bcf8359c369e44d5ced5db1a26a1cf2aca2bcf8929cd0fe4cffac73c98cf0|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-markupsafe-{version}-cp313/{name_lower}-{version}-py3-none-any.whl|13.0|0"
 )
 
 wheel_url() {

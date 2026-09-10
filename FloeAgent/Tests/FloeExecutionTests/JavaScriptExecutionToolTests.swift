@@ -70,7 +70,7 @@ struct JavaScriptExecutionToolTests {
         let call = try makeCall(#"{"other":1}"#)
         let result = try await executor.execute(call, context: makeContext())
         #expect(result.status == .failed)
-        #expect(result.outputSummary.contains("Invalid arguments"))
+        #expect(result.outputSummary.contains("missing required argument"))
     }
 
     // MARK: Execution through the full loop

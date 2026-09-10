@@ -1315,15 +1315,25 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             UIBezierPath(roundedRect: card, cornerRadius: 28).fill()
 
             let mark = CGRect(x: 52, y: 48, width: 42, height: 42)
-            UIColor.systemBlue.setFill()
-            UIBezierPath(roundedRect: mark, cornerRadius: 12).fill()
-            ("F" as NSString).draw(
-                in: mark.insetBy(dx: 11, dy: 5),
-                withAttributes: [
-                    .font: UIFont.systemFont(ofSize: 24, weight: .bold),
-                    .foregroundColor: UIColor.white
-                ]
-            )
+            // The real product icon, not a placeholder glyph: the PiP window
+            // floats over other apps and must identify Floe at a glance.
+            if let logo = UIImage(named: "PiPLogo")?.cgImage {
+                let context = UIGraphicsGetCurrentContext()
+                context?.saveGState()
+                UIBezierPath(roundedRect: mark, cornerRadius: 12).addClip()
+                context?.draw(logo, in: mark)
+                context?.restoreGState()
+            } else {
+                UIColor.systemBlue.setFill()
+                UIBezierPath(roundedRect: mark, cornerRadius: 12).fill()
+                ("F" as NSString).draw(
+                    in: mark.insetBy(dx: 11, dy: 5),
+                    withAttributes: [
+                        .font: UIFont.systemFont(ofSize: 24, weight: .bold),
+                        .foregroundColor: UIColor.white
+                    ]
+                )
+            }
             ("Floe Agent" as NSString).draw(
                 at: CGPoint(x: 108, y: 54),
                 withAttributes: [

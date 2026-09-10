@@ -193,6 +193,29 @@ struct BackgroundJobTests {
         }
     }
 
+    @Test("Submit rejects malformed target arguments at the call site")
+    func submitValidatesTargetArguments() async throws {
+        let (db, _, run) = try await fixture()
+        let registry = ToolRunnerRegistry()
+        registry.register(LocalPythonTool(service: LocalPythonService(version: "test") { _, _ in .cancelled }))
+        let store = BackgroundJobStore(database: db)
+        let service = BackgroundJobService(store: store, registry: registry)
+        let tool = JobsSubmitTool(service: service)
+        // exec.localPython requires `script`; a guessed `code` key must fail NOW,
+        // not asynchronously, and the message must name the missing argument.
+        do {
+            _ = try await tool.execute(
+                .init(tool: "exec.localPython", arguments: #"{"code":"print(1)","timeout":30}"#),
+                context: .init(runID: run, toolCallID: "bad-args", cancellation: CancellationToken())
+            )
+            Issue.record("Expected submit-time argument validation")
+        } catch {
+            #expect(String(describing: error).contains("script"))
+        }
+        // No half-created job may linger after the fast failure.
+        #expect(try await store.activeJobs().isEmpty)
+    }
+
     private func extractJobID(_ summary: String) -> UUID? {
         guard let data = summary.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

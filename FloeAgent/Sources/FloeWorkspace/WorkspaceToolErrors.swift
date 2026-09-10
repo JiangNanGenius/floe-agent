@@ -21,6 +21,8 @@ public enum WorkspaceToolError: Error, Sendable, Equatable {
     case conflict(expected: String, actual: String)
     /// create_file target already exists.
     case alreadyExists(String)
+    /// create_file target already exists and `overwrite` was not requested.
+    case alreadyExistsOverwritable(String)
     /// Operation requires a file but found a directory (or vice versa).
     case isDirectory(String)
     /// Tool was invoked with an unsupported execution scope (e.g. host).
@@ -46,6 +48,8 @@ extension WorkspaceToolError: LocalizedError {
             "Write conflict: expected \(expected) but found \(actual)"
         case .alreadyExists(let path):
             "File already exists: \(path)"
+        case .alreadyExistsOverwritable(let path):
+            "File already exists: \(path). Use workspace.writeFile to modify it, or call workspace.createFile again with overwrite=true."
         case .isDirectory(let path):
             "Path is a directory: \(path)"
         case .unsupportedScope(let scope):
@@ -67,7 +71,7 @@ public extension WorkspaceToolError {
         case .tooLarge: "tooLarge"
         case .notFound: "notFound"
         case .conflict: "conflict"
-        case .alreadyExists: "alreadyExists"
+        case .alreadyExists, .alreadyExistsOverwritable: "alreadyExists"
         case .isDirectory: "isDirectory"
         case .unsupportedScope: "unsupportedScope"
         case .invalidPatch: "invalidPatch"
@@ -81,6 +85,7 @@ public extension WorkspaceToolError {
         switch self {
         case .escapesRoot(let path), .secretFile(let path),
              .notFound(let path), .alreadyExists(let path),
+             .alreadyExistsOverwritable(let path),
              .isDirectory(let path), .unsupportedScope(let path),
              .invalidPatch(let path), .invalidArguments(let path):
             payload["detail"] = path

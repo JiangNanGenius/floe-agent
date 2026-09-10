@@ -29,7 +29,7 @@ public actor LocalPythonService: ScriptExecutionService {
         let request = ScriptExecutionRequest(script: """
         import sys, json, importlib
         libraries = {}
-        for name in ('numpy', 'PIL', 'pandas', 'scipy', 'matplotlib', 'regex', 'yaml', 'markupsafe', 'orjson', 'pydantic_core'):
+        for name in ('numpy', 'PIL', 'pandas', 'scipy', 'matplotlib', 'regex', 'yaml', 'markupsafe', 'orjson', 'pydantic_core', 'zstandard', 'brotli', 'greenlet', 'frozenlist', 'multidict'):
             try:
                 module = importlib.import_module(name)
                 libraries[name] = {'available': True, 'version': getattr(module, '__version__', 'unknown')}

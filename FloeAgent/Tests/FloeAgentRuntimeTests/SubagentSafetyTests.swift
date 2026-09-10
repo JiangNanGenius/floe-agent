@@ -37,4 +37,25 @@ struct SubagentSafetyTests {
         #expect(output.exitStatus == 1)
         #expect(output.summary.contains("budget is unavailable"))
     }
+
+    @Test("delegate type maps to subagent kind and schema ceiling follows it")
+    func typeMappingAndSchemaCeiling() {
+        #expect(DelegateTool.parametersJSON.contains("\"enum\": [\"explore\", \"research\"]"))
+        let args = DelegateTool.Arguments(task: "t", type: .research)
+        #expect(args.type == .research)
+        // explore (default) strips web/network groups from the child schema.
+        #expect(SubagentRequest.Kind.explore != .research)
+        #expect(DelegateTool.Arguments(task: "t").type == nil)
+    }
+
+    @Test("child system prompt carries the self-contained handoff contract")
+    func handoffContract() {
+        let prompt = SubagentRunner.handoffPromptForTesting(kind: .explore, context: "ctx")
+        #expect(prompt.contains("receives only your final message"))
+        #expect(prompt.contains("self-contained handoff"))
+        #expect(prompt.contains("Never address the end user directly"))
+        #expect(prompt.contains("ctx"))
+        let research = SubagentRunner.handoffPromptForTesting(kind: .research, context: nil)
+        #expect(research.contains("web/network"))
+    }
 }

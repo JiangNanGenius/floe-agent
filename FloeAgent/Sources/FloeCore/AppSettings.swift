@@ -152,6 +152,9 @@ public enum AppSettingsKey {
     public static let runningInputMode = "agent.runningInputMode"
     public static let backgroundExecution = "agent.backgroundExecution"
     public static let verifyFinalAnswer = "agent.verifyFinalAnswer"
+    /// Semantic (model-written) context compaction for cloud models. Local
+    /// models always use the deterministic summarizer regardless.
+    public static let semanticContextCompaction = "agent.semanticContextCompaction"
 }
 
 /// Counts returned by destructive clear operations so the UI can echo

@@ -156,6 +156,9 @@ NumPy、Pillow 和 pandas 在支持的构建中原生提供，以当前运行时
 
 耗时 Python 工作（批量下载、数据清洗）不应阻塞对话：`jobs.submit` 可把 `exec.localPython`、`network.download`、`network.http`、`web.fetch` 提交为持久后台任务并立即返回 jobID，Python 协作时限放宽到 600 秒。用 `jobs.status` 查进度、`jobs.result` 取结果、`jobs.cancel` 取消；完成后结果自动回注对话并发送本地通知。后台下载在 App 挂起后继续，网络中断后透明续传（上限 2 GB）。
 
+1.6.3 起：提交时即校验目标工具参数（写错参数名当场报缺失键，不再异步失败）；任务清单在完成全部步骤后自动完结，下一任务自动开新清单（旧历史保留）；某工具连续失败三次会被熔断并要求重读其 schema；长任务中若工作超过清单进度会收到计划保鲜提醒。画中画悬浮窗显示真实应用图标、当前工具与调用/失败计数、等待审批的工具名，速度数字仅反映模型 decode 速率（工具输出不计入）。
+
+
 `exec.localNumerical` 提供无需额外运行时的受限 R、Stata 和 MATLAB/Octave 兼容数值表面，包括描述统计、分位数、协方差/相关和单自变量 OLS；Stata 兼容命令包括 `generate`、`display`、`summarize`、`correlate` 和 `regress`。它不是 GNU R 或 Stata。PyStata 仍要求另行安装并授权 Stata，`pyreadstat` 则依赖本机扩展，二者都不能伪装成纯 Python 包装进 iOS 沙箱；完整 R/Stata 应在已配置的可信 SSH 主机运行。
 
 已安装技能可以附带受限的 UTF-8 `.py` 脚本和锁定版本的纯 Python 依赖。创建或安装技能时会统一验证路径与源码，只下载并检查通用 wheel，并记录脚本与依赖指纹。后续任务可以直接复用完全相同的已审计脚本，变化的任务数据通过 `inputJSON` 单独传入；源码或依赖变化、重要文件改动、凭据使用、提权、破坏性行为和外部副作用仍进入当前任务的正常审批。

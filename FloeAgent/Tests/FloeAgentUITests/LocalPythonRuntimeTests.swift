@@ -40,6 +40,31 @@ struct LocalPythonRuntimeTests {
         #expect(manifest.contains("3.0.5"))
     }
 
+    @Test("wheelhouse packages import inside the bundled runtime")
+    @MainActor func wheelhousePackagesImport() async throws {
+        let service = try #require(CPythonServiceFactory.make())
+        let outcome = await service.run(ScriptExecutionRequest(script: """
+        import json, sys
+        import regex
+        import yaml
+        import markupsafe
+        assert sys.platform == 'ios'
+        assert regex.compile('a+').findall('caaab') == ['aaa']
+        assert regex.__version__ == '2026.9.10'
+        assert yaml.safe_load('a: 1') == {'a': 1}
+        assert yaml.__version__ == '6.0.3'
+        assert str(markupsafe.escape('<b>x</b>')) == '&lt;b&gt;x&lt;/b&gt;'
+        assert markupsafe.__version__ == '3.0.3'
+        print(json.dumps({'wheelhouseSmoke': 'passed', 'regex': regex.__version__, 'yaml': yaml.__version__, 'markupsafe': markupsafe.__version__}, sort_keys=True))
+        """, timeout: 30, maxOutputBytes: 4096), cancellation: nil)
+        guard case .ok(_, let stdout, let stderr, false, false, _) = outcome else {
+            Issue.record("Wheelhouse imports in Floe failed: \(outcome)")
+            return
+        }
+        #expect(stdout.contains("\"wheelhouseSmoke\": \"passed\""))
+        #expect(stderr.isEmpty)
+    }
+
     @Test("the packaged CPython runtime imports the zipped stdlib and executes")
     @MainActor
     func bundledRuntimeSmokeTest() async throws {

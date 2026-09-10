@@ -149,4 +149,99 @@ struct TaskChecklistTests {
         ]), runID: run, operationID: "third")
         #expect(retried.revision == 2)
     }
+
+    @Test func finishedChecklistAcceptsFreshStepsWithoutStartNew() async throws {
+        let (db, _, run) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        let done = try await store.update(.init(title: "Day one", steps: [
+            .init(id: "a", title: "A", status: .completed, evidence: ["report.txt"]),
+            .init(id: "b", title: "B", status: .cancelled)
+        ]), runID: run, operationID: "day-one")
+        #expect(done.isFinished)
+        #expect(done.lifecycleHint.contains("CHECKLIST FINISHED"))
+        // A new task must not append to the finished list: fresh IDs, no startNew.
+        let next = try await store.update(.init(title: "Day two", steps: [
+            .init(id: "c", title: "C", status: .inProgress)
+        ]), runID: run, operationID: "day-two")
+        #expect(next.revision == 2 && next.steps.map(\.id) == ["c"])
+        // History survives in the revisions table.
+        let revisions = try await db.reader { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_checklist_revisions WHERE conversation_id = ?", arguments: [done.conversationID.uuidString])
+        }
+        #expect(revisions == 2)
+    }
+
+    @Test func unfinishedChecklistLetsTerminalStepsRetireButKeepsOpenIDs() async throws {
+        let (db, _, run) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        _ = try await store.update(.init(title: "Work", steps: [
+            .init(id: "a", title: "A", status: .completed, evidence: ["a.txt"]),
+            .init(id: "b", title: "B", status: .completed, evidence: ["b.txt"]),
+            .init(id: "c", title: "C", status: .inProgress),
+            .init(id: "d", title: "D")
+        ]), runID: run, operationID: "initial")
+        // Completed steps retire from the working list; open IDs must stay.
+        let slimmed = try await store.update(.init(title: "Work", steps: [
+            .init(id: "c", title: "C", status: .completed, evidence: ["c.txt"]),
+            .init(id: "d", title: "D", status: .inProgress)
+        ]), runID: run, operationID: "slim")
+        #expect(slimmed.steps.map(\.id) == ["c", "d"])
+        // Dropping an OPEN step fails and names exactly which IDs to carry.
+        do {
+            _ = try await store.update(.init(title: "Work", steps: [
+                .init(id: "x", title: "X", status: .inProgress)
+            ]), runID: run, operationID: "drop-open")
+            Issue.record("Expected an open-step carry failure")
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains("d"))          // the only remaining open step
+            #expect(!message.contains("\"a\""))     // settled steps are not required
+        }
+        // Dropping a COMPLETED step is allowed: c retires, d closes, list finishes.
+        let finished = try await store.update(.init(title: "Work", steps: [
+            .init(id: "d", title: "D", status: .completed, evidence: ["d.txt"])
+        ]), runID: run, operationID: "finish")
+        #expect(finished.steps.map(\.id) == ["d"] && finished.isFinished)
+    }
+
+    @Test func omittedRevisionWritesOverCurrentAndPreciseErrorsNameSteps() async throws {
+        let (db, _, run) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        _ = try await store.update(.init(title: "Work", steps: [.init(id: "a", title: "A", status: .inProgress)]), runID: run, operationID: "one")
+        // No expectedRevision: single-writer fast path, no CAS failure.
+        let overwritten = try await store.update(.init(title: "Work", steps: [.init(id: "a", title: "A", status: .completed, evidence: ["a.txt"])]), runID: run, operationID: "two")
+        #expect(overwritten.revision == 2 && overwritten.isFinished)
+        // Precise validation errors name the offending steps.
+        #expect(throws: (any Error).self) {
+            try TaskChecklistUpdate(title: "T", steps: [
+                .init(id: "a", title: "A", status: .inProgress),
+                .init(id: "b", title: "B", status: .inProgress)
+            ]).validate()
+        }
+        do {
+            try TaskChecklistUpdate(title: "T", steps: [
+                .init(id: "a", title: "A", status: .inProgress),
+                .init(id: "b", title: "B", status: .inProgress)
+            ]).validate()
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains("a") && message.contains("b"))
+        }
+        do {
+            try TaskChecklistUpdate(title: "T", steps: [.init(id: "a", title: "A", status: .completed)]).validate()
+        } catch {
+            #expect(String(describing: error).contains("marked completed"))
+        }
+    }
+
+    @Test func toolOutputCarriesLifecycleHint() async throws {
+        let (db, _, run) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        let tool = TaskUpdatePlanTool(store: store)
+        let output = try await tool.execute(.init(title: "Work", steps: [
+            .init(id: "a", title: "A", status: .completed, evidence: ["a.txt"])
+        ]), context: .init(runID: run, toolCallID: "call-x", cancellation: CancellationToken()))
+        #expect(output.summary.contains("CHECKLIST FINISHED"))
+        #expect(output.summary.contains("starts a NEW checklist"))
+    }
 }

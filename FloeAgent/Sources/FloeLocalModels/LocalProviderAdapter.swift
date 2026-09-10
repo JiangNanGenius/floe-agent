@@ -558,6 +558,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             tools: promptBuild.selectedTools,
                             maxTokens: 256
                         )
+                        let mainRate = completion.tokensPerSecond
+                        let mainOutputTokens = completion.outputTokens
                         completion.inputTokens += repair.inputTokens
                         completion.outputTokens += repair.outputTokens
                         completion.cacheReadTokens = Self.sumOptional(
@@ -571,9 +573,14 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         )
                         completion.totalDurationMs += repair.totalDurationMs
                         completion.text = repair.text
-                        completion.tokensPerSecond = completion.totalDurationMs > 0
-                            ? Double(completion.outputTokens) / (Double(completion.totalDurationMs) / 1_000)
-                            : nil
+                        // Decode-only rate, token-weighted across both calls.
+                        // Never divide output by TOTAL duration here: prompt
+                        // prefill (which carries replayed tool results) is not
+                        // generation and must not dilute the reported speed.
+                        completion.tokensPerSecond = DecodeRateCombiner.weightedDecodeRate(
+                            main: (mainRate, mainOutputTokens),
+                            repair: (repair.tokensPerSecond, repair.outputTokens)
+                        )
                         channels = Self.splitReasoning(from: repair.text)
                         parsedToolCall = try Self.fallbackToolCall(
                             from: channels.answer,
@@ -1310,5 +1317,24 @@ private extension Array where Element: Hashable {
     func uniqued() -> [Element] {
         var seen: Set<Element> = []
         return filter { seen.insert($0).inserted }
+    }
+}
+
+/// Token-weighted average of decode-only rates; nil-safe. Legs must be
+/// engine-reported decode rates (output tokens ÷ decode time) — a rate
+/// derived from total call duration counts prompt prefill as generation.
+public enum DecodeRateCombiner {
+    public static func weightedDecodeRate(
+        main: (rate: Double?, outputTokens: Int),
+        repair: (rate: Double?, outputTokens: Int)
+    ) -> Double? {
+        let legs = [(main.rate, Double(main.outputTokens)), (repair.rate, Double(repair.outputTokens))]
+            .compactMap { rate, tokens -> (Double, Double)? in
+                guard let rate, rate.isFinite, rate > 0, tokens > 0 else { return nil }
+                return (rate, tokens)
+            }
+        guard !legs.isEmpty else { return nil }
+        let totalTokens = legs.reduce(0.0) { $0 + $1.1 }
+        return legs.reduce(0.0) { $0 + $1.0 * $1.1 } / totalTokens
     }
 }

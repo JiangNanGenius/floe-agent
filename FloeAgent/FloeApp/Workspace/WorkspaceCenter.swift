@@ -116,6 +116,11 @@ final class WorkspaceCenter: ObservableObject {
     /// Makes “add to context” idempotent across rapid taps and SwiftUI task
     /// re-entry. Durable attachment metadata provides the relaunch check.
     private var contextAttachmentKeysInFlight: Set<String> = []
+    /// Diagnostics for task-root drift: remembers the root path each
+    /// conversation resolved to earlier in this process so a later run
+    /// resolving somewhere else is visible in the logs.
+    private var resolvedTaskRootPaths: [UUID: String] = [:]
+    private let logger = FloeLogger(category: .app)
 
     /// Maximum size of the agent instruction file body (16 KiB).
     static let instructionsMaxBytes = 16 * 1024
@@ -406,6 +411,7 @@ final class WorkspaceCenter: ObservableObject {
             let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
                 .appendingPathComponent(relative, isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            recordTaskRootResolution(conversationID: conversationID, root: root)
             let activation = try activateMountsForLease(for: record, rootURL: root)
             await activateNetworkMounts(for: record, rootURL: root, publishToInspector: false)
             return TaskRootLease(url: root, release: {
@@ -419,6 +425,7 @@ final class WorkspaceCenter: ObservableObject {
         guard root.startAccessingSecurityScopedResource() else {
             throw FloeError.validationFailed("Workspace folder is not accessible")
         }
+        recordTaskRootResolution(conversationID: conversationID, root: root)
         let activation = try activateMountsForLease(for: record, rootURL: root)
         await activateNetworkMounts(for: record, rootURL: root, publishToInspector: false)
         return TaskRootLease(url: root, release: {
@@ -427,6 +434,20 @@ final class WorkspaceCenter: ObservableObject {
             activation.scopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
             root.stopAccessingSecurityScopedResource()
         })
+    }
+
+    /// Records the root resolved for a run and warns when the same
+    /// conversation drifts to a different root within this process.
+    /// Diagnostics only; never changes resolution behavior.
+    private func recordTaskRootResolution(conversationID: UUID, root: URL) {
+        let path = root.standardizedFileURL.path
+        if let previous = resolvedTaskRootPaths[conversationID], previous != path {
+            logger.warning(
+                "taskRootDrift conversation=\(conversationID.uuidString) previous=\(previous) current=\(path)"
+            )
+        }
+        resolvedTaskRootPaths[conversationID] = path
+        logger.info("taskRootResolved conversation=\(conversationID.uuidString) root=\(path)")
     }
 
     /// Rebinds the visible file inspector to the selected task's immutable

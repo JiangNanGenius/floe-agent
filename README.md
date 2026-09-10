@@ -24,16 +24,17 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Current upgrade — 1.6.2 beta candidate
+## Current upgrade — 1.6.3 beta candidate
 
-**1.6.2 (137)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.2.md). This round hardens the toolchain itself and the Chinese-document experience:
+**1.6.3 (138)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.3.md). This round hardens the agent harness itself against evidence from real session logs, benchmarked against OpenCode, Claude Code, and Kimi Code:
 
-- **Background jobs (jobs.\*)**: large downloads and long Python data pulls/cleaning leave the task's critical path — the agent gets a durable jobID immediately, keeps working, and completion re-enters the conversation automatically. Downloads survive app suspension with transparent resume (2 GB cap).
-- **Tool results replay as history**: evidence the model already read stays available across turns instead of vanishing after one follow-up, ending repeated catalog re-enumeration; schema-budget eviction is announced and loaded tool definitions persist across runs of a task.
-- **Curated CJK font bundle**: nine core families (Source Han Sans/Serif SC+TC, LXGW WenKai, HarmonyOS Sans, MiSans, Alibaba PuHuiTi 3.0, Sarasa Mono) in selected weights make Office preview/editing render Chinese correctly; nineteen more display families remain installable on demand.
-- **Office correctness**: extraction/editing no longer merges self-closing XML elements (empty styled cells, empty paragraphs); the engine prewarms after launch.
-- **Harness cost control**: prompts are layered into cacheable/volatile sections with an explicit Anthropic cache breakpoint, and a 100-step tool-iteration budget forces degenerate loops to wrap up.
-
+- **Task checklists that stay clean**: a finished checklist closes itself and the next task starts a fresh list — no more append-forever plans; updates carry only unfinished step IDs, `expectedRevision` is optional, and validation errors name the exact step to fix.
+- **A failure circuit breaker and plan-freshness reminders**: a tool failing three times in a row is interrupted with a forced re-read of its schema; long runs nudge the plan when work outruns it. Injected as authoritative `<system-reminder>` blocks.
+- **Model-written context compaction** for cloud models (deterministic fallback intact), and a full system-prompt overhaul: delivery must be verified with real calls before it is claimed, blocked work is reported instead of silently shrunk, denials are never retried or routed around.
+- **Typed parallel subagents**: `delegate` gains explore/research presets and a self-contained handoff contract; batched delegations truly run in parallel.
+- **A more honest floating surface (PiP)**: the real app icon, a decode-only model speed metric (tool output and prefill no longer count), and live tool/approval detail.
+- **Job submissions validate immediately**: wrong argument names fail at the call site naming the missing key, instead of failing asynchronously with opaque decode errors.
+- **First wheelhouse promotions**: regex (native dual-slice), PyYAML, and MarkupSafe completed the build → immutable release → SHA-pinned install pipeline; zstandard/Brotli/greenlet/frozenlist/multidict candidates are in flight.
 
 ## Why Floe Agent
 

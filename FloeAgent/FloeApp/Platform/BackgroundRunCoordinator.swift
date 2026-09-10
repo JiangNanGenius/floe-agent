@@ -101,13 +101,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         var reportedTokensPerSecond: Double?
         var isGenerating = false
         var checklist: TaskChecklist?
+        /// Live tool activity for the floating surface: what is running right
+        /// now and how the run's tool calls have fared so far.
+        var currentToolName: String?
+        var pendingApprovalToolName: String?
+        var toolCallCount = 0
+        var toolFailureCount = 0
 
         func presentation(now: Date = Date()) -> String {
             let elapsed = max(0, Int(now.timeIntervalSince(stageStartedAt)))
             let idle = max(0, Int(now.timeIntervalSince(lastActivityAt)))
+            // The speed figure is the model's decode rate only; it never
+            // appears during tool phases and never counts tool output bytes.
             let speed: String
             if isGenerating, let rate = reportedTokensPerSecond, rate.isFinite, rate >= 0, idle < 5 {
-                speed = String(format: " · %.1f tokens/s", rate)
+                speed = String(format: " · 模型 %.1f tokens/s", rate)
             } else if isGenerating, outputCharacters > 0, idle < 5 {
                 speed = String(format: " · %.1f 字符/秒", Double(outputCharacters) / max(1, now.timeIntervalSince(outputWindowStartedAt)))
             } else { speed = "" }
@@ -115,7 +123,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // Bound the step caption so long titles leave room for real activity.
             let step = checklist?.currentStep.map { String($0.title.prefix(20)).replacingOccurrences(of: "\n", with: " ") }
             let task = checklist.map { "\n\($0.progressSummary)" + (step.map { "\n当前：\($0)" } ?? "") } ?? ""
-            return "\(stage)\n本阶段 \(elapsed) 秒\(speed)\n\(activity)\(task)"
+            var toolLine = ""
+            if let pending = pendingApprovalToolName {
+                toolLine = "\n等待审批：\(pending)"
+            } else if let tool = currentToolName {
+                let failures = toolFailureCount > 0 ? " · 失败 \(toolFailureCount)" : ""
+                toolLine = "\n工具：\(tool) · 第 \(toolCallCount) 次调用\(failures)"
+            } else if toolCallCount > 0 {
+                let failures = toolFailureCount > 0 ? " · 失败 \(toolFailureCount)" : ""
+                toolLine = "\n工具调用 \(toolCallCount) 次\(failures)"
+            }
+            return "\(stage)\n本阶段 \(elapsed) 秒\(speed)\n\(activity)\(task)\(toolLine)"
         }
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
@@ -521,6 +539,41 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         if let tokensPerSecond { active.reportedTokensPerSecond = tokensPerSecond }
         activeRuns[runID] = active
+    }
+
+    /// Live tool activity for the floating surface. `finished` clears the
+    /// "currently running" tool; failures bump the visible failure counter.
+    func didUpdateTool(runID: UUID, name: String, outcome: ToolSurfaceOutcome) {
+        guard var active = activeRuns[runID] else { return }
+        switch outcome {
+        case .started:
+            active.currentToolName = name
+            active.toolCallCount += 1
+            active.lastActivityAt = Date()
+        case .finished(let failed):
+            if active.currentToolName == name { active.currentToolName = nil }
+            if failed { active.toolFailureCount += 1 }
+            active.lastActivityAt = Date()
+        }
+        activeRuns[runID] = active
+        if surfacedRunID == runID {
+            environment.backgroundVideoService.update(progress: active.presentation())
+        }
+    }
+
+    func didUpdatePendingApproval(runID: UUID, toolName: String?) {
+        guard var active = activeRuns[runID] else { return }
+        guard active.pendingApprovalToolName != toolName else { return }
+        active.pendingApprovalToolName = toolName
+        activeRuns[runID] = active
+        if surfacedRunID == runID {
+            environment.backgroundVideoService.update(progress: active.presentation())
+        }
+    }
+
+    enum ToolSurfaceOutcome: Sendable, Equatable {
+        case started
+        case finished(failed: Bool)
     }
 
     /// Checklist revisions are shared with chat. This is plan bookkeeping,

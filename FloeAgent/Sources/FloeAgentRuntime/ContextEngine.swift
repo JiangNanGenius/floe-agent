@@ -236,9 +236,79 @@ public protocol ContextSummarizer: Sendable {
     func summarize(messages: [ConversationMessage], maximumCharacters: Int) async throws -> String
 }
 
+/// Semantic compaction via the run's own cloud model (OpenCode/Kimi-Code
+/// style). The summarization call is one-shot, tool-free, bounded on both
+/// input and output, and any failure falls back to the deterministic
+/// summarizer so compaction can never be broken by a model hiccup.
+public struct ModelContextSummarizer: ContextSummarizer {
+    /// One-shot text completion: prompt in, plain text out. Wired at the app
+    /// layer where the provider adapter and credentials live.
+    public typealias Completion = @Sendable (_ prompt: String) async throws -> String
+
+    private let complete: Completion
+    private let fallback: DeterministicContextSummarizer
+    /// The compaction request is never allowed to balloon the very context it
+    /// shrinks; older candidates already keep the protected tail elsewhere.
+    private let maximumInputCharacters: Int
+
+    public init(
+        complete: @escaping Completion,
+        maximumInputCharacters: Int = 64_000
+    ) {
+        self.complete = complete
+        self.fallback = DeterministicContextSummarizer()
+        self.maximumInputCharacters = maximumInputCharacters
+    }
+
+    public func summarize(
+        messages: [ConversationMessage],
+        maximumCharacters: Int
+    ) async throws -> String {
+        guard maximumCharacters > 0, !messages.isEmpty else { return "" }
+        let transcript = Self.renderTranscript(messages: messages, budget: maximumInputCharacters)
+        guard !transcript.isEmpty else { return "" }
+        let prompt = """
+        You are compacting an AI agent's conversation so work can continue without the original messages. Write the continuation record in first person, in the user's language, within \(maximumCharacters) characters. Preserve exactly: the user's objective and latest corrections; decisions made and why; concrete artifacts and identifiers (file paths, URLs, job IDs, revisions); tool outcomes that matter, including exact error text for unresolved failures; what remains unfinished and the specific next step; acceptance criteria and blockers. Drop: narration, superseded attempts, bulk raw output. Never invent results or mark unverified work as done. Output only the record.
+
+        Conversation to compact:
+        \(transcript)
+        """
+        do {
+            let text = try await complete(prompt)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                throw FloeError.validationFailed("Semantic compaction returned empty text")
+            }
+            return String(text.prefix(maximumCharacters))
+        } catch {
+            // Compaction must degrade gracefully, never fail the run.
+            return try await fallback.summarize(messages: messages, maximumCharacters: maximumCharacters)
+        }
+    }
+
+    /// Per-message excerpts keep the compaction prompt itself bounded; the
+    /// deterministic summarizer's normalization is reused for consistency.
+    static func renderTranscript(messages: [ConversationMessage], budget: Int) -> String {
+        var rendered: [String] = []
+        var used = 0
+        for message in messages {
+            let normalized = message.content
+                .replacingOccurrences(of: "\n", with: " ")
+                .split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ")
+            guard !normalized.isEmpty else { continue }
+            let line = "[\(message.role)] \(String(normalized.prefix(600)))"
+            if used + line.utf8.count > budget { break }
+            rendered.append(line)
+            used += line.utf8.count
+        }
+        return rendered.joined(separator: "\n")
+    }
+}
+
+
 /// Deterministic fallback usable when no compression model is configured.
-public struct DeterministicContextSummarizer: ContextSummarizer {
-    public init() {}
+public struct DeterministicContextSummarizer: ContextSummarizer {    public init() {}
 
     public func summarize(
         messages: [ConversationMessage],

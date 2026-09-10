@@ -254,7 +254,7 @@ struct ToolRunnerRegistryTests {
         let malformed = try makeCall("test.registryEcho", argumentsJSON: #"{"other":1}"#)
         let malformedResult = try await executor.execute(malformed, context: makeContext())
         #expect(malformedResult.status == .failed)
-        #expect(malformedResult.outputSummary.contains("Invalid arguments"))
+        #expect(malformedResult.outputSummary.contains("missing required argument 'text'"))
     }
 
     // MARK: Cancellation propagation

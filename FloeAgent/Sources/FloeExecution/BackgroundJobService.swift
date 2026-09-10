@@ -77,9 +77,12 @@ public actor BackgroundJobService {
                 "jobs.submit supports \(Self.supportedTargets.sorted().joined(separator: ", ")) for now; call other tools directly"
             )
         }
-        guard registry.runner(named: targetTool) != nil else {
+        guard let runner = registry.runner(named: targetTool) else {
             throw FloeError.validationFailed("Tool '\(targetTool)' is not available in this build")
         }
+        // Fail fast at the call site: a job whose arguments never decode would
+        // otherwise fail asynchronously with no caller left to correct them.
+        try runner.validateArguments(payloadJSON)
         guard let conversationID = try await store.conversationID(runID: runID) else {
             throw FloeError.validationFailed("Run has no owning task")
         }

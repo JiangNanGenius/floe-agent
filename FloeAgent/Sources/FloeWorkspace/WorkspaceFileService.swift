@@ -426,17 +426,24 @@ public struct WorkspaceFileService: Sendable {
 
     // MARK: - Writing
 
-    /// Creates a new file, failing when the target already exists.
+    /// Creates a new file, failing when the target already exists unless
+    /// `overwrite` is true. Existing directories are never overwritten.
     @discardableResult
     public func createFile(
         _ path: String,
         content: String,
+        overwrite: Bool = false,
         cancellation: CancellationToken? = nil
     ) throws -> WriteOutcome {
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
-        guard !fileManager.fileExists(atPath: url.path) else {
-            throw WorkspaceToolError.alreadyExists(path)
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            guard overwrite, !isDirectory.boolValue else {
+                throw isDirectory.boolValue
+                    ? WorkspaceToolError.alreadyExists(path)
+                    : WorkspaceToolError.alreadyExistsOverwritable(path)
+            }
         }
         return try performWrite(url, path: path, content: content)
     }

@@ -283,6 +283,9 @@ public actor FloeAgentRuntime {
         /// Maximum identical observable tool outcomes in one progress epoch.
         /// A value of two stops on the first unchanged retry.
         public var unchangedToolOutcomeLimit: Int
+        /// Supplies the durable checklist for plan-freshness reminders.
+        /// Read per dispatch; absent disables that reminder variant.
+        public var planChecklistProvider: (@Sendable () async -> TaskChecklist?)?
         /// Maximum wait for the first decoded provider event.
         public var providerFirstEventTimeout: TimeInterval
         /// Maximum gap between decoded provider events after the first event.
@@ -318,6 +321,7 @@ public actor FloeAgentRuntime {
             forceInitialCompaction: Bool = false,
             maxProviderRetries: Int = 5,
             unchangedToolOutcomeLimit: Int = 3,
+            planChecklistProvider: (@Sendable () async -> TaskChecklist?)? = nil,
             providerFirstEventTimeout: TimeInterval = 120,
             providerStreamIdleTimeout: TimeInterval = 45,
             providerReasoningIdleTimeout: TimeInterval = 180,
@@ -343,6 +347,7 @@ public actor FloeAgentRuntime {
             self.forceInitialCompaction = forceInitialCompaction
             self.maxProviderRetries = max(0, maxProviderRetries)
             self.unchangedToolOutcomeLimit = max(2, unchangedToolOutcomeLimit)
+            self.planChecklistProvider = planChecklistProvider
             self.providerFirstEventTimeout = max(0, providerFirstEventTimeout)
             self.providerStreamIdleTimeout = max(0, providerStreamIdleTimeout)
             self.providerReasoningIdleTimeout = max(
@@ -406,6 +411,7 @@ public actor FloeAgentRuntime {
     private var contextOverflowRecoveryCount = 0
     private var loopGuard = ToolLoopGuard()
     private var executionLedger = HarnessExecutionLedger()
+    private var reminderCenter = AgentReminderCenter()
     /// Durable per-call boundaries distinguish a request that never started
     /// from one whose real-world outcome became unknown during interruption.
     private var toolLifecycleByCallID: [String: AgentToolLifecycleEntry] = [:]
@@ -669,8 +675,40 @@ public actor FloeAgentRuntime {
             }
         }
         messages.append(ConversationMessage(role: "user", content: goal, images: images))
+        registerPlanFreshnessReminder()
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal)))
         await runModelTurn()
+    }
+
+    /// The checklist reminder nags on evidence, not on a fixed clock: it
+    /// fires when work outruns the durable plan, and goes quiet the moment
+    /// the plan catches up. It never replaces the model's judgement on
+    /// whether the task warrants a checklist at all.
+    private func registerPlanFreshnessReminder() {
+        guard configuration.planChecklistProvider != nil else { return }
+        reminderCenter.register(variant: "planFreshness") { [weak self] context in
+            guard let self else { return nil }
+            // One reminder per stretch of unplanned work; not every dispatch.
+            if let last = context.lastInjectedAtToolCall, context.toolCallCount - last < 8 { return nil }
+            let entries = await self.ledgerEntriesSnapshot()
+            let lastUpdateIndex = entries.lastIndex { $0.toolName == "task.updatePlan" && $0.status == .ok }
+            let callsSinceUpdate = entries.count - (lastUpdateIndex.map { $0 + 1 } ?? 0)
+            guard let checklist = await self.configuration.planChecklistProvider?() else {
+                guard context.toolCallCount >= 10 else { return nil }
+                return "This run has made \(context.toolCallCount) tool calls without a durable checklist. If this is multi-step work, record the plan with task.updatePlan so progress survives interruption and compaction; skip it for a simple request."
+            }
+            if checklist.isFinished {
+                guard context.toolCallCount > 0 else { return nil }
+                return "The checklist \"\(checklist.title)\" is finished (\(checklist.completedCount)/\(checklist.steps.count) completed). For a new task submit a fresh steps array — a new checklist starts automatically; do not append to the finished list."
+            }
+            guard callsSinceUpdate >= 8 else { return nil }
+            let open = checklist.steps.filter { !$0.isTerminal }.map(\.id).joined(separator: ", ")
+            return "Plan freshness: \(callsSinceUpdate) tool calls since your last successful task.updatePlan; unfinished steps: [\(open)]. If the plan drifted, update it now (carry those IDs or mark them cancelled; completed steps may be omitted). If it is accurate, keep going — do not re-read it."
+        }
+    }
+
+    private func ledgerEntriesSnapshot() -> [HarnessExecutionLedger.Entry] {
+        executionLedger.entries
     }
 
     /// streamingModel/executingTool/waitingApproval → cancelling → checkpointed.
@@ -1267,6 +1305,18 @@ public actor FloeAgentRuntime {
                     at: 0
                 )
             }
+        }
+        // Harness reminders (plan freshness, …) are per-dispatch directives:
+        // they land in the volatile tail, never in durable history.
+        // Copy-evaluate-writeback: a mutating async call cannot run directly
+        // on the actor-isolated property.
+        var reminderCenterCopy = reminderCenter
+        let reminders = await reminderCenterCopy.evaluate(toolCallCount: executionLedger.entries.count)
+        reminderCenter = reminderCenterCopy
+        if !reminders.isEmpty, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            let block = reminders.joined(separator: "\n\n")
+            legacyMessages[index].content += "\n\n" + block
+            contentMessages[index].content.append(.text(block))
         }
         if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
             legacyMessages[index].content += "\n\n" + temporalContext
@@ -2320,6 +2370,7 @@ public actor FloeAgentRuntime {
                 let matches = ToolDiscovery.matches(queries: queries, descriptors: discoverableDescriptors)
                 let selected = ToolDiscovery.bounded(matches + discoverableDescriptors.filter { ["skill.read", "skill.search"].contains($0.name) && !matches.map(\.name).contains($0.name) }, priority: matches.map(\.name))
                 let names = selected.map(\.name)
+                let alreadyInContext = discoveredToolNames
                 discoveredToolNames.formUnion(names)
                 discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
                 persistDiscoveryIfChanged()
@@ -2328,6 +2379,7 @@ public actor FloeAgentRuntime {
                     ? "No matching executable tool in this task's capability set. " + ToolDiscovery.index(discoverableDescriptors)
                     : "Loaded for the next request:\n" + selected.map { descriptor in
                         descriptor.name + ": " + String(descriptor.toolDescription.prefix(160))
+                            + (alreadyInContext.contains(descriptor.name) ? " (schema already in context; call it directly, no reload needed)" : "")
                             + " [ownerSkillID=" + (descriptor.ownerSkillID ?? "none (underlying registered capability)")
                             + "; relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
                     }.joined(separator: "\n")
@@ -3543,6 +3595,15 @@ struct ToolLoopGuard {
     /// schemaLoaded flags drift. Counting them per route without the outcome
     /// and across progress epochs stops wasteful re-listing loops.
     private var catalogEnumerationCounts: [String: Int] = [:]
+    /// Consecutive-failure circuit breaker. Unlike the unchanged-outcome
+    /// guard, this tracks a TOOL's failure streak across differing arguments:
+    /// a model flailing at one contract (e.g. checklist validation storms)
+    /// must stop and re-read the schema instead of guessing new payloads.
+    /// Survives progress epochs; resets on that tool's next success.
+    private var consecutiveFailuresByTool: [String: Int] = [:]
+    private var lastFailureExcerptByTool: [String: String] = [:]
+
+    static let failureBreakerThreshold = 3
 
     mutating func advanceProgressEpoch() {
         outcomeCountsInEpoch.removeAll(keepingCapacity: true)
@@ -3570,6 +3631,22 @@ struct ToolLoopGuard {
         isSideEffecting: Bool,
         stopLimit: Int = 3
     ) -> ToolLoopGuardrailDecision? {
+        // Failure streak tracking applies to every tool and argument shape.
+        if result.status == .failed {
+            let streak = consecutiveFailuresByTool[call.toolName, default: 0] + 1
+            consecutiveFailuresByTool[call.toolName] = streak
+            lastFailureExcerptByTool[call.toolName] = String(result.outputSummary.prefix(300))
+            if streak >= Self.failureBreakerThreshold {
+                let excerpt = lastFailureExcerptByTool[call.toolName] ?? ""
+                return ToolLoopGuardrailDecision(
+                    shouldStop: false,
+                    message: "Circuit breaker: '\(call.toolName)' has failed \(streak) times in a row (most recently: \(excerpt)). Do not guess another payload: re-read the tool's schema by exact name with tools.search, map every required argument against the error above, and fix the named problem — or choose a materially different path. If the contract cannot express what you need, report the blocker to the user instead of retrying."
+                )
+            }
+        } else if result.status == .ok {
+            consecutiveFailuresByTool[call.toolName] = 0
+            lastFailureExcerptByTool[call.toolName] = nil
+        }
         let arguments = Self.canonicalDigest(call.argumentsJSON)
         let observableOutput = result.outputDigest.isEmpty
             ? Self.digest(Data(result.outputSummary.utf8))

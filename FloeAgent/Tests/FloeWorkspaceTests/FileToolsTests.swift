@@ -385,7 +385,7 @@ struct FileToolsTests {
 
     // MARK: createFile / writeFile
 
-    @Test("createFile writes content and refuses to overwrite")
+    @Test("createFile writes content and refuses to overwrite without opt-in")
     func createFile() async throws {
         let fixture = try makeFixture()
         let tool = WorkspaceCreateFileTool(environment: fixture.environment)
@@ -402,15 +402,42 @@ struct FileToolsTests {
             _ = try await tool.execute(
                 .init(path: "new/note.txt", content: "other"), context: fixture.context
             )
-            Issue.record("expected alreadyExists")
+            Issue.record("expected alreadyExistsOverwritable")
         } catch let error as WorkspaceToolError {
-            guard case .alreadyExists = error else {
-                Issue.record("expected alreadyExists, got \(error)")
+            guard case .alreadyExistsOverwritable = error else {
+                Issue.record("expected alreadyExistsOverwritable, got \(error)")
                 return
             }
+            // The failure must guide the caller to the supported escape hatches.
+            #expect(error.localizedDescription.contains("workspace.writeFile"))
+            #expect(error.localizedDescription.contains("overwrite=true"))
+            // The stable machine-readable code stays alreadyExists.
+            #expect(error.code == "alreadyExists")
+            #expect(error.structuredSummary.contains(#""code":"alreadyExists""#))
         }
         // Untouched.
         #expect(try fixture.read("new/note.txt") == "hello")
+    }
+
+    @Test("createFile with overwrite=true replaces existing content")
+    func createFileOverwrite() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("doc.md", "v1")
+        let tool = WorkspaceCreateFileTool(environment: fixture.environment)
+
+        let output = try await tool.execute(
+            .init(path: "doc.md", content: "v2-longer", overwrite: true), context: fixture.context
+        )
+        #expect(output.summary.contains("created=doc.md"))
+        #expect(output.summary.contains("bytes=9"))
+        #expect(output.artifacts.count == 1)
+        #expect(try fixture.read("doc.md") == "v2-longer")
+
+        // Creating at a fresh path still succeeds with the flag set.
+        _ = try await tool.execute(
+            .init(path: "fresh.md", content: "new", overwrite: true), context: fixture.context
+        )
+        #expect(try fixture.read("fresh.md") == "new")
     }
 
     @Test("writeFile overwrites and detects mtime/sha conflicts")

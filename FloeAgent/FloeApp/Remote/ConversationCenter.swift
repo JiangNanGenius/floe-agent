@@ -207,7 +207,9 @@ final class ConversationCenter: ObservableObject {
         let raw = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
         let history = try await environment.intelligenceStore.applyingCompactions(raw, conversationID: conversationID)
         let window = providerAndModel(modelID: modelID)?.1.limits.contextTokens ?? 32_768
-        let result = try await HybridContextEngine().compact(CompactionRequest(
+        let engine: any ContextEngine = providerAndModel(modelID: modelID)
+            .map { makeContextEngine(provider: $0.0, model: $0.1) } ?? HybridContextEngine()
+        let result = try await engine.compact(CompactionRequest(
             context: ContextRequest(messages: history, budget: ContextBudget(contextWindowTokens: window)), force: true))
         try Task.checkCancellation()
         let current = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
@@ -412,13 +414,40 @@ final class ConversationCenter: ObservableObject {
     private var attemptedForegroundRecovery: Set<UUID> = []
     private let adapterFactory = ProviderAdapterFactory()
 
+    /// Semantic compaction for cloud runs (settings-gated; local models keep
+    /// the deterministic summarizer). The summarization call is one-shot and
+    /// tool-free; ModelContextSummarizer itself falls back on any failure.
+    private func makeContextEngine(provider: ProviderProfile, model: ModelProfile) -> any ContextEngine {
+        guard provider.kind != .local, environment.settingsCenter.semanticContextCompaction else {
+            return HybridContextEngine()
+        }
+        let adapter = providerAdapter(for: provider)
+        let credentials = resolveCredentials(for: provider)
+        return HybridContextEngine(summarizer: ModelContextSummarizer { prompt in
+            let request = ProviderStreamRequest(
+                provider: provider,
+                model: model,
+                messages: [(role: "user", content: prompt)],
+                toolSchemas: [],
+                reasoningPolicy: .disabled
+            )
+            var text = ""
+            for try await event in adapter.stream(request: request, credentials: credentials) {
+                if case .textDelta(let delta) = event {
+                    text += delta.text
+                    if text.utf8.count > 32_000 { break }
+                }
+            }
+            return text
+        })
+    }
+
     func providerAdapter(for provider: ProviderProfile) -> any ProviderAdapter {
         if provider.kind == .local {
             return LocalProviderAdapter(
                 runtime: environment.localModelRuntime,
                 store: environment.localModelStore
-            )
-        }
+            )        }
         return adapterFactory.adapter(for: provider)
     }
 
@@ -882,7 +911,10 @@ final class ConversationCenter: ObservableObject {
             verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer,
             forceInitialCompaction: forceInitialCompaction,
             maxProviderRetries: runSurface == .canvas ? 1 : 5,
-            unchangedToolOutcomeLimit: runSurface == .canvas ? 2 : 3
+            unchangedToolOutcomeLimit: runSurface == .canvas ? 2 : 3,
+            planChecklistProvider: { [database = environment.database] in
+                try? await TaskChecklistStore(database: database).latest(conversationID: conversationID)
+            }
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
@@ -902,6 +934,7 @@ final class ConversationCenter: ObservableObject {
             credentials: credentials,
             gate: environment.catastrophicGate,
             checkpointStore: environment.checkpointStore,
+            contextEngine: makeContextEngine(provider: provider, model: model),
             toolCallNormalizer: { [credentialVault = environment.credentialVault] call in
                 let owner: CredentialOwner = if canonicalWorkspace?.kind == .project,
                                                 let canonicalWorkspaceID {
@@ -943,7 +976,13 @@ final class ConversationCenter: ObservableObject {
                 workspaceAttachmentPaths: workspaceAttachmentPaths,
                 workspaceNotes: (runSurface == .ordinary
                     ? environment.workspaceCenter.runtimeWorkspaceNotes(rootURL: taskRootLease?.url)
-                    : []) + [WebSearchSettingsCenter.runtimeProviderNote()].compactMap { $0 }
+                    : []) + [WebSearchSettingsCenter.runtimeProviderNote()].compactMap { $0 },
+                workspaceListing: runSurface == .ordinary
+                    ? WorkspaceContextBriefing.topLevelListing(rootURL: taskRootLease?.url)
+                    : nil,
+                projectInstructions: runSurface == .ordinary
+                    ? WorkspaceContextBriefing.projectInstructions(rootURL: taskRootLease?.url)
+                    : nil
             ),
             resourceAccessCleanup: taskRootLease?.release
         )
@@ -3771,6 +3810,8 @@ final class ConversationCenter: ObservableObject {
             guard let service else { return }
             let stream = service.events()
             var checklistCalls: Set<String> = []
+            var checklistChanged = false
+            var toolNamesByCallID: [String: String] = [:]
             if let self {
                 let snapshot = await service.snapshot()
                 self.apply(snapshot)
@@ -3781,12 +3822,16 @@ final class ConversationCenter: ObservableObject {
                 guard !Task.isCancelled, let self else { break }
                 switch event {
                 case .toolLifecycle(let lifecycle):
-                    var checklistChanged = false
+                    checklistChanged = false
                     switch lifecycle {
                     case .requested(let call), .started(let call):
                         if call.toolName == "task.updatePlan" { checklistCalls.insert(call.id) }
+                        toolNamesByCallID[call.id] = call.toolName
+                        self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: call.toolName, outcome: .started)
                     case .finished(let result):
+                        let toolName = toolNamesByCallID.removeValue(forKey: result.callID) ?? "tool"
                         checklistChanged = checklistCalls.remove(result.callID) != nil && result.status == .ok
+                        self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: toolName, outcome: .finished(failed: result.status == .failed))
                     }
                     let snapshot = await service.snapshot()
                     self.apply(snapshot)
@@ -3803,8 +3848,12 @@ final class ConversationCenter: ObservableObject {
                     self.apply(snapshot)
                     self.publishSession(snapshot.conversationID)
                     if snapshot.isTerminal { break }
-                case .answerDelta(let text), .reasoningDelta(let text):
+                case .answerDelta(let text):
                     self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID, characters: text.text.count)
+                case .reasoningDelta:
+                    // Reasoning tokens are model work but not user-visible
+                    // output; the surface speed tracks answer text only.
+                    self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID)
                 case .usageChanged(let usage):
                     self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID, tokensPerSecond: usage.tokensPerSecond)
                 }
@@ -3869,6 +3918,10 @@ final class ConversationCenter: ObservableObject {
             isGenerating: snapshot.stateName == "streamingModel"
         )
         if let waiting = snapshot.pendingApproval {
+            environment.backgroundRunCoordinator.didUpdatePendingApproval(
+                runID: snapshot.runID,
+                toolName: waiting.toolCall.toolName
+            )
             let descriptor = ToolCatalog.descriptor(named: waiting.toolCall.toolName)
             let pending = PendingApproval(
                 runID: snapshot.runID,
@@ -3891,6 +3944,7 @@ final class ConversationCenter: ObservableObject {
             )
         } else {
             pendingApprovals.removeAll { $0.runID == snapshot.runID }
+            environment.backgroundRunCoordinator.didUpdatePendingApproval(runID: snapshot.runID, toolName: nil)
         }
     }
 

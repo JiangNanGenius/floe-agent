@@ -15,24 +15,27 @@ public struct DelegateTool: AgentTool {
         public var task: String
         public var context: String?
         public var maxIterations: Int?
+        public var type: SubagentRequest.Kind?
 
-        public init(task: String, context: String? = nil, maxIterations: Int? = nil) {
+        public init(task: String, context: String? = nil, maxIterations: Int? = nil, type: SubagentRequest.Kind? = nil) {
             self.task = task
             self.context = context
             self.maxIterations = maxIterations
+            self.type = type
         }
     }
 
     public static let name = "delegate"
     public static let toolDescription =
-        "Delegate one subtask to a focused, strictly read-only subagent that works in a clean context and returns a concise summary. It inherits the parent task's tool and workspace ceilings and cannot modify files, control GUIs, run code, or delegate again."
+        "Delegate one subtask to a focused, strictly read-only subagent that works in a clean context and returns a self-contained handoff summary. Types: `explore` (default; fast local workspace/conversation reads, no network) or `research` (adds read-only web/network evidence). It inherits the parent task's tool and workspace ceilings and cannot modify files, control GUIs, run code, or delegate again. Several independent delegate calls in one batch run in parallel — batch them. Give the subagent complete context: it sees nothing of this conversation beyond what you pass."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "task": {"type": "string", "description": "The subtask for the subagent to complete"},
         "context": {"type": "string", "description": "Optional background the subagent needs"},
-        "maxIterations": {"type": "integer", "description": "Maximum subagent turns (default 6, max 20)"}
+        "maxIterations": {"type": "integer", "description": "Maximum subagent turns (default 6, max 20)"},
+        "type": {"type": "string", "enum": ["explore", "research"], "description": "explore = local reads only (default); research = adds read-only web/network tools"}
       },
       "required": ["task"],
       "additionalProperties": false
@@ -70,6 +73,7 @@ public struct DelegateTool: AgentTool {
                     task: args.task,
                     context: args.context,
                     maxIterations: args.maxIterations ?? 6,
+                    kind: args.type ?? .explore,
                     runID: context.runID
                 ),
                 context: context

@@ -11,29 +11,34 @@ import FloeTools
 
 // MARK: - workspace.createFile
 
-/// Creates a new file; fails when the target already exists.
+/// Creates a new file; fails when the target already exists unless
+/// `overwrite=true` is passed.
 public struct WorkspaceCreateFileTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var path: String
         public var content: String
+        /// Replace the existing file at `path` instead of failing.
+        public var overwrite: Bool?
         public var scope: String?
 
-        public init(path: String, content: String, scope: String? = nil) {
+        public init(path: String, content: String, overwrite: Bool? = nil, scope: String? = nil) {
             self.path = path
             self.content = content
+            self.overwrite = overwrite
             self.scope = scope
         }
     }
 
     public static let name = "workspace.createFile"
     public static let toolDescription =
-        "Create a new workspace file with the given content. Fails without overwriting when the file already exists; use writeFile for updates. Prefer the .md extension for documents, notes, and reports; use a different extension only when the caller explicitly requires a specific format."
+        "Create a new workspace file with the given content. Fails without overwriting when the file already exists; pass overwrite=true to replace the existing file, or use writeFile for updates. Prefer the .md extension for documents, notes, and reports; use a different extension only when the caller explicitly requires a specific format."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative path for the new file"},
-        "content": {"type": "string", "description": "Full file content (UTF-8)"}
+        "content": {"type": "string", "description": "Full file content (UTF-8)"},
+        "overwrite": {"type": "boolean", "description": "Replace the file when it already exists (default false)"}
       },
       "required": ["path", "content"],
       "additionalProperties": false
@@ -61,19 +66,36 @@ public struct WorkspaceCreateFileTool: AgentTool {
         }
         try context.authorizeWorkspacePath(args.path)
         if let route = try await environment.networkRoute(path: args.path, context: context) {
+            var expectedEntityTag: String?
             do {
-                _ = try await route.adapter.metadata(path: route.relativePath)
-                throw WorkspaceToolError.alreadyExists(args.path)
+                let metadata = try await route.adapter.metadata(path: route.relativePath)
+                guard args.overwrite == true else {
+                    throw WorkspaceToolError.alreadyExistsOverwritable(args.path)
+                }
+                expectedEntityTag = metadata.entityTag
             } catch let error as NetworkWorkspaceError where error.code == .notFound {
                 // Expected for create-only semantics.
             }
             let data = Data(args.content.utf8)
-            let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: nil)
+            let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: expectedEntityTag)
             return WorkspaceToolSupport.output("created=\(args.path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) mtime=\(result.modifiedAt?.timeIntervalSince1970 ?? 0) network=true")
         }
         let service = try environment.makeService(context: context)
-        let outcome = try service.createFile(args.path, content: args.content, cancellation: context.cancellation)
-        let diff = service.diff(original: "", modified: args.content, label: args.path)
+        let prior = args.overwrite == true
+            ? try? service.readFile(args.path, cancellation: context.cancellation)
+            : nil
+        let outcome = try service.createFile(
+            args.path,
+            content: args.content,
+            overwrite: args.overwrite == true,
+            cancellation: context.cancellation
+        )
+        let diff: String
+        if let prior, !prior.truncated {
+            diff = service.diff(original: prior.text, modified: args.content, label: args.path)
+        } else {
+            diff = service.diff(original: "", modified: args.content, label: args.path)
+        }
         let artifact = try WorkspaceToolSupport.changeArtifact(diff: diff, runID: context.runID)
         return WorkspaceToolSupport.output(
             "created=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",

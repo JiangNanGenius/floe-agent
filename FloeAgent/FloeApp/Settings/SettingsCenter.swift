@@ -66,6 +66,9 @@ final class SettingsCenter: ObservableObject {
     }
     /// Self-critique pass on the final answer before the run completes.
     @Published private(set) var verifyFinalAnswer: Bool = false
+    /// Model-written semantic summaries during context compaction (cloud
+    /// models only; local models stay deterministic). Default on.
+    @Published private(set) var semanticContextCompaction: Bool = true
     /// Speech settings for TTS.
     @Published private(set) var speechRate: Float = 0.5
     @Published private(set) var speechPitch: Float = 1.0
@@ -287,6 +290,9 @@ final class SettingsCenter: ObservableObject {
         }
         if let verify: Bool = decode(Bool.self, AppSettingsKey.verifyFinalAnswer) {
             verifyFinalAnswer = verify
+        }
+        if let semantic: Bool = decode(Bool.self, AppSettingsKey.semanticContextCompaction) {
+            semanticContextCompaction = semantic
         }
         if let rate: Float = decode(Float.self, "speech.rate") {
             speechRate = rate
@@ -523,6 +529,11 @@ final class SettingsCenter: ObservableObject {
     func setVerifyFinalAnswer(_ value: Bool) async {
         verifyFinalAnswer = value
         await persist(value, forKey: AppSettingsKey.verifyFinalAnswer)
+    }
+
+    func setSemanticContextCompaction(_ value: Bool) async {
+        semanticContextCompaction = value
+        await persist(value, forKey: AppSettingsKey.semanticContextCompaction)
     }
 
     func setSpeechRate(_ value: Float) async {

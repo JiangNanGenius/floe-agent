@@ -95,3 +95,22 @@ struct LocalPromptHarnessTests {
         }
     }
 }
+
+// MARK: - Decode-rate provenance (PiP speed口径)
+
+@Suite("Local decode-rate accounting")
+struct LocalDecodeRateTests {
+    @Test func weightedDecodeRateIgnoresPrefillAndWeightsByTokens() {
+        // 40 tok/s over 10 tokens + 20 tok/s over 30 tokens → 25 tok/s.
+        let rate = DecodeRateCombiner.weightedDecodeRate(
+            main: (rate: 40, outputTokens: 10),
+            repair: (rate: 20, outputTokens: 30)
+        )
+        #expect(rate == 25)
+    }
+
+    @Test func weightedDecodeRateSurvivesMissingLegs() {
+        #expect(DecodeRateCombiner.weightedDecodeRate(main: (nil, 10), repair: (30, 5)) == 30)
+        #expect(DecodeRateCombiner.weightedDecodeRate(main: (nil, 0), repair: (nil, 0)) == nil)
+    }
+}

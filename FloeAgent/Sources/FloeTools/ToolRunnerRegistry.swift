@@ -13,13 +13,38 @@ import FloeCore
 public struct AnyAgentTool: Sendable {
     public var descriptor: ToolCatalog.Descriptor
     public var run: @Sendable (Data, ToolContext) async throws -> ToolExecutionOutput
+    /// Decode + validate without executing. Used by background job submission
+    /// so malformed arguments fail fast at the call site, not asynchronously.
+    public var validateArguments: @Sendable (Data) throws -> Void
 
     public init(
         descriptor: ToolCatalog.Descriptor,
-        run: @escaping @Sendable (Data, ToolContext) async throws -> ToolExecutionOutput
+        run: @escaping @Sendable (Data, ToolContext) async throws -> ToolExecutionOutput,
+        validateArguments: @escaping @Sendable (Data) throws -> Void = { _ in }
     ) {
         self.descriptor = descriptor
         self.run = run
+        self.validateArguments = validateArguments
+    }
+
+    /// Renders a decoding failure as an actionable message naming the exact
+    /// argument, instead of the platform's opaque "data is missing" text.
+    static func describeDecodingError(_ error: DecodingError, toolName: String) -> String {
+        func path(_ context: DecodingError.Context) -> String {
+            context.codingPath.map(\.stringValue).joined(separator: ".")
+        }
+        switch error {
+        case .keyNotFound(let key, _):
+            return "missing required argument '\(key.stringValue)' for tool '\(toolName)'"
+        case .typeMismatch(_, let context):
+            return "argument '\(path(context))' for tool '\(toolName)' has the wrong type (\(context.debugDescription))"
+        case .valueNotFound(_, let context):
+            return "argument '\(path(context))' for tool '\(toolName)' is null but a value is required"
+        case .dataCorrupted(let context):
+            return "malformed arguments for tool '\(toolName)': \(context.debugDescription)"
+        @unknown default:
+            return "invalid arguments for tool '\(toolName)'"
+        }
     }
 
     /// Type-erases a concrete `AgentTool`: decodes `argumentsJSON` into the
@@ -35,14 +60,25 @@ public struct AnyAgentTool: Sendable {
             requiresHostScope: T.requiresHostScope,
             prerequisites: T.prerequisites
         )
+        self.validateArguments = { argumentsJSON in
+            let arguments: T.Arguments
+            do {
+                arguments = try JSONDecoder().decode(T.Arguments.self, from: argumentsJSON)
+            } catch let error as DecodingError {
+                throw FloeError.validationFailed(AnyAgentTool.describeDecodingError(error, toolName: T.name))
+            } catch {
+                throw FloeError.validationFailed("Invalid arguments for tool '\(T.name)': \(error.localizedDescription)")
+            }
+            try tool.validate(arguments)
+        }
         self.run = { argumentsJSON, context in
             let arguments: T.Arguments
             do {
                 arguments = try JSONDecoder().decode(T.Arguments.self, from: argumentsJSON)
+            } catch let error as DecodingError {
+                throw FloeError.validationFailed(AnyAgentTool.describeDecodingError(error, toolName: T.name))
             } catch {
-                throw FloeError.validationFailed(
-                    "Invalid arguments for tool '\(T.name)': \(error.localizedDescription)"
-                )
+                throw FloeError.validationFailed("Invalid arguments for tool '\(T.name)': \(error.localizedDescription)")
             }
             try tool.validate(arguments)
             return try await tool.execute(arguments, context: context)
