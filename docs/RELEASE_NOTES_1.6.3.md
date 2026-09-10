@@ -3,6 +3,9 @@
 > 2026-09-11。本轮主线：按真实会话日志（floe-task-694DB10F）修复代理 harness 的摩擦点，并对标 OpenCode / Claude Code / Kimi Code 完成提示词与机制升级。
 > English summary follows the Chinese section.
 
+### 简体中文
+
+
 ## 任务清单生命周期（治"清单越用越乱"）
 
 - **完成的清单自动完结**：全部步骤终态后，`task.readPlan` 明确提示清单已完结；下一次 `task.updatePlan` 提交全新 steps 即自动开启新清单，不再要求携带或取消旧步骤（历史完整保留在修订表）。
@@ -49,6 +52,8 @@
 - orjson/pydantic-core（Rust 链）仍为二期实验。
 
 ---
+
+### English
 
 ## English Summary
 
