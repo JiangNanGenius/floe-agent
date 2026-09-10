@@ -55,6 +55,24 @@ fi
 
 tar -xzf "$stage/src.tar.gz" -C "$stage"
 source_dir="$stage/$FLOE_WHEEL_SDIST_DIR"
+# Upstream sdists may carry their own [tool.cibuildwheel] tables written for a
+# newer cibuildwheel than our pin (e.g. zstandard's cpython-freethreading
+# enable group fails 4.2.1's parse before env overrides merge). We drive
+# cibuildwheel entirely through CIBW_* env vars, so the sdist's own table is
+# stripped after extraction.
+python3 - "$source_dir/pyproject.toml" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except OSError:
+    raise SystemExit(0)
+pattern = re.compile(r"(?ms)^\[tool\.cibuildwheel[^\]]*\].*?(?=^\[|\Z)")
+stripped = pattern.sub("", text)
+if stripped != text:
+    open(path, "w", encoding="utf-8").write(stripped)
+    print("stripped sdist-native [tool.cibuildwheel] config")
+PYEOF
 cp "$repo_root/ios-wheelhouse/$FLOE_WHEEL_SMOKE" "$source_dir/floe_wheel_smoke.py"
 
 export CIBW_BUILD='cp313-ios_arm64_iphoneos cp313-ios_arm64_iphonesimulator'
