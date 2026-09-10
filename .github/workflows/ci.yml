@@ -267,6 +267,23 @@ jobs:
           swift package resolve
           scripts/pin_check.sh
 
+      # This job compiles the release-shaped app: it needs the same verified
+      # bundled fonts as the release pipeline.
+      - name: Restore bundled font cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            FloeAgent/Vendor/Fonts/downloads
+            FloeAgent/FloeApp/Resources/Fonts/Bundled
+          key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
+
+      - name: Fetch and verify bundled fonts
+        run: |
+          python3 scripts/fonts/fetch_fonts.py --check || {
+            python3 scripts/fonts/fetch_fonts.py
+            python3 scripts/fonts/fetch_fonts.py --check
+          }
+
       - name: Build App Store SDK branch
         run: |
           xcodebuild \
