@@ -78,6 +78,64 @@
       "license": "MIT",
       "homepage": "https://docs.pydantic.dev/",
       "note": "maturin/Rust 交叉链路，实验项。"
+    },
+    "zstandard": {
+      "version": "0.25.0",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/fd/aa/3e0508d5a5dd96529cdc5a97011299056e14c6505b678fd58938792794b1/zstandard-0.25.0.tar.gz",
+        "sha256": "7713e1179d162cf5c7906da876ec2ccb9c3a9dcbdffef0cc7f70c3667a205f0b",
+        "dir": "zstandard-0.25.0"
+      },
+      "smoke": "smoke/zstandard_smoke.py",
+      "license": "BSD-3-Clause",
+      "homepage": "https://github.com/indygreg/python-zstandard",
+      "note": "无 env 开关：setup.py 默认编译内置 zstd C 源码（--system-zstd 仅命令行参数），Rust 后端默认关、cffi 后端默认开；verify bundled-c-backend selection in CI logs。"
+    },
+    "brotli": {
+      "version": "1.2.0",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/f7/16/c92ca344d646e71a43b8bb353f0a6490d7f6e06210f8554c8f874e454285/brotli-1.2.0.tar.gz",
+        "sha256": "e310f77e41941c13340a95976fe66a8a95b01e783d430eeaf7a2f87e0a57dd0a",
+        "dir": "brotli-1.2.0"
+      },
+      "smoke": "smoke/brotli_smoke.py",
+      "license": "MIT",
+      "homepage": "https://github.com/google/brotli",
+      "importName": "brotli"
+    },
+    "greenlet": {
+      "version": "3.5.5",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/0b/d8/7cc97c142388aef03f622e001c572c4f84e9252a439549d483f555771970/greenlet-3.5.5.tar.gz",
+        "sha256": "adb4bae02e91a8e863e48b177e4014bdcac8a6b5e047ea1df687a61534b85e6c",
+        "dir": "greenlet-3.5.5"
+      },
+      "smoke": "smoke/greenlet_smoke.py",
+      "license": "MIT AND PSF-2.0",
+      "homepage": "https://greenlet.readthedocs.io",
+      "note": "sdist 自带 arm64 上下文切换汇编（platform/switch_aarch64_gcc.h，slp_platformselect.h 对 __aarch64__ 选中）；watch CI for assembly errors。"
+    },
+    "frozenlist": {
+      "version": "1.8.0",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/2d/f5/c831fac6cc817d26fd54c7eaccd04ef7e0288806943f7cc5bbf69f3ac1f0/frozenlist-1.8.0.tar.gz",
+        "sha256": "3ede829ed8d842f6cd48fc7081d7a41001a56f1f38603f9d49bf3020d59a31ad",
+        "dir": "frozenlist-1.8.0"
+      },
+      "smoke": "smoke/frozenlist_smoke.py",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/aio-libs/frozenlist"
+    },
+    "multidict": {
+      "version": "6.8.0",
+      "sdist": {
+        "url": "https://files.pythonhosted.org/packages/14/95/989c1b5ca17b72128661530cd6e351a0a83cda9a4d6c036e9ed976c18931/multidict-6.8.0.tar.gz",
+        "sha256": "5cd4637ce76312ba1e05eb9c5193fec231f64fee0944e135fa1e951242355b37",
+        "dir": "multidict-6.8.0"
+      },
+      "smoke": "smoke/multidict_smoke.py",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/aio-libs/multidict"
     }
   }
 }
