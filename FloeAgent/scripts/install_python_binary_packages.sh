@@ -104,7 +104,12 @@ project_yml_entries=()
 for spec in "${packages[@]}"; do
     IFS='|' read -r package version device_sha sim_sha url_template package_min_ios flatten_subdirs <<< "$spec"
     device_wheel="$(download_wheel "$package" "$version" "iphoneos" "$device_sha")"
-    sim_wheel="$(download_wheel "$package" "$version" "iphonesimulator" "$sim_sha")"
+    # Pure-Python py3-none-any wheels carry one file for both slices.
+    if [ "$device_sha" = "$sim_sha" ] && [ "${url_template/\{arch\}/}" = "$url_template" ]; then
+        sim_wheel="$device_wheel"
+    else
+        sim_wheel="$(download_wheel "$package" "$version" "iphonesimulator" "$sim_sha")"
+    fi
 
     stage="$cache_root/stage-$package"
     rm -rf "$stage"

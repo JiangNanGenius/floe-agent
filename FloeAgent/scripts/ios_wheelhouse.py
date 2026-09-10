@@ -26,10 +26,11 @@ def main() -> int:
         return 2
     sdist = package["sdist"]
     env = dict(package.get("env", {}))
-    env.update({
-        "PIP_EXTRA_INDEX_URL": manifest["buildDepsIndex"],
-        "IPHONEOS_DEPLOYMENT_TARGET": manifest["deploymentTarget"],
-    })
+    if not package.get("pure"):
+        env.update({
+            "PIP_EXTRA_INDEX_URL": manifest["buildDepsIndex"],
+            "IPHONEOS_DEPLOYMENT_TARGET": manifest["deploymentTarget"],
+        })
     values = {
         "FLOE_WHEEL_NAME": name,
         "FLOE_WHEEL_VERSION": package["version"],
@@ -37,6 +38,7 @@ def main() -> int:
         "FLOE_WHEEL_SDIST_SHA256": sdist["sha256"],
         "FLOE_WHEEL_SDIST_DIR": sdist["dir"],
         "FLOE_WHEEL_SMOKE": package["smoke"],
+        "FLOE_WHEEL_PURE": "1" if package.get("pure") else "0",
         "FLOE_WHEEL_RUST": "1" if package.get("rust") else "0",
         "FLOE_WHEEL_ENV": " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items()),
     }

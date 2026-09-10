@@ -16,6 +16,8 @@ if [ "$FLOE_WHEEL_RUST" = "1" ]; then
         brew install rustup
         rustup-init -y --default-toolchain stable
     fi
+    # rustup-init installs into ~/.cargo/bin; make it visible in this shell.
+    export PATH="$HOME/.cargo/bin:$PATH"
     rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 fi
 
@@ -25,6 +27,32 @@ trap 'rm -rf "$stage"' EXIT
 curl --fail --location --retry 3 "$FLOE_WHEEL_SDIST_URL" --output "$stage/src.tar.gz"
 actual="$(shasum -a 256 "$stage/src.tar.gz" | awk '{print $1}')"
 test "$actual" = "$FLOE_WHEEL_SDIST_SHA256"
+
+out_dir="$repo_root/ios-wheelhouse/out/$FLOE_WHEEL_NAME"
+mkdir -p "$out_dir"
+
+if [ "$FLOE_WHEEL_PURE" = "1" ]; then
+    # Packages whose iOS build is pure Python anyway: build once on the host
+    # in a controlled venv and require a universal py3-none-any wheel. The iOS
+    # cibuildwheel testbed rejects pure output by design.
+    python3 -m venv "$stage/venv"
+    "$stage/venv/bin/pip" install --quiet --upgrade pip
+    env $FLOE_WHEEL_ENV "$stage/venv/bin/python" -m pip wheel --no-deps \
+        --wheel-dir "$stage/pure-out" "$stage/src.tar.gz"
+    wheel="$(ls "$stage"/pure-out/*-none-any.whl 2>/dev/null || true)"
+    if [ -z "$wheel" ]; then
+        echo "error: expected a pure py3-none-any wheel for $FLOE_WHEEL_NAME" >&2
+        ls "$stage/pure-out" >&2 || true
+        exit 1
+    fi
+    # Smoke: install the wheel into the venv and run the package's checks.
+    "$stage/venv/bin/pip" install --quiet "$wheel"
+    FLOE_SMOKE_HOST=1 "$stage/venv/bin/python" "$repo_root/ios-wheelhouse/$FLOE_WHEEL_SMOKE"
+    cp "$wheel" "$out_dir/"
+    echo "pure wheel written to $out_dir"
+    exit 0
+fi
+
 tar -xzf "$stage/src.tar.gz" -C "$stage"
 source_dir="$stage/$FLOE_WHEEL_SDIST_DIR"
 cp "$repo_root/ios-wheelhouse/$FLOE_WHEEL_SMOKE" "$source_dir/floe_wheel_smoke.py"
