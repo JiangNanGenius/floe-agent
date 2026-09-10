@@ -97,6 +97,12 @@ def stage_family(family: dict, output_root: Path) -> dict:
     staged: list[dict] = []
     seen_names: set[str] = set()
 
+    # Weight/file picks change over time: drop every previously staged font
+    # file before re-staging; provenance.json is rewritten below.
+    for old in fam_dir.iterdir():
+        if old.suffix.lower() in FONT_EXTS:
+            old.unlink()
+
     for source in family.get("sources", []):
         url = source["url"]
         name = unquote(Path(urlparse(url).path).name)
@@ -199,6 +205,12 @@ def check_family(family: dict, output_root: Path) -> bool:
         elif sha256_file(path) != entry["sha256"]:
             print(f"  ✗ {family['id']}: digest mismatch {entry['fileName']}")
             ok = False
+    # Stale fonts from older pick sets must not silently ship.
+    expected = {entry["fileName"] for entry in prov["files"]}
+    for path in fam_dir.iterdir():
+        if path.suffix.lower() in FONT_EXTS and path.name not in expected:
+            print(f"  ✗ {family['id']}: stale unpinned font {path.name}")
+            ok = False
     if ok:
         print(f"  ✓ {family['id']}: {len(prov['files'])} files verified")
     return ok
@@ -208,11 +220,18 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", help="comma-separated family ids")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--include-optional", action="store_true",
+                        help="also stage tier=optional families (display/calligraphy fonts users can install on demand)")
     args = parser.parse_args()
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     output_root = REPO_ROOT / manifest["outputDir"]
     families = manifest["families"]
+    if not args.include_optional:
+        skipped = [f["id"] for f in families if f.get("tier") == "optional"]
+        families = [f for f in families if f.get("tier") != "optional"]
+        if skipped:
+            print(f"tier=optional families skipped ({len(skipped)}); --include-optional stages them on demand")
     if args.only:
         wanted = set(args.only.split(","))
         families = [f for f in families if f["id"] in wanted]
