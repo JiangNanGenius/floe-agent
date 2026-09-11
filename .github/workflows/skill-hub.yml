@@ -5,6 +5,12 @@ on:
   pull_request:
     paths: ['skill-hub/**', 'FloeAgent/Sources/FloeSkills/**', '.github/workflows/skill-hub.yml']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Sign and commit official skill packages
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -33,3 +39,31 @@ jobs:
               exit 1
             fi
           fi
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install cryptography==46.0.6
+      - name: Build signed official packages
+        env:
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        run: python skill-hub/build.py
+      - name: Commit signed artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add skill-hub/catalog.json skill-hub/catalog.sig skill-hub/packages \
+            FloeAgent/Sources/FloeSkills/OfficialBundledSkills.generated.swift \
+            FloeAgent/Sources/FloeSkills/OfficialSkillHubKeys.generated.swift
+          if git diff --cached --quiet; then
+            echo "No signed artifact changes"
+            exit 0
+          fi
+          git commit -m "Publish signed official skill packages"
+          git push origin "HEAD:${{ github.ref_name }}"

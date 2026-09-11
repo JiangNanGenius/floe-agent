@@ -7,60 +7,6 @@ import FloeTools
 @Suite("FloeExecution.NetworkDiagnostics")
 struct NetworkDiagnosticToolsTests {
 
-    // MARK: - Remote ping dialect (BSD milliseconds vs iputils seconds)
-
-    @Test("ping -W is seconds on Linux and milliseconds on macOS/BSD targets")
-    func pingWaitDialect() {
-        #expect(NetworkDiagnosticTiming.pingWaitValue(timeoutSeconds: 3, kind: .linux) == 3)
-        #expect(NetworkDiagnosticTiming.pingWaitValue(timeoutSeconds: 3, kind: .openWrt) == 3)
-        #expect(NetworkDiagnosticTiming.pingWaitValue(timeoutSeconds: 3, kind: .nas) == 3)
-        #expect(NetworkDiagnosticTiming.pingWaitValue(timeoutSeconds: 3, kind: .unknown) == 3)
-        #expect(NetworkDiagnosticTiming.pingWaitValue(timeoutSeconds: 3, kind: nil) == 3)
-        #expect(NetworkDiagnosticTiming.pingWaitValue(timeoutSeconds: 3, kind: .macOS) == 3000)
-        #expect(NetworkDiagnosticTiming.pingWaitValue(timeoutSeconds: 10, kind: .macOS) == 10_000)
-        #expect(
-            NetworkDiagnosticTiming.pingCommand(target: "192.0.2.1", count: 4, timeoutSeconds: 3, kind: .macOS)
-                == "ping -c 4 -W 3000 192.0.2.1"
-        )
-        #expect(
-            NetworkDiagnosticTiming.pingCommand(target: "192.0.2.1", count: 4, timeoutSeconds: 3, kind: .linux)
-                == "ping -c 4 -W 3 192.0.2.1"
-        )
-    }
-
-    @Test("cached target inspection selects the ping dialect")
-    func persistedKindLookup() throws {
-        let defaults = try #require(UserDefaults(suiteName: "NetworkDiagnosticToolsTests.\(UUID().uuidString)"))
-        let hostID = UUID()
-        #expect(NetworkDiagnosticTiming.persistedTargetKind(hostID: nil, defaults: defaults) == nil)
-        #expect(NetworkDiagnosticTiming.persistedTargetKind(hostID: hostID, defaults: defaults) == nil)
-        let inspection = RemoteTargetInspection(
-            hostID: hostID, kind: .macOS, vendor: "Apple", operatingSystem: "Darwin",
-            containerRuntime: nil, confidence: 0.95, evidence: "Darwin"
-        )
-        defaults.set(try JSONEncoder().encode(inspection), forKey: SSHCommandService.inspectionCacheKey(hostID: hostID))
-        #expect(NetworkDiagnosticTiming.persistedTargetKind(hostID: hostID, defaults: defaults) == .macOS)
-    }
-
-    // MARK: - Watchdog budgets
-
-    @Test("ping watchdog covers the send interval plus one final wait")
-    func pingWatchdog() {
-        #expect(NetworkDiagnosticTiming.pingWatchdogSeconds(count: 4, timeoutSeconds: 3) == 22)
-        #expect(NetworkDiagnosticTiming.pingWatchdogSeconds(count: 10, timeoutSeconds: 10) == 35)
-        #expect(NetworkDiagnosticTiming.pingWatchdogSeconds(count: 1, timeoutSeconds: 1) == 17)
-    }
-
-    @Test("traceroute runs numeric with two probes per hop and a bounded tracepath fallback")
-    func tracerouteBudgetAndCommand() {
-        #expect(NetworkDiagnosticTiming.tracerouteBudgetSeconds(maxHops: 20, waitSeconds: 2) == 95)
-        #expect(NetworkDiagnosticTiming.tracerouteBudgetSeconds(maxHops: 30, waitSeconds: 5) == 315)
-        #expect(NetworkDiagnosticTiming.tracerouteBudgetSeconds(maxHops: 1, waitSeconds: 1) == 17)
-        let command = NetworkDiagnosticTiming.tracerouteCommand(target: "192.0.2.1", maxHops: 8, waitSeconds: 2)
-        #expect(command.contains("traceroute -n -q 2 -m 8 -w 2 192.0.2.1"))
-        #expect(command.contains("timeout 47 tracepath -n -m 8 192.0.2.1"))
-    }
-
     // MARK: - Deadline wrapper (device dnsLookup timeout path)
 
     @Test("withDeadline returns the operation result before the deadline")
@@ -150,6 +96,30 @@ struct NetworkDiagnosticToolsTests {
         #expect(DeviceICMPPacket.parseEchoReply(Data([0, 0, 0])) == nil)  // truncated
     }
 
+    @Test("time-exceeded parsing extracts the embedded echo sequence")
+    func timeExceededEmbeddedSequence() {
+        // Outer ICMP header (8 bytes) + embedded IPv4 header (20 bytes) +
+        // first 8 bytes of the original echo request.
+        var packet = Data(count: 8 + 20 + 8)
+        packet[0] = DeviceICMPPacket.timeExceededType
+        packet[1] = 0
+        let ipStart = 8
+        packet[ipStart] = 0x45  // IPv4, 5-word header
+        let icmpStart = ipStart + 20
+        packet[icmpStart] = DeviceICMPPacket.echoRequestType
+        packet[icmpStart + 6] = 0x00
+        packet[icmpStart + 7] = 0x2A
+        #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(packet) == 42)
+        // Destination unreachable is accepted too.
+        packet[0] = DeviceICMPPacket.destinationUnreachableType
+        #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(packet) == 42)
+        // An echo reply is not an error envelope.
+        packet[0] = DeviceICMPPacket.echoReplyType
+        #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(packet) == nil)
+        // Truncated payloads are rejected.
+        #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(Data([11, 0, 0, 0])) == nil)
+    }
+
     // MARK: - Device ping report formatting
 
     @Test("device ping report summarizes RTT stats and loss")
@@ -172,11 +142,29 @@ struct NetworkDiagnosticToolsTests {
         #expect(text.contains("rttMs min=10.00 avg=15.00 max=20.00"))
     }
 
-    // MARK: - Tool wiring
+    @Test("device traceroute report lists hop addresses and RTTs")
+    func tracerouteReportSummary() {
+        let report = DeviceTracerouteReport(
+            target: "example.com", resolvedAddress: "192.0.2.9", maxHops: 8,
+            hops: [
+                .init(ttl: 1, status: .timeExceeded(address: "192.168.1.1", rtts: [1.5, 1.7])),
+                .init(ttl: 2, status: .timeout),
+                .init(ttl: 3, status: .reached(rtts: [12.25]))
+            ]
+        )
+        let text = report.summaryText()
+        #expect(text.contains("method=icmpTraceroute target=example.com resolved=192.0.2.9"))
+        #expect(text.contains("hop ttl=1 address=192.168.1.1 rttMs=1.50,1.70"))
+        #expect(text.contains("hop ttl=2 status=timeout"))
+        #expect(text.contains("hop ttl=3 address=192.0.2.9 rttMs=12.25"))
+        #expect(text.contains("summary hops=3 reached=true"))
+    }
+
+    // MARK: - Tool wiring (no SSH, no real network)
 
     @Test("network.ping runs the injected device pinger without SSH or network")
     func devicePingWiring() async throws {
-        let tool = NetworkPingTool(service: nil) { target, count, timeout, _ in
+        let tool = NetworkPingTool(devicePinger: { target, count, timeout, _ in
             #expect(target == "example.com")
             #expect(count == 2 && timeout == 1)
             return DevicePingReport(
@@ -186,9 +174,9 @@ struct NetworkDiagnosticToolsTests {
                     .init(sequence: 1, status: .timeout)
                 ]
             )
-        }
+        })
         let output = try await tool.execute(
-            .init(target: "example.com", hostID: nil, executionTarget: nil, count: 2, timeoutSeconds: 1),
+            .init(target: "example.com", count: 2, timeoutSeconds: 1),
             context: ToolContext(runID: UUID(), cancellation: CancellationToken())
         )
         #expect(output.exitStatus == 0)
@@ -198,28 +186,39 @@ struct NetworkDiagnosticToolsTests {
         #expect(output.summary.contains("lossPercent=50.0"))
     }
 
-    @Test("device ping rejects the device+hostID combination")
-    func devicePingValidation() {
-        let tool = NetworkPingTool(service: nil)
-        #expect(throws: FloeError.self) {
-            try tool.validate(.init(target: "example.com", hostID: UUID().uuidString, executionTarget: "device"))
-        }
+    @Test("network.traceroute runs the injected device tracer without SSH or network")
+    func deviceTracerouteWiring() async throws {
+        let tool = NetworkTracerouteTool(deviceTracer: { target, maxHops, wait, _ in
+            #expect(target == "example.com")
+            #expect(maxHops == 8 && wait == 1)
+            return DeviceTracerouteReport(
+                target: target, resolvedAddress: "192.0.2.9", maxHops: maxHops,
+                hops: [
+                    .init(ttl: 1, status: .timeExceeded(address: "192.168.1.1", rtts: [2.0])),
+                    .init(ttl: 2, status: .reached(rtts: [9.5]))
+                ]
+            )
+        })
+        let output = try await tool.execute(
+            .init(target: "example.com", maxHops: 8, timeoutSeconds: 1),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains("method=icmpTraceroute"))
+        #expect(output.summary.contains("hop ttl=1 address=192.168.1.1"))
+        #expect(output.summary.contains("reached=true"))
     }
 
-    @Test("device traceroute stays host-only and points at device ping")
-    func deviceTracerouteUnavailable() async throws {
-        let tool = NetworkTracerouteTool(service: nil)
-        do {
-            _ = try await tool.execute(
-                .init(target: "example.com"),
-                context: ToolContext(runID: UUID(), cancellation: CancellationToken())
-            )
-            Issue.record("expected deviceTracerouteUnavailable")
-        } catch let FloeError.validationFailed(message) {
-            #expect(message.contains("deviceTracerouteUnavailable"))
-            #expect(message.contains("network.ping"))
-        } catch {
-            Issue.record("unexpected error: \(error)")
+    @Test("network diagnostic tools declare no remote-host dependency")
+    func deviceOnlyDescriptors() {
+        #expect(!NetworkPingTool.requiresHostScope)
+        #expect(!NetworkTracerouteTool.requiresHostScope)
+        #expect(!NetworkDNSLookupTool.requiresHostScope)
+        #expect(!NetworkTCPProbeTool.requiresHostScope)
+        for labels in [NetworkPingTool.riskLabels, NetworkTracerouteTool.riskLabels,
+                       NetworkDNSLookupTool.riskLabels, NetworkTCPProbeTool.riskLabels] {
+            #expect(labels.contains(.networkAccess))
+            #expect(!labels.contains(.executesRemoteCommand))
         }
     }
 }

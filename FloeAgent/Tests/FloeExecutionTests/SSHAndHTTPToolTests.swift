@@ -127,7 +127,7 @@ struct SSHAndHTTPToolTests {
         }
     }
 
-    @Test("Device diagnostics are registered without an SSH service, and device traceroute fails honestly")
+    @Test("Device diagnostics are registered without an SSH service and run device-local")
     func deviceDiagnostics() async throws {
         let registry = ToolRunnerRegistry()
         registerExecutionTools(registry: registry)
@@ -139,12 +139,11 @@ struct SSHAndHTTPToolTests {
         let result = try await dns.execute(argumentsJSON: Data(#"{"target":"localhost"}"#.utf8), context: context)
         #expect(result.summary.contains("executionTarget=device"))
         #expect(result.summary.contains("127.0.0.1") || result.summary.contains("::1"))
-        // Device ping is now real ICMP (covered with an injected pinger in
-        // NetworkDiagnosticToolsTests); device traceroute stays host-only.
-        let traceroute = try #require(registry.runner(named: "network.traceroute"))
-        await #expect(throws: FloeError.self) {
-            _ = try await traceroute.execute(argumentsJSON: Data(#"{"target":"127.0.0.1"}"#.utf8), context: context)
-        }
+        // Device ping and traceroute are real ICMP paths (covered with an
+        // injected backend in NetworkDiagnosticToolsTests); the descriptors
+        // must never require an SSH host.
+        #expect(!NetworkPingTool.requiresHostScope)
+        #expect(!NetworkTracerouteTool.requiresHostScope)
     }
 
     @Test("network.http descriptor is network-flagged")
@@ -204,15 +203,10 @@ struct SSHAndHTTPToolTests {
 
     @Test("structured network diagnostics reject command injection and stay read-only")
     func networkDiagnosticContracts() throws {
-        let service = SSHCommandService(
-            sessionFactory: { _ in FakeSession() },
-            hostResolver: { id in RemotePythonService.RemotePythonHost(id: id, displayName: "probe") },
-            defaultHostProvider: { UUID() }
-        )
-        let ping = NetworkPingTool(service: service)
-        try ping.validate(.init(target: "example.com", hostID: nil, count: 2, timeoutSeconds: 2))
+        let ping = NetworkPingTool()
+        try ping.validate(.init(target: "example.com", count: 2, timeoutSeconds: 2))
         #expect(throws: FloeError.self) {
-            try ping.validate(.init(target: "example.com; reboot", hostID: nil, count: 2, timeoutSeconds: 2))
+            try ping.validate(.init(target: "example.com; reboot", count: 2, timeoutSeconds: 2))
         }
         #expect(NetworkPingTool.toolEffect == .readOnly)
         #expect(NetworkTracerouteTool.toolEffect == .readOnly)

@@ -121,6 +121,26 @@ enum DeviceICMPPacket {
         let sequence = UInt16(data[6]) << 8 | UInt16(data[7])
         return EchoReply(identifier: identifier, sequence: sequence, payload: data.subdata(in: 8..<data.count))
     }
+
+    static let timeExceededType: UInt8 = 11
+    static let destinationUnreachableType: UInt8 = 3
+
+    /// Extracts the embedded original ICMP echo sequence from an ICMP error
+    /// message (time exceeded / destination unreachable). The datagram socket
+    /// strips the outer IPv4 header, so the payload starts at the outer ICMP
+    /// header: 8 bytes, then the embedded IPv4 header + first 8 bytes of the
+    /// original datagram.
+    static func parseErrorEmbeddedSequence(_ data: Data) -> UInt16? {
+        guard data.count >= 8 + 20 + 8,
+              data[0] == timeExceededType || data[0] == destinationUnreachableType else { return nil }
+        let ipStart = 8
+        guard data[ipStart] >> 4 == 4 else { return nil }
+        let headerLength = Int(data[ipStart] & 0x0F) * 4
+        guard headerLength >= 20, data.count >= ipStart + headerLength + 8 else { return nil }
+        let icmpStart = ipStart + headerLength
+        guard data[icmpStart] == echoRequestType || data[icmpStart] == echoReplyType else { return nil }
+        return UInt16(data[icmpStart + 6]) << 8 | UInt16(data[icmpStart + 7])
+    }
 }
 
 /// Runs genuine ICMP echo requests from this device. The blocking socket
@@ -142,7 +162,7 @@ enum DeviceICMPPing {
             try resolveIPv4(target)
         }
         guard let sAddr = addresses.first else {
-            throw FloeError.validationFailed("device ping supports IPv4 targets only and \(target) has no A record; use executionTarget=host for IPv6")
+            throw FloeError.validationFailed("device ping supports IPv4 targets only and \(target) has no A record")
         }
         try cancellation.throwIfCancelled()
         return try await Task.detached(priority: .utility) {
