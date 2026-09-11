@@ -17,39 +17,23 @@ import FloeModels
 /// tools whose schema was budget-evicted from this request.
 public enum CompatToolNames {
     public static func usesWireSafeNames(_ provider: ProviderProfile) -> Bool {
-        if provider.toolNameCompatibility { return true }
-        if provider.baseURL.host?.lowercased().contains("deepseek") == true { return true }
-        return provider.displayName?.lowercased().contains("deepseek") == true
+        provider.traits().usesWireSafeToolNames
     }
 
     public static func wireName(_ canonicalName: String, for provider: ProviderProfile) -> String {
-        usesWireSafeNames(provider)
-            ? canonicalName.replacingOccurrences(of: ".", with: "_")
-            : canonicalName
+        ToolNameSpelling.wire(canonicalName, safe: usesWireSafeNames(provider))
     }
 
-    /// Canonical (dotted) name for a model-emitted wire name. Exact schema
-    /// names pass through untouched (a provider may legitimately emit the
-    /// canonical spelling); otherwise the unique ceiling name sanitizing to
-    /// the wire spelling wins; ambiguous or unknown spellings pass through
-    /// unchanged so the runtime's not-in-catalog denial stays honest.
+    /// Canonical (dotted) name for a model-emitted wire name. The universe is
+    /// the run ceiling AND the schemas offered this turn — discovery tools
+    /// (tools.list/tools.search) and the synthetic plan tool exist only in
+    /// toolSchemas. Unknown or ambiguous spellings pass through unchanged so
+    /// the runtime's not-in-catalog denial stays honest.
     public static func canonicalName(_ wireName: String, request: ProviderStreamRequest) -> String {
         guard usesWireSafeNames(request.provider) else { return wireName }
-        // Total over everything the model can legitimately call: the run
-        // ceiling AND the schemas actually offered this turn. Discovery tools
-        // (tools.list/tools.search) and the synthetic plan tool appear only in
-        // toolSchemas, so a ceiling-only universe strands their wire names.
         var universe = request.allToolNames
         universe.append(contentsOf: request.toolSchemas.map(\.name))
-        if universe.contains(wireName) { return wireName }
-        // Compat models routinely drift case on underscored names
-        // (workspace_listdirectory), so the sanitized lookup folds it.
-        let target = wireName.lowercased()
-        let matches = Set(universe.filter {
-            $0.replacingOccurrences(of: ".", with: "_").lowercased() == target
-        })
-        if matches.count == 1, let only = matches.first { return only }
-        return wireName
+        return ToolNameSpelling.canonical(wireName, among: universe) ?? wireName
     }
 }
 

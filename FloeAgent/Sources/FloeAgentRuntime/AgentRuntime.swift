@@ -2392,7 +2392,7 @@ public actor FloeAgentRuntime {
                 persistDiscoveryIfChanged()
                 let wireSafe = CompatToolNames.usesWireSafeNames(configuration.provider)
                 func display(_ name: String) -> String {
-                    wireSafe ? name.replacingOccurrences(of: ".", with: "_") : name
+                    ToolNameSpelling.wire(name, safe: wireSafe)
                 }
                 let deferred = matches.filter { !names.contains($0.name) }.map(\.name)
                 let matchedSummary = matches.isEmpty

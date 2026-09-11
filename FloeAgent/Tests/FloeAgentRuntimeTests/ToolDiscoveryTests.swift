@@ -162,11 +162,10 @@ struct ToolDiscoveryTests {
             arguments: Data(#"{"afterName":"workspace_createFile","limit":10}"#.utf8),
             descriptors: descriptors, loaded: [], wireSafeNames: true
         )
-        struct Row: Decodable { let name: String; let wireName: String? }
+        struct Row: Decodable { let name: String }
         struct Page: Decodable { let tools: [Row]; let total: Int; let nextAfterName: String? }
         let page = try JSONDecoder().decode(Page.self, from: Data(output.utf8))
         #expect(page.tools.map(\.name) == ["workspace_listDirectory", "workspace_readFile"])
-        #expect(page.tools[0].wireName == nil)
         #expect(page.total == 4)
         #expect(page.nextAfterName == nil)
         // Paged output hands back a wire-spelled cursor that keeps working.

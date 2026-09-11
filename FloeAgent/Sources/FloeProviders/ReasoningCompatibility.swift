@@ -125,13 +125,11 @@ enum ReasoningCompatibility {
     }
 
     private static func isDeepSeek(provider: ProviderProfile, model: ModelProfile) -> Bool {
-        provider.baseURL.host?.lowercased().contains("deepseek") == true
-            || model.remoteModelID.lowercased().contains("deepseek")
+        provider.traits(model: model).isDeepSeek
     }
 
     private static func isDashScope(_ provider: ProviderProfile) -> Bool {
-        provider.baseURL.host?.lowercased().contains("dashscope") == true
-            || provider.displayName?.lowercased().contains("dashscope") == true
+        provider.traits().isDashScope
     }
 
     private static func supportsOpenAINone(_ modelID: String) -> Bool {
@@ -142,18 +140,11 @@ enum ReasoningCompatibility {
     }
 
     private static func isOpenAIReasoningFamily(provider: ProviderProfile, model: ModelProfile) -> Bool {
-        if provider.kind == .openAI || provider.baseURL.host?.lowercased().contains("openai.com") == true {
-            return true
-        }
-        let id = model.remoteModelID.lowercased()
-        return id.hasPrefix("gpt-5") || id.hasPrefix("o1") || id.hasPrefix("o3")
-            || id.hasPrefix("o4") || id.contains("codex")
+        provider.traits(model: model).isOpenAIReasoningFamily
     }
 
     private static func isAnthropicFamily(provider: ProviderProfile, model: ModelProfile) -> Bool {
-        provider.kind == .anthropic
-            || provider.baseURL.host?.lowercased().contains("anthropic") == true
-            || model.remoteModelID.lowercased().contains("claude")
+        provider.traits(model: model).isAnthropicFamily
     }
 
     private static func openAIEffort(_ effort: ModelReasoningEffort, modelID: String) -> String {

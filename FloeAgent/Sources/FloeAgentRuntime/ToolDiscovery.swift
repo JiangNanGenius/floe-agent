@@ -20,21 +20,15 @@ enum ToolDiscovery {
         var limit: Int?
     }
 
-    /// Maps a model-spelled name to the canonical ceiling name. Compat-mode
-    /// providers see dots as underscores on the wire, so cursors and exact
-    /// queries may arrive underscored; case-insensitive throughout because
-    /// compat models routinely drift case. A unique sanitized match wins.
+    /// Maps a model-spelled name to the canonical ceiling name via the shared
+    /// spelling utility. Compat-mode providers see dots as underscores on the
+    /// wire, so cursors and exact queries may arrive underscored.
     static func canonicalSpelling(_ spelling: String, among descriptors: [ToolCatalog.Descriptor]) -> String {
-        let names = descriptors.map(\.name)
-        if names.contains(spelling) { return spelling }
-        if let folded = names.first(where: { $0.lowercased() == spelling.lowercased() }) { return folded }
-        let target = spelling.replacingOccurrences(of: ".", with: "_").lowercased()
-        let matches = names.filter { $0.replacingOccurrences(of: ".", with: "_").lowercased() == target }
-        return matches.count == 1 ? matches[0] : spelling
+        ToolNameSpelling.canonical(spelling, among: descriptors.map(\.name)) ?? spelling
     }
 
     static func wireSpelling(_ canonical: String, wireSafe: Bool) -> String {
-        wireSafe ? canonical.replacingOccurrences(of: ".", with: "_") : canonical
+        ToolNameSpelling.wire(canonical, safe: wireSafe)
     }
 
     static func list(arguments: Data, descriptors: [ToolCatalog.Descriptor], loaded: Set<String>, relatedSkills: [String: [String]] = [:], wireSafeNames: Bool = false) throws -> String {
@@ -52,7 +46,6 @@ enum ToolDiscovery {
         let page = Array(remaining.prefix(args.limit ?? 30))
         struct Entry: Encodable {
             let name: String
-            let wireName: String?
             let description: String
             let group: String
             let schemaLoaded: Bool
@@ -66,7 +59,6 @@ enum ToolDiscovery {
         }
         let response = Response(tools: page.map {
             Entry(name: wireSafeNames ? wireSpelling($0.name, wireSafe: true) : $0.name,
-                  wireName: nil,
                   description: String($0.toolDescription.prefix(240)),
                   group: group($0.name), schemaLoaded: loaded.contains($0.name),
                   ownerSkillID: $0.ownerSkillID, relatedSkillIDs: relatedSkills[$0.name, default: []])

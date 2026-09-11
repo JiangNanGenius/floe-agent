@@ -933,8 +933,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return names.intersection(mlxAdmissibleToolNames)
     }
 
-    /// Resolves an emitted name against the offered set: exact, then alias,
-    /// then case-fold, then dot/underscore variants. Nil means drop.
+    /// Resolves an emitted name against the offered set through the shared
+    /// spelling rule after applying the known weak-model aliases.
     static func normalizedOfferedName(
         _ emitted: String,
         offered: Set<String>,
@@ -942,13 +942,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
     ) -> String? {
         if offered.contains(emitted) { return emitted }
         if let alias = aliases[emitted], offered.contains(alias) { return alias }
-        if let cased = offered.first(where: { $0.lowercased() == emitted.lowercased() }) { return cased }
-        let dotted = emitted.replacingOccurrences(of: "_", with: ".")
-        if offered.contains(dotted) { return dotted }
-        let underscored = emitted.replacingOccurrences(of: ".", with: "_")
-        let unique = offered.filter { $0.replacingOccurrences(of: ".", with: "_") == underscored }
-        if unique.count == 1, let first = unique.first { return first }
-        return nil
+        return ToolNameSpelling.canonical(emitted, among: Array(offered))
     }
 
     private static let mlxAdmissibleToolNames: Set<String> = [
