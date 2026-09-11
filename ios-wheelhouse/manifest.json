@@ -138,7 +138,11 @@
    },
    "smoke": "smoke/multidict_smoke.py",
    "license": "Apache-2.0",
-   "homepage": "https://github.com/aio-libs/multidict"
+   "homepage": "https://github.com/aio-libs/multidict",
+   "env": {
+    "CFLAGS": "-Wno-overriding-option"
+   },
+   "note": "上游 -Werror 与 iOS 交叉 wrapper 的 -mios-version-min/-target 双旗冲突；CFLAGS 仅对该警告豁免。"
   }
  }
 }
