@@ -256,22 +256,26 @@ public struct ChatChunk: Sendable, Codable, Hashable {
             public var content: String?
             /// Reasoning content (DeepSeek/compatible gateways).
             public var reasoningContent: String?
+            /// OpenRouter-style gateways stream the same channel as `reasoning`.
+            public var reasoning: String?
             public var toolCalls: [ToolCallDelta]?
 
             public init(
                 role: String? = nil,
                 content: String? = nil,
                 reasoningContent: String? = nil,
+                reasoning: String? = nil,
                 toolCalls: [ToolCallDelta]? = nil
             ) {
                 self.role = role
                 self.content = content
                 self.reasoningContent = reasoningContent
+                self.reasoning = reasoning
                 self.toolCalls = toolCalls
             }
 
             enum CodingKeys: String, CodingKey {
-                case role, content
+                case role, content, reasoning
                 case reasoningContent = "reasoning_content"
                 case toolCalls = "tool_calls"
             }

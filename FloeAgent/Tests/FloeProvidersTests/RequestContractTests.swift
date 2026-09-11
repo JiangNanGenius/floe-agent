@@ -185,6 +185,83 @@ struct RequestContractTests {
         #expect(body.messages.first?.role == "user")
     }
 
+    @Test("Thinking-mode replay carries reasoning on every wire and drops empty values")
+    func reasoningReplayAcrossWires() throws {
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com")),
+            toolNameCompatibility: true
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "deepseek-v4-pro",
+            displayName: "DeepSeek",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
+            capabilities: [.text, .tools]
+        )
+        let call = try ToolCall(
+            id: "call-1",
+            toolName: "workspace.readFile",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        let result = ToolResult(callID: call.id, status: .ok, outputSummary: "file contents", outputDigest: "d")
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            contentMessages: [
+                ProviderMessage(role: "assistant", content: [.text("working")], reasoningContent: "history-thought")
+            ],
+            pendingToolCalls: [call],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result, assistantReasoning: "prior-thought")],
+            pendingAssistantReasoning: "pending-thought",
+            toolSchemas: [.init(name: "workspace.readFile", description: "read")]
+        )
+
+        // Chat: assistant history, replayed pair and pending batch all carry reasoning.
+        let chat = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+        let chatMessages = try #require(chat["messages"] as? [[String: Any]])
+        let chatReasoning = chatMessages.compactMap { $0["reasoning_content"] as? String }
+        #expect(chatReasoning.contains("history-thought"))
+        #expect(chatReasoning.contains("prior-thought"))
+        #expect(chatReasoning.contains("pending-thought"))
+
+        // Responses: plain-text reasoning items precede each assistant turn.
+        let responses = try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))
+        let input = try #require(responses["input"] as? [[String: Any]])
+        let reasoningItems = input.filter { $0["type"] as? String == "reasoning" }
+        #expect(reasoningItems.count == 3)
+        #expect(reasoningItems.allSatisfy { item in
+            (item["content"] as? [[String: Any]])?.first?["type"] as? String == "reasoning_text"
+        })
+
+        // Anthropic: thinking blocks precede tool_use on every assistant turn.
+        let anthropic = try jsonObject(AnthropicMessagesAdapter().buildBody(from: request))
+        let anthropicMessages = try #require(anthropic["messages"] as? [[String: Any]])
+        let thinkingCount = anthropicMessages
+            .compactMap { $0["content"] as? [[String: Any]] }
+            .flatMap { $0 }
+            .filter { $0["type"] as? String == "thinking" }
+            .count
+        #expect(thinkingCount == 3)
+
+        // Empty reasoning is absent, never an empty string.
+        var emptyRequest = request
+        emptyRequest.pendingAssistantReasoning = ""
+        emptyRequest.replayedToolPairs = [ReplayedToolPair(call: call, result: result)]
+        let emptyChat = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: emptyRequest))
+        let emptyMessages = try #require(emptyChat["messages"] as? [[String: Any]])
+        #expect(!emptyMessages.contains { $0["reasoning_content"] as? String == "" })
+        // Legacy pairs without reasoning become explicit non-authoritative history.
+        #expect(emptyMessages.contains {
+            ($0["role"] as? String) == "system"
+                && ($0["content"] as? String)?.contains("reasoning unavailable") == true
+        })
+    }
+
     @Test("Provider follow-up pairs each tool call with its result")
     func toolCallResultPairing() throws {
         let providerID = UUID()
@@ -283,11 +360,13 @@ struct RequestContractTests {
             replayedToolPairs: [
                 ReplayedToolPair(
                     call: first,
-                    result: ToolResult(callID: first.id, status: .ok, outputSummary: "first-output", outputDigest: "f")
+                    result: ToolResult(callID: first.id, status: .ok, outputSummary: "first-output", outputDigest: "f"),
+                    assistantReasoning: "first-thought"
                 ),
                 ReplayedToolPair(
                     call: second,
-                    result: ToolResult(callID: second.id, status: .ok, outputSummary: "second-output", outputDigest: "s")
+                    result: ToolResult(callID: second.id, status: .ok, outputSummary: "second-output", outputDigest: "s"),
+                    assistantReasoning: "second-thought"
                 )
             ]
         )
@@ -329,11 +408,11 @@ struct RequestContractTests {
         }
         #expect(inputSequence == [
             "message:system", "message:user",
-            "function_call:history-1", "function_call_output:history-1",
-            "function_call:history-2", "function_call_output:history-2",
+            "reasoning:", "function_call:history-1", "function_call_output:history-1",
+            "reasoning:", "function_call:history-2", "function_call_output:history-2",
             "function_call:pending-1", "function_call_output:pending-1"
         ])
-        let historyCall = try #require(input[2]["name"] as? String)
+        let historyCall = try #require(input[3]["name"] as? String)
         // Compat providers sanitize on EVERY wire, not just chat.
         #expect(historyCall == "workspace_listDirectory")
 

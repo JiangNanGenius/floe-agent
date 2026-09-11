@@ -67,8 +67,10 @@ public struct ConversationHistoryAssembler: Sendable {
                 content: content,
                 createdAt: message.createdAt,
                 images: images,
-                reasoningContent: message.parts.contains(where: { $0.kind == .reasoning })
-                    ? message.parts.filter { $0.kind == .reasoning }.compactMap(\.text).joined() : nil
+                reasoningContent: {
+                    let text = message.parts.filter { $0.kind == .reasoning }.compactMap(\.text).joined()
+                    return text.isEmpty ? nil : text
+                }()
             ))
         }
         recent.reverse()

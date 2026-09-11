@@ -79,6 +79,8 @@ public enum WireTranslator {
             return [.textDelta(AgentEvent.TextDelta(text: delta))]
         case .reasoningSummaryTextDelta(let delta):
             return [.reasoningSummary(AgentEvent.ReasoningSummary(text: delta))]
+        case .reasoningTextDelta(let delta):
+            return [.reasoningSummary(AgentEvent.ReasoningSummary(text: delta))]
         case .outputItemDoneFunctionCall(let item):
             return [makeToolCall(id: item.callID, name: item.name, argumentsJSON: item.arguments)]
         case .completed(let usage):
@@ -131,7 +133,8 @@ public enum WireTranslator {
             if let content = choice.delta.content, !content.isEmpty {
                 events.append(.textDelta(AgentEvent.TextDelta(text: content)))
             }
-            if let reasoning = choice.delta.reasoningContent, !reasoning.isEmpty {
+            if let reasoning = nonEmptyReasoning(choice.delta.reasoningContent)
+                ?? nonEmptyReasoning(choice.delta.reasoning) {
                 events.append(.reasoningSummary(AgentEvent.ReasoningSummary(text: reasoning)))
             }
             for toolDelta in choice.delta.toolCalls ?? [] {

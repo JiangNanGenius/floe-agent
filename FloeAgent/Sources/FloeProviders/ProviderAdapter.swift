@@ -103,11 +103,23 @@ public enum ProviderReasoningPolicy: Sendable, Hashable {
 public struct ReplayedToolPair: Sendable, Hashable, Codable {
     public var call: ToolCall
     public var result: ToolResult
+    /// Reasoning emitted immediately before this call. Thinking-mode providers
+    /// (DeepSeek) reject tool-bearing requests whose historical assistant
+    /// turns omit `reasoning_content`; nil for pre-capture checkpoints.
+    public var assistantReasoning: String?
 
-    public init(call: ToolCall, result: ToolResult) {
+    public init(call: ToolCall, result: ToolResult, assistantReasoning: String? = nil) {
         self.call = call
         self.result = result
+        self.assistantReasoning = assistantReasoning
     }
+}
+
+/// Empty reasoning is absent reasoning: an empty string on the wire is
+/// rejected by thinking-mode providers and bypasses legacy fallbacks.
+func nonEmptyReasoning(_ value: String?) -> String? {
+    guard let value, !value.isEmpty else { return nil }
+    return value
 }
 
 /// Everything an adapter needs to build one streaming request.
@@ -484,32 +496,72 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
     }
 
     func buildBody(from request: ProviderStreamRequest) -> ResponsesRequest {
-        var input: [ResponsesRequest.InputItem] = request.effectiveMessages.map { message in
-            if case .text(let text) = message.content.first, message.content.count == 1 {
-                return .message(role: message.role, content: text)
+        let replaysReasoning = ReasoningCompatibility.requiresAssistantReasoningReplay(
+            provider: request.provider,
+            model: request.model
+        )
+        var input: [ResponsesRequest.InputItem] = []
+        for message in request.effectiveMessages {
+            let reasoning = replaysReasoning && message.role == "assistant"
+                ? nonEmptyReasoning(message.reasoningContent)
+                : nil
+            if replaysReasoning, message.role == "assistant", reasoning == nil,
+               !request.toolSchemas.isEmpty {
+                // Legacy assistant history without captured reasoning: keep it
+                // as explicitly non-authoritative context instead of an
+                // assistant message the provider may reject.
+                let text = message.content.compactMap { part -> String? in
+                    if case .text(let value) = part { return value }
+                    return nil
+                }.joined(separator: "\n")
+                input.append(.message(role: "system", content: "[Legacy assistant history; protocol reasoning unavailable]\n" + String(text.prefix(4_000))))
+                continue
             }
-            return .multimodalMessage(
-                role: message.role,
-                content: message.content.map { part in
-                    switch part {
-                    case .text(let text): return .text(text)
-                    case .imageData(let mimeType, let base64):
-                        return .imageURL("data:\(mimeType);base64,\(base64)")
-                    case .imageURL(let url): return .imageURL(url.absoluteString)
+            if let reasoning {
+                input.append(.reasoning(text: reasoning))
+            }
+            if case .text(let text) = message.content.first, message.content.count == 1 {
+                input.append(.message(role: message.role, content: text))
+            } else {
+                input.append(.multimodalMessage(
+                    role: message.role,
+                    content: message.content.map { part in
+                        switch part {
+                        case .text(let text): return .text(text)
+                        case .imageData(let mimeType, let base64):
+                            return .imageURL("data:\(mimeType);base64,\(base64)")
+                        case .imageURL(let url): return .imageURL(url.absoluteString)
+                        }
                     }
-                }
-            )
+                ))
+            }
         }
         for pair in request.replayedToolPairs {
+            let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider)
+            let pairReasoning = nonEmptyReasoning(pair.assistantReasoning)
+            if replaysReasoning, pairReasoning == nil {
+                input.append(.message(
+                    role: "system",
+                    content: "[Historical tool call; protocol reasoning unavailable] \(pairName) -> \(String(pair.result.outputSummary.prefix(2_000)))"
+                ))
+                continue
+            }
+            if let pairReasoning {
+                input.append(.reasoning(text: pairReasoning))
+            }
             input.append(.functionCall(
                 callID: pair.call.id,
-                name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
+                name: pairName,
                 arguments: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
             ))
             input.append(.functionCallOutput(
                 callID: pair.result.callID,
                 output: pair.result.outputSummary
             ))
+        }
+        if !request.pendingToolCalls.isEmpty,
+           let pendingReasoning = replaysReasoning ? nonEmptyReasoning(request.pendingAssistantReasoning) : nil {
+            input.append(.reasoning(text: pendingReasoning))
         }
         for call in request.pendingToolCalls {
             input.append(.functionCall(
@@ -662,7 +714,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             // Do not invent missing reasoning or submit an invalid assistant turn.
             // Preserve its text as explicitly non-authoritative historical context.
             if replaysReasoning, !request.toolSchemas.isEmpty,
-               message.role == "assistant", message.reasoningContent == nil {
+               message.role == "assistant", nonEmptyReasoning(message.reasoningContent) == nil {
                 let text = message.content.compactMap { part -> String? in
                     if case .text(let text) = part { return text }
                     return nil
@@ -672,7 +724,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             }
             if case .text(let text) = message.content.first, message.content.count == 1 {
                 return ChatRequest.Message(role: message.role, content: text,
-                    reasoningContent: message.role == "assistant" && ReasoningCompatibility.requiresAssistantReasoningReplay(provider: request.provider, model: request.model) ? message.reasoningContent : nil)
+                    reasoningContent: replaysReasoning && message.role == "assistant" ? nonEmptyReasoning(message.reasoningContent) : nil)
             }
             return ChatRequest.Message(
                 role: message.role,
@@ -684,20 +736,34 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     case .imageURL(let url): return .imageURL(url.absoluteString)
                     }
                 },
-                reasoningContent: message.role == "assistant" && ReasoningCompatibility.requiresAssistantReasoningReplay(provider: request.provider, model: request.model) ? message.reasoningContent : nil
+                reasoningContent: replaysReasoning && message.role == "assistant" ? nonEmptyReasoning(message.reasoningContent) : nil
             )
         }
         for pair in request.replayedToolPairs {
+            let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider)
+            let pairReasoning = nonEmptyReasoning(pair.assistantReasoning)
+            if replaysReasoning, pairReasoning == nil {
+                // Legacy checkpoint: the assistant turn was recorded before
+                // reasoning capture existed. DeepSeek rejects tool_calls
+                // without reasoning_content, so preserve the evidence as
+                // explicitly non-authoritative historical context instead.
+                messages.append(ChatRequest.Message(
+                    role: "system",
+                    content: "[Historical tool call; protocol reasoning unavailable] \(pairName) -> \(String(pair.result.outputSummary.prefix(2_000)))"
+                ))
+                continue
+            }
             messages.append(ChatRequest.Message(
                 role: "assistant",
                 content: nil,
                 toolCalls: [ChatRequest.Message.ToolCall(
                     id: pair.call.id,
                     function: .init(
-                        name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
+                        name: pairName,
                         arguments: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
                     )
-                )]
+                )],
+                reasoningContent: replaysReasoning ? pairReasoning : nil
             ))
             messages.append(ChatRequest.Message(
                 role: "tool",
@@ -718,10 +784,9 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                         )
                     )
                 },
-                reasoningContent: ReasoningCompatibility.requiresAssistantReasoningReplay(
-                    provider: request.provider,
-                    model: request.model
-                ) ? request.pendingAssistantReasoning : nil
+                reasoningContent: replaysReasoning
+                    ? nonEmptyReasoning(request.pendingAssistantReasoning)
+                    : nil
             ))
         }
         for result in request.toolResults {
@@ -873,26 +938,37 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
         } else {
             system = systemText.isEmpty ? nil : [.init(text: systemText)]
         }
+        let replaysReasoning = ReasoningCompatibility.requiresAssistantReasoningReplay(
+            provider: request.provider,
+            model: request.model
+        )
         var messages: [AnthropicRequest.Message] = request.effectiveMessages
             .filter { $0.role != "system" }
             .map { message in
-            AnthropicRequest.Message(role: message.role, content: message.content.map { part in
+            var blocks: [AnthropicContent] = message.content.map { part in
                 switch part {
                 case .text(let text): return .text(text)
                 case .imageData(let mimeType, let base64): return .image(mimeType: mimeType, base64: base64)
                 case .imageURL(let url): return .text("[Image: \(url.absoluteString)]")
                 }
-            })
+            }
+            if replaysReasoning, message.role == "assistant",
+               let reasoning = nonEmptyReasoning(message.reasoningContent) {
+                blocks.insert(.thinking(reasoning), at: 0)
+            }
+            return AnthropicRequest.Message(role: message.role, content: blocks)
         }
         for pair in request.replayedToolPairs {
-            messages.append(AnthropicRequest.Message(
-                role: "assistant",
-                content: [.toolUse(
-                    id: pair.call.id,
-                    name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
-                    inputJSON: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
-                )]
+            var assistantBlocks: [AnthropicContent] = []
+            if replaysReasoning, let reasoning = nonEmptyReasoning(pair.assistantReasoning) {
+                assistantBlocks.append(.thinking(reasoning))
+            }
+            assistantBlocks.append(.toolUse(
+                id: pair.call.id,
+                name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
+                inputJSON: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
             ))
+            messages.append(AnthropicRequest.Message(role: "assistant", content: assistantBlocks))
             messages.append(AnthropicRequest.Message(
                 role: "user",
                 content: [.toolResult(
@@ -903,16 +979,18 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
             ))
         }
         if !request.pendingToolCalls.isEmpty {
-            messages.append(AnthropicRequest.Message(
-                role: "assistant",
-                content: request.pendingToolCalls.map { call in
-                    .toolUse(
-                        id: call.id,
-                        name: CompatToolNames.wireName(call.toolName, for: request.provider),
-                        inputJSON: String(decoding: call.argumentsJSON, as: UTF8.self)
-                    )
-                }
-            ))
+            var assistantBlocks: [AnthropicContent] = []
+            if replaysReasoning, let reasoning = nonEmptyReasoning(request.pendingAssistantReasoning) {
+                assistantBlocks.append(.thinking(reasoning))
+            }
+            assistantBlocks.append(contentsOf: request.pendingToolCalls.map { call in
+                .toolUse(
+                    id: call.id,
+                    name: CompatToolNames.wireName(call.toolName, for: request.provider),
+                    inputJSON: String(decoding: call.argumentsJSON, as: UTF8.self)
+                )
+            })
+            messages.append(AnthropicRequest.Message(role: "assistant", content: assistantBlocks))
         }
         if !request.toolResults.isEmpty {
             messages.append(AnthropicRequest.Message(

@@ -54,8 +54,16 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
     public enum InputItem: Sendable, Hashable {
         case message(role: String, content: String)
         case multimodalMessage(role: String, content: [ContentPart])
+        case reasoning(text: String)
         case functionCall(callID: String, name: String, arguments: String)
         case functionCallOutput(callID: String, output: String)
+
+        /// Plain-text reasoning item supported by DeepSeek's Responses API
+        /// ("content is merged into the adjacent assistant message").
+        struct ReasoningPart: Codable {
+            var type = "reasoning_text"
+            var text: String
+        }
 
         public enum ContentPart: Sendable, Codable, Hashable {
             case text(String)
@@ -103,6 +111,13 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
                     callID: try container.decode(String.self, forKey: .callID),
                     output: try container.decode(String.self, forKey: .output)
                 )
+            case "reasoning":
+                let parts = (try? container.decode([ContentPart].self, forKey: .content)) ?? []
+                let text = parts.compactMap { part -> String? in
+                    if case .text(let value) = part { return value }
+                    return nil
+                }.joined()
+                self = .reasoning(text: text)
             default:
                 let role = try container.decode(String.self, forKey: .role)
                 if let text = try? container.decode(String.self, forKey: .content) {
@@ -136,6 +151,9 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
                 try container.encode("function_call_output", forKey: .type)
                 try container.encode(callID, forKey: .callID)
                 try container.encode(output, forKey: .output)
+            case .reasoning(let text):
+                try container.encode("reasoning", forKey: .type)
+                try container.encode([ReasoningPart(text: text)], forKey: .content)
             }
         }
     }
@@ -218,6 +236,8 @@ public struct FunctionCallItem: Sendable, Codable, Hashable {
 public enum ResponsesStreamEvent: Sendable, Hashable {
     case outputTextDelta(delta: String)
     case reasoningSummaryTextDelta(delta: String)
+    /// DeepSeek's Responses API streams chain-of-thought as reasoning_text.
+    case reasoningTextDelta(delta: String)
     case functionCallArgumentsDelta(delta: String)
     case outputItemDoneFunctionCall(FunctionCallItem)
     case completed(usage: Usage?)
@@ -285,6 +305,8 @@ extension ResponsesStreamEvent: Codable {
             self = .outputTextDelta(delta: try container.decode(String.self, forKey: .delta))
         case "response.reasoning_summary_text.delta":
             self = .reasoningSummaryTextDelta(delta: try container.decode(String.self, forKey: .delta))
+        case "response.reasoning_text.delta":
+            self = .reasoningTextDelta(delta: try container.decode(String.self, forKey: .delta))
         case "response.function_call_arguments.delta":
             self = .functionCallArgumentsDelta(delta: try container.decode(String.self, forKey: .delta))
         case "response.output_item.done":
@@ -314,6 +336,9 @@ extension ResponsesStreamEvent: Codable {
             try container.encode(delta, forKey: .delta)
         case .reasoningSummaryTextDelta(let delta):
             try container.encode("response.reasoning_summary_text.delta", forKey: .type)
+            try container.encode(delta, forKey: .delta)
+        case .reasoningTextDelta(let delta):
+            try container.encode("response.reasoning_text.delta", forKey: .type)
             try container.encode(delta, forKey: .delta)
         case .functionCallArgumentsDelta(let delta):
             try container.encode("response.function_call_arguments.delta", forKey: .type)

@@ -2573,7 +2573,11 @@ public actor FloeAgentRuntime {
         // settled pair stays authoritative for replay.
         let existingReplayIDs = Set(replayableToolHistory.map { $0.call.id })
         for item in orderedResults where !existingReplayIDs.contains(item.call.id) {
-            replayableToolHistory.append(ReplayedToolPair(call: item.call, result: item.result))
+            replayableToolHistory.append(ReplayedToolPair(
+                call: item.call,
+                result: item.result,
+                assistantReasoning: responseReasoning.isEmpty ? nil : responseReasoning
+            ))
         }
         do {
             try await writeCheckpoint()
@@ -3218,7 +3222,9 @@ public actor FloeAgentRuntime {
             },
             providerDispatchEnvelope: latestProviderDispatchEnvelope,
             providerDispatchRequest: latestProviderDispatchRequest,
-            pendingAssistantReasoning: responseReasoning,
+            pendingAssistantReasoning: responseReasoning.isEmpty
+                ? (providerRetryRequest?.pendingAssistantReasoning ?? "")
+                : responseReasoning,
             replayedToolPairs: replayableToolHistory
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
