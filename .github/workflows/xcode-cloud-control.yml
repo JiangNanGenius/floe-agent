@@ -395,7 +395,8 @@ jobs:
           test "$issue_count" -gt 0
 
       - name: Verify TestFlight processing and group visibility
-        if: inputs.operation == 'verify-testflight'        env:
+        if: inputs.operation == 'verify-testflight'
+        env:
           BUILD_ID: ${{ inputs.build_id }}
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
