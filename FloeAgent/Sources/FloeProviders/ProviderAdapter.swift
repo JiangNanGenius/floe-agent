@@ -35,15 +35,21 @@ public enum CompatToolNames {
     /// unchanged so the runtime's not-in-catalog denial stays honest.
     public static func canonicalName(_ wireName: String, request: ProviderStreamRequest) -> String {
         guard usesWireSafeNames(request.provider) else { return wireName }
-        if request.toolSchemas.contains(where: { $0.name == wireName }) { return wireName }
-        if request.allToolNames.contains(wireName) { return wireName }
-        let universe = request.allToolNames.isEmpty
-            ? request.toolSchemas.map(\.name)
-            : request.allToolNames
-        let matches = universe.filter {
-            $0.replacingOccurrences(of: ".", with: "_") == wireName
-        }
-        return matches.count == 1 ? matches[0] : wireName
+        // Total over everything the model can legitimately call: the run
+        // ceiling AND the schemas actually offered this turn. Discovery tools
+        // (tools.list/tools.search) and the synthetic plan tool appear only in
+        // toolSchemas, so a ceiling-only universe strands their wire names.
+        var universe = request.allToolNames
+        universe.append(contentsOf: request.toolSchemas.map(\.name))
+        if universe.contains(wireName) { return wireName }
+        // Compat models routinely drift case on underscored names
+        // (workspace_listdirectory), so the sanitized lookup folds it.
+        let target = wireName.lowercased()
+        let matches = Set(universe.filter {
+            $0.replacingOccurrences(of: ".", with: "_").lowercased() == target
+        })
+        if matches.count == 1, let only = matches.first { return only }
+        return wireName
     }
 }
 

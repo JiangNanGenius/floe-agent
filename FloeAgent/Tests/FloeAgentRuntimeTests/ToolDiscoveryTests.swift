@@ -154,7 +154,7 @@ struct ToolDiscoveryTests {
         #expect(ToolDiscovery.matches(query: "修改已有技能", descriptors: available).map(\.name) == ["skill.create", "skill.read", "skill.manage"])
     }
 
-    @Test("Compat mode: underscored cursors paginate and entries carry wire names")
+    @Test("Compat mode: underscored cursors paginate and entries are wire-spelled")
     func compatListCursorAndWireNames() throws {
         let descriptors = ["workspace.createFile", "workspace.listDirectory", "workspace.readFile", "web.search"].map(descriptor)
         // Underscored cursor from a wire-spelled page turn must not skip the group.
@@ -165,9 +165,23 @@ struct ToolDiscoveryTests {
         struct Row: Decodable { let name: String; let wireName: String? }
         struct Page: Decodable { let tools: [Row]; let total: Int; let nextAfterName: String? }
         let page = try JSONDecoder().decode(Page.self, from: Data(output.utf8))
-        #expect(page.tools.map(\.name) == ["workspace.listDirectory", "workspace.readFile"])
-        #expect(page.tools[0].wireName == "workspace_listDirectory")
+        #expect(page.tools.map(\.name) == ["workspace_listDirectory", "workspace_readFile"])
+        #expect(page.tools[0].wireName == nil)
         #expect(page.total == 4)
+        #expect(page.nextAfterName == nil)
+        // Paged output hands back a wire-spelled cursor that keeps working.
+        let firstPage = try ToolDiscovery.list(
+            arguments: Data(#"{"limit":2}"#.utf8),
+            descriptors: descriptors, loaded: [], wireSafeNames: true
+        )
+        let first = try JSONDecoder().decode(Page.self, from: Data(firstPage.utf8))
+        #expect(first.nextAfterName == "workspace_createFile")
+        let secondPage = try ToolDiscovery.list(
+            arguments: Data(#"{"afterName":"\#(first.nextAfterName ?? "")","limit":2}"#.utf8),
+            descriptors: descriptors, loaded: [], wireSafeNames: true
+        )
+        let second = try JSONDecoder().decode(Page.self, from: Data(secondPage.utf8))
+        #expect(second.tools.map(\.name) == ["workspace_listDirectory", "workspace_readFile"])
     }
 
     @Test("Compat mode: underscored exact query loads the canonical tool")

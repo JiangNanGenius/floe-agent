@@ -1221,7 +1221,7 @@ public actor FloeAgentRuntime {
             guard let reason = executionLedger.statefulToolDenialReason(
                 for: descriptor.name, userGoal: statefulRouteGoal
             ) else { return nil }
-            return "\(descriptor.name): \(reason)"
+            return "\(CompatToolNames.wireName(descriptor.name, for: configuration.provider)): \(reason)"
         }
         var legacyMessages = messages.map { (role: $0.role, content: $0.content) }
         var contentMessages = messages.map { message in
@@ -1252,8 +1252,13 @@ public actor FloeAgentRuntime {
         // models believe the capability vanished and re-enumerate the catalog.
         if supportsTools, !evictedSchemaNames.isEmpty {
             let note = "Schema budget unloaded these previously discovered tools for this request only: "
-                + evictedSchemaNames.joined(separator: ", ")
-                + ". They remain installed and callable, and results already obtained stay valid. Reload one schema by exact name with tools.search; do not re-enumerate the catalog with tools.list."
+                + evictedSchemaNames.map {
+                    CompatToolNames.wireName($0, for: configuration.provider)
+                }.joined(separator: ", ")
+                + ". They remain installed and callable, and results already obtained stay valid. Reload one schema by exact name with "
+                + CompatToolNames.wireName(ToolDiscovery.name, for: configuration.provider)
+                + "; do not re-enumerate the catalog with "
+                + CompatToolNames.wireName(ToolDiscovery.listName, for: configuration.provider) + "."
             if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
                 legacyMessages[index].content += "\n\n" + note
                 contentMessages[index].content.append(.text(note))
@@ -1265,7 +1270,10 @@ public actor FloeAgentRuntime {
         // Local adapters build their own admitted tool metadata. Keep runtime
         // state and receipts, without appending a second full cloud directory.
         if supportsTools, configuration.provider.kind != .local, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
-            let discovery = ToolDiscovery.index(discoverableDescriptors)
+            let discovery = ToolDiscovery.index(
+                discoverableDescriptors,
+                wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider)
+            )
             legacyMessages[index].content += "\n\n" + discovery
             contentMessages[index].content.append(.text(discovery))
         }
@@ -1386,8 +1394,10 @@ public actor FloeAgentRuntime {
             // Compat-mode reverse name mapping must be total over the run's
             // capability ceiling — the same set tools.list enumerates —
             // because eviction notes legitimately invite calls to tools whose
-            // schema was trimmed from this request.
+            // schema was trimmed from this request. The discovery tools are
+            // always callable, so they belong to that ceiling too.
             allToolNames: discoverableDescriptors.map(\.name)
+                + [ToolDiscovery.name, ToolDiscovery.listName]
         )
         // A retry must replay the exact safe dispatch boundary. In particular,
         // do not rebuild a compacted prompt or regenerate a tool request after
@@ -2380,18 +2390,23 @@ public actor FloeAgentRuntime {
                 discoveredToolNames.formUnion(names)
                 discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
                 persistDiscoveryIfChanged()
+                let wireSafe = CompatToolNames.usesWireSafeNames(configuration.provider)
+                func display(_ name: String) -> String {
+                    wireSafe ? name.replacingOccurrences(of: ".", with: "_") : name
+                }
                 let deferred = matches.filter { !names.contains($0.name) }.map(\.name)
                 let matchedSummary = matches.isEmpty
-                    ? "No matching executable tool in this task's capability set. " + ToolDiscovery.index(discoverableDescriptors)
+                    ? "No matching executable tool in this task's capability set. "
+                        + ToolDiscovery.index(discoverableDescriptors, wireSafeNames: wireSafe)
                     : "Loaded for the next request:\n" + selected.map { descriptor in
-                        descriptor.name + ": " + String(descriptor.toolDescription.prefix(160))
+                        display(descriptor.name) + ": " + String(descriptor.toolDescription.prefix(160))
                             + (alreadyInContext.contains(descriptor.name) ? " (schema already in context; call it directly, no reload needed)" : "")
                             + " [ownerSkillID=" + (descriptor.ownerSkillID ?? "none (underlying registered capability)")
                             + "; relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
                     }.joined(separator: "\n")
-                        + (deferred.isEmpty ? "" : "\nNot yet loaded (schema budget): \(deferred.joined(separator: ", ")). Search one exact name when needed, not the same broad query.")
+                        + (deferred.isEmpty ? "" : "\nNot yet loaded (schema budget): \(deferred.map(display).joined(separator: ", ")). Search one exact name when needed, not the same broad query.")
                 let querySummary = queries.map { query in
-                    query + " => " + ToolDiscovery.matches(query: query, descriptors: discoverableDescriptors).map(\.name).joined(separator: ", ")
+                    query + " => " + ToolDiscovery.matches(query: query, descriptors: discoverableDescriptors).map(\.name).map(display).joined(separator: ", ")
                 }.joined(separator: "\n")
                 let result = ToolResult(callID: call.id, status: .ok, outputSummary: querySummary + "\n" + matchedSummary, outputDigest: "", maximumSummaryCharacters: 262_144)
                 await audit(toolCall: call, result: result, decision: "allow:tool-discovery")

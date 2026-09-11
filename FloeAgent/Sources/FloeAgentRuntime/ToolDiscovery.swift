@@ -65,12 +65,14 @@ enum ToolDiscovery {
             let nextAfterName: String?
         }
         let response = Response(tools: page.map {
-            Entry(name: $0.name,
-                  wireName: wireSafeNames ? wireSpelling($0.name, wireSafe: true) : nil,
+            Entry(name: wireSafeNames ? wireSpelling($0.name, wireSafe: true) : $0.name,
+                  wireName: nil,
                   description: String($0.toolDescription.prefix(240)),
                   group: group($0.name), schemaLoaded: loaded.contains($0.name),
                   ownerSkillID: $0.ownerSkillID, relatedSkillIDs: relatedSkills[$0.name, default: []])
-        }, total: rows.count, nextAfterName: remaining.count > page.count ? page.last?.name : nil)
+        }, total: rows.count, nextAfterName: remaining.count > page.count
+            ? page.last.map { wireSafeNames ? wireSpelling($0.name, wireSafe: true) : $0.name }
+            : nil)
         return String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
     }
     static var descriptor: ToolCatalog.Descriptor {
@@ -141,22 +143,23 @@ enum ToolDiscovery {
         return descriptors.filter { groups.contains(group($0.name)) }
     }
 
-    static func index(_ descriptors: [ToolCatalog.Descriptor]) -> String {
+    static func index(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
         let names = Set(descriptors.map(\.name))
+        func n(_ name: String) -> String { wireSpelling(name, wireSafe: wireSafeNames) }
         var lines: [String] = []
         if names.isSuperset(of: ["task.readPlan", "task.updatePlan"]) {
-            lines.append("At task start, judge whether the request requires substantial multi-step work. If so, use task.readPlan and task.updatePlan to maintain a durable checklist while executing; simple questions need none. Revise the same checklist when new evidence or user steering changes the work: preserve step IDs, update the revision, and retain completed evidence. A checklist never enables Goal mode.")
+            lines.append("At task start, judge whether the request requires substantial multi-step work. If so, use \(n("task.readPlan")) and \(n("task.updatePlan")) to maintain a durable checklist while executing; simple questions need none. Revise the same checklist when new evidence or user steering changes the work: preserve step IDs, update the revision, and retain completed evidence. A checklist never enables Goal mode.")
         }
-        lines.append("Use tools.list to enumerate tool metadata available in this run; it does not load every schema. Use tools.search to load definitions by exact name or capability, batching independent queries. Available groups: "
+        lines.append("Use \(n("tools.list")) to enumerate tool metadata available in this run; it does not load every schema. Use \(n("tools.search")) to load definitions by exact name or capability, batching independent queries. Available groups: "
             + (groups.isEmpty ? "none" : groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", "))
             + ". Deferred schemas are not missing capabilities; runtime permissions and prerequisites still apply.")
-        if names.contains("skill.list") { lines.append("Use skill.list for the complete installed guide inventory.") }
+        if names.contains("skill.list") { lines.append("Use \(n("skill.list")) for the complete installed guide inventory.") }
         if names.isSuperset(of: ["skill.search", "skill.read"]) {
-            lines.append("Guides provide optional workflow help via skill.search/skill.read. Known tool calls do not require a guide; reuse a guide already read at the current revision.")
+            lines.append("Guides provide optional workflow help via \(n("skill.search"))/\(n("skill.read")). Known tool calls do not require a guide; reuse a guide already read at the current revision.")
         }
         if names.contains("exec.localPython") {
-            lines.append("Local Python execution is exec.localPython; it is a different environment from SSH Executor or interactive Terminal.")
+            lines.append("Local Python execution is \(n("exec.localPython")); it is a different environment from SSH Executor or interactive Terminal.")
         }
         return lines.joined(separator: "\n")
     }

@@ -433,6 +433,22 @@ struct RequestContractTests {
         )
         #expect(CompatToolNames.canonicalName("workspace_readFile", request: request) == "workspace.readFile")
         #expect(CompatToolNames.canonicalName("document_pdf_render", request: request) == "document.pdf.render")
+        // Tools that exist only as offered schemas (discovery, plan submit)
+        // must resolve even when the ceiling snapshot predates them.
+        let schemaOnlyRequest = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            toolSchemas: [
+                .init(name: "tools.list", description: "List"),
+                .init(name: "tools.search", description: "Search")
+            ],
+            allToolNames: ["workspace.readFile"]
+        )
+        #expect(CompatToolNames.canonicalName("tools_list", request: schemaOnlyRequest) == "tools.list")
+        #expect(CompatToolNames.canonicalName("tools_search", request: schemaOnlyRequest) == "tools.search")
+        // Weak compat models lowercase camelCase segments; the sanitized
+        // lookup folds case instead of denying an otherwise unique tool.
+        #expect(CompatToolNames.canonicalName("workspace_readfile", request: request) == "workspace.readFile")
         // Ambiguous or unknown spellings pass through unchanged (honest denial downstream).
         #expect(CompatToolNames.canonicalName("workspace_unknown", request: request) == "workspace_unknown")
         // Canonical spellings always pass through, compat on or off.
