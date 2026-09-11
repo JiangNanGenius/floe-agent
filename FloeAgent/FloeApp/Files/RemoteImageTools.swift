@@ -966,6 +966,7 @@ struct PDFEditTool: AgentTool {
             appliedRotations = rotatePages.map { (page: $0, degrees: shared) }
         }
         let editedData: Data = try PDFKitGate.run { () throws -> Data in
+            try withPDFExceptionGuard {
             guard let document = PDFDocument(data: data) else { throw FloeError.validationFailed("Edited PDF could not be opened") }
             let mutationToken = PDFOperationJournal.begin(
                 tool: Self.name,
@@ -1053,6 +1054,7 @@ struct PDFEditTool: AgentTool {
             }
             PDFOperationJournal.end(mutationToken, status: "ok")
             return outputData
+            }
         }
         try PDFToolSupport.write(editedData, to: args.outputPath, context: context)
         let verifiedPageCount: Int
@@ -1280,18 +1282,23 @@ struct PDFFromImagesTool: AgentTool {
 }
 
 /// Process-wide gate for PDFKit, which is not thread-safe: agent-loop tools
-/// parse/draw/serialize on background cooperative threads while the
-/// main-thread reader parses the same files, and the races crash. Every
-/// PDFKit touch goes through this lock. It is recursive so helpers such as
-/// `PDFToolSupport.open` may gate inside an outer gated section; never await
-/// while holding it.
+/// parse/draw/serialize while the main-thread reader displays its own
+/// document, and thread migration of PDFKit objects crashes. Every PDFKit
+/// touch runs on one dedicated serial queue (thread affinity), and nested
+/// calls re-enter directly. Never await while holding it.
 enum PDFKitGate {
-    private static let lock = NSRecursiveLock()
+    private static let queueKey = DispatchSpecificKey<Void>()
+    private static let queue: DispatchQueue = {
+        let queue = DispatchQueue(label: "org.floeagent.pdfkit", qos: .userInitiated)
+        queue.setSpecific(key: queueKey, value: ())
+        return queue
+    }()
 
     static func run<T>(_ work: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return try work()
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return try work()
+        }
+        return try queue.sync { try work() }
     }
 }
 
@@ -1305,11 +1312,13 @@ enum PDFToolSupport {
 
     static func open(_ path: String, context: ToolContext) throws -> PDFDocument {
         let data = try read(path, context: context)
-        return try PDFKitGate.run { () throws -> PDFDocument in
-            guard let document = PDFDocument(data: data), !document.isLocked, document.pageCount > 0 else {
-                throw FloeError.validationFailed("Input is not an unlocked readable PDF")
+        return try PDFKitGate.run {
+            try withPDFExceptionGuard { () throws -> PDFDocument in
+                guard let document = PDFDocument(data: data), !document.isLocked, document.pageCount > 0 else {
+                    throw FloeError.validationFailed("Input is not an unlocked readable PDF")
+                }
+                return document
             }
-            return document
         }
     }
 
@@ -1340,11 +1349,13 @@ enum PDFToolSupport {
         guard data.count <= 64 * 1_024 * 1_024 else {
             throw FloeError.validationFailed("Input is not a bounded readable PDF")
         }
-        return try PDFKitGate.run { () throws -> PDFDocument in
-            guard let document = PDFDocument(data: data) else {
-                throw FloeError.validationFailed("Input is not a bounded readable PDF")
+        return try PDFKitGate.run {
+            try withPDFExceptionGuard { () throws -> PDFDocument in
+                guard let document = PDFDocument(data: data) else {
+                    throw FloeError.validationFailed("Input is not a bounded readable PDF")
+                }
+                return document
             }
-            return document
         }
     }
 
@@ -1415,6 +1426,9 @@ enum PDFToolSupport {
                 checkCancellation: { try context.cancellation.throwIfCancelled() }
             )
         )
+        // Near-real-time reader refresh: open readers reload the committed
+        // revision instead of waiting for their poll interval.
+        NotificationCenter.default.post(name: .floePDFDocumentDidChange, object: url)
     }
 
     static func output(_ text: String, status: Int32) -> ToolExecutionOutput {

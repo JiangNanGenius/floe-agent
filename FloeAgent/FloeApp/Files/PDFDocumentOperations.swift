@@ -63,7 +63,11 @@ enum PDFDocumentOperations {
             let result = try await Task.detached(priority: .userInitiated) {
                 // PDFKit is not thread-safe; the entire workflow stays behind the
                 // process-wide gate (the PDFium bridge has its own mutex).
-                try PDFKitGate.run { try process(data, operations: operations, images: images, cancellation: cancellation) }
+                try PDFKitGate.run {
+                    try withPDFExceptionGuard {
+                        try process(data, operations: operations, images: images, cancellation: cancellation)
+                    }
+                }
             }.value
             PDFOperationJournal.end(token, status: "ok")
             return result
@@ -154,10 +158,15 @@ enum PDFDocumentOperations {
             case .reorderPages:
                 guard let order = op.pages, order.count == document.pageCount,
                       Set(order) == Set(1...document.pageCount) else { throw invalid("reorderPages requires each existing page exactly once") }
-                // Retain page objects before removal, preserving their annotations.
+                // Rebuild into a fresh document instead of remove-all/reinsert
+                // into the same one: removing pages invalidates their internal
+                // resources, and reinserting the retained objects is a known
+                // PDFKit use-after-free. Page objects keep their annotations.
                 let ordered = try order.map { try page($0, in: document) }
-                while document.pageCount > 0 { document.removePage(at: document.pageCount - 1) }
-                for p in ordered { document.insert(p, at: document.pageCount) }
+                let rebuilt = PDFDocument()
+                for p in ordered { rebuilt.insert(p, at: rebuilt.pageCount) }
+                guard rebuilt.pageCount == order.count else { throw invalid("Page reorder failed to rebuild the document") }
+                document = rebuilt
             case .cropPage:
                 let p = try page(op.page, in: document)
                 p.setBounds(try rect(op.bounds, inside: p.bounds(for: .mediaBox)), for: .cropBox)
@@ -333,6 +342,10 @@ enum PDFDocumentOperations {
         var bytes = 0
         for index in 0..<source.pageCount {
             try cancellation.throwIfCancelled()
+            // Per-page pool: 3000px renders, PNG encodes and Vision requests
+            // otherwise accumulate until the whole 50-page loop drains, which
+            // reads as a Jetsam crash on device.
+            try autoreleasepool {
             let p = try page(index + 1, in: source)
             // Refuse rotated/cropped page geometry rather than silently redact a different location.
             let box = p.bounds(for: .mediaBox)
@@ -396,6 +409,7 @@ enum PDFDocumentOperations {
                 guard let searchDoc = PDFDocument(data: searchable), let searchPage = searchDoc.page(at: 0) else { throw invalid("Searchable OCR PDF failed to reopen") }
                 output.insert(searchPage, at: output.pageCount)
             } else { output.insert(rendered, at: output.pageCount) }
+            }
         }
         output.documentAttributes = [:]
         return output
@@ -426,4 +440,19 @@ enum PDFDocumentOperations {
         annotation.type?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "Widget"
     }
     private static func invalid(_ message: String) -> FloeError { .validationFailed(message) }
+}
+
+/// Runs PDFKit mutations through the ObjC exception boundary so an engine
+/// `NSException` (invalid indices, widget/form internals, KVC keys, malformed
+/// documents) becomes an ordinary tool error instead of a process crash.
+func withPDFExceptionGuard<T>(_ work: @escaping () throws -> T) throws -> T {
+    var outcome: Result<T, Error>?
+    let failure = FloePDFExceptionGuard.run {
+        do { outcome = .success(try work()) }
+        catch { outcome = .failure(error) }
+    }
+    if let outcome { return try outcome.get() }
+    throw FloeError.internalError(
+        failure ?? "PDF engine raised an unexpected internal exception"
+    )
 }

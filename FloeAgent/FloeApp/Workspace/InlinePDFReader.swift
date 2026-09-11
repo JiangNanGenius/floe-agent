@@ -1,17 +1,12 @@
 #if canImport(UIKit)
 import SwiftUI
 import PDFKit
+import Combine
 
-/// Hands the gated parse result back to the MainActor reader. PDFDocument is
-/// not Sendable; here it is only touched behind PDFKitGate or by the single
-/// PDFView that owns the session.
-private final class GatedPDFDocumentBox: @unchecked Sendable {
-    let document: PDFDocument
-    let isLocked: Bool
-    init(_ document: PDFDocument) {
-        self.document = document
-        self.isLocked = document.isLocked
-    }
+extension Notification.Name {
+    /// Posted after any PDF tool commits a document, so an open reader can
+    /// refresh in near-real-time instead of waiting for its poll interval.
+    static let floePDFDocumentDidChange = Notification.Name("org.floeagent.pdf-document-did-change")
 }
 
 /// Both presentation sizes share one document and reading position. The
@@ -47,22 +42,22 @@ final class PDFReadingSession: ObservableObject {
             guard (info.fileSize ?? 0) <= 64 * 1024 * 1024 else {
                 throw CocoaError(.fileReadTooLarge)
             }
-            // PDFKit is not thread-safe: parse behind the process-wide gate on
-            // a background thread, then deliver the ready document to main.
-            let box = try await Task.detached(priority: .userInitiated) { () throws -> GatedPDFDocumentBox in
-                let bytes = try Data(contentsOf: url, options: .mappedIfSafe)
-                return try PDFKitGate.run { () throws -> GatedPDFDocumentBox in
-                    guard let loaded = PDFDocument(data: bytes) else { throw CocoaError(.fileReadCorruptFile) }
-                    return GatedPDFDocumentBox(loaded)
-                }
+            // Read bytes off the main thread, but build the document on the
+            // MainActor: this PDFDocument is owned by PDFView and must never
+            // migrate threads (the previous background-built handoff was a
+            // top crash candidate). Tool edits use separate, gated documents.
+            let bytes = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url, options: .mappedIfSafe)
             }.value
             try Task.checkCancellation()
+            let loaded = try withPDFExceptionGuard { PDFDocument(data: bytes) }
+            guard let loaded else { throw CocoaError(.fileReadCorruptFile) }
             capture()
             modificationDate = info.contentModificationDate
             byteCount = info.fileSize
             error = nil
-            locked = box.isLocked
-            document = box.document
+            locked = loaded.isLocked
+            document = loaded
         } catch is CancellationError {
         } catch {
             self.error = error.localizedDescription
@@ -100,6 +95,10 @@ struct InlinePDFReader: View {
                     await session.load(url, validateRead: validateRead)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .floePDFDocumentDidChange)) { notification in
+                guard let changed = notification.object as? URL, changed == url else { return }
+                Task { await session.load(url, force: true, validateRead: validateRead) }
+            }
             .fullScreenCover(isPresented: $expanded, onDismiss: { password = ""; session.fullScreen = false }) {
                 NavigationStack {
                     reader(inFullScreen: true)
@@ -133,7 +132,7 @@ struct InlinePDFReader: View {
                     .textFieldStyle(.roundedBorder)
                 if wrongPassword { Text("pdf.reader.wrong_password").foregroundStyle(.red) }
                 Button("pdf.reader.unlock") {
-                    let unlocked = PDFKitGate.run { session.document?.unlock(withPassword: password) == true }
+                    let unlocked = session.document?.unlock(withPassword: password) == true
                     password = ""
                     wrongPassword = !unlocked
                     session.locked = !unlocked
