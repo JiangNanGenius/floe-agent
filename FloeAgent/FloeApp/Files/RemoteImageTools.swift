@@ -1398,7 +1398,7 @@ enum PDFToolSupport {
         return ordered
     }
 
-    static func write(_ data: Data, to path: String, context: ToolContext) throws {
+    static func write(_ data: Data, to path: String, context: ToolContext, overwrite: Bool = false) throws {
         try validatePath(path)
         guard let root = context.workspaceRootURL else {
             throw FloeError.invalidConfiguration("No task workspace is available")
@@ -1406,22 +1406,19 @@ enum PDFToolSupport {
         try context.authorizeWorkspacePath(path)
         let guarder = WorkspacePathGuard(rootURL: root)
         let url = try guarder.resolve(path)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard data.count <= 64 * 1024 * 1024, !FileManager.default.fileExists(atPath: url.path) else {
-            throw FloeError.validationFailed("Output exists or exceeds the file limit; choose a new output path")
-        }
-        let staged = url.deletingLastPathComponent().appendingPathComponent(".floe-pdf-\(UUID())")
-        defer { try? FileManager.default.removeItem(at: staged) }
-        try data.write(to: staged, options: .withoutOverwriting)
-        try context.cancellation.throwIfCancelled()
-        _ = try guarder.resolve(path)
-        // moveItem refuses an existing destination, unlike atomic replacement.
-        try FileManager.default.moveItem(at: staged, to: url)
+        _ = try AtomicFileCommitter.commit(
+            data,
+            to: url,
+            policy: FileCommitPolicy(
+                conflict: overwrite ? .replaceAtomically(consent: true) : .failIfExists,
+                maxBytes: FileLimits.pdf,
+                checkCancellation: { try context.cancellation.throwIfCancelled() }
+            )
+        )
     }
 
     static func output(_ text: String, status: Int32) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: status)
+        ToolExecutionOutput(summary: text, fullOutputSHA256: Digest.sha256Hex(Data(text.utf8)), exitStatus: status)
     }
 }
 

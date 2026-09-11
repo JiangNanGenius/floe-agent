@@ -73,11 +73,11 @@ public struct PDFFillFormTool: AgentTool {
         }
         do {
             try context.authorizeWorkspacePath(args.inputPath)
-            let guarder = WorkspacePathGuard(rootURL: root)
+            let guarder = WorkspacePathGuard(rootURL: root, maxReadBytes: FileLimits.pdf)
             let sourceURL = try guarder.resolve(args.inputPath)
             try guarder.assertReadableSize(sourceURL)
-            let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
-            guard data.count <= 64 * 1_024 * 1_024 else {
+            let data = try Data(floeContentsOf: sourceURL, options: [.mappedIfSafe])
+            guard data.count <= FileLimits.pdf else {
                 throw FloeError.validationFailed("PDF exceeds the 64 MB limit")
             }
             var input: [String: Any] = ["action": args.action, "pdf": data.base64EncodedString()]
@@ -118,15 +118,19 @@ public struct PDFFillFormTool: AgentTool {
                 try context.authorizeWorkspacePath(outputPath)
                 let outputURL = try guarder.resolve(outputPath)
                 try guarder.assertWritable(outputURL)
-                guard !FileManager.default.fileExists(atPath: outputURL.path) else {
-                    throw FloeError.validationFailed("Output already exists: \(outputPath)")
-                }
-                try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try filled.write(to: outputURL, options: [.atomic])
+                let filledReceipt = try AtomicFileCommitter.commit(
+                    filled,
+                    to: outputURL,
+                    policy: FileCommitPolicy(
+                        conflict: .failIfExists,
+                        maxBytes: FileLimits.pdf,
+                        checkCancellation: { try context.cancellation.throwIfCancelled() }
+                    )
+                )
                 let applied = (result["applied"] as? [String]) ?? []
                 let skipped = (result["skipped"] as? [String]) ?? []
                 return Self.output(
-                    "status=ok action=fill output=\(outputPath) applied=\(applied.count) skipped=\(skipped.count)\(skipped.isEmpty ? "" : " skippedFields=" + skipped.joined(separator: ","))",
+                    "status=ok action=fill output=\(outputPath) sha256=\(filledReceipt.sha256.prefix(16)) applied=\(applied.count) skipped=\(skipped.count)\(skipped.isEmpty ? "" : " skippedFields=" + skipped.joined(separator: ","))",
                     exitStatus: 0
                 )
             case .jsException(let message, _):
