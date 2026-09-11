@@ -12,6 +12,7 @@ import Crypto
 import FloeCore
 import FloeExecution
 import FloePersistence
+import FloeTools
 import FloeWorkspace
 
 /// Holds the system completion handler for the background session until all
@@ -184,24 +185,50 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
                 return
             }
 
+            guard (200..<300).contains(statusCode) else {
+                try? FileManager.default.removeItem(at: staging)
+                _ = try? await store.transition(id: jobID, to: .failed) {
+                    $0.lastError = "Download failed with HTTP \(statusCode)"
+                }
+                await self.notifyTerminal(jobID: jobID)
+                return
+            }
+
             var destination: URL?
             var workspaceRelative: String?
             var fallbackNote: String?
             if let rootPath = job.workspaceRootPath {
-                let guarder = WorkspacePathGuard(rootURL: URL(fileURLWithPath: rootPath))
-                if let resolved = try? guarder.resolve(args.destination) {
+                var isDirectory: ObjCBool = false
+                let rootReachable = FileManager.default.fileExists(atPath: rootPath, isDirectory: &isDirectory)
+                    && isDirectory.boolValue
+                if rootReachable,
+                   let guarder = try? WorkspacePathGuard(rootURL: URL(fileURLWithPath: rootPath)),
+                   let resolved = try? guarder.resolve(args.destination) {
+                    // A reachable workspace is authoritative: a conflict or any
+                    // write failure is reported to the model instead of
+                    // silently relocating the file to app storage. Overwrite
+                    // only happens with explicit consent carried in the job.
                     do {
-                        try FileManager.default.createDirectory(
-                            at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true
+                        _ = try AtomicFileCommitter.commit(
+                            stagedFile: staging,
+                            to: resolved,
+                            policy: FileCommitPolicy(
+                                conflict: args.overwrite == true
+                                    ? .replaceAtomically(consent: true)
+                                    : .failIfExists,
+                                maxBytes: cap
+                            )
                         )
-                        guard !FileManager.default.fileExists(atPath: resolved.path) else {
-                            throw FloeError.validationFailed("Destination already exists: \(args.destination)")
-                        }
-                        try FileManager.default.moveItem(at: staging, to: resolved)
                         destination = resolved
                         workspaceRelative = args.destination
                     } catch {
-                        fallbackNote = "Workspace was not reachable after relaunch (\(error.localizedDescription)); the file was kept in app storage instead."
+                        try? FileManager.default.removeItem(at: staging)
+                        _ = try? await store.transition(id: jobID, to: .failed) {
+                            $0.lastError = error.localizedDescription
+                                + " Ask the user, then resubmit with overwrite=true to replace it."
+                        }
+                        await self.notifyTerminal(jobID: jobID)
+                        return
                     }
                 }
             }
@@ -214,7 +241,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
                 }
                 try FileManager.default.moveItem(at: staging, to: fallback)
                 destination = fallback
-                fallbackNote = fallbackNote ?? "The file is in app-owned storage; copy it into a workspace to share it."
+                fallbackNote = fallbackNote ?? "The task workspace was unreachable after relaunch; the file is in app-owned storage; copy it into a workspace to share it."
             }
             guard let destination else { return }
 

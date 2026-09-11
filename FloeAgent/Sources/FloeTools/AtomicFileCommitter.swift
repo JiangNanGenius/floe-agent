@@ -89,6 +89,45 @@ public enum AtomicFileCommitter {
         )
     }
 
+    /// Commits an already-staged file (e.g. a completed URLSession download)
+    /// with the same conflict/verification policy, avoiding a full read into
+    /// memory for large payloads.
+    @discardableResult
+    public static func commit(
+        stagedFile: URL,
+        to destination: URL,
+        policy: FileCommitPolicy = FileCommitPolicy()
+    ) throws -> FileCommitReceipt {
+        try policy.checkCancellation?()
+        let byteCount = (try? stagedFile.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        if let maxBytes = policy.maxBytes, byteCount > maxBytes {
+            throw FloeError.validationFailed("Payload exceeds the \(maxBytes)-byte limit")
+        }
+        let fileManager = FileManager.default
+        let existed = fileManager.fileExists(atPath: destination.path)
+        if existed {
+            try checkConflict(destination: destination, policy: policy)
+        }
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try policy.verifyBeforeCommit?(stagedFile)
+        try policy.checkCancellation?()
+        if existed {
+            _ = try fileManager.replaceItemAt(destination, withItemAt: stagedFile)
+        } else {
+            try fileManager.moveItem(at: stagedFile, to: destination)
+        }
+        let digest = (try? Digest.sha256Hex(ofFileAt: destination)) ?? ""
+        return FileCommitReceipt(
+            url: destination,
+            byteCount: byteCount,
+            sha256: digest,
+            replacedExisting: existed
+        )
+    }
+
     private static func checkConflict(destination: URL, policy: FileCommitPolicy) throws {
         switch policy.conflict {
         case .failIfExists:

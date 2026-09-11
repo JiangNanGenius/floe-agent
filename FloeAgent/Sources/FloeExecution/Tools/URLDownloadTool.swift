@@ -20,34 +20,40 @@ public struct URLDownloadTool: AgentTool {
         public var maxBytes: Int?
         public var timeout: Double?
         public var localNetwork: Bool?
+        /// Explicit consent to replace an existing destination, asked for
+        /// after the user confirms.
+        public var overwrite: Bool?
 
         public init(
             url: String,
             destination: String,
             maxBytes: Int? = nil,
             timeout: Double? = nil,
-            localNetwork: Bool? = nil
+            localNetwork: Bool? = nil,
+            overwrite: Bool? = nil
         ) {
             self.url = url
             self.destination = destination
             self.maxBytes = maxBytes
             self.timeout = timeout
             self.localNetwork = localNetwork
+            self.overwrite = overwrite
         }
     }
 
     public static let name = "network.download"
     public static let toolDescription =
-        "Download a URL directly into the task workspace as a new file (GET only). Public endpoints require HTTPS; set localNetwork only for a user-requested LAN target. The download is size-capped (default 32 MB, max 64 MB), every redirect is revalidated, and an existing destination is never overwritten. Prefer this over network.http when the content belongs in a file rather than in the conversation."
+        "Download a URL directly into the task workspace as a file (GET only). Public endpoints require HTTPS; set localNetwork only for a user-requested LAN target. The download is size-capped (default 32 MB, max 64 MB) and every redirect is revalidated. An existing destination is never overwritten unless the user explicitly confirms and overwrite=true is passed. Prefer this over network.http when the content belongs in a file rather than in the conversation."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "url": {"type": "string", "description": "HTTPS URL or local HTTP diagnostic endpoint to download"},
-        "destination": {"type": "string", "description": "Workspace-relative output path; must not already exist"},
+        "destination": {"type": "string", "description": "Workspace-relative output path; must not already exist unless overwrite is confirmed"},
         "maxBytes": {"type": "integer", "description": "Download cap in bytes (default 33554432, max 67108864)"},
         "timeout": {"type": "number", "description": "Timeout in seconds (default 60, max 120)"},
-        "localNetwork": {"type": "boolean", "description": "Enable only for a local-network target requested by the user"}
+        "localNetwork": {"type": "boolean", "description": "Enable only for a local-network target requested by the user"},
+        "overwrite": {"type": "boolean", "description": "Set true only after the user confirms replacing an existing destination file"}
       },
       "required": ["url", "destination"],
       "additionalProperties": false
@@ -101,9 +107,9 @@ public struct URLDownloadTool: AgentTool {
             try context.authorizeWorkspacePath(args.destination)
             let guarder = WorkspacePathGuard(rootURL: root)
             let destination = try guarder.resolve(args.destination)
-            guard !FileManager.default.fileExists(atPath: destination.path) else {
-                throw FloeError.validationFailed("Destination already exists: \(args.destination)")
-            }
+            let staging = destination.deletingLastPathComponent()
+                .appendingPathComponent(".floe-download-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: staging) }
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
@@ -113,12 +119,19 @@ public struct URLDownloadTool: AgentTool {
                 url: url,
                 timeout: args.timeout ?? Self.defaultTimeout,
                 maxBytes: args.maxBytes ?? Self.defaultMaxBytes,
-                to: destination
+                to: staging
             )
-            let data = try Data(contentsOf: destination, options: [.mappedIfSafe])
-            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let receipt = try AtomicFileCommitter.commit(
+                stagedFile: staging,
+                to: destination,
+                policy: FileCommitPolicy(
+                    conflict: args.overwrite == true ? .replaceAtomically(consent: true) : .failIfExists,
+                    maxBytes: args.maxBytes ?? Self.defaultMaxBytes,
+                    checkCancellation: { try context.cancellation.throwIfCancelled() }
+                )
+            )
             return Self.output(
-                "status=ok path=\(args.destination) statusCode=\(result.statusCode) contentType=\(result.contentType) bytes=\(result.byteCount) sha256=\(digest)",
+                "status=ok path=\(args.destination) statusCode=\(result.statusCode) contentType=\(result.contentType) bytes=\(result.byteCount) sha256=\(receipt.sha256)",
                 exitStatus: 0
             )
         } catch {
