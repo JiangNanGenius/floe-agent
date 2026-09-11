@@ -628,12 +628,28 @@ final class ConversationCenter: ObservableObject {
                     let subscribers = Array(self.sessionContinuations[conversationID, default: [:]].values)
                     subscribers.forEach { $0.yield(snapshot) }
                 }
+                // The task list rides the same pump: its preview/ordering must
+                // track live runs without a manual reload.
+                await self.refreshConversationInList(conversationID)
                 guard self.sessionRevisions[conversationID, default: 0] != requestedRevision,
                       !self.sessionContinuations[conversationID, default: [:]].isEmpty else { break }
                 do { try await Task.sleep(for: .milliseconds(40)) } catch { break }
             }
             self.pendingSessionPublishes[conversationID] = nil
         }
+    }
+
+    /// Single-record list refresh: swap the re-read conversation into the
+    /// sorted list (or insert when new). Cheap counterpart to full reload().
+    private func refreshConversationInList(_ conversationID: UUID) async {
+        guard let fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
+        if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+            guard conversations[index].updatedAt != fresh.updatedAt || conversations[index].title != fresh.title else { return }
+            conversations[index] = fresh
+        } else {
+            conversations.insert(fresh, at: 0)
+        }
+        conversations.sort { $0.updatedAt > $1.updatedAt }
     }
 
     /// One-shot cold-launch repair. iOS cannot keep a local provider loop

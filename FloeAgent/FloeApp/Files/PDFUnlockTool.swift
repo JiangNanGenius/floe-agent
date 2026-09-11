@@ -40,8 +40,11 @@ struct PDFUnlockTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         let output = try await Task.detached { try FloePDFiumBridge.unlock(input, password: password) }.value
         try context.cancellation.throwIfCancelled()
-        guard let reopened = PDFDocument(data: output), !reopened.isLocked, reopened.pageCount > 0 else { throw FloeError.storageCorrupted("Decrypted PDF failed to reopen") }
+        guard let pageCount = try PDFKitGate.run({ () throws -> Int? in
+            guard let reopened = PDFDocument(data: output), !reopened.isLocked, reopened.pageCount > 0 else { return nil }
+            return reopened.pageCount
+        }) else { throw FloeError.storageCorrupted("Decrypted PDF failed to reopen") }
         try PDFToolSupport.write(output, to: args.outputPath, context: context)
-        return PDFToolSupport.output("Saved verified unlocked copy: \(args.outputPath); pages=\(reopened.pageCount); originalPreserved=true; secretReturned=false", status: 0)
+        return PDFToolSupport.output("Saved verified unlocked copy: \(args.outputPath); pages=\(pageCount); originalPreserved=true; secretReturned=false", status: 0)
     }
 }

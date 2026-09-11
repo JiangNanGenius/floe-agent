@@ -127,7 +127,7 @@ struct SSHAndHTTPToolTests {
         }
     }
 
-    @Test("Device diagnostics are registered without an SSH service, and ICMP fails honestly")
+    @Test("Device diagnostics are registered without an SSH service, and device traceroute fails honestly")
     func deviceDiagnostics() async throws {
         let registry = ToolRunnerRegistry()
         registerExecutionTools(registry: registry)
@@ -139,9 +139,11 @@ struct SSHAndHTTPToolTests {
         let result = try await dns.execute(argumentsJSON: Data(#"{"target":"localhost"}"#.utf8), context: context)
         #expect(result.summary.contains("executionTarget=device"))
         #expect(result.summary.contains("127.0.0.1") || result.summary.contains("::1"))
-        let ping = try #require(registry.runner(named: "network.ping"))
+        // Device ping is now real ICMP (covered with an injected pinger in
+        // NetworkDiagnosticToolsTests); device traceroute stays host-only.
+        let traceroute = try #require(registry.runner(named: "network.traceroute"))
         await #expect(throws: FloeError.self) {
-            _ = try await ping.execute(argumentsJSON: Data(#"{"target":"127.0.0.1"}"#.utf8), context: context)
+            _ = try await traceroute.execute(argumentsJSON: Data(#"{"target":"127.0.0.1"}"#.utf8), context: context)
         }
     }
 

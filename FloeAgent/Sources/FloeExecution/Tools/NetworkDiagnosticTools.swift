@@ -73,6 +73,102 @@ private enum NetworkDiagnosticSupport {
     }
 }
 
+/// Command builders, watchdog budgets and deadline helpers for the network
+/// diagnostic tools. Internal (not private) so the FloeExecution test target
+/// can exercise the pure math without any network or SSH traffic.
+enum NetworkDiagnosticTiming {
+    /// iputils `ping -W` waits in seconds; the BSD/macOS ping waits in
+    /// milliseconds. Uninspected and non-macOS hosts keep the Linux seconds
+    /// semantics: that is the safe direction, because a millisecond value
+    /// sent to iputils would wait thousands of seconds per reply.
+    static func pingWaitValue(timeoutSeconds: Int, kind: RemoteTargetKind?) -> Int {
+        kind == .macOS ? timeoutSeconds * 1000 : timeoutSeconds
+    }
+
+    static func pingCommand(target: String, count: Int, timeoutSeconds: Int, kind: RemoteTargetKind?) -> String {
+        "ping -c \(count) -W \(pingWaitValue(timeoutSeconds: timeoutSeconds, kind: kind)) \(target)"
+    }
+
+    /// Covers `count` sends at the fixed 1 s interval plus one final
+    /// per-reply wait and slack; the previous count*timeout+5 budget was
+    /// far looser than the command's real worst case.
+    static func pingWatchdogSeconds(count: Int, timeoutSeconds: Int) -> TimeInterval {
+        TimeInterval(count + timeoutSeconds + 15)
+    }
+
+    /// Upper bound for a numeric traceroute with 2 probes per hop, plus
+    /// slack. Shared by the SSH watchdog and the remote `timeout` wrapping
+    /// the tracepath fallback so the two cannot drift apart.
+    static func tracerouteBudgetSeconds(maxHops: Int, waitSeconds: Int) -> Int {
+        maxHops * 2 * waitSeconds + 15
+    }
+
+    static func tracerouteCommand(target: String, maxHops: Int, waitSeconds: Int) -> String {
+        // -n keeps every hop numeric: reverse-DNS lookups stall each hop for
+        // seconds. -q 2 sends two probes per hop instead of the default
+        // three. The tracepath fallback has no per-probe wait flag, so it is
+        // wrapped in the same budget via the remote `timeout` command.
+        let budget = tracerouteBudgetSeconds(maxHops: maxHops, waitSeconds: waitSeconds)
+        return "if command -v traceroute >/dev/null 2>&1; then traceroute -n -q 2 -m \(maxHops) -w \(waitSeconds) \(target); elif command -v tracepath >/dev/null 2>&1; then timeout \(budget) tracepath -n -m \(maxHops) \(target); else echo 'traceroute unavailable on probe host' >&2; exit 127; fi"
+    }
+
+    /// Reads the inspection cached by `SSHCommandService.inspectTarget`.
+    /// Nil when the host was never inspected — the ping dialect then
+    /// defaults to Linux/iputils seconds.
+    static func persistedTargetKind(hostID: UUID?, defaults: UserDefaults = .standard) -> RemoteTargetKind? {
+        guard let hostID,
+              let data = defaults.data(forKey: SSHCommandService.inspectionCacheKey(hostID: hostID)),
+              let inspection = try? JSONDecoder().decode(RemoteTargetInspection.self, from: data) else {
+            return nil
+        }
+        return inspection.kind
+    }
+
+    /// Races a blocking operation (getaddrinfo cannot be interrupted)
+    /// against a deadline. The first finisher wins; an overrunning operation
+    /// keeps running detached but its result is discarded.
+    static func withDeadline<T: Sendable>(
+        seconds: TimeInterval,
+        timeoutMessage: String,
+        operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        let arbiter = DeadlineArbiter<T>()
+        return try await withCheckedThrowingContinuation { continuation in
+            arbiter.arm(continuation)
+            Task.detached {
+                arbiter.resolve(Result { try operation() })
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                arbiter.resolve(.failure(FloeError.validationFailed(timeoutMessage)))
+            }
+        }
+    }
+}
+
+/// One-shot race arbiter for `withDeadline`: only the first completion
+/// resumes the continuation.
+private final class DeadlineArbiter<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    private var resolved = false
+
+    func arm(_ continuation: CheckedContinuation<T, Error>) {
+        lock.lock()
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func resolve(_ result: Result<T, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resolved, let continuation else { return }
+        resolved = true
+        self.continuation = nil
+        continuation.resume(with: result)
+    }
+}
+
 public struct NetworkPingTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var target: String
@@ -82,14 +178,22 @@ public struct NetworkPingTool: AgentTool {
         public var timeoutSeconds: Int?
     }
     public static let name = "network.ping"
-    public static let toolDescription = "Run a bounded genuine ICMP ping on an explicitly selected SSH host. This build does not implement device ICMP: device returns deviceICMPUnavailable, never a simulated ping. For device service reachability use network.tcpProbe; ping is not a mandatory prerequisite for VNC."
-    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to ping"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device when hostID is omitted; device ICMP is unavailable in this build. Select host with hostID for ICMP."},"hostID":{"type":"string","description":"Explicit paired SSH host UUID. Supplying it selects host unless executionTarget is specified. No default host is inferred."},"count":{"type":"integer","minimum":1,"maximum":10},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":10}},"required":["target"],"additionalProperties":false}"#
+    public static let toolDescription = "Run a bounded genuine ICMP echo (ping). On this device (the default when hostID is omitted) it uses a datagram ICMP socket — no entitlement needed — sending one probe per second and reporting per-reply RTT plus min/avg/max and loss. With executionTarget=host and hostID it runs ping on that paired SSH host instead (per-reply wait is emitted in milliseconds for macOS/BSD targets and seconds for Linux). Never report a simulated ping. For device TCP service reachability use network.tcpProbe; ping is not a mandatory prerequisite for VNC."
+    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to ping"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device when hostID is omitted; device runs a real bounded ICMP echo from this device (IPv4). Select host with hostID to ping from that paired SSH host instead."},"hostID":{"type":"string","description":"Explicit paired SSH host UUID. Supplying it selects host unless executionTarget is specified. No default host is inferred."},"count":{"type":"integer","minimum":1,"maximum":10},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":10}},"required":["target"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand]
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
     public static let requiresHostScope = false
     private let service: SSHCommandService?
-    public init(service: SSHCommandService? = nil) { self.service = service }
+    /// Device ping backend; tests inject a fake so no real ICMP is needed.
+    private let devicePinger: DevicePingHandler
+    public init(service: SSHCommandService? = nil) {
+        self.init(service: service, devicePinger: nil)
+    }
+    init(service: SSHCommandService?, devicePinger: DevicePingHandler?) {
+        self.service = service
+        self.devicePinger = devicePinger ?? DeviceICMPPing.run
+    }
     public func validate(_ args: Arguments) throws {
         _ = try NetworkDiagnosticSupport.target(args.target)
         _ = try NetworkDiagnosticSupport.hostID(args.hostID)
@@ -103,14 +207,19 @@ public struct NetworkPingTool: AgentTool {
         let target = try NetworkDiagnosticSupport.target(args.target)
         let count = args.count ?? 4
         let timeout = args.timeoutSeconds ?? 3
-        guard try !NetworkDiagnosticSupport.isDevice(args.executionTarget, hostID: args.hostID) else {
-            throw FloeError.validationFailed("deviceICMPUnavailable: select executionTarget=host with hostID for real ICMP, or network.tcpProbe for device TCP reachability")
+        if try NetworkDiagnosticSupport.isDevice(args.executionTarget, hostID: args.hostID) {
+            try context.cancellation.throwIfCancelled()
+            let report = try await devicePinger(target, count, timeout, context.cancellation)
+            try context.cancellation.throwIfCancelled()
+            return NetworkDiagnosticSupport.localOutput(report.summaryText())
         }
         guard let service else { throw FloeError.validationFailed("hostExecutorUnavailable: configure an SSH host first") }
+        let resolvedHostID = try NetworkDiagnosticSupport.hostID(args.hostID)
+        let kind = NetworkDiagnosticTiming.persistedTargetKind(hostID: resolvedHostID)
         let result = try await service.run(
-            command: "ping -c \(count) -W \(timeout) \(target)",
-            hostID: try NetworkDiagnosticSupport.hostID(args.hostID),
-            timeout: TimeInterval(count * timeout + 5),
+            command: NetworkDiagnosticTiming.pingCommand(target: target, count: count, timeoutSeconds: timeout, kind: kind),
+            hostID: resolvedHostID,
+            timeout: NetworkDiagnosticTiming.pingWatchdogSeconds(count: count, timeoutSeconds: timeout),
             maxOutputBytes: 32 * 1024,
             cancellation: context.cancellation
         )
@@ -127,8 +236,8 @@ public struct NetworkTracerouteTool: AgentTool {
         public var timeoutSeconds: Int?
     }
     public static let name = "network.traceroute"
-    public static let toolDescription = "Run a bounded genuine traceroute or tracepath on an explicitly selected SSH host. This build does not implement device traceroute: device returns deviceTracerouteUnavailable. Never infer hops from TCP or HTTP probes."
-    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to trace"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device when hostID is omitted; device traceroute is unavailable in this build. Select host with hostID for a route trace."},"hostID":{"type":"string","description":"Explicit paired SSH host UUID. Supplying it selects host unless executionTarget is specified. No default host is inferred."},"maxHops":{"type":"integer","minimum":1,"maximum":30},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":5}},"required":["target"],"additionalProperties":false}"#
+    public static let toolDescription = "Run a bounded genuine traceroute (numeric output, 2 probes per hop) or a timeout-wrapped tracepath fallback on an explicitly selected SSH host. Device traceroute is unavailable and returns deviceTracerouteUnavailable; device ICMP ping IS available via network.ping. Never infer hops from TCP or HTTP probes."
+    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to trace"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device when hostID is omitted; device traceroute is unavailable (use network.ping for device ICMP). Select host with hostID for a route trace."},"hostID":{"type":"string","description":"Explicit paired SSH host UUID. Supplying it selects host unless executionTarget is specified. No default host is inferred."},"maxHops":{"type":"integer","minimum":1,"maximum":30},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":5}},"required":["target"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand]
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
@@ -149,14 +258,13 @@ public struct NetworkTracerouteTool: AgentTool {
         let hops = args.maxHops ?? 20
         let wait = args.timeoutSeconds ?? 2
         guard try !NetworkDiagnosticSupport.isDevice(args.executionTarget, hostID: args.hostID) else {
-            throw FloeError.validationFailed("deviceTracerouteUnavailable: select executionTarget=host with hostID for a real route trace")
+            throw FloeError.validationFailed("deviceTracerouteUnavailable: device traceroute is unavailable; device ICMP ping works via network.ping, or select executionTarget=host with hostID for a real route trace")
         }
         guard let service else { throw FloeError.validationFailed("hostExecutorUnavailable: configure an SSH host first") }
-        let command = "if command -v traceroute >/dev/null 2>&1; then traceroute -m \(hops) -w \(wait) \(target); elif command -v tracepath >/dev/null 2>&1; then tracepath -m \(hops) \(target); else echo 'traceroute unavailable on probe host' >&2; exit 127; fi"
         let result = try await service.run(
-            command: command,
+            command: NetworkDiagnosticTiming.tracerouteCommand(target: target, maxHops: hops, waitSeconds: wait),
             hostID: try NetworkDiagnosticSupport.hostID(args.hostID),
-            timeout: TimeInterval(hops * wait + 10),
+            timeout: TimeInterval(NetworkDiagnosticTiming.tracerouteBudgetSeconds(maxHops: hops, waitSeconds: wait)),
             maxOutputBytes: 64 * 1024,
             cancellation: context.cancellation
         )
@@ -171,7 +279,7 @@ public struct NetworkDNSLookupTool: AgentTool {
         public var executionTarget: String?
     }
     public static let name = "network.dnsLookup"
-    public static let toolDescription = "Resolve a hostname on this device by default, or on an explicitly selected SSH host."
+    public static let toolDescription = "Resolve a hostname on this device by default (bounded by a 10s deadline), or on an explicitly selected SSH host."
     public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device; host requires hostID"},"hostID":{"type":"string"}},"required":["target"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand]
     public static let isSideEffecting = false
@@ -188,7 +296,14 @@ public struct NetworkDNSLookupTool: AgentTool {
         let target = try NetworkDiagnosticSupport.target(args.target)
         if try NetworkDiagnosticSupport.isDevice(args.executionTarget, hostID: args.hostID) {
             try context.cancellation.throwIfCancelled()
-            let addresses = try await Task.detached { try NetworkDiagnosticSupport.dns(target) }.value
+            // getaddrinfo can block for the full resolver timeout; race it
+            // against a 10 s deadline so a stuck resolver fails cleanly.
+            let addresses = try await NetworkDiagnosticTiming.withDeadline(
+                seconds: 10,
+                timeoutMessage: "device dnsLookup timed out after 10s"
+            ) {
+                try NetworkDiagnosticSupport.dns(target)
+            }
             try context.cancellation.throwIfCancelled()
             return NetworkDiagnosticSupport.localOutput("method=dnsLookup addresses=" + addresses.joined(separator: ", "))
         }

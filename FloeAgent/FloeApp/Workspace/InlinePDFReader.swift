@@ -2,6 +2,18 @@
 import SwiftUI
 import PDFKit
 
+/// Hands the gated parse result back to the MainActor reader. PDFDocument is
+/// not Sendable; here it is only touched behind PDFKitGate or by the single
+/// PDFView that owns the session.
+private final class GatedPDFDocumentBox: @unchecked Sendable {
+    let document: PDFDocument
+    let isLocked: Bool
+    init(_ document: PDFDocument) {
+        self.document = document
+        self.isLocked = document.isLocked
+    }
+}
+
 /// Both presentation sizes share one document and reading position. The
 /// document is never decoded as text and PDF passwords never leave this view.
 @MainActor
@@ -32,20 +44,25 @@ final class PDFReadingSession: ObservableObject {
             let info = try freshURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             guard force || document == nil || info.contentModificationDate != modificationDate
                     || info.fileSize != byteCount else { return }
-            guard (info.fileSize ?? 0) <= 128 * 1024 * 1024 else {
+            guard (info.fileSize ?? 0) <= 64 * 1024 * 1024 else {
                 throw CocoaError(.fileReadTooLarge)
             }
-            let bytes = try await Task.detached(priority: .userInitiated) {
-                try Data(contentsOf: url, options: .mappedIfSafe)
+            // PDFKit is not thread-safe: parse behind the process-wide gate on
+            // a background thread, then deliver the ready document to main.
+            let box = try await Task.detached(priority: .userInitiated) { () throws -> GatedPDFDocumentBox in
+                let bytes = try Data(contentsOf: url, options: .mappedIfSafe)
+                return try PDFKitGate.run { () throws -> GatedPDFDocumentBox in
+                    guard let loaded = PDFDocument(data: bytes) else { throw CocoaError(.fileReadCorruptFile) }
+                    return GatedPDFDocumentBox(loaded)
+                }
             }.value
             try Task.checkCancellation()
-            guard let loaded = PDFDocument(data: bytes) else { throw CocoaError(.fileReadCorruptFile) }
             capture()
             modificationDate = info.contentModificationDate
             byteCount = info.fileSize
             error = nil
-            locked = loaded.isLocked
-            document = loaded
+            locked = box.isLocked
+            document = box.document
         } catch is CancellationError {
         } catch {
             self.error = error.localizedDescription
@@ -116,7 +133,7 @@ struct InlinePDFReader: View {
                     .textFieldStyle(.roundedBorder)
                 if wrongPassword { Text("pdf.reader.wrong_password").foregroundStyle(.red) }
                 Button("pdf.reader.unlock") {
-                    let unlocked = session.document?.unlock(withPassword: password) == true
+                    let unlocked = PDFKitGate.run { session.document?.unlock(withPassword: password) == true }
                     password = ""
                     wrongPassword = !unlocked
                     session.locked = !unlocked

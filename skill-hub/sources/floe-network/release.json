@@ -1,9 +1,9 @@
 {
-  "description": "Device DNS and TCP diagnostics, host ICMP and traceroute, LAN discovery, HTTP and downloads.",
+  "description": "Device DNS, TCP and ICMP ping diagnostics, host ICMP and traceroute, LAN discovery, HTTP and downloads.",
   "minimumAppVersion": "1.4.98",
   "name": "Network Diagnostics",
   "releaseNotes": {
-    "zh-Hans": "修正本机与远程网络检测说明，减少无效重试。",
-    "en": "Clarify device and remote diagnostics to avoid unsupported retries."
+    "zh-Hans": "本机 ping 现为真实 ICMP 回显；traceroute 仍仅限主机端。",
+    "en": "Device ping is now a genuine ICMP echo; traceroute remains host-only."
   }
 }

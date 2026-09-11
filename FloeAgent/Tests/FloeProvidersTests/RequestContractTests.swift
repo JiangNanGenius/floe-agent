@@ -334,7 +334,8 @@ struct RequestContractTests {
             "function_call:pending-1", "function_call_output:pending-1"
         ])
         let historyCall = try #require(input[2]["name"] as? String)
-        #expect(historyCall == "workspace.listDirectory")
+        // Compat providers sanitize on EVERY wire, not just chat.
+        #expect(historyCall == "workspace_listDirectory")
 
         // Anthropic: assistant tool_use / user tool_result blocks per pair;
         // system extraction stays at the top level.
@@ -400,10 +401,47 @@ struct RequestContractTests {
         let replay = try #require(messages.first?["tool_calls"] as? [[String: Any]])
         #expect((replay[0]["function"] as? [String: Any])?["name"] as? String
             == "workspace_listDirectory")
-        #expect(adapter.canonicalToolName("workspace_listDirectory", for: request)
+        #expect(CompatToolNames.canonicalName("workspace_listDirectory", request: request)
             == "workspace.listDirectory")
-        #expect(adapter.canonicalToolName("workspace.listDirectory", for: request)
+        #expect(CompatToolNames.canonicalName("workspace.listDirectory", request: request)
             == "workspace.listDirectory")
+    }
+
+    @Test("Compat reverse mapping is total over the run ceiling, not just offered schemas")
+    func compatReverseMappingUsesRunCeiling() throws {
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://gateway.example.com")),
+            toolNameCompatibility: true
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "gateway-model",
+            displayName: "Gateway",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192)
+        )
+        // The schema was budget-evicted from this request, but the ceiling
+        // (tools.list's universe) still names it. The call must resolve.
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            toolSchemas: [.init(name: "web.search", description: "Search")],
+            allToolNames: ["web.search", "workspace.readFile", "document.pdf.render"]
+        )
+        #expect(CompatToolNames.canonicalName("workspace_readFile", request: request) == "workspace.readFile")
+        #expect(CompatToolNames.canonicalName("document_pdf_render", request: request) == "document.pdf.render")
+        // Ambiguous or unknown spellings pass through unchanged (honest denial downstream).
+        #expect(CompatToolNames.canonicalName("workspace_unknown", request: request) == "workspace_unknown")
+        // Canonical spellings always pass through, compat on or off.
+        #expect(CompatToolNames.canonicalName("web.search", request: request) == "web.search")
+        var nativeProvider = provider
+        nativeProvider.toolNameCompatibility = false
+        nativeProvider.baseURL = try #require(URL(string: "https://api.example.com"))
+        let nativeRequest = ProviderStreamRequest(provider: nativeProvider, model: model, allToolNames: ["workspace.readFile"])
+        #expect(CompatToolNames.canonicalName("workspace_readFile", request: nativeRequest) == "workspace_readFile")
     }
 
     @Test("DeepSeek text-only turns validate the advertised catalog before generation")

@@ -56,7 +56,9 @@ enum PDFDocumentOperations {
 
     static func run(_ data: Data, operations: [Operation], images: [String: Data] = [:], cancellation: CancellationToken) async throws -> Result {
         try await Task.detached(priority: .userInitiated) {
-            try process(data, operations: operations, images: images, cancellation: cancellation)
+            // PDFKit is not thread-safe; the entire workflow stays behind the
+            // process-wide gate (the PDFium bridge has its own mutex).
+            try PDFKitGate.run { try process(data, operations: operations, images: images, cancellation: cancellation) }
         }.value
     }
 

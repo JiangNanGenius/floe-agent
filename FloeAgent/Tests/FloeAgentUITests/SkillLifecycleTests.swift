@@ -5,6 +5,7 @@ import UIKit
 import PDFKit
 import FloeSkills
 import FloePersistence
+import FloeCore
 import FloeTools
 import FloeWorkspace
 import CryptoKit
@@ -204,6 +205,69 @@ struct SkillLifecycleTests {
         let png = try Data(contentsOf: root.appendingPathComponent("preview.png"))
         #expect(png.prefix(8) == Data([137,80,78,71,13,10,26,10]))
         #expect(UIImage(data: png) != nil)
+    }
+
+    @Test("PDF render caps output at 20 pages and rejects degenerate page boxes")
+    @MainActor func pdfRenderPageCapAndBounds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pdf-render-guards-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let multi = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 300, height: 200)).pdfData { renderer in
+            for index in 0..<25 {
+                renderer.beginPage()
+                ("PAGE \(index + 1)" as NSString).draw(at: CGPoint(x: 30, y: 100), withAttributes: [.font: UIFont.systemFont(ofSize: 26)])
+            }
+        }
+        try multi.write(to: root.appendingPathComponent("multi.pdf"))
+        let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root, cancellation: CancellationToken())
+        do {
+            _ = try await PDFRenderTool().execute(.init(path: "multi.pdf", pages: "1-25"), context: context)
+            Issue.record("Expected the 20-page render cap to reject 1-25")
+        } catch let FloeError.validationFailed(message) {
+            #expect(message.contains("20"))
+        }
+        _ = try await PDFRenderTool().execute(.init(path: "multi.pdf", pages: "1-20"), context: context)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("PDFRenders").path).count == 20)
+        // Raw bytes keep the zero-width media box PDFKit would normalize away
+        // when serializing one of its own pages.
+        func rawPDF(mediaBox: String) -> Data {
+            var data = Data("%PDF-1.4\n".utf8), offsets: [Int] = []
+            func append(_ string: String) { data.append(Data(string.utf8)) }
+            offsets.append(data.count); append("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+            offsets.append(data.count); append("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+            offsets.append(data.count); append("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox \(mediaBox) >>\nendobj\n")
+            let xref = data.count
+            append("xref\n0 4\n0000000000 65535 f \n")
+            for offset in offsets { append(String(format: "%010d 00000 n \n", offset)) }
+            append("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n\(xref)\n%%EOF\n")
+            return data
+        }
+        try rawPDF(mediaBox: "[0 0 0 200]").write(to: root.appendingPathComponent("degenerate.pdf"))
+        do {
+            _ = try await PDFRenderTool().execute(.init(path: "degenerate.pdf", page: 1), context: context)
+            Issue.record("Expected degenerate media box to fail validation")
+        } catch let FloeError.validationFailed(message) {
+            #expect(message.contains("bounds"))
+        }
+    }
+
+    @Test("PDF merge retains sources through serialization and verifies output")
+    @MainActor func pdfMergeRoundTrip() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pdf-merge-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try pdfFixture().write(to: root.appendingPathComponent("a.pdf"))
+        try pdfFixture().write(to: root.appendingPathComponent("b.pdf"))
+        let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root, cancellation: CancellationToken())
+        let output = try await PDFMergeTool().execute(.init(inputPaths: ["a.pdf", "b.pdf"], outputPath: "merged.pdf"), context: context)
+        #expect(output.summary.contains("1+1"))
+        let merged = try #require(PDFDocument(url: root.appendingPathComponent("merged.pdf")))
+        #expect(merged.pageCount == 2)
+        #expect(merged.page(at: 0)?.string?.contains("HELLO") == true)
+        #expect(merged.page(at: 1)?.string?.contains("HELLO") == true)
+        await #expect(throws: (any Error).self) {
+            try await PDFMergeTool().execute(.init(inputPaths: ["a.pdf", "b.pdf"], outputPath: "merged.pdf"), context: context)
+        }
     }
 
     @Test("Encrypted PDF unlock uses approved credential references and preserves its source")

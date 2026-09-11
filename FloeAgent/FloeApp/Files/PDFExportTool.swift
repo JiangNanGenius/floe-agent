@@ -28,23 +28,25 @@ struct PDFExportTool: AgentTool {
         try validate(args)
         let input = try PDFToolSupport.read(args.inputPath, context: context)
         let exported: (Data, Int, Int) = try await Task.detached {
-            guard let pdf = PDFDocument(data: input), !pdf.isLocked, (1...500).contains(pdf.pageCount), pdf.allowsCopying else {
-                throw FloeError.validationFailed("PDF must permit copying, be unlocked and contain 1...500 pages")
+            try PDFKitGate.run { () throws -> (Data, Int, Int) in
+                guard let pdf = PDFDocument(data: input), !pdf.isLocked, (1...500).contains(pdf.pageCount), pdf.allowsCopying else {
+                    throw FloeError.validationFailed("PDF must permit copying, be unlocked and contain 1...500 pages")
+                }
+                let selected = try args.pages.map { try PDFToolSupport.pageNumbers(from: $0, pageCount: pdf.pageCount) } ?? Array(1...pdf.pageCount)
+                var records: [[String: Any]] = [], texts: [String] = [], total = 0, empty = 0
+                for number in selected {
+                    try context.cancellation.throwIfCancelled()
+                    guard let page = pdf.page(at: number - 1) else { throw FloeError.validationFailed("PDF page unavailable") }
+                    let text = page.string ?? ""
+                    total += text.utf8.count
+                    guard total <= 8_388_608 else { throw FloeError.validationFailed("PDF export text exceeds 8 MiB") }
+                    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { empty += 1 }
+                    records.append(["page": number, "text": text]); texts.append(text)
+                }
+                let data = args.format == "json" ? try JSONSerialization.data(withJSONObject: ["pages": records], options: [.sortedKeys]) : Data(texts.joined(separator: "\n\u{000C}\n").utf8)
+                guard data.count <= 8_388_608 else { throw FloeError.validationFailed("PDF export exceeds 8 MiB") }
+                return (data, selected.count, empty)
             }
-            let selected = try args.pages.map { try PDFToolSupport.pageNumbers(from: $0, pageCount: pdf.pageCount) } ?? Array(1...pdf.pageCount)
-            var records: [[String: Any]] = [], texts: [String] = [], total = 0, empty = 0
-            for number in selected {
-                try context.cancellation.throwIfCancelled()
-                guard let page = pdf.page(at: number - 1) else { throw FloeError.validationFailed("PDF page unavailable") }
-                let text = page.string ?? ""
-                total += text.utf8.count
-                guard total <= 8_388_608 else { throw FloeError.validationFailed("PDF export text exceeds 8 MiB") }
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { empty += 1 }
-                records.append(["page": number, "text": text]); texts.append(text)
-            }
-            let data = args.format == "json" ? try JSONSerialization.data(withJSONObject: ["pages": records], options: [.sortedKeys]) : Data(texts.joined(separator: "\n\u{000C}\n").utf8)
-            guard data.count <= 8_388_608 else { throw FloeError.validationFailed("PDF export exceeds 8 MiB") }
-            return (data, selected.count, empty)
         }.value
         try PDFToolSupport.write(exported.0, to: args.outputPath, context: context)
         return PDFToolSupport.output("Exported \(exported.1) pages to \(args.outputPath); pagesWithoutExtractableText=\(exported.2); originalPreserved=true", status: 0)

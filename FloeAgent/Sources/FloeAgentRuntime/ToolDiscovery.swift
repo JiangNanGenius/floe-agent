@@ -20,8 +20,29 @@ enum ToolDiscovery {
         var limit: Int?
     }
 
-    static func list(arguments: Data, descriptors: [ToolCatalog.Descriptor], loaded: Set<String>, relatedSkills: [String: [String]] = [:]) throws -> String {
-        let args = try JSONDecoder().decode(ListArguments.self, from: arguments)
+    /// Maps a model-spelled name to the canonical ceiling name. Compat-mode
+    /// providers see dots as underscores on the wire, so cursors and exact
+    /// queries may arrive underscored; case-insensitive throughout because
+    /// compat models routinely drift case. A unique sanitized match wins.
+    static func canonicalSpelling(_ spelling: String, among descriptors: [ToolCatalog.Descriptor]) -> String {
+        let names = descriptors.map(\.name)
+        if names.contains(spelling) { return spelling }
+        if let folded = names.first(where: { $0.lowercased() == spelling.lowercased() }) { return folded }
+        let target = spelling.replacingOccurrences(of: ".", with: "_").lowercased()
+        let matches = names.filter { $0.replacingOccurrences(of: ".", with: "_").lowercased() == target }
+        return matches.count == 1 ? matches[0] : spelling
+    }
+
+    static func wireSpelling(_ canonical: String, wireSafe: Bool) -> String {
+        wireSafe ? canonical.replacingOccurrences(of: ".", with: "_") : canonical
+    }
+
+    static func list(arguments: Data, descriptors: [ToolCatalog.Descriptor], loaded: Set<String>, relatedSkills: [String: [String]] = [:], wireSafeNames: Bool = false) throws -> String {
+        var args = try JSONDecoder().decode(ListArguments.self, from: arguments)
+        if let cursor = args.afterName {
+            let normalized = canonicalSpelling(cursor, among: descriptors)
+            if normalized != cursor { args.afterName = normalized }
+        }
         guard (1...100).contains(args.limit ?? 30) else {
             throw FloeError.validationFailed("Tool list limit must be 1–100")
         }
@@ -31,6 +52,7 @@ enum ToolDiscovery {
         let page = Array(remaining.prefix(args.limit ?? 30))
         struct Entry: Encodable {
             let name: String
+            let wireName: String?
             let description: String
             let group: String
             let schemaLoaded: Bool
@@ -43,7 +65,9 @@ enum ToolDiscovery {
             let nextAfterName: String?
         }
         let response = Response(tools: page.map {
-            Entry(name: $0.name, description: String($0.toolDescription.prefix(240)),
+            Entry(name: $0.name,
+                  wireName: wireSafeNames ? wireSpelling($0.name, wireSafe: true) : nil,
+                  description: String($0.toolDescription.prefix(240)),
                   group: group($0.name), schemaLoaded: loaded.contains($0.name),
                   ownerSkillID: $0.ownerSkillID, relatedSkillIDs: relatedSkills[$0.name, default: []])
         }, total: rows.count, nextAfterName: remaining.count > page.count ? page.last?.name : nil)
@@ -89,7 +113,10 @@ enum ToolDiscovery {
             terms.contains(where: query.contains) ? group : nil
         })
         let tokens = query.split(whereSeparator: { $0.isWhitespace || "，,;；/".contains($0) }).map(String.init)
-        let exact = descriptors.filter { tokens.contains($0.name.lowercased()) }
+        let exact = descriptors.filter { descriptor in
+            tokens.contains(descriptor.name.lowercased())
+                || tokens.contains(where: { canonicalSpelling($0, among: descriptors).lowercased() == descriptor.name.lowercased() })
+        }
         if !exact.isEmpty { return exact }
         for descriptor in descriptors {
             if tokens.contains(where: { descriptor.name.lowercased().contains($0) }) {

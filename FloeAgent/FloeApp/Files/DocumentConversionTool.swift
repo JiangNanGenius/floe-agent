@@ -171,10 +171,13 @@ enum DocumentFileConverter {
             renderer.prepare(forDrawingPages: NSRange(location: 0, length: 1))
             let pages = renderer.numberOfPages
             guard (1...500).contains(pages) else { throw FloeError.validationFailed("PDF requires 1...500 pages") }
+            // prepare() must cover exactly the pages drawn below.
+            renderer.prepare(forDrawingPages: NSRange(location: 0, length: pages))
             let pdf = UIGraphicsPDFRenderer(bounds: renderer.paperRect).pdfData { ctx in
                 for page in 0..<pages { ctx.beginPage(); renderer.drawPage(at: page, in: renderer.paperRect) }
             }
-            guard let reopened = PDFDocument(data: pdf), reopened.pageCount == pages else { throw FloeError.validationFailed("Generated PDF failed verification") }
+            let verifiedPages = PDFKitGate.run { PDFDocument(data: pdf)?.pageCount }
+            guard verifiedPages == pages else { throw FloeError.validationFailed("Generated PDF failed verification") }
             return Result(data: pdf, warnings: warnings)
         }
         if target == "rtf" {
@@ -195,20 +198,22 @@ enum DocumentFileConverter {
 
     static func pdfHTML(_ data: Data, cancellation: CancellationToken) async throws -> Data {
         try await Task.detached {
-            guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.allowsCopying, (1...500).contains(pdf.pageCount) else {
-                throw FloeError.validationFailed("PDF must permit copying, be unlocked and contain 1...500 pages")
-            }
-            var parts: [String] = [], total = 0
-            for n in 0..<pdf.pageCount {
-                try cancellation.throwIfCancelled()
-                guard let page = pdf.page(at: n), let text = page.string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw FloeError.validationFailed("Page \(n + 1) has no extractable text. Create a searchable OCR copy before converting; no page was silently omitted")
+            try PDFKitGate.run { () throws -> Data in
+                guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.allowsCopying, (1...500).contains(pdf.pageCount) else {
+                    throw FloeError.validationFailed("PDF must permit copying, be unlocked and contain 1...500 pages")
                 }
-                total += text.utf8.count
-                guard total <= maximumBytes / 2 else { throw FloeError.validationFailed("PDF text exceeds conversion limit") }
-                parts.append("<section><h2>Page \(n + 1)</h2><p>" + escape(text).replacingOccurrences(of: "\n", with: "<br>") + "</p></section>")
+                var parts: [String] = [], total = 0
+                for n in 0..<pdf.pageCount {
+                    try cancellation.throwIfCancelled()
+                    guard let page = pdf.page(at: n), let text = page.string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw FloeError.validationFailed("Page \(n + 1) has no extractable text. Create a searchable OCR copy before converting; no page was silently omitted")
+                    }
+                    total += text.utf8.count
+                    guard total <= maximumBytes / 2 else { throw FloeError.validationFailed("PDF text exceeds conversion limit") }
+                    parts.append("<section><h2>Page \(n + 1)</h2><p>" + escape(text).replacingOccurrences(of: "\n", with: "<br>") + "</p></section>")
+                }
+                return Data(parts.joined(separator: "\n").utf8)
             }
-            return Data(parts.joined(separator: "\n").utf8)
         }.value
     }
 

@@ -1382,7 +1382,12 @@ public actor FloeAgentRuntime {
                     description: PlanSubmission.toolDescription,
                     parametersJSON: PlanSubmission.parametersJSON
                 )
-            ] : []) : []
+            ] : []) : [],
+            // Compat-mode reverse name mapping must be total over the run's
+            // capability ceiling — the same set tools.list enumerates —
+            // because eviction notes legitimately invite calls to tools whose
+            // schema was trimmed from this request.
+            allToolNames: discoverableDescriptors.map(\.name)
         )
         // A retry must replay the exact safe dispatch boundary. In particular,
         // do not rebuild a compacted prompt or regenerate a tool request after
@@ -2348,7 +2353,8 @@ public actor FloeAgentRuntime {
                     let output = try ToolDiscovery.list(arguments: call.argumentsJSON,
                         descriptors: discoverableDescriptors + [ToolDiscovery.descriptor, ToolDiscovery.listDescriptor],
                         loaded: discoveredToolNames.union([ToolDiscovery.name, ToolDiscovery.listName]),
-                        relatedSkills: configuration.relatedSkillIDsByTool)
+                        relatedSkills: configuration.relatedSkillIDsByTool,
+                        wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider))
                     result = ToolResult(callID: call.id, status: .ok, outputSummary: output, outputDigest: "", maximumSummaryCharacters: 262_144)
                 } catch {
                     result = ToolResult(callID: call.id, status: .failed, outputSummary: "Invalid list: \(error)", outputDigest: "")

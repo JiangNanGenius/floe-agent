@@ -9,6 +9,44 @@ import FoundationNetworking
 import FloeCore
 import FloeModels
 
+/// Compat-mode tool name mapping shared by all three wire adapters.
+/// Some providers (DeepSeek, gateways) enforce ^[A-Za-z0-9_-]+$ function
+/// names, so dotted canonical names travel the wire as underscored spellings.
+/// The reverse map is total over the run's capability ceiling
+/// (`allToolNames`), because the runtime may legitimately invite calls to
+/// tools whose schema was budget-evicted from this request.
+public enum CompatToolNames {
+    public static func usesWireSafeNames(_ provider: ProviderProfile) -> Bool {
+        if provider.toolNameCompatibility { return true }
+        if provider.baseURL.host?.lowercased().contains("deepseek") == true { return true }
+        return provider.displayName?.lowercased().contains("deepseek") == true
+    }
+
+    public static func wireName(_ canonicalName: String, for provider: ProviderProfile) -> String {
+        usesWireSafeNames(provider)
+            ? canonicalName.replacingOccurrences(of: ".", with: "_")
+            : canonicalName
+    }
+
+    /// Canonical (dotted) name for a model-emitted wire name. Exact schema
+    /// names pass through untouched (a provider may legitimately emit the
+    /// canonical spelling); otherwise the unique ceiling name sanitizing to
+    /// the wire spelling wins; ambiguous or unknown spellings pass through
+    /// unchanged so the runtime's not-in-catalog denial stays honest.
+    public static func canonicalName(_ wireName: String, request: ProviderStreamRequest) -> String {
+        guard usesWireSafeNames(request.provider) else { return wireName }
+        if request.toolSchemas.contains(where: { $0.name == wireName }) { return wireName }
+        if request.allToolNames.contains(wireName) { return wireName }
+        let universe = request.allToolNames.isEmpty
+            ? request.toolSchemas.map(\.name)
+            : request.allToolNames
+        let matches = universe.filter {
+            $0.replacingOccurrences(of: ".", with: "_") == wireName
+        }
+        return matches.count == 1 ? matches[0] : wireName
+    }
+}
+
 /// Credentials resolved from the Keychain for one request. Never persisted
 /// beyond the call site.
 public struct ProviderCredentials: Sendable {
@@ -109,6 +147,11 @@ public struct ProviderStreamRequest: Sendable {
     public var pendingAssistantReasoning: String?
     /// Tools offered to the model, as wire-neutral schema descriptors.
     public var toolSchemas: [ToolSchemaDescriptor]
+    /// Every canonical tool name inside this run's capability ceiling — the
+    /// SAME set tools.list enumerates. Compat-mode reverse name mapping must
+    /// be total over this set, not just over the budget-trimmed schemas,
+    /// because the runtime legitimately invites calls to evicted tools.
+    public var allToolNames: [String]
     public var reasoningPolicy: ProviderReasoningPolicy
     /// Transient liveness only. Partial arguments are never dispatched,
     /// persisted as a tool call, or exposed as model text.
@@ -124,6 +167,7 @@ public struct ProviderStreamRequest: Sendable {
         replayedToolPairs: [ReplayedToolPair] = [],
         pendingAssistantReasoning: String? = nil,
         toolSchemas: [ToolSchemaDescriptor] = [],
+        allToolNames: [String] = [],
         reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
         onToolArgumentsProgress: (@Sendable () async -> Void)? = nil
     ) {
@@ -136,6 +180,7 @@ public struct ProviderStreamRequest: Sendable {
         self.replayedToolPairs = replayedToolPairs
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.toolSchemas = toolSchemas
+        self.allToolNames = allToolNames
         self.reasoningPolicy = reasoningPolicy
         self.onToolArgumentsProgress = onToolArgumentsProgress
     }
@@ -398,7 +443,12 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                                 await request.onToolArgumentsProgress?()
                             }
                             for event in WireTranslator.translate(wireEvent) {
-                                continuation.yield(event)
+                                if case .toolRequest(var call) = event {
+                                    call.toolName = CompatToolNames.canonicalName(call.toolName, request: request)
+                                    continuation.yield(.toolRequest(call))
+                                } else {
+                                    continuation.yield(event)
+                                }
                             }
                         } catch {
                             logger.warning("Responses event decode failed: \(error.localizedDescription)")
@@ -463,7 +513,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         for pair in request.replayedToolPairs {
             input.append(.functionCall(
                 callID: pair.call.id,
-                name: pair.call.toolName,
+                name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
                 arguments: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
             ))
             input.append(.functionCallOutput(
@@ -474,7 +524,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         for call in request.pendingToolCalls {
             input.append(.functionCall(
                 callID: call.id,
-                name: call.toolName,
+                name: CompatToolNames.wireName(call.toolName, for: request.provider),
                 arguments: String(decoding: call.argumentsJSON, as: UTF8.self)
             ))
         }
@@ -483,7 +533,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         }
         let tools = request.toolSchemas.map {
             ResponsesRequest.ToolDefinition(
-                name: $0.name,
+                name: CompatToolNames.wireName($0.name, for: request.provider),
                 description: $0.description,
                 parameters: $0.parametersJSON
             )
@@ -557,7 +607,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                             }
                             for event in WireTranslator.translate(chunk, aggregator: &aggregator) {
                                 if case .toolRequest(var call) = event {
-                                    call.toolName = canonicalToolName(call.toolName, for: request)
+                                    call.toolName = CompatToolNames.canonicalName(call.toolName, request: request)
                                     continuation.yield(.toolRequest(call))
                                 } else if case .completed(let completion) = event {
                                     // OpenAI Chat Completions commonly sends a
@@ -654,7 +704,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                 toolCalls: [ChatRequest.Message.ToolCall(
                     id: pair.call.id,
                     function: .init(
-                        name: wireToolName(pair.call.toolName, for: request.provider),
+                        name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
                         arguments: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
                     )
                 )]
@@ -673,7 +723,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     ChatRequest.Message.ToolCall(
                         id: call.id,
                         function: .init(
-                            name: wireToolName(call.toolName, for: request.provider),
+                            name: CompatToolNames.wireName(call.toolName, for: request.provider),
                             arguments: String(decoding: call.argumentsJSON, as: UTF8.self)
                         )
                     )
@@ -695,7 +745,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             // DeepSeek and some gateways reject dots in tool names
             // (^[a-zA-Z0-9_-]+$). When the provider has toolNameCompatibility
             // enabled, convert dots to underscores for the wire only.
-            let wireName = wireToolName($0.name, for: request.provider)
+            let wireName = CompatToolNames.wireName($0.name, for: request.provider)
             return ChatRequest.ToolDefinition(
                 name: wireName,
                 description: $0.description,
@@ -721,33 +771,6 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         )
     }
 
-    /// Converts only names actually advertised on this request. A model may
-    /// still return a canonical dotted name, and underscore collisions remain
-    /// untouched unless the mapping is unique.
-    func canonicalToolName(_ wireName: String, for request: ProviderStreamRequest) -> String {
-        guard usesWireSafeToolNames(request.provider) else { return wireName }
-        if request.toolSchemas.contains(where: { $0.name == wireName }) { return wireName }
-        let matches = request.toolSchemas.filter {
-            wireToolName($0.name, for: request.provider) == wireName
-        }
-        return matches.count == 1 ? matches[0].name : wireName
-    }
-
-    func wireToolName(_ canonicalName: String, for provider: ProviderProfile) -> String {
-        usesWireSafeToolNames(provider)
-            ? canonicalName.replacingOccurrences(of: ".", with: "_")
-            : canonicalName
-    }
-
-    /// DeepSeek validates the complete tool catalog before it begins a turn,
-    /// including turns that contain no image and never end up using a tool.
-    /// Make its documented wire-name constraint automatic so a stale or
-    /// unsynchronised UI toggle cannot break every basic chat request.
-    private func usesWireSafeToolNames(_ provider: ProviderProfile) -> Bool {
-        if provider.toolNameCompatibility { return true }
-        if provider.baseURL.host?.lowercased().contains("deepseek") == true { return true }
-        return provider.displayName?.lowercased().contains("deepseek") == true
-    }
 }
 
 // MARK: - Anthropic Messages adapter
@@ -786,7 +809,12 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                                 await request.onToolArgumentsProgress?()
                             }
                             for event in WireTranslator.translate(wireEvent, aggregator: &aggregator) {
-                                continuation.yield(event)
+                                if case .toolRequest(var call) = event {
+                                    call.toolName = CompatToolNames.canonicalName(call.toolName, request: request)
+                                    continuation.yield(.toolRequest(call))
+                                } else {
+                                    continuation.yield(event)
+                                }
                             }
                         } catch {
                             logger.warning("Anthropic event decode failed: \(error.localizedDescription)")
@@ -871,7 +899,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                 role: "assistant",
                 content: [.toolUse(
                     id: pair.call.id,
-                    name: pair.call.toolName,
+                    name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
                     inputJSON: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
                 )]
             ))
@@ -890,7 +918,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                 content: request.pendingToolCalls.map { call in
                     .toolUse(
                         id: call.id,
-                        name: call.toolName,
+                        name: CompatToolNames.wireName(call.toolName, for: request.provider),
                         inputJSON: String(decoding: call.argumentsJSON, as: UTF8.self)
                     )
                 }
@@ -906,7 +934,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
         }
         let tools = request.toolSchemas.map {
             AnthropicRequest.ToolDefinition(
-                name: $0.name,
+                name: CompatToolNames.wireName($0.name, for: request.provider),
                 description: $0.description,
                 inputSchema: $0.parametersJSON
             )

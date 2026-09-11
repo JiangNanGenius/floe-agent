@@ -79,7 +79,9 @@ struct LocalPromptHarnessTests {
             #expect(local.systemInstructions.contains("Prior result: revision seven"))
             #expect(local.systemInstructions.contains("Current runtime time:"))
             #expect(local.systemInstructions.contains("Runtime clock at dispatch:"))
-            #expect(local.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative): workspace.readFile"))
+            // Discovery tools are admissible in fallback mode so weak models
+            // can find names; the authoritative directory lists them first.
+            #expect(local.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative): tools.list, tools.search, workspace.readFile"))
             #expect(local.text.contains(user))
             #expect(!local.text.contains("Prior result: revision seven"))
             if let path = ProcessInfo.processInfo.environment["FLOE_SYNTHETIC_LOCAL_PROMPT_AUDIT_DIR"] {

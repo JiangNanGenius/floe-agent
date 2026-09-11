@@ -153,4 +153,28 @@ struct ToolDiscoveryTests {
         let available = ["skill.create", "skill.read", "skill.manage", "memory.organizePreview", "ssh.cancelTask"].map(descriptor)
         #expect(ToolDiscovery.matches(query: "修改已有技能", descriptors: available).map(\.name) == ["skill.create", "skill.read", "skill.manage"])
     }
+
+    @Test("Compat mode: underscored cursors paginate and entries carry wire names")
+    func compatListCursorAndWireNames() throws {
+        let descriptors = ["workspace.createFile", "workspace.listDirectory", "workspace.readFile", "web.search"].map(descriptor)
+        // Underscored cursor from a wire-spelled page turn must not skip the group.
+        let output = try ToolDiscovery.list(
+            arguments: Data(#"{"afterName":"workspace_createFile","limit":10}"#.utf8),
+            descriptors: descriptors, loaded: [], wireSafeNames: true
+        )
+        struct Row: Decodable { let name: String; let wireName: String? }
+        struct Page: Decodable { let tools: [Row]; let total: Int; let nextAfterName: String? }
+        let page = try JSONDecoder().decode(Page.self, from: Data(output.utf8))
+        #expect(page.tools.map(\.name) == ["workspace.listDirectory", "workspace.readFile"])
+        #expect(page.tools[0].wireName == "workspace_listDirectory")
+        #expect(page.total == 4)
+    }
+
+    @Test("Compat mode: underscored exact query loads the canonical tool")
+    func compatSearchExactName() {
+        let available = ["workspace.readFile", "workspace.writeFile", "web.search"].map(descriptor)
+        #expect(ToolDiscovery.matches(query: "workspace_readfile", descriptors: available).map(\.name) == ["workspace.readFile"])
+        // Canonical spelling keeps working.
+        #expect(ToolDiscovery.matches(query: "workspace.readfile", descriptors: available).map(\.name) == ["workspace.readFile"])
+    }
 }

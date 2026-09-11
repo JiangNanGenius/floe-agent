@@ -7,9 +7,12 @@
 // the documented fallback: a base64-wrapped `python3 -c` one-liner (no
 // shell quoting issues, script bytes travel verbatim-encoded).
 //
-// The exec channel is closed on timeout/cancellation via
-// `client.session.channel.close()` (the session channel IS reachable),
-// which terminates the in-flight exec.
+// On timeout/cancellation the whole SSH client is torn down via
+// `client.close()`. A channel-scoped close is NOT possible with the
+// pinned Citadel: the public `executeCommandStream` drops its channel
+// handle, `_executeCommandStream` (which returns it) is internal, and
+// `SSHClient.session` has an internal getter — closing the connection is
+// the only public way to terminate an in-flight exec.
 
 import Foundation
 import Citadel

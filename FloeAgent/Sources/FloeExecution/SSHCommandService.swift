@@ -309,9 +309,16 @@ public struct SSHCommandService: Sendable {
         return mutationMarkers.contains(where: normalized.contains)
     }
 
+    /// UserDefaults key for the cached inspection of a host. The network
+    /// diagnostic tools read the same cache to pick the remote ping dialect
+    /// (BSD vs iputils `-W` semantics), so keep the format stable.
+    static func inspectionCacheKey(hostID: UUID) -> String {
+        "floe.remoteTargetInspection.\(hostID.uuidString)"
+    }
+
     private static func persist(_ inspection: RemoteTargetInspection) -> RemoteTargetInspection {
         if let data = try? JSONEncoder().encode(inspection) {
-            UserDefaults.standard.set(data, forKey: "floe.remoteTargetInspection.\(inspection.hostID.uuidString)")
+            UserDefaults.standard.set(data, forKey: inspectionCacheKey(hostID: inspection.hostID))
         }
         return inspection
     }

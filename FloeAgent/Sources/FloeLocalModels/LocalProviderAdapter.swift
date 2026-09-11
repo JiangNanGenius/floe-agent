@@ -933,7 +933,26 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return names.intersection(mlxAdmissibleToolNames)
     }
 
+    /// Resolves an emitted name against the offered set: exact, then alias,
+    /// then case-fold, then dot/underscore variants. Nil means drop.
+    static func normalizedOfferedName(
+        _ emitted: String,
+        offered: Set<String>,
+        aliases: [String: String]
+    ) -> String? {
+        if offered.contains(emitted) { return emitted }
+        if let alias = aliases[emitted], offered.contains(alias) { return alias }
+        if let cased = offered.first(where: { $0.lowercased() == emitted.lowercased() }) { return cased }
+        let dotted = emitted.replacingOccurrences(of: "_", with: ".")
+        if offered.contains(dotted) { return dotted }
+        let underscored = emitted.replacingOccurrences(of: ".", with: "_")
+        let unique = offered.filter { $0.replacingOccurrences(of: ".", with: "_") == underscored }
+        if unique.count == 1, let first = unique.first { return first }
+        return nil
+    }
+
     private static let mlxAdmissibleToolNames: Set<String> = [
+            "tools.list", "tools.search", "task.readPlan", "task.updatePlan", "skill.search",
             "web.search", "web.searchAI", "web.fetch",
             "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
             "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
@@ -1207,9 +1226,15 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 "browser.fetch": "web.fetch",
                 "browser.search": "web.search"
             ]
-            let name = offeredToolNames.contains(emittedName)
-                ? emittedName : (aliases[emittedName] ?? emittedName)
-            guard offeredToolNames.contains(name) else { continue }
+            // Weak local models mangle names (case drift, underscore/dot
+            // swaps). Normalize before giving up instead of silently dropping.
+            let name = Self.normalizedOfferedName(emittedName, offered: offeredToolNames, aliases: aliases)
+            guard let name else {
+                FloeLogger(category: .providers).warning(
+                    "localFallbackToolNameDropped emitted=\(emittedName) offered=\(offeredToolNames.count)"
+                )
+                continue
+            }
             let arguments: [String: Any]
             if let dictionary = body["arguments"] as? [String: Any] {
                 arguments = dictionary
