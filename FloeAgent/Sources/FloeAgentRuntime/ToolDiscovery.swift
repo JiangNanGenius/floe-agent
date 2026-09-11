@@ -95,6 +95,7 @@ enum ToolDiscovery {
             "http": ["http", "接口", "api"],
             "network": ["network", "网络", "ping", "dns", "http", "端口", "traceroute"],
             "workspace": ["workspace", "文件", "编辑", "file", "html", "代码"],
+            "image": ["image", "图片", "图像", "照片", "生成图片", "生图", "画图", "createimage", "create image", "text-to-image", "文字识别", "ocr"],
             "canvas": ["canvas", "画布", "生成", "图片", "视频"],
             "memory": ["memory", "记忆", "remember"],
             "skill": ["skill", "技能"],

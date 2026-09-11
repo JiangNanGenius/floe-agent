@@ -38,11 +38,19 @@ final class LocalPreviewServer: @unchecked Sendable {
         let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let server = LocalPreviewServer(listener: listener, root: canonicalRoot, token: token)
         listener.newConnectionHandler = { [weak server] connection in server?.accept(connection) }
-        try await server.begin()
+        // Resolve the entry before starting the listener: a missing entry must
+        // not leak a running listener/port.
+        let selectedEntry = try server.resolveEntry(entry)
+        do {
+            try await server.begin()
+        } catch {
+            server.stop()
+            throw error
+        }
         guard let port = listener.port?.rawValue else {
+            server.stop()
             throw FloeError.internalError("Preview listener did not receive a port")
         }
-        let selectedEntry = try server.resolveEntry(entry)
         let url = URL(string: "http://127.0.0.1:\(port)/\(token)/\(selectedEntry)")!
         BrowserURLPolicy.authorizePreview(url)
         return (server, Session(root: canonicalRoot, entry: selectedEntry, url: url))
@@ -142,18 +150,39 @@ final class LocalPreviewServer: @unchecked Sendable {
     }
 
     private func resolveEntry(_ requested: String?) throws -> String {
-        let candidates = [requested, "index.html", "public/index.html"].compactMap { $0 }
+        let candidates = [requested, "index.html", "index.htm", "public/index.html", "dist/index.html", "build/index.html"]
+            .compactMap { $0 }
         for candidate in candidates {
             guard !candidate.isEmpty,
                   !candidate.split(separator: "/").contains(".."),
                   !candidate.hasPrefix("/") else { continue }
             let url = root.appendingPathComponent(candidate).standardizedFileURL.resolvingSymlinksInPath()
             let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-            if url.path.hasPrefix(rootPrefix), FileManager.default.fileExists(atPath: url.path) {
+            var isDirectory: ObjCBool = false
+            if url.path.hasPrefix(rootPrefix),
+               FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+               !isDirectory.boolValue {
                 return candidate
             }
         }
-        throw FloeError.notFound("No preview entry file was found")
+        // Convenience for the common flat-site case: serve the only HTML file
+        // instead of failing with an opaque error.
+        if let listing = try? FileManager.default.contentsOfDirectory(atPath: root.path) {
+            let htmls = listing
+                .filter { ["html", "htm"].contains(($0 as NSString).pathExtension.lowercased()) }
+                .sorted()
+            if htmls.count == 1, let only = htmls.first {
+                return only
+            }
+            if !htmls.isEmpty {
+                throw FloeError.notFound(
+                    "No preview entry file was found in '\(root.lastPathComponent)' (served root: \(root.path)); pass entry explicitly. HTML candidates: \(htmls.prefix(12).joined(separator: ", "))"
+                )
+            }
+        }
+        throw FloeError.notFound(
+            "No preview entry file was found in '\(root.lastPathComponent)' (served root: \(root.path)); create an index.html or pass entry. The entry is relative to the served directory."
+        )
     }
 
     private static func mimeType(for extensionName: String) -> String {
@@ -206,17 +235,27 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
 
     func start(root: URL, relativeRoot: String?, entry: String?) async throws -> ToolExecutionOutput {
         guard let browser else { throw FloeError.invalidConfiguration("Visible browser is unavailable") }
-        let selectedRoot: URL
+        var selectedRoot: URL
+        var selectedEntry = entry
         if let relativeRoot, !relativeRoot.isEmpty {
             guard !relativeRoot.hasPrefix("/"), !relativeRoot.split(separator: "/").contains("..") else {
                 throw FloeError.validationFailed("Preview root must be a safe workspace-relative path")
             }
-            selectedRoot = root.appendingPathComponent(relativeRoot)
+            let candidate = root.appendingPathComponent(relativeRoot)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                // The model passed a file (commonly the entry page) as root:
+                // serve its directory and use the file as the entry.
+                selectedRoot = candidate.deletingLastPathComponent()
+                selectedEntry = candidate.lastPathComponent
+            } else {
+                selectedRoot = candidate
+            }
         } else {
             selectedRoot = root
         }
         server?.stop()
-        let started = try await LocalPreviewServer.start(root: selectedRoot, entry: entry)
+        let started = try await LocalPreviewServer.start(root: selectedRoot, entry: selectedEntry)
         server = started.0
         session = started.1
         activeURL = started.1.url
@@ -253,8 +292,8 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
 private struct PreviewStartTool: AgentTool {
     struct Arguments: Decodable, Sendable { let root: String?; let entry: String? }
     static let name = "preview.start"
-    static let toolDescription = "Serve static files from the current task workspace and open them in Floe's visible browser"
-    static let parametersJSON = #"{"type":"object","properties":{"root":{"type":"string"},"entry":{"type":"string"}},"additionalProperties":false}"#
+    static let toolDescription = "Serve static files from the current task workspace and open them in Floe's visible browser. root is a workspace-relative directory (a file path is accepted; its parent is served with that file as the entry); entry is relative to root and defaults to index.html/index.htm/public/index.html/dist/index.html/build/index.html or the only HTML file in the directory."
+    static let parametersJSON = #"{"type":"object","properties":{"root":{"type":"string","description":"Workspace-relative directory to serve; a file path serves its parent with that file as entry"},"entry":{"type":"string","description":"Entry file relative to root; defaults to common index names or the only HTML file"}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly

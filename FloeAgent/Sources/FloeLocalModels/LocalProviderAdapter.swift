@@ -1218,7 +1218,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
             let aliases = [
                 "browser.get": "web.fetch",
                 "browser.fetch": "web.fetch",
-                "browser.search": "web.search"
+                "browser.search": "web.search",
+                "image.createImage": "image.generate",
+                "image_createImage": "image.generate",
+                "image.create": "image.generate",
+                "createImage": "image.generate"
             ]
             // Weak local models mangle names (case drift, underscore/dot
             // swaps). Normalize before giving up instead of silently dropping.

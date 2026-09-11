@@ -331,7 +331,9 @@ private final class WorksheetXMLParser: XMLCollector {
     private var currentReference: String?
     private var currentType: String?
     private var currentValue = ""
+    private var currentFormula = ""
     private var collectingValue = false
+    private var collectingFormula = false
     private var collectingInlineText = false
     private(set) var rowCount = 0
 
@@ -357,8 +359,11 @@ private final class WorksheetXMLParser: XMLCollector {
             currentReference = attributeDict["r"]
             currentType = attributeDict["t"]
             currentValue = ""
+            currentFormula = ""
         case "v":
             collectingValue = currentReference != nil
+        case "f":
+            collectingFormula = currentReference != nil
         case "t":
             collectingInlineText = currentReference != nil && currentType == "inlineStr"
         default:
@@ -367,7 +372,7 @@ private final class WorksheetXMLParser: XMLCollector {
     }
 
     override func parser(_ parser: XMLParser, foundCharacters string: String) {
-        if collectingValue || collectingInlineText { currentValue += string }
+        if collectingValue || collectingInlineText || collectingFormula { currentValue += string }
     }
 
     override func parser(
@@ -378,17 +383,30 @@ private final class WorksheetXMLParser: XMLCollector {
     ) {
         if elementName == "v" { collectingValue = false }
         if elementName == "t" { collectingInlineText = false }
+        if elementName == "f" {
+            collectingFormula = false
+            currentFormula = currentValue
+            currentValue = ""
+        }
         guard elementName == "c", let reference = currentReference else { return }
         defer {
             currentReference = nil
             currentType = nil
             currentValue = ""
+            currentFormula = ""
         }
         guard let (row, column) = Self.cellPosition(reference),
               row <= maximumRows,
               column < maximumColumns else { return }
         rowCount = max(rowCount, row)
-        cells[row, default: [:]][column] = decodedValue(currentValue, type: currentType)
+        // Our own workbook writer emits formulas without cached values; expose
+        // the formula itself (like office.inspect does) instead of an empty
+        // cell. External producers with a cached <v> keep their computed value.
+        if currentValue.isEmpty, !currentFormula.isEmpty {
+            cells[row, default: [:]][column] = "=" + currentFormula
+        } else {
+            cells[row, default: [:]][column] = decodedValue(currentValue, type: currentType)
+        }
     }
 
     func renderedRows() -> [[String]] {

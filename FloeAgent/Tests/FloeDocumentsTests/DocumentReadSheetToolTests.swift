@@ -98,6 +98,10 @@ struct DocumentReadSheetToolTests {
         #expect(output.summary.contains("sheet=Data rows=2 shown=2"))
         #expect(output.summary.contains("Hello\t\tInline"))
         #expect(output.summary.contains("true\t42"))
+        // Formula without a cached value reads as the formula (matching
+        // office.inspect); a cached value still wins.
+        #expect(output.summary.contains("=SUM(B2:B2)"))
+        #expect(output.summary.contains("\t84"))
     }
 
     private static func makeWorkbook(at url: URL) throws {
@@ -125,7 +129,7 @@ struct DocumentReadSheetToolTests {
             <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
               <sheetData>
                 <row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="inlineStr"><is><t>Inline</t></is></c></row>
-                <row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2"><v>42</v></c></row>
+                <row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2"><v>42</v></c><c r="C2"><f>SUM(B2:B2)</f></c><c r="D2"><f>B2*2</f><v>84</v></c></row>
               </sheetData>
             </worksheet>
             """#

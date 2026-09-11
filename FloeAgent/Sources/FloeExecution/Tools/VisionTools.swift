@@ -36,13 +36,27 @@ private enum WorkspaceVisionInput {
         guard let path else {
             throw FloeError.validationFailed("No image input was supplied")
         }
-        try context.authorizeWorkspacePath(path)
-        guard let root = context.workspaceRootURL else {
-            throw FloeError.validationFailed("No task workspace is available")
-        }
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.hasPrefix("~") else {
             throw FloeError.validationFailed("path must be relative to the task workspace")
+        }
+        // Tool results hand the model app-storage artifact paths
+        // (GeneratedImages/, BrowserArtifacts/, VNCArtifacts/). Accept the
+        // same references image.inspect accepts before falling back to the
+        // task workspace — otherwise OCR of a generated image reports "file
+        // not found" for the path the model was given.
+        if let namespace = trimmed.split(separator: "/").first.map(String.init),
+           ArtifactNamespace(rawValue: namespace) != nil,
+           let artifact = try? FloeArtifactStore.resolve(
+               trimmed,
+               allowed: [.generatedImages, .browser, .vnc],
+               maxBytes: maximumBytes
+           ) {
+            return try Data(floeContentsOf: artifact, options: [.mappedIfSafe])
+        }
+        try context.authorizeWorkspacePath(path)
+        guard let root = context.workspaceRootURL else {
+            throw FloeError.validationFailed("No task workspace is available")
         }
         let rootURL = root.standardizedFileURL.resolvingSymlinksInPath()
         let normalized = (trimmed as NSString).standardizingPath

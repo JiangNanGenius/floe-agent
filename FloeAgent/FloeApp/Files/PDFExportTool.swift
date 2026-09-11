@@ -9,10 +9,12 @@ struct PDFExportTool: AgentTool {
         var outputPath: String
         var format: String
         var pages: String?
+        /// Explicit overwrite consent, asked for after the user confirms.
+        var overwrite: Bool?
     }
     static let name = "document.pdf.export"
-    static let toolDescription = "Export real PDF text to a new UTF-8 text or JSON file, preserving requested page order. JSON retains page boundaries. Maximum 500 pages / 8 MiB text. Scanned pages are reported, never invented; create a searchable OCR copy first when requested. This is not layout-preserving Word conversion. Use document.pdf.render for PNG/JPEG exports."
-    static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"format":{"type":"string","enum":["text","json"]},"pages":{"type":"string","description":"1-based page selection, e.g. 3,1-2; omit for all pages"}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
+    static let toolDescription = "Export real PDF text to a new UTF-8 text or JSON file, preserving requested page order. JSON retains page boundaries. Maximum 500 pages / 8 MiB text. Scanned pages are reported, never invented; create a searchable OCR copy first when requested. Never overwrites unless the user explicitly confirms and overwrite=true is passed. This is not layout-preserving Word conversion. Use document.pdf.render for PNG/JPEG exports."
+    static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"format":{"type":"string","enum":["text","json"]},"pages":{"type":"string","description":"1-based page selection, e.g. 3,1-2; omit for all pages"},"overwrite":{"type":"boolean","description":"Set true only after the user confirms replacing an existing output file"}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
@@ -48,7 +50,7 @@ struct PDFExportTool: AgentTool {
                 return (data, selected.count, empty)
             }
         }.value
-        try PDFToolSupport.write(exported.0, to: args.outputPath, context: context)
+        try PDFToolSupport.write(exported.0, to: args.outputPath, context: context, overwrite: args.overwrite == true)
         return PDFToolSupport.output("Exported \(exported.1) pages to \(args.outputPath); pagesWithoutExtractableText=\(exported.2); originalPreserved=true", status: 0)
     }
 }

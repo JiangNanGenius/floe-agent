@@ -593,7 +593,7 @@ struct RemoteImageGenerateTool: AgentTool {
         paths.reserveCapacity(attachments.count)
         for attachment in attachments {
             let ext = (attachment.displayName as NSString).pathExtension.lowercased()
-            let filename = "generated-\(attachment.id.uuidString).\(ext.isEmpty ? "jpg" : ext)"
+            let filename = "\(attachment.id.uuidString).\(ext.isEmpty ? "jpg" : ext)"
             let relativePath = "GeneratedImages/\(filename)"
             try context.authorizeWorkspacePath(relativePath)
             let destination = canonicalRoot.appendingPathComponent(relativePath)
