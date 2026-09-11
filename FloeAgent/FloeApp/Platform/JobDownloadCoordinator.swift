@@ -45,6 +45,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
 
     private let database: DatabaseManager
     private let onTerminal: @Sendable (BackgroundJob) async -> Void
+    private let reattacher: WorkspaceRootReattacher?
     /// jobID -> in-flight bookkeeping. The database record stays authoritative
     /// across process relaunches; these maps only accelerate progress writes.
     private var progressState: [UUID: (received: Int64, expected: Int64, lastWrite: Date)] = [:]
@@ -59,14 +60,27 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
 
-    init(database: DatabaseManager, onTerminal: @escaping @Sendable (BackgroundJob) async -> Void) {
+    init(
+        database: DatabaseManager,
+        reattacher: WorkspaceRootReattacher? = nil,
+        onTerminal: @escaping @Sendable (BackgroundJob) async -> Void
+    ) {
         self.database = database
+        self.reattacher = reattacher
         self.onTerminal = onTerminal
         super.init()
         _ = session
     }
 
     // MARK: - Ownership handoff from BackgroundJobService
+
+    /// Whether a background URLSession task still exists for this job.
+    /// Launch reconciliation must not interrupt a job whose task is alive.
+    nonisolated func hasLiveTask(jobID: UUID) async -> Bool {
+        let session = await MainActor.run { self.session }
+        let tasks = await session.allTasks
+        return tasks.contains { $0.taskDescription == jobID.uuidString }
+    }
 
     /// Returns true when the background session accepted the job. A false
     /// return (or a throw) makes the service run the job in-process instead.
@@ -197,12 +211,24 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             var destination: URL?
             var workspaceRelative: String?
             var fallbackNote: String?
-            if let rootPath = job.workspaceRootPath {
+            var leaseRelease: (@Sendable () -> Void)?
+            var rootURL: URL?
+            if let reattacher {
+                let lease = await reattacher.acquireRoot(conversationID: job.conversationID)
+                rootURL = lease?.url
+                leaseRelease = lease?.release
+            }
+            if rootURL == nil, let rootPath = job.workspaceRootPath {
+                rootURL = URL(fileURLWithPath: rootPath)
+            }
+            defer { leaseRelease?() }
+            if let rootURL {
+                let rootPath = rootURL.path
                 var isDirectory: ObjCBool = false
                 let rootReachable = FileManager.default.fileExists(atPath: rootPath, isDirectory: &isDirectory)
                     && isDirectory.boolValue
                 if rootReachable,
-                   let guarder = try? WorkspacePathGuard(rootURL: URL(fileURLWithPath: rootPath)),
+                   let guarder = try? WorkspacePathGuard(rootURL: rootURL),
                    let resolved = try? guarder.resolve(args.destination) {
                     // A reachable workspace is authoritative: a conflict or any
                     // write failure is reported to the model instead of

@@ -463,7 +463,10 @@ final class AppEnvironment: ObservableObject {
         // Background jobs (jobs.*): long downloads and Python data work run
         // off the run's critical path. Registered after the execution tools so
         // submit-time availability checks see every supported target runner.
-        let jobDownloads = JobDownloadCoordinator(database: database) { [weak self] job in
+        let jobDownloads = JobDownloadCoordinator(
+            database: database,
+            reattacher: WorkspaceRootReattacher(store: SQLiteWorkspaceStore(database: database))
+        ) { [weak self] job in
             await self?.handleBackgroundJobTerminal(job)
         }
         backgroundJobService = registerBackgroundJobTools(
@@ -476,6 +479,9 @@ final class AppEnvironment: ObservableObject {
             },
             downloadCancelHandler: { jobID in
                 await jobDownloads.cancel(jobID: jobID)
+            },
+            downloadTaskLiveness: { jobID in
+                await jobDownloads.hasLiveTask(jobID: jobID)
             }
         )
         // Browser automation.

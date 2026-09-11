@@ -42,6 +42,9 @@ public actor BackgroundJobService {
     private let downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)?
     /// Cancels the URLSession task of a background-owned download job.
     private let downloadCancelHandler: (@Sendable (UUID) async -> Void)?
+    /// Reports whether a background URLSession task still exists for a job.
+    /// Launch reconciliation only interrupts download jobs whose task is gone.
+    private let downloadTaskLiveness: (@Sendable (UUID) async -> Bool)?
 
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private var cancellations: [UUID: CancellationToken] = [:]
@@ -51,13 +54,15 @@ public actor BackgroundJobService {
         registry: ToolRunnerRegistry = .shared,
         onTerminal: @escaping @Sendable (BackgroundJob) async -> Void = { _ in },
         downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)? = nil,
-        downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil
+        downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil,
+        downloadTaskLiveness: (@Sendable (UUID) async -> Bool)? = nil
     ) {
         self.store = store
         self.registry = registry
         self.onTerminal = onTerminal
         self.downloadHandler = downloadHandler
         self.downloadCancelHandler = downloadCancelHandler
+        self.downloadTaskLiveness = downloadTaskLiveness
     }
 
     /// Validates and persists the job, then starts it. Retried tool calls
@@ -201,14 +206,23 @@ public actor BackgroundJobService {
     /// Marks every non-terminal in-process job interrupted. Called once at
     /// process launch, because in-process execution cannot survive the
     /// previous process exiting. Download jobs owned by a background
-    /// URLSession are excluded on purpose: their tasks can still be alive.
+    /// URLSession stay untouched while their system task is still alive;
+    /// orphaned tasks (no live URLSession task) are interrupted too, so a
+    /// relaunch cannot leave them stuck at "running" forever.
     @discardableResult
     public func reconcileInterruptedOnLaunch() async throws -> Int {
-        let active = try await store.activeJobs().filter { $0.kind == .tool }
+        let active = try await store.activeJobs()
         var count = 0
-        for job in active {
+        for job in active where job.kind == .tool {
             if (try? await store.transition(id: job.id, to: .interrupted) {
                 $0.lastError = "Process exited before the job finished"
+            }) != nil { count += 1 }
+        }
+        for job in active where job.kind == .download {
+            let alive = await downloadTaskLiveness?(job.id) ?? false
+            guard !alive else { continue }
+            if (try? await store.transition(id: job.id, to: .interrupted) {
+                $0.lastError = "Download was interrupted by relaunch and its system task is gone; resubmit with jobs.submit"
             }) != nil { count += 1 }
         }
         return count

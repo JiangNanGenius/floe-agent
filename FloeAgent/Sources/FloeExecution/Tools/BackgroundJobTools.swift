@@ -220,7 +220,8 @@ public func registerBackgroundJobTools(
     registry: ToolRunnerRegistry = .shared,
     onTerminal: @escaping @Sendable (BackgroundJob) async -> Void = { _ in },
     downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)? = nil,
-    downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil
+    downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil,
+    downloadTaskLiveness: (@Sendable (UUID) async -> Bool)? = nil
 ) -> BackgroundJobService {
     let store = BackgroundJobStore(database: database)
     let service = BackgroundJobService(
@@ -228,7 +229,8 @@ public func registerBackgroundJobTools(
         registry: registry,
         onTerminal: onTerminal,
         downloadHandler: downloadHandler,
-        downloadCancelHandler: downloadCancelHandler
+        downloadCancelHandler: downloadCancelHandler,
+        downloadTaskLiveness: downloadTaskLiveness
     )
     ToolCatalog.register(JobsSubmitTool.self)
     ToolCatalog.register(JobsStatusTool.self)
