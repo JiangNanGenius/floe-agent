@@ -181,11 +181,23 @@ struct BrowserProtocolTests {
         ))
         #expect(waited.status == .ok)
 
-        let screenshot = await center.execute(BrowserCommand(
+        // Simulator WebKit intermittently reports "An unknown error occurred"
+        // (code=webkit) for the first capture after a load; retry a bounded
+        // number of times so a transient capture failure does not fail the
+        // entire accepted-SDK regression suite (observed 1.6.2/1.6.4/1.6.5/1.6.6).
+        var screenshot = await center.execute(BrowserCommand(
             sessionID: center.sessionID,
             tabID: tabID,
             action: .screenshot
         ))
+        for attempt in 1...3 where screenshot.status == .failed && screenshot.error?.code == "webkit" {
+            try await Task.sleep(for: .seconds(Double(attempt)))
+            screenshot = await center.execute(BrowserCommand(
+                sessionID: center.sessionID,
+                tabID: tabID,
+                action: .screenshot
+            ))
+        }
         let page = try #require(screenshot.page)
         let artifact = try #require(page.screenshotArtifact)
         let button = try #require(page.nodes.first(where: { $0.role == "button" }))
