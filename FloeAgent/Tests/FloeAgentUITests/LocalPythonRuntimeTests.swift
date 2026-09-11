@@ -55,6 +55,16 @@ struct LocalPythonRuntimeTests {
         assert yaml.__version__ == '6.0.3'
         assert str(markupsafe.escape('<b>x</b>')) == '&lt;b&gt;x&lt;/b&gt;'
         assert markupsafe.__version__ == '3.0.3'
+        import zstandard, brotli, greenlet, frozenlist, multidict
+        data = b'floe wheelhouse smoke' * 64
+        assert zstandard.ZstdDecompressor().decompress(zstandard.ZstdCompressor().compress(data)) == data
+        assert brotli.decompress(brotli.compress(data)) == data
+        g = greenlet.greenlet(lambda: 42)
+        assert g.switch() == 42
+        fl = frozenlist.FrozenList([1, 2]); fl.freeze()
+        assert list(fl) == [1, 2]
+        md = multidict.CIMultiDict([('Key', 'a'), ('key', 'b')])
+        assert md.getall('KEY') == ['a', 'b']
         print(json.dumps({'wheelhouseSmoke': 'passed', 'regex': regex.__version__, 'yaml': yaml.__version__, 'markupsafe': markupsafe.__version__}, sort_keys=True))
         """, timeout: 30, maxOutputBytes: 4096), cancellation: nil)
         guard case .ok(_, let stdout, let stderr, false, false, _) = outcome else {

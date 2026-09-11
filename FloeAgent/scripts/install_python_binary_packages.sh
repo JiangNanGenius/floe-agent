@@ -28,6 +28,13 @@ packages=(
     "pyyaml|6.0.3|425edf1bc97f0adf1c4575191d6b7df7bbd929ac8b57e5a871a964938a2e6bdd|425edf1bc97f0adf1c4575191d6b7df7bbd929ac8b57e5a871a964938a2e6bdd|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-pyyaml-{version}-cp313/{name_lower}-{version}-py3-none-any.whl|13.0|0"
     # markupsafe: upstream setup degraded to pure (no C speedups on iOS yet).
     "markupsafe|3.0.3|796bcf8359c369e44d5ced5db1a26a1cf2aca2bcf8929cd0fe4cffac73c98cf0|796bcf8359c369e44d5ced5db1a26a1cf2aca2bcf8929cd0fe4cffac73c98cf0|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-markupsafe-{version}-cp313/{name_lower}-{version}-py3-none-any.whl|13.0|0"
+    # Wheelhouse batch 2 (all native dual-slice, binaries are minOS 17.0).
+    # zstandard: backend_c lives in the package dir → flatten=1.
+    "zstandard|0.25.0|c9f61b9bb299ed98d52f5da7f4c7bbc578f312d243f8e3a718332adef68eb1c9|3f0715627a38bcf08da090913453c6e620dcb1e70273655fe02f42c4c512c63f|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-zstandard-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|17.0|1"
+    "brotli|1.2.0|291f48e73ceb74bdcd6b46680198999bf16d58c22d1d7bf6843a44de96775023|7bc78bacc170119fad42127e73e333baddfe1aaa6bae8412581365f3af0ee7b1|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-brotli-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|17.0|0"
+    "greenlet|3.5.5|8a979276c0bc44fe9da820b2b645425a2f3607f9a2f8ae9ecf45698f6f20f486|7902602d9825d5963098d5d029e90022626bba0c5729e5ebd94d90934d5dd7e0|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-greenlet-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|17.0|1"
+    "frozenlist|1.8.0|ab062952d8f486753188532f6acb406211eeea1b6dc3cba622ac6bcac78e2628|ffb1775d2a47cd0409a19c42087a29f4d7f253dddd8cf616551770b7ce762af0|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-frozenlist-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|17.0|1"
+    "multidict|6.8.0|8fea4127932e9036d9e466565b7fe1cacdb3c6adb22c88a63aea512067437719|594ad7dc01dc43911cf5b9d71ec7e91d980cced503884751c0d38652b1b38063|https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-multidict-{version}-cp313/{name_lower}-{version}-cp313-cp313-ios_13_0_arm64_{arch}.whl|17.0|1"
 )
 
 wheel_url() {

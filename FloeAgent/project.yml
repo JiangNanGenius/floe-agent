@@ -240,6 +240,8 @@ targets:
         # BEGIN embedded Python binary packages (generated)
       - framework: Vendor/PythonExtensions/_bounded_integers.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/_brotli.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/_common.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_generator.xcframework
@@ -282,9 +284,15 @@ targets:
         embed: true
       - framework: Vendor/PythonExtensions/bit_generator.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/frozenlist__frozenlist.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/greenlet__greenlet.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/lapack_lite.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/mtrand.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/multidict__multidict.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/pandas__libs__cyutility.xcframework
         embed: true
@@ -377,6 +385,8 @@ targets:
       - framework: Vendor/PythonExtensions/pandas__libs_writers.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/regex__regex.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/zstandard_backend_c.xcframework
         embed: true
         # END embedded Python binary packages
         embed: true
