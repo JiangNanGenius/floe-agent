@@ -13,6 +13,7 @@ on:
           - monitor
           - inspect-issues
           - verify-testflight
+          - crash-feedback
           - start
           - enable-tag-and-start
           - update-and-start
@@ -394,8 +395,7 @@ jobs:
           test "$issue_count" -gt 0
 
       - name: Verify TestFlight processing and group visibility
-        if: inputs.operation == 'verify-testflight'
-        env:
+        if: inputs.operation == 'verify-testflight'        env:
           BUILD_ID: ${{ inputs.build_id }}
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
@@ -444,3 +444,45 @@ jobs:
           done
           echo "Timed out waiting for TestFlight processing of $BUILD_ID" >&2
           exit 1
+
+      - name: Fetch TestFlight crash feedback for the selected build
+        if: inputs.operation == 'crash-feedback'
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_ID"
+          case "$BUILD_ID" in
+            *[!A-Za-z0-9:_-]*) echo "Invalid App Store Connect build ID" >&2; exit 2 ;;
+          esac
+          api_get() {
+            local path="$1"
+            shift
+            curl --fail-with-body --silent --show-error --get \
+              -H "Authorization: Bearer $ASC_TOKEN" \
+              -H "Accept: application/json" \
+              "https://api.appstoreconnect.apple.com$path" "$@"
+          }
+          api_get /v1/betaFeedbackCrashSubmissions \
+            --data-urlencode "filter[build]=$BUILD_ID" \
+            --data-urlencode 'limit=200' \
+            --data-urlencode 'fields[betaFeedbackCrashSubmissions]=createdDate,comment,deviceModel,osVersion,locale,connectionType,build' \
+            --data-urlencode 'include=build' \
+            > "$RUNNER_TEMP/crash-submissions.json"
+          count="$(jq '.data | length' "$RUNNER_TEMP/crash-submissions.json")"
+          echo "crash-submission-count=$count"
+          jq -r '.data[] | "crash-submission id=\(.id) created=\(.attributes.createdDate) device=\(.attributes.deviceModel // "unknown") os=\(.attributes.osVersion // "unknown") comment=\((.attributes.comment // "") | tostring | .[0:200])"' \
+            "$RUNNER_TEMP/crash-submissions.json"
+          while IFS= read -r submission_id; do
+            if ! api_get "/v1/betaFeedbackCrashSubmissions/$submission_id/crashLog" \
+              --data-urlencode 'fields[betaCrashLogs]=logText' \
+              > "$RUNNER_TEMP/crash-log-$submission_id.json"; then
+              echo "crash-log-unavailable id=$submission_id"
+              continue
+            fi
+            echo "crash-log id=$submission_id begin"
+            jq -r '.data.attributes.logText // "no logText"' "$RUNNER_TEMP/crash-log-$submission_id.json" | cut -c1-60000
+            echo
+            echo "crash-log id=$submission_id end"
+          done < <(jq -r '.data[].id' "$RUNNER_TEMP/crash-submissions.json")

@@ -893,6 +893,12 @@ struct PDFEditTool: AgentTool {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args)
         let originalInput = try PDFToolSupport.read(args.inputPath, context: context)
+        let editToken = PDFOperationJournal.begin(
+            tool: Self.name,
+            detail: "bytes=\(originalInput.count) inputSHA=\(PDFOperationJournal.digest(originalInput)) ops=\(args.operations?.count ?? 0)"
+        )
+        var editStatus = "threw"
+        defer { PDFOperationJournal.end(editToken, status: editStatus) }
         let source = try PDFKitGate.run { () throws -> PDFDocument in
             guard let source = PDFDocument(data: originalInput), !source.isLocked else { throw FloeError.validationFailed("PDF is locked or unsupported") }
             return source
@@ -961,6 +967,12 @@ struct PDFEditTool: AgentTool {
         }
         let editedData: Data = try PDFKitGate.run { () throws -> Data in
             guard let document = PDFDocument(data: data) else { throw FloeError.validationFailed("Edited PDF could not be opened") }
+            let mutationToken = PDFOperationJournal.begin(
+                tool: Self.name,
+                detail: "phase=pageMutations+serialize pages=\(document.pageCount) remove=\(args.removePages?.count ?? 0) rotate=\(appliedRotations.count) watermark=\(args.watermark != nil) pageNumbers=\(args.pageNumbers == true) encrypted=\(encrypted)"
+            )
+            let outputData: Data
+            do {
             for pageNumber in Set(args.removePages ?? []).sorted(by: >) {
                 let index = pageNumber - 1
                 guard document.page(at: index) != nil else {
@@ -1028,12 +1040,19 @@ struct PDFEditTool: AgentTool {
                       verified.unlock(withPassword: userPassword ?? ownerPassword ?? ""), verified.pageCount == document.pageCount else {
                     throw FloeError.internalError("Edited PDF could not be written")
                 }
-                return protected
+                outputData = protected
+            } else {
+                guard let edited = document.dataRepresentation() else {
+                    throw FloeError.internalError("Edited PDF could not be serialized")
+                }
+                outputData = edited
             }
-            guard let edited = document.dataRepresentation() else {
-                throw FloeError.internalError("Edited PDF could not be serialized")
+            } catch {
+                PDFOperationJournal.end(mutationToken, status: "error:\(type(of: error))")
+                throw error
             }
-            return edited
+            PDFOperationJournal.end(mutationToken, status: "ok")
+            return outputData
         }
         try PDFToolSupport.write(editedData, to: args.outputPath, context: context)
         let verifiedPageCount: Int
@@ -1057,6 +1076,7 @@ struct PDFEditTool: AgentTool {
         if replacedCount > 0 { summary += " replaceTextMatches=\(replacedCount) (native content-stream rewrite; not secure redaction)" }
         if encrypted { summary += " encrypted=true" }
         if !operationEvidence.isEmpty { summary += "\n" + operationEvidence.joined(separator: "\n") }
+        editStatus = "ok"
         return PDFToolSupport.output(summary, status: 0)
     }
 

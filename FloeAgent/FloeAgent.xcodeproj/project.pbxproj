@@ -150,6 +150,7 @@
 		4C2AB5B8C64EC6493BF92520 /* ScreenShareCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A82429B0BF7E6E52C6B4A8C /* ScreenShareCenter.swift */; };
 		4C3164052094AEB9B4DAB81D /* _sfc64.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1078C97511E013940FBDC94D /* _sfc64.xcframework */; };
 		4C337AC9C80DE98A41054F60 /* BackgroundRunCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D916CCF8A7BB2EDB41913DD /* BackgroundRunCoordinator.swift */; };
+		4DA4FE4D075259455908EC22 /* PDFOperationJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 036B56AC987CE799669752B9 /* PDFOperationJournal.swift */; };
 		4EEFA3CD704D9B31D968EF08 /* pandas__libs_tslibs_vectorized.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4F3EF265CBE408F15A161E09 /* pandas__libs_json.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4FCDF1DDA235217013082223 /* pandas__libs_tslibs_timezones.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */; };
@@ -674,6 +675,7 @@
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
 		018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARFixtures.generated.swift; sourceTree = "<group>"; };
 		03482FFDDB47C3482FD2326D /* DomainSkillLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainSkillLibrary.swift; sourceTree = "<group>"; };
+		036B56AC987CE799669752B9 /* PDFOperationJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFOperationJournal.swift; sourceTree = "<group>"; };
 		04588885DF3B30D110854AAB /* cmath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = cmath.xcframework; path = Vendor/PythonExtensions/cmath.xcframework; sourceTree = "<group>"; };
 		053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_ccalendar.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_ccalendar.xcframework; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
@@ -1289,6 +1291,7 @@
 				81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */,
 				8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */,
 				AE5B8692C95AE635852BE44C /* PDFExportTool.swift */,
+				036B56AC987CE799669752B9 /* PDFOperationJournal.swift */,
 				802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */,
 				7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */,
 				8B378CF37C409045418D9D24 /* QuickLookView.swift */,
@@ -2310,6 +2313,7 @@
 				EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */,
 				F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */,
 				2B2206D557B86B95224EAC76 /* PDFExportTool.swift in Sources */,
+				4DA4FE4D075259455908EC22 /* PDFOperationJournal.swift in Sources */,
 				D280F700D57E336852039D32 /* PDFOperationSchema.swift in Sources */,
 				CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */,
 				265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */,

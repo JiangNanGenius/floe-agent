@@ -55,11 +55,22 @@ enum PDFDocumentOperations {
     }
 
     static func run(_ data: Data, operations: [Operation], images: [String: Data] = [:], cancellation: CancellationToken) async throws -> Result {
-        try await Task.detached(priority: .userInitiated) {
-            // PDFKit is not thread-safe; the entire workflow stays behind the
-            // process-wide gate (the PDFium bridge has its own mutex).
-            try PDFKitGate.run { try process(data, operations: operations, images: images, cancellation: cancellation) }
-        }.value
+        let token = PDFOperationJournal.begin(
+            tool: "document.pdf.workflow",
+            detail: "ops=\(operations.count) inputSHA=\(PDFOperationJournal.digest(data)) bytes=\(data.count)"
+        )
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                // PDFKit is not thread-safe; the entire workflow stays behind the
+                // process-wide gate (the PDFium bridge has its own mutex).
+                try PDFKitGate.run { try process(data, operations: operations, images: images, cancellation: cancellation) }
+            }.value
+            PDFOperationJournal.end(token, status: "ok")
+            return result
+        } catch {
+            PDFOperationJournal.end(token, status: "error:\(type(of: error))")
+            throw error
+        }
     }
 
     private static func process(_ input: Data, operations: [Operation], images: [String: Data], cancellation: CancellationToken) throws -> Result {
@@ -80,6 +91,11 @@ enum PDFDocumentOperations {
             try cancellation.throwIfCancelled()
             guard (op.text?.utf8.count ?? 0) <= 16_000, (op.fieldName?.count ?? 0) <= 200,
                   (op.fontSize ?? 12).isFinite, (6...96).contains(op.fontSize ?? 12) else { throw invalid("Invalid PDF text or font size") }
+            let token = PDFOperationJournal.begin(
+                tool: "pdf.action",
+                detail: "action=\(op.action.rawValue) page=\(op.page.map(String.init) ?? "-") pages=\(document.pageCount)"
+            )
+            do {
             switch op.action {
             case .replaceRegion, .addText, .insertImage, .replaceImage, .removeImage: break
             default: nativeSnapshot = nil
@@ -270,6 +286,11 @@ enum PDFDocumentOperations {
                 guard operations.count == 1, op.acceptRasterization == true else { throw invalid("searchableOCR must be the only operation; explicitly accept rasterized pages with a new OCR text layer") }
                 document = try rasterCopy(document, regions: [], ocr: true, languages: op.languages, cancellation: cancellation)
                 evidence.append("onDeviceOCR=true; recognized text may contain errors; page appearance is rasterized")
+            }
+            PDFOperationJournal.end(token, status: "ok")
+            } catch {
+                PDFOperationJournal.end(token, status: "error:\(type(of: error))")
+                throw error
             }
             evidence.append("applied=\(op.action.rawValue)")
         }
