@@ -1037,16 +1037,22 @@ struct PDFEditTool: AgentTool {
                 var options: [PDFDocumentWriteOption: Any] = [:]
                 if let userPassword { options[.userPasswordOption] = userPassword }
                 if let ownerPassword { options[.ownerPasswordOption] = ownerPassword }
-                guard let protected = document.dataRepresentation(options: options), let verified = PDFDocument(data: protected),
-                      verified.unlock(withPassword: userPassword ?? ownerPassword ?? ""), verified.pageCount == document.pageCount else {
-                    throw FloeError.internalError("Edited PDF could not be written")
+                // The crypto writer allocates heavily; pool it and verify the
+                // encrypted output reopens and unlocks before it is committed.
+                outputData = try autoreleasepool {
+                    guard let protected = document.dataRepresentation(options: options), let verified = PDFDocument(data: protected),
+                          verified.unlock(withPassword: userPassword ?? ownerPassword ?? ""), verified.pageCount == document.pageCount else {
+                        throw FloeError.internalError("Edited PDF could not be written")
+                    }
+                    return protected
                 }
-                outputData = protected
             } else {
-                guard let edited = document.dataRepresentation() else {
-                    throw FloeError.internalError("Edited PDF could not be serialized")
+                outputData = try autoreleasepool {
+                    guard let edited = document.dataRepresentation() else {
+                        throw FloeError.internalError("Edited PDF could not be serialized")
+                    }
+                    return edited
                 }
-                outputData = edited
             }
             } catch {
                 PDFOperationJournal.end(mutationToken, status: "error:\(type(of: error))")

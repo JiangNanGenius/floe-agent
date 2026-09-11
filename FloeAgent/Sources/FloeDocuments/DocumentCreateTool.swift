@@ -1,8 +1,8 @@
 // FloeDocuments — document.createMarkdown agent tool.
 //
 // Creates a document in the workspace. Markdown and plain-text documents are
-// written directly. Office creation is not advertised until a bundled,
-// signed implementation exists; runtime package downloads are forbidden.
+// written directly; Word/Excel/PowerPoint creation is implemented in
+// OfficeDocumentTools with the bundled native builders.
 
 import Foundation
 import Crypto

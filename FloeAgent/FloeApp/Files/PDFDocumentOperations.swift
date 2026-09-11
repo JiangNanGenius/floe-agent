@@ -87,6 +87,9 @@ enum PDFDocumentOperations {
             throw invalid("Signed PDFs require an explicitly accepted rasterized unsigned copy; editing does not preserve signature validity")
         }
         var evidence: [String] = []
+        /// Visibility into batch-local annotation removals: operator indices
+        /// always refer to the inspected revision.
+        var annotationRemovalsByPage: [Int: Set<Int>] = [:]
         // PDFKit can rebuild a native PDF's ToUnicode map when serializing it
         // again (some SDKs map CJK glyphs to look-alike radical code points).
         // Preserve verified native bytes until an actual PDFKit mutation occurs.
@@ -208,10 +211,23 @@ enum PDFDocumentOperations {
                 p.addAnnotation(a)
             case .updateAnnotation, .removeAnnotation:
                 let p = try page(op.page, in: document)
-                guard let index = op.annotationIndex, p.annotations.indices.contains(index) else { throw invalid("Annotation index is stale or missing; inspect this document revision") }
-                let a = p.annotations[index]
+                guard let index = op.annotationIndex else { throw invalid("Annotation index is stale or missing; inspect this document revision") }
+                // Indices come from the inspected revision. When an earlier
+                // operation in the same batch removed annotations on this
+                // page, later indices shift; adjust against the removals
+                // instead of mutating the wrong annotation.
+                let pageNumber = op.page ?? -1
+                let removed = annotationRemovalsByPage[pageNumber, default: []]
+                let adjusted = index - removed.filter { $0 < index }.count
+                guard !removed.contains(index), p.annotations.indices.contains(adjusted) else {
+                    throw invalid("Annotation index is stale or missing; inspect this document revision")
+                }
+                let a = p.annotations[adjusted]
                 guard !isWidget(a) else { throw invalid("Use field operations for form widgets") }
-                if op.action == .removeAnnotation { p.removeAnnotation(a) }
+                if op.action == .removeAnnotation {
+                    p.removeAnnotation(a)
+                    annotationRemovalsByPage[pageNumber, default: []].insert(index)
+                }
                 else {
                     if let text = op.text { a.contents = text }
                     if let bounds = op.bounds { a.bounds = try rect(bounds, inside: p.bounds(for: .mediaBox)) }

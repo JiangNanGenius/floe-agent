@@ -388,8 +388,8 @@ final class FilesCenter: ObservableObject {
 
     // MARK: - Document working copies
 
-    /// Opens a working copy for safe writeback. The Office editing engine is
-    /// deferred; the Alpha ships open / preview / safe writeback / Save As.
+    /// Opens a working copy for safe writeback through the native Office
+    /// engine (SecurityScopedDocumentWorkspace + FloeDocuments).
     func makeWorkingCopy(of attachment: AttachmentRef) async throws -> DocumentSession {
         let url = try resolveURL(for: attachment)
         let session = try await workspace.open(securityScopedURL: url)

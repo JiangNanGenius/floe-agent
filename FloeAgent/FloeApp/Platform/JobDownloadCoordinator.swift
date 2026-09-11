@@ -271,7 +271,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             }
             guard let destination else { return }
 
-            let digest = Self.fileSHA256(destination)
+            let digest = (try? Digest.sha256Hex(ofFileAt: destination)) ?? ""
             var summaryText = "status=ok path=\(workspaceRelative ?? destination.path) statusCode=\(statusCode) contentType=\(contentType) bytes=\(byteCount) sha256=\(digest)"
             if let fallbackNote { summaryText += "\nnote=\(fallbackNote)" }
             let finalSummary = summaryText
@@ -357,20 +357,6 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
         if let job = try? await store.job(id: jobID) {
             await onTerminal(job)
         }
-    }
-
-    private static func fileSHA256(_ url: URL) -> String {
-        guard let stream = InputStream(url: url) else { return "" }
-        stream.open()
-        defer { stream.close() }
-        var hasher = SHA256()
-        var buffer = [UInt8](repeating: 0, count: 1 << 20)
-        while stream.hasBytesAvailable {
-            let read = stream.read(&buffer, maxLength: buffer.count)
-            if read > 0 { hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: read)) }
-            else { break }
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
 #endif
