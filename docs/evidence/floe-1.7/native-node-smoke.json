@@ -1,77 +1,92 @@
-{
-  "scope": "NodeMobile 18.20.4 in minimal iOS Simulator App; not physical-device or full-App acceptance",
-  "results": [
-    {
-      "stderr": "",
-      "status": 0,
-      "stdout": "scoped\n",
-      "exit": 0,
-      "index": 0,
-      "workerStopped": true,
-      "truncated": false
-    },
-    {
-      "stdout": "input-data",
-      "stderr": "",
-      "status": 0,
-      "index": 1,
-      "workerStopped": true,
-      "exit": 0,
-      "truncated": false
-    },
-    {
-      "exit": 0,
-      "index": 2,
-      "status": 0,
-      "stdout": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-      "workerStopped": true,
-      "stderr": "",
-      "truncated": true
-    },
-    {
-      "stdout": "",
-      "exit": 1,
-      "truncated": false,
-      "status": 2,
-      "index": 3,
-      "stderr": "",
-      "workerStopped": true
-    },
-    {
-      "status": 0,
-      "exit": 0,
-      "stdout": "alive\n",
-      "truncated": false,
-      "workerStopped": true,
-      "stderr": "",
-      "index": 4
-    },
-    {
-      "workerStopped": true,
-      "index": 5,
-      "stderr": "",
-      "exit": 0,
-      "stdout": "input-data",
-      "truncated": false,
-      "status": 0
-    },
-    {
-      "stdout": "",
-      "status": 3,
-      "truncated": false,
-      "index": 6,
-      "workerStopped": true,
-      "exit": 1,
-      "stderr": ""
-    },
-    {
-      "exit": 0,
-      "stdout": "after-cancel\n",
-      "truncated": false,
-      "status": 0,
-      "workerStopped": true,
-      "stderr": "",
-      "index": 7
-    }
-  ]
-}
+[
+  {
+    "stdout" : "scoped\n",
+    "processCwdPreserved" : true,
+    "exit" : 0,
+    "truncated" : false,
+    "index" : 0,
+    "stderr" : "",
+    "workerStopped" : true,
+    "status" : 0
+  },
+  {
+    "workerStopped" : true,
+    "stderr" : "",
+    "exit" : 0,
+    "status" : 0,
+    "truncated" : false,
+    "stdout" : "input-data",
+    "processCwdPreserved" : true,
+    "index" : 1
+  },
+  {
+    "workerStopped" : true,
+    "stdout" : "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "index" : 2,
+    "truncated" : true,
+    "status" : 0,
+    "stderr" : "",
+    "processCwdPreserved" : true,
+    "exit" : 0
+  },
+  {
+    "stderr" : "",
+    "index" : 3,
+    "processCwdPreserved" : true,
+    "status" : 2,
+    "truncated" : false,
+    "workerStopped" : true,
+    "exit" : 1,
+    "stdout" : ""
+  },
+  {
+    "processCwdPreserved" : true,
+    "stderr" : "",
+    "workerStopped" : true,
+    "status" : 0,
+    "exit" : 0,
+    "index" : 4,
+    "truncated" : false,
+    "stdout" : "alive\n"
+  },
+  {
+    "processCwdPreserved" : true,
+    "index" : 5,
+    "exit" : 0,
+    "status" : 0,
+    "stdout" : "input-data",
+    "workerStopped" : true,
+    "stderr" : "",
+    "truncated" : false
+  },
+  {
+    "stderr" : "",
+    "status" : 3,
+    "stdout" : "",
+    "truncated" : false,
+    "processCwdPreserved" : true,
+    "workerStopped" : true,
+    "exit" : 1,
+    "index" : 6
+  },
+  {
+    "stderr" : "",
+    "truncated" : false,
+    "index" : 7,
+    "exit" : 0,
+    "processCwdPreserved" : true,
+    "status" : 0,
+    "workerStopped" : true,
+    "stdout" : "after-cancel\n"
+  },
+  {
+    "stderr" : "",
+    "truncated" : false,
+    "status" : 0,
+    "workerStopped" : true,
+    "processCwdPreserved" : true,
+    "exit" : 0,
+    "index" : 8,
+    "stdout" : "scoped-file\n"
+  }
+]

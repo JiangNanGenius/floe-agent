@@ -64,3 +64,25 @@ test('pinned package manager entry points start on the shared host', { timeout: 
     }
   } finally { h.close(); }
 });
+test('worker routes relative async, stream, Buffer and file URL filesystem operations', { timeout: 15000 }, async () => {
+  const h = host(); await h.started;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'floe-node-paths-'));
+  try {
+    const script = `(async () => {
+      const fs = require('node:fs'); const p = fs.promises;
+      await p.writeFile('a.txt', 'scoped'); await p.rename('a.txt', 'b.txt');
+      await p.symlink('b.txt', 'link.txt');
+      let text = ''; for await (const b of fs.createReadStream('link.txt')) text += b;
+      const esm = await import('node:fs/promises');
+      console.log(text, await esm.readFile(Buffer.from('b.txt'), 'utf8'),
+        await p.readFile(require('node:url').pathToFileURL(process.cwd() + '/b.txt'), 'utf8'));
+    })().catch(e => { console.error(e); process.exitCode = 1; });`;
+    const entry = path.join(root, 'paths.cjs');
+    fs.writeFileSync(entry, script);
+    const result = await h.send(request('paths', '', { entry, args: [], cwd: root }));
+    assert.equal(result.code, 0, Buffer.from(result.stderr ?? '', 'base64').toString());
+    assert.equal(stdout(result), 'scoped scoped scoped\n');
+    assert.equal(fs.readlinkSync(path.join(root, 'link.txt')), 'b.txt');
+    assert.equal(fs.readFileSync(path.join(root, 'b.txt'), 'utf8'), 'scoped');
+  } finally { h.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});

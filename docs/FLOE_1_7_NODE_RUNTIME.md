@@ -49,3 +49,10 @@ switches fail explicitly. Worker APIs differ from main-thread Node (notably
 `process.chdir`). Linux executables, child_process and unverified native extensions
 are not implied to work. A package manager printing its version is not installation
 or package compatibility acceptance.
+
+
+## Per-worker current directory qualification
+
+The host no longer calls process.chdir for a job. A worker-local shim resolves common fs and fs.promises relative paths against the job directory, including streams, Buffer paths and file URLs. Native NodeMobile qualification passed 9 cases; every case kept the app process cwd unchanged and left no active worker. Four host tests passed, including filesystem operations and pinned package-manager startup.
+
+This is path routing, not native-code isolation. Child workers and relative filesystem calls inside native addons still require qualification. Dynamic import from the current `node -e` VM path is not implemented; file entry points support it.

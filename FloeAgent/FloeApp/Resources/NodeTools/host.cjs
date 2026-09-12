@@ -10,7 +10,6 @@ const outputFD = Number(process.argv[3] ?? 1);
 const input = fs.createReadStream(null, { fd: inputFD, autoClose: false });
 const output = fs.createWriteStream(null, { fd: outputFD, autoClose: false });
 let current = null;
-const originalCWD = process.cwd();
 function reply(value) { output.write(JSON.stringify(value) + '\n'); }
 async function stop(reason) {
   if (!current) return;
@@ -26,8 +25,8 @@ function start(job) {
   }
   let worker;
   try {
-    process.chdir(job.cwd);
     const path = require('node:path');
+    if (typeof job.cwd !== 'string' || !path.isAbsolute(job.cwd) || !require('node:fs').statSync(job.cwd).isDirectory()) throw Error('A valid absolute working directory is required');
     const data = { floeJob: true, stdin: job.stdin ?? '', cwd: job.cwd, args: job.args };
     if (job.entry) data.entry = path.resolve(job.cwd, job.entry);
     else if (['-e', '--eval', '-p', '--print'].includes(job.args[0])) {
@@ -39,7 +38,6 @@ function start(job) {
     worker = new Worker(path.join(__dirname, 'worker.cjs'), { stdout: true, stderr: true,
       env: job.env, workerData: data, resourceLimits: { maxOldGenerationSizeMb: 256 }, execArgv: [] });
   } catch (error) {
-    process.chdir(originalCWD);
     reply({ id: job.id, status: 'failed', code: 125, stderr: String(error) }); return;
   }
   const state = { worker, id: job.id, stdout: [], stderr: [], bytes: 0, truncated: false, reason: null };
@@ -59,7 +57,6 @@ function start(job) {
   const timer = setTimeout(() => { void stop('timedOut'); }, job.timeoutMs);
   worker.on('exit', code => {
     clearTimeout(timer);
-    process.chdir(originalCWD);
     current = null;
     reply({ id: job.id, status: state.reason ?? 'ok', code,
       stdout: Buffer.from(Buffer.concat(state.stdout).toString('utf8')).toString('base64'), stderr: Buffer.from(Buffer.concat(state.stderr).toString('utf8')).toString('base64'),
