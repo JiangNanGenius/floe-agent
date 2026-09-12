@@ -2,7 +2,15 @@
 
 [README](../README.md) · [简体中文 README](../README.zh-CN.md) · [User guide](USER_GUIDE.md)
 
-This page describes the 1.5.0 source baseline and the current workflow-upgrade branch (schema v36). Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
+This page describes the Floe 1.7 integration architecture (schema v40). Integration is incomplete; [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md) separates verified paths from planned behavior. Older audit and delivery documents retain their historical meaning.
+
+## Floe 1.7 integration boundaries
+
+`FloeEnvironments` owns environment records, layer types and resolved paths; `FloePackages` consumes these types instead of defining a second environment model. `EnvironmentExecutionCoordinator` resolves workspace/conversation ownership, leases executions and retains ownership until workers have actually stopped. Tool contexts and persisted background jobs carry `environmentID`; schema v40 adds the background-job field.
+
+Resolution order is session, project, shared, then base, with an explicit write layer. The integration is not complete across all Python/WASM/install paths. Environment separation is dependency/data/lifecycle layering, not a security sandbox for native code in the same process.
+
+The Node bridge starts a persistent host once and schedules serial requests with per-request workers. Media transcode/audio conversion use bounded processing and verified temporary outputs. Unconnected enhancement runners are not registered as available tools. Package transactions stage and verify payloads before journaled file changes; current fixture coverage and remaining gaps are tracked in [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md).
 
 ## Domain vocabulary / 领域术语
 
@@ -25,7 +33,7 @@ flowchart TB
     PROVIDERS["Cloud adapters · text · vision · image"]
     LOCAL["Apple Foundation Models · MLX local runtime"]
     TOOLS["Compiled ToolCatalog · scoped runners"]
-    PERSIST["GRDB persistence · schema v20"]
+    PERSIST["GRDB persistence · schema v40"]
     SECURITY["Approval · catastrophic gate · audit chain"]
     BROWSER["Visible WKWebView · Floe Browser Protocol"]
     REMOTE["SSH · PTY · forwarding · VNC"]
@@ -97,7 +105,7 @@ Provider schema filtering reduces accidental requests; executor-side authorizati
 | `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX models, memory policy, dynamic context, and bounded local tool translation. |
 | `FloeAgentRuntime` | State machine, harness, context assembly, Plan/Goal/Memory, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time catalog, authorization, approvals, audit, and catastrophic-action detection. |
-| `FloePersistence` | GRDB stores and append-only migrations through schema v20. |
+| `FloePersistence` | GRDB stores and append-only migrations through schema v40. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scope, working copies, change artifacts, documents, and local image operations. |
 | `FloeGit` | Non-destructive local repository operations, GitHub connection, and local/cloud source-control tools. |
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution and visible computer control. |

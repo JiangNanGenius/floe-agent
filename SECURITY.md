@@ -9,6 +9,14 @@
 > commands, coarse per-command risk) are listed there. The bundled Python
 > package path, fingerprint rules and no-native-ELF boundary are unchanged.
 
+## Floe 1.7 环境与软件包边界 / Environment and package boundary
+
+环境用于依赖、数据和生命周期分层；同进程原生 shell、Python 和 Node 不具备每环境的强安全隔离。改变 cwd、搜索路径或 mini-root 不等于 OS 沙箱。应用自身的文件访问继续进行路径与权限检查。
+
+软件包签名链须从配置的可信 OpenPGP 公钥开始；缺少公钥必须失败，不能自动跳过。下载摘要一致只证明字节一致，不证明包适配 iOS。普通 Linux 原生二进制不属于可运行包；原生扩展需要预构建、来源/签名与 ABI 验证。当前完整接入状态见[实施记录](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+
+Environments organize dependencies, data and lifecycle; they are not strong security isolation for native code within the App process. Package and model readiness requires verified trust, compatibility and execution, not just a successful download.
+
 ## Current status
 
 Floe Agent publishes prerelease builds for evaluation. They are not a supported production service, and the community unsigned IPA is not an App Store package. Do not use development or unsigned builds to operate production systems or store production credentials. [简体中文安全策略](SECURITY.zh-CN.md)

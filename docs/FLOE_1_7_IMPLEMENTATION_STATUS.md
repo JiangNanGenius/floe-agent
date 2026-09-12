@@ -37,6 +37,24 @@ Branch: `codex/floe-1-7-integration-20260912`.
   the pinned npm/pnpm/yarn entry points. See `FLOE_1_7_NODE_RUNTIME.md` and evidence.
   Check mode also preserved lock bytes and modification time.
 
+- `8173639`: pinned Node and generated project checkpoint. CI `34696909375`
+  passed all three Node host tests, then failed because the workflow invoked a
+  non-executable pin script directly. The next change invokes it through Bash.
+  The release-SDK job also found an unavailable super-resolution probe type;
+  the unused probe is removed while that runner remains unavailable.
+- Current local package work passes 23 qualification tests: six environment,
+  thirteen package (integrity/hold, transaction recovery, dependency resolution,
+  publisher-to-client installs), three media and one persistence test. This is
+  working-tree evidence, not acceptance of an immutable release commit.
+  The end-to-end fixture exposed and fixed a missing Debian ar archive header
+  in the repository publisher. Production source provisioning remains open.
+
+## Documentation
+
+See [build and acceptance](FLOE_1_7_BUILD_AND_ACCEPTANCE.md),
+[migration/recovery](FLOE_1_7_MIGRATION.md), [compatibility](FLOE_1_7_COMPATIBILITY.md)
+and [documentation audit](FLOE_1_7_DOCUMENTATION_AUDIT.md).
+
 ## Remaining acceptance gates
 
 - Complete App build and native shell runtime tests; previous minimal App reproduced

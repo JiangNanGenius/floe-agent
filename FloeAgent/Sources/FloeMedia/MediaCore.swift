@@ -55,7 +55,7 @@ public struct MediaCapabilities: Sendable, Codable {
 
     public static func probe(appBuild: String) -> MediaCapabilities {
         #if canImport(AVFoundation)
-        var native = Native(
+        let native = Native(
             frameRateConversion: false,
             lowLatencyInterpolation: false,
             superResolution: false,
@@ -71,14 +71,6 @@ public struct MediaCapabilities: Sendable, Codable {
             supportedScaleFactors: [],
             maximumDimension: 0
         )
-        if #available(iOS 26.0, macOS 26.0, *) {
-            native.frameRateConversion = false
-            native.superResolution = false
-            native.supportedScaleFactors = VTSuperResolutionScalerConfiguration.supportedScaleFactors.map { Int($0) }
-        }
-        if #available(iOS 27.0, macOS 27.0, *) {
-            native.lowLatencyInterpolation = false
-        }
         return MediaCapabilities(
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             appBuild: appBuild,

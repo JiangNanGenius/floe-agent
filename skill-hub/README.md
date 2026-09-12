@@ -37,3 +37,9 @@ Skill 包不能分发原生库、运行时或动态安装 App 功能。最低 Ap
 
 The publisher/catalog fields reserve a future marketplace boundary. This is
 not a third-party marketplace, payment system or native plugin loader.
+
+## 1.7 media catalog integration
+
+`floe-video` and the media model catalog are under integration. Their source descriptions are not proof that the App has connected every runner, model download or background-job path. The existing 33 model entries remain candidates pending resource, license and device qualification; see [compatibility](../docs/FLOE_1_7_COMPATIBILITY.md).
+
+Skill content changes require a version increment and brief bilingual change notes, then regeneration and signature verification through this hub's publication workflow. Do not hand-edit signed archives/catalogs or advertise unconnected tools as available.

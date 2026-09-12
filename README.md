@@ -24,17 +24,13 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Current upgrade — 1.6.7 release candidate
+## Floe 1.7 development upgrade
 
-**1.6.7 (143)** adds the local terminal substrate: an on-device POSIX shell (`exec.shell`, interactive `shell.*` sessions, background jobs) on the BSD-licensed ios_system command bus, an apt/pkg capability catalog with 34 preset pure-Python packages, data-only `.deb` extraction, and the first tool-demotion wave into workflow guides. See [release notes](docs/RELEASE_NOTES_1.6.7.md), [architecture](docs/ARCHITECTURE_LOCAL_SHELL.md) and the [implementation record](docs/PLAN_LOCAL_SHELL.md); installation availability requires separate TestFlight verification.
+Floe 1.7 is being integrated on `codex/floe-1-7-integration-20260912`. It adds layered environments, package management, a persistent Node host and a media workbench. This is an unfinished development milestone; no 1.7 TestFlight availability or production release is implied.
 
-Rapid-iteration hardening from on-device feedback:
+Environment ownership and persistence, signed repository fixtures, bounded media exports and native shell/Node smoke cases have focused verification. Environment migration, complete package installation flows, model inference, the workbench and device acceptance remain open. The 15 package entries and 33 model entries are candidates, not an available download catalog.
 
-- **Compat-mode tool naming, total and bidirectional**: all three wire protocols sanitize names consistently, reverse mapping covers the whole permission ceiling (not just the trimmed schema set), tools.list paginates underscored cursors correctly, and the local text fallback normalizes mangled names plus admits discovery tools.
-- **PDF crash surface closed**: every PDFKit touch serialized through a process-wide gate, render capped per call, merge lifetime fixed, large-file viewer parsing moved off the main thread.
-- **Network diagnostics done right**: real device-side ICMP ping, correct BSD/Linux `-W` semantics, traceroute without per-hop DNS stalls, bounded fallbacks, dnsLookup deadline.
-- **Live task list**: the conversation list refreshes as runs progress, no manual reload.
-- **More bundled Python wheels**: zstandard, Brotli, greenlet, frozenlist, multidict join regex/PyYAML/MarkupSafe inside the pinned runtime bundle.
+See [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [upgrade and recovery](docs/FLOE_1_7_MIGRATION.md), and [build and acceptance](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Existing version notes remain in the [documentation index](docs/README.md).
 
 ## Why Floe Agent
 

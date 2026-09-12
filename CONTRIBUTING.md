@@ -2,6 +2,12 @@
 
 Thank you for helping build Floe Agent. The project ships prerelease builds, its interfaces are still moving, and changes involving credentials, browser control, files, or remote computers require especially careful review. [简体中文贡献指南](CONTRIBUTING.zh-CN.md)
 
+## Floe 1.7 integration workflow
+
+当前整合分支为 `codex/floe-1-7-integration-20260912`。先阅读[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)与[构建验收说明](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)，保留未验收修改、复现输入和恢复证据。不要用整分支覆盖重叠修改。
+
+Use focused local tests and cloud App builds. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output; do not turn an artifact upload into a release claim. Runtime lock check mode must remain read-only. Generated Xcode changes must match `project.yml`.
+
 ## Before you start
 
 1. Read the [product overview](PRODUCT.md), [development plan](docs/DEVELOPMENT_PLAN.md), and [security policy](SECURITY.md).

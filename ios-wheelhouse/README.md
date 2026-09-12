@@ -3,6 +3,12 @@
 为内嵌 CPython 3.13 预编译"没有纯 Python 通用 wheel"的常用包。与 pandas 产线同构：
 **CI 构建候选 → 人工核验 → 不可变 GitHub Release → install 脚本 SHA-256 pin**。
 
+## 1.7 环境与兼容性
+
+wheel 构建成功只证明该产线的测试范围；接入 1.7 还要验证当前环境的安装位置、搜索顺序、ABI、来源/签名、升级与恢复。公共纯 Python 包与预构建原生扩展分开验收，普通 Linux wheel 或 ELF 不能作为 iOS 可运行包。
+
+本轮状态见[兼容性说明](../docs/FLOE_1_7_COMPATIBILITY.md)和[构建验收](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)。不要以软件包池候选条目数代替已通过 App 实测的版本数。
+
 ## 目录
 
 - `manifest.json` — 每包构建配方：sdist URL/SHA-256、冒烟脚本、额外 env、rust 标记

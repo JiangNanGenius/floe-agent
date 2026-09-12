@@ -1,10 +1,18 @@
 # Product Overview
 
 > **Historical note (2026-09-12):** the version-1 exclusion of "an unrestricted
-> shell/process environment" below is superseded. Floe 1.6.7 ships a bounded
-> on-device POSIX shell substrate (approval-gated, mini-root-confined, no
+> shell/process environment" below is superseded. The 1.6.7 source introduced a bounded
+> on-device POSIX shell substrate (approval-gated, with scoped file operations, no
 > native ELF execution) plus an apt/pkg capability catalog. The authoritative
 > description is [docs/ARCHITECTURE_LOCAL_SHELL.md](docs/ARCHITECTURE_LOCAL_SHELL.md).
+
+## Floe 1.7 product scope
+
+The active milestone connects layered dependency environments, package installation and media processing to the existing task and workspace experience. The media workbench is a single-asset editor with preview, trim, operation settings, export and shared task progress; a professional multitrack editor is outside this milestone.
+
+Environment layers are `session > project > shared > base`. They organize dependencies, data and lifecycle. Native Python, Node and shell code running inside the App is not separated by a strong per-environment process security boundary. App file operations still enforce their own path and permission checks.
+
+The milestone remains unfinished. Candidate package/model catalogs must not be advertised as runnable downloads before signing, installation and real execution are verified. See [status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [compatibility](docs/FLOE_1_7_COMPATIBILITY.md).
 
 ## Purpose
 
@@ -39,7 +47,7 @@ Floe Agent is designed around three commitments:
 
 ## Current development focus
 
-The current upgrade adds a Discover/Installed plugin surface, contextual batch task management, an isolated all-workspace file manager, inline PDF reading, mobile canvas corrections, and truthful live execution feedback. Word, Excel, and PowerPoint remain one Office tool family; PDF is separate.
+The preceding workflow upgrade added a Discover/Installed plugin surface, contextual batch task management, an isolated all-workspace file manager, inline PDF reading, mobile canvas corrections, and truthful live execution feedback. Word, Excel, and PowerPoint remain one Office tool family; PDF is separate.
 
 Editing correctness takes priority over appearance: supported edits must retain intended content, formatting and object positions, survive save/reopen, preserve unrelated content and report conflicts. Full advanced Office editing remains pending offline-engine qualification and integration; the basic native editor does not establish desktop-document parity. See [scope, screenshots and verification status](docs/WORKFLOW_UPGRADE.md).
 

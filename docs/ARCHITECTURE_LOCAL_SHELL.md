@@ -11,6 +11,12 @@ terminal and package surfaces; it supersedes the earlier statements in
 `PRODUCT.md`, `DEVELOPMENT_PLAN.md` and `SECURITY.md` that the app offers no
 local command environment.
 
+## 1.7 integration status and boundary
+
+The shell substrate is being integrated with explicit workspace/conversation environment ownership. Environment layers do not isolate same-process native execution. Path checks on App file operations and per-tool permission decisions remain necessary; a mini-root or changed working directory is not an OS-level containment boundary.
+
+Four minimal iOS Simulator reproductions cover environment scope, no scope leakage, bounded stdin/output with exit status, and a loop piped to `tr`. They do not establish complete multi-stage pipeline, interactive cancellation or device acceptance. Node now uses a persistent host; see [Node runtime](FLOE_1_7_NODE_RUNTIME.md). Apt candidate entries and model catalog entries are not automatically usable: see [compatibility](FLOE_1_7_COMPATIBILITY.md).
+
 ## 1. What this adds
 
 | Surface | Tool / command | Mode |

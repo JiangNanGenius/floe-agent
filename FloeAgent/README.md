@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe Agent 1.5.0 source target (build 131). The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v36.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe 1.7 integration branch. The minimum deployment target is iOS/iPadOS 26.0; database migrations now reach schema v40. The branch is not yet TestFlight-qualified. See the [current build and acceptance guide](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) before running builds.
 
 ## Build prerequisites
 
@@ -57,7 +57,7 @@ CI regenerates the project and fails if the committed project differs.
 | `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX downloads, resource policy, dynamic local context, and bounded local tool-call translation. |
 | `FloeAgentRuntime` | Continuous run state machine, context assembly, Plan/Goal/Memory, harness, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time tool catalog, scoped execution, approvals, audit chain, Keychain, and catastrophic-action gate. |
-| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v36, including durable private-workspace cleanup intents. |
+| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v40, including durable private-workspace cleanup intents. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. |
 | `FloeGit` | Non-destructive libgit2 repository operations, GitHub API/Keychain integration, and model-facing local/cloud source-control tools. |
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. |

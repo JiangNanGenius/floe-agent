@@ -2,9 +2,20 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.50 source target (build 81). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide covers existing Floe workflows and explicitly marked 1.7 development changes. Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
 
 This guide includes the current development-branch workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
+
+## 1.7 开发功能与使用边界 / Development features
+
+1.7 的环境、包管理和媒体工作台尚未完成全链路验收。已安装版本没有相应入口时，不要依据计划中的界面名称尝试操作。当前状态见[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+
+- 环境按会话、项目、共享、基础层查找依赖；写入必须绑定当前环境，不应猜测第一个项目或临时目录。旧数据迁移完成前保留恢复副本。
+- Node 宿主与 npm/pnpm/yarn 启动已做定向验证；这不等于所有公共包可安装或可运行。原生 Linux 包不可直接在 iOS 执行。
+- 媒体转码及音频转换仅接受已支持的参数组合。成功应能重新打开真实输出；插帧、超分等增强只有运行器和资源可用时才能使用。
+- 软件包池和模型目录是候选清单，不能将条目数量当作已完成能力数。参见[兼容性说明](FLOE_1_7_COMPATIBILITY.md)。
+
+The 1.7 environment/package/media flows remain under integration. Existing menu labels depend on the installed build. Check supported parameters and real resource availability before processing; preserve source files and verify exported files by reopening them.
 
 ## 1. Install safely
 
