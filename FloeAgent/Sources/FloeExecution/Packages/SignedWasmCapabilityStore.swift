@@ -51,6 +51,7 @@ public actor SignedWasmCapabilityStore {
     private let download: Download
     private let runtime: any WasmCommandRuntime
     private var busy = Set<String>()
+    private var activeRuns: [String: Int] = [:]
 
     public init(catalogData: Data, signature: Data, publicKey: Data, appVersion: String, root: URL, runtime: any WasmCommandRuntime = WasmKitCommandRuntime(), download: @escaping Download) throws {
         catalog = try SignedWasmCatalog.verify(data: catalogData, signature: signature, publicKey: publicKey, appVersion: appVersion)
@@ -71,7 +72,7 @@ public actor SignedWasmCapabilityStore {
 
     public func install(id: String, cancellation: CancellationToken?) async throws {
         guard let entry = catalog.packages.first(where: { $0.id == id }) else { throw FloeError.notFound("Unknown signed WASM package") }
-        guard busy.insert(id).inserted else { throw FloeError.validationFailed("Package operation already in progress") }
+        guard activeRuns[id, default: 0] == 0, busy.insert(id).inserted else { throw FloeError.validationFailed("Package operation already in progress") }
         defer { busy.remove(id) }
         try cancellation?.throwIfCancelled()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -99,7 +100,7 @@ public actor SignedWasmCapabilityStore {
 
     public func remove(id: String) throws {
         guard let entry = catalog.packages.first(where: { $0.id == id }) else { throw FloeError.notFound("Unknown WASM package") }
-        guard !busy.contains(id) else { throw FloeError.validationFailed("Package is currently in use") }
+        guard !busy.contains(id), activeRuns[id, default: 0] == 0 else { throw FloeError.validationFailed("Package is currently in use") }
         // Removing the activation receipt makes the command unavailable immediately.
         if FileManager.default.fileExists(atPath: receiptURL(entry).path) { try FileManager.default.removeItem(at: receiptURL(entry)) }
         if FileManager.default.fileExists(atPath: moduleURL(entry).path) { try FileManager.default.removeItem(at: moduleURL(entry)) }
@@ -109,8 +110,14 @@ public actor SignedWasmCapabilityStore {
         guard let entry = catalog.packages.first(where: { $0.command == command }), installedIDs().contains(entry.id) else {
             return .failed(message: "WASM command is not installed; install its signed capability with apt")
         }
-        guard busy.insert(entry.id).inserted else { return .failed(message: "WASM package is already in use") }
-        defer { busy.remove(entry.id) }
+        guard !busy.contains(entry.id), activeRuns.values.reduce(0, +) < 4 else {
+            return .failed(message: "WASM package is being changed or all execution slots are occupied")
+        }
+        activeRuns[entry.id, default: 0] += 1
+        defer {
+            activeRuns[entry.id, default: 0] -= 1
+            if activeRuns[entry.id] == 0 { activeRuns.removeValue(forKey: entry.id) }
+        }
         guard (try? FloeDigest.sha256Hex(ofFileAt: moduleURL(entry))) == entry.sha256 else {
             return .failed(message: "Installed WASM package failed integrity verification")
         }

@@ -30,20 +30,33 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
     @TaskLocal static var input: CommandInput?
     final class CommandInput: @unchecked Sendable {
         let stream: UnsafeMutablePointer<FILE>?
-        init(_ stream: UnsafeMutablePointer<FILE>?) { self.stream = stream }
-        func read() -> String? {
+        init(_ source: UnsafeMutablePointer<FILE>?) {
+            guard let source else { stream = nil; return }
+            let fd = dup(fileno(source))
+            stream = fd >= 0 ? fdopen(fd, "r") : nil
+            if fd >= 0 && stream == nil { Darwin.close(fd) }
+        }
+        deinit { if let stream { fclose(stream) } }
+        func read(cancellation: CancellationToken?) -> String? {
             guard let stream else { return "" }
             var data = Data()
             var bytes = [UInt8](repeating: 0, count: 4096)
             while true {
-                let count = fread(&bytes, 1, bytes.count, stream)
-                if count == 0 { return ferror(stream) == 0 ? String(decoding: data, as: UTF8.self) : nil }
+                if cancellation?.isCancelled == true { return nil }
+                var descriptor = pollfd(fd: fileno(stream), events: Int16(POLLIN), revents: 0)
+                let ready = poll(&descriptor, 1, 50)
+                if ready < 0 { if errno == EINTR { continue }; return nil }
+                if ready == 0 { continue }
+                let count = Darwin.read(fileno(stream), &bytes, bytes.count)
+                if count == 0 { return String(decoding: data, as: UTF8.self) }
+                if count < 0 { if errno == EINTR { continue }; return nil }
                 guard data.count + count <= 256 * 1024 else { return nil }
                 data.append(contentsOf: bytes.prefix(count))
             }
         }
     }
     private var contexts: [String: ShellCommandContext] = [:]
+    private var activeInvocations: [String: [UUID: CancellationToken]] = [:]
     private var pythonStorage: LocalPythonService?
     private var installerStorage: CapabilityInstaller?
     private var wasmStorage: SignedWasmCapabilityStore?
@@ -64,7 +77,24 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
     func bind(sessionID: String, rootURL: URL, runID: UUID?, cancellation: CancellationToken?) {
         lock.withLock { contexts[sessionID] = ShellCommandContext(rootURL: rootURL, workingDirectory: rootURL, runID: runID ?? UUID(), cancellation: cancellation ?? CancellationToken()) }
     }
-    func unbind(sessionID: String) { _ = lock.withLock { contexts.removeValue(forKey: sessionID) } }
+    func cancelCurrent(sessionID: String) {
+        lock.withLock { activeInvocations[sessionID]?.values.forEach { $0.cancel() } }
+    }
+    func beginInvocation(sessionID: String, token: CancellationToken) -> UUID {
+        let id = UUID()
+        lock.withLock { activeInvocations[sessionID, default: [:]][id] = token }
+        return id
+    }
+    func endInvocation(sessionID: String, id: UUID) {
+        lock.withLock {
+            activeInvocations[sessionID]?.removeValue(forKey: id)
+            if activeInvocations[sessionID]?.isEmpty == true { activeInvocations.removeValue(forKey: sessionID) }
+        }
+    }
+    func unbind(sessionID: String) {
+        cancelCurrent(sessionID: sessionID)
+        _ = lock.withLock { contexts.removeValue(forKey: sessionID) }
+    }
     func context(sessionID: String) -> ShellCommandContext? { lock.withLock { contexts[sessionID] } }
     func configure(python: LocalPythonService?, installer: CapabilityInstaller?, wasm: SignedWasmCapabilityStore? = nil) {
         lock.withLock { self.pythonStorage = python; self.installerStorage = installer; self.wasmStorage = wasm }
@@ -124,7 +154,13 @@ public func floeShellCommandMain(
         argv?[index].map { String(cString: $0) }
     }
     let input = FloeShellCommandRegistry.CommandInput(FloeShellCurrentStdin())
-    var invocation = FloeShellCurrentSessionID().flatMap { FloeShellCommandRegistry.shared.context(sessionID: $0) }
+    let sessionID = FloeShellCurrentSessionID() ?? ""
+    var invocation = FloeShellCommandRegistry.shared.context(sessionID: sessionID)
+    let parentCancellation = invocation?.cancellation
+    let commandCancellation = CancellationToken()
+    if parentCancellation?.isCancelled == true { commandCancellation.cancel() }
+    invocation?.cancellation = commandCancellation
+    let invocationID = FloeShellCommandRegistry.shared.beginInvocation(sessionID: sessionID, token: commandCancellation)
     if let directory = FloeShellCurrentWorkingDirectory(), let root = invocation?.rootURL.resolvingSymlinksInPath() {
         let url = URL(fileURLWithPath: directory).resolvingSymlinksInPath()
         if url == root || url.path.hasPrefix(root.path + "/") { invocation?.workingDirectory = url }
@@ -138,13 +174,23 @@ public func floeShellCommandMain(
         let stdout: UnsafeMutablePointer<FILE>?
         let stderr: UnsafeMutablePointer<FILE>?
         init(stdout: UnsafeMutablePointer<FILE>?, stderr: UnsafeMutablePointer<FILE>?) {
-            self.stdout = stdout
-            self.stderr = stderr
+            func ownedStream(_ source: UnsafeMutablePointer<FILE>?) -> UnsafeMutablePointer<FILE>? {
+                guard let source else { return nil }
+                let fd = dup(fileno(source))
+                guard fd >= 0 else { return nil }
+                _ = fcntl(fd, F_SETNOSIGPIPE, 1)
+                guard let stream = fdopen(fd, "w") else { Darwin.close(fd); return nil }
+                return stream
+            }
+            self.stdout = ownedStream(stdout)
+            self.stderr = ownedStream(stderr)
         }
+        deinit { if let stdout { fclose(stdout) }; if let stderr { fclose(stderr) } }
     }
     let box = Box(stdout: stdout, stderr: stderr)
     let semaphore = DispatchSemaphore(value: 0)
     Task.detached {
+        defer { FloeShellCommandRegistry.shared.endInvocation(sessionID: sessionID, id: invocationID) }
         box.code = await FloeShellCommandRegistry.$invocation.withValue(capturedInvocation) {
             await FloeShellCommandRegistry.$input.withValue(input) {
                 await handler(arguments, box.stdout, box.stderr)
@@ -152,7 +198,9 @@ public func floeShellCommandMain(
         }
         semaphore.signal()
     }
-    semaphore.wait()
+    while semaphore.wait(timeout: .now() + 0.025) == .timedOut {
+        if parentCancellation?.isCancelled == true { commandCancellation.cancel() }
+    }
     return box.code
 }
 
@@ -178,11 +226,12 @@ enum FloeShellCommands {
         registerHash(registry)
         registerNetwork(registry)
         registerPackages(registry)
-        registerWasm(registry)
         registry.register("git") { _, _, stderr in
             FloeShellWrite(stderr, "git: use the git.* agent tools (libgit2) or an approved remote host\n")
             return 127
         }
+        FloePlatformServices.shared.registerCommands(in: registry)
+    }
     }
 
     static func refreshPythonCommands() async {
@@ -196,7 +245,8 @@ enum FloeShellCommands {
         for entry in store.catalog.packages {
             registry.register(entry.command) { arguments, stdout, stderr in
                 guard let context = registry.context else { return 2 }
-                guard let input = FloeShellCommandRegistry.input?.read() else {
+                guard let input = FloeShellCommandRegistry.input?.read(cancellation: context.cancellation) else {
+                    if context.cancellation.isCancelled { return 130 }
                     FloeShellWrite(stderr, "WASM stdin exceeds 256 KiB or could not be read\n"); return 2
                 }
                 let outcome = await store.run(command: entry.command, arguments: Array(arguments.dropFirst()), stdin: input, environment: [:], rootURL: context.rootURL, cancellation: context.cancellation)
