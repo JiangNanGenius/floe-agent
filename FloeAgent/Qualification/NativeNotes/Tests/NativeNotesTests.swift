@@ -74,6 +74,11 @@ import FloeNotes
                text == title {
                 let images = try await web.callAsyncJavaScript("return document.querySelectorAll('me-tpc img').length", arguments: [:], in: nil, contentWorld: .page) as? Int
                 XCTAssertEqual(images, 0)
+                let screenshot = try await web.takeSnapshot(configuration: nil)
+                let attachment = XCTAttachment(image: screenshot)
+                attachment.name = "Notes mind map component — literal Chinese and English text"
+                attachment.lifetime = .keepAlways
+                add(attachment)
                 return
             }
             try await Task.sleep(for: .milliseconds(100))

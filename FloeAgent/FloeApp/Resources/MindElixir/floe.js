@@ -40,6 +40,7 @@
   }
   window.floeRender = payload => {
     applying = true; pending = false; ids.clear();
+    try {
     documentID = payload.document.id; revision = payload.document.revision;
     const nodes = payload.document.nodes;
     const lookup = new Map(nodes.map(n => [n.id, {
@@ -54,10 +55,14 @@
     const data = {nodeData:root, arrows:payload.document.connections.map(a => ({id:a.id,from:a.from,to:a.to,label:a.title,delta1:a.delta1,delta2:a.delta2,bidirectional:a.bidirectional,style:a.style})), direction:payload.document.mindMapDirection ?? 2, summaries:payload.document.summaries || []};
     if (!map) {
       const Engine = MindElixir.default;
-      map = new Engine({el:'#map',direction:2,editable:true,allowUndo:false,toolBar:true,
-        keypress:true,contextMenu:{locale:'zh_CN'},newTopicName:'新主题',markdown:escapeText,
+      const instance = new Engine({el:'#map',direction:2,editable:true,allowUndo:false,toolBar:true,
+        keypress:true,contextMenu:{locale:{
+          addChild:'插入子节点',addParent:'插入父节点',addSibling:'插入同级节点',removeNode:'删除节点',
+          focus:'专注',cancelFocus:'取消专注',moveUp:'上移',moveDown:'下移',link:'连接',
+          linkBidirectional:'双向连接',clickTips:'请点击目标节点',summary:'摘要'
+        }},newTopicName:'新主题',markdown:escapeText,
         theme:payload.dark ? Engine.DARK_THEME : Engine.THEME});
-      map.init(data);
+      instance.init(data); map = instance;
       map.bus.addListener('operation', operation => { if (operation.name !== 'beginEdit') commit(); });
       map.bus.addListener('expandNode', commit);
       document.addEventListener('keydown', event => {
@@ -70,7 +75,7 @@
       map.refresh(data); map.editable = true;
       map.changeTheme(payload.dark ? MindElixir.default.DARK_THEME : MindElixir.default.THEME);
     }
-    applying = false;
+    } finally { applying = false; }
   };
   window.addEventListener('error', event => send({type:'error',message:String(event.message)}));
   window.addEventListener('unhandledrejection', () => send({type:'error',message:'导图操作失败，请重新打开文档。'}));

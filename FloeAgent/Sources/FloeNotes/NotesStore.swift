@@ -95,10 +95,17 @@ public actor NotesStore {
         return value
     }
 
-    @discardableResult public func apply(_ batch: NoteEditBatch) throws -> NoteDocument {
+    @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil) throws -> NoteDocument {
         defer { publishChange() }
         guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else { throw NoteError.invalidOperation("编辑批次为空或过大。") }
         return try database.write { db in
+            // Recheck tool authority inside the same write transaction as its edits.
+            // A native revoke while the Agent prepares a batch must win at commit.
+            if let conversation = authorizedConversationID {
+                guard try Bool.fetchOne(db, sql: "SELECT can_edit FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversation.uuidString, batch.documentID.uuidString]) == true else {
+                    throw NoteError.invalidOperation("此对话已没有修改该资料的授权。")
+                }
+            }
             if let request = batch.requestID,
                let receipt = try Row.fetchOne(db, sql: "SELECT document_id,body FROM edit_receipts WHERE request_id=?", arguments: [request]) {
                 let id: String = receipt["document_id"]
@@ -254,6 +261,23 @@ public actor NotesStore {
             guard try read(documentID, db: db).deletedAt == nil else { throw NoteError.notFound }
             try db.execute(sql: "INSERT OR REPLACE INTO assistant_scopes VALUES(?,?,?)",
                            arguments: [conversationID.uuidString, documentID.uuidString, canEdit])
+        }
+    }
+
+    public func accessGrants(conversationID: UUID) throws -> [UUID: Bool] {
+        try database.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT s.document_id, s.can_edit FROM assistant_scopes s JOIN documents d ON s.document_id=d.id WHERE s.conversation_id=? AND d.deleted IS NULL", arguments: [conversationID.uuidString])
+            return Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+                guard let id = UUID(uuidString: row["document_id"] as String) else { return nil }
+                return (id, row["can_edit"] as Bool)
+            })
+        }
+    }
+
+    /// Revokes future reads and edits without removing source documents or chat history.
+    public func revokeAccess(conversationID: UUID, documentID: UUID) throws {
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversationID.uuidString, documentID.uuidString])
         }
     }
 

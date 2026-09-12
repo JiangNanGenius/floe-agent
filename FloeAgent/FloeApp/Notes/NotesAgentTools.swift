@@ -203,7 +203,7 @@ struct NotesEditTool: AgentTool {
         }
         try context.cancellation.throwIfCancelled()
         let value = try await store.apply(.init(documentID: args.documentID, expectedRevision: args.expectedRevision,
-                                              title: args.title, edits: edits, requestID: requestID))
+                                              title: args.title, edits: edits, requestID: requestID), authorizedConversationID: context.conversationID)
         return try NotesReadTool.output(["documentID": value.id.uuidString, "revision": String(value.revision), "status": "saved", "undoable": "true"])
     }
     private func command(_ operation: Operation, in document: NoteDocument) throws -> NoteEdit {

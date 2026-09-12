@@ -1,0 +1,46 @@
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 245]
+[Planning deferred tasks]
+[1 / 4] GRDB_GRDB
+[4 / 16] GRDB_GRDB
+[5 / 11] FloeNotes
+[7 / 13] FloeNotes
+[11 / 16] FloeNotes
+[11 / 22] FloeNotes
+[12 / 23] FloeNotes
+[14 / 23] FloeNotes
+[16 / 22] NotesTests-product
+[18 / 24] NotesTests-product
+[21 / 27] NotesTests-product
+[23 / 27] NotesTests-product
+[25 / 27] NotesTests-product
+Build complete! (12.72秒)
+Test Suite 'All tests' started at 2026-09-13 09:38:28.447.
+Test Suite 'All tests' passed at 2026-09-13 09:38:28.450.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.003) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite NotesStoreTests started.
+◇ Test receiptsSurviveRestartWithoutDuplicateEdits() started.
+◇ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() started.
+◇ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() started.
+◇ Test assistantScopesAndTrashAreIndependentFromChat() started.
+◇ Test durableHistoryAndCAS() started.
+◇ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() started.
+◇ Test rejectedBatchIsAtomicAndStaleEditsFail() started.
+◇ Test revokingScopeSurvivesRestartAndPreservesOtherConversationAndDocument() started.
+◇ Test mindMapRejectsCyclesWithoutChangingPersistedTree() started.
+✔ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() passed after 0.034 seconds.
+✔ Test receiptsSurviveRestartWithoutDuplicateEdits() passed after 0.035 seconds.
+✔ Test rejectedBatchIsAtomicAndStaleEditsFail() passed after 0.037 seconds.
+✔ Test assistantScopesAndTrashAreIndependentFromChat() passed after 0.038 seconds.
+✔ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() passed after 0.038 seconds.
+✔ Test revokingScopeSurvivesRestartAndPreservesOtherConversationAndDocument() passed after 0.038 seconds.
+✔ Test durableHistoryAndCAS() passed after 0.048 seconds.
+✔ Test mindMapRejectsCyclesWithoutChangingPersistedTree() passed after 0.051 seconds.
+✔ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() passed after 0.066 seconds.
+✔ Suite NotesStoreTests passed after 0.067 seconds.
+✔ Test run with 9 tests in 1 suite passed after 0.068 seconds.

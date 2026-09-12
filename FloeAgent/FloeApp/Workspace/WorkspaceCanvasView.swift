@@ -8522,6 +8522,7 @@ private struct SharedCanvasAgentConversation: View {
     @Binding var isRunning: Bool
 
     @State private var prompt = ""
+    @State private var isNotesPickerPresented = false
     @State private var dictationPrefix = ""
     @State private var insertedRunIDs = Set<UUID>()
     @State private var visibleTimelineCount = 30
@@ -8556,6 +8557,14 @@ private struct SharedCanvasAgentConversation: View {
             transcript
             Divider()
             composer
+        }
+        .sheet(isPresented: $isNotesPickerPresented) {
+            NotesKnowledgePicker(conversationID: viewModel.conversationID) { document, notesStore in
+                if let attachment = try await NotesKnowledgeAttachment.prepare(document: document, store: notesStore, files: center.environment.filesCenter) {
+                    viewModel.attachments.append(attachment)
+                }
+                prompt += (prompt.isEmpty ? "" : "\n\n") + NotesKnowledgeAttachment.reference(document)
+            }
         }
         .task {
             viewModel.agentMode = .agent
@@ -8640,6 +8649,21 @@ private struct SharedCanvasAgentConversation: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            HStack {
+                Button("添加手记资料", systemImage: "book.closed") { isNotesPickerPresented = true }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("canvas.agent.notes")
+                Spacer()
+            }
+            ForEach(viewModel.attachments) { attachment in
+                HStack {
+                    Label(attachment.displayName, systemImage: "doc").lineLimit(1)
+                    Spacer()
+                    Button("移除", systemImage: "xmark.circle") {
+                        viewModel.attachments.removeAll { $0.id == attachment.id }
+                    }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                }.font(.caption)
+            }
             if let voiceError = canvasVoiceError {
                 HStack(spacing: 8) {
                     Image(systemName: "microphone.slash")

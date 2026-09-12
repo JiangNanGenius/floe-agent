@@ -158,7 +158,7 @@ jobs:
 
       - name: Verify persistent Node host and pinned tools
         run: |
-          node --test scripts/tests/node_host.test.cjs
+          node --test scripts/tests/node_host.test.cjs scripts/tests/notes_bridge.test.cjs
           bash scripts/pin_node_tools.sh --check
 
       - name: Resolve and pin-check dependencies

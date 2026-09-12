@@ -13,6 +13,8 @@ import Foundation
 public enum CanvasAgentToolPolicy {
     public static let nativeToolNames: Set<String> = [
         "web.search", "web.fetch",
+        // Notes tools enforce a separate native picker grant per conversation.
+        "notes.read", "notes.search", "notes.edit",
         "canvas.getState", "canvas.applyOperations", "canvas.delete",
         "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
         "canvas.generate", "canvas.generationStatus"

@@ -25,6 +25,8 @@ jobs:
       DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
+      - name: Check native Notes bridge contracts
+        run: node --test FloeAgent/scripts/tests/notes_bridge.test.cjs
       - name: Generate native component project
         run: |
           brew install xcodegen

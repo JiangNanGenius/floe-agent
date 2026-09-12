@@ -210,16 +210,10 @@ struct ThreadComposerView: View {
         .sheet(isPresented: $isNotesPickerPresented) {
             if let contextID {
                 NotesKnowledgePicker(conversationID: contextID) { document, store in
-                    if let resource = document.officeResourceID, let fileName = document.officeFileName {
-                        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-attachment-\(UUID().uuidString)")
-                        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                        defer { try? FileManager.default.removeItem(at: folder) }
-                        let file = folder.appendingPathComponent(fileName)
-                        try FileManager.default.copyItem(at: try await store.resourceURL(resource), to: file)
-                        let attachment = try await environment.filesCenter.registerPickedDocument(url: file, compressImage: false)
+                    if let attachment = try await NotesKnowledgeAttachment.prepare(document: document, store: store, files: environment.filesCenter) {
                         attachments.append(attachment)
                     }
-                    draft += (draft.isEmpty ? "" : "\n\n") + "已选择手记资料：\(document.title)。documentID=\(document.id.uuidString)。可使用 notes.read 读取最新内容；笔迹及图片需另行提供选区图像，不能当作已识别的文字。"
+                    draft += (draft.isEmpty ? "" : "\n\n") + NotesKnowledgeAttachment.reference(document)
                 }
             }
         }

@@ -24,6 +24,7 @@ targets:
       - ../../FloeApp/Notes/NoteElementInspector.swift
       - ../../FloeApp/Notes/NotesTextLayout.swift
       - ../../FloeApp/Notes/NotesAnswerSaveSheet.swift
+      - ../../FloeApp/Notes/NotesKnowledgePicker.swift
       - ../../FloeApp/Notes/NotesRepository.swift
       - ../../FloeApp/Notes/NotesSession.swift
       - ../../FloeApp/Notes/NoteMindMapView.swift

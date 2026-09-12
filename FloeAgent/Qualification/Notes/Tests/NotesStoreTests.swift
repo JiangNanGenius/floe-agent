@@ -77,6 +77,25 @@ struct NotesStoreTests {
         #expect(try await store.scopedDocuments(conversationID: conversation).count == 1)
     }
 
+    @Test func revokingScopeSurvivesRestartAndPreservesOtherConversationAndDocument() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let document = try await store.create(NoteDocument(title: "Shared material"))
+        let first = UUID(), second = UUID()
+        try await store.grantAccess(conversationID: first, documentID: document.id, canEdit: false)
+        try await store.grantAccess(conversationID: second, documentID: document.id, canEdit: true)
+        #expect(try await store.accessGrants(conversationID: first)[document.id] == false)
+        try await store.revokeAccess(conversationID: first, documentID: document.id)
+        let reopened = try NotesStore(root: root)
+        #expect(try await reopened.accessGrants(conversationID: first).isEmpty)
+        await #expect(throws: (any Error).self) { try await reopened.authorize(conversationID: first, documentID: document.id, editing: false) }
+        try await reopened.authorize(conversationID: second, documentID: document.id, editing: true)
+        let batch = NoteEditBatch(documentID: document.id, expectedRevision: document.revision, title: "late edit", edits: [.rename("Late")])
+        await #expect(throws: (any Error).self) { try await reopened.apply(batch, authorizedConversationID: first) }
+        #expect(try await reopened.document(document.id) == document)
+        #expect(try await reopened.apply(batch, authorizedConversationID: second).title == "Late")
+    }
+
     @Test func mindMapRejectsCyclesWithoutChangingPersistedTree() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

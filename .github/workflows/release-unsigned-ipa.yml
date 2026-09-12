@@ -141,7 +141,7 @@ jobs:
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/platform" --timeout 1200 -- swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes" --timeout 1200 -- swift test --package-path Qualification/Notes --scratch-path .build --force-resolved-versions --jobs 4
           grep -E 'Test run with [1-9][0-9]* tests? .*passed' platform-qualification.log
-          node --test scripts/tests/node_host.test.cjs
+          node --test scripts/tests/node_host.test.cjs scripts/tests/notes_bridge.test.cjs
 
       - name: Preserve Swift regression output and stall diagnostics
         if: always()
