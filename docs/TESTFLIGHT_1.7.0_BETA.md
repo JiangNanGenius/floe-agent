@@ -1,4 +1,4 @@
-# Floe 1.7.0 (144) — TestFlight candidate
+# Floe 1.7.0 — TestFlight candidate history
 
 This is an internal beta candidate, not completion of the full 1.7 upgrade plan.
 
@@ -6,7 +6,7 @@ This is an internal beta candidate, not completion of the full 1.7 upgrade plan.
 - Tag: `v1.7.0-beta.1`; local tag/version/extension/build preflight passed.
 - Cloud archive/upload workflow: [34707145277](https://github.com/JiangNanGenius/floe-agent/actions/runs/34707145277).
 - Audience to verify after Apple processing: existing internal **Floe QA** group.
-- Current gate: cloud build/qualification in progress. No uploaded build or TestFlight visibility is claimed yet.
+- Build 144 candidate was cancelled before upload: full-App CI 34706721636 found a missing `await` in the actor-isolated font import adapter. Build 145 / beta.2 includes the fix; cloud verification remains required. No uploaded build or TestFlight visibility is claimed yet.
 - Beta tags do not automatically publish a public GitHub release. No production App Store release is requested.
 
 ## Included changes

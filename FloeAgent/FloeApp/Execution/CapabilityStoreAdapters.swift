@@ -22,7 +22,7 @@ struct FontStoreCapabilityAdapter: CapabilityFontInstalling {
     let store: DeviceFontStore
 
     func installCapabilityFont(downloadedFile: URL, sha256: String?) async throws {
-        _ = try store.importFont(from: downloadedFile)
+        _ = try await store.importFont(from: downloadedFile)
     }
 }
 
