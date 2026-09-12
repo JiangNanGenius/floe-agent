@@ -54,12 +54,12 @@ struct ToolFailureBreakerTests {
         var guard_ = ToolLoopGuard()
         // Distinct arguments: the unchanged-outcome guard must stay silent;
         // the streak breaker is what fires.
-        _ = guard_.record(call: call("task.updatePlan", "a"), result: failure("error one"), isSideEffecting: false)
-        _ = guard_.record(call: call("task.updatePlan", "b"), result: failure("error two"), isSideEffecting: false)
-        let third = guard_.record(call: call("task.updatePlan", "c"), result: failure("error three names the field"), isSideEffecting: false)
+        _ = guard_.record(call: call("checklist.updatePlan", "a"), result: failure("error one"), isSideEffecting: false)
+        _ = guard_.record(call: call("checklist.updatePlan", "b"), result: failure("error two"), isSideEffecting: false)
+        let third = guard_.record(call: call("checklist.updatePlan", "c"), result: failure("error three names the field"), isSideEffecting: false)
         #expect(third?.shouldStop == false)
         #expect(third?.message.contains("Circuit breaker") == true)
-        #expect(third?.message.contains("task.updatePlan") == true)
+        #expect(third?.message.contains("checklist.updatePlan") == true)
         #expect(third?.message.contains("error three names the field") == true)
         #expect(third?.message.contains("3 times") == true)
     }

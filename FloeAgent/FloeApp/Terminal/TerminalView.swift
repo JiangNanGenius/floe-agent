@@ -103,7 +103,7 @@ struct TerminalView: View {
 /// SwiftTerm-backed PTY renderer. It interprets ANSI/VT sequences, owns the
 /// software/hardware keyboard surface, and forwards raw bytes and resize
 /// events to the long-lived SSH session owned by RemoteSessionCenter.
-private struct SSHEmulatorView: UIViewRepresentable {
+struct SSHEmulatorView: UIViewRepresentable {
     let output: Data
     let isInteractive: Bool
     let onSend: @MainActor (Data) -> Void

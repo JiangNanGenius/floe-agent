@@ -1,5 +1,11 @@
 # Product Overview
 
+> **Historical note (2026-09-12):** the version-1 exclusion of "an unrestricted
+> shell/process environment" below is superseded. Floe 1.6.7 ships a bounded
+> on-device POSIX shell substrate (approval-gated, mini-root-confined, no
+> native ELF execution) plus an apt/pkg capability catalog. The authoritative
+> description is [docs/ARCHITECTURE_LOCAL_SHELL.md](docs/ARCHITECTURE_LOCAL_SHELL.md).
+
 ## Purpose
 
 Floe Agent is a bring-your-own-key AI agent workspace for iPhone and iPad. It brings model conversations, Files documents, image operations, SSH terminals, and VNC sessions into one auditable task flow without requiring a Floe account or a Floe-operated proxy.

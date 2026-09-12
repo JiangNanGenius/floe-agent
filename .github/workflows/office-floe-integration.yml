@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Prepare pinned native runtimes
         run: |
-          brew install xcodegen cmake
+          brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
           python3 scripts/test_office_host_bootstrap.py
           python3 scripts/test_office_app_load_chain.py

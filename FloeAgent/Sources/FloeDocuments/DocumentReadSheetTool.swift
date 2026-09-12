@@ -440,18 +440,16 @@ public func registerDocumentTools(
     rootProvider: @escaping @Sendable () -> URL?
 ) -> (@Sendable () -> URL?) {
     ToolCatalog.register(DocumentReadSheetTool.self)
-    ToolCatalog.register(DocumentCreateTool.self)
     ToolCatalog.register(OfficeInspectTool.self)
     ToolCatalog.register(OfficeUpdateTextTool.self)
-    ToolCatalog.register(DocumentCreateWordTool.self)
-    ToolCatalog.register(DocumentCreateWorkbookTool.self)
+    ToolCatalog.register(DocumentCreateTool.self)
     ToolCatalog.register(PresentationCreateDeckTool.self)
     registry.register(DocumentReadSheetTool(rootProvider: rootProvider))
-    registry.register(DocumentCreateTool(rootProvider: rootProvider))
     registry.register(OfficeInspectTool(rootProvider: rootProvider))
     registry.register(OfficeUpdateTextTool(rootProvider: rootProvider))
     registry.register(DocumentCreateWordTool(rootProvider: rootProvider))
     registry.register(DocumentCreateWorkbookTool(rootProvider: rootProvider))
+    registry.register(DocumentCreateTool(rootProvider: rootProvider))
     registry.register(PresentationCreateDeckTool(rootProvider: rootProvider))
     return rootProvider
 }

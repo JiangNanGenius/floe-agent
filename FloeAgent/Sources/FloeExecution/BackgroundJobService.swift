@@ -28,7 +28,7 @@ public actor BackgroundJobService {
     /// Only non-host-scoped, workspace-safe targets are eligible; expanding
     /// this list requires a fresh approval-surface review.
     public static let supportedTargets: Set<String> = [
-        "exec.localPython", "network.download", "network.http", "web.fetch"
+        "exec.localPython", "exec.shell", "network.download", "network.http", "web.fetch"
     ]
 
     private let store: BackgroundJobStore

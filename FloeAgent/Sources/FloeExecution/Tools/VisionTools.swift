@@ -177,7 +177,7 @@ public struct BarcodeScanTool: AgentTool {
         }
     }
 
-    public static let name = "image.scanBarcode"
+    public static let name = "image.barcode.scan"
     public static let toolDescription =
         "Scan barcodes and QR codes in a PNG/JPEG image using on-device Apple Vision. Pass a workspace-relative path (preferred) or base64 bytes."
     public static let parametersJSON = #"""

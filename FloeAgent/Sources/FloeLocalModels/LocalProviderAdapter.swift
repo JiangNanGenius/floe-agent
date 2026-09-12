@@ -946,7 +946,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
     }
 
     private static let mlxAdmissibleToolNames: Set<String> = [
-            "tools.list", "tools.search", "task.readPlan", "task.updatePlan", "skill.search",
+            "tools.list", "tools.search", "checklist.readPlan", "checklist.updatePlan", "skill.search",
             "web.search", "web.searchAI", "web.fetch",
             "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
             "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",

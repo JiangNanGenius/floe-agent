@@ -49,8 +49,8 @@ enum ToolDiscovery {
             let description: String
             let group: String
             let schemaLoaded: Bool
-            let ownerSkillID: String?
             let relatedSkillIDs: [String]
+            let aliases: [String]
         }
         struct Response: Encodable {
             let tools: [Entry]
@@ -61,7 +61,8 @@ enum ToolDiscovery {
             Entry(name: wireSafeNames ? wireSpelling($0.name, wireSafe: true) : $0.name,
                   description: String($0.toolDescription.prefix(240)),
                   group: group($0.name), schemaLoaded: loaded.contains($0.name),
-                  ownerSkillID: $0.ownerSkillID, relatedSkillIDs: relatedSkills[$0.name, default: []])
+                  relatedSkillIDs: relatedSkills[$0.name, default: []],
+                  aliases: ToolAliasTable.aliases(of: $0.name))
         }, total: rows.count, nextAfterName: remaining.count > page.count
             ? page.last.map { wireSafeNames ? wireSpelling($0.name, wireSafe: true) : $0.name }
             : nil)
@@ -84,33 +85,20 @@ enum ToolDiscovery {
     static func matches(query: String, descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
-        let synonyms: [String: [String]] = [
-            "vnc": ["vnc", "远程桌面", "鼠标", "remote desktop"],
-            "executor": ["ssh", "executor", "执行命令", "运行命令"],
-            "hosts": ["主机", "server", "连接配置"],
-            "terminal": ["终端", "terminal", "交互", "telnet", "串口"],
-            "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
-            "pdf": ["pdf"],
-            "office": ["markdown", "rtf", "富文本", "格式转换", "互转", "office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
-            "http": ["http", "接口", "api"],
-            "network": ["network", "网络", "ping", "dns", "http", "端口", "traceroute"],
-            "workspace": ["workspace", "文件", "编辑", "file", "html", "代码"],
-            "image": ["image", "图片", "图像", "照片", "生成图片", "生图", "画图", "createimage", "create image", "text-to-image", "文字识别", "ocr"],
-            "canvas": ["canvas", "画布", "生成", "图片", "视频"],
-            "memory": ["memory", "记忆", "remember"],
-            "skill": ["skill", "技能"],
-            "browser": ["browser", "浏览器", "网页", "website"],
-            "web": ["web", "搜索", "search", "查找"],
-            "git": ["git", "仓库", "commit", "repository"],
-            "mail": ["mail", "邮件", "邮箱", "收信", "发信", "imap", "pop3", "smtp"]
-        ]
+        let synonyms = ToolAliasTable.synonyms
         var groups = Set(synonyms.compactMap { group, terms in
             terms.contains(where: query.contains) ? group : nil
         })
         let tokens = query.split(whereSeparator: { $0.isWhitespace || "，,;；/".contains($0) }).map(String.init)
         let exact = descriptors.filter { descriptor in
-            tokens.contains(descriptor.name.lowercased())
-                || tokens.contains(where: { canonicalSpelling($0, among: descriptors).lowercased() == descriptor.name.lowercased() })
+            let aliases = ToolAliasTable.aliases(of: descriptor.name)
+            return tokens.contains(descriptor.name.lowercased())
+                || aliases.contains(where: { tokens.contains($0.lowercased()) })
+                || tokens.contains(where: {
+                    let canonical = ToolAliasTable.canonical($0)
+                    return canonical.lowercased() == descriptor.name.lowercased()
+                        || canonicalSpelling($0, among: descriptors).lowercased() == descriptor.name.lowercased()
+                })
         }
         if !exact.isEmpty { return exact }
         for descriptor in descriptors {
@@ -141,8 +129,8 @@ enum ToolDiscovery {
         let names = Set(descriptors.map(\.name))
         func n(_ name: String) -> String { wireSpelling(name, wireSafe: wireSafeNames) }
         var lines: [String] = []
-        if names.isSuperset(of: ["task.readPlan", "task.updatePlan"]) {
-            lines.append("At task start, judge whether the request requires substantial multi-step work. If so, use \(n("task.readPlan")) and \(n("task.updatePlan")) to maintain a durable checklist while executing; simple questions need none. Revise the same checklist when new evidence or user steering changes the work: preserve step IDs, update the revision, and retain completed evidence. A checklist never enables Goal mode.")
+        if names.isSuperset(of: ["checklist.readPlan", "checklist.updatePlan"]) {
+            lines.append("At task start, judge whether the request requires substantial multi-step work. If so, use \(n("checklist.readPlan")) and \(n("checklist.updatePlan")) to maintain a durable checklist while executing; simple questions need none. Revise the same checklist when new evidence or user steering changes the work: preserve step IDs, update the revision, and retain completed evidence. A checklist never enables Goal mode.")
         }
         lines.append("Use \(n("tools.list")) to enumerate tool metadata available in this run; it does not load every schema. Use \(n("tools.search")) to load definitions by exact name or capability, batching independent queries. Available groups: "
             + (groups.isEmpty ? "none" : groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", "))
@@ -159,7 +147,7 @@ enum ToolDiscovery {
 
     /// Discovery is a presentation budget, never an authority grant.
     static func bounded(_ descriptors: [ToolCatalog.Descriptor], priority: [String], pinned: Set<String> = [], maxTools: Int = 23, maxBytes: Int = 23_000) -> [ToolCatalog.Descriptor] {
-        let core: Set<String> = ["skill.search", "skill.read", "skill.list", "task.readPlan", "task.updatePlan"]
+        let core: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan"]
         let ranks = Dictionary(priority.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         let ordered = descriptors.sorted {
             let a = core.contains($0.name) || pinned.contains($0.name)

@@ -834,7 +834,6 @@ final class ConversationCenter: ObservableObject {
                 let denied = (taskPolicy.networkAllowed == false && risks.contains(.networkAccess))
                     || (taskPolicy.approvalMode == "readOnly" && descriptor.effect != .readOnly)
                     || (taskPolicy.browserControlAllowed == false && descriptor.name.hasPrefix("browser."))
-                    || (taskPolicy.uploadAllowed == false && descriptor.name == "browser.upload")
                     || (taskPolicy.credentialsAllowed == false && risks.contains(.accessesCredentials))
                     || (taskPolicy.remoteExecutionAllowed == false
                         && !risks.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem]))
@@ -3841,7 +3840,7 @@ final class ConversationCenter: ObservableObject {
                     checklistChanged = false
                     switch lifecycle {
                     case .requested(let call), .started(let call):
-                        if call.toolName == "task.updatePlan" { checklistCalls.insert(call.id) }
+                        if call.toolName == "checklist.updatePlan" { checklistCalls.insert(call.id) }
                         toolNamesByCallID[call.id] = call.toolName
                         self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: call.toolName, outcome: .started)
                     case .finished(let result):

@@ -522,7 +522,7 @@ struct HarnessPlanningTests {
     func toolWorkflowRecoveryHints() {
         #expect(ToolWorkflowGuidance.recoveryHint(for: "ssh.taskStatus")?.contains("ssh.execute") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "remoteHosting.manage")?.contains("action=list") == true)
-        #expect(ToolWorkflowGuidance.recoveryHint(for: "cloudWorkspace.gitStatus")?.contains("cloudWorkspace.catalog") == true)
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "cloudWorkspace.git.status")?.contains("cloudWorkspace.catalog") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.observe")?.contains("vnc.connect") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.typeCredential")?.contains("obey the user's explicit prerequisite route") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.typeCredential")?.contains("SSH is not mandatory") == true)

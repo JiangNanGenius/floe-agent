@@ -1,5 +1,14 @@
 # Security Policy
 
+> **Scope note (2026-09-12):** Floe 1.6.7 adds the local shell substrate
+> (`exec.shell`, `shell.*`), the apt/pkg capability catalog, data-only `.deb`
+> extraction and sandboxed WASM command packages. Every one of these paths is
+> approval-gated and documented in
+> [docs/ARCHITECTURE_LOCAL_SHELL.md](docs/ARCHITECTURE_LOCAL_SHELL.md); the
+> explicitly approved relaxations (mini-root-wide read access for external
+> commands, coarse per-command risk) are listed there. The bundled Python
+> package path, fingerprint rules and no-native-ELF boundary are unchanged.
+
 ## Current status
 
 Floe Agent publishes prerelease builds for evaluation. They are not a supported production service, and the community unsigned IPA is not an App Store package. Do not use development or unsigned builds to operate production systems or store production credentials. [简体中文安全策略](SECURITY.zh-CN.md)

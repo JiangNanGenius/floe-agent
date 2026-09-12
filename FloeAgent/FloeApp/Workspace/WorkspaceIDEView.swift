@@ -21,6 +21,7 @@ struct WorkspaceIDEView: View {
     @State private var pendingDismissal = false
     @State private var showsUnsavedAlert = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var terminalOwner: LocalTerminalOwner?
     @State private var sidebarPanel: SidebarPanel = .files
 
     private enum SidebarPanel: String, CaseIterable, Identifiable {
@@ -53,6 +54,7 @@ struct WorkspaceIDEView: View {
                     .toolbar { closeToolbar }
             }
         }
+        .sheet(item: $terminalOwner) { owner in LocalTerminalView(owner: owner) }
         .navigationSplitViewStyle(.balanced)
         .background(FloeTheme.readingSurface)
         .task { await treeModel.loadRoot() }
@@ -172,6 +174,14 @@ struct WorkspaceIDEView: View {
 
     @ToolbarContentBuilder
     private var closeToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                if let workspace = center.currentWorkspace, let root = center.currentRootURL {
+                    terminalOwner = center.environment.localTerminals.owner(workspaceID: workspace.id, root: root)
+                }
+            } label: { Label("本地终端", systemImage: "terminal") }
+            .disabled(center.currentRootURL == nil)
+        }
         ToolbarItem(placement: .topBarTrailing) {
             Button {
                 requestDismissal()

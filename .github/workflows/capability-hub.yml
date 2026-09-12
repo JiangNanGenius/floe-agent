@@ -1,0 +1,57 @@
+name: WASI Capability Hub
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Sign official WASI packages and commit the catalog (no app release)
+        type: boolean
+        default: false
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m venv /tmp/capability-signing
+      - run: /tmp/capability-signing/bin/pip install cryptography==46.0.3
+      - run: /tmp/capability-signing/bin/python capability-hub/build.py --test-key --output /tmp/capability-test
+  publish:
+    needs: verify
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: xcode-27
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - run: python3 -m venv /tmp/capability-signing
+      - run: /tmp/capability-signing/bin/pip install cryptography==46.0.3
+      - name: Commit immutable WASI artifact
+        run: |
+          /tmp/capability-signing/bin/python capability-hub/build.py --test-key --output /tmp/capability-artifacts
+          mkdir -p capability-hub/packages
+          cp -R /tmp/capability-artifacts/packages/. capability-hub/packages/
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add capability-hub/packages
+          if ! git diff --cached --quiet; then
+            git commit -m "Stage immutable WASI command artifact"
+            git push origin HEAD:main
+          fi
+          echo "FLOE_CAPABILITY_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: Sign official catalog
+        env:
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        run: /tmp/capability-signing/bin/python capability-hub/build.py
+      - name: Commit immutable packages and app catalog
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add capability-hub/packages capability-hub/catalog.json capability-hub/catalog.sig FloeAgent/FloeApp/Resources/Capabilities
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Publish signed WASI capability catalog"
+          git push origin HEAD:main

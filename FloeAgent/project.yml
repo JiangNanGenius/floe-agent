@@ -23,6 +23,8 @@ options:
 packages:
   FloeAgentPackages:
     path: .  # Local Swift package (root Package.swift)
+  FloeShellEngine:
+    path: ThirdParty/FloeShellEngine
 
 targets:
   FloeAgent:
@@ -36,11 +38,15 @@ targets:
     sources:
       - path: FloeApp
         excludes:
+          - Resources/Capabilities
           - Resources/python
           - Resources/PDFiumLicenses
           - Resources/LibArchiveLicenses
           - Resources/DocumentConversion
           - Resources/Fonts/Bundled
+      - path: FloeApp/Resources/Capabilities
+        type: folder
+        buildPhase: resources
       - path: FloeApp/Resources/python
         type: folder
         buildPhase: resources
@@ -428,6 +434,26 @@ targets:
         product: FloeGit
       - package: FloeAgentPackages
         product: FloeLocalModels
+      - framework: Frameworks/dash.xcframework
+        embed: true
+        link: false
+      - framework: Frameworks/dashA.xcframework
+        embed: true
+        link: false
+      - framework: Frameworks/dashB.xcframework
+        embed: true
+        link: false
+      - framework: Frameworks/dashC.xcframework
+        embed: true
+        link: false
+      - framework: Frameworks/dashD.xcframework
+        embed: true
+        link: false
+      - framework: Frameworks/dashE.xcframework
+        embed: true
+        link: false
+      - package: FloeShellEngine
+        product: FloeShellEngine
       - target: FloeScreenShare
         embed: true
     postBuildScripts:
@@ -457,8 +483,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.6.6"
-        CURRENT_PROJECT_VERSION: "142"
+        MARKETING_VERSION: "1.6.7"
+        CURRENT_PROJECT_VERSION: "143"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -515,8 +541,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.6.6"
-        CURRENT_PROJECT_VERSION: "142"
+        MARKETING_VERSION: "1.6.7"
+        CURRENT_PROJECT_VERSION: "143"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -560,8 +586,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.6.6"
-        CURRENT_PROJECT_VERSION: "142"
+        MARKETING_VERSION: "1.6.7"
+        CURRENT_PROJECT_VERSION: "143"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -600,8 +626,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.6.6"
-        CURRENT_PROJECT_VERSION: "142"
+        MARKETING_VERSION: "1.6.7"
+        CURRENT_PROJECT_VERSION: "143"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -622,6 +648,7 @@ targets:
           - ThreadTimelineTests.swift
           - VoiceInputControllerTests.swift
           - CrashAndFeedbackRegressionTests.swift
+          - LocalShellRuntimeTests.swift
           - LocalPythonRuntimeTests.swift
           - RemoteImageInspectToolTests.swift
           - ImportantFileShortcutTests.swift
@@ -651,6 +678,7 @@ targets:
       - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift
       - path: Tests/FloeAgentUITests/BrowserProtocolTests.swift
       - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
+      - path: Tests/FloeAgentUITests/LocalShellRuntimeTests.swift
       - path: Tests/FloeAgentUITests/LocalPythonRuntimeTests.swift
       - path: Tests/FloeAgentUITests/RemoteImageInspectToolTests.swift
       - path: Tests/FloeAgentUITests/ImportantFileShortcutTests.swift

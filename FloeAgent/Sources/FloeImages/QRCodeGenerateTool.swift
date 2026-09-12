@@ -1,7 +1,7 @@
-// FloeImages — image.qrGenerate agent tool.
+// FloeImages — image.qr.generate agent tool.
 //
 // Generates a QR code PNG locally with Core Image. Complements
-// image.scanBarcode (decode) with the missing encode direction.
+// image.barcode.scan (decode) with the missing encode direction.
 
 import Foundation
 import CoreGraphics
@@ -35,7 +35,7 @@ public struct QRCodeGenerateTool: AgentTool {
         }
     }
 
-    public static let name = "image.qrGenerate"
+    public static let name = "image.qr.generate"
     public static let toolDescription =
         "Generate a QR code PNG locally (Core Image, no network). content is the exact payload to encode (max 2000 bytes); size is the output edge in pixels (default 512, max 2048); correctionLevel L/M/Q/H (default M). Writes a new workspace file and returns its path."
     public static let parametersJSON = #"""

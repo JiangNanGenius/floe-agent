@@ -828,7 +828,7 @@ struct ToolLoopHardeningTests {
             }.joined(separator: "\n")
             for prompt in [legacy, structured] {
                 #expect(prompt.contains("Native tool calling is unavailable"))
-                for absent in ["tools.search", "tools.list", "task.updatePlan", "exec.localPython", "Synthetic guide"] {
+                for absent in ["tools.search", "tools.list", "checklist.updatePlan", "exec.localPython", "Synthetic guide"] {
                     #expect(!prompt.contains(absent))
                 }
             }
@@ -842,7 +842,7 @@ struct ToolLoopHardeningTests {
             let adapter = MockAdapter()
             adapter.script = [[.completed(.init(stopReason: .endTurn))]]
             let executor = MockExecutor()
-            for (name, effect): (String, ToolEffect) in [("task.readPlan", .readOnly), ("task.updatePlan", .internalState)] {
+            for (name, effect): (String, ToolEffect) in [("checklist.readPlan", .readOnly), ("checklist.updatePlan", .internalState)] {
                 executor.descriptors[name] = .init(name: name, toolDescription: name, parametersJSON: "{}", riskLabels: [], isSideEffecting: false, effect: effect)
             }
             let provider = TestFixtures.localhostProvider()
@@ -851,8 +851,8 @@ struct ToolLoopHardeningTests {
             await runtime.injectSystemContext(AgentPromptComposer.compose(mode: mode, runtimeContext: "Synthetic audit"))
             try await runtime.start(goal: "Plan the work")
             let request = try #require(adapter.requests.first)
-            #expect(request.toolSchemas.contains { $0.name == "task.updatePlan" } == (mode != .plan))
-            #expect(request.messages.contains { $0.role == "system" && $0.content.contains("task.updatePlan") } == (mode != .plan))
+            #expect(request.toolSchemas.contains { $0.name == "checklist.updatePlan" } == (mode != .plan))
+            #expect(request.messages.contains { $0.role == "system" && $0.content.contains("checklist.updatePlan") } == (mode != .plan))
             try writeSyntheticPromptAudit(request, name: mode.rawValue)
         }
     }

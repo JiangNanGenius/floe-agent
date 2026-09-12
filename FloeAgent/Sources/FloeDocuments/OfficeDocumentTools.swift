@@ -195,9 +195,9 @@ public struct PresentationCreateDeckTool: AgentTool {
         public var title: String
         public var slides: [OfficePresentationSlide]
     }
-    public static let name = "presentation.createDeck"
+    public static let name = "document.presentation.createDeck"
     public static let toolDescription =
-        "Create a native 16:9 .pptx with slide titles, bullet text and optional speaker notes. Use supplied content; research with web.search/web.fetch only when additional source material is needed, and place supporting URLs in notes. This basic creation schema does not position objects, insert charts/images, or edit themes. Floe validates the OOXML package; use document.office.inspect/updateText for existing text fields. For an inline conversation table/chart/web preview use presentation.createInline."
+        "Create a native 16:9 .pptx with slide titles, bullet text and optional speaker notes. Use supplied content; research with web.search/web.fetch only when additional source material is needed, and place supporting URLs in notes. This basic creation schema does not position objects, insert charts/images, or edit themes. Floe validates the OOXML package; use document.office.inspect/updateText for existing text fields. For an inline conversation table/chart/web preview use document.presentation.createInline."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"New workspace-relative .pptx path"},"title":{"type":"string","maxLength":300},"slides":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"title":{"type":"string","maxLength":300},"bullets":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":1000}},"notes":{"type":"string","description":"Optional speaker notes including [Sources] URLs","maxLength":20000}},"required":["title","bullets"],"additionalProperties":false}}},"required":["path","title","slides"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true

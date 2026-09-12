@@ -88,6 +88,16 @@ final class AppEnvironment: ObservableObject {
     /// Real remote-Python capability probe (FloeExecution), surfaced to
     /// SettingsCenter so the UI reads live state instead of a placeholder.
     let remotePythonProbe: FloeExecution.RemotePythonProbe
+    /// Local shell substrate (ios_system-backed) shared by exec.shell and the
+    /// interactive shell.* tools.
+    let localShellService: LocalShellService
+    let shellSessionCenter: ShellSessionCenter
+    lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
+    /// Managed pure-Python installer shared by exec.localPython, exec.shell
+    /// and the apt capability layer.
+    let managedPythonInstaller: ManagedPythonInstallService?
+    /// apt/pkg capability catalog and reviewed install routing.
+    let capabilityInstaller: CapabilityInstaller
     /// Long-lived visible WebKit session shared by UI and browser tools.
     let browserCenter: BrowserSessionCenter
     let previewCenter: LocalPreviewCoordinator
@@ -293,6 +303,37 @@ final class AppEnvironment: ObservableObject {
             service: localPythonService
         )
 
+        // Local shell substrate. The backend is the ios_system command bus;
+        // Floe replacement commands (python3, ping, traceroute, dig, nc,
+        // sha256sum, apt/pkg/dpkg) shadow the external ones with Floe-backed
+        // implementations at registration time below.
+        let shellPolicy = ShellCommandPolicy(
+            gate: try? CatastrophicActionGate.withBundledPatterns()
+        )
+        let shellBackend = IOSSystemShellBackend()
+        self.localShellService = LocalShellService(
+            backend: shellBackend,
+            policy: shellPolicy,
+            environmentDefaults: Self.localShellEnvironment(),
+            rootProvider: WorkspaceCenter.toolRootProvider
+        )
+        self.shellSessionCenter = ShellSessionCenter(backend: shellBackend, policy: shellPolicy)
+        let managedPython = localPythonService.map { ManagedPythonInstallService(python: $0, packagesChanged: { await FloeShellCommands.refreshPythonCommands() }) }
+        self.managedPythonInstaller = managedPython
+        let capabilityRoot = ((try? FloeArtifactStore.root()) ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+            .appendingPathComponent("Packages", isDirectory: true)
+        let wasmCapabilities = BundledWasmCapabilities.load(root: capabilityRoot)
+        self.capabilityInstaller = CapabilityInstaller(
+            catalog: CapabilityCatalog.bundled(),
+            pythonInstaller: managedPython,
+            http: HTTPRequestService(),
+            packagesRoot: capabilityRoot,
+            skillInstaller: SkillCenterCapabilityAdapter(center: skillsCenter),
+            fontInstaller: FontStoreCapabilityAdapter(store: fontStore),
+            modelInstaller: nil,
+            wasmStore: wasmCapabilities
+        )
+
         self.localModelsCenter.onCatalogChanged = { [weak self] in
             await self?.localModelRuntime.unload(modelID: nil)
             await self?.conversationCenter.reload()
@@ -313,11 +354,31 @@ final class AppEnvironment: ObservableObject {
         FloeShortcutsRuntime.shared.install(environment: self)
     }
 
+    /// Environment exported into every local shell run. Paths point at
+    /// Floe-owned directories (package bins, a writable HOME, a shell tmp),
+    /// never at host paths the sandbox does not own.
+    private static func localShellEnvironment() -> [String: String] {
+        let root = (try? FloeArtifactStore.root())
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let packagesBin = root.appendingPathComponent("Packages/bin").path
+        let pythonBin = root.appendingPathComponent("Packages/pybin").path
+        let home = root.appendingPathComponent("ShellHome").path
+        let temp = root.appendingPathComponent("ShellTmp").path
+        return [
+            "PATH": "\(packagesBin):\(pythonBin):/usr/local/bin:/usr/bin:/bin",
+            "HOME": home,
+            "TMPDIR": temp,
+            "TERM": "xterm-256color",
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "PS1": "[\\w]\\$ "
+        ]
+    }
+
     /// Terminal-state hook for jobs.* background work. A live run is steered
     /// with the outcome; a finished run leaves a durable queued input the user
     /// can see and act on. A local notification always mirrors the outcome.
-    private func handleBackgroundJobTerminal(_ job: BackgroundJob) async {
-        let evidence = job.resultSummary ?? job.lastError ?? job.state.rawValue
+    private func handleBackgroundJobTerminal(_ job: BackgroundJob) async {        let evidence = job.resultSummary ?? job.lastError ?? job.state.rawValue
         let content = "[Floe background job \(job.id.uuidString)] \(job.targetTool) finished with state=\(job.state.rawValue). "
             + "Evidence excerpt: \(String(evidence.prefix(1_000))). "
             + "Use jobs.result with this jobID for the full output; do not resubmit an unchanged payload."
@@ -460,6 +521,20 @@ final class AppEnvironment: ObservableObject {
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             includeOnDeviceJavaScript: true
         )
+        // Local shell surface: exec.shell, interactive shell.* and apt.
+        registerShellTools(
+            shell: localShellService,
+            sessions: shellSessionCenter,
+            pythonInstaller: managedPythonInstaller,
+            capabilityInstaller: capabilityInstaller
+        )
+        FloeShellCommandRegistry.shared.configure(
+            python: localPythonService,
+            installer: capabilityInstaller,
+            wasm: wasmCapabilities
+        )
+        FloeShellCommands.install()
+        Task { await FloeShellCommands.refreshPythonCommands() }
         // Background jobs (jobs.*): long downloads and Python data work run
         // off the run's critical path. Registered after the execution tools so
         // submit-time availability checks see every supported target runner.

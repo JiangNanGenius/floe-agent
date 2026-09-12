@@ -62,7 +62,7 @@ jobs:
 
       - name: Install release tooling
         run: |
-          brew install xcodegen gitleaks syft cmake
+          brew install xcodegen automake gitleaks syft cmake
           xcodebuild -downloadComponent MetalToolchain
           scripts/bootstrap_python_runtime.sh
 
@@ -338,7 +338,7 @@ jobs:
 
       - name: Rebuild the exact tag with the accepted App Store SDK
         run: |
-          brew install xcodegen cmake
+          brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh

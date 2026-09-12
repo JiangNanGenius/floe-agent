@@ -591,7 +591,7 @@ struct LocalModelCatalogTests {
             ToolSchemaDescriptor(name: "document.pdf.inspect", description: "Read PDF text"),
             ToolSchemaDescriptor(name: "document.pdf.render", description: "Render a scanned PDF page"),
             ToolSchemaDescriptor(name: "image.ocr", description: "OCR a rendered PDF page"),
-            ToolSchemaDescriptor(name: "presentation.createInline", description: "Create a chart"),
+            ToolSchemaDescriptor(name: "document.presentation.createInline", description: "Create a chart"),
             ToolSchemaDescriptor(name: "browser.click", description: "Click browser"),
             ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH")
         ]
@@ -613,7 +613,7 @@ struct LocalModelCatalogTests {
         #expect(build.systemInstructions.contains("document.pdf.inspect"))
         #expect(build.systemInstructions.contains("document.pdf.render"))
         #expect(build.systemInstructions.contains("image.ocr"))
-        #expect(!build.systemInstructions.contains("presentation.createInline"))
+        #expect(!build.systemInstructions.contains("document.presentation.createInline"))
         #expect(!build.systemInstructions.contains("browser.click"))
         #expect(!build.systemInstructions.contains("- ssh.execute:"))
         #expect(!build.text.contains("OFFERED TOOLS"))
@@ -735,8 +735,8 @@ struct LocalModelCatalogTests {
             ToolSchemaDescriptor(name: "git.commit", description: "Commit changes"),
             ToolSchemaDescriptor(name: "git.push", description: "Push changes"),
             ToolSchemaDescriptor(name: "github.repositories", description: "List repositories"),
-            ToolSchemaDescriptor(name: "cloudWorkspace.gitStatus", description: "Cloud Git status"),
-            ToolSchemaDescriptor(name: "cloudWorkspace.gitPush", description: "Cloud Git push"),
+            ToolSchemaDescriptor(name: "cloudWorkspace.git.status", description: "Cloud Git status"),
+            ToolSchemaDescriptor(name: "cloudWorkspace.git.push", description: "Cloud Git push"),
             ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH")
         ]
 

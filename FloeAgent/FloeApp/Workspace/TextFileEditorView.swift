@@ -45,6 +45,7 @@ struct TextFileEditorView: View {
     @State private var editorCommand = CodeEditorCommand()
     @State private var runOutput: CodeRunOutput?
     @State private var isRunning = false
+    @State private var runCancellation: CancellationToken?
 
     /// Whether this file is Markdown and should offer preview + formatting.
     private var isMarkdown: Bool {
@@ -146,6 +147,9 @@ struct TextFileEditorView: View {
                         Label("重做", systemImage: "arrow.uturn.forward")
                     }
                     if language.runnableToolName != nil {
+                        if isRunning {
+                            Button("停止") { runCancellation?.cancel() }
+                        }
                         Button {
                             Task { await run(language) }
                         } label: {
@@ -301,24 +305,31 @@ struct TextFileEditorView: View {
 
     private func run(_ language: CodeLanguage) async {
         isRunning = true
-        defer { isRunning = false }
+        defer { isRunning = false; runCancellation = nil }
         guard let toolName = language.runnableToolName else { return }
         guard let runner = ToolRunnerRegistry.shared.runner(named: toolName) else {
             runOutput = CodeRunOutput(title: "无法运行", text: "此构建未包含 \(language.displayName) 运行时。")
             return
         }
         do {
-            let arguments = try JSONSerialization.data(withJSONObject: [
-                "script": text,
-                "timeout": 30,
-                "maxOutputBytes": 262_144
-            ])
+            if toolName == "exec.shell", (relativePath as NSString).pathExtension.lowercased() != "sh" {
+                runOutput = CodeRunOutput(title: "不支持的 Shell 方言", text: "本地运行使用 POSIX sh；bash、zsh、fish 脚本请先转换，或在远程主机运行。")
+                return
+            }
+            var values: [String: Any] = ["script": text, "timeout": 30, "maxOutputBytes": 262_144]
+            if toolName == "exec.shell" {
+                let directory = (relativePath as NSString).deletingLastPathComponent
+                values["cwd"] = directory.isEmpty ? "." : directory
+            }
+            let arguments = try JSONSerialization.data(withJSONObject: values)
+            let cancellation = CancellationToken()
+            runCancellation = cancellation
             let context = ToolContext(
                 runID: UUID(),
-                approvalGrantID: UUID(),
+                toolCallID: "user.editor.run." + UUID().uuidString,
                 scope: .local,
                 workspaceRootURL: center.currentRootURL,
-                cancellation: CancellationToken()
+                cancellation: cancellation
             )
             let output = try await runner.execute(argumentsJSON: arguments, context: context)
             runOutput = CodeRunOutput(
@@ -611,6 +622,7 @@ private enum CodeLanguage: Equatable {
 
     fileprivate var runnableToolName: String? {
         switch self {
+        case .shell: "exec.shell"
         case .python: "exec.localPython"
         case .javascript: "exec.javascript"
         default: nil

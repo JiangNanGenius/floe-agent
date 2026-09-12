@@ -91,9 +91,15 @@ scripts/package_python_extensions.sh
 # pure-Python into site-packages, every extension as a signed XCFramework.
 scripts/install_python_binary_packages.sh
 
+# Install the locked pure-Python preset after native-wheel dependencies.
+python3 scripts/install_python_bundled_packages.py
+
 # Native PDF content editing is independent of Python and signed into the app.
 python3 scripts/bootstrap_pdfium.py
 python3 scripts/bootstrap_libarchive.py
 python3 scripts/bootstrap_office_host.py
 
 echo "Installed CPython 3.13-b10 runtime in Vendor/ and FloeApp/Resources/python"
+
+# The local terminal needs the POSIX interpreter in addition to ios_system.
+bash "$(dirname "$0")/build_dash_ios.sh"

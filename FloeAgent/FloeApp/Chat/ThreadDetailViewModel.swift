@@ -177,7 +177,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// strip is a focused working set, not a second file tree.
     var importantFiles: [ImportantFileShortcut] {
         let supportedTools: Set<String> = [
-            "workspace.readFile", "workspace.inspectMetadata",
+            "workspace.readFile", "workspace.inspectFileMetadata",
             "workspace.createFile", "workspace.writeFile", "workspace.applyPatch"
         ]
         var seen: Set<String> = []
@@ -193,7 +193,7 @@ final class ThreadDetailViewModel: ObservableObject {
                   !path.split(separator: "/").contains(".."),
                   seen.insert(path).inserted else { continue }
             let action: String
-            if tool == "workspace.readFile" || tool == "workspace.inspectMetadata" { action = "查看" }
+            if tool == "workspace.readFile" || tool == "workspace.inspectFileMetadata" { action = "查看" }
             else if tool == "workspace.createFile" { action = "新建" }
             else { action = "编辑" }
             result.append(.init(path: path, action: action))

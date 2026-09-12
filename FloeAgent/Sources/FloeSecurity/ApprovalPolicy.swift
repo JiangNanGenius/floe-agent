@@ -171,7 +171,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if Self.isDeterministicallyExempt(action) {
             return .allow(scope: Self.scope(for: action.toolCall), expiresAt: nil)
         }
-        if action.isManagedPythonPackageRequest {
+        if action.isSoftwareInstallRequest {
             guard let packageReviewBackend else {
                 return .escalateToHuman(reason: "No software package review model is configured")
             }
@@ -203,7 +203,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
 
     public func requiresModelReview(_ action: ProposedAction) -> Bool {
         if Self.isDeterministicallyExempt(action) { return false }
-        if action.isManagedPythonPackageRequest { return packageReviewBackend != nil }
+        if action.isSoftwareInstallRequest { return packageReviewBackend != nil }
         return backend != nil
     }
 
@@ -214,16 +214,15 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if requiresPDFConsentReview(action) { return false }
         if action.isPreapprovedSkillPythonRequest { return true }
         let alwaysExempt: Set<String> = [
-            "image.inspect", "image.ocr", "image.scanBarcode", "image.generate",
+            "image.inspect", "image.ocr", "image.barcode.scan", "image.generate",
             "canvas.generate", "canvas.assetImport",
             "document.pdf.inspect", "document.pdf.render",
             "document.office.inspect", "document.office.updateText",
-            "document.createWord", "document.createWorkbook", "presentation.createDeck",
+            "document.createWord", "document.createWorkbook", "document.presentation.createDeck",
             "workspace.listDirectory", "workspace.readFile",
-            "workspace.inspectMetadata", "workspace.searchFiles", "workspace.createFile",
+            "workspace.inspectFileMetadata", "workspace.searchFiles", "workspace.createFile",
             "workspace.writeFile", "workspace.applyPatch", "workspace.createDirectory",
-            "workspace.appendFile", "workspace.replaceText",
-            "workspace.moveItem", "document.createMarkdown",
+            "workspace.moveFile",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
             "browser.tabs", "remote.connection.status", "vnc.status",
             "network.scanLAN",
@@ -232,29 +231,26 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "apple.home.list", "apple.watch.status", "apple.location.current",
             "apple.automation.list",
             "font.list", "font.install",
-            "memory.recall", "exec.compatEvaluator", "presentation.createInline",
+            "memory.recall", "exec.compatEvaluator", "document.presentation.createInline",
             "git.status", "git.diff", "git.log", "git.initialize", "git.stage",
             "git.commit", "git.createBranch", "git.switchBranch", "git.fetch",
             "git.pull", "github.repositories", "github.clone",
-            "cloudWorkspace.gitStatus", "cloudWorkspace.gitDiff", "cloudWorkspace.gitLog",
-            "cloudWorkspace.gitInitialize", "cloudWorkspace.gitStage",
-            "cloudWorkspace.gitCommit", "cloudWorkspace.gitFetch",
-            "cloudWorkspace.gitPull", "cloudWorkspace.gitBranch"
+            "cloudWorkspace.git.status", "cloudWorkspace.git.diff", "cloudWorkspace.git.log",
+            "cloudWorkspace.git.initialize", "cloudWorkspace.git.stage",
+            "cloudWorkspace.git.commit", "cloudWorkspace.git.fetch",
+            "cloudWorkspace.git.pull", "cloudWorkspace.git.branch"
         ]
         if alwaysExempt.contains(action.toolCall.toolName) { return true }
         if Self.isRoutineToolDiagnosticRequest(action) { return true }
         if Self.isExplicitlyAuthorizedGitPublication(action) { return true }
-        if action.toolCall.toolName == "exec.localPython", !action.isManagedPythonPackageRequest {
+        if action.toolCall.toolName == "exec.localPython", !action.isSoftwareInstallRequest {
             return true
         }
         if Self.isReadOnlySSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSandboxedSSH(action) { return true }
         if Self.isExplicitlyAuthorizedHostMaintenance(action) { return true }
-        if action.toolCall.toolName == "image.svgDocument",
-           let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
-           object["operation"] as? String == "inspect" { return true }
-        guard ["document.pdf.edit", "document.pdf.save"].contains(action.toolCall.toolName),
+        guard ["document.pdf.edit"].contains(action.toolCall.toolName),
               let object = try? JSONSerialization.jsonObject(
                   with: action.toolCall.argumentsJSON
               ) as? [String: Any] else { return false }
@@ -268,7 +264,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     /// remote execution, credentials, outbound disclosure, GUI control, or
     /// remote-system mutation, and never skips managed-package review.
     private static func isRoutineToolDiagnosticRequest(_ action: ProposedAction) -> Bool {
-        guard !action.isManagedPythonPackageRequest else { return false }
+        guard !action.isSoftwareInstallRequest else { return false }
         let goal = action.userGoal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let mentionsTools = ["工具", "能力", "tool", "capability"].contains(where: goal.contains)
         let requestsDiagnostic = [
@@ -301,7 +297,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         ]
         guard !denials.contains(where: goal.contains) else { return false }
         switch action.toolCall.toolName {
-        case "git.push", "cloudWorkspace.gitPush":
+        case "git.push", "cloudWorkspace.git.push":
             return ["推送", "发布", "上传", "push", "publish"].contains(where: goal.contains)
         case "github.createRepository":
             return ["创建仓库", "新建仓库", "create repository", "create repo"].contains(where: goal.contains)
@@ -553,7 +549,7 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
                 expiresAt: nil
             )
         }
-        if action.isManagedPythonPackageRequest {
+        if action.isSoftwareInstallRequest {
             guard let packageReviewBackend else {
                 return .escalateToHuman(reason: "No software package review model is configured")
             }
@@ -575,14 +571,32 @@ private extension ProposedAction {
         try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any]
     }
 
-    var isManagedPythonPackageRequest: Bool {
-        guard toolCall.toolName == "exec.localPython",
-              let object = try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any]
-        else { return false }
-        if let packages = object["packages"] as? [Any], !packages.isEmpty { return true }
-        return !((try? ManagedPythonPackageSpecParser.parse(
-            command: object["pipCommand"] as? String
-        )) ?? []).isEmpty
+    /// True when the call asks to acquire, remove or fetch software through a
+    /// reviewed installer path: managed pure-Python packages (exec.localPython),
+    /// the apt capability catalog, or exec.shell with an inline package list.
+    /// These always route to the package-review backend.
+    var isSoftwareInstallRequest: Bool {
+        if toolCall.toolName == "exec.localPython" {
+            guard let object = argumentObject else { return false }
+            if let packages = object["packages"] as? [Any], !packages.isEmpty { return true }
+            return !((try? ManagedPythonPackageSpecParser.parse(
+                command: object["pipCommand"] as? String
+            )) ?? []).isEmpty
+        }
+        if toolCall.toolName == "apt" {
+            guard let action = argumentObject?["action"] as? String else { return false }
+            return ["install", "remove", "download"].contains(action)
+        }
+        if toolCall.toolName == "exec.shell" {
+            guard let object = argumentObject else { return false }
+            if let packages = object["packages"] as? [Any], !packages.isEmpty { return true }
+            if let command = object["command"] as? String,
+               command.range(of: #"(?i)(^|[\s;&|])(apt|apt-get|pkg|pip3?|python3?\s+-m\s+pip)\s+(install|remove|uninstall|upgrade)"#, options: .regularExpression) != nil {
+                return true
+            }
+            return false
+        }
+        return false
     }
 
     var isPreapprovedSkillPythonRequest: Bool {

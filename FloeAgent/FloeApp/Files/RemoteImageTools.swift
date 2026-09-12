@@ -699,8 +699,8 @@ struct PDFRenderTool: AgentTool {
     {"type":"object","properties":{"path":{"type":"string"},"page":{"type":"integer","minimum":1},"pages":{"type":"string","description":"1-based multi-page spec, e.g. \"1-3,5\""},"format":{"type":"string","enum":["png","jpeg"]},"outputPath":{"type":"string","description":"New workspace-relative image path (single page only)"}},"required":["path"],"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
-    static let isSideEffecting = false
-    static let toolEffect: ToolEffect = .readOnly
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
 
     func validate(_ args: Arguments) throws {
         try PDFToolSupport.validatePath(args.path)

@@ -23,6 +23,7 @@
 		07D75CCBF1B9602AD64F5709 /* pandas__libs_tslibs_ccalendar.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */; };
 		086E743FC13CE9DA2BD91D05 /* _csv.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; };
 		089D513D837438C091ED08A0 /* FloeSkills in Frameworks */ = {isa = PBXBuildFile; productRef = 5B057579F6C5787F1EF9F172 /* FloeSkills */; };
+		08C1D1CFB085F7933B03B84F /* FloeShellEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 923643E245C0A12DF9647622 /* FloeShellEngine */; };
 		08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */; };
 		08F47781D4B996B2696C8989 /* HomeLaunchpadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */; };
 		09D32302D5EB9204F8E9467B /* pandas__libs_index.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F59B5D886E094D81CE9B9DF0 /* pandas__libs_index.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -71,6 +72,8 @@
 		1E91E2AB9058241938BF0D6A /* _dbm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A0E5089889969429F874CF6 /* _dbm.xcframework */; };
 		1F2F8E843A2CFA8EC42B1AEA /* pandas__libs_hashtable.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7C7B72A5E39B57AC2C0495F8 /* pandas__libs_hashtable.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		200FF4205A0D8FB439E16371 /* BrowserProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */; };
+		2147C295D0A9FED8623025CA /* dash.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B2F5FA6182890371A5AD9ABA /* dash.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		2152EEB394E8606B0FAF2D88 /* dashE.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 41C98E7CCFBEC485C346C9A3 /* dashE.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A23E7E08860487A8333BE4F /* HostListView.swift */; };
 		231450C31B4BABA097EDE191 /* PDFium.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 276A4BD225189F342404A19B /* PDFium.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		232956B5D2159E67076246D5 /* _statistics.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -85,6 +88,8 @@
 		2939AB869D58351E507444A9 /* _sha2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE19791AC2454F6739825F8F /* _sha2.xcframework */; };
 		293F87E7D63F9F4FE1674785 /* _bounded_integers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9B83A57D75B2264625E7B8B6 /* _bounded_integers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2A13232B1933B91BD7195B9D /* ProviderListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */; };
+		2A28A5D2E585FE372E6AA7E8 /* FloeShellCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */; };
+		2A2BD3D420AE0BDD0039FA1F /* Capabilities in Resources */ = {isa = PBXBuildFile; fileRef = 35310CD2A0EE3E66298E8709 /* Capabilities */; };
 		2B2206D557B86B95224EAC76 /* PDFExportTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE5B8692C95AE635852BE44C /* PDFExportTool.swift */; };
 		2B28AD0DF65EBCBC434FE9A7 /* _codecs_iso2022.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 769843681E5F1AF7817CA413 /* _codecs_iso2022.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2B4684696D47D57E69A5ABAF /* FilesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 425DF63623F387B29E54E3DE /* FilesSettingsView.swift */; };
@@ -100,6 +105,7 @@
 		30EECC8CBB688887DC731E91 /* pandas__libs_pandas_datetime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */; };
 		30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FBC9F374C911EA91D944FB0 /* MoreView.swift */; };
 		311AEDE3D09FC84B37113EAD /* frozenlist__frozenlist.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 45BFF6DBD374D777C39302B6 /* frozenlist__frozenlist.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		313555104A755FCB1D5ABD01 /* dashA.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 703BE45E358D57D074DC5538 /* dashA.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		31A880D7E77E4D90E1CA89EF /* WorkspaceCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */; };
 		32180DBBC109A9CEFC4C00A5 /* AgentPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */; };
 		330DA84EDC7F8F28C0127FE1 /* ToolCallCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3135923FB83C439E60E432C /* ToolCallCardView.swift */; };
@@ -129,6 +135,7 @@
 		3FF334176694033ADAA8D057 /* _multiarray_tests.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		405D2CF50F65452FBB99CE0D /* FloeDocuments in Frameworks */ = {isa = PBXBuildFile; productRef = 42091B03632EF4B82CED17C8 /* FloeDocuments */; };
 		409300A554DB5115C9C6AB45 /* ProvidersSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7CA2C01CEE850FC7B6F1D6A /* ProvidersSettingsView.swift */; };
+		413F511639D463F80B8F7E2B /* LocalShellRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 020723F1965651F1C7D6CD77 /* LocalShellRuntimeTests.swift */; };
 		4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */; };
 		41F8F5B12F2A29237D33FEEC /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = E235AA51EFF99AA0DEA509BD /* libz.tbd */; };
 		42924454C7187541E75FE29D /* MoreViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B429A0789887E0740567D60 /* MoreViewModel.swift */; };
@@ -203,6 +210,7 @@
 		6557760A3B71DB9B473F461E /* _ssl.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		661CA51EDEEDD000187330F0 /* CanvasTouchInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */; };
 		6631922EFC570774B5A03AA0 /* pandas__libs_json.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */; };
+		66A06EF450BB006193BCBA2F /* FloeShellBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */; };
 		671CC44587B45BA2A401FD33 /* ThreadEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */; };
 		6746445A87576F1AE979702A /* SkillsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583BB494E657BD1BC7481C75 /* SkillsView.swift */; };
 		67E0B11F77FD1726248D939B /* ArchiveCompressedBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F760D84DCB71D5B59F7EAB6A /* ArchiveCompressedBridge.swift */; };
@@ -245,6 +253,7 @@
 		7AF822628DBEFE38ACA05194 /* _bisect.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		7B44A496EC3A28601170695B /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */; };
 		7BB5CA51824E786287F252A8 /* TextFileEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9882EA32564305D017F2566 /* TextFileEditorView.swift */; };
+		7C2EF25195E6C5C8949A7A2A /* CapabilityStoreAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8496EE48316FEA0DF993901A /* CapabilityStoreAdapters.swift */; };
 		7C8242E3BE460533DA26F51C /* _zoneinfo.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */; };
 		7C8518294F67702219A7CA5D /* TaskChangesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE529725CBA54629E95EA4F0 /* TaskChangesInspectorView.swift */; };
 		7C9BBE2BC1FD0E734C478463 /* _md5.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 538FB08A4DD774D6AEFCF28F /* _md5.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -263,6 +272,7 @@
 		865C66A3A51EDF18E78ECFE7 /* _lsprof.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 47008301B5CA511920D10074 /* _lsprof.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		8668DA22595206B2929FF350 /* pandas__libs_join.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		86B3B6255EE780A3692A46C8 /* WorkspaceIDEView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E18D2CD25230D158008D8A /* WorkspaceIDEView.swift */; };
+		872A979323680CF7BE8DB171 /* dashC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E7E878F704F2A5D35DAD0C0B /* dashC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		878398C628C1FBE1C8F9311E /* _statistics.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */; };
 		87AFCC752E0DF0191D12E736 /* _codecs_hk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D759D5F275E2F39C7C03E74F /* _codecs_hk.xcframework */; };
 		8881F92055BBAB8B2451C973 /* pandas__libs_sparse.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 87012024D0AFCF4EB416D0E3 /* pandas__libs_sparse.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -285,6 +295,7 @@
 		90D96EA991CF736CBE0CDA39 /* _philox.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 51AC2F5A4C03ECDAA0FD1C3D /* _philox.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */; };
 		917D73FC29D40DE3C690A434 /* cmath.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 04588885DF3B30D110854AAB /* cmath.xcframework */; };
+		92B24B94472F24426637372F /* dashB.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 35B5A41ABFA2589E38D1E784 /* dashB.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		93987026B1D74DCF68D275A1 /* _socket.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; };
 		93AE4E65731A89CBCF346E33 /* math.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BB881F2DC155C2D3A5681681 /* math.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		93EC91B1C5DF8EEC49FB6914 /* _struct.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B7B559ED19BFCC88432C6828 /* _struct.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -297,6 +308,7 @@
 		9932D9C05CE68E26BE063A03 /* _contextvars.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 46C5D94B0311C71146C0A52C /* _contextvars.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		993A04071E9FB880BC5727C3 /* _uuid.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EBFC00F1FCA508F70838C348 /* _uuid.xcframework */; };
 		99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E546884B42CDF2BB96931B /* UserMessageBubble.swift */; };
+		99F788D0AAAF6A6C9E837F53 /* WasmKitCommandRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */; };
 		9A14F4703ACB1ABC85E9FB46 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */; };
 		9AE3503A129EA99DA6997C67 /* python in Resources */ = {isa = PBXBuildFile; fileRef = 926B95CD92D851FFE3BB0DFE /* python */; };
 		9B0C36D962598923D5B259A1 /* zod.min.js in Resources */ = {isa = PBXBuildFile; fileRef = D93429C0B86DDBE47C24DFF2 /* zod.min.js */; };
@@ -343,9 +355,11 @@
 		B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */; };
 		B33934D6A8A4190628D89B73 /* WorkspaceCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */; };
+		B3B23C39470308057F0D0761 /* IOSSystemShellBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */; };
 		B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */; };
 		B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */; };
 		B55C732E6DFC10F5E1184B58 /* pandas__libs_lib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 74A2B0388E1F0CF642F226A5 /* pandas__libs_lib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B64AAD73B34ED0DC62DB552E /* commandDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = 0DE3488753123247EB0D9C9B /* commandDictionary.plist */; };
 		B81C50AA905334687754F195 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; };
 		B850872108F008D942A08193 /* BrowserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D499B038C15DC8EA198B669A /* BrowserModels.swift */; };
 		B8558423FFAEBC3CBA0916FA /* VoiceInputControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */; };
@@ -418,6 +432,7 @@
 		D27117ADEB48A630EEF5C7E2 /* DiagnosticsAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */; };
 		D280F700D57E336852039D32 /* PDFOperationSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */; };
 		D296A21FB23B0FC15D0B48FC /* _multiarray_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */; };
+		D3C48B06130B128E68B9D7BE /* dashD.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 293AE960803DF52F2523348D /* dashD.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D3D14D3164C5FCDC4A33A2BC /* array.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 397F1DC728D743D05F510489 /* array.xcframework */; };
 		D4DECF7BF638B994E512FBF1 /* _random.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 12C202262489FD354A0B595A /* _random.xcframework */; };
 		D75EF5BED6075C184EC0EC41 /* DocumentConversionTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BB114D01B97A798547225F0 /* DocumentConversionTool.swift */; };
@@ -464,12 +479,14 @@
 		EE5EC1D663E8FBEC866E7A96 /* _imagingft.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F5ECABBE2BD25105411AD392 /* _imagingft.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EEAF07E93D7D0C103F0EA346 /* pandas__libs_tslibs_timedeltas.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */; };
 		EEB68AFF7BCD15C86059B496 /* _mt19937.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */; };
+		EEC769EBC4DFA463E3844163 /* extraCommandsDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = C298297A7E2B2DE1AAF2AF86 /* extraCommandsDictionary.plist */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
 		F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 566A108E33736D5DD705D005 /* pdf-lib.min.js */; };
 		F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */; };
 		F1F4FEA5795C0509165D8A62 /* pandas__libs_ops_dispatch.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F21AD42E26BA47E7C2A1129D /* LocalTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09130318B26A8CC203740EA0 /* LocalTerminalView.swift */; };
 		F2A94C7D54C7BB530508D94D /* _socket.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2AAFBF6B82F2153828BC49E /* pyexpat.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
@@ -667,6 +684,12 @@
 				6EFE06F5EE84FD76D6026BBA /* pandas__libs_writers.xcframework in Embed Frameworks */,
 				C7276F291731A9D815FA2CCE /* regex__regex.xcframework in Embed Frameworks */,
 				5865F29C2F55DD59CDA460A4 /* zstandard_backend_c.xcframework in Embed Frameworks */,
+				2147C295D0A9FED8623025CA /* dash.xcframework in Embed Frameworks */,
+				313555104A755FCB1D5ABD01 /* dashA.xcframework in Embed Frameworks */,
+				92B24B94472F24426637372F /* dashB.xcframework in Embed Frameworks */,
+				872A979323680CF7BE8DB171 /* dashC.xcframework in Embed Frameworks */,
+				D3C48B06130B128E68B9D7BE /* dashD.xcframework in Embed Frameworks */,
+				2152EEB394E8606B0FAF2D88 /* dashE.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -676,6 +699,7 @@
 /* Begin PBXFileReference section */
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
 		018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARFixtures.generated.swift; sourceTree = "<group>"; };
+		020723F1965651F1C7D6CD77 /* LocalShellRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalShellRuntimeTests.swift; sourceTree = "<group>"; };
 		03482FFDDB47C3482FD2326D /* DomainSkillLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainSkillLibrary.swift; sourceTree = "<group>"; };
 		036B56AC987CE799669752B9 /* PDFOperationJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFOperationJournal.swift; sourceTree = "<group>"; };
 		04588885DF3B30D110854AAB /* cmath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = cmath.xcframework; path = Vendor/PythonExtensions/cmath.xcframework; sourceTree = "<group>"; };
@@ -685,12 +709,14 @@
 		0759DE46F499DE82B08079EC /* pandas__libs_ops.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_ops.xcframework; path = Vendor/PythonExtensions/pandas__libs_ops.xcframework; sourceTree = "<group>"; };
 		078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _multiarray_tests.xcframework; path = Vendor/PythonExtensions/_multiarray_tests.xcframework; sourceTree = "<group>"; };
 		085605503DC285FC91B0449B /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
+		09130318B26A8CC203740EA0 /* LocalTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTerminalView.swift; sourceTree = "<group>"; };
 		09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _pcg64.xcframework; path = Vendor/PythonExtensions/_pcg64.xcframework; sourceTree = "<group>"; };
 		0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichArtifactView.swift; sourceTree = "<group>"; };
 		0B2D5DED5D4B408F395DC2A4 /* FloeApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FloeApp-Bridging-Header.h"; sourceTree = "<group>"; };
 		0B303CF6C9E42EF5BD06E96A /* FloeWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_jp.xcframework; path = Vendor/PythonExtensions/_codecs_jp.xcframework; sourceTree = "<group>"; };
 		0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _heapq.xcframework; path = Vendor/PythonExtensions/_heapq.xcframework; sourceTree = "<group>"; };
+		0DE3488753123247EB0D9C9B /* commandDictionary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = commandDictionary.plist; sourceTree = "<group>"; };
 		0DFCAB0BEA5779876F42194A /* ProviderServiceRole.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderServiceRole.swift; sourceTree = "<group>"; };
 		0EC05C4A2D3FF390E3DBFCB0 /* pandas__libs_tslibs_timestamps.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timestamps.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timestamps.xcframework; sourceTree = "<group>"; };
 		0F445AF25FACF2975FCE8934 /* FloePDFiumBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloePDFiumBridge.mm; sourceTree = "<group>"; };
@@ -721,6 +747,7 @@
 		1B80FCD68F0A3B45FD2E6F5E /* BrowserTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserTools.swift; sourceTree = "<group>"; };
 		1BB114D01B97A798547225F0 /* DocumentConversionTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentConversionTool.swift; sourceTree = "<group>"; };
 		1BED50B2B524010095D18E24 /* SourceControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceControlView.swift; sourceTree = "<group>"; };
+		1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloeShellBridge.mm; sourceTree = "<group>"; };
 		1C32A6146AB14AF5C82B06F5 /* greenlet__greenlet.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = greenlet__greenlet.xcframework; path = Vendor/PythonExtensions/greenlet__greenlet.xcframework; sourceTree = "<group>"; };
 		1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
 		1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _decimal.xcframework; path = Vendor/PythonExtensions/_decimal.xcframework; sourceTree = "<group>"; };
@@ -732,13 +759,16 @@
 		219CD6341FB443743691F92D /* LocalPreviewServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPreviewServer.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
 		238052542CCEFF5EA4FF6DC3 /* Bundled */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Bundled; path = FloeApp/Resources/Fonts/Bundled; sourceTree = SOURCE_ROOT; };
+		242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WasmKitCommandRuntime.swift; sourceTree = "<group>"; };
 		251662A9C6AD6E96E2C40543 /* pandas__libs_tslibs_fields.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_fields.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_fields.xcframework; sourceTree = "<group>"; };
 		26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = RARFixtures.LICENSE.txt; sourceTree = "<group>"; };
 		276A4BD225189F342404A19B /* PDFium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PDFium.xcframework; path = Vendor/PDFium/PDFium.xcframework; sourceTree = "<group>"; };
 		2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeDiagnostics.swift; sourceTree = "<group>"; };
+		27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSystemShellBackend.swift; sourceTree = "<group>"; };
 		27BD00E30D4F02142C2C3B51 /* FloeShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeShare.entitlements; sourceTree = "<group>"; };
 		28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _asyncio.xcframework; path = Vendor/PythonExtensions/_asyncio.xcframework; sourceTree = "<group>"; };
 		28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _mt19937.xcframework; path = Vendor/PythonExtensions/_mt19937.xcframework; sourceTree = "<group>"; };
+		293AE960803DF52F2523348D /* dashD.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashD.xcframework; path = Frameworks/dashD.xcframework; sourceTree = "<group>"; };
 		2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_groupby.xcframework; path = Vendor/PythonExtensions/pandas__libs_groupby.xcframework; sourceTree = "<group>"; };
 		2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportantFileShortcutTests.swift; sourceTree = "<group>"; };
@@ -753,6 +783,8 @@
 		3319E3323937D58167E59374 /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
 		3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillLifecycleTests.swift; sourceTree = "<group>"; };
 		34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorViewModel.swift; sourceTree = "<group>"; };
+		35310CD2A0EE3E66298E8709 /* Capabilities */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Capabilities; path = FloeApp/Resources/Capabilities; sourceTree = SOURCE_ROOT; };
+		35B5A41ABFA2589E38D1E784 /* dashB.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashB.xcframework; path = Frameworks/dashB.xcframework; sourceTree = "<group>"; };
 		35BE65ADB5F2AA44F63AFCDB /* marked.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = marked.min.js; sourceTree = "<group>"; };
 		35C112647BD8DF8C99E18D89 /* SampleHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
 		36E68916820B033030E49814 /* DocumentRecoveryListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentRecoveryListView.swift; sourceTree = "<group>"; };
@@ -774,6 +806,7 @@
 		3F914921E8AD3146396600E5 /* FloePDFiumBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloePDFiumBridge.h; sourceTree = "<group>"; };
 		4005923C1682BD260619B12B /* pandas__libs_window_aggregations.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_window_aggregations.xcframework; path = Vendor/PythonExtensions/pandas__libs_window_aggregations.xcframework; sourceTree = "<group>"; };
 		40BAFE31EE72FD82F859328D /* _codecs_cn.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_cn.xcframework; path = Vendor/PythonExtensions/_codecs_cn.xcframework; sourceTree = "<group>"; };
+		41C98E7CCFBEC485C346C9A3 /* dashE.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashE.xcframework; path = Frameworks/dashE.xcframework; sourceTree = "<group>"; };
 		423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_strptime.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_strptime.xcframework; sourceTree = "<group>"; };
 		425DF63623F387B29E54E3DE /* FilesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesSettingsView.swift; sourceTree = "<group>"; };
 		42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeBlockView.swift; sourceTree = "<group>"; };
@@ -838,6 +871,7 @@
 		6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChatVoiceUITests.swift; sourceTree = "<group>"; };
 		6E4B5351714B8B79EF8E8055 /* Floe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Floe.entitlements; sourceTree = "<group>"; };
 		6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
+		703BE45E358D57D074DC5538 /* dashA.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashA.xcframework; path = Frameworks/dashA.xcframework; sourceTree = "<group>"; };
 		705BF3479430A93FD0851E2D /* pandas__libs__cyutility.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs__cyutility.xcframework; path = Vendor/PythonExtensions/pandas__libs__cyutility.xcframework; sourceTree = "<group>"; };
 		71091AA54C5E2F667D6469A6 /* zlib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = zlib.xcframework; path = Vendor/PythonExtensions/zlib.xcframework; sourceTree = "<group>"; };
 		71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasTouchInteractionTests.swift; sourceTree = "<group>"; };
@@ -864,8 +898,10 @@
 		7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSettingsView.swift; sourceTree = "<group>"; };
 		802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFOperationSchema.swift; sourceTree = "<group>"; };
 		81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentEditor.swift; sourceTree = "<group>"; };
+		828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShellCommands.swift; sourceTree = "<group>"; };
 		82CCECA26179BEA9F020C01A /* pandas__libs_reshape.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_reshape.xcframework; path = Vendor/PythonExtensions/pandas__libs_reshape.xcframework; sourceTree = "<group>"; };
 		83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideLauncherView.swift; sourceTree = "<group>"; };
+		8496EE48316FEA0DF993901A /* CapabilityStoreAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityStoreAdapters.swift; sourceTree = "<group>"; };
 		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
 		851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_algos.xcframework; path = Vendor/PythonExtensions/pandas__libs_algos.xcframework; sourceTree = "<group>"; };
 		855EFD5014DCA004E8103D32 /* _sha3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sha3.xcframework; path = Vendor/PythonExtensions/_sha3.xcframework; sourceTree = "<group>"; };
@@ -934,6 +970,7 @@
 		AE91B3167D376A273DCB756C /* _imaging.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imaging.xcframework; path = Vendor/PythonExtensions/_imaging.xcframework; sourceTree = "<group>"; };
 		B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCenter.swift; sourceTree = "<group>"; };
 		B2C7F4E1D9EC1405A1792A0A /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
+		B2F5FA6182890371A5AD9ABA /* dash.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dash.xcframework; path = Frameworks/dash.xcframework; sourceTree = "<group>"; };
 		B3135923FB83C439E60E432C /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
 		B32CD3F6C61FCE56B91D237E /* pandas__libs_tslib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslib.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslib.xcframework; sourceTree = "<group>"; };
 		B34EFFB9B7D542730D69B86E /* _codecs_tw.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_tw.xcframework; path = Vendor/PythonExtensions/_codecs_tw.xcframework; sourceTree = "<group>"; };
@@ -947,10 +984,12 @@
 		BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadEventView.swift; sourceTree = "<group>"; };
 		BB881F2DC155C2D3A5681681 /* math.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = math.xcframework; path = Vendor/PythonExtensions/math.xcframework; sourceTree = "<group>"; };
 		BBD2144374FF4E9AD173B157 /* mmap.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = mmap.xcframework; path = Vendor/PythonExtensions/mmap.xcframework; sourceTree = "<group>"; };
+		BD21A10D592EBFDF538C2C85 /* FloeShellBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeShellBridge.h; sourceTree = "<group>"; };
 		BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliaryModelsView.swift; sourceTree = "<group>"; };
 		BE65485FC8E0E948FC57BB93 /* CanvasAgentToolContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasAgentToolContractTests.swift; sourceTree = "<group>"; };
 		C06D262BD6B80363EE7587F7 /* DocumentConversion */ = {isa = PBXFileReference; lastKnownFileType = folder; name = DocumentConversion; path = FloeApp/Resources/DocumentConversion; sourceTree = SOURCE_ROOT; };
 		C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashAndFeedbackRegressionTests.swift; sourceTree = "<group>"; };
+		C298297A7E2B2DE1AAF2AF86 /* extraCommandsDictionary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = extraCommandsDictionary.plist; sourceTree = "<group>"; };
 		C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadViewModel.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C4778F6E6793ACD2D5FB6C14 /* _operand_flag_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _operand_flag_tests.xcframework; path = Vendor/PythonExtensions/_operand_flag_tests.xcframework; sourceTree = "<group>"; };
@@ -973,6 +1012,7 @@
 		D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_json.xcframework; path = Vendor/PythonExtensions/pandas__libs_json.xcframework; sourceTree = "<group>"; };
 		D3239F632B3D2E2DF7F9BBA8 /* LocalModelsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelsSettingsView.swift; sourceTree = "<group>"; };
 		D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _pocketfft_umath.xcframework; path = Vendor/PythonExtensions/_pocketfft_umath.xcframework; sourceTree = "<group>"; };
+		D40292BBF7F05D18D0071749 /* FloeShellEngine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeShellEngine; path = ThirdParty/FloeShellEngine; sourceTree = SOURCE_ROOT; };
 		D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeAssetIngestionService.swift; sourceTree = "<group>"; };
 		D469D627A123A3676681A3F3 /* SidebarCollapseGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarCollapseGesture.swift; sourceTree = "<group>"; };
 		D499B038C15DC8EA198B669A /* BrowserModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserModels.swift; sourceTree = "<group>"; };
@@ -1002,6 +1042,7 @@
 		E388FA201B460E867D612C38 /* FloeScreenShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeScreenShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformBackgroundPolicy.swift; sourceTree = "<group>"; };
 		E4D444391A1A5C38A59A2C54 /* ConversationBatchManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationBatchManagementView.swift; sourceTree = "<group>"; };
+		E7E878F704F2A5D35DAD0C0B /* dashC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashC.xcframework; path = Frameworks/dashC.xcframework; sourceTree = "<group>"; };
 		E9C72C2A24D117C574C0444C /* BrowserSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSessionCenter.swift; sourceTree = "<group>"; };
 		EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailViewModel.swift; sourceTree = "<group>"; };
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
@@ -1213,6 +1254,7 @@
 				5BB820EF2110E8C73542D2C2 /* FloeExecution in Frameworks */,
 				8BDBF9D426DD621EA4ECB830 /* FloeGit in Frameworks */,
 				1DAE6DE83A3980067040AF3F /* FloeLocalModels in Frameworks */,
+				08C1D1CFB085F7933B03B84F /* FloeShellEngine in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1222,10 +1264,16 @@
 		0265BD63889CDF2B4FDA477B /* Execution */ = {
 			isa = PBXGroup;
 			children = (
+				8496EE48316FEA0DF993901A /* CapabilityStoreAdapters.swift */,
 				37342E477B47F8A9B76D15B6 /* CPythonLocalRuntime.swift */,
 				0B2D5DED5D4B408F395DC2A4 /* FloeApp-Bridging-Header.h */,
 				FC00A178D3BFF39807097F6A /* FloeCPythonBridge.h */,
 				A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */,
+				BD21A10D592EBFDF538C2C85 /* FloeShellBridge.h */,
+				1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */,
+				828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */,
+				27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */,
+				242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */,
 			);
 			path = Execution;
 			sourceTree = "<group>";
@@ -1266,6 +1314,7 @@
 				6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */,
 				2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */,
 				E01FD1096C0BE9486FA630A6 /* LocalPythonRuntimeTests.swift */,
+				020723F1965651F1C7D6CD77 /* LocalShellRuntimeTests.swift */,
 				93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */,
 				018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */,
 				26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */,
@@ -1535,6 +1584,7 @@
 		767A8A677CD42C54269BAEC2 /* Terminal */ = {
 			isa = PBXGroup;
 			children = (
+				09130318B26A8CC203740EA0 /* LocalTerminalView.swift */,
 				605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */,
 				9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */,
 				531772E03835546E29F3B7DF /* TerminalViewModel.swift */,
@@ -1686,6 +1736,12 @@
 				E25201278D78378B37FF1BBD /* binascii.xcframework */,
 				74012AF12E05312093931759 /* bit_generator.xcframework */,
 				04588885DF3B30D110854AAB /* cmath.xcframework */,
+				B2F5FA6182890371A5AD9ABA /* dash.xcframework */,
+				703BE45E358D57D074DC5538 /* dashA.xcframework */,
+				35B5A41ABFA2589E38D1E784 /* dashB.xcframework */,
+				E7E878F704F2A5D35DAD0C0B /* dashC.xcframework */,
+				293AE960803DF52F2523348D /* dashD.xcframework */,
+				41C98E7CCFBEC485C346C9A3 /* dashE.xcframework */,
 				EE446478DBD5263458338578 /* fcntl.xcframework */,
 				45BFF6DBD374D777C39302B6 /* frozenlist__frozenlist.xcframework */,
 				1C32A6146AB14AF5C82B06F5 /* greenlet__greenlet.xcframework */,
@@ -1830,6 +1886,7 @@
 			isa = PBXGroup;
 			children = (
 				4B364052541A17BBD46A6C70 /* FloeAgent */,
+				D40292BBF7F05D18D0071749 /* FloeShellEngine */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -1882,6 +1939,7 @@
 			isa = PBXGroup;
 			children = (
 				37BB930D0175C1FF7EE714EE /* Assets.xcassets */,
+				35310CD2A0EE3E66298E8709 /* Capabilities */,
 				C06D262BD6B80363EE7587F7 /* DocumentConversion */,
 				916ACA33CDE6532714E49272 /* Info.plist */,
 				2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */,
@@ -1891,6 +1949,7 @@
 				926B95CD92D851FFE3BB0DFE /* python */,
 				B52C94351F1E33240FA5A1D5 /* Fonts */,
 				EB3F3DF9DADE5E378FE9D27A /* js-packages */,
+				F213B64AF72D70128C90D328 /* Shell */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -1933,6 +1992,15 @@
 				D93429C0B86DDBE47C24DFF2 /* zod.min.js */,
 			);
 			path = "js-packages";
+			sourceTree = "<group>";
+		};
+		F213B64AF72D70128C90D328 /* Shell */ = {
+			isa = PBXGroup;
+			children = (
+				0DE3488753123247EB0D9C9B /* commandDictionary.plist */,
+				C298297A7E2B2DE1AAF2AF86 /* extraCommandsDictionary.plist */,
+			);
+			path = Shell;
 			sourceTree = "<group>";
 		};
 		F9736247E976C4B2AE821D94 /* Entitlements */ = {
@@ -1992,6 +2060,7 @@
 				59DBBD5C35D97EBB383798F6 /* FloeExecution */,
 				E6A81719803BDDE4E13451F3 /* FloeGit */,
 				A0ED3E17200948E8978373F2 /* FloeLocalModels */,
+				923643E245C0A12DF9647622 /* FloeShellEngine */,
 			);
 			productName = FloeAgent;
 			productReference = 8D4157CD2630B494873F61E6 /* Floe Agent.app */;
@@ -2133,6 +2202,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				22A88FCEEDE1E3AC97A571ED /* XCLocalSwiftPackageReference "." */,
+				CDC86C45CC43B317BBCDD8C4 /* XCLocalSwiftPackageReference "ThirdParty/FloeShellEngine" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D2F4766B4780E506300D05AC /* Products */;
@@ -2156,13 +2226,16 @@
 			files = (
 				75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */,
 				BEFDD6EB71B069F44842E36A /* Bundled in Resources */,
+				2A2BD3D420AE0BDD0039FA1F /* Capabilities in Resources */,
 				6429C2AE431431EA55322D1E /* DocumentConversion in Resources */,
 				F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */,
 				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
 				8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
+				B64AAD73B34ED0DC62DB552E /* commandDictionary.plist in Resources */,
 				72F687318496A3451661FD31 /* dayjs.min.js in Resources */,
+				EEC769EBC4DFA463E3844163 /* extraCommandsDictionary.plist in Resources */,
 				5AE108D9A18E2DF3B4591CDA /* lodash.min.js in Resources */,
 				C6CD25F689A569EBCC25BDF6 /* marked.min.js in Resources */,
 				F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */,
@@ -2247,6 +2320,7 @@
 				2B89EFA4B10C970A94C681FC /* Canvas3DDirectorView.swift in Sources */,
 				5F7840F49827B094F2E4E771 /* CanvasAgentTools.swift in Sources */,
 				51013E3CE31A8318EDF57DA7 /* CanvasSavedImageBatchCommitPlanner.swift in Sources */,
+				7C2EF25195E6C5C8949A7A2A /* CapabilityStoreAdapters.swift in Sources */,
 				E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */,
 				1A3518834841B087FC3D0694 /* ConversationBatchManagementView.swift in Sources */,
 				A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */,
@@ -2282,6 +2356,8 @@
 				A5C100B39388D49632E01BAF /* FloeCPythonBridge.m in Sources */,
 				9BA3B9A6FA78531B9263C768 /* FloePDFExceptionGuard.mm in Sources */,
 				700E0E333832B9669753A226 /* FloePDFiumBridge.mm in Sources */,
+				66A06EF450BB006193BCBA2F /* FloeShellBridge.mm in Sources */,
+				2A28A5D2E585FE372E6AA7E8 /* FloeShellCommands.swift in Sources */,
 				FBA76463B171719B586A0436 /* FloeShortcuts.swift in Sources */,
 				A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */,
 				53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */,
@@ -2294,6 +2370,7 @@
 				C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */,
 				2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */,
 				EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */,
+				B3B23C39470308057F0D0761 /* IOSSystemShellBackend.swift in Sources */,
 				08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */,
 				4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */,
 				D940A535577FE25640F5F5E5 /* InlinePDFReader.swift in Sources */,
@@ -2301,6 +2378,7 @@
 				C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */,
 				E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */,
 				C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */,
+				F21AD42E26BA47E7C2A1129D /* LocalTerminalView.swift in Sources */,
 				BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */,
 				0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */,
 				17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */,
@@ -2381,6 +2459,7 @@
 				C8EB11021CF07BD709D09AA5 /* VoiceInput.swift in Sources */,
 				EC895B8CCE64F446C1797162 /* VoiceInputController.swift in Sources */,
 				FB6996DA07A08B986A011ED7 /* VoiceInputLive.swift in Sources */,
+				99F788D0AAAF6A6C9E837F53 /* WasmKitCommandRuntime.swift in Sources */,
 				436FDD6DD750FD77FF840D91 /* WebSearchSettingsCenter.swift in Sources */,
 				B33934D6A8A4190628D89B73 /* WorkspaceCanvasView.swift in Sources */,
 				31A880D7E77E4D90E1CA89EF /* WorkspaceCenter.swift in Sources */,
@@ -2416,6 +2495,7 @@
 				448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */,
 				5783D26BF683BAD283217A43 /* ImportantFileShortcutTests.swift in Sources */,
 				FEE62E3E419BA78474C58CBF /* LocalPythonRuntimeTests.swift in Sources */,
+				413F511639D463F80B8F7E2B /* LocalShellRuntimeTests.swift in Sources */,
 				B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */,
 				4A812D9D0082904ECFCB9984 /* RARFixtures.generated.swift in Sources */,
 				AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */,
@@ -2500,12 +2580,13 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				FLOE_GITHUB_OAUTH_CLIENT_ID = Ov23litEyLPjXVLEDzWW;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
+					"\"Frameworks\"",
 					"\"Vendor\"",
 					"\"Vendor/LibArchive\"",
 					"\"Vendor/PDFium\"",
@@ -2522,7 +2603,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
 					"-framework",
@@ -2545,7 +2626,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2556,7 +2637,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -2629,7 +2710,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2640,7 +2721,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -2675,7 +2756,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2686,7 +2767,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -2786,7 +2867,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2797,7 +2878,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -2816,12 +2897,13 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				FLOE_GITHUB_OAUTH_CLIENT_ID = Ov23litEyLPjXVLEDzWW;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
+					"\"Frameworks\"",
 					"\"Vendor\"",
 					"\"Vendor/LibArchive\"",
 					"\"Vendor/PDFium\"",
@@ -2838,7 +2920,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
 					"-framework",
@@ -2862,7 +2944,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2873,7 +2955,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -2908,7 +2990,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 142;
+				CURRENT_PROJECT_VERSION = 143;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2919,7 +3001,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.6;
+				MARKETING_VERSION = 1.6.7;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -3002,6 +3084,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = .;
 		};
+		CDC86C45CC43B317BBCDD8C4 /* XCLocalSwiftPackageReference "ThirdParty/FloeShellEngine" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ThirdParty/FloeShellEngine;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -3048,6 +3134,10 @@
 		8E8F4CD97A741A8F515EC80E /* FloeTools */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeTools;
+		};
+		923643E245C0A12DF9647622 /* FloeShellEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeShellEngine;
 		};
 		94B845AC13D8F637547A4AB0 /* FloeMarkdown */ = {
 			isa = XCSwiftPackageProductDependency;

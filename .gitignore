@@ -83,3 +83,6 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Reproducible dash iOS framework outputs.
+FloeAgent/Frameworks/dash*.xcframework/

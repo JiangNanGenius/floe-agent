@@ -184,7 +184,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
                 artifacts: output.artifacts,
-                maximumSummaryCharacters: ["skill.read", "skill.list", "skill.search", "task.readPlan", "task.updatePlan", "image.models"].contains(call.toolName) ? 262_144 : 4096
+                maximumSummaryCharacters: ["skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 : 4096
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -691,11 +691,11 @@ public actor FloeAgentRuntime {
             // One reminder per stretch of unplanned work; not every dispatch.
             if let last = context.lastInjectedAtToolCall, context.toolCallCount - last < 8 { return nil }
             let entries = await self.ledgerEntriesSnapshot()
-            let lastUpdateIndex = entries.lastIndex { $0.toolName == "task.updatePlan" && $0.status == .ok }
+            let lastUpdateIndex = entries.lastIndex { $0.toolName == "checklist.updatePlan" && $0.status == .ok }
             let callsSinceUpdate = entries.count - (lastUpdateIndex.map { $0 + 1 } ?? 0)
             guard let checklist = await self.configuration.planChecklistProvider?() else {
                 guard context.toolCallCount >= 10 else { return nil }
-                return "This run has made \(context.toolCallCount) tool calls without a durable checklist. If this is multi-step work, record the plan with task.updatePlan so progress survives interruption and compaction; skip it for a simple request."
+                return "This run has made \(context.toolCallCount) tool calls without a durable checklist. If this is multi-step work, record the plan with checklist.updatePlan so progress survives interruption and compaction; skip it for a simple request."
             }
             if checklist.isFinished {
                 guard context.toolCallCount > 0 else { return nil }
@@ -703,7 +703,7 @@ public actor FloeAgentRuntime {
             }
             guard callsSinceUpdate >= 8 else { return nil }
             let open = checklist.steps.filter { !$0.isTerminal }.map(\.id).joined(separator: ", ")
-            return "Plan freshness: \(callsSinceUpdate) tool calls since your last successful task.updatePlan; unfinished steps: [\(open)]. If the plan drifted, update it now (carry those IDs or mark them cancelled; completed steps may be omitted). If it is accurate, keep going — do not re-read it."
+            return "Plan freshness: \(callsSinceUpdate) tool calls since your last successful checklist.updatePlan; unfinished steps: [\(open)]. If the plan drifted, update it now (carry those IDs or mark them cancelled; completed steps may be omitted). If it is accurate, keep going — do not re-read it."
         }
     }
 
@@ -1198,7 +1198,7 @@ public actor FloeAgentRuntime {
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            ["skill.search", "skill.read", "skill.list", "task.readPlan", "task.updatePlan"].contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan"].contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         let pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
@@ -1762,7 +1762,9 @@ public actor FloeAgentRuntime {
             // provider's completion event so read-only calls can run in
             // parallel and writes act as barriers.
             do {
-                let normalized = try await toolCallNormalizer?(call) ?? call
+                var canonicalCall = call
+                canonicalCall.toolName = ToolAliasTable.canonical(call.toolName)
+                let normalized = try await toolCallNormalizer?(canonicalCall) ?? canonicalCall
                 pendingToolBatch.append(normalized.withIDContext(runID: runID))
             } catch {
                 pendingToolBatch.removeAll { $0.id == call.id }
@@ -2401,8 +2403,7 @@ public actor FloeAgentRuntime {
                     : "Loaded for the next request:\n" + selected.map { descriptor in
                         display(descriptor.name) + ": " + String(descriptor.toolDescription.prefix(160))
                             + (alreadyInContext.contains(descriptor.name) ? " (schema already in context; call it directly, no reload needed)" : "")
-                            + " [ownerSkillID=" + (descriptor.ownerSkillID ?? "none (underlying registered capability)")
-                            + "; relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
+                            + " [relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
                     }.joined(separator: "\n")
                         + (deferred.isEmpty ? "" : "\nNot yet loaded (schema budget): \(deferred.map(display).joined(separator: ", ")). Search one exact name when needed, not the same broad query.")
                 let querySummary = queries.map { query in

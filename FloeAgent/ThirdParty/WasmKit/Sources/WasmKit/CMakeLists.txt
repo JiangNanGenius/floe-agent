@@ -1,0 +1,40 @@
+add_wasmkit_library(WasmKit
+  Engine.swift
+  Imports.swift
+  Module.swift
+  ModuleParser.swift
+  Translator.swift
+  Validator.swift
+  ResourceLimiter.swift
+  Component/CanonicalLifting.swift
+  Component/CanonicalLowering.swift
+  Component/CanonicalCall.swift
+  Component/CanonicalOptions.swift
+  Component/ComponentTypes.swift
+  Execution/DebuggerInstructionMapping.swift
+  Execution/Instructions/Control.swift
+  Execution/Instructions/Instruction.swift
+  Execution/Instructions/Table.swift
+  Execution/Instructions/Memory.swift
+  Execution/Instructions/Misc.swift
+  Execution/Instructions/InstructionSupport.swift
+  Execution/ConstEvaluation.swift
+  Execution/DispatchInstruction.swift
+  Execution/EngineInterceptor.swift
+  Execution/Errors.swift
+  Execution/Execution.swift
+  Execution/Function.swift
+  Execution/Instances.swift
+  Execution/IO.swift
+  Execution/NameRegistry.swift
+  Execution/Profiler.swift
+  Execution/Runtime.swift
+  Execution/SignpostTracer.swift
+  Execution/Store.swift
+  Execution/StoreAllocator.swift
+  Execution/UntypedValue.swift
+  Execution/Value.swift
+)
+
+target_link_wasmkit_libraries(WasmKit PUBLIC
+  _CWasmKit WasmParser SystemExtras WasmTypes SystemPackage)

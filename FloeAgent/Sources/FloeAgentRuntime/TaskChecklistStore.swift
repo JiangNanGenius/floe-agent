@@ -40,7 +40,7 @@ public struct TaskChecklist: Codable, Sendable, Equatable {
     /// a finished checklist is closed out instead of appended to forever.
     public var lifecycleHint: String {
         if isFinished {
-            return "CHECKLIST FINISHED (\(completedCount)/\(steps.count) completed). Your next task.updatePlan with a fresh steps array starts a NEW checklist; do not carry these settled steps. Their history stays in the revisions table."
+            return "CHECKLIST FINISHED (\(completedCount)/\(steps.count) completed). Your next checklist.updatePlan with a fresh steps array starts a NEW checklist; do not carry these settled steps. Their history stays in the revisions table."
         }
         let open = steps.filter { !$0.isTerminal }.map(\.id)
         return "Checklist in progress (\(completedCount)/\(steps.count) completed). Updates must carry the unfinished step IDs [\(open.joined(separator: ", "))] (or mark them cancelled); completed/cancelled steps may be omitted. Current revision is \(revision)."
@@ -147,7 +147,7 @@ public actor TaskChecklistStore {
             let previous = try body.map { try JSONDecoder().decode(TaskChecklist.self, from: Data($0.utf8)) }
             let currentRevision = previous?.revision ?? 0
             if let expected = update.expectedRevision, expected != currentRevision {
-                throw FloeError.validationFailed("Checklist changed: current revision is \(currentRevision). Do not re-read the plan; retry task.updatePlan with expectedRevision=\(currentRevision) and the same intended changes, or omit expectedRevision to write over the current revision.")
+                throw FloeError.validationFailed("Checklist changed: current revision is \(currentRevision). Do not re-read the plan; retry checklist.updatePlan with expectedRevision=\(currentRevision) and the same intended changes, or omit expectedRevision to write over the current revision.")
             }
             if let previous, !previous.isFinished {
                 let openIDs = previous.steps.filter { !$0.isTerminal }.map(\.id)

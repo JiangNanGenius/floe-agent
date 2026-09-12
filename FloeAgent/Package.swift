@@ -31,6 +31,8 @@ let package = Package(
         .library(name: "FloeLocalModels", targets: ["FloeLocalModels"])
     ],
     dependencies: [
+        .package(path: "ThirdParty/WasmKit"),
+        .package(url: "https://github.com/apple/swift-system", exact: "1.8.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.88.0"),
         .package(url: "https://github.com/Wellz26/swift-nio-ssh.git", exact: "0.3.6"),
@@ -232,12 +234,15 @@ let package = Package(
         .target(
             name: "FloeExecution",
             dependencies: [
+                .product(name: "WasmKit", package: "WasmKit"),
+                .product(name: "WasmKitWASI", package: "WasmKit"),
+                .product(name: "SystemPackage", package: "swift-system"),
                 "FloeCore", "FloeTools", "FloeSSH", "FloeWorkspace", "FloeSecurity",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeExecution",
-            resources: [.copy("Resources/RemoteAgent")],
+            resources: [.copy("Resources/RemoteAgent"), .process("Resources/CapabilityCatalog.json"), .process("Resources/managed_package_remove.py"), .process("Resources/deb_extract.py")],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),
@@ -611,7 +616,8 @@ let package = Package(
             name: "FloeExecutionTests",
             dependencies: [
                 "FloeExecution", "FloeCore", "FloeTools", "FloeModels",
-                "FloeAgentRuntime", "FloeSSH", "FloePersistence", "FloeTestSupport"
+                "FloeAgentRuntime", "FloeSSH", "FloePersistence", "FloeTestSupport",
+                .product(name: "WAT", package: "WasmKit"), .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Tests/FloeExecutionTests",
             swiftSettings: [

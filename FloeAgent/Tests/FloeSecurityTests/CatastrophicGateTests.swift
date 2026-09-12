@@ -404,7 +404,7 @@ struct ApprovalPolicyTests {
         let policy = AutomaticApprovalPolicy(backend: backend)
         for name in [
             "git.status", "git.diff", "git.initialize", "git.stage", "git.commit",
-            "git.pull", "github.clone", "cloudWorkspace.gitCommit"
+            "git.pull", "github.clone", "cloudWorkspace.git.commit"
         ] {
             let call = try ToolCall(id: name, toolName: name, argumentsJSON: Data(#"{}"#.utf8), scope: .local)
             let proposed = ProposedAction(
@@ -758,8 +758,8 @@ struct ApprovalPolicyTests {
             "image.inspect", "image.ocr", "image.generate",
             "document.pdf.inspect", "document.pdf.render",
             "document.office.inspect", "document.office.updateText",
-            "document.createWord", "document.createWorkbook", "presentation.createDeck",
-            "exec.compatEvaluator", "presentation.createInline"
+            "document.createWord", "document.createWorkbook", "document.presentation.createDeck",
+            "exec.compatEvaluator", "document.presentation.createInline"
         ] {
             let call = try ToolCall(
                 id: name,

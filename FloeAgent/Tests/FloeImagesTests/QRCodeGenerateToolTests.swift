@@ -11,7 +11,7 @@ struct QRCodeGenerateToolTests {
 
     @Test("descriptor is mutating and file-writing")
     func descriptorContract() {
-        #expect(QRCodeGenerateTool.name == "image.qrGenerate")
+        #expect(QRCodeGenerateTool.name == "image.qr.generate")
         #expect(QRCodeGenerateTool.isSideEffecting)
         #expect(QRCodeGenerateTool.riskLabels == [.writesFiles])
     }

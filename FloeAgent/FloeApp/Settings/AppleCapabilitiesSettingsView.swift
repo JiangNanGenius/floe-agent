@@ -72,7 +72,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .maps: ["apple.maps."]
         case .web: ["browser."]
         case .watch: ["apple.watch."]
-        case .vision: ["image.inspect", "image.ocr", "image.scanBarcode"]
+        case .vision: ["image.inspect", "image.ocr", "image.barcode.scan"]
         case .mail: ["apple.mail.compose"]
         case .documents: ["document.", "font."]
         case .camera: ["apple.camera.capture"]

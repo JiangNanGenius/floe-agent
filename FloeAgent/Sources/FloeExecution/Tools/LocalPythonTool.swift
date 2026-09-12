@@ -155,78 +155,20 @@ public struct LocalPythonTool: AgentTool {
         var packageOutput = ""
         let packages = try Self.requestedPackages(args)
         if !packages.isEmpty {
-            let encoded = try JSONEncoder().encode(packages)
-            let packageJSON = String(decoding: encoded, as: UTF8.self)
-            let installer = """
-                import json, sys, os, shutil, tempfile
-                from pip._internal.cli.main import main as _floe_pip
-                _target = next((p for p in sys.path if p.endswith('PythonPackages')), None)
-                if not _target:
-                    raise RuntimeError('Managed package directory is unavailable')
-                _specs = json.loads(\(String(reflecting: packageJSON)))
-                _parent = os.path.dirname(_target)
-                os.makedirs(_parent, exist_ok=True)
-                os.makedirs(_target, exist_ok=True)
-                _stage = tempfile.mkdtemp(prefix='floe-pip-stage-', dir=_parent)
-                _backup = tempfile.mkdtemp(prefix='floe-pip-backup-', dir=_parent)
-                _cache = os.path.join(_parent, 'PythonPackageCache')
-                os.makedirs(_cache, exist_ok=True)
-                _args = ['install', '--disable-pip-version-check', '--no-input',
-                         '--only-binary=:all:', '--platform=any', '--implementation=py',
-                         '--abi=none', '--cache-dir', _cache, '--target', _stage] + _specs
-                try:
-                    _code = _floe_pip(_args)
-                    if _code != 0:
-                        raise RuntimeError(f'Managed package install failed with exit code {_code}')
-                    _native = []
-                    for _root, _dirs, _files in os.walk(_stage):
-                        for _file in _files:
-                            if _file.lower().endswith(('.so', '.dylib', '.a', '.framework', '.bundle')):
-                                _native.append(os.path.join(_root, _file))
-                    if _native:
-                        raise RuntimeError('Managed package contains prohibited native artifacts')
-                    _distributions = sorted(
-                        _name[:-10] for _name in os.listdir(_stage)
-                        if _name.lower().endswith('.dist-info')
-                    )
-                    _installed = []
-                    try:
-                        for _name in os.listdir(_stage):
-                            _source = os.path.join(_stage, _name)
-                            _destination = os.path.join(_target, _name)
-                            if os.path.lexists(_destination):
-                                shutil.move(_destination, os.path.join(_backup, _name))
-                            shutil.move(_source, _destination)
-                            _installed.append(_name)
-                    except BaseException:
-                        for _name in _installed:
-                            _destination = os.path.join(_target, _name)
-                            if os.path.isdir(_destination): shutil.rmtree(_destination, ignore_errors=True)
-                            elif os.path.lexists(_destination): os.remove(_destination)
-                        for _name in os.listdir(_backup):
-                            shutil.move(os.path.join(_backup, _name), os.path.join(_target, _name))
-                        raise
-                    print('managedPackages=' + ','.join(_specs))
-                    print('resolvedDistributions=' + ','.join(_distributions))
-                finally:
-                    shutil.rmtree(_stage, ignore_errors=True)
-                    shutil.rmtree(_backup, ignore_errors=True)
-                """
-            let installRequest = ScriptExecutionRequest(
-                script: installer,
-                inputJSON: nil,
+            let installer = ManagedPythonInstallService(python: service)
+            let installOutcome = await installer.install(
+                specs: packages,
                 timeout: Self.maxTimeout,
                 maxOutputBytes: min(args.maxOutputBytes ?? Self.defaultMaxOutputBytes, Self.maxOutputBytesCap),
-                allowsManagedPackageInstaller: true
+                cancellation: context.cancellation
             )
-            let installOutcome = await service.run(installRequest, cancellation: context.cancellation)
             switch installOutcome {
-            case .ok(_, let stdout, let stderr, _, _, _):
-                packageOutput = stdout + (stderr.isEmpty ? "" : "\n" + stderr)
-            case .jsException(let message, let stdout):
-                return Self.output("status=packageInstallFailed\nerror=\(message)\n\(stdout)", exitStatus: 65)
-            case .timedOut(let afterMs, let partialStdout):
-                return Self.output("status=packageInstallTimedOut afterMs=\(afterMs)\n\(partialStdout)", exitStatus: 124)
+            case .ok(let output):
+                packageOutput = output
+            case .failed(let message):
+                return Self.output("status=packageInstallFailed\nerror=\(message)", exitStatus: 65)
+            case .timedOut(let partialOutput):
+                return Self.output("status=packageInstallTimedOut\n\(partialOutput)", exitStatus: 124)
             case .cancelled:
                 throw FloeError.cancelled
             }

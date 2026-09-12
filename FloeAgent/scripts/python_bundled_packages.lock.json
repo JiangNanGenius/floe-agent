@@ -1,0 +1,216 @@
+{
+  "generatedBy": "FloeAgent/scripts/pin_python_bundled_packages.py",
+  "packages": [
+    {
+      "name": "attrs",
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "url": "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl",
+      "version": "26.1.0"
+    },
+    {
+      "name": "beautifulsoup4",
+      "sha256": "d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9",
+      "url": "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl",
+      "version": "4.15.0"
+    },
+    {
+      "name": "chardet",
+      "sha256": "4076d795897ce45239825956a1334e134322ecc4bfe84dbb12acd5390de0fbc1",
+      "url": "https://files.pythonhosted.org/packages/cf/6e/5a0b348fa4cd7847567a28c6e697ccf58391960bfd13a6e7473ee23ca2f2/chardet-7.6.0-py3-none-any.whl",
+      "version": "7.6.0"
+    },
+    {
+      "name": "click",
+      "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360",
+      "url": "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl",
+      "version": "8.5.0"
+    },
+    {
+      "name": "defusedxml",
+      "sha256": "a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61",
+      "url": "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl",
+      "version": "0.7.1"
+    },
+    {
+      "name": "et-xmlfile",
+      "sha256": "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+      "url": "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl",
+      "version": "2.0.0"
+    },
+    {
+      "name": "feedparser",
+      "sha256": "e35e3f760151b0c3b22cac9684155cae186a233e16c49bcbc6c49e91e3131137",
+      "url": "https://files.pythonhosted.org/packages/7f/61/f04912e63702e73fb2a378f9c0a1ad9eb17a334a11a6b3fe1daa593903c2/feedparser-6.0.14-py3-none-any.whl",
+      "version": "6.0.14"
+    },
+    {
+      "name": "feedparser-sgmllib",
+      "sha256": "2cab2d43b95a954f920f18aebce7a4dbbb3f539780b127e2aa114f579821e01d",
+      "url": "https://files.pythonhosted.org/packages/85/a0/79a31f898092e145bd66e2b338fb0656979acb2bbbcae8220940fbfcd820/feedparser_sgmllib-2.1.0-py3-none-any.whl",
+      "version": "2.1.0"
+    },
+    {
+      "name": "filelock",
+      "sha256": "3f16ecd0117feae0dfc147e8c62eb5daeccd8bd800378c3ddf416de9b4feb6b1",
+      "url": "https://files.pythonhosted.org/packages/cc/06/4f138f618dbea66803291274f228f01daf29f306fe8b96bc30dab765df75/filelock-3.32.6-py3-none-any.whl",
+      "version": "3.32.6"
+    },
+    {
+      "name": "fonttools",
+      "sha256": "3060b8c1fc2329fa20265b7c138614143ea7c1624e26c5c180c76aeb74deae6f",
+      "url": "https://files.pythonhosted.org/packages/e6/35/f894ceb867118c0261d0f69a9bd516b045a3754238f76c88a49513ac7a83/fonttools-4.65.0-py3-none-any.whl",
+      "version": "4.65.0"
+    },
+    {
+      "name": "fpdf2",
+      "sha256": "3557a478fc577a929c94aace9666aed4dcc432b5ab6764232e6a59f1ccd75f17",
+      "url": "https://files.pythonhosted.org/packages/f5/be/af012eda9507494f28b99b077423806c43a11573eb6225dd46f19ae2d263/fpdf2-2.8.8-py3-none-any.whl",
+      "version": "2.8.8"
+    },
+    {
+      "name": "html5lib",
+      "sha256": "0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d",
+      "url": "https://files.pythonhosted.org/packages/6c/dd/a834df6482147d48e225a49515aabc28974ad5a4ca3215c18a882565b028/html5lib-1.1-py2.py3-none-any.whl",
+      "version": "1.1"
+    },
+    {
+      "name": "humanize",
+      "sha256": "353eb2f34c09d098b2880eee8bef21832eae6d174f48c5762fff7e5fcb74d01d",
+      "url": "https://files.pythonhosted.org/packages/b0/aa/0b7365d30fed43e7a3449aba1fe20a0a7174d9cf13e282af4e69ac825441/humanize-4.16.0-py3-none-any.whl",
+      "version": "4.16.0"
+    },
+    {
+      "name": "icalendar",
+      "sha256": "8355acfe17be81b368f0b1e3740817cea9b56ea889931f8f1a87c62f2d28db0b",
+      "url": "https://files.pythonhosted.org/packages/bb/82/50bff78b0bb0c7d7c0cb39e0ee189b92f611fff6bd7cf57f25e92d5a7551/icalendar-7.3.0-py3-none-any.whl",
+      "version": "7.3.0"
+    },
+    {
+      "name": "jmespath",
+      "sha256": "a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64",
+      "url": "https://files.pythonhosted.org/packages/14/2f/967ba146e6d58cf6a652da73885f52fc68001525b4197effc174321d70b4/jmespath-1.1.0-py3-none-any.whl",
+      "version": "1.1.0"
+    },
+    {
+      "name": "jsonlines",
+      "sha256": "185b334ff2ca5a91362993f42e83588a360cf95ce4b71a73548502bda52a7c55",
+      "url": "https://files.pythonhosted.org/packages/f8/62/d9ba6323b9202dd2fe166beab8a86d29465c41a0288cbe229fac60c1ab8d/jsonlines-4.0.0-py3-none-any.whl",
+      "version": "4.0.0"
+    },
+    {
+      "name": "Markdown",
+      "sha256": "fa6c92a00a4a3c98b22728c64a935ae1928250ae65058a6ded814d2cc29a4cea",
+      "url": "https://files.pythonhosted.org/packages/64/69/4a5af2bc115a9a33fefe51709749de8262be3f9ba063d1753a837cdbc49c/markdown-3.10.3-py3-none-any.whl",
+      "version": "3.10.3"
+    },
+    {
+      "name": "openpyxl",
+      "sha256": "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+      "url": "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl",
+      "version": "3.1.5"
+    },
+    {
+      "name": "packaging",
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+      "url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+      "version": "26.3"
+    },
+    {
+      "name": "platformdirs",
+      "sha256": "52f2f181bbfde907966932cc8312d967d02976422d66d537ea16092b8e291081",
+      "url": "https://files.pythonhosted.org/packages/f4/e1/5b7b8bbb55084d1425bcb9bc823ff519e1b2be05f6ebb0089e2eacc38413/platformdirs-4.11.8-py3-none-any.whl",
+      "version": "4.11.8"
+    },
+    {
+      "name": "pyparsing",
+      "sha256": "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d",
+      "url": "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl",
+      "version": "3.3.2"
+    },
+    {
+      "name": "pypdf",
+      "sha256": "ee93a2665670ecf57ee81d197a4ca548f3dc15f9cefc56e59b8140866aaa3de5",
+      "url": "https://files.pythonhosted.org/packages/58/13/645df3995075112cb3cce15e8797c205f0f88fb50acc11012b84b071bc22/pypdf-6.18.1-py3-none-any.whl",
+      "version": "6.18.1"
+    },
+    {
+      "name": "python-slugify",
+      "sha256": "b1180fb0fd6b3590e7fbd8328b08d56cde9dcac736527a070c0a811480621316",
+      "url": "https://files.pythonhosted.org/packages/16/cc/bf2237784cddf5c37f5e4cb25f60670a0c57c3d8ce15d43da16f472c08ef/python_slugify-9.0.0-py3-none-any.whl",
+      "version": "9.0.0"
+    },
+    {
+      "name": "pytz",
+      "sha256": "dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815",
+      "url": "https://files.pythonhosted.org/packages/0f/7b/39c34ca613b0b198cb866466651b26b045e2009864c5183c979a3b83f383/pytz-2026.3.post1-py2.py3-none-any.whl",
+      "version": "2026.3.post1"
+    },
+    {
+      "name": "six",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "version": "1.17.0"
+    },
+    {
+      "name": "soupsieve",
+      "sha256": "8089a26fd974ca7a1f30276d3d8492ab266ab15af581642dfe8aa162e0c1c823",
+      "url": "https://files.pythonhosted.org/packages/eb/dc/ad025c1ee131eba60c69f4dd5779b18fcf1e6b21a343e2162a84d5d133c7/soupsieve-2.9.2-py3-none-any.whl",
+      "version": "2.9.2"
+    },
+    {
+      "name": "sqlparse",
+      "sha256": "b861c0288ce2fa56209a9a6412d2e066ac664b3873b89c26c9d8415e8e32996f",
+      "url": "https://files.pythonhosted.org/packages/d9/50/f00935da0ec7cbf325f8dc4f772ae46fbc7b672dd62876e73f0a94adda57/sqlparse-0.6.0-py3-none-any.whl",
+      "version": "0.6.0"
+    },
+    {
+      "name": "tabulate",
+      "sha256": "f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3",
+      "url": "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl",
+      "version": "0.10.0"
+    },
+    {
+      "name": "tenacity",
+      "sha256": "6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55",
+      "url": "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl",
+      "version": "9.1.4"
+    },
+    {
+      "name": "text-unidecode",
+      "sha256": "1311f10e8b895935241623731c2ba64f4c455287888b18189350b67134a822e8",
+      "url": "https://files.pythonhosted.org/packages/a6/a5/c0b6468d3824fe3fde30dbb5e1f687b291608f9473681bbf7dabbf5a87d7/text_unidecode-1.3-py2.py3-none-any.whl",
+      "version": "1.3"
+    },
+    {
+      "name": "tomli",
+      "sha256": "0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe",
+      "url": "https://files.pythonhosted.org/packages/7b/61/cceae43728b7de99d9b847560c262873a1f6c98202171fd5ed62640b494b/tomli-2.4.1-py3-none-any.whl",
+      "version": "2.4.1"
+    },
+    {
+      "name": "typing-extensions",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "version": "4.16.0"
+    },
+    {
+      "name": "vobject",
+      "sha256": "0fbdb982065cf4d1843a5d5950c88510041c6de026bda49c3502721de1c6ac3d",
+      "url": "https://files.pythonhosted.org/packages/68/20/6bba813bbd498c28edbbcf8253a6398cf4266ecf7bfa6129835c0a2bfbb1/vobject-0.9.9-py2.py3-none-any.whl",
+      "version": "0.9.9"
+    },
+    {
+      "name": "webencodings",
+      "sha256": "7fab6269c8bf237c657876b52058ccb182e861518d1c695c1a9aaa8c1c105d5b",
+      "url": "https://files.pythonhosted.org/packages/77/c6/040cbc72480d789a5f40d63fb484d3106554c4dfa2d2b70ad5022057750f/webencodings-0.6.1-py3-none-any.whl",
+      "version": "0.6.1"
+    },
+    {
+      "name": "xlsxwriter",
+      "sha256": "9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3",
+      "url": "https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl",
+      "version": "3.2.9"
+    }
+  ],
+  "schemaVersion": 1
+}

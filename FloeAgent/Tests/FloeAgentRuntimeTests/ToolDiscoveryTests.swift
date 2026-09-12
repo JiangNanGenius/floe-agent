@@ -29,10 +29,10 @@ struct ToolDiscoveryTests {
 
     @Test func instructionsRespectTheEffectiveCatalog() {
         let limited = ToolDiscovery.index([descriptor("workspace.readFile")])
-        #expect(!limited.contains("task.updatePlan"))
+        #expect(!limited.contains("checklist.updatePlan"))
         #expect(!limited.contains("exec.localPython"))
         #expect(!limited.contains("skill.list"))
-        let complete = ToolDiscovery.index(["task.readPlan", "task.updatePlan", "skill.list"].map(descriptor))
+        let complete = ToolDiscovery.index(["checklist.readPlan", "checklist.updatePlan", "skill.list"].map(descriptor))
         #expect(complete.contains("Revise the same checklist"))
         #expect(complete.contains("A checklist never enables Goal mode"))
         #expect(complete.contains("skill.list"))
@@ -40,17 +40,16 @@ struct ToolDiscoveryTests {
 
     @Test func directoryDistinguishesOwnershipFromWorkflowGuidance() throws {
         let owned = ToolCatalog.Descriptor(name: "custom.report", toolDescription: "Report", parametersJSON: "{}",
-            riskLabels: [], isSideEffecting: false, ownerSkillID: "report-plugin")
+            riskLabels: [], isSideEffecting: false)
         let output = try ToolDiscovery.list(arguments: Data("{}".utf8),
             descriptors: [owned, descriptor("workspace.readFile")], loaded: [owned.name],
             relatedSkills: ["workspace.readFile": ["floe-files", "floe-office"]])
         let object = try #require(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
         let entries = try #require(object["tools"] as? [[String: Any]])
         let report = try #require(entries.first { $0["name"] as? String == owned.name })
-        #expect(report["ownerSkillID"] as? String == "report-plugin")
         #expect(report["schemaLoaded"] as? Bool == true)
+        #expect(report["aliases"] as? [String] == [])
         let file = try #require(entries.first { $0["name"] as? String == "workspace.readFile" })
-        #expect(file["ownerSkillID"] == nil)
         #expect(file["relatedSkillIDs"] as? [String] == ["floe-files", "floe-office"])
     }
 

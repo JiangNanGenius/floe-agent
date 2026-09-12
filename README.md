@@ -24,9 +24,11 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Current upgrade — 1.6.4 beta candidate
+## Current upgrade — 1.6.7 release candidate
 
-**1.6.4 (140)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.4.md). Rapid-iteration hardening from on-device feedback:
+**1.6.7 (143)** adds the local terminal substrate: an on-device POSIX shell (`exec.shell`, interactive `shell.*` sessions, background jobs) on the BSD-licensed ios_system command bus, an apt/pkg capability catalog with 34 preset pure-Python packages, data-only `.deb` extraction, and the first tool-demotion wave into workflow guides. See [release notes](docs/RELEASE_NOTES_1.6.7.md), [architecture](docs/ARCHITECTURE_LOCAL_SHELL.md) and the [implementation record](docs/PLAN_LOCAL_SHELL.md); installation availability requires separate TestFlight verification.
+
+Rapid-iteration hardening from on-device feedback:
 
 - **Compat-mode tool naming, total and bidirectional**: all three wire protocols sanitize names consistently, reverse mapping covers the whole permission ceiling (not just the trimmed schema set), tools.list paginates underscored cursors correctly, and the local text fallback normalizes mangled names plus admits discovery tools.
 - **PDF crash surface closed**: every PDFKit touch serialized through a process-wide gate, render capped per call, merge lifetime fixed, large-file viewer parsing moved off the main thread.

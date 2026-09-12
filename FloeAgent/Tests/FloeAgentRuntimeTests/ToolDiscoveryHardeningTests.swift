@@ -83,7 +83,7 @@ struct ToolDiscoveryHardeningTests {
         // First sweep across two pages plus a skill.list: all fresh, no warning.
         let page1First = try call("tools.list", #"{"limit":30}"#, id: "1")
         #expect(guardUnderTest.record(call: page1First, result: ok(page1First, "page-1"), isSideEffecting: false) == nil)
-        let page2 = try call("tools.list", #"{"limit":30,"afterName":"image.scanBarcode"}"#, id: "2")
+        let page2 = try call("tools.list", #"{"limit":30,"afterName":"image.barcode.scan"}"#, id: "2")
         #expect(guardUnderTest.record(call: page2, result: ok(page2, "page-2"), isSideEffecting: false) == nil)
         let skills1 = try call("skill.list", "{}", id: "3")
         #expect(guardUnderTest.record(call: skills1, result: ok(skills1, "skills"), isSideEffecting: false) == nil)

@@ -100,19 +100,21 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
 
     private var runners: [String: AnyAgentTool] = [:]
     private let lock = NSLock()
+    private var compatibilityNames = Set<String>()
 
     public init() {}
 
     /// Registers (or replaces) the runner for `tool.descriptor.name`.
-    public func register(_ tool: AnyAgentTool) {
+    public func register(_ tool: AnyAgentTool, compatibilityOnly: Bool = false) {
         lock.lock()
         runners[tool.descriptor.name] = tool
+        if compatibilityOnly { compatibilityNames.insert(tool.descriptor.name) } else { compatibilityNames.remove(tool.descriptor.name) }
         lock.unlock()
     }
 
     /// Type-erases and registers a concrete `AgentTool` in one call.
-    public func register<T: AgentTool>(_ tool: T) {
-        register(AnyAgentTool(tool))
+    public func register<T: AgentTool>(_ tool: T, compatibilityOnly: Bool = false) {
+        register(AnyAgentTool(tool), compatibilityOnly: compatibilityOnly)
     }
 
     /// Looks up a runner by catalog name. Absent names surface as the
@@ -120,14 +122,14 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
     public func runner(named name: String) -> AnyAgentTool? {
         lock.lock()
         defer { lock.unlock() }
-        return runners[name]
+        return runners[ToolAliasTable.canonical(name)]
     }
 
     /// Returns the executable descriptor for a runtime-provided tool.
     public func descriptor(named name: String) -> ToolCatalog.Descriptor? {
         lock.lock()
         defer { lock.unlock() }
-        return runners[name]?.descriptor
+        return runners[ToolAliasTable.canonical(name)]?.descriptor
     }
 
     /// All currently executable runtime descriptors, sorted for deterministic
@@ -135,7 +137,7 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
     public var allDescriptors: [ToolCatalog.Descriptor] {
         lock.lock()
         defer { lock.unlock() }
-        return runners.values.map(\.descriptor).sorted { $0.name < $1.name }
+        return runners.values.map(\.descriptor).filter { !compatibilityNames.contains($0.name) }.sorted { $0.name < $1.name }
     }
 
     /// Removes runtime entries owned by one dynamic source. Native callers do

@@ -18,8 +18,6 @@ public enum ToolCatalog {
         public var effect: ToolEffect
         public var requiresHostScope: Bool
         public var prerequisites: [ToolPrerequisite]
-        /// Set by a trusted registering adapter, never inferred from names.
-        public var ownerSkillID: String?
 
         public init(
             name: String,
@@ -29,11 +27,9 @@ public enum ToolCatalog {
             isSideEffecting: Bool,
             effect: ToolEffect? = nil,
             requiresHostScope: Bool? = nil,
-            prerequisites: [ToolPrerequisite] = [],
-            ownerSkillID: String? = nil
+            prerequisites: [ToolPrerequisite] = []
         ) {
             self.name = name
-            self.ownerSkillID = ownerSkillID
             self.toolDescription = toolDescription ?? name
             self.parametersJSON = Self.validatedSchema(parametersJSON, toolName: name)
             self.riskLabels = riskLabels
@@ -133,29 +129,31 @@ public enum ToolCatalog {
 
     private final class RegistryStorage: @unchecked Sendable {
         private var descriptors: [String: Descriptor] = [:]
+        private var compatibilityNames = Set<String>()
         private let lock = NSLock()
 
-        func register(_ descriptor: Descriptor) {
+        func register(_ descriptor: Descriptor, compatibilityOnly: Bool = false) {
             lock.lock()
             descriptors[descriptor.name] = descriptor
+            if compatibilityOnly { compatibilityNames.insert(descriptor.name) } else { compatibilityNames.remove(descriptor.name) }
             lock.unlock()
         }
 
         func descriptor(named name: String) -> Descriptor? {
             lock.lock()
             defer { lock.unlock() }
-            return descriptors[name]
+            return descriptors[ToolAliasTable.canonical(name)]
         }
 
         func all() -> [Descriptor] {
             lock.lock()
             defer { lock.unlock() }
-            return Array(descriptors.values).sorted { $0.name < $1.name }
+            return descriptors.values.filter { !compatibilityNames.contains($0.name) }.sorted { $0.name < $1.name }
         }
     }
 
     /// Registers a tool type. Called once at app startup per tool module.
-    public static func register<T: AgentTool>(_ type: T.Type) {
+    public static func register<T: AgentTool>(_ type: T.Type, compatibilityOnly: Bool = false) {
         registry.register(Descriptor(
             name: T.name,
             toolDescription: T.toolDescription,
@@ -165,7 +163,7 @@ public enum ToolCatalog {
             effect: T.toolEffect,
             requiresHostScope: T.requiresHostScope,
             prerequisites: T.prerequisites
-        ))
+        ), compatibilityOnly: compatibilityOnly)
     }
 
     /// Looks up a tool descriptor by name. Absent names are rejected before

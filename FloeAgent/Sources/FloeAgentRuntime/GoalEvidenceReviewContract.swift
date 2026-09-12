@@ -78,6 +78,6 @@ public enum GoalEvidenceReviewContract {
     }
 
     public static func isPreparationTool(_ name: String) -> Bool {
-        ["tools.search", "tools.list", "skill.search", "skill.list", "skill.read", "task.readPlan"].contains(name)
+        ["tools.search", "tools.list", "skill.search", "skill.list", "skill.read", "checklist.readPlan"].contains(name)
     }
 }

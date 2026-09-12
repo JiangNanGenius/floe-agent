@@ -99,7 +99,7 @@ struct GoalEvidenceReviewContractTests {
 
     @Test("discovery and plan reads cannot count as execution evidence")
     func discovery() {
-        for tool in ["tools.list", "tools.search", "skill.list", "skill.search", "skill.read", "task.readPlan"] {
+        for tool in ["tools.list", "tools.search", "skill.list", "skill.search", "skill.read", "checklist.readPlan"] {
             #expect(GoalEvidenceReviewContract.isPreparationTool(tool))
         }
         #expect(!GoalEvidenceReviewContract.isPreparationTool("workspace.writeFile"))

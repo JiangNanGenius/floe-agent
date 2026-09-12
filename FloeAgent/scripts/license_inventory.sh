@@ -58,6 +58,13 @@ for pin in sorted(pins, key=lambda p: p["identity"]):
 # and redistribution wrapper explicit so an App Store build cannot silently
 # omit them from the license inventory.
 rows.extend([
+    ("ios_system command bus and BSD commands", "v3.0.4 manifest / v3.0.2 binaries", "BSD-3-Clause", "https://github.com/holzschu/ios_system"),
+    ("dash iOS", "0.5.11.5 + iOS port", "BSD-3-Clause", "https://github.com/holzschu/dash_iOS"),
+    ("WasmKit runtime", "0.2.2 + Floe budget patch", "MIT", "https://github.com/swiftwasm/WasmKit/tree/0.2.2"),
+    ("WasmKit SystemExtras", "0.2.2", "Apache-2.0 WITH Swift-exception", "https://github.com/swiftwasm/WasmKit/tree/0.2.2/Sources/SystemExtras"),
+    ("ios_system libssh2", "1.11.0", "BSD-3-Clause", "https://github.com/holzschu/libssh2-apple"),
+    ("ios_system OpenSSL", "1.1.1w", "OpenSSL", "https://github.com/holzschu/openssl-apple"),
+    ("curl_ios", "v3.0.2 binary", "curl license (MIT/X derivative)", "https://github.com/holzschu/ios_system/tree/v3.0.4/curl_ios"),
     ("RoyalVNCKit (Floe synchronized queue)", "92d4427c73817d8f849bb289ff190aa4b40c44ea + Floe patch", "MIT", "https://github.com/JiangNanGenius/floe-agent/tree/main/FloeAgent/ThirdParty/RoyalVNCKit"),
     ("llama.cpp", "b10581", "MIT", "https://github.com/ggml-org/llama.cpp"),
     ("llama-ios-xcframework", "1.0.0", "MIT", "https://github.com/saitawngpha/llama-ios"),

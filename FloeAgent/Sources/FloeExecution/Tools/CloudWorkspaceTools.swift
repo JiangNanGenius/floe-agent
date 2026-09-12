@@ -240,7 +240,7 @@ private enum CloudWorkspaceGitSupport {
 }
 
 public struct CloudWorkspaceGitStatusTool: AgentTool {
-    public static let name = "cloudWorkspace.gitStatus"
+    public static let name = "cloudWorkspace.git.status"
     public static let toolDescription = "Read Git branch and working-tree status in one Floe-owned cloud workspace. Read-only."
     public static let parametersJSON = CloudWorkspaceGitSupport.readSchema
     public static let riskLabels: Set<RiskLabel> = [.readsFiles]
@@ -254,7 +254,7 @@ public struct CloudWorkspaceGitStatusTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitDiffTool: AgentTool {
-    public static let name = "cloudWorkspace.gitDiff"
+    public static let name = "cloudWorkspace.git.diff"
     public static let toolDescription = "Read a bounded Git diff for an entire Floe-owned cloud workspace or one relative path."
     public static let parametersJSON = CloudWorkspaceGitSupport.diffSchema
     public static let riskLabels: Set<RiskLabel> = [.readsFiles]
@@ -268,7 +268,7 @@ public struct CloudWorkspaceGitDiffTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitLogTool: AgentTool {
-    public static let name = "cloudWorkspace.gitLog"
+    public static let name = "cloudWorkspace.git.log"
     public static let toolDescription = "Read the latest 30 commits in a Floe-owned cloud workspace."
     public static let parametersJSON = CloudWorkspaceGitSupport.readSchema
     public static let riskLabels: Set<RiskLabel> = [.readsFiles]
@@ -282,7 +282,7 @@ public struct CloudWorkspaceGitLogTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitInitializeTool: AgentTool {
-    public static let name = "cloudWorkspace.gitInitialize"
+    public static let name = "cloudWorkspace.git.initialize"
     public static let toolDescription = "Initialize a Git repository with main as its first branch inside a Floe-owned cloud workspace."
     public static let parametersJSON = CloudWorkspaceGitSupport.writeSchema
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
@@ -296,7 +296,7 @@ public struct CloudWorkspaceGitInitializeTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitStageTool: AgentTool {
-    public static let name = "cloudWorkspace.gitStage"
+    public static let name = "cloudWorkspace.git.stage"
     public static let toolDescription = "Stage all changes or one relative path in a Floe-owned cloud workspace. Repository metadata cannot be targeted."
     public static let parametersJSON = CloudWorkspaceGitSupport.stageSchema
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
@@ -310,7 +310,7 @@ public struct CloudWorkspaceGitStageTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitCommitTool: AgentTool {
-    public static let name = "cloudWorkspace.gitCommit"
+    public static let name = "cloudWorkspace.git.commit"
     public static let toolDescription = "Commit staged changes in a Floe-owned cloud workspace using the host's configured Git identity. Does not push."
     public static let parametersJSON = CloudWorkspaceGitSupport.commitSchema
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
@@ -329,7 +329,7 @@ public struct CloudWorkspaceGitCommitTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitFetchTool: AgentTool {
-    public static let name = "cloudWorkspace.gitFetch"
+    public static let name = "cloudWorkspace.git.fetch"
     public static let toolDescription = "Fetch remote refs in a cloud workspace using the cloud host's existing Git/SSH credential configuration; does not modify workspace files."
     public static let parametersJSON = CloudWorkspaceGitSupport.readSchema
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .networkAccess, .executesRemoteCommand]
@@ -343,7 +343,7 @@ public struct CloudWorkspaceGitFetchTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitPullTool: AgentTool {
-    public static let name = "cloudWorkspace.gitPull"
+    public static let name = "cloudWorkspace.git.pull"
     public static let toolDescription = "Perform a fast-forward-only pull in a Floe-owned cloud workspace. Never merges, rebases, resets or discards files."
     public static let parametersJSON = CloudWorkspaceGitSupport.writeSchema
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .networkAccess, .executesRemoteCommand]
@@ -357,7 +357,7 @@ public struct CloudWorkspaceGitPullTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitPushTool: AgentTool {
-    public static let name = "cloudWorkspace.gitPush"
+    public static let name = "cloudWorkspace.git.push"
     public static let toolDescription = "Push the current cloud-workspace branch without force using credentials already configured on the cloud host."
     public static let parametersJSON = CloudWorkspaceGitSupport.writeSchema
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand, .modifiesRemoteSystem]
@@ -371,7 +371,7 @@ public struct CloudWorkspaceGitPushTool: AgentTool {
 }
 
 public struct CloudWorkspaceGitBranchTool: AgentTool {
-    public static let name = "cloudWorkspace.gitBranch"
+    public static let name = "cloudWorkspace.git.branch"
     public static let toolDescription = "Create or switch a cloud-workspace branch only while its working tree is clean. Set name and create=true to create."
     public struct Arguments: Decodable, Sendable {
         public var hostID: String?; public var workspaceID: String; public var name: String; public var create: Bool?; public var port: Int?
