@@ -193,6 +193,7 @@ struct RootView: View {
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("floe.settings.appearance") private var appearanceValue = "system"
     /// SceneStorage belongs to one WindowGroup content instance even though
     /// navigation and the environment remain app-wide shared objects.
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
@@ -372,7 +373,7 @@ struct RootView: View {
     /// Maps the appearance preference to a concrete color scheme (nil = follow
     /// the system).
     private var resolvedColorScheme: ColorScheme? {
-        switch environment.settingsCenter.appearance {
+        switch AppearancePreference(rawValue: appearanceValue) ?? .system {
         case .system: return nil
         case .light: return .light
         case .dark: return .dark
@@ -494,7 +495,7 @@ struct RootView: View {
                 sidebarColumn
                     .frame(width: drawerWidth)
                     .frame(maxHeight: .infinity)
-                    .background(FloeTheme.readingSurface.ignoresSafeArea())
+                    .background(FloeTheme.groupedSurface.ignoresSafeArea())
                     .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     .offset(x: interactiveOffset)
                     .shadow(color: .black.opacity(0.18 * drawerProgress), radius: 24, x: 8)

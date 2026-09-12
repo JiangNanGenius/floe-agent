@@ -18,17 +18,11 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            Section("settings.general.appearance") {
-                Picker("settings.general.appearance", selection: Binding(
-                    get: { center.appearance },
-                    set: { center.setAppearance($0) }
-                )) {
-                    ForEach(AppearancePreference.allCases, id: \.self) { preference in
-                        Text(title(for: preference)).tag(preference)
-                    }
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
-
+            AppearanceSettingsSection(selection: Binding(
+                get: { center.appearance },
+                set: { center.setAppearance($0) }
+            ))
+            Section("settings.general.language") {
                 Picker("settings.general.language", selection: Binding(
                     get: { center.languageOverride },
                     set: { center.setLanguageOverride($0) }

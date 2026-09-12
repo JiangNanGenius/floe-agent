@@ -207,3 +207,5 @@ Internal plans, audits, validation notes and release handoffs are intentionally 
 Before a large or security-sensitive change, read [CONTRIBUTING.md](CONTRIBUTING.md) and open an issue describing the user problem, scope, security impact, and verification plan. Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md).
 
 Original Floe Agent code is licensed under the [Mozilla Public License 2.0](LICENSE). Third-party components retain their own licenses and notices.
+
+The 1.7 UI continuation adds General → Automatic/Light/Dark appearance, project/conversation container management, and foldable reasoning/tool batches. Availability and beta qualification are tracked in the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md).

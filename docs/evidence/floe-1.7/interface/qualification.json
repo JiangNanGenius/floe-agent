@@ -1,0 +1,22 @@
+{
+  "scope": "Native component fixture; not full App or physical device acceptance",
+  "uiTests": {
+    "result": "passed",
+    "count": 2,
+    "log": "/tmp/floe17-interface-native-picker.log",
+    "resultBundle": "/tmp/floe17-interface-native-picker.xcresult"
+  },
+  "moduleTests": {
+    "result": "passed",
+    "count": 49,
+    "log": "/tmp/floe17-management-final-tests.log"
+  },
+  "sourceSHA256": {
+    "FloeAgent/FloeApp/Design/AppearanceSettingsSection.swift": "b794920c543c8f781062c3a5214891212da9bbfc68ac85a92414b63c581e2028",
+    "FloeAgent/FloeApp/Design/FloeTheme.swift": "5a2b29e932e575d59b13e40d5435de651f592aa990d6955cd17feebe0f57cd07",
+    "FloeAgent/FloeApp/Chat/ReasoningBlockView.swift": "5e6ecd33de9820d390e87641f0a18e9488e08e7f6cf0b0cefea834bb6461b41d",
+    "FloeAgent/FloeApp/Chat/ToolCallCardView.swift": "e7ec4f12345971a17bce0dc37b74f621b14e67ac41a289d886295245d63d3f1c",
+    "FloeAgent/FloeApp/Chat/StepGroupView.swift": "1e07041d868884c566d2d820665aed8bb130a777660a3a710badd34c7eb61eeb",
+    "FloeAgent/Sources/FloePackages/EnvironmentManagementService.swift": "aeff322f5951f3cc2572fccbe69d27bbf24d16e37a262c726924904cbbe6a825"
+  }
+}

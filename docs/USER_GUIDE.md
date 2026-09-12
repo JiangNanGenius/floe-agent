@@ -260,3 +260,27 @@ Open a workspace video and select the crop/rotate/captions entry in the media wo
 Ask the Agent to trim workspace audio, adjust gain, apply fades or mix two inputs. Mix inputs must share a sample rate and channel count; convert them first when needed. Gains range from 0 to 16 and summed peaks clip to the normal PCM range. Choose a separate WAV, CAF, AIFF or M4A output. Cancellation preserves the source and any existing output.
 
 Frame extraction writes actual PNG or JPEG files. Choose timestamps or an interval and a new output directory; the complete batch commits together and existing directories are preserved. Proxy videos retain their aspect ratio within the requested maximum dimension.
+
+## Light, dark and automatic appearance (1.7 beta)
+
+Open the lower-left **Settings → General** and choose Automatic, Light or Dark. Automatic follows iOS, including its scheduled/sunset appearance changes configured under system Settings → Display & Brightness → Automatic. Manual choices persist and apply immediately. A canvas without its own explicit appearance inherits the app choice. Document pages and video pixels retain their original content.
+
+Reasoning and tool calls use consistent expandable frames. Open a header to inspect text, inputs, outputs and approval records. Consecutive calls can collapse as a batch without reopening on each result. Current activity, failures and pending decisions remain visible when collapsed. New steps use a short fade/offset transition; Reduce Motion disables it.
+
+## Project, conversation and package management (1.7 beta)
+
+Open **Settings → Execution Environment → Project and conversation containers**. Search environment names or IDs, then inspect ownership, status, measured storage, locally installed dependencies and read-only inherited dependencies. Installation, removal and version holds target the exact environment shown on that page.
+
+Refresh validates repository signatures and indexes before exposing installable versions. Missing sources and failed verification appear as errors, not a usable package catalog. Production apt source provisioning and the official package pool remain unfinished. Package tasks retain their running/result state across navigation and provide cancellation while running.
+
+Stop closes admission before waiting for that environment's tasks; Resume reopens a stopped environment unless its dependencies require rebuilding. Stop before saving a template. Deletion waits for owned work and refuses a project with remaining child sessions or a worker that has not ended. These containers layer dependencies, data and lifecycle; they are not strong process isolation for native code.
+
+These development captures use native production components with synthetic
+workspace/task rows; the actual appearance entry is Settings → General.
+
+<img src="evidence/floe-1.7/interface/appearance-light.png" width="300" alt="Light appearance in General">
+<img src="evidence/floe-1.7/interface/appearance-dark.png" width="300" alt="Dark appearance in General">
+
+Completed calls can remain folded while a newly running tool stays visible:
+
+<img src="evidence/floe-1.7/interface/thread-folded-active.png" width="360" alt="Folded completed calls with visible current activity and an error result">

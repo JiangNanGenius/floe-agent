@@ -2940,6 +2940,7 @@ struct WorkspaceCanvasView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @AppStorage("creative.canvas.sync.enabled") private var globalCanvasSyncEnabled = true
     @AppStorage("creative.canvas.appearance") private var canvasAppearance = "system"
+    @AppStorage("floe.settings.appearance") private var appAppearance = "system"
     @AppStorage("creative.canvas.onboarding.version") private var canvasOnboardingVersion = 0
     @StateObject private var store: CanvasDocumentStore
     private let workspace: WorkspaceRecord?
@@ -3068,7 +3069,9 @@ struct WorkspaceCanvasView: View {
         .navigationSplitViewStyle(.balanced)
         .preferredColorScheme(
             canvasAppearance == "light" ? .light
-                : canvasAppearance == "dark" ? .dark : nil
+                : canvasAppearance == "dark" ? .dark
+                : appAppearance == "light" ? .light
+                : appAppearance == "dark" ? .dark : nil
         )
         .alert("画布无法保存", isPresented: Binding(
             get: { store.saveError != nil },

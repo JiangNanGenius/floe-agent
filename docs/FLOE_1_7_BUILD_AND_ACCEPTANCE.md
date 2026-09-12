@@ -43,3 +43,7 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 ## 媒体工作台最小 App
 
 [NativeMedia](../FloeAgent/Qualification/NativeMedia/README.md) 编译生产工作台/播放器，使用合成视频检查编辑模型保存重开和真实导出。`--model-smoke` 产出 `media-model-results.json`，与宿主媒体测试、完整 App UI 和真机结果分别记录。该测试不能证明共享队列或聊天附件已接通。
+
+## 原生外观、容器和步骤框验证
+
+[NativeManagement](../FloeAgent/Qualification/NativeManagement/README.md) 编译生产主题选择器、容器管理界面、思考框、工具框和连续步骤组。它使用合成环境和明确的 App 路由替身；不能替代完整 App 导航、审批执行、附件或真机验收。UI 测试实际点击主题选择、展开思考、折叠完成调用并追加运行中的调用。模块级 `EnvironmentManagementTests` 验证真实管理服务对不同项目、继承依赖和生命周期的处理。

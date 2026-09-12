@@ -326,6 +326,7 @@ struct ThreadDetailView: View {
                     ForEach(viewModel.timeline) { item in
                         timelineRow(item)
                             .id(item.id)
+                            .transition(viewModel.isRunning ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                     }
 
                     if let usage = viewModel.usageSummary {
@@ -345,6 +346,7 @@ struct ThreadDetailView: View {
                             .id("thread-latest-anchor")
                     }
                     .padding()
+                    .animation(viewModel.isRunning && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: viewModel.timeline.map(\.id))
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .onScrollPhaseChange { _, phase in
@@ -440,7 +442,7 @@ struct ThreadDetailView: View {
                 events: events,
                 isLatest: isLatest,
                 isLive: viewModel.isRunning && events.contains { $0.runID == viewModel.selectedRunID },
-                hasError: viewModel.events.contains { $0.kind == .error },
+                hasError: events.contains { $0.kind == .error },
                 pendingApprovals: viewModel.pendingApprovals
             ) { approval, decision in
                 Task { await viewModel.resolve(approval, decision: decision) }

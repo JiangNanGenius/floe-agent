@@ -26,6 +26,7 @@ final class FloePlatformServices: @unchecked Sendable {
     private var contextProvider: (@Sendable () async -> PackagesCLI.Context?)?
     private var mediaRenderer: Any?
     private var baseSliceURL: URL?
+    private var management: EnvironmentManagementService?
     private var configured = false
 
     func configure(
@@ -51,6 +52,7 @@ final class FloePlatformServices: @unchecked Sendable {
             promote: promote,
             bundledBaseURL: baseSliceURL
         )
+        self.management = EnvironmentManagementService(registry: registry, lifecycle: lifecycle, engine: aptEngine, baseSliceURL: baseSliceURL)
         self.configured = true
         lock.unlock()
     }
@@ -60,6 +62,7 @@ final class FloePlatformServices: @unchecked Sendable {
         let record: ContainerRecord
         let packages: [InstalledPackage]
         let bytes: Int64
+        var issue: String? = nil
     }
 
     func prepareWorkspaceEnvironment(root: URL) async throws {
@@ -77,26 +80,44 @@ final class FloePlatformServices: @unchecked Sendable {
         var reports: [EnvironmentReport] = []
         for record in await registry.all() {
             guard let root = await registry.layerURL(for: record.id) else { continue }
-            let report = try await Task.detached(priority: .utility) {
-                let manifest = try LayerManifest.loadChecked(from: root)
-                var bytes: Int64 = 0
-                if let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]) {
-                    while let file = files.nextObject() as? URL {
-                        try Task.checkCancellation()
-                        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey])
-                        if values.isRegularFile == true && values.isSymbolicLink != true {
-                            let (sum, overflow) = bytes.addingReportingOverflow(Int64(values.fileSize ?? 0))
-                            guard !overflow else { throw FloeError.validationFailed("Environment size overflow") }
-                            bytes = sum
+            do {
+                let report = try await Task.detached(priority: .utility) {
+                    guard let manifest = try LayerManifest.loadChecked(from: root) else {
+                        throw FloeError.validationFailed("环境清单缺失；数据已保留")
+                    }
+                    var bytes: Int64 = 0
+                    if let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]) {
+                        while let file = files.nextObject() as? URL {
+                            try Task.checkCancellation()
+                            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey])
+                            if values.isRegularFile == true && values.isSymbolicLink != true {
+                                let (sum, overflow) = bytes.addingReportingOverflow(Int64(values.fileSize ?? 0))
+                                guard !overflow else { throw FloeError.validationFailed("Environment size overflow") }
+                                bytes = sum
+                            }
                         }
                     }
-                }
-                return EnvironmentReport(record: record, packages: manifest?.packages ?? [], bytes: bytes)
-            }.value
-            reports.append(report)
+                    return EnvironmentReport(record: record, packages: manifest.packages, bytes: bytes)
+                }.value
+                reports.append(report)
+            } catch is CancellationError { throw CancellationError() }
+            catch { reports.append(EnvironmentReport(record: record, packages: [], bytes: record.bytes, issue: String(describing: error))) }
         }
         return reports
     }
+
+    typealias PackageReport = EnvironmentManagementService.PackageReport
+    typealias PackageAction = EnvironmentManagementService.PackageAction
+    private func managementService() throws -> EnvironmentManagementService {
+        guard let service = lock.withLock({ management }) else { throw FloeError.invalidConfiguration("Environment service unavailable") }
+        return service
+    }
+    func packageReport(id: String) async throws -> PackageReport { try await managementService().packageReport(id: id) }
+    func managePackage(id: String, action: PackageAction) async throws -> String { try await managementService().managePackage(id: id, action: action) }
+    func stopEnvironment(id: String) async throws { try await managementService().stopEnvironment(id: id) }
+    func resumeEnvironment(id: String) async throws { try await managementService().resumeEnvironment(id: id) }
+    func deleteEnvironment(id: String) async throws { try await managementService().deleteEnvironment(id: id) }
+    func saveEnvironmentTemplate(id: String, name: String) async throws { try await managementService().saveEnvironmentTemplate(id: id, name: name) }
 
     var isConfigured: Bool {
         lock.lock(); defer { lock.unlock() }

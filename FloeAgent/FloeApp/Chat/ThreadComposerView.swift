@@ -196,7 +196,7 @@ struct ThreadComposerView: View {
         .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+                .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

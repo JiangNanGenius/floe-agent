@@ -1,0 +1,11 @@
+Test Case '-[FloeManagementUITests.ManagementUITests testAppearanceChoicesAndThinkingDisclosure]' started.
+Test Case '-[FloeManagementUITests.ManagementUITests testAppearanceChoicesAndThinkingDisclosure]' passed (102.702 seconds).
+Test Case '-[FloeManagementUITests.ManagementUITests testCollapsedBatchStaysCollapsedWhenToolArrives]' started.
+Test Case '-[FloeManagementUITests.ManagementUITests testCollapsedBatchStaysCollapsedWhenToolArrives]' passed (46.215 seconds).
+** TEST SUCCEEDED **
+
+✔ Test run with 1 test in 1 suite passed after 0.113 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.371 seconds.
+✔ Test run with 18 tests in 5 suites passed after 0.974 seconds.
+✔ Test run with 14 tests in 3 suites passed after 23.647 seconds.
+✔ Test run with 15 tests in 2 suites passed after 2.575 seconds.

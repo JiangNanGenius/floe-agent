@@ -47,60 +47,54 @@ struct ToolCallCardView: View {
                 RichArtifactGallery(artifacts: richArtifacts)
             }
             if isExpanded {
-                detail
+                Divider()
+                detail.transition(FloeTheme.stepTransition(reduceMotion: reduceMotion))
             }
         }
-        .padding(10)
-        .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
-        .accessibilityElement(children: .combine)
+        .padding(12)
+        .background(FloeTheme.stepSurface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(FloeTheme.separator.opacity(0.45), lineWidth: 0.5))
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: status)
+        .onChange(of: status, initial: true) { _, value in
+            if ["failed", "error", "denied", "expired", "needsUser"].contains(value) { isExpanded = true }
+        }
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: - Header: icon + name + status chip + duration + fold
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: statusIcon)
-                .foregroundStyle(statusColor)
-                .contentTransition(.symbolEffect(.replace))
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: status)
-                .accessibilityHidden(true)
-            Text(name)
-                .font(FloeTheme.Typography.metadata.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Text(statusTitle)
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(statusColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .background(statusColor.opacity(0.12), in: Capsule())
-            if let duration {
-                Text(durationText(duration))
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            if hasDetail {
-                Button {
-                    withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) {
-                        isExpanded.toggle()
-                    }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .foregroundStyle(.secondary)
+        Button {
+            guard hasDetail else { return }
+            withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded.toggle() }
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: statusIcon)
+                    .font(.body.weight(.medium)).foregroundStyle(statusColor)
+                    .frame(width: 26, height: 26)
+                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                    HStack(spacing: 8) {
+                        Text(statusTitle).foregroundStyle(statusColor)
+                        if let duration { Text(durationText(duration)).monospacedDigit().foregroundStyle(.secondary) }
+                    }.font(.caption)
                 }
-                .buttonStyle(.plain)
-                .frame(
-                    minWidth: FloeTheme.minimumTarget,
-                    minHeight: FloeTheme.minimumTarget
-                )
-                .accessibilityLabel(
-                    isExpanded
-                        ? LocalizedStringKey("thread.collapse")
-                        : LocalizedStringKey("thread.expand")
-                )
+                Spacer(minLength: 4)
+                if hasDetail {
+                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        .foregroundStyle(.secondary).frame(width: 24, height: 26)
+                }
             }
+            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+        .accessibilityHint(hasDetail ? "查看调用参数、结果和审批记录" : "")
     }
 
     // MARK: - Folded-out detail
@@ -124,7 +118,7 @@ struct ToolCallCardView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             Text(text)
                 .font(FloeTheme.Typography.evidence)
                 .foregroundStyle(.secondary)
@@ -153,6 +147,10 @@ struct ToolCallCardView: View {
         switch status {
         case "ok", "completed": "checkmark.circle"
         case "failed", "error": "xmark.octagon"
+        case "denied": "hand.raised"
+        case "expired": "clock.badge.exclamationmark"
+        case "cancelled": "stop.circle"
+        case "pending", "needsUser": "hourglass"
         default: "wrench.and.screwdriver"
         }
     }
@@ -160,9 +158,10 @@ struct ToolCallCardView: View {
     private var statusColor: Color {
         switch status {
         case "ok", "completed": FloeTheme.success
-        case "failed", "error": FloeTheme.destructive
+        case "failed", "error", "denied", "expired": FloeTheme.destructive
         case "running", "executingTool": FloeTheme.primary
-        default: FloeTheme.pending
+        case "pending", "needsUser": FloeTheme.pending
+        default: FloeTheme.unknown
         }
     }
 
@@ -171,7 +170,12 @@ struct ToolCallCardView: View {
         case "ok", "completed": "tool.status.succeeded"
         case "failed", "error": "tool.status.failed"
         case "running", "executingTool": "tool.status.running"
-        default: "tool.status.pending"
+        case "pending": "tool.status.pending"
+        case "needsUser": "tool.status.needsUser"
+        case "denied": "tool.status.denied"
+        case "expired": "tool.status.expired"
+        case "cancelled": "tool.status.cancelled"
+        default: "tool.status.unknown"
         }
     }
 

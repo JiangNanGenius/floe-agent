@@ -47,3 +47,14 @@ editing and frame-utility paths. The next candidate adds bounded audio editing,
 real per-input mix gains, verified PNG/JPEG batches, aspect-preserving proxies,
 source-preserving thumbnails and accepted-SDK directory-iteration compatibility.
 No previous candidate has reached TestFlight upload.
+
+## Build 147 / beta.4 candidate
+
+Includes the audio/frame fixes plus General appearance selection, project/session
+container and package management, refined reasoning/tool frames and persistent
+batch folding. Forty-nine module tests and two native component UI tests pass;
+[interface evidence](evidence/floe-1.7/interface/README.md) records the fixture
+boundary. Final native component compilation also passes after adding conversation
+titles to container rows. Full-App cloud builds and Apple processing remain pending.
+Production apt provisioning, the complete model capability matrix and physical
+device acceptance remain open; this is an internal beta, not full-plan acceptance.

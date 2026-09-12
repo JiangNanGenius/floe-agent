@@ -183,8 +183,16 @@ public actor ContainerLifecycle {
     }
 
     public func stop(containerID: String) async throws {
-        try await stopWork(containerID: containerID)
-        try? await registry.transition(id: containerID, state: .stopped)
+        guard let record = await registry.record(id: containerID), record.kind.isWritableLayer,
+              record.state != .deleting else { throw FloeError.validationFailed("Environment cannot be stopped") }
+        // Close admission before draining work; otherwise another task can enter
+        // between the final worker check and the persisted stopped state.
+        try await registry.transition(id: containerID, state: .stopped)
+        do { try await stopWork(containerID: containerID) }
+        catch {
+            try? await registry.transition(id: containerID, state: record.state)
+            throw error
+        }
     }
 
     /// Refreshes cached size/package counters for every container.

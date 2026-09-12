@@ -358,7 +358,10 @@ final class AppEnvironment: ObservableObject {
                     guard let self else { throw FloeError.invalidConfiguration("Shell session service is unavailable") }
                     await self.shellSessionCenter.closeAll(environmentID: id)
                 },
-                cancelJobs: { id in try await environmentExecutions.stopAndWait(environmentID: id) },
+                cancelJobs: { id in
+                    await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
+                    try await environmentExecutions.stopAndWait(environmentID: id)
+                },
                 terminateWorkers: { id in
                     try await environmentExecutions.stopAndWait(environmentID: id)
                     try await FloeShellCommandRegistry.shared.waitForWorkers(environmentID: id)

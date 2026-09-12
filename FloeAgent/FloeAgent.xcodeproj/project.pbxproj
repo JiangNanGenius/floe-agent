@@ -50,6 +50,7 @@
 		144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17F136474D0FB91E6F810317 /* ThreadDetailView.swift */; };
 		152D5427B6D2BCBE090BAE34 /* VideoProviderAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1202B558B5346402D1ABD69D /* VideoProviderAdapterTests.swift */; };
 		158A4F0C9123183E73090756 /* CanvasAgentToolContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE65485FC8E0E948FC57BB93 /* CanvasAgentToolContractTests.swift */; };
+		16803A444C43C3B228DB9373 /* EnvironmentManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */; };
 		17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1D2F99E9E151908419336F /* MailSettingsView.swift */; };
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
 		17FD962AF3A10BB975AEC422 /* _multiarray_umath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 67584DFEB3C8240E56927B4E /* _multiarray_umath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -311,6 +312,7 @@
 		944E3FB5C585C549D0629B3E /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = F083763A8E3CC5FC0CCEEF1A /* FloeCore */; };
 		9480F3B70B2928BD0DAD3631 /* AppleSystemTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B4E7317E7E655E86990C5D1 /* AppleSystemTools.swift */; };
 		9484845FCE5ED5231B66713F /* DataManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */; };
+		96E82AE4BDD74EF81543A495 /* AppearanceSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0E5940DD8BE562FA25E8D7 /* AppearanceSettingsSection.swift */; };
 		97D3E78758C847D8E6B7F1BB /* RARArchiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */; };
 		98BD8CC5877E2714FF8979F3 /* _lzma.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9932D9C05CE68E26BE063A03 /* _contextvars.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 46C5D94B0311C71146C0A52C /* _contextvars.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -814,6 +816,7 @@
 		397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsModel.swift; sourceTree = "<group>"; };
 		397F1DC728D743D05F510489 /* array.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = array.xcframework; path = Vendor/PythonExtensions/array.xcframework; sourceTree = "<group>"; };
 		3BAA7AD6EAE3979E983C9E76 /* FloeShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		3C0E5940DD8BE562FA25E8D7 /* AppearanceSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettingsSection.swift; sourceTree = "<group>"; };
 		3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _ssl.xcframework; path = Vendor/PythonExtensions/_ssl.xcframework; sourceTree = "<group>"; };
 		3C2891331FDB42F816478E56 /* termios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = termios.xcframework; path = Vendor/PythonExtensions/termios.xcframework; sourceTree = "<group>"; };
 		3C8A30D0D7D561C3E9BE4EC0 /* AppleCapabilitiesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCapabilitiesSettingsView.swift; sourceTree = "<group>"; };
@@ -894,6 +897,7 @@
 		6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
 		703BE45E358D57D074DC5538 /* dashA.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashA.xcframework; path = Frameworks/dashA.xcframework; sourceTree = "<group>"; };
 		705BF3479430A93FD0851E2D /* pandas__libs__cyutility.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs__cyutility.xcframework; path = Vendor/PythonExtensions/pandas__libs__cyutility.xcframework; sourceTree = "<group>"; };
+		708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentManagerView.swift; sourceTree = "<group>"; };
 		71091AA54C5E2F667D6469A6 /* zlib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = zlib.xcframework; path = Vendor/PythonExtensions/zlib.xcframework; sourceTree = "<group>"; };
 		71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasTouchInteractionTests.swift; sourceTree = "<group>"; };
 		725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideUITests.swift; sourceTree = "<group>"; };
@@ -1537,6 +1541,7 @@
 				67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */,
 				CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */,
 				36E68916820B033030E49814 /* DocumentRecoveryListView.swift */,
+				708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */,
 				1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */,
 				533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */,
 				F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */,
@@ -2014,6 +2019,7 @@
 		E231240F5BD781568EEABB6C /* Design */ = {
 			isa = PBXGroup;
 			children = (
+				3C0E5940DD8BE562FA25E8D7 /* AppearanceSettingsSection.swift */,
 				75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */,
 				D469D627A123A3676681A3F3 /* SidebarCollapseGesture.swift */,
 			);
@@ -2350,6 +2356,7 @@
 				8F40177268113AACE1405851 /* AppDestination.swift in Sources */,
 				C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */,
 				7B44A496EC3A28601170695B /* AppRouter.swift in Sources */,
+				96E82AE4BDD74EF81543A495 /* AppearanceSettingsSection.swift in Sources */,
 				27855675D9ACDFE95B27B41E /* AppleCapabilitiesSettingsView.swift in Sources */,
 				9480F3B70B2928BD0DAD3631 /* AppleSystemTools.swift in Sources */,
 				1025E15EE1084740B1DB0D0A /* ApprovalCardView.swift in Sources */,
@@ -2392,6 +2399,7 @@
 				53B27391A46184754D48D72B /* DocumentRecoveryListView.swift in Sources */,
 				640A6E1C865CD29BBC93B547 /* DomainSkillLibrary.swift in Sources */,
 				C7F85CE15D1A3A53A80ED1CF /* DraftTaskPermissionsSheet.swift in Sources */,
+				16803A444C43C3B228DB9373 /* EnvironmentManagerView.swift in Sources */,
 				7E68D5161A58FBD3F6C55FAF /* ErrorEventView.swift in Sources */,
 				C5BCA4D53959F1B96E82F8B1 /* ExecutionEnvironmentView.swift in Sources */,
 				0698EEE9614E076C9AFEED3A /* FeedbackReportView.swift in Sources */,

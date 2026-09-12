@@ -30,29 +30,31 @@ struct ReasoningBlockView: View {
                     isExpanded.toggle()
                 }
             } label: {
-                HStack(spacing: 8) {
-                    if isStreaming {
-                        ProgressView().controlSize(.small)
+                HStack(alignment: .top, spacing: 10) {
+                    Group {
+                        if isStreaming { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "sparkle").foregroundStyle(FloeTheme.primary) }
+                    }.frame(width: 26, height: 26).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("reasoning.title").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        if !isExpanded {
+                            Text(preview.isEmpty ? (isStreaming ? "正在思考…" : "查看思考记录") : preview)
+                                .font(.footnote).foregroundStyle(.secondary)
+                                .lineLimit(2).multilineTextAlignment(.leading)
+                        }
                     }
-                    Text("reasoning.title")
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
-                    if !isExpanded {
-                        Text(preview)
-                            .font(FloeTheme.Typography.metadata)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        .foregroundStyle(.secondary).frame(width: 24, height: 26)
                 }
+                .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("reasoning.expand")
             if isExpanded {
+                Divider()
                 if isLongText {
                     LongReasoningReader(text: text, isStreaming: isStreaming)
                 } else {
@@ -89,8 +91,9 @@ struct ReasoningBlockView: View {
                 }
             }
         }
-        .padding(10)
-        .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
+        .padding(12)
+        .background(FloeTheme.stepSurface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(FloeTheme.separator.opacity(0.45), lineWidth: 0.5))
         .animation(isLongText ? nil : FloeTheme.motionAnimation(reduceMotion: reduceMotion), value: isExpanded)
     }
 

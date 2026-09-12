@@ -12,6 +12,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import UIKit
 
 /// Semantic design tokens for the Floe Agent shell.
 enum FloeTheme {
@@ -56,6 +57,12 @@ enum FloeTheme {
     static var readingSurface: Color { Color(uiColor: .systemBackground) }
 
     /// Opaque grouped surface for lists and forms.
+    /// Distinct navigation and input planes in both appearances.
+    static var sidebarSurface: Color { Color(uiColor: .secondarySystemBackground) }
+    static var stepSurface: Color { Color(uiColor: .secondarySystemBackground) }
+    static var fieldSurface: Color { Color(uiColor: .tertiarySystemFill) }
+    static var separator: Color { Color(uiColor: .separator) }
+
     static var groupedSurface: Color { Color(uiColor: .systemGroupedBackground) }
 
     /// Chrome material for navigation bars, the composer and floating
@@ -91,6 +98,12 @@ enum FloeTheme {
             minWidth: minimumTarget,
             minHeight: minimumTarget,
             alignment: alignment
+        )
+    }
+
+    static func stepTransition(reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .identity : .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity
         )
     }
 

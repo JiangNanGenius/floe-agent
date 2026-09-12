@@ -29,3 +29,9 @@
 ## 分发前必须完成
 
 保持同一固定提交，完成开发/发布 SDK 构建、真机测试、Office 保存重开及中文文档、聊天/工具、工作区、Canvas 和 PiP 回归。构建或上传成功不能代替 App Store Connect 处理和 TestFlight 可安装确认。
+
+### Interface and container management
+
+- General settings now includes visual Automatic/Light/Dark choices with immediate app-wide updates and inherited Canvas appearance.
+- Added project/conversation container management with exact-environment package actions, inherited dependency inspection, lifecycle controls, measured capacity and recoverable task feedback. Production apt source/package provisioning remains pending.
+- Refined reasoning and tool frames, concise batch summaries, persistent manual folding and reduced-motion-aware insertion animations. Running tools, failed calls and approvals remain visible in folded batches.

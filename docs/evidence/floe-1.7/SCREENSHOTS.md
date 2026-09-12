@@ -15,3 +15,9 @@
 [native-visual-video-editor.png](native-visual-video-editor.png) 为固定 VideoEditorKit 源码在专用 iOS 27 模拟器中加载 6 秒合成素材后的界面。属于开发截图，未进行完整触控和真机验收。
 
 [字幕对照帧和成片](video-editor-captions/) 来自 2 秒纯色测试视频；字幕显示前、中、后的像素检查已通过。
+
+## General appearance and execution frames
+
+[Native interface evidence](interface/README.md) retains day/night/automatic
+appearance and expanded/folded tool-batch screenshots from passing UI tests.
+These are synthetic component fixtures, not a full application or device run.

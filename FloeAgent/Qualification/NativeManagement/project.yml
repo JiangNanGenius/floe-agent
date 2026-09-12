@@ -1,0 +1,61 @@
+name: FloeManagementSmoke
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeAgent:
+    path: ../..
+targets:
+  FloeManagementSmoke:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: ../../FloeApp/Chat/ToolCallCardView.swift
+      - path: ../../FloeApp/Chat/ReasoningBlockView.swift
+      - path: ../../FloeApp/Chat/StepGroupView.swift
+      - path: ../../FloeApp/Resources/Assets.xcassets
+      - path: ../../FloeApp/Resources/Localizable.xcstrings
+      - path: ../../FloeApp/Design/FloeTheme.swift
+      - path: ../../FloeApp/Design/AppearanceSettingsSection.swift
+      - path: ../../FloeApp/Settings/EnvironmentManagerView.swift
+    dependencies:
+      - package: FloeAgent
+        product: FloePackages
+      - package: FloeAgent
+        product: FloeEnvironments
+      - package: FloeAgent
+        product: FloeCore
+      - package: FloeAgent
+        product: FloePersistence
+      - package: FloeAgent
+        product: FloeSecurity
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.management-smoke
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'
+  FloeManagementUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: FloeManagementSmoke
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.management-uitests
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'
+schemes:
+  FloeManagementSmoke:
+    build:
+      targets:
+        FloeManagementSmoke: all
+        FloeManagementUITests: [test]
+    test:
+      targets: [FloeManagementUITests]

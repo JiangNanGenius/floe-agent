@@ -61,7 +61,7 @@ struct ThreadEventView: View {
     /// The assistant answer is the visual subject — it carries no
     /// chrome header. Everything else keeps the metadata header.
     private var showsHeader: Bool {
-        event.kind != .assistantText
+        ![.assistantText, .reasoning, .toolRequest, .toolResult].contains(event.kind)
     }
 
     private var header: some View {
