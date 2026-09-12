@@ -30,10 +30,13 @@ upload or production release is part of this checkpoint.
 
 ## Evidence so far
 
-- Focused Swift regression: 15 tests passed before the final compatibility-list
-  regression was added. Rerun results should replace this count when complete.
+- Focused Swift regression: 17 tests passed, including interpreter loop budgets,
+  stdin/output limits, memory limits, cancellation, signed installs and both parent
+  traversal and symlink escape rejection by WASI preopens.
 - Python package payload tests: 7 passed; official skill builder: 4 passed.
 - WASI package assembler and temporary-key signing build passed locally.
+- Trusted cloud signing succeeded; local verification confirmed official Skill
+  Hub signatures, the WASI signature, artifact digest and matching bundled catalog.
 - iOS bridge compiled against the actual pinned header; the Swift shell backend
   and replacement-command source compiled in a focused host harness.
 - Real dash iOS/device and arm64 simulator frameworks built successfully.
@@ -49,8 +52,7 @@ upload or production release is part of this checkpoint.
    global and does not constrain every file API. The approved workspace boundary
    has not been relaxed. Multiple engine sessions must not be advertised as
    isolated merely because their Swift owners are separate.
-3. Official capability/skill signing on the trusted workflow, then verification
-   of the resulting app resources and install/run/remove flow.
+3. App-level capability install/run/remove verification with the signed resources.
 4. Device import coverage for the bundled Python preset and app-level regressions.
 
 The older draft release notes describe intended behavior. They do not constitute

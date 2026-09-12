@@ -85,6 +85,36 @@ struct WasmCapabilityTests {
         #expect(stdout == "中文 input\n")
     }
 
+    @Test func preopensRejectParentAndSymlinkEscapes() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("workspace")
+        let outside = base.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("outside".utf8).write(to: outside.appendingPathComponent("secret"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("escape"), withDestinationURL: outside)
+        for path in ["../outside/secret", "escape/secret"] {
+            let url = try module("""
+            (module
+              (import "wasi_snapshot_preview1" "fd_prestat_get" (func $prestat (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_open" (func $open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 64) "\(path)")
+              (func (export "_start") (local $fd i32)
+                (drop (call $prestat (i32.const 3) (i32.const 0)))
+                (if (i32.eq (i32.load (i32.const 4)) (i32.const 10))
+                  (then (local.set $fd (i32.const 3)))
+                  (else (local.set $fd (i32.const 4))))
+                (if (i32.eqz (call $open (local.get $fd) (i32.const 1) (i32.const 64) (i32.const \(path.utf8.count)) (i32.const 0) (i64.const 2) (i64.const 0) (i32.const 0) (i32.const 32)))
+                  (then unreachable))))
+            """, root: root)
+            let outcome = await WasmKitCommandRuntime().run(moduleURL: url, arguments: [], stdin: nil, environment: [:], rootURL: root, timeout: 2, maxOutputBytes: 1024)
+            guard case .exited(let code, _, _, _, _, _) = outcome else { Issue.record("Preopen escape accepted or runtime failed: \(outcome)"); continue }
+            #expect(code == 0)
+        }
+    }
+
     @Test func signatureInstallTamperAndRemove() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
