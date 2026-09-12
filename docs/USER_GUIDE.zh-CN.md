@@ -8,6 +8,10 @@
 
 ## 1.7 开发功能与使用边界 / Development features
 
+开发分支已增加本地工作区视频入口：在 MP4/MOV/M4V 文件预览中打开“媒体工作台”，调整剪辑区间、速度/音量和导出设置，保存参数后可重开继续。导出后可切换播放处理结果。此入口仍待完整 App 与真机验收；共享队列和聊天附件回接尚未完成。
+
+The development branch adds a media-workbench action to local workspace video previews. It carries the source automatically, saves edit parameters and offers export playback. Full App/device interaction checks, shared queues and chat attachment handoff remain open.
+
 1.7 的环境、包管理和媒体工作台尚未完成全链路验收。已安装版本没有相应入口时，不要依据计划中的界面名称尝试操作。当前状态见[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 
 - 环境按会话、项目、共享、基础层查找依赖；写入必须绑定当前环境，不应猜测第一个项目或临时目录。旧数据迁移完成前保留恢复副本。

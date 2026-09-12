@@ -62,6 +62,14 @@ Branch: `codex/floe-1-7-integration-20260912`.
   of every package in the signed v2 Skill catalog. These are resource-management
   tests, not model inference or per-environment model-lifecycle acceptance.
 
+- Basic edit rendering now applies trim, synchronized speed, volume and audio
+  fades, then routes export settings through the verified transcode path. Unsupported
+  operations fail before processing. Workspace video preview connects to a lightweight
+  editor with persisted parameters and output playback; App/UI/device acceptance,
+  shared jobs and chat attachment handoff remain open. Thirty-three focused tests
+  pass, including edited-file parameters and synchronized audio/video duration.
+  Evidence: `docs/evidence/floe-1.7/media-edit-qualification.txt`.
+
 ## Documentation
 
 See [build and acceptance](FLOE_1_7_BUILD_AND_ACCEPTANCE.md),

@@ -1,5 +1,6 @@
 import Foundation
 import FloeCore
+import FloeTools
 #if canImport(AVFoundation)
 import AVFoundation
 import VideoToolbox
@@ -154,12 +155,36 @@ public struct VideoEditPlan: Sendable, Codable {
         public var quality: Double?
         public var range: [Double]?
         public var hardwareAcceleration: Bool?
+
+        public init(container: String, videoCodec: String? = nil, audioCodec: String? = nil,
+                    videoBitrate: Int? = nil, audioBitrate: Int? = nil, width: Int? = nil,
+                    height: Int? = nil, frameRate: Double? = nil, quality: Double? = nil,
+                    range: [Double]? = nil, hardwareAcceleration: Bool? = nil) {
+            self.container = container
+            self.videoCodec = videoCodec
+            self.audioCodec = audioCodec
+            self.videoBitrate = videoBitrate
+            self.audioBitrate = audioBitrate
+            self.width = width
+            self.height = height
+            self.frameRate = frameRate
+            self.quality = quality
+            self.range = range
+            self.hardwareAcceleration = hardwareAcceleration
+        }
     }
 
     public var input: String
     public var output: String
     public var operations: [Operation]
     public var export: Export
+
+    public init(input: String, output: String, operations: [Operation], export: Export) {
+        self.input = input
+        self.output = output
+        self.operations = operations
+        self.export = export
+    }
 
     public func validate() throws {
         guard !input.isEmpty, !output.isEmpty else {
@@ -257,112 +282,154 @@ public actor MediaRenderer {
 
     /// Renders a plan to the output path. Throws when an operation cannot be
     /// honored; never falls back silently.
-    public func render(plan: VideoEditPlan) async throws -> MediaRenderResult {
+    public func render(plan: VideoEditPlan, cancellation: CancellationToken? = nil) async throws -> MediaRenderResult {
         try plan.validate()
+        try cancellation?.throwIfCancelled()
+        guard plan.export.quality == nil, plan.export.range == nil, plan.export.hardwareAcceleration == nil else {
+            throw FloeError.validationFailed("quality, export range and forced hardware selection are not supported")
+        }
+        guard ["mp4", "mov", "m4v"].contains(plan.export.container.lowercased()),
+              [nil, "h264", "hevc"].contains(plan.export.videoCodec?.lowercased()),
+              [nil, "aac"].contains(plan.export.audioCodec?.lowercased()),
+              (plan.export.width == nil) == (plan.export.height == nil) else {
+            throw FloeError.validationFailed("Unsupported export format or incomplete dimensions")
+        }
+        if let fps = plan.export.frameRate, !fps.isFinite || fps <= 0 || fps > 240 {
+            throw FloeError.validationFailed("Frame rate must be finite and in (0, 240]")
+        }
+        for value in [plan.export.width, plan.export.height, plan.export.videoBitrate, plan.export.audioBitrate].compactMap({ $0 }) {
+            guard value > 0 else { throw FloeError.validationFailed("Dimensions and bitrates must be positive") }
+        }
+        if let width = plan.export.width, let height = plan.export.height {
+            guard width <= 8192, height <= 8192, width % 2 == 0, height % 2 == 0,
+                  width * height <= limits.maximumPixels else { throw FloeError.validationFailed("Export dimensions exceed limits") }
+        }
+        var trims = 0
+        var rate = 1.0
+        var volume: Float = 1
+        var muted = false
+        var fadeIn: Double?
+        var fadeOut: Double?
+        for operation in plan.operations {
+            switch operation {
+            case .trim: trims += 1
+            case .speed(let value): rate *= value
+            case .volume(let value): volume *= Float(value)
+            case .mute: muted = true
+            case .fadeAudioIn(let seconds): fadeIn = seconds
+            case .fadeAudioOut(let seconds): fadeOut = seconds
+            default: throw FloeError.validationFailed("This edit operation has no connected renderer: \(operation)")
+            }
+        }
+        guard trims <= 1, rate.isFinite, rate > 0, volume.isFinite, volume <= 4 else {
+            throw FloeError.validationFailed("Use one source trim and finite speed/volume parameters")
+        }
         let inputURL = try resolve(plan.input)
         let outputURL = try resolveOutput(plan.output)
-        let composition = AVMutableComposition()
+        guard inputURL != outputURL else { throw FloeError.validationFailed("Choose a separate output file") }
         let asset = AVURLAsset(url: inputURL)
         let duration = try await asset.load(.duration)
         let sourceRange = try await sourceTimeRange(plan: plan, asset: asset, duration: duration)
-        let videoTracks = try await asset.loadTracks(withMediaType: .video)
-        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        guard let sourceVideo = videoTracks.first else {
-            throw FloeError.validationFailed("input has no video track")
+        let composition = AVMutableComposition()
+        guard let sourceVideo = try await asset.loadTracks(withMediaType: .video).first,
+              let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw FloeError.validationFailed("Input has no usable video track")
         }
-        guard let compositionVideo = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw FloeError.internalError("could not add composition video track")
+        try video.insertTimeRange(sourceRange, of: sourceVideo, at: .zero)
+        video.preferredTransform = try await sourceVideo.load(.preferredTransform)
+        var audio: AVMutableCompositionTrack?
+        if !muted, let sourceAudio = try await asset.loadTracks(withMediaType: .audio).first {
+            guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                throw FloeError.internalError("Could not create audio composition track")
+            }
+            try track.insertTimeRange(sourceRange, of: sourceAudio, at: .zero)
+            audio = track
         }
-        try compositionVideo.insertTimeRange(sourceRange, of: sourceVideo, at: .zero)
-        if let sourceAudio = audioTracks.first,
-           let compositionAudio = composition.addMutableTrack(
-               withMediaType: .audio,
-               preferredTrackID: kCMPersistentTrackID_Invalid
-           ) {
-            try? compositionAudio.insertTimeRange(sourceRange, of: sourceAudio, at: .zero)
+        let renderedDuration = CMTimeMultiplyByFloat64(sourceRange.duration, multiplier: 1 / rate)
+        guard renderedDuration.seconds.isFinite, renderedDuration.seconds <= limits.maximumDurationSeconds else {
+            throw FloeError.validationFailed("Rendered duration exceeds the limit")
         }
-        var applied: [String] = ["trim"]
-        var warnings: [String] = []
-
-        var videoComposition: AVMutableVideoComposition?
-        var instructions = [AVMutableVideoCompositionInstruction]()
-        let instruction = AVMutableVideoCompositionInstruction()
-        instruction.timeRange = CMTimeRange(start: .zero, duration: sourceRange.duration)
-        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideo)
-        var transform = CGAffineTransform.identity
-        var renderSize = try await sourceVideo.load(.naturalSize)
-        for operation in plan.operations {
-            switch operation {
-            case .trim, .concat, .reorder, .replaceAudio, .subtitles, .transition, .gif, .frameRate:
-                warnings.append("operation handled by a dedicated pipeline (not the base compositor): \(operation)")
-            case .speed(let rate):
-                let scaled = CMTimeMultiplyByFloat64(sourceRange.duration, multiplier: 1.0 / rate)
-                compositionVideo.scaleTimeRange(CMTimeRange(start: .zero, duration: sourceRange.duration), toDuration: scaled)
-                applied.append("speed=\(rate)")
-            case .crop(let x, let y, let width, let height):
-                transform = transform.concatenating(CGAffineTransform(translationX: -CGFloat(x), y: -CGFloat(y)))
-                renderSize = CGSize(width: width, height: height)
-                applied.append("crop=\(width)x\(height)+\(x)+\(y)")
-            case .scale(let width, let height):
-                let scaleX = CGFloat(width) / max(renderSize.width, 1)
-                let scaleY = CGFloat(height) / max(renderSize.height, 1)
-                transform = transform.concatenating(CGAffineTransform(scaleX: scaleX, y: scaleY))
-                renderSize = CGSize(width: width, height: height)
-                applied.append("scale=\(width)x\(height)")
-            case .rotate(let degrees):
-                transform = transform.concatenating(CGAffineTransform(rotationAngle: CGFloat(degrees) * .pi / 180))
-                applied.append("rotate=\(degrees)")
-            case .flipHorizontal:
-                transform = transform.concatenating(CGAffineTransform(scaleX: -1, y: 1))
-                applied.append("flipHorizontal")
-            case .flipVertical:
-                transform = transform.concatenating(CGAffineTransform(scaleX: 1, y: -1))
-                applied.append("flipVertical")
-            default:
-                warnings.append("operation requires the CoreImage compositor and was recorded as pending: \(operation)")
+        // Scale the composition, not only video, so audio keeps the same timeline.
+        if rate != 1 { composition.scaleTimeRange(CMTimeRange(start: .zero, duration: sourceRange.duration), toDuration: renderedDuration) }
+        let fadeInSeconds = fadeIn ?? 0
+        let fadeOutSeconds = fadeOut ?? 0
+        guard fadeInSeconds + fadeOutSeconds <= renderedDuration.seconds else {
+            throw FloeError.validationFailed("Audio fades overlap or exceed the output duration")
+        }
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+            throw FloeError.internalError("Could not create composition export")
+        }
+        if let audio {
+            let parameters = AVMutableAudioMixInputParameters(track: audio)
+            parameters.setVolume(volume, at: .zero)
+            if fadeInSeconds > 0 {
+                parameters.setVolumeRamp(fromStartVolume: 0, toEndVolume: volume,
+                    timeRange: CMTimeRange(start: .zero, duration: CMTime(seconds: fadeInSeconds, preferredTimescale: 600)))
+            }
+            if fadeOutSeconds > 0 {
+                parameters.setVolumeRamp(fromStartVolume: volume, toEndVolume: 0,
+                    timeRange: CMTimeRange(start: CMTime(seconds: renderedDuration.seconds - fadeOutSeconds, preferredTimescale: 600),
+                                          duration: CMTime(seconds: fadeOutSeconds, preferredTimescale: 600)))
+            }
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = [parameters]
+            exporter.audioMix = mix
+        }
+        let directory = outputURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let intermediate = directory.appendingPathComponent(".floe-edit-\(UUID().uuidString).mov")
+        let stagedOutput = directory.appendingPathComponent(".floe-edited-\(UUID().uuidString).\(plan.export.container)")
+        defer {
+            try? FileManager.default.removeItem(at: intermediate)
+            try? FileManager.default.removeItem(at: stagedOutput)
+        }
+        // Transfer the exporter to one task. Cancellation crosses only the
+        // Sendable Task handle, never the non-Sendable AVFoundation object.
+        let compositionExport = Task { try await self.exportComposition(exporter, to: intermediate) }
+        let cancellationWatcher = Task {
+            while !Task.isCancelled {
+                if cancellation?.isCancelled == true { compositionExport.cancel(); return }
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
         }
-        layerInstruction.setTransform(transform, at: .zero)
-        instruction.layerInstructions = [layerInstruction]
-        instructions.append(instruction)
-        let mutableVideoComposition = AVMutableVideoComposition()
-        mutableVideoComposition.instructions = instructions
-        mutableVideoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-        mutableVideoComposition.renderSize = renderSize
-        videoComposition = mutableVideoComposition
-
-        guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
-            throw FloeError.internalError("could not create export session")
+        defer { cancellationWatcher.cancel() }
+        try await withTaskCancellationHandler {
+            try await compositionExport.value
+        } onCancel: { compositionExport.cancel() }
+        cancellationWatcher.cancel()
+        try cancellation?.throwIfCancelled()
+        _ = try await MediaTranscodePipeline.run(.init(input: intermediate.path, output: stagedOutput.path,
+            container: plan.export.container, videoCodec: plan.export.videoCodec, audioCodec: plan.export.audioCodec,
+            width: plan.export.width, height: plan.export.height, frameRate: plan.export.frameRate,
+            videoBitrate: plan.export.videoBitrate, audioBitrate: plan.export.audioBitrate, passthrough: false),
+            input: intermediate, output: stagedOutput, cancellation: cancellation)
+        let exported = AVURLAsset(url: stagedOutput)
+        guard let track = try await exported.loadTracks(withMediaType: .video).first else {
+            throw FloeError.validationFailed("Edited output has no video track")
         }
-        export.outputURL = outputURL
-        export.outputFileType = fileType(for: plan.export.container)
-        export.videoComposition = videoComposition
-        try? FileManager.default.removeItem(at: outputURL)
-        await export.export()
-        guard export.status == .completed else {
-            throw FloeError.internalError("export failed: \(export.error?.localizedDescription ?? "unknown error")")
-        }
-        let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+        let size = try await track.load(.naturalSize)
+        let fps = try await track.load(.nominalFrameRate)
+        let actualDuration = try await exported.load(.duration).seconds
+        let attributes = try FileManager.default.attributesOfItem(atPath: stagedOutput.path)
         let bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-        guard bytes <= limits.maximumOutputBytes else {
-            try? FileManager.default.removeItem(at: outputURL)
-            throw FloeError.validationFailed("output exceeds \(limits.maximumOutputBytes) bytes")
+        guard bytes > 0, bytes <= limits.maximumOutputBytes,
+              size.width * size.height <= Double(limits.maximumPixels),
+              abs(actualDuration - renderedDuration.seconds) <= max(0.2, 2 / Double(fps)) else {
+            throw FloeError.validationFailed("Edited output exceeds limits or has an unexpected duration")
         }
-        return MediaRenderResult(
-            outputPath: plan.output,
-            durationSeconds: CMTimeGetSeconds(sourceRange.duration),
-            width: Int(renderSize.width),
-            height: Int(renderSize.height),
-            frameRate: plan.export.frameRate ?? 30,
-            videoCodec: plan.export.videoCodec ?? "h264",
-            audioCodec: plan.export.audioCodec,
-            byteCount: bytes,
-            appliedOperations: applied,
-            warnings: warnings
-        )
+        try cancellation?.throwIfCancelled()
+        try Task.checkCancellation()
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            _ = try FileManager.default.replaceItemAt(outputURL, withItemAt: stagedOutput)
+        } else { try FileManager.default.moveItem(at: stagedOutput, to: outputURL) }
+        return MediaRenderResult(outputPath: plan.output, durationSeconds: actualDuration,
+            width: Int(size.width), height: Int(size.height), frameRate: Double(fps),
+            videoCodec: plan.export.videoCodec ?? "h264", audioCodec: audio == nil ? nil : "aac",
+            byteCount: bytes, appliedOperations: plan.operations.map { String(describing: $0) }, warnings: [])
+    }
+
+    private func exportComposition(_ exporter: AVAssetExportSession, to url: URL) async throws {
+        try await exporter.export(to: url, as: .mov)
     }
 
     /// Extracts frames at explicit timestamps (seconds), writing image files.
@@ -429,29 +496,19 @@ public actor MediaRenderer {
     }
 
     private func resolve(_ path: String) throws -> URL {
-        if path.hasPrefix("/") {
-            let url = URL(fileURLWithPath: path)
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw FloeError.notFound(path)
-            }
-            return url
-        }
-        guard let root = rootProvider() else {
-            throw FloeError.invalidConfiguration("no workspace root for media paths")
-        }
-        let url = root.appendingPathComponent(path)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw FloeError.notFound(path)
-        }
+        let url = try resolveOutput(path)
+        guard FileManager.default.fileExists(atPath: url.path) else { throw FloeError.notFound(path) }
         return url
     }
 
     private func resolveOutput(_ path: String) throws -> URL {
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        guard let root = rootProvider() else {
-            throw FloeError.invalidConfiguration("no workspace root for media paths")
+        guard !path.isEmpty, !path.contains("\0"), let root = rootProvider() else {
+            throw FloeError.validationFailed("A workspace and valid media path are required")
         }
-        return root.appendingPathComponent(path)
+        let canonical = root.resolvingSymlinksInPath().standardizedFileURL
+        let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : canonical.appendingPathComponent(path)).resolvingSymlinksInPath().standardizedFileURL
+        guard url.path.hasPrefix(canonical.path + "/") else { throw FloeError.validationFailed("Media path escapes workspace") }
+        return url
     }
 }
 #endif

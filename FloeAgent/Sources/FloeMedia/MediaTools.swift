@@ -79,7 +79,7 @@ public struct VideoEditTool: AgentTool {
 
     public static let name = "video.edit"
     public static let toolDescription =
-        "Apply an explicit, non-destructive edit plan and export the result. Operations: trim, concat, reorder, speed, crop, scale, rotate, flip, color, volume, fadeAudioIn/Out, mute, replaceAudio, overlayImage, overlayText, watermark, transition, subtitles, gif, frameRate. Every operation requires its own parameters; there are no defaults. The response reports the effective operations and any operation that a dedicated pipeline must handle. Long renders should use jobs.submit."
+        "Edit a video using one source trim, synchronized speed, volume, mute and non-overlapping audio fades. Other operations fail before processing. Export supports mp4/mov/m4v, H.264/HEVC and AAC; optional dimensions, frame rate and bitrates are applied to the actual file. quality, export range and forced hardware selection are unsupported. Output is staged and verified before replacement; source files are preserved. This tool does not imply shared background-media job support."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "input":{"type":"string"},"output":{"type":"string"},
@@ -94,14 +94,14 @@ public struct VideoEditTool: AgentTool {
     public init() {}
 
     public func validate(_ args: Arguments) throws {
-        var plan = VideoEditPlan(input: args.input, output: args.output, operations: args.operations, export: args.exportSpec)
+        let plan = VideoEditPlan(input: args.input, output: args.output, operations: args.operations, export: args.exportSpec)
         try plan.validate()
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let plan = VideoEditPlan(input: args.input, output: args.output, operations: args.operations, export: args.exportSpec)
         let renderer = MediaRenderer(rootProvider: { context.workspaceRootURL })
-        let result = try await renderer.render(plan: plan)
+        let result = try await renderer.render(plan: plan, cancellation: context.cancellation)
         var lines = [
             "status=ok output=\(result.outputPath)",
             "durationSeconds=\(String(format: "%.3f", result.durationSeconds)) size=\(result.width)x\(result.height) fps=\(String(format: "%.2f", result.frameRate))",

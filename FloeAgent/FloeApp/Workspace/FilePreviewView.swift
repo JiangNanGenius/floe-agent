@@ -39,6 +39,7 @@ struct FilePreviewView: View {
     @State private var isOfficeEditorPresented = false
     @State private var quickLookURL: URL?
     @State private var previewError: String?
+    @State private var mediaEditorSource: URL?
 
     var body: some View {
         Group {
@@ -85,6 +86,11 @@ struct FilePreviewView: View {
                 center: center
             ) {
                 Task { await load() }
+            }
+        }
+        .fullScreenCover(item: $mediaEditorSource, onDismiss: { Task { await load() } }) { url in
+            if let root = center.currentRootURL {
+                NavigationStack { MediaEditorView(workspaceRoot: root, previewURL: url) }
             }
         }
         .sheet(item: $quickLookURL) { url in
@@ -144,6 +150,16 @@ struct FilePreviewView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            if ["mov", "mp4", "m4v"].contains(WorkspaceFileType.pathExtension(for: relativePath)),
+               !center.isCloudWorkspacePath(relativePath), !center.isNetworkWorkspacePath(relativePath) {
+                Button {
+                    do {
+                        guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+                        mediaEditorSource = try service.guardResolver.resolve(relativePath)
+                    } catch { previewError = error.localizedDescription }
+                } label: { Label("媒体工作台", systemImage: "film.stack") }
+                .accessibilityIdentifier("file.preview.mediaEditor")
+            }
             if isHTML, content != nil {
                 Button {
                     startWebPreview()
