@@ -66,13 +66,26 @@ public actor ContainerLifecycle {
         deleting.insert(containerID)
         defer { deleting.remove(containerID) }
         try await registry.transition(id: containerID, state: .deleting)
+        guard !(await registry.all()).contains(where: { $0.parentID == containerID || $0.templateID == containerID }) else {
+            try await registry.transition(id: containerID, state: record.state)
+            throw FloeError.validationFailed("Environment still has dependent sessions; remove those sessions before deleting their project")
+        }
         do { try await stopWork(containerID: containerID) }
         catch {
             try? await registry.transition(id: containerID, state: record.state)
             throw error
         }
         let layerURL = roots.layerURL(id: record.id, kind: record.kind)
-        let manifest = LayerManifest.load(from: layerURL)
+        let manifest: LayerManifest
+        do {
+            guard let checked = try LayerManifest.loadChecked(from: layerURL) else {
+                throw FloeError.validationFailed("Environment manifest is missing; data retained")
+            }
+            manifest = checked
+        } catch {
+            try? await registry.transition(id: containerID, state: .stopped)
+            throw error
+        }
         let bytes = directorySize(at: layerURL)
         let trash = roots.trashURL.appendingPathComponent(record.id + "-" + UUID().uuidString)
         do {
@@ -86,7 +99,7 @@ public actor ContainerLifecycle {
             try? await registry.transition(id: containerID, state: .stopped)
             throw error
         }
-        let refs = manifest?.casRefs ?? []
+        let refs = manifest.casRefs
         do { try await cas.release(refs) }
         catch {
             // The removed environment remains recoverable in trash. Keep its

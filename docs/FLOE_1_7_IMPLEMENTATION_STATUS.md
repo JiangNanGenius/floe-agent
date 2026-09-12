@@ -123,3 +123,5 @@ execution evidence.
 The original remaining acceptance gates still apply. This checkpoint does not qualify all 15 media model capability classes or all 15 native package pool entries.
 
 - Follow-up native qualification: 9 bridge cases and 4 Swift adapter checks pass. Environment qualification now runs 11 tests, adding cross-workspace session ownership, registry write-failure rollback and template independence after CAS collection. See `native-node-adapter.json` and `environment-template-qualification.txt` in the evidence directory. Full App cloud verification remains required.
+
+- Environment promotion now uses the same recoverable file transaction as package installation, verifies regular files and checksums, refuses ownership/path conflicts, and commits dpkg metadata with the layer manifest. Source copies are retained. Two new promotion tests cover source removal, missing files and traversal. Project deletion rejects dependent sessions; inherited rebuild state blocks execution. Full local qualification executes 42 tests (15 environment, 16 package, 9 media, 1 persistence, 1 signed catalog); this remains host/module evidence.

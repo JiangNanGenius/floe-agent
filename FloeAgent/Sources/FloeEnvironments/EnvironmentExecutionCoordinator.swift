@@ -47,6 +47,13 @@ public actor EnvironmentExecutionCoordinator {
               !latest.requiresRebuild, !stopping.contains(record.id) else {
             throw FloeError.validationFailed("Environment is stopped, being deleted, or requires a dependency rebuild")
         }
+        for layer in stack.layers where layer.kind != .base {
+            guard let manifest = layer.manifest,
+                  let owner = await registry.record(id: manifest.id),
+                  owner.state == .active, !owner.requiresRebuild else {
+                throw FloeError.validationFailed("An inherited environment layer is unavailable or requires rebuilding")
+            }
+        }
         let writable = roots.layerURL(id: record.id, kind: record.kind)
         guard record.kind.isWritableLayer else { throw FloeError.validationFailed("Execution needs a writable environment") }
         let home = writable.appendingPathComponent("home/floe")

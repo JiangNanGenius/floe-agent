@@ -188,3 +188,38 @@ extension EnvironmentPersistenceTests {
         #expect(await restarted.template(named: "saved")?.id == template.id)
     }
 }
+
+extension EnvironmentPersistenceTests {
+    @Test func projectDeletionPreservesDependentSessionAndFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        let project = try await registry.ensureProjectContainer(workspaceID: "a", workspaceRootPath: "/a")
+        let session = try await registry.ensureSessionContainer(conversationID: "chat", workspaceID: "a", workspaceRootPath: "/a")
+        let file = roots.layerURL(id: project.id, kind: .project).appendingPathComponent("usr/lib/preserved")
+        try Data("dependency".utf8).write(to: file)
+        let lifecycle = ContainerLifecycle(roots: roots, registry: registry, cas: ContainerCAS(roots: roots), hooks: .init(stopSessions: { _ in }, cancelJobs: { _ in }, terminateWorkers: { _ in }))
+        await #expect(throws: (any Error).self) { try await lifecycle.destroy(containerID: project.id) }
+        #expect(await registry.record(id: project.id)?.state == .active)
+        #expect(await registry.record(id: session.id)?.state == .active)
+        #expect(try Data(contentsOf: file) == Data("dependency".utf8))
+    }
+
+    @Test func inheritedRebuildBlocksExistingAndNewSessions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        let coordinator = EnvironmentExecutionCoordinator(roots: roots, registry: registry)
+        let context = ToolContext(runID: UUID(), workspaceRootURL: root.appendingPathComponent("a"), cancellation: CancellationToken(), conversationID: UUID())
+        let first = try await coordinator.acquire(context)
+        let id = try #require(first.context.environmentID)
+        let parent = try #require(await registry.record(id: id)?.parentID)
+        await first.finish()
+        try await registry.markRebuild(id: parent, reason: "dependency change")
+        await #expect(throws: (any Error).self) { try await coordinator.acquire(context) }
+        var explicit = context; explicit.environmentID = id
+        await #expect(throws: (any Error).self) { try await coordinator.acquire(explicit) }
+    }
+}

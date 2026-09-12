@@ -1,0 +1,114 @@
+◇ Test run started.
+◇ Suite "Signed model catalog and bundled Skills" started.
+◇ Test schemaTwoCatalogVerifiesEveryPublishedPackage() started.
+✔ Test schemaTwoCatalogVerifiesEveryPublishedPackage() passed after 0.014 seconds.
+✔ Suite "Signed model catalog and bundled Skills" passed after 0.014 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.015 seconds.
+◇ Test run started.
+◇ Suite "Job environment persistence" started.
+◇ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() started.
+✔ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() passed after 0.143 seconds.
+✔ Suite "Job environment persistence" passed after 0.143 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.144 seconds.
+◇ Test run started.
+◇ Suite "Package integrity" started.
+◇ Suite "Publisher to client package installation" started.
+◇ Suite "Package dependency constraints" started.
+◇ Suite "Package transaction recovery" started.
+◇ Test tarChecksTruncationAndChecksum() started.
+◇ Test acceptsGnuPGSignatureAndRejectsTampering() started.
+◇ Test emptyTrustStoreNeverAcceptsRepository() started.
+◇ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() started.
+◇ Test choosesCompatibleVersionAndInstallsDependenciesFirst() started.
+◇ Test explicitRequestUpgradesAndConflictsFail() started.
+◇ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() started.
+◇ Test damagedDownloadNeverReachesInstalledState() started.
+◇ Test recoveryValidatesAllBackupsBeforeChangingFiles() started.
+◇ Test interruptedWriteRestoresOldAndRemovesNewFiles() started.
+◇ Test signedInstallUpgradeDependencyAndOwnedRemoval() started.
+◇ Test committedFilesSurviveRecovery() started.
+◇ Test recoveryRejectsSymlinkedJournalDirectory() started.
+◇ Test collisionsScriptsAndLocalEditsFailBeforeMutation() started.
+◇ Test alternativesAndConflictingVersionConstraints() started.
+◇ Test packagePathsRejectLinksAndTraversal() started.
+✔ Test choosesCompatibleVersionAndInstallsDependenciesFirst() passed after 0.033 seconds.
+✔ Test tarChecksTruncationAndChecksum() passed after 0.033 seconds.
+✔ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() passed after 0.033 seconds.
+✔ Test explicitRequestUpgradesAndConflictsFail() passed after 0.033 seconds.
+✔ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() passed after 0.033 seconds.
+✔ Test recoveryRejectsSymlinkedJournalDirectory() passed after 0.033 seconds.
+✔ Test committedFilesSurviveRecovery() passed after 0.033 seconds.
+✔ Test alternativesAndConflictingVersionConstraints() passed after 0.032 seconds.
+✔ Test acceptsGnuPGSignatureAndRejectsTampering() passed after 0.035 seconds.
+✔ Suite "Package dependency constraints" passed after 0.036 seconds.
+✔ Test emptyTrustStoreNeverAcceptsRepository() passed after 0.044 seconds.
+✔ Suite "Package integrity" passed after 0.044 seconds.
+✔ Test interruptedWriteRestoresOldAndRemovesNewFiles() passed after 0.052 seconds.
+✔ Test packagePathsRejectLinksAndTraversal() passed after 0.031 seconds.
+✔ Test recoveryValidatesAllBackupsBeforeChangingFiles() passed after 0.063 seconds.
+✔ Suite "Package transaction recovery" passed after 0.063 seconds.
+✔ Test damagedDownloadNeverReachesInstalledState() passed after 0.074 seconds.
+✔ Test collisionsScriptsAndLocalEditsFailBeforeMutation() passed after 0.179 seconds.
+✔ Test signedInstallUpgradeDependencyAndOwnedRemoval() passed after 0.199 seconds.
+✔ Suite "Publisher to client package installation" passed after 0.200 seconds.
+✔ Test run with 16 tests in 4 suites passed after 0.201 seconds.
+◇ Test run started.
+◇ Suite "Model artifact readiness and ownership" started.
+◇ Suite "Real media exports" started.
+◇ Test corruptRegistryIsNotOverwrittenByInstall() started.
+◇ Test rejectsPendingAndTraversalBeforeDownload() started.
+◇ Test validatesSizeAndRestoresInstalledStateAfterRestart() started.
+◇ Test rejectedAndCancelledExportsPreserveFiles() started.
+◇ Test speedChangesAudioAndVideoOnTheSameTimeline() started.
+◇ Test editsApplyTrimSpeedAndExportSettingsToActualFile() started.
+◇ Test unsupportedEditCannotReplaceExistingOutput() started.
+◇ Test audioConversionAppliesRateAndChannels() started.
+◇ Test requestedDimensionsAndFrameRateReachEncodedFile() started.
+✔ Test unsupportedEditCannotReplaceExistingOutput() passed after 0.010 seconds.
+✔ Test rejectsPendingAndTraversalBeforeDownload() passed after 0.011 seconds.
+✔ Test corruptRegistryIsNotOverwrittenByInstall() passed after 0.018 seconds.
+✔ Test validatesSizeAndRestoresInstalledStateAfterRestart() passed after 0.024 seconds.
+✔ Suite "Model artifact readiness and ownership" passed after 0.024 seconds.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.246 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 0.919 seconds.
+✔ Test editsApplyTrimSpeedAndExportSettingsToActualFile() passed after 1.373 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 1.375 seconds.
+✔ Test speedChangesAudioAndVideoOnTheSameTimeline() passed after 1.557 seconds.
+✔ Suite "Real media exports" passed after 1.557 seconds.
+✔ Test run with 9 tests in 2 suites passed after 1.558 seconds.
+◇ Test run started.
+◇ Suite "Environment promotion" started.
+◇ Suite "Environment durability" started.
+◇ Test missingFileAndPathEscapeNeverMutateEitherLayer() started.
+◇ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() started.
+◇ Test failedStopPreservesEnvironment() started.
+◇ Test registrySurvivesRestartAndMarksNewBase() started.
+◇ Test inheritedRebuildBlocksExistingAndNewSessions() started.
+◇ Test corruptCASIndexNeverAuthorizesCollection() started.
+◇ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() started.
+◇ Test sessionOwnershipIncludesWorkspace() started.
+◇ Test projectsAndCancellationRemainScoped() started.
+◇ Test casRetainsSharedBlobsAndCopiesAreIndependent() started.
+◇ Test failedCASReferenceWriteDoesNotEnableCollection() started.
+◇ Test corruptRegistryIsPreserved() started.
+◇ Test explicitEnvironmentCannotCrossWorkspace() started.
+✔ Test corruptCASIndexNeverAuthorizesCollection() passed after 0.090 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.090 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.090 seconds.
+✔ Test missingFileAndPathEscapeNeverMutateEitherLayer() passed after 0.090 seconds.
+✔ Test corruptRegistryIsPreserved() passed after 0.090 seconds.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.090 seconds.
+◇ Test projectDeletionPreservesDependentSessionAndFiles() started.
+◇ Test failedCreationAndTransitionRollBackRegistryMemory() started.
+✔ Test failedCASReferenceWriteDoesNotEnableCollection() passed after 0.100 seconds.
+✔ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() passed after 0.110 seconds.
+✔ Test inheritedRebuildBlocksExistingAndNewSessions() passed after 0.112 seconds.
+✔ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() passed after 0.115 seconds.
+✔ Suite "Environment promotion" passed after 0.115 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.129 seconds.
+✔ Test sessionOwnershipIncludesWorkspace() passed after 0.134 seconds.
+✔ Test failedCreationAndTransitionRollBackRegistryMemory() passed after 0.046 seconds.
+✔ Test projectDeletionPreservesDependentSessionAndFiles() passed after 0.051 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.177 seconds.
+✔ Suite "Environment durability" passed after 0.178 seconds.
+✔ Test run with 15 tests in 2 suites passed after 0.178 seconds.

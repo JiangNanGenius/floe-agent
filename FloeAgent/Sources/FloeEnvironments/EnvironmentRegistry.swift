@@ -134,6 +134,11 @@ public actor EnvironmentRegistry {
                 guard parent != nil else { throw FloeError.notFound("Session project environment") }
             }
         }
+        if let parent {
+            guard parent.state == .active, !parent.requiresRebuild else {
+                throw FloeError.validationFailed("Project environment is stopped, deleting, or requires rebuilding")
+            }
+        }
         if let existing = records.values.first(where: { $0.kind == .session && $0.ownerID == conversationID && $0.parentID == parent?.id }) {
             touch(existing.id)
             return records[existing.id] ?? existing

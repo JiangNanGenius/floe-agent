@@ -32,12 +32,12 @@ Platform limitations: https://nodejs-mobile.github.io/docs/api/differences/
 
 ## Evidence and open gates
 
-- `node --test FloeAgent/scripts/tests/node_host.test.cjs`: three suites exercise
+- `node --test FloeAgent/scripts/tests/node_host.test.cjs`: four host tests exercise
   repeated tasks, cwd/env/stdin, output limits, exit codes, cancellation/timeout and
   all three pinned package-manager version commands on the macOS host.
-- `FloeAgent/Qualification/NativeNode`: eight cases passed against the actual
+- `FloeAgent/Qualification/NativeNode`: nine bridge cases and four Swift adapter checks passed against the actual
   NodeMobile framework on iOS Simulator. Results are in
-  `docs/evidence/floe-1.7/native-node-smoke.json`. The worker lifetime assertions
+  `docs/evidence/floe-1.7/native-node-adapter.json`. The worker lifetime assertions
   are recorded with each result.
 - `FloeExecution` compiles locally using Xcode 27 beta.
 - Outstanding: full App linkage, true-device resource profiling, interactive shell

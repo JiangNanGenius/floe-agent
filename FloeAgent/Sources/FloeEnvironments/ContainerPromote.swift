@@ -1,9 +1,8 @@
 import Foundation
 import FloeCore
 
-/// Layer promotion: move installed packages (records + files) from a writable
-/// container layer into a permanent target layer. Conflicts are refused
-/// unless the versions match exactly.
+/// Durable package promotion copies verified records and files into a permanent
+/// layer. The source remains usable and can be removed independently afterward.
 public actor ContainerPromote {
     public enum PromoteError: Error, CustomStringConvertible {
         case unknownPackage(String)
@@ -43,109 +42,115 @@ public actor ContainerPromote {
         from containerID: String,
         to target: LayerKind
     ) async throws -> [String] {
+        try await registry.prepare()
         guard let record = await registry.record(id: containerID) else {
             throw FloeError.notFound("container \(containerID)")
         }
-        guard record.kind == .session || record.kind == .project else {
+        guard record.kind == .session || record.kind == .project,
+              record.state != .deleting, !record.requiresRebuild else {
             throw PromoteError.immutableTarget(containerID)
         }
-        let sourceURL = roots.layerURL(id: record.id, kind: record.kind)
-        let targetURL: URL
+        let targetRecord: ContainerRecord
         switch target {
         case .shared:
-            targetURL = roots.sharedURL
+            guard let shared = await registry.record(id: EnvironmentRegistry.sharedContainerID) else { throw PromoteError.missingTargetLayer }
+            targetRecord = shared
         case .project:
-            guard let parentID = record.parentID ?? record.id == containerID ? record.parentID : record.parentID,
-                  let parent = await registry.record(id: parentID),
-                  parent.kind == .project else {
+            guard record.kind == .session, let parentID = record.parentID,
+                  let parent = await registry.record(id: parentID), parent.kind == .project else {
                 throw PromoteError.missingTargetLayer
             }
-            targetURL = roots.layerURL(id: parent.id, kind: .project)
-        case .session, .base:
-            throw PromoteError.immutableTarget(target.rawValue)
+            targetRecord = parent
+        case .session, .base: throw PromoteError.immutableTarget(target.rawValue)
         }
-
-        var sourceManifest = LayerManifest.load(from: sourceURL)
-            ?? LayerManifest(id: record.id, kind: record.kind == .project ? .project : .session, baseRevision: record.baseRevision)
-        var targetManifest = LayerManifest.load(from: targetURL)
-            ?? LayerManifest(
-                id: target == .shared ? EnvironmentRegistry.sharedContainerID : targetURL.lastPathComponent,
-                kind: target == .shared ? .shared : .project,
-                baseRevision: record.baseRevision
-            )
-
-        var promoted: [String] = []
-        for name in packageNames {
-            guard let index = sourceManifest.packages.firstIndex(where: { $0.name == name }) else {
-                let stack = await registry.layerStack(for: record.id, bundledBaseURL: nil)
-                if stack.layerOwning(package: name) == .base || stack.layerOwning(package: name) == .shared {
-                    continue
-                }
+        guard targetRecord.state != .deleting, !targetRecord.requiresRebuild else {
+            throw PromoteError.immutableTarget(targetRecord.id)
+        }
+        let sourceURL = roots.layerURL(id: record.id, kind: record.kind)
+        let targetURL = roots.layerURL(id: targetRecord.id, kind: targetRecord.kind)
+        guard let sourceManifest = try LayerManifest.loadChecked(from: sourceURL),
+              var targetManifest = try LayerManifest.loadChecked(from: targetURL),
+              sourceManifest.id == record.id, targetManifest.id == targetRecord.id else {
+            throw FloeError.validationFailed("Promotion requires intact layer manifests")
+        }
+        let names = Array(Set(packageNames)).sorted()
+        guard !names.isEmpty else { throw FloeError.validationFailed("No packages selected for promotion") }
+        // No awaits from validation through commit: the actor cannot interleave
+        // another promotion. The journal also rejects an outstanding install.
+        var copies: [(path: String, source: URL, digest: String, mode: Int)] = []
+        var claimed = Set<String>()
+        for name in names {
+            guard name.range(of: "^[a-z0-9][a-z0-9+.-]*$", options: .regularExpression) != nil else {
+                throw FloeError.validationFailed("Invalid promoted package name")
+            }
+            guard let package = sourceManifest.packages.first(where: { $0.name == name }) else {
                 throw PromoteError.unknownPackage(name)
             }
-            let package = sourceManifest.packages[index]
-            if let existing = targetManifest.packages.first(where: { $0.name == name }) {
-                guard existing.version == package.version else {
-                    throw PromoteError.conflict(name, existing: existing.version, incoming: package.version)
+            if let existing = targetManifest.packages.first(where: { $0.name == name }), existing.version != package.version {
+                throw PromoteError.conflict(name, existing: existing.version, incoming: package.version)
+            }
+            for relative in package.files {
+                guard relative != LayerManifest.fileName, !relative.hasPrefix("var/lib/dpkg/"),
+                      relative != EnvironmentFileTransaction.directoryName,
+                      !relative.hasPrefix(EnvironmentFileTransaction.directoryName + "/"),
+                      claimed.insert(relative).inserted else {
+                    throw FloeError.validationFailed("Duplicate or reserved promoted file: \(relative)")
                 }
-                sourceManifest.packages.remove(at: index)
-                promoted.append(name)
-                continue
+                let source = try EnvironmentFileTransaction.location(relative, root: sourceURL)
+                let destination = try EnvironmentFileTransaction.location(relative, root: targetURL)
+                let attrs = try fileManager.attributesOfItem(atPath: source.path)
+                guard attrs[.type] as? FileAttributeType == .typeRegular else {
+                    throw FloeError.validationFailed("Promotion requires regular package files: \(relative)")
+                }
+                let digest = try FloeDigest.sha256Hex(ofFileAt: source)
+                if let expected = package.fileDigests?[relative], digest != expected {
+                    throw FloeError.validationFailed("Promoted file checksum mismatch: \(relative)")
+                }
+                guard !targetManifest.packages.contains(where: { $0.name != name && $0.files.contains(relative) }) else {
+                    throw FloeError.validationFailed("Promoted file belongs to another package: \(relative)")
+                }
+                if fileManager.fileExists(atPath: destination.path) {
+                    guard targetManifest.packages.contains(where: { $0.name == name && $0.files.contains(relative) }),
+                          try FloeDigest.sha256Hex(ofFileAt: destination) == digest else {
+                        throw FloeError.validationFailed("Promoted file conflicts with existing data: \(relative)")
+                    }
+                }
+                copies.append((relative, source, digest, (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o644))
             }
-            moveFiles(package.files, from: sourceURL, to: targetURL)
-            var moved = package
-            moved.layer = target
-            targetManifest.packages.append(moved)
-            sourceManifest.packages.remove(at: index)
-            promoted.append(name)
+            var promoted = package; promoted.layer = target
+            targetManifest.packages.removeAll { $0.name == name }
+            targetManifest.packages.append(promoted)
         }
-        sourceManifest.casRefs = Array(Set(sourceManifest.casRefs))
-        targetManifest.casRefs = Array(Set(targetManifest.casRefs))
-        try sourceManifest.write(to: sourceURL)
-        try targetManifest.write(to: targetURL)
-        await refreshCounters(containerID: record.id, layerURL: sourceURL)
-        if target == .shared {
-            await refreshCounters(containerID: EnvironmentRegistry.sharedContainerID, layerURL: targetURL)
+        // Copies own their bytes; source CAS references and installed records
+        // remain unchanged. Removing the source later cannot invalidate target.
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let manifestData = try encoder.encode(targetManifest)
+        var entries = LayerPackageDatabase.readStatus(at: targetURL)
+        var metadataPaths = [LayerManifest.fileName, "var/lib/dpkg/status"]
+        for name in names {
+            metadataPaths += ["var/lib/dpkg/info/" + name + ".list", "var/lib/dpkg/info/" + name + ".md5sums"]
         }
-        return promoted
-    }
-
-    private func moveFiles(_ files: [String], from source: URL, to target: URL) {
-        for relative in files {
-            let sourceFile = source.appendingPathComponent(relative)
-            let targetFile = target.appendingPathComponent(relative)
-            guard fileManager.fileExists(atPath: sourceFile.path) else { continue }
-            try? fileManager.createDirectory(
-                at: targetFile.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try? fileManager.removeItem(at: targetFile)
-            do {
-                try fileManager.moveItem(at: sourceFile, to: targetFile)
-            } catch {
-                try? fileManager.copyItem(at: sourceFile, to: targetFile)
-                try? fileManager.removeItem(at: sourceFile)
+        let transaction = try EnvironmentFileTransaction(root: targetURL,
+            paths: copies.map(\.path) + metadataPaths)
+        do {
+            for copy in copies { try transaction.copy(from: copy.source, to: copy.path, digest: copy.digest, mode: copy.mode) }
+            for package in targetManifest.packages where names.contains(package.name) {
+                let entry = LayerPackageDatabase.StatusEntry(name: package.name, version: package.version,
+                    architecture: package.architecture, status: "install ok installed", summary: package.summary,
+                    license: package.license, source: package.source, layer: target,
+                    requiresBase: package.requiresBase, installedFiles: package.files)
+                entries.removeAll { $0.name == package.name }; entries.append(entry)
+                try LayerPackageDatabase.writeInfoFiles(for: entry, at: targetURL)
             }
+            try LayerPackageDatabase.writeStatus(entries, at: targetURL)
+            try transaction.write(manifestData, to: LayerManifest.fileName)
+            try transaction.commit()
+        } catch {
+            // Recovery keeps the journal if restoring any file fails.
+            try EnvironmentFileTransaction.recover(root: targetURL)
+            throw error
         }
-    }
-
-    private func refreshCounters(containerID: String, layerURL: URL) async {
-        guard let manifest = LayerManifest.load(from: layerURL) else { return }
-        let bytes = layerSize(layerURL)
-        try? await registry.updateBytes(id: containerID, bytes: bytes, packageCount: manifest.packages.count)
-    }
-
-    private func layerSize(_ url: URL) -> Int64 {
-        guard let enumerator = fileManager.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
-        ) else { return 0 }
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-                  values.isRegularFile == true else { continue }
-            total += Int64(values.fileSize ?? 0)
-        }
-        return total
+        return names
     }
 }

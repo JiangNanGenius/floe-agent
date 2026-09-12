@@ -135,6 +135,12 @@ jobs:
           swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
           swift test --filter 'FloeExecutionTests.JavaScriptExecutionToolTests'
 
+      - name: Qualify environment, package, media and Node release modules
+        run: |
+          swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
+          grep -E 'Test run with [1-9][0-9]* tests? .*passed' platform-qualification.log
+          node --test scripts/tests/node_host.test.cjs
+
       - name: Build iOS simulator release gate
         run: |
           xcodebuild \
