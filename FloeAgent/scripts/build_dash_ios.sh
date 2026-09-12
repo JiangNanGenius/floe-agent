@@ -44,7 +44,9 @@ for floe_sdk in iphoneos iphonesimulator; do
     floe_framework="$floe_build/$floe_name.framework"
     mkdir -p "$floe_framework/Headers"
     cp "$floe_build/src/dash" "$floe_framework/$floe_name"
-    cp "$floe_source/basic_Info.plist" "$floe_framework/Info.plist"
+    floe_plist=basic_Info.plist
+    if [ "$floe_sdk" = iphonesimulator ]; then floe_plist=basic_Info_Simulator.plist; fi
+    cp "$floe_source/$floe_plist" "$floe_framework/Info.plist"
     plutil -replace CFBundleExecutable -string "$floe_name" "$floe_framework/Info.plist"
     plutil -replace CFBundleName -string "$floe_name" "$floe_framework/Info.plist"
     plutil -replace CFBundleIdentifier -string "dev.floe.$floe_name" "$floe_framework/Info.plist"

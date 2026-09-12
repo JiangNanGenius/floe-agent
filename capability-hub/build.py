@@ -21,7 +21,7 @@ def build(output, test_key=False):
     artifact.parent.mkdir(parents=True, exist_ok=True)
     candidate = artifact.with_suffix('.candidate.wasm')
     try:
-        subprocess.run(['swift', 'run', '--package-path', str(ROOT), '--jobs', '2', 'CapabilityAssembler', str(ROOT / 'sources/floe-text.wat'), str(candidate)], check=True)
+        subprocess.run(['swift', 'run', '--package-path', str(ROOT), '--jobs', '2', 'CapabilityAssembler', str(ROOT / 'Sources/floe-text.wat'), str(candidate)], check=True)
         data = candidate.read_bytes()
         if artifact.exists() and artifact.read_bytes() != data:
             raise RuntimeError('Published WASM artifact differs; increment the package version')

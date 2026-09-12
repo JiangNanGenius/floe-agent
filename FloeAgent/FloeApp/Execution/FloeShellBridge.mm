@@ -369,11 +369,13 @@ BOOL FloeShellOpenSession(
         close(inputPipe[0]); close(inputPipe[1]);
         return NO;
     }
+    fcntl(inputPipe[1], F_SETNOSIGPIPE, 1);
+    fcntl(outputPipe[1], F_SETNOSIGPIPE, 1);
     FloeShellSetEnvironment(environment);
     if (rootPath.length > 0) { ios_setMiniRoot(rootPath); }
 
     FloeSessionThreadContext *context = new FloeSessionThreadContext();
-    context->command = strdup((command.length > 0 ? command : @"sh").UTF8String);
+    context->command = strdup((command.length > 0 ? command : @"dash -i").UTF8String);
     context->inputReadFD = inputPipe[0];
     context->outputWriteFD = outputPipe[1];
     context->rootPath = workingDirectory.length > 0 ? strdup(workingDirectory.UTF8String) : NULL;
