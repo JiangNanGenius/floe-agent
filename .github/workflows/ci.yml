@@ -130,6 +130,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Qualify environment, package, media and job modules
+        run: |
+          set -o pipefail
+          swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
+      - name: Upload platform qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-qualification-${{ github.sha }}
+          path: FloeAgent/platform-qualification.log
+
+
       - name: Install Xcode Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 

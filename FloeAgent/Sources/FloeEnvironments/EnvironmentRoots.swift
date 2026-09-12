@@ -1,3 +1,4 @@
+import FloeTools
 import Foundation
 import FloeCore
 

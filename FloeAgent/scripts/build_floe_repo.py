@@ -10,11 +10,13 @@ Outputs (under `pool/repo/`):
     pool/<component>/<file>.deb
     dists/<suite>/<component>/binary-<arch>/Packages(.gz)
     dists/<suite>/Release
-    dists/<suite>/InRelease.sig            Ed25519 signature over Release bytes
+    dists/<suite>/InRelease                OpenPGP clearsigned Release
+    dists/<suite>/Release.gpg              OpenPGP detached signature
     catalog.json                           machine-readable package index
 
-Signing uses an Ed25519 PEM key from FLOE_REPO_SIGNING_KEY (OpenSSL 3).
-Without a key the script still builds an unsigned repo and prints a warning.
+Signing imports an OpenPGP secret key from FLOE_REPO_SIGNING_KEY into a temporary
+GnuPG home. Unsigned output is allowed only with FLOE_REPO_ALLOW_UNSIGNED=1 and
+is not consumable by the production client.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 POOL = ROOT / "pool"
@@ -177,15 +180,28 @@ def main() -> int:
 
     key_path = os.environ.get("FLOE_REPO_SIGNING_KEY")
     if key_path and pathlib.Path(key_path).is_file():
-        signature_path = REPO / "dists" / SUITE / "Release.gpg"
-        subprocess.run(
-            ["openssl", "pkeyutl", "-sign", "-inkey", key_path, "-rawin",
-             "-in", str(release_path), "-out", str(signature_path)],
-            check=True,
-        )
-        print(f"signed Release -> {signature_path}")
+        with tempfile.TemporaryDirectory(prefix="floe-repo-sign-") as temporary:
+            home = pathlib.Path(temporary)
+            home.chmod(0o700)
+            command = ["gpg", "--homedir", str(home), "--batch", "--yes"]
+            try:
+                subprocess.run(command + ["--import", key_path], check=True, capture_output=True)
+                signer = command + ["--pinentry-mode", "loopback", "--passphrase-fd", "0", "--digest-algo", "SHA256"]
+                passphrase = (os.environ.get("FLOE_REPO_KEY_PASSPHRASE", "") + "\n").encode()
+                for options in [
+                    ["--armor", "--clearsign", "--output", str(release_path.with_name("InRelease"))],
+                    ["--detach-sign", "--output", str(release_path.with_name("Release.gpg"))],
+                ]:
+                    subprocess.run(signer + options + [str(release_path)], input=passphrase, check=True, capture_output=True)
+                public_key = subprocess.run(command + ["--armor", "--export"], check=True, capture_output=True).stdout
+                (REPO / "repo-key.asc").write_bytes(public_key)
+            finally:
+                subprocess.run(["gpgconf", "--homedir", str(home), "--kill", "all"], capture_output=True)
+        print("signed OpenPGP InRelease and Release.gpg")
+    elif os.environ.get("FLOE_REPO_ALLOW_UNSIGNED") == "1":
+        print("qualification-only unsigned repository; production client will reject it")
     else:
-        print("warning: no FLOE_REPO_SIGNING_KEY; repository is unsigned")
+        raise RuntimeError("A production repository requires FLOE_REPO_SIGNING_KEY (OpenPGP)")
 
     catalog = {
         "schemaVersion": 1,

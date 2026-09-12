@@ -81,7 +81,7 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
 
     public static let currentLayerFormat = 1
 
-    public var isCompatible(withLayerFormat format: Int) -> Bool {
+    public func isCompatible(withLayerFormat format: Int) -> Bool {
         format == Self.currentLayerFormat || format == Self.currentLayerFormat - 1
     }
 }
@@ -98,6 +98,8 @@ public struct InstalledPackage: Codable, Sendable, Hashable {
     public var license: String?
     public var source: String?
     public var requiresBase: String?
+    public var depends: String?
+    public var preDepends: String?
     public var files: [String]
 
     public init(
@@ -110,7 +112,9 @@ public struct InstalledPackage: Codable, Sendable, Hashable {
         license: String? = nil,
         source: String? = nil,
         requiresBase: String? = nil,
-        files: [String] = []
+        files: [String] = [],
+        depends: String? = nil,
+        preDepends: String? = nil
     ) {
         self.name = name
         self.version = version
@@ -121,6 +125,8 @@ public struct InstalledPackage: Codable, Sendable, Hashable {
         self.license = license
         self.source = source
         self.requiresBase = requiresBase
+        self.depends = depends
+        self.preDepends = preDepends
         self.files = files
     }
 }

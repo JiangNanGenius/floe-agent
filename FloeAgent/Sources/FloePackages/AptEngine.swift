@@ -1,3 +1,4 @@
+import FloeEnvironments
 import Foundation
 import FloeCore
 
@@ -32,7 +33,7 @@ public actor AptEngine {
     public struct ScriptRunner: Sendable {
         /// Runs a maintainer script inside the container. Returns exit code.
         public var run: @Sendable (_ script: String, _ arguments: [String], _ container: Container) async -> Int32
-        public init(run: @escaping @Sendable (String, [String], Container) async -> Int32 = { _, _, _ in 0 }) {
+        public init(run: @escaping @Sendable (String, [String], Container) async -> Int32 = { _, _, _ in 126 }) {
             self.run = run
         }
     }
@@ -78,9 +79,8 @@ public actor AptEngine {
     private let scriptRunner: ScriptRunner
     private let trustedKeys: [OpenPGP.Key]
     private let signatureVerifier: (@Sendable (Data, Data, [OpenPGP.Key]) throws -> Void)?
-    private var cachedIndex: [String: [AptPackage]] = [:]
+    private var indexes: [String: [String: [AptPackage]]] = [:]
     private var releaseBySource: [String: AptRelease] = [:]
-    private var holds: Set<String> = []
 
     public init(
         downloader: Downloader,
@@ -105,17 +105,20 @@ public actor AptEngine {
             do {
                 let releaseText = try await fetchRelease(source: source)
                 let release = Deb822.parse(stanza: releaseText)
-                let parsedRelease = AptRelease.parse(release)
-                if let parsedRelease, !parsedRelease.isValid() {
+                guard let parsedRelease = AptRelease.parse(release) else { throw AptError.untrusted(source.uri) }
+                if !parsedRelease.isValid() {
                     throw AptIndex.IndexError.expired(parsedRelease.suite)
                 }
-                if let parsedRelease {
-                    releaseBySource[source.id] = parsedRelease
-                }
+                releaseBySource[source.id] = parsedRelease
                 for component in source.components {
                     guard let url = source.packagesURL(component: component, architecture: "all")
                         ?? source.packagesURL(component: component, architecture: container.architecture) else { continue }
                     let data = try await downloader.fetch(url, 64 * 1024 * 1024)
+                    guard let releaseRoot = source.releaseURL()?.deletingLastPathComponent().path else { throw AptError.untrusted(source.uri) }
+                    let prefix = releaseRoot + "/"
+                    guard url.path.hasPrefix(prefix) else { throw AptError.untrusted(source.uri) }
+                    try AptIndex.validate(packagesData: data, relativePath: String(url.path.dropFirst(prefix.count)),
+                        release: parsedRelease, digest: { FloeDigest.sha256Hex($0) })
                     let document = try AptIndex.decompressPackages(data, memberName: url.lastPathComponent)
                     let packages = AptIndex.parsePackages(
                         String(decoding: document, as: UTF8.self),
@@ -130,7 +133,7 @@ public actor AptEngine {
                 failures.append("\(source.uri) \(source.suite): \(error.localizedDescription)")
             }
         }
-        cachedIndex = index
+        indexes[container.id] = index
         return UpdateReport(sources: sources.count, packages: packageCount, failures: failures)
     }
 
@@ -139,16 +142,14 @@ public actor AptEngine {
             throw AptError.untrusted(source.uri)
         }
         let data = try await downloader.fetch(inReleaseURL, 32 * 1024 * 1024)
+        guard !trustedKeys.isEmpty else { throw AptError.untrusted(source.uri) }
+        let clearsigned = try OpenPGP.parseClearsigned(data)
         if let signatureVerifier {
-            let clearsigned = try OpenPGP.parseClearsigned(data)
             try signatureVerifier(clearsigned.signaturePacket, clearsigned.text, trustedKeys)
-            return String(decoding: clearsigned.text, as: UTF8.self)
+        } else {
+            try OpenPGP.verify(signaturePacketBody: clearsigned.signaturePacket, over: clearsigned.text, keys: trustedKeys)
         }
-        if source.trusted || trustedKeys.isEmpty {
-            // `trusted=yes` is an explicit escape hatch; callers surface a warning.
-            return String(decoding: try OpenPGP.decodeIfArmored(data), as: UTF8.self)
-        }
-        throw AptError.untrusted(source.uri)
+        return String(decoding: clearsigned.text, as: UTF8.self)
     }
 
     private func persistLists(index: [String: [AptPackage]], container: Container) throws {
@@ -177,32 +178,46 @@ public actor AptEngine {
 
     // MARK: - Index queries
 
-    public func loadedIndex() -> [String: [AptPackage]] { cachedIndex }
+    public func loadedIndex(container: Container) -> [String: [AptPackage]] { indexes[container.id] ?? [:] }
 
-    public func allPackages() -> [AptPackage] {
-        cachedIndex.values.flatMap { $0 }
+    public func allPackages(container: Container) -> [AptPackage] {
+        (indexes[container.id] ?? [:]).values.flatMap { $0 }
     }
 
-    public func search(_ query: String) -> [AptPackage] {
+    public func search(_ query: String, container: Container) -> [AptPackage] {
         let normalized = query.lowercased()
-        return allPackages().filter {
+        return allPackages(container: container).filter {
             $0.name.lowercased().contains(normalized)
                 || ($0.description ?? "").lowercased().contains(normalized)
         }
     }
 
-    public func show(_ name: String) -> [AptPackage] {
-        allPackages().filter { $0.name == name }
+    public func show(_ name: String, container: Container) -> [AptPackage] {
+        allPackages(container: container).filter { $0.name == name }
     }
 
-    public func hold(_ name: String) { holds.insert(name) }
-    public func unhold(_ name: String) { holds.remove(name) }
-    public func held() -> [String] { holds.sorted() }
+    public func hold(_ name: String, container: Container) throws {
+        var names = try held(container: container); if !names.contains(name) { names.append(name) }
+        try writeHolds(names, container: container)
+    }
+    public func unhold(_ name: String, container: Container) throws {
+        try writeHolds(held(container: container).filter { $0 != name }, container: container)
+    }
+    public func held(container: Container) throws -> [String] {
+        let url = container.layerURL.appendingPathComponent("var/lib/apt/floe-holds.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        return try JSONDecoder().decode([String].self, from: Data(contentsOf: url)).sorted()
+    }
+    private func writeHolds(_ names: [String], container: Container) throws {
+        let url = container.layerURL.appendingPathComponent("var/lib/apt/floe-holds.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(names.sorted()).write(to: url, options: .atomic)
+    }
 
     // MARK: - Resolution
 
     /// Resolves the install set for `names` (bounded, first-match).
-    public func resolve(_ names: [String], installed: [String: String]) throws -> [AptPackage] {
+    public func resolve(_ names: [String], installed: [String: String], container: Container) throws -> [AptPackage] {
         var selected: [String: AptPackage] = [:]
         var queue = names
         var visited = Set<String>()
@@ -210,9 +225,9 @@ public actor AptEngine {
             if visited.contains(name) { continue }
             visited.insert(name)
             if installed[name] != nil { continue }
-            guard let candidate = bestPackage(named: name) else {
+            guard let candidate = bestPackage(named: name, container: container) else {
                 // Virtual package via Provides.
-                if let provider = allPackages().first(where: { provides($0, name) }) {
+                if let provider = allPackages(container: container).first(where: { provides($0, name) }) {
                     selected[provider.name] = provider
                     queue.append(contentsOf: dependencyNames(provider.depends))
                     continue
@@ -226,8 +241,8 @@ public actor AptEngine {
         return selected.values.sorted { $0.name < $1.name }
     }
 
-    public func bestPackage(named name: String) -> AptPackage? {
-        allPackages()
+    public func bestPackage(named name: String, container: Container) -> AptPackage? {
+        allPackages(container: container)
             .filter { $0.name == name }
             .max { DebVersion.compare($0.version, $1.version) == .older }
     }
@@ -260,18 +275,18 @@ public actor AptEngine {
     ) async throws -> [Step] {
         let installed = DpkgDatabase.merged(layers: [(container.layerKind, container.layerURL)])
         let installedVersions = Dictionary(uniqueKeysWithValues: installed.map { ($0.name, $0.version) })
-        let resolved = try resolve(names, installed: installedVersions)
+        let resolved = try resolve(names, installed: installedVersions, container: container)
         var steps: [Step] = []
         var manifest = LayerManifest.load(from: container.layerURL)
             ?? LayerManifest(id: container.id, kind: container.layerKind, baseRevision: container.baseRevision)
         for package in resolved {
-            guard !holds.contains(package.name) else { throw AptError.held(package.name) }
+            guard try !held(container: container).contains(package.name) else { throw AptError.held(package.name) }
             guard packageReview(package) else { throw AptError.conflict("review rejected \(package.name)") }
             guard let packageURL = URL(string: package.filename.hasPrefix("http") ? package.filename : repositoryURL(for: package) ) else {
                 throw AptError.unresolved(package.filename)
             }
             let data = try await downloader.fetch(packageURL, 256 * 1024 * 1024)
-            try AptIndex.validateDeb(data: data, package: package, digest: { Data($0).sha256Hex })
+            try AptIndex.validateDeb(data: data, package: package, digest: { FloeDigest.sha256Hex(Data($0)) })
             let payload = try DebArchive.read(data: data)
             switch DebArchive.installability(of: payload) {
             case .nativePayload:
@@ -317,7 +332,9 @@ public actor AptEngine {
                 license: package.license,
                 source: package.source,
                 requiresBase: package.requiresBase,
-                files: files
+                files: files,
+                depends: package.depends,
+                preDepends: package.preDepends
             ))
             steps.append(Step(package: package.name, version: package.version, action: "install", detail: nil))
         }
@@ -352,11 +369,11 @@ public actor AptEngine {
     }
 
     /// Upgrade plan for installed packages that have newer candidates.
-    public func upgradePlan(container: Container) -> [Step] {
+    public func upgradePlan(container: Container) throws -> [Step] {
         let installed = DpkgDatabase.merged(layers: [(container.layerKind, container.layerURL)])
         var steps: [Step] = []
         for entry in installed {
-            guard !holds.contains(entry.name), let candidate = bestPackage(named: entry.name) else { continue }
+            guard try !held(container: container).contains(entry.name), let candidate = bestPackage(named: entry.name, container: container) else { continue }
             if DebVersion.compare(candidate.version, entry.version) == .newer {
                 steps.append(Step(package: entry.name, version: candidate.version, action: "upgrade", detail: entry.version))
             }

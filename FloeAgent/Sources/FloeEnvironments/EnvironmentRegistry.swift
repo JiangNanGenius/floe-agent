@@ -31,11 +31,22 @@ public actor EnvironmentRegistry {
     public func prepare() throws {
         try roots.prepare()
         guard !loaded else { return }
-        loaded = true
-        if let data = try? Data(floeContentsOf: roots.registryURL),
-           let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
+        if fileManager.fileExists(atPath: roots.registryURL.path) {
+            let data = try Data(floeContentsOf: roots.registryURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let snapshot = try decoder.decode(Snapshot.self, from: data)
+            guard snapshot.schemaVersion == Self.schemaVersion,
+                  Set(snapshot.containers.map(\.id)).count == snapshot.containers.count else {
+                throw FloeError.validationFailed("Unsupported or duplicate environment records")
+            }
             records = Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, $0) })
             quota = snapshot.quota
+            for (id, var record) in records where record.baseRevision != baseRevision {
+                record.requiresRebuild = true
+                record.rebuildReason = "Base revision changed; rebuild dependencies before execution"
+                records[id] = record
+            }
         }
         if records[Self.sharedContainerID] == nil {
             let shared = ContainerRecord(
@@ -48,6 +59,7 @@ public actor EnvironmentRegistry {
             try materialize(shared)
         }
         try persist()
+        loaded = true
     }
 
     public func setBaseRevision(_ revision: String) {
@@ -145,7 +157,7 @@ public actor EnvironmentRegistry {
         let destinationURL = roots.layerURL(id: template.id, kind: .template)
         try cloneOrCopyDirectory(from: sourceURL, to: destinationURL)
         if var manifest = LayerManifest.load(from: sourceURL) {
-            manifest.kind = .template
+            manifest.kind = .shared
             manifest.id = template.id
             try manifest.write(to: destinationURL)
         }
@@ -158,12 +170,10 @@ public actor EnvironmentRegistry {
     @discardableResult
     public func remove(id: String) throws -> ContainerRecord? {
         try prepare()
-        guard var record = records[id] else { return nil }
-        record.state = .deleting
-        records[id] = record
-        try persist()
+        guard let record = records[id] else { return nil }
         records.removeValue(forKey: id)
-        try persist()
+        do { try persist() }
+        catch { records[id] = record; throw error }
         return record
     }
 
@@ -214,8 +224,8 @@ public actor EnvironmentRegistry {
             layers.append(.init(kind: kind, url: url, manifest: LayerManifest.load(from: url)))
         }
         guard let record = records[id] else {
-            if let bundledBaseURL { append(bundledBaseURL, kind: .base) }
             append(roots.sharedURL, kind: .shared)
+            if let bundledBaseURL { append(bundledBaseURL, kind: .base) }
             return ResolvedLayerStack(layers: layers)
         }
         append(roots.layerURL(id: record.id, kind: record.kind), kind: record.kind == .session ? .session : .project)
@@ -249,6 +259,7 @@ public actor EnvironmentRegistry {
     }
 
     public func wouldExceedQuota(kind: ContainerKind, adding bytes: Int64) -> Bool {
+        guard bytes >= 0, bytes <= quota.totalBytes, totalBytes() <= quota.totalBytes - bytes else { return true }
         switch kind {
         case .session:
             let used = records.values.filter { $0.kind == .session }.reduce(0) { $0 + $1.bytes }

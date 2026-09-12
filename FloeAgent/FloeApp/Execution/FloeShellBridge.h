@@ -71,6 +71,8 @@ void FloeShellSignalSession(NSString *sessionID, int signalNumber);
 /// Closes all descriptors for a session and forgets it.
 void FloeShellCloseSession(NSString *sessionID);
 void FloeShellResizeSession(NSString *sessionID, NSInteger columns, NSInteger rows);
+/// True until native work has actually unwound, including after timeout/close.
+BOOL FloeShellHasActiveWorker(NSString *sessionID);
 BOOL FloeShellSessionExitCode(NSString *sessionID, int32_t *code);
 
 /// Sets the mini-root confinement for a session's future resolves.

@@ -1,3 +1,4 @@
+import FloeEnvironments
 import Foundation
 import FloeCore
 
@@ -70,7 +71,7 @@ public struct PackagesCLI: Sendable {
             lines.append("Reading package lists... Done")
             return Result(output: lines.joined(separator: "\n"), exitCode: report.failures.isEmpty ? 0 : 100)
         case "list":
-            let packages = await engine.allPackages().sorted { $0.name < $1.name }
+            let packages = await engine.allPackages(container: context.container).sorted { $0.name < $1.name }
             let installedNames = Set(context.installed.map(\.name))
             var lines = ["Listing... Done"]
             for package in packages where operands.isEmpty || operands.contains(where: { package.name.contains($0) }) {
@@ -79,12 +80,12 @@ public struct PackagesCLI: Sendable {
             }
             return Result(output: lines.joined(separator: "\n"))
         case "search":
-            let results = await engine.search(operands.first ?? "")
+            let results = await engine.search(operands.first ?? "", container: context.container)
             return Result(output: results.map { "\($0.name) - \($0.description?.split(separator: "\n").first ?? "")" }.joined(separator: "\n"))
         case "show":
             var lines: [String] = []
             for name in operands {
-                for package in await engine.show(name) {
+                for package in await engine.show(name, container: context.container) {
                     lines.append("Package: \(package.name)")
                     lines.append("Version: \(package.version)")
                     lines.append("Architecture: \(package.architecture)")
@@ -104,7 +105,7 @@ public struct PackagesCLI: Sendable {
                     lines.append("\(name):")
                     lines.append("  Installed: \(installed.version)")
                 }
-                if let candidate = await engine.bestPackage(named: name) {
+                if let candidate = await engine.bestPackage(named: name, container: context.container) {
                     lines.append("  Candidate: \(candidate.version)")
                 }
             }
@@ -128,7 +129,9 @@ public struct PackagesCLI: Sendable {
                 return Result(output: "E: \(error.localizedDescription)", exitCode: 100)
             }
         case "upgrade", "full-upgrade":
-            let plan = await engine.upgradePlan(container: context.container)
+            let plan: [AptEngine.Step]
+            do { plan = try await engine.upgradePlan(container: context.container) }
+            catch { return Result(output: "E: \(error)", exitCode: 100) }
             guard !plan.isEmpty else { return Result(output: "0 upgraded, 0 newly installed, 0 to remove.") }
             do {
                 let steps = try await engine.install(plan.map(\.package), container: context.container)
@@ -156,13 +159,14 @@ public struct PackagesCLI: Sendable {
     }
 
     private func runAptCache(_ arguments: [String]) async -> Result {
+        guard let context = await contextProvider() else { return Result(output: "E: No active environment", exitCode: 100) }
         let subcommand = arguments.dropFirst().first ?? "show"
         let operands = arguments.dropFirst(2).filter { !$0.hasPrefix("-") }
         switch subcommand {
         case "show", "showpkg":
             var lines: [String] = []
             for name in operands {
-                for package in await engine.show(name) {
+                for package in await engine.show(name, container: context.container) {
                     lines.append("\(package.name) - \(package.description ?? "")")
                     if let depends = package.depends { lines.append("  Depends: \(depends)") }
                 }
@@ -171,7 +175,7 @@ public struct PackagesCLI: Sendable {
         case "depends":
             var lines: [String] = []
             for name in operands {
-                guard let package = await engine.bestPackage(named: name) else { continue }
+                guard let package = await engine.bestPackage(named: name, container: context.container) else { continue }
                 lines.append("\(name)")
                 for dependency in (package.depends ?? "").split(separator: ",") {
                     lines.append("  Depends: \(dependency.trimmingCharacters(in: .whitespaces))")
@@ -186,21 +190,24 @@ public struct PackagesCLI: Sendable {
     }
 
     private func runAptMark(_ arguments: [String]) async -> Result {
+        guard let context = await contextProvider() else { return Result(output: "E: No active environment", exitCode: 100) }
+        do {
         let subcommand = arguments.dropFirst().first ?? "showhold"
         let operands = arguments.dropFirst(2)
         switch subcommand {
         case "hold":
-            for name in operands { await engine.hold(name) }
+            for name in operands { try await engine.hold(name, container: context.container) }
             return Result(output: operands.map { "\($0) set on hold." }.joined(separator: "\n"))
         case "unhold":
-            for name in operands { await engine.unhold(name) }
+            for name in operands { try await engine.unhold(name, container: context.container) }
             return Result(output: operands.map { "Canceled hold on \($0)." }.joined(separator: "\n"))
         case "showhold":
-            let holds = await engine.held()
+            let holds = try await engine.held(container: context.container)
             return Result(output: holds.joined(separator: "\n"))
         default:
             return Result(output: "E: Invalid operation \(subcommand)", exitCode: 100)
         }
+        } catch { return Result(output: "E: \(error)", exitCode: 100) }
     }
 
     // MARK: - dpkg
@@ -264,13 +271,13 @@ public struct PackagesCLI: Sendable {
             guard let debPath = arguments.dropFirst(2).first else {
                 return Result(output: "dpkg-deb: --contents needs an archive", exitCode: 2)
             }
-            return listDebContents(path: debPath, container: context)
+            return listDebContents(path: debPath, container: context.container)
         case "-x", "--extract":
             let operands = arguments.dropFirst(2).filter { !$0.hasPrefix("-") }
             guard operands.count >= 1 else {
                 return Result(output: "dpkg-deb: --extract needs <archive> [directory]", exitCode: 2)
             }
-            return extractDeb(path: operands[0], destination: operands.count > 1 ? operands[1] : ".", container: context)
+            return extractDeb(path: operands[0], destination: operands.count > 1 ? operands[1] : ".", container: context.container)
         case "-e", "--control":
             let operands = arguments.dropFirst(2).filter { !$0.hasPrefix("-") }
             guard let debPath = operands.first else {
@@ -287,7 +294,7 @@ public struct PackagesCLI: Sendable {
             guard let debPath = arguments.dropFirst(2).first else {
                 return Result(output: "dpkg: --install needs an archive", exitCode: 2)
             }
-            return installLocalDeb(path: debPath, container: context)
+            return installLocalDeb(path: debPath, container: context.container)
         case "--print-architecture":
             return Result(output: context.container.architecture)
         case "--compare-versions":
@@ -320,10 +327,10 @@ public struct PackagesCLI: Sendable {
         switch flag {
         case "-c", "--contents":
             guard let path = operands.first else { return Result(output: "dpkg-deb: --contents needs an archive", exitCode: 2) }
-            return listDebContents(path: path, container: context)
+            return listDebContents(path: path, container: context.container)
         case "-x", "--extract":
             guard let path = operands.first else { return Result(output: "dpkg-deb: --extract needs an archive", exitCode: 2) }
-            return extractDeb(path: path, destination: operands.count > 1 ? operands[1] : ".", container: context)
+            return extractDeb(path: path, destination: operands.count > 1 ? operands[1] : ".", container: context.container)
         case "-e", "--control":
             guard let path = operands.first else { return Result(output: "dpkg-deb: --control needs an archive", exitCode: 2) }
             return controlDeb(path: path, destination: operands.count > 1 ? operands[1] : nil)
@@ -332,7 +339,7 @@ public struct PackagesCLI: Sendable {
             return fieldDeb(path: path, field: operands.count > 1 ? operands[1] : nil)
         case "-b", "--build":
             guard let source = operands.first else { return Result(output: "dpkg-deb: --build needs a directory", exitCode: 2) }
-            return buildDeb(source: source, output: operands.count > 1 ? operands[1] : nil, container: context)
+            return buildDeb(source: source, output: operands.count > 1 ? operands[1] : nil, container: context.container)
         default:
             return Result(output: "dpkg-deb: unknown option \(flag)", exitCode: 2)
         }

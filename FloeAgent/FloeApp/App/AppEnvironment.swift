@@ -101,6 +101,7 @@ final class AppEnvironment: ObservableObject {
     let managedPythonInstaller: ManagedPythonInstallService?
     /// apt/pkg capability catalog and reviewed install routing.
     let capabilityInstaller: CapabilityInstaller
+    private let wasmCapabilities: SignedWasmCapabilityStore?
     /// Long-lived visible WebKit session shared by UI and browser tools.
     let browserCenter: BrowserSessionCenter
     let previewCenter: LocalPreviewCoordinator
@@ -326,6 +327,7 @@ final class AppEnvironment: ObservableObject {
         let capabilityRoot = ((try? FloeArtifactStore.root()) ?? URL(fileURLWithPath: NSTemporaryDirectory()))
             .appendingPathComponent("Packages", isDirectory: true)
         let wasmCapabilities = BundledWasmCapabilities.load(root: capabilityRoot)
+        self.wasmCapabilities = wasmCapabilities
         self.capabilityInstaller = CapabilityInstaller(
             catalog: CapabilityCatalog.bundled(),
             pythonInstaller: managedPython,
@@ -345,14 +347,22 @@ final class AppEnvironment: ObservableObject {
             baseRevision: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "dev"
         )
         let containerCAS = ContainerCAS(roots: environmentRoots)
+        let environmentExecutions = EnvironmentExecutionCoordinator(roots: environmentRoots, registry: environmentRegistry)
+        ToolEnvironmentRouting.shared.configure { context in try await environmentExecutions.acquire(context) }
         let containerLifecycle = ContainerLifecycle(
             roots: environmentRoots,
             registry: environmentRegistry,
             cas: containerCAS,
             hooks: ContainerLifecycle.Hooks(
-                stopSessions: { [weak self] _ in await self?.shellSessionCenter.closeAllSessions() },
-                cancelJobs: { _ in },
-                terminateWorkers: { _ in }
+                stopSessions: { [weak self] id in
+                    guard let self else { throw FloeError.invalidConfiguration("Shell session service is unavailable") }
+                    await self.shellSessionCenter.closeAll(environmentID: id)
+                },
+                cancelJobs: { id in try await environmentExecutions.stopAndWait(environmentID: id) },
+                terminateWorkers: { id in
+                    try await environmentExecutions.stopAndWait(environmentID: id)
+                    try await FloeShellCommandRegistry.shared.waitForWorkers(environmentID: id)
+                }
             )
         )
         let containerPromote = ContainerPromote(
@@ -375,36 +385,24 @@ final class AppEnvironment: ObservableObject {
                 return try Data(floeContentsOf: temp)
             }
         )
-        Task {
-            try? await environmentRegistry.prepare()
-            _ = try? await environmentRegistry.ensureProjectContainer(
-                workspaceID: "default",
-                workspaceRootPath: NSTemporaryDirectory()
-            )
-        }
         FloePlatformServices.shared.configure(
             registry: environmentRegistry,
             lifecycle: containerLifecycle,
             cas: containerCAS,
             promote: containerPromote,
             aptEngine: aptEngine,
-            contextProvider: { [weak environmentRegistry] in
-                guard let environmentRegistry else { return nil }
-                guard let record = await environmentRegistry.all().first(where: { $0.kind == .project }) else {
-                    return nil
-                }
-                let layerURL = environmentRoots.layerURL(id: record.id, kind: .project)
+            contextProvider: {
+                guard let environment = FloeShellCommandRegistry.shared.context?.environment,
+                      let record = await environmentRegistry.record(id: environment.id),
+                      record.state == .active, !record.requiresRebuild else { return nil }
+                let stack = await environmentRegistry.layerStack(for: record.id, bundledBaseURL: nil)
+                let layerURL = environment.writableLayerURL
+                let layerKind: LayerKind = record.kind == .session ? .session : .project
                 return PackagesCLI.Context(
-                    container: AptEngine.Container(
-                        id: record.id,
-                        rootURL: environmentRoots.rootURL,
-                        layerURL: layerURL,
-                        layerKind: .project,
-                        baseRevision: record.baseRevision
-                    ),
-                    sources: AptSources.read(inContainerAt: layerURL),
-                    layerURL: layerURL,
-                    installed: DpkgDatabase.merged(layers: [(.project, layerURL)])
+                    container: AptEngine.Container(id: record.id, rootURL: environmentRoots.rootURL,
+                        layerURL: layerURL, layerKind: layerKind, baseRevision: record.baseRevision),
+                    sources: AptSources.read(inContainerAt: layerURL), layerURL: layerURL,
+                    installed: DpkgDatabase.merged(layers: stack.layers.map { ($0.kind, $0.url) })
                 )
             },
             baseSliceURL: nil

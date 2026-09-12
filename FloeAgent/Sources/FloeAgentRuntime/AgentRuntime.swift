@@ -2262,7 +2262,8 @@ public actor FloeAgentRuntime {
             workspaceRootURL: configuration.workspaceRootURL,
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
             cancellation: cancellationToken,
-            childBudget: childBudget
+            childBudget: childBudget,
+            conversationID: configuration.conversationID
         )
         let result: ToolResult
         do {
@@ -2742,7 +2743,8 @@ public actor FloeAgentRuntime {
                 workspaceRootURL: configuration.workspaceRootURL,
                 allowedWorkspacePaths: configuration.allowedWorkspacePaths,
                 cancellation: cancellationToken,
-                childBudget: childBudget
+                childBudget: childBudget,
+                conversationID: configuration.conversationID
             )
             toRun.append((call, grant, context))
         }

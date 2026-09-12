@@ -437,7 +437,7 @@ let package = Package(
         .target(
             name: "FloePackages",
             dependencies: [
-                "FloeCore", "FloeTools",
+                "FloeCore", "FloeTools", "FloeEnvironments",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "SWCompression", package: "SWCompression")
             ],

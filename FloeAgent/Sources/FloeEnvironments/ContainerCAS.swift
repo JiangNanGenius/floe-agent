@@ -100,10 +100,12 @@ public actor ContainerCAS {
         return digest
     }
 
-    /// Materializes a blob at `destination`, preferring APFS clone, then
-    /// hardlink, then copy.
+    /// Materializes a blob at `destination`, preferring APFS clone, then copy. Writable files must never share an inode with CAS.
     public func link(digest: String, to destination: URL) throws {
         loadIfNeeded()
+        guard digest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+            throw FloeError.validationFailed("Invalid CAS digest")
+        }
         let source = blobURL(digest)
         guard fileManager.fileExists(atPath: source.path) else {
             throw FloeError.notFound("CAS blob \(digest)")
@@ -114,11 +116,7 @@ public actor ContainerCAS {
         )
         try? fileManager.removeItem(at: destination)
         if cloneFile(from: source, to: destination) { return }
-        do {
-            try fileManager.linkItem(at: source, to: destination)
-        } catch {
-            try fileManager.copyItem(at: source, to: destination)
-        }
+        try fileManager.copyItem(at: source, to: destination)
     }
 
     /// Retains a set of blobs for one layer (idempotent per layer operation).
@@ -136,7 +134,7 @@ public actor ContainerCAS {
         for digest in digests {
             guard let count = index.refs[digest] else { continue }
             if count <= 1 {
-                index.refs.removeValue(forKey: digest)
+                index.refs[digest] = 0
             } else {
                 index.refs[digest] = count - 1
             }
@@ -149,12 +147,12 @@ public actor ContainerCAS {
     public func garbageCollect(grace: TimeInterval = 7 * 24 * 3600, now: Date = Date()) -> Int64 {
         loadIfNeeded()
         var reclaimed: Int64 = 0
-        for (digest, refCount) in index.refs where refCount <= 0 {
+        for digest in Array(index.bytes.keys) where index.refs[digest, default: 0] == 0 {
             let created = index.createdAt[digest] ?? now
             guard now.timeIntervalSince(created) >= grace else { continue }
             let url = blobURL(digest)
             if fileManager.fileExists(atPath: url.path) {
-                try? fileManager.removeItem(at: url)
+                do { try fileManager.removeItem(at: url) } catch { continue }
             }
             reclaimed += index.bytes[digest] ?? 0
             index.refs.removeValue(forKey: digest)
@@ -169,7 +167,7 @@ public actor ContainerCAS {
         loadIfNeeded()
         let referenced = index.refs.filter { $0.value > 0 }.keys
         return Stats(
-            blobCount: index.refs.count,
+            blobCount: index.bytes.count,
             totalBytes: index.bytes.values.reduce(0, +),
             referencedBytes: referenced.reduce(Int64(0)) { $0 + (index.bytes[$1] ?? 0) }
         )

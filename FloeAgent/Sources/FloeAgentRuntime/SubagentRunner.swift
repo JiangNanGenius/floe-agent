@@ -186,7 +186,10 @@ public struct SubagentRunner: Sendable {
                             allowedToolNames: parentContext.allowedToolNames,
                             workspaceRootURL: parentContext.workspaceRootURL,
                             allowedWorkspacePaths: parentContext.allowedWorkspacePaths,
-                            cancellation: token
+                            cancellation: token,
+                            environmentID: parentContext.environmentID,
+                            conversationID: parentContext.conversationID,
+                            environment: parentContext.environment
                         ))
                     } catch {
                         result = ToolResult(

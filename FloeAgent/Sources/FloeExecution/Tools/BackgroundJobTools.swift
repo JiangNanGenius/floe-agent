@@ -96,7 +96,8 @@ public struct JobsSubmitTool: AgentTool {
             payloadJSON: payload,
             scope: context.scope,
             workspaceRootURL: context.workspaceRootURL,
-            allowedWorkspacePaths: context.allowedWorkspacePaths
+            allowedWorkspacePaths: context.allowedWorkspacePaths,
+            environmentID: context.environmentID
         )
         struct Response: Encodable {
             let jobID: String

@@ -69,7 +69,8 @@ public struct ShellOpenTool: AgentTool {
             rows: args.rows ?? 24,
             runID: context.runID,
             rootURL: root,
-            cancellation: context.cancellation
+            cancellation: context.cancellation,
+            toolEnvironment: context.environment
         )
         var text = "status=ok sessionID=\(result.sessionID) alive=\(result.alive)"
         if !result.initialOutput.isEmpty { text += "\noutput:\n\(result.initialOutput)" }

@@ -29,27 +29,8 @@ public actor MediaExportEngine {
         public var passthrough: Bool
     }
 
-    public func transcode(_ spec: TranscodeSpec) async throws -> String {
-        let inputURL = try resolve(spec.input)
-        let outputURL = try resolveOutput(spec.output)
-        guard let export = AVAssetExportSession(
-            asset: AVURLAsset(url: inputURL),
-            presetName: spec.passthrough ? AVAssetExportPresetPassthrough : AVAssetExportPresetHighestQuality
-        ) else {
-            throw FloeError.internalError("could not create export session")
-        }
-        export.outputURL = outputURL
-        export.outputFileType = fileType(for: spec.container)
-        try? FileManager.default.removeItem(at: outputURL)
-        await export.export()
-        guard export.status == .completed else {
-            throw FloeError.internalError("export failed: \(export.error?.localizedDescription ?? "unknown")")
-        }
-        let bytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-        var lines = ["status=ok output=\(spec.output) container=\(spec.container) bytes=\(bytes)"]
-        if let codec = spec.videoCodec { lines.append("videoCodec=\(codec)") }
-        if let codec = spec.audioCodec { lines.append("audioCodec=\(codec)") }
-        return lines.joined(separator: "\n")
+    public func transcode(_ spec: TranscodeSpec, cancellation: CancellationToken? = nil) async throws -> String {
+        try await MediaTranscodePipeline.run(spec, input: resolve(spec.input), output: resolveOutput(spec.output), cancellation: cancellation)
     }
 
     public func thumbnail(input: String, timeSeconds: Double, output: String, maximumDimension: Int) async throws -> String {
@@ -59,11 +40,7 @@ public actor MediaExportEngine {
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: maximumDimension, height: maximumDimension)
         let image = try await generator.image(at: CMTime(seconds: timeSeconds, preferredTimescale: 600)).image
-        #if canImport(UIKit)
-        guard let data = image.pngData() else { throw FloeError.internalError("could not encode thumbnail") }
-        #else
-        guard let data = image.pngData else { throw FloeError.internalError("could not encode thumbnail") }
-        #endif
+        guard let data = MediaImageEncoding.png(image) else { throw FloeError.internalError("could not encode thumbnail") }
         try data.write(to: outputURL, options: .atomic)
         return "status=ok output=\(output) timeSeconds=\(timeSeconds) maxDimension=\(maximumDimension)"
     }
@@ -79,27 +56,24 @@ public actor MediaExportEngine {
         }
     }
 
-    private func resolve(_ path: String) throws -> URL {
-        if path.hasPrefix("/") {
-            let url = URL(fileURLWithPath: path)
-            guard FileManager.default.fileExists(atPath: url.path) else { throw FloeError.notFound(path) }
-            return url
-        }
-        guard let root = rootProvider() else {
-            throw FloeError.invalidConfiguration("no workspace root for media paths")
-        }
-        let url = root.appendingPathComponent(path)
+    func resolve(_ path: String) throws -> URL {
+        let url = try resolveOutput(path)
         guard FileManager.default.fileExists(atPath: url.path) else { throw FloeError.notFound(path) }
         return url
     }
 
-    private func resolveOutput(_ path: String) throws -> URL {
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        guard let root = rootProvider() else {
-            throw FloeError.invalidConfiguration("no workspace root for media paths")
+    func resolveOutput(_ path: String) throws -> URL {
+        guard !path.isEmpty, !path.contains("\0"), let root = rootProvider() else {
+            throw FloeError.validationFailed("A workspace and valid media path are required")
         }
-        return root.appendingPathComponent(path)
+        let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let candidate = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : canonicalRoot.appendingPathComponent(path)).resolvingSymlinksInPath().standardizedFileURL
+        guard candidate.path.hasPrefix(canonicalRoot.path + "/") else {
+            throw FloeError.validationFailed("Media path escapes the workspace")
+        }
+        return candidate
     }
+
 }
 #endif
 
@@ -149,7 +123,7 @@ public struct VideoTranscodeTool: AgentTool {
             videoBitrate: args.videoBitrate,
             audioBitrate: args.audioBitrate,
             passthrough: args.remuxOnly ?? false
-        ))
+        ), cancellation: context.cancellation)
         return ToolExecutionOutput(digesting: result, exitStatus: 0)
         #else
         throw FloeError.invalidConfiguration("video processing is unavailable on this platform")
@@ -225,19 +199,8 @@ public struct AudioConvertTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         #if canImport(AVFoundation)
         let engine = MediaExportEngine(rootProvider: { context.workspaceRootURL })
-        let result = try await engine.transcode(.init(
-            input: args.input,
-            output: args.output,
-            container: args.container,
-            videoCodec: nil,
-            audioCodec: nil,
-            width: nil,
-            height: nil,
-            frameRate: nil,
-            videoBitrate: nil,
-            audioBitrate: args.bitRate,
-            passthrough: false
-        ))
+        let result = try await engine.convertAudio(input: args.input, output: args.output, container: args.container,
+            sampleRate: args.sampleRate, channels: args.channels, bitRate: args.bitRate, cancellation: context.cancellation)
         return ToolExecutionOutput(digesting: result, exitStatus: 0)
         #else
         throw FloeError.invalidConfiguration("audio processing is unavailable on this platform")

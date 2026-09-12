@@ -1,0 +1,33 @@
+{
+  "scope": "iOS simulator minimal bridge app, four prior reproductions; not full app or complete shell suite",
+  "results": [
+    {
+      "stderr": "",
+      "status": 0,
+      "exit": 0,
+      "stdout": "scoped",
+      "index": 2
+    },
+    {
+      "stderr": "",
+      "stdout": "unset",
+      "index": 3,
+      "status": 0,
+      "exit": 0
+    },
+    {
+      "exit": 7,
+      "index": 1,
+      "status": 0,
+      "stderr": "",
+      "stdout": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "status": 0,
+      "exit": 0,
+      "stdout": "HELLO\nWORLD\n",
+      "stderr": "",
+      "index": 0
+    }
+  ]
+}

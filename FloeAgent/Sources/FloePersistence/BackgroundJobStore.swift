@@ -55,6 +55,7 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
     public var resultPath: String?
     public var lastError: String?
     public var workspaceRootPath: String?
+    public var environmentID: String?
     public var retryCount: Int
     public var createdAt: Date
     public var updatedAt: Date
@@ -75,6 +76,7 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
         resultPath: String? = nil,
         lastError: String? = nil,
         workspaceRootPath: String? = nil,
+        environmentID: String? = nil,
         retryCount: Int = 0,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -94,6 +96,7 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
         self.resultPath = resultPath
         self.lastError = lastError
         self.workspaceRootPath = workspaceRootPath
+        self.environmentID = environmentID
         self.retryCount = retryCount
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -121,9 +124,9 @@ public actor BackgroundJobStore {
                     id, conversation_id, run_id, tool_call_id, kind, target_tool,
                     payload_json, state, progress_json, result_summary,
                     result_digest, result_path, last_error,
-                    workspace_root_path, retry_count,
+                    workspace_root_path, environment_id, retry_count,
                     created_at, updated_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     state=excluded.state, progress_json=excluded.progress_json,
                     result_summary=excluded.result_summary, result_digest=excluded.result_digest,
@@ -134,7 +137,7 @@ public actor BackgroundJobStore {
                     job.id.uuidString, job.conversationID.uuidString, job.runID.uuidString,
                     job.toolCallID, job.kind.rawValue, job.targetTool, job.payloadJSON,
                     job.state.rawValue, job.progressJSON, job.resultSummary, job.resultDigest,
-                    job.resultPath, job.lastError, job.workspaceRootPath, job.retryCount,
+                    job.resultPath, job.lastError, job.workspaceRootPath, job.environmentID, job.retryCount,
                     job.createdAt, job.updatedAt, job.completedAt
                 ])
         }
@@ -223,7 +226,7 @@ public actor BackgroundJobStore {
             state: state, progressJSON: row["progress_json"],
             resultSummary: row["result_summary"], resultDigest: row["result_digest"],
             resultPath: row["result_path"], lastError: row["last_error"],
-            workspaceRootPath: row["workspace_root_path"], retryCount: row["retry_count"],
+            workspaceRootPath: row["workspace_root_path"], environmentID: row["environment_id"], retryCount: row["retry_count"],
             createdAt: row["created_at"], updatedAt: row["updated_at"],
             completedAt: row["completed_at"]
         )

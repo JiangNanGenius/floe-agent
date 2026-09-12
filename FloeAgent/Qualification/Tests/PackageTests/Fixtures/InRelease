@@ -1,0 +1,17 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Suite: floe-test
+Codename: floe-test
+Architectures: all
+Components: main
+SHA256:
+ 0000000000000000000000000000000000000000000000000000000000000000 0 main/binary-all/Packages
+-----BEGIN PGP SIGNATURE-----
+
+iJEEARYKADkWIQQfpMoBHrSn0fPGoah7scujbRmDggUCaqVKEBsUgAAAAAAEAA5t
+YW51MiwyLjUrMS4xMiwwLDMACgkQe7HLo20Zg4JmIAEA2/GwmPqqfhyr0r+8UkfY
+WkUneMpQM4GxxbjsXj7RWksA/jkwsC9Pd3BtW2eWDpvB3J1smtlrgk43PCQ+4qov
+GT8M
+=/pJ0
+-----END PGP SIGNATURE-----

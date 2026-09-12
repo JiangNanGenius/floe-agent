@@ -32,32 +32,45 @@ public enum TarArchive {
     }
 
     public static func read(_ data: Data) throws -> [Entry] {
+        guard data.count <= 256 * 1024 * 1024 else { throw FloeError.validationFailed("Tar exceeds expanded size limit") }
         var entries: [Entry] = []
         var offset = 0
         var longName: String?
+        var longLink: String?
         while offset + 512 <= data.count {
             let header = data.subdata(in: offset..<(offset + 512))
             offset += 512
-            if header.allSatisfy({ $0 == 0 }) { break }
-            guard let name = cString(header, 0, 100) else { break }
+            if header.allSatisfy({ $0 == 0 }) {
+                guard longName == nil, longLink == nil else { throw FloeError.validationFailed("Dangling tar extended header") }
+                return entries
+            }
+            guard entries.count < 10000,
+                  let expected = cString(header, 148, 8).flatMap({ Int($0, radix: 8) }),
+                  expected == header.enumerated().reduce(0, { $0 + ((148..<156).contains($1.offset) ? 32 : Int($1.element)) }) else {
+                throw FloeError.validationFailed("Invalid tar checksum or entry limit")
+            }
+            guard let name = cString(header, 0, 100) else { throw FloeError.validationFailed("Missing tar name") }
             let mode = Int(cString(header, 100, 8) ?? "644", radix: 8) ?? 0o644
-            let size = Int(cString(header, 124, 12) ?? "0", radix: 8) ?? 0
+            guard let size = Int(cString(header, 124, 12) ?? "0", radix: 8), size >= 0, size <= data.count - offset else {
+                throw FloeError.validationFailed("Truncated or invalid tar payload")
+            }
+            let paddedSize = ((size + 511) / 512) * 512
+            guard paddedSize <= data.count - offset else { throw FloeError.validationFailed("Truncated tar padding") }
             let typeFlag = header[156]
-            let linkName = cString(header, 157, 100) ?? ""
+            var linkName = cString(header, 157, 100) ?? ""
             let prefix = cString(header, 345, 155)
             var fullPath = prefix.map { "\($0)/\(name)" } ?? name
             if typeFlag == Character("L").asciiValue ?? 0 || typeFlag == Character("K").asciiValue ?? 0 {
                 let payload = data.subdata(in: offset..<(offset + size))
-                longName = String(data: payload, encoding: .utf8)?
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
+                guard size <= 4096, let value = String(data: payload, encoding: .utf8) else { throw FloeError.validationFailed("Invalid tar extended name") }
+                let name = value.trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
+                if typeFlag == Character("L").asciiValue { longName = name } else { longLink = name }
                 offset += size
                 if offset % 512 != 0 { offset += 512 - (offset % 512) }
                 continue
             }
-            if let longName {
-                fullPath = longName
-                longName = nil
-            }
+            if let extendedName = longName { fullPath = extendedName; longName = nil }
+            if let extendedLink = longLink { linkName = extendedLink; longLink = nil }
             let payloadStart = offset
             let payloadEnd = min(offset + size, data.count)
             let payload = data.subdata(in: payloadStart..<payloadEnd)
@@ -86,7 +99,7 @@ public enum TarArchive {
                 data: kind == .file ? payload : Data()
             ))
         }
-        return entries
+        throw FloeError.validationFailed("Tar end marker is missing")
     }
 
     public static func write(_ entries: [Entry]) -> Data {

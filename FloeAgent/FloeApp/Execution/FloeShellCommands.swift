@@ -17,6 +17,7 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
         var workingDirectory: URL
         var runID: UUID
         var cancellation: CancellationToken
+        var environment: ToolEnvironment? = nil
     }
 
     typealias Handler = @Sendable (_ arguments: [String], _ stdout: UnsafeMutablePointer<FILE>?, _ stderr: UnsafeMutablePointer<FILE>?) async -> Int32
@@ -74,8 +75,8 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
 
     var context: ShellCommandContext? { Self.invocation }
 
-    func bind(sessionID: String, rootURL: URL, runID: UUID?, cancellation: CancellationToken?) {
-        lock.withLock { contexts[sessionID] = ShellCommandContext(rootURL: rootURL, workingDirectory: rootURL, runID: runID ?? UUID(), cancellation: cancellation ?? CancellationToken()) }
+    func bind(sessionID: String, rootURL: URL, runID: UUID?, cancellation: CancellationToken?, environment: ToolEnvironment? = nil) {
+        lock.withLock { contexts[sessionID] = ShellCommandContext(rootURL: rootURL, workingDirectory: rootURL, runID: runID ?? UUID(), cancellation: cancellation ?? CancellationToken(), environment: environment) }
     }
     func cancelCurrent(sessionID: String) {
         lock.withLock { activeInvocations[sessionID]?.values.forEach { $0.cancel() } }
@@ -93,7 +94,26 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
     }
     func unbind(sessionID: String) {
         cancelCurrent(sessionID: sessionID)
+        if FloeShellHasActiveWorker(sessionID) {
+            Task { [weak self] in
+                while FloeShellHasActiveWorker(sessionID) { try? await Task.sleep(for: .milliseconds(50)) }
+                self?.removeContext(sessionID: sessionID)
+            }
+        } else { removeContext(sessionID: sessionID) }
+    }
+    private func removeContext(sessionID: String) {
         _ = lock.withLock { contexts.removeValue(forKey: sessionID) }
+    }
+    func waitForWorkers(environmentID: String) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while true {
+            let ids = lock.withLock { contexts.filter { $0.value.environment?.id == environmentID }.map(\.key) }
+            guard ids.contains(where: { FloeShellHasActiveWorker($0) }) else { return }
+            guard ContinuousClock.now < deadline else {
+                throw FloeError.validationFailed("Native shell work has not stopped; environment data was retained")
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
     }
     func context(sessionID: String) -> ShellCommandContext? { lock.withLock { contexts[sessionID] } }
     func configure(python: LocalPythonService?, installer: CapabilityInstaller?, wasm: SignedWasmCapabilityStore? = nil) {

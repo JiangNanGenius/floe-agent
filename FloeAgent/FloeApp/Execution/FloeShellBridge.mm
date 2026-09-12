@@ -54,6 +54,22 @@ static NSMutableDictionary<NSString *, FloeShellSessionRecord *> *FloeShellSessi
     return sessions;
 }
 
+static NSCountedSet<NSString *> *FloeActiveWorkers(void) {
+    static NSCountedSet *workers;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ workers = [NSCountedSet new]; });
+    return workers;
+}
+static void FloeWorkerStarted(NSString *sessionID) {
+    @synchronized (FloeActiveWorkers()) { [FloeActiveWorkers() addObject:sessionID]; }
+}
+static void FloeWorkerFinished(NSString *sessionID) {
+    @synchronized (FloeActiveWorkers()) { [FloeActiveWorkers() removeObject:sessionID]; }
+}
+BOOL FloeShellHasActiveWorker(NSString *sessionID) {
+    @synchronized (FloeActiveWorkers()) { return [FloeActiveWorkers() countForObject:sessionID] > 0; }
+}
+
 static NSLock *FloeShellRunLock(void) {
     static NSLock *lock;
     static dispatch_once_t once;
@@ -150,6 +166,7 @@ struct FloeRunContext {
     std::unique_ptr<FloePipeCapture> outputCapture;
     std::unique_ptr<FloePipeCapture> errorCapture;
     int32_t exitCode = 125;
+    __strong NSString *trackedSessionID;
     std::atomic_bool finished{false};
     ~FloeRunContext() {
         if (command) free((void *)command);
@@ -157,6 +174,7 @@ struct FloeRunContext {
         if (input) fclose(input);
         if (output) fclose(output);
         if (error) fclose(error);
+        if (trackedSessionID) FloeWorkerFinished(trackedSessionID);
     }
 };
 
@@ -265,6 +283,8 @@ FloeShellBridgeStatus FloeShellRunCommand(
 
         NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
         pthread_t thread;
+        context->trackedSessionID = sessionID;
+        FloeWorkerStarted(sessionID);
         auto holder = new std::shared_ptr<FloeRunContext>(context);
         if (pthread_create(&thread, NULL, FloeRunThreadMain, holder) != 0) {
             delete holder;
@@ -407,6 +427,7 @@ BOOL FloeShellOpenSession(
         free((void *)context->command);
         if (context->rootPath) { free(context->rootPath); }
         delete context;
+        FloeWorkerFinished(sessionID);
     }];
     thread.name = [@"floe.shell." stringByAppendingString:sessionID];
     thread.qualityOfService = NSQualityOfServiceUserInitiated;
@@ -421,6 +442,7 @@ BOOL FloeShellOpenSession(
     @synchronized (FloeShellSessions()) {
         FloeShellSessions()[sessionID] = record;
     }
+    FloeWorkerStarted(sessionID);
     [thread start];
 
     // Give the program a moment to print its banner/prompt.

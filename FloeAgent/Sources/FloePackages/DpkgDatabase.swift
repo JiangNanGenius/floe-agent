@@ -1,3 +1,4 @@
+import FloeEnvironments
 import Foundation
 import FloeCore
 
@@ -118,7 +119,7 @@ public enum DpkgDatabase {
     }
 
     /// Merges a layer stack, top layer wins on name conflicts.
-    public static func merged(_ layers: [(kind: LayerKind, url: URL)]) -> [StatusEntry] {
+    public static func merged(layers: [(kind: LayerKind, url: URL)]) -> [StatusEntry] {
         var seen = Set<String>()
         var result: [StatusEntry] = []
         for layer in layers {

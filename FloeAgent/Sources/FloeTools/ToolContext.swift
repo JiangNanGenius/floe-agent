@@ -11,6 +11,8 @@ public struct ToolContext: Sendable {
     /// execute packages (exec.shell, apt, pip, npm) resolve their writable
     /// layer from this identifier; nil means the default project container.
     public var environmentID: String?
+    public var conversationID: UUID?
+    public var environment: ToolEnvironment?
     /// Durable provider call identifier. Remote/durable tools use it as an
     /// idempotency key so reconnecting never starts the same action twice.
     public var toolCallID: String?
@@ -45,10 +47,14 @@ public struct ToolContext: Sendable {
         allowedWorkspacePaths: [String] = [],
         cancellation: CancellationToken,
         childBudget: ChildBudgetContext? = nil,
-        environmentID: String? = nil
+        environmentID: String? = nil,
+        conversationID: UUID? = nil,
+        environment: ToolEnvironment? = nil
     ) {
         self.runID = runID
         self.environmentID = environmentID
+        self.conversationID = conversationID
+        self.environment = environment
         self.toolCallID = toolCallID
         self.approvalGrantID = approvalGrantID
         self.scope = scope

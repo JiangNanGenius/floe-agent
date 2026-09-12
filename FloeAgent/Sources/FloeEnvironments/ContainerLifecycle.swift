@@ -6,14 +6,14 @@ import FloeCore
 /// of shell/job/media dependencies.
 public actor ContainerLifecycle {
     public struct Hooks: Sendable {
-        public var stopSessions: @Sendable (String) async -> Void
-        public var cancelJobs: @Sendable (String) async -> Void
-        public var terminateWorkers: @Sendable (String) async -> Void
+        public var stopSessions: @Sendable (String) async throws -> Void
+        public var cancelJobs: @Sendable (String) async throws -> Void
+        public var terminateWorkers: @Sendable (String) async throws -> Void
 
         public init(
-            stopSessions: @escaping @Sendable (String) async -> Void = { _ in },
-            cancelJobs: @escaping @Sendable (String) async -> Void = { _ in },
-            terminateWorkers: @escaping @Sendable (String) async -> Void = { _ in }
+            stopSessions: @escaping @Sendable (String) async throws -> Void = { _ in throw FloeError.invalidConfiguration("Environment lifecycle hook is not configured") },
+            cancelJobs: @escaping @Sendable (String) async throws -> Void = { _ in throw FloeError.invalidConfiguration("Environment lifecycle hook is not configured") },
+            terminateWorkers: @escaping @Sendable (String) async throws -> Void = { _ in throw FloeError.invalidConfiguration("Environment lifecycle hook is not configured") }
         ) {
             self.stopSessions = stopSessions
             self.cancelJobs = cancelJobs
@@ -34,6 +34,7 @@ public actor ContainerLifecycle {
     private let cas: ContainerCAS
     private let hooks: Hooks
     private let fileManager = FileManager.default
+    private var deleting = Set<String>()
 
     public init(
         roots: EnvironmentRoots = .shared,
@@ -50,7 +51,7 @@ public actor ContainerLifecycle {
     /// Stops work and destroys the writable layer. Templates and the shared
     /// layer are immutable here (remove them explicitly through the registry).
     @discardableResult
-    public func destroy(containerID: String, orphaned: Bool = false) async -> DestroyReport? {
+    public func destroy(containerID: String, orphaned: Bool = false) async throws -> DestroyReport? {
         guard let record = await registry.record(id: containerID) else { return nil }
         guard record.kind == .session || record.kind == .project else {
             return DestroyReport(
@@ -61,36 +62,39 @@ public actor ContainerLifecycle {
                 orphaned: orphaned
             )
         }
-        await stopWork(containerID: containerID)
+        guard !deleting.contains(containerID) else { throw FloeError.validationFailed("Environment deletion is already in progress") }
+        deleting.insert(containerID)
+        defer { deleting.remove(containerID) }
+        try await registry.transition(id: containerID, state: .deleting)
+        do { try await stopWork(containerID: containerID) }
+        catch {
+            try? await registry.transition(id: containerID, state: record.state)
+            throw error
+        }
         let layerURL = roots.layerURL(id: record.id, kind: record.kind)
         let manifest = LayerManifest.load(from: layerURL)
-        var reclaimed: Int64 = directorySize(at: layerURL)
-        let trash = roots.trashURL.appendingPathComponent("\(record.id)-\(Int(Date().timeIntervalSince1970))")
+        let bytes = directorySize(at: layerURL)
+        let trash = roots.trashURL.appendingPathComponent(record.id + "-" + UUID().uuidString)
         do {
             try fileManager.createDirectory(at: roots.trashURL, withIntermediateDirectories: true)
-            if fileManager.fileExists(atPath: layerURL.path) {
-                try fileManager.moveItem(at: layerURL, to: trash)
-            }
+            if fileManager.fileExists(atPath: layerURL.path) { try fileManager.moveItem(at: layerURL, to: trash) }
+            _ = try await registry.remove(id: record.id)
         } catch {
-            FloeLogger(category: .tools).error("containerTrashFailed id=\(record.id) error=\(error.localizedDescription)")
+            if fileManager.fileExists(atPath: trash.path), !fileManager.fileExists(atPath: layerURL.path) {
+                try? fileManager.moveItem(at: trash, to: layerURL)
+            }
+            try? await registry.transition(id: containerID, state: .stopped)
+            throw error
         }
-        if let refs = manifest?.casRefs, !refs.isEmpty {
-            await cas.release(refs)
-        }
-        _ = try? await registry.remove(id: record.id)
+        let refs = manifest?.casRefs ?? []
+        await cas.release(refs)
+        var reclaimed: Int64 = 0
         if fileManager.fileExists(atPath: trash.path) {
-            reclaimed += directorySize(at: trash)
-            try? fileManager.removeItem(at: trash)
-        } else {
-            reclaimed = 0
+            do { try fileManager.removeItem(at: trash); reclaimed = bytes }
+            catch { FloeLogger(category: .tools).error("containerTrashRetained id=\(record.id)") }
         }
-        return DestroyReport(
-            containerID: record.id,
-            kind: record.kind,
-            reclaimedBytes: reclaimed,
-            casReleased: manifest?.casRefs.count ?? 0,
-            orphaned: orphaned
-        )
+        return DestroyReport(containerID: record.id, kind: record.kind, reclaimedBytes: reclaimed,
+                             casReleased: refs.count, orphaned: orphaned)
     }
 
     /// Destroys every session/project container whose owner no longer exists.
@@ -98,20 +102,20 @@ public actor ContainerLifecycle {
     public func collectOrphans(
         liveConversationIDs: Set<String>,
         liveWorkspaceIDs: Set<String>
-    ) async -> [DestroyReport] {
+    ) async throws -> [DestroyReport] {
         let all = await registry.all()
         var reports: [DestroyReport] = []
         for record in all {
             switch record.kind {
             case .session:
                 if let owner = record.ownerID, !liveConversationIDs.contains(owner) {
-                    if let report = await destroy(containerID: record.id, orphaned: true) {
+                    if let report = try await destroy(containerID: record.id, orphaned: true) {
                         reports.append(report)
                     }
                 }
             case .project:
                 if let owner = record.ownerID, !liveWorkspaceIDs.contains(owner) {
-                    if let report = await destroy(containerID: record.id, orphaned: true) {
+                    if let report = try await destroy(containerID: record.id, orphaned: true) {
                         reports.append(report)
                     }
                 }
@@ -157,8 +161,8 @@ public actor ContainerLifecycle {
         try await registry.clearRebuild(id: containerID)
     }
 
-    public func stop(containerID: String) async {
-        await stopWork(containerID: containerID)
+    public func stop(containerID: String) async throws {
+        try await stopWork(containerID: containerID)
         try? await registry.transition(id: containerID, state: .stopped)
     }
 
@@ -172,10 +176,10 @@ public actor ContainerLifecycle {
         }
     }
 
-    private func stopWork(containerID: String) async {
-        await hooks.stopSessions(containerID)
-        await hooks.cancelJobs(containerID)
-        await hooks.terminateWorkers(containerID)
+    private func stopWork(containerID: String) async throws {
+        try await hooks.stopSessions(containerID)
+        try await hooks.cancelJobs(containerID)
+        try await hooks.terminateWorkers(containerID)
     }
 
     private func directorySize(at url: URL) -> Int64 {

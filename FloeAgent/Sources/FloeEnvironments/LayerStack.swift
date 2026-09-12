@@ -77,6 +77,13 @@ public struct ResolvedLayerStack: Sendable {
         self.layers = layers
     }
 
+    private func contained(_ path: String, in root: URL) -> URL? {
+        guard !path.hasPrefix("/"), !path.contains("\0"), !path.split(separator: "/").contains("..") else { return nil }
+        let base = root.resolvingSymlinksInPath().standardizedFileURL
+        let candidate = base.appendingPathComponent(path).resolvingSymlinksInPath().standardizedFileURL
+        return candidate == base || candidate.path.hasPrefix(base.path + "/") ? candidate : nil
+    }
+
     public func layers(ofKind kind: LayerKind) -> [Layer] {
         layers.filter { $0.kind == kind }
     }
@@ -85,7 +92,7 @@ public struct ResolvedLayerStack: Sendable {
     /// existing file (top layer wins).
     public func resolve(_ relativePath: String) -> URL? {
         for layer in layers {
-            let candidate = layer.url.appendingPathComponent(relativePath)
+            guard let candidate = contained(relativePath, in: layer.url) else { continue }
             if FileManager.default.fileExists(atPath: candidate.path) {
                 return candidate
             }
@@ -96,7 +103,7 @@ public struct ResolvedLayerStack: Sendable {
     /// All existing candidates for a relative directory, top-first.
     public func resolveAll(_ relativePath: String) -> [URL] {
         layers.compactMap { layer in
-            let candidate = layer.url.appendingPathComponent(relativePath)
+            guard let candidate = contained(relativePath, in: layer.url) else { return nil }
             return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
         }
     }

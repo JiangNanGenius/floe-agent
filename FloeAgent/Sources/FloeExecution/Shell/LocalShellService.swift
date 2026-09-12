@@ -132,7 +132,8 @@ public actor LocalShellService {
             timeout: normalizedTimeout(timeout, isBackground: isBackground),
             maxOutputBytes: normalizedOutputCap(maxOutputBytes),
             sessionID: context.toolCallID ?? context.runID.uuidString,
-            runID: context.runID
+            runID: context.runID,
+            toolEnvironment: context.environment
         )
         let started = Date()
         let outcome = await backend.run(request, cancellation: context.cancellation)

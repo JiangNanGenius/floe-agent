@@ -133,7 +133,7 @@ public enum AptIndex {
         release: AptRelease,
         digest: (Data) -> String
     ) throws {
-        guard let expected = release.hashes[relativePath] else { return }
+        guard let expected = release.hashes[relativePath] else { throw IndexError.hashMismatch(relativePath) }
         let actual = digest(packagesData)
         guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
             throw IndexError.hashMismatch(relativePath)

@@ -14,7 +14,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         do { directory = try ShellInputValidation.directory(cwd: request.cwd, root: request.rootURL) }
         catch { return .failed(message: String(describing: error)) }
         if cancellation?.isCancelled == true { return .cancelled }
-        FloeShellCommandRegistry.shared.bind(sessionID: request.sessionID, rootURL: request.rootURL, runID: request.runID, cancellation: cancellation)
+        FloeShellCommandRegistry.shared.bind(sessionID: request.sessionID, rootURL: request.rootURL, runID: request.runID, cancellation: cancellation, environment: request.toolEnvironment)
         defer { FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID) }
         return await Task.detached(priority: .userInitiated) {
             let started = DispatchTime.now().uptimeNanoseconds
@@ -22,7 +22,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             var code: Int32 = 125
             let escaped = request.command.replacingOccurrences(of: "'", with: "'\\''")
             let command = "dash -c '\(escaped)'"
-            let status = FloeShellRunCommand(command, request.rootURL.path, directory.path, request.sessionID, request.environment, request.stdin.map { Data($0.utf8) }, request.timeout, UInt(max(1, request.maxOutputBytes)), { cancellation?.isCancelled == true }, &stdout, &stderr, &code)
+            let status = FloeShellRunCommand(command, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.stdin.map { Data($0.utf8) }, request.timeout, UInt(max(1, request.maxOutputBytes)), { cancellation?.isCancelled == true }, &stdout, &stderr, &code)
             let duration = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
             let out = stdout as String? ?? "", err = stderr as String? ?? ""
             if cancellation?.isCancelled == true { return .cancelled }
@@ -38,13 +38,13 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         let directory = try ShellInputValidation.directory(cwd: request.cwd, root: request.rootURL)
-        FloeShellCommandRegistry.shared.bind(sessionID: request.sessionID, rootURL: request.rootURL, runID: request.runID, cancellation: cancellation)
+        FloeShellCommandRegistry.shared.bind(sessionID: request.sessionID, rootURL: request.rootURL, runID: request.runID, cancellation: cancellation, environment: request.toolEnvironment)
         return try await Task.detached(priority: .userInitiated) { [self] in
             var inputFD: Int32 = -1, outputFD: Int32 = -1
             var initial: NSString?
             let escaped = request.command.replacingOccurrences(of: "'", with: "'\\''")
             let body = request.command.isEmpty ? "dash -i" : "dash -c '\(escaped)'"
-            guard FloeShellOpenSession(body, request.rootURL.path, directory.path, request.sessionID, request.environment, request.columns, request.rows, &inputFD, &outputFD, &initial), inputFD >= 0, outputFD >= 0 else {
+            guard FloeShellOpenSession(body, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.columns, request.rows, &inputFD, &outputFD, &initial), inputFD >= 0, outputFD >= 0 else {
                 FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID)
                 throw FloeError.internalError("The local shell could not open a session")
             }

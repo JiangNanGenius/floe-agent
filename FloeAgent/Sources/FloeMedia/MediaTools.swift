@@ -216,9 +216,9 @@ public enum MediaToolRegistration {
         registry.register(VideoExtractFramesTool())
         #endif
         ToolCatalog.register(VideoInterpolateTool.self)
-        registry.register(VideoInterpolateTool())
+        registry.register(VideoInterpolateTool(processor: frameProcessing ?? UnavailableFrameProcessing()))
         ToolCatalog.register(VideoSuperResolutionTool.self)
-        registry.register(VideoSuperResolutionTool())
+        registry.register(VideoSuperResolutionTool(processor: frameProcessing ?? UnavailableFrameProcessing()))
         ToolCatalog.register(AudioInspectTool.self)
         registry.register(AudioInspectTool())
         ToolCatalog.register(AudioEditTool.self)

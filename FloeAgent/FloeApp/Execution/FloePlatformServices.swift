@@ -117,14 +117,14 @@ final class FloePlatformServices: @unchecked Sendable {
                     entry = toolPath
                 }
                 let environment = IOSSystemNodeRuntime.defaultEnvironment(
-                    containerRoot: context.rootURL,
+                    containerRoot: context.environment?.writableLayerURL ?? context.rootURL,
                     workspaceRoot: context.rootURL
                 )
                 let request = NodeRunRequest(
                     entryScript: entry,
                     arguments: userArguments,
-                    workingDirectory: context.rootURL,
-                    environment: environment,
+                    workingDirectory: context.workingDirectory,
+                    environment: environment.merging(context.environment?.variables ?? [:]) { _, resolved in resolved },
                     timeout: 300,
                     maxOutputBytes: 256 * 1024
                 )

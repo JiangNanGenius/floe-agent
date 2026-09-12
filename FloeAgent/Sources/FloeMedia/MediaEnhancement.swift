@@ -219,39 +219,7 @@ public struct MediaEnhancementRouting: Sendable {
     }
 
     private func videoToolboxProcess(_ request: Request, kind: Kind) async throws -> String {
-        #if canImport(AVFoundation) && canImport(VideoToolbox)
-        if #available(iOS 26.0, macOS 26.0, *) {
-            let asset = AVURLAsset(url: request.input)
-            let videoTracks = try await asset.loadTracks(withMediaType: .video)
-            guard let track = videoTracks.first else {
-                throw FloeError.validationFailed("input has no video track")
-            }
-            let size = try await track.load(.naturalSize)
-            let frameRate = try await track.load(.nominalFrameRate)
-            switch kind {
-            case .interpolation:
-                guard let targetFPS = request.targetFPS, targetFPS > 0 else {
-                    throw FloeError.validationFailed("targetFPS is required for interpolation")
-                }
-                guard VTSuperResolutionScalerConfiguration.isSupported else {
-                    throw FloeError.invalidConfiguration("frame rate conversion is not supported on this device")
-                }
-                return "mode=\(request.mode) targetFPS=\(targetFPS) sourceFPS=\(frameRate) size=\(Int(size.width))x\(Int(size.height)) frames=deferred-to-pipeline"
-            case .superResolution:
-                guard let scaleFactor = request.scaleFactor, scaleFactor > 1 else {
-                    throw FloeError.validationFailed("scaleFactor > 1 is required for super resolution")
-                }
-                let supported = VTSuperResolutionScalerConfiguration.supportedScaleFactors.map { $0.intValue }
-                guard supported.isEmpty || supported.contains(scaleFactor) else {
-                    throw FloeError.validationFailed("scaleFactor \(scaleFactor) is not supported; device supports \(supported)")
-                }
-                return "mode=\(request.mode) scaleFactor=\(scaleFactor) size=\(Int(size.width))x\(Int(size.height)) frames=deferred-to-pipeline"
-            }
-        }
-        throw FloeError.invalidConfiguration("frame processing requires iOS 26 or later")
-        #else
-        throw FloeError.invalidConfiguration("video processing is unavailable on this platform")
-        #endif
+        throw FloeError.invalidConfiguration("Native frame processing has no connected output pipeline in this build")
     }
 }
 
@@ -273,7 +241,8 @@ public struct VideoInterpolateTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
 
-    public init() {}
+    private let processor: any FrameProcessing
+    public init(processor: any FrameProcessing = UnavailableFrameProcessing()) { self.processor = processor }
 
     public func validate(_ args: Arguments) throws {
         guard args.targetFPS > 0 else { throw FloeError.validationFailed("targetFPS must be positive") }
@@ -283,15 +252,13 @@ public struct VideoInterpolateTool: AgentTool {
         guard let root = context.workspaceRootURL else {
             throw FloeError.validationFailed("a workspace root is required")
         }
-        let routing = MediaEnhancementRouting()
-        let result = try await routing.interpolate(.init(
+        let result = try await processor.interpolate(
             input: root.appendingPathComponent(args.input),
             output: root.appendingPathComponent(args.output),
             targetFPS: args.targetFPS,
             mode: args.mode,
-            modelID: args.modelID,
-            quality: args.quality
-        ))
+            modelID: args.modelID
+        )
         return ToolExecutionOutput(digesting: result, exitStatus: 0)
     }
 }
@@ -314,7 +281,8 @@ public struct VideoSuperResolutionTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
 
-    public init() {}
+    private let processor: any FrameProcessing
+    public init(processor: any FrameProcessing = UnavailableFrameProcessing()) { self.processor = processor }
 
     public func validate(_ args: Arguments) throws {
         guard args.scaleFactor > 1 else { throw FloeError.validationFailed("scaleFactor must be greater than 1") }
@@ -324,15 +292,13 @@ public struct VideoSuperResolutionTool: AgentTool {
         guard let root = context.workspaceRootURL else {
             throw FloeError.validationFailed("a workspace root is required")
         }
-        let routing = MediaEnhancementRouting()
-        let result = try await routing.superResolution(.init(
+        let result = try await processor.superResolution(
             input: root.appendingPathComponent(args.input),
             output: root.appendingPathComponent(args.output),
             scaleFactor: args.scaleFactor,
             mode: args.mode,
-            modelID: args.modelID,
-            quality: args.quality
-        ))
+            modelID: args.modelID
+        )
         return ToolExecutionOutput(digesting: result, exitStatus: 0)
     }
 }

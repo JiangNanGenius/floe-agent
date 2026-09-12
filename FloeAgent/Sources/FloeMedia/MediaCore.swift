@@ -42,6 +42,17 @@ public struct MediaCapabilities: Sendable, Codable {
     public var containers: [String]
     public var notes: [String]
 
+    #if canImport(AVFoundation)
+    private static func supportsHardwareEncoding(_ codec: CMVideoCodecType) -> Bool {
+        var session: VTCompressionSession?
+        let status = VTCompressionSessionCreate(allocator: kCFAllocatorDefault, width: 64, height: 64,
+            codecType: codec, encoderSpecification: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true] as CFDictionary,
+            imageBufferAttributes: nil, compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &session)
+        if let session { VTCompressionSessionInvalidate(session) }
+        return status == noErr
+    }
+    #endif
+
     public static func probe(appBuild: String) -> MediaCapabilities {
         #if canImport(AVFoundation)
         var native = Native(
@@ -53,20 +64,20 @@ public struct MediaCapabilities: Sendable, Codable {
             temporalNoiseFilter: false,
             motionBlur: false,
             metalFXFrameInterpolator: false,
-            hardwareEncodeH264: VTIsHardwareDecodeSupported(kVTVideoCodecType_H264),
-            hardwareEncodeHEVC: VTIsHardwareDecodeSupported(kVTVideoCodecType_HEVC),
-            hardwareDecodeAV1: VTIsHardwareDecodeSupported(kVTVideoCodecType_AV1),
-            personSegmentation: true,
+            hardwareEncodeH264: supportsHardwareEncoding(kCMVideoCodecType_H264),
+            hardwareEncodeHEVC: supportsHardwareEncoding(kCMVideoCodecType_HEVC),
+            hardwareDecodeAV1: VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1),
+            personSegmentation: false,
             supportedScaleFactors: [],
             maximumDimension: 0
         )
         if #available(iOS 26.0, macOS 26.0, *) {
-            native.frameRateConversion = VTSuperResolutionScalerConfiguration.isSupported
-            native.superResolution = VTSuperResolutionScalerConfiguration.isSupported
-            native.supportedScaleFactors = VTSuperResolutionScalerConfiguration.supportedScaleFactors.map { $0.intValue }
+            native.frameRateConversion = false
+            native.superResolution = false
+            native.supportedScaleFactors = VTSuperResolutionScalerConfiguration.supportedScaleFactors.map { Int($0) }
         }
         if #available(iOS 27.0, macOS 27.0, *) {
-            native.lowLatencyInterpolation = VTLowLatencyFrameInterpolationConfiguration.isSupported
+            native.lowLatencyInterpolation = false
         }
         return MediaCapabilities(
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
@@ -372,11 +383,7 @@ public actor MediaRenderer {
         for timestamp in timestamps.sorted() {
             let time = CMTime(seconds: timestamp, preferredTimescale: 600)
             let image = try await generator.image(at: time).image
-            #if canImport(UIKit)
-            guard let data = image.pngData() ?? image.jpegData(compressionQuality: 0.9) else { continue }
-            #else
-            guard let data = image.pngData else { continue }
-            #endif
+                guard let data = MediaImageEncoding.png(image) else { continue }
             let name = String(format: "frame-%010.3f.\(format)", timestamp)
             let destination = directory.appendingPathComponent(name)
             try data.write(to: destination, options: .atomic)

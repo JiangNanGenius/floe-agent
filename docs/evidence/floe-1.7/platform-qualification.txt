@@ -1,0 +1,55 @@
+Local Xcode 27 beta, macOS host; not iOS device acceptance.
+Command: swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 2
+
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Job environment persistence" started.
+◇ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() started.
+✔ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() passed after 0.133 seconds.
+✔ Suite "Job environment persistence" passed after 0.133 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.134 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Package integrity" started.
+◇ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() started.
+◇ Test emptyTrustStoreNeverAcceptsRepository() started.
+◇ Test tarChecksTruncationAndChecksum() started.
+◇ Test acceptsGnuPGSignatureAndRejectsTampering() started.
+✔ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() passed after 0.005 seconds.
+✔ Test tarChecksTruncationAndChecksum() passed after 0.012 seconds.
+✔ Test acceptsGnuPGSignatureAndRejectsTampering() passed after 0.025 seconds.
+✔ Test emptyTrustStoreNeverAcceptsRepository() passed after 0.028 seconds.
+✔ Suite "Package integrity" passed after 0.029 seconds.
+✔ Test run with 4 tests in 1 suite passed after 0.029 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Real media exports" started.
+◇ Test rejectedAndCancelledExportsPreserveFiles() started.
+◇ Test requestedDimensionsAndFrameRateReachEncodedFile() started.
+◇ Test audioConversionAppliesRateAndChannels() started.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.324 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 0.859 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 1.465 seconds.
+✔ Suite "Real media exports" passed after 1.466 seconds.
+✔ Test run with 3 tests in 1 suite passed after 1.466 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Environment durability" started.
+◇ Test corruptRegistryIsPreserved() started.
+◇ Test projectsAndCancellationRemainScoped() started.
+◇ Test explicitEnvironmentCannotCrossWorkspace() started.
+◇ Test registrySurvivesRestartAndMarksNewBase() started.
+◇ Test failedStopPreservesEnvironment() started.
+◇ Test casRetainsSharedBlobsAndCopiesAreIndependent() started.
+✔ Test corruptRegistryIsPreserved() passed after 0.066 seconds.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.109 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.134 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.142 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.174 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.251 seconds.
+✔ Suite "Environment durability" passed after 0.252 seconds.
+✔ Test run with 6 tests in 1 suite passed after 0.253 seconds.

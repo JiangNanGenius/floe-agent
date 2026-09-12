@@ -14,7 +14,7 @@ public struct ShellRunRequest: Sendable {
     public var command: String
     /// Virtual working directory, workspace-relative (`"."` = root).
     public var cwd: String
-    /// Confinement root. External commands may not leave it.
+    /// Workspace root for relative paths; native commands share the App process.
     public var rootURL: URL
     /// Additional environment exported for this run only.
     public var environment: [String: String]
@@ -27,6 +27,7 @@ public struct ShellRunRequest: Sendable {
     /// Stable session identity; backends that keep per-session state use it.
     public var sessionID: String
     public var runID: UUID?
+    public var toolEnvironment: ToolEnvironment?
 
     public init(
         command: String,
@@ -37,7 +38,8 @@ public struct ShellRunRequest: Sendable {
         timeout: TimeInterval = 10,
         maxOutputBytes: Int = 64 * 1024,
         sessionID: String,
-        runID: UUID? = nil
+        runID: UUID? = nil,
+        toolEnvironment: ToolEnvironment? = nil
     ) {
         self.command = command
         self.cwd = cwd
@@ -48,6 +50,7 @@ public struct ShellRunRequest: Sendable {
         self.maxOutputBytes = maxOutputBytes
         self.sessionID = sessionID
         self.runID = runID
+        self.toolEnvironment = toolEnvironment
     }
 }
 
@@ -81,6 +84,7 @@ public struct ShellOpenRequest: Sendable {
     public var rows: Int
     public var sessionID: String
     public var runID: UUID?
+    public var toolEnvironment: ToolEnvironment?
 
     public init(
         command: String = "",
@@ -90,7 +94,8 @@ public struct ShellOpenRequest: Sendable {
         columns: Int = 80,
         rows: Int = 24,
         sessionID: String,
-        runID: UUID? = nil
+        runID: UUID? = nil,
+        toolEnvironment: ToolEnvironment? = nil
     ) {
         self.command = command
         self.cwd = cwd
@@ -100,6 +105,7 @@ public struct ShellOpenRequest: Sendable {
         self.rows = rows
         self.sessionID = sessionID
         self.runID = runID
+        self.toolEnvironment = toolEnvironment
     }
 }
 

@@ -28,6 +28,7 @@ public actor ShellSessionCenter {
         var sessionID: String
         var schedulerID: UUID
         var runID: UUID
+        var environmentLease: ToolEnvironmentLease
         var expiresAt: Date
         var buffer: String
         var alive: Bool
@@ -62,7 +63,8 @@ public actor ShellSessionCenter {
         runID: UUID,
         rootURL: URL,
         cancellation: CancellationToken?,
-        forTerminal: Bool = false
+        forTerminal: Bool = false,
+        toolEnvironment: ToolEnvironment? = nil
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         try ShellInputValidation.validate(command: command, cwd: cwd, environment: environment)
@@ -79,6 +81,7 @@ public actor ShellSessionCenter {
         pendingOpens += 1
         defer { pendingOpens -= 1 }
         let sessionID = UUID().uuidString.lowercased()
+        let lease = try await ToolEnvironmentRouting.shared.acquire(ToolContext(runID: runID, workspaceRootURL: rootURL, cancellation: cancellation ?? CancellationToken(), environmentID: toolEnvironment?.id, environment: toolEnvironment))
         let request = ShellOpenRequest(
             command: command,
             cwd: cwd,
@@ -87,13 +90,17 @@ public actor ShellSessionCenter {
             columns: max(20, min(columns, 500)),
             rows: max(5, min(rows, 200)),
             sessionID: sessionID,
-            runID: runID
+            runID: runID,
+            toolEnvironment: lease.context.environment
         )
-        let result = try await backend.openSession(request, cancellation: cancellation)
+        let result: ShellOpenResult
+        do { result = try await backend.openSession(request, cancellation: cancellation) }
+        catch { await lease.finish(); throw error }
         let entry = Entry(
             sessionID: sessionID,
             schedulerID: UUID(),
             runID: runID,
+            environmentLease: lease,
             expiresAt: Date().addingTimeInterval(configuration.sessionLifetime),
             buffer: "",
             alive: result.alive
@@ -103,6 +110,7 @@ public actor ShellSessionCenter {
             await scheduleExpiry(for: sessionID, schedulerID: entry.schedulerID)
         } else {
             await backend.closeSession(sessionID: sessionID)
+            await lease.finish()
         }
         return ShellOpenResult(
             sessionID: sessionID,
@@ -167,6 +175,7 @@ public actor ShellSessionCenter {
         sessions.removeValue(forKey: sessionID)
         await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
         await backend.closeSession(sessionID: sessionID)
+        await entry.environmentLease.finish()
     }
 
     public func signal(sessionID: String, signal: ShellSignal, runID: UUID) async {
@@ -185,18 +194,25 @@ public actor ShellSessionCenter {
             sessions.removeValue(forKey: entry.sessionID)
             await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
             await backend.closeSession(sessionID: entry.sessionID)
+            await entry.environmentLease.finish()
         }
     }
 
     /// Closes every live session. Container teardown uses this hook; session
     /// tagging by container is applied when the run context carries an
     /// environment identifier.
+    public func closeAll(environmentID: String) async {
+        let owned = sessions.values.filter { $0.environmentLease.context.environmentID == environmentID }
+        for entry in owned { await close(sessionID: entry.sessionID, runID: entry.runID) }
+    }
+
     public func closeAllSessions() async {
         let all = Array(sessions.values)
         for entry in all {
             sessions.removeValue(forKey: entry.sessionID)
             await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
             await backend.closeSession(sessionID: entry.sessionID)
+            await entry.environmentLease.finish()
         }
     }
 
@@ -217,5 +233,6 @@ public actor ShellSessionCenter {
         }
         sessions.removeValue(forKey: sessionID)
         await backend.closeSession(sessionID: sessionID)
+        await entry.environmentLease.finish()
     }
 }

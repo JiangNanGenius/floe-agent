@@ -75,7 +75,8 @@ public actor BackgroundJobService {
         payloadJSON: Data,
         scope: ToolScope,
         workspaceRootURL: URL?,
-        allowedWorkspacePaths: [String]
+        allowedWorkspacePaths: [String],
+        environmentID: String? = nil
     ) async throws -> BackgroundJob {
         guard Self.supportedTargets.contains(targetTool) else {
             throw FloeError.validationFailed(
@@ -96,7 +97,8 @@ public actor BackgroundJobService {
             conversationID: conversationID, runID: runID, toolCallID: toolCallID,
             kind: isDownload ? .download : .tool,
             targetTool: targetTool, payloadJSON: payloadJSON,
-            workspaceRootPath: workspaceRootURL?.path
+            workspaceRootPath: workspaceRootURL?.path,
+            environmentID: environmentID
         )
         let persisted: BackgroundJob
         do {
@@ -157,7 +159,9 @@ public actor BackgroundJobService {
                     scope: scope,
                     workspaceRootURL: workspaceRootURL,
                     allowedWorkspacePaths: allowedWorkspacePaths,
-                    cancellation: token
+                    cancellation: token,
+                    environmentID: job.environmentID,
+                    conversationID: job.conversationID
                 )
                 let output = try await runner.execute(argumentsJSON: job.payloadJSON, context: context)
                 summary = output.summary

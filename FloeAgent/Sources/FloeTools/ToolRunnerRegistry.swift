@@ -87,7 +87,15 @@ public struct AnyAgentTool: Sendable {
 
     /// Executes the tool with JSON-encoded arguments.
     public func execute(argumentsJSON: Data, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await run(argumentsJSON, context)
+        let lease = try await ToolEnvironmentRouting.shared.acquire(context)
+        do {
+            let output = try await run(argumentsJSON, lease.context)
+            await lease.finish()
+            return output
+        } catch {
+            await lease.finish()
+            throw error
+        }
     }
 }
 

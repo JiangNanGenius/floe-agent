@@ -35,6 +35,11 @@ public struct FloeEnvCommand: Sendable {
     }
 
     public func run(_ arguments: [String]) async -> Result {
+        do { return try await execute(arguments) }
+        catch { return Result(output: "floe-env: \(error)", exitCode: 1) }
+    }
+
+    private func execute(_ arguments: [String]) async throws -> Result {
         let args = arguments.dropFirst().filter { $0 != "floe-env" }
         let action = args.first ?? "list"
         switch action {
@@ -51,13 +56,13 @@ public struct FloeEnvCommand: Sendable {
             guard let id = args.dropFirst().first else {
                 return Result(output: "usage: floe-env stop <id>", exitCode: 2)
             }
-            await lifecycle.stop(containerID: id)
+            try await lifecycle.stop(containerID: id)
             return Result(output: "stopped \(id)")
         case "rm", "remove":
             guard let id = args.dropFirst().first else {
                 return Result(output: "usage: floe-env rm <id>", exitCode: 2)
             }
-            guard let report = await lifecycle.destroy(containerID: id) else {
+            guard let report = try await lifecycle.destroy(containerID: id) else {
                 return Result(output: "floe-env: container not found: \(id)", exitCode: 1)
             }
             return Result(output: "removed \(report.containerID) reclaimed=\(formatBytes(report.reclaimedBytes)) casReleased=\(report.casReleased)")
@@ -108,8 +113,8 @@ public struct FloeEnvCommand: Sendable {
     }
 
     private func inspect(id: String) async -> Result {
-        let record = await registry.record(id: id)
-            ?? await registry.containersOwned(by: id).first
+        var record = await registry.record(id: id)
+        if record == nil { record = await registry.containersOwned(by: id).first }
         guard let record else {
             return Result(output: "floe-env: container not found: \(id)", exitCode: 1)
         }

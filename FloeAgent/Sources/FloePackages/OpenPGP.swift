@@ -21,30 +21,30 @@ public enum OpenPGP {
         var offset = 0
         while offset < data.count {
             let first = data[offset]
-            guard first & 0x80 != 0 else { break }
+            guard first & 0x80 != 0 else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
             let isNewFormat = first & 0x40 != 0
             let tag: Int
             var bodyLength: Int
             if isNewFormat {
                 tag = Int(first & 0x3F)
                 offset += 1
-                guard offset < data.count else { break }
+                guard offset < data.count else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
                 let lengthByte = data[offset]
                 offset += 1
                 if lengthByte < 192 {
                     bodyLength = Int(lengthByte)
                 } else if lengthByte < 224 {
-                    guard offset < data.count else { break }
-                    bodyLength = (Int(lengthByte) - 192) << 8 + Int(data[offset]) + 192
+                    guard offset < data.count else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
+                    bodyLength = ((Int(lengthByte) - 192) << 8) + Int(data[offset]) + 192
                     offset += 1
                 } else if lengthByte == 255 {
-                    guard offset + 4 <= data.count else { break }
+                    guard offset + 4 <= data.count else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
                     bodyLength = Int(data[offset]) << 24 | Int(data[offset + 1]) << 16 | Int(data[offset + 2]) << 8 | Int(data[offset + 3])
                     offset += 4
                 } else {
                     // Partial body lengths are not used in key/signature
                     // packets we consume; skip the remainder defensively.
-                    break
+                    throw FloeError.validationFailed("Partial OpenPGP packets are unsupported")
                 }
             } else {
                 tag = Int((first >> 2) & 0x0F)
@@ -52,22 +52,22 @@ public enum OpenPGP {
                 offset += 1
                 switch lengthType {
                 case 0:
-                    guard offset < data.count else { break }
+                    guard offset < data.count else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
                     bodyLength = Int(data[offset])
                     offset += 1
                 case 1:
-                    guard offset + 2 <= data.count else { break }
+                    guard offset + 2 <= data.count else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
                     bodyLength = Int(data[offset]) << 8 | Int(data[offset + 1])
                     offset += 2
                 case 2:
-                    guard offset + 4 <= data.count else { break }
+                    guard offset + 4 <= data.count else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
                     bodyLength = Int(data[offset]) << 24 | Int(data[offset + 1]) << 16 | Int(data[offset + 2]) << 8 | Int(data[offset + 3])
                     offset += 4
                 default:
                     bodyLength = data.count - offset
                 }
             }
-            guard bodyLength >= 0, offset + bodyLength <= data.count else { break }
+            guard bodyLength >= 0, offset + bodyLength <= data.count else { throw FloeError.validationFailed("Malformed OpenPGP packet") }
             packets.append(RawPacket(tag: tag, body: data.subdata(in: offset..<(offset + bodyLength))))
             offset += bodyLength
         }
@@ -101,8 +101,7 @@ public enum OpenPGP {
     public static func parsePublicKey(_ body: Data, isSubkey: Bool = false) throws -> PublicKey {
         var reader = Reader(body)
         let version = try reader.byte()
-        _ = try reader.uint32() // creation time
-        let creationTime = Date(timeIntervalSince1970: TimeInterval(0))
+        let creationTime = Date(timeIntervalSince1970: TimeInterval(try reader.uint32()))
         let algorithm = try reader.byte()
         var rsaModulus: Data?
         var rsaExponent: Int?
@@ -118,13 +117,15 @@ public enum OpenPGP {
             // OID length + OID (Ed25519: 2B 06 01 04 01 DA 47 0F 01)
             let oidLength = try reader.byte()
             ecCurveOID = Array(try reader.bytes(count: Int(oidLength)))
-            let pointLength = try reader.byte()
-            ed25519Point = try reader.bytes(count: Int(pointLength))
+            let point = try mpi(&reader)
+            guard ecCurveOID == [0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01], point.count == 33, point.first == 0x40 else {
+                throw FloeError.validationFailed("Unsupported OpenPGP EdDSA key")
+            }
+            ed25519Point = Data(point.dropFirst())
         case 19: // ECDSA
             let oidLength = try reader.byte()
             ecCurveOID = Array(try reader.bytes(count: Int(oidLength)))
-            let pointLength = try reader.byte()
-            ecPointData = try reader.bytes(count: Int(pointLength))
+            ecPointData = try mpi(&reader)
         default:
             break
         }
@@ -153,7 +154,8 @@ public enum OpenPGP {
             rsaExponent: rsaExponent,
             ed25519Point: ed25519Point,
             ecPointData: ecPointData,
-            ecCurveOID: ecCurveOID
+            ecCurveOID: ecCurveOID,
+            revoked: false
         )
     }
 
@@ -181,7 +183,7 @@ public enum OpenPGP {
     public static func parseSignature(_ body: Data) throws -> Signature {
         var reader = Reader(body)
         let version = try reader.byte()
-        guard version == 4 || version == 5 || version == 6 else {
+        guard version == 4 else {
             throw FloeError.validationFailed("unsupported signature version \(version)")
         }
         var signatureType: UInt8 = 0
@@ -202,14 +204,13 @@ public enum OpenPGP {
         // The hashed portion starts at the version octet (RFC 4880 §5.2.4).
         let hashedPortion = body.subdata(in: 0..<(hashedStart + hashedLength))
         let unhashedLength = Int(try reader.uint16())
-        _ = try reader.bytes(count: unhashedLength)
-        let unhashedPortion = Data()
+        let unhashedPortion = try reader.bytes(count: unhashedLength)
         let left16 = try reader.bytes(count: 2)
         let material = try reader.rest()
         var issuer: String?
         var fingerprint: String?
         var creation: Date?
-        parseSubpackets(hashedPortion.dropFirst(0), issuer: &issuer, fingerprint: &fingerprint, creation: &creation)
+        parseSubpackets(hashedPortion.dropFirst(hashedStart), issuer: &issuer, fingerprint: &fingerprint, creation: &creation)
         _ = left16
         return Signature(
             version: Int(version),
@@ -242,7 +243,7 @@ public enum OpenPGP {
                 length = Int(lengthByte)
             } else if lengthByte < 255 {
                 guard offset < bytes.count else { return }
-                length = (Int(lengthByte) - 192) << 8 + Int(bytes[offset]) + 192
+                length = ((Int(lengthByte) - 192) << 8) + Int(bytes[offset]) + 192
                 offset += 1
             } else {
                 guard offset + 4 <= bytes.count else { return }
@@ -378,23 +379,28 @@ public enum OpenPGP {
         var signatureBase64 = ""
         var inSignature = false
         var inPayload = false
+        var payloadHeaders = false
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
-            if line.hasPrefix("-----BEGIN PGP SIGNED MESSAGE-----") { inPayload = true; continue }
+            let line = String(rawLine).trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+            if line.hasPrefix("-----BEGIN PGP SIGNED MESSAGE-----") { payloadHeaders = true; continue }
             if line.hasPrefix("-----BEGIN PGP SIGNATURE-----") { inSignature = true; inPayload = false; continue }
             if line.hasPrefix("-----END PGP SIGNATURE-----") { inSignature = false; continue }
+            if payloadHeaders {
+                if line.isEmpty { payloadHeaders = false; inPayload = true }
+                continue
+            }
             if inSignature {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.hasPrefix("=") { continue }
+                if trimmed.hasPrefix("=") || trimmed.contains(":") { continue }
                 signatureBase64 += trimmed
                 continue
             }
             if inPayload {
                 // Ignore the armor headers (Hash:) that precede the payload.
-                if payloadLines.isEmpty, line.contains(":") { continue }
                 // Dash-unescape per RFC 4880 §7.1.
                 var content = line
                 if content.hasPrefix("- ") { content.removeFirst(2) }
+                while content.last == " " || content.last == "\t" { content.removeLast() }
                 payloadLines.append(content)
             }
         }
@@ -448,13 +454,15 @@ public enum OpenPGP {
         guard !candidateKeys.isEmpty else {
             throw VerifyError.noKey(issuer ?? "unknown")
         }
-        for key in candidateKeys where !key.isExpired {
+        for key in candidateKeys where !key.isExpired && !key.revoked {
             if try verify(signature: signature, over: data, key: key) { return }
         }
         throw VerifyError.invalidSignature
     }
 
     private static func verify(signature: Signature, over data: Data, key: PublicKey) throws -> Bool {
+        guard signature.publicKeyAlgorithm == key.algorithm || ([1, 3].contains(signature.publicKeyAlgorithm) && [1, 3].contains(key.algorithm)),
+              [0, 1].contains(signature.signatureType) else { return false }
         let digest = try digestForSignature(signature, over: data, key: key)
         switch key.algorithm {
         case 1, 2, 3:
@@ -476,7 +484,8 @@ public enum OpenPGP {
             let algorithm: SecKeyAlgorithm = signature.hashAlgorithm == 8 ? .rsaSignatureDigestPKCS1v15SHA256
                 : signature.hashAlgorithm == 9 ? .rsaSignatureDigestPKCS1v15SHA384
                 : .rsaSignatureDigestPKCS1v15SHA512
-            let rsaSignature = normalizedRSASignature(signature.signatureMaterial, modulusSize: modulus.count)
+            var signatureReader = Reader(signature.signatureMaterial)
+            let rsaSignature = normalizedRSASignature(try mpi(&signatureReader), modulusSize: modulus.count)
             return SecKeyVerifySignature(secKey, algorithm, digest as CFData, rsaSignature as CFData, &error)
         case 22:
             guard let point = key.ed25519Point, point.count == 32 else { return false }
@@ -510,6 +519,10 @@ public enum OpenPGP {
     /// Builds the OpenPGP hash: data || hashed portion || v4 trailer.
     private static func digestForSignature(_ signature: Signature, over data: Data, key: PublicKey) throws -> Data {
         var material = data
+        if signature.signatureType == 1 {
+            guard let text = String(data: data, encoding: .utf8) else { throw VerifyError.invalidSignature }
+            material = Data(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "\r\n").utf8)
+        }
         // hashedPortion already includes version/algos/length prefix.
         material.append(signature.hashedPortion)
         let trailerLength = signature.hashedPortion.count
