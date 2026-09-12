@@ -570,7 +570,7 @@ void FloeExportDocument(const std::function<COKitDocument *()> &lookupDocument,
     }
     if (filter.isEmpty()) throw std::runtime_error("Unsupported document export format.");
     css::uno::Reference<css::frame::XStorable> storable(shell->GetModel(), css::uno::UNO_QUERY_THROW);
-    css::uno::Sequence<css::beans::PropertyValue> properties{
+    cpo::uno::Sequence<css::beans::PropertyValue> properties{
         comphelper::makePropertyValue(u"FilterName"_ustr, filter),
         comphelper::makePropertyValue(u"Overwrite"_ustr, false),
         comphelper::makePropertyValue(u"FilterOptions"_ustr, format == "txt" ? u"UTF8,LF"_ustr : OUString())
