@@ -15,27 +15,21 @@ The scripts use `DEVELOPER_DIR` where practical and do not require changing the 
 
 ## Build and test
 
-```bash
-cd FloeAgent
-brew install xcodegen
-xcodegen generate
-scripts/local_build.sh
-```
-
-Focused commands:
+Prefer focused local tests and cloud App builds for the 1.7 integration. From the repository root, with a full Xcode selected through `DEVELOPER_DIR`:
 
 ```bash
-swift build
-swift test
-swift test --filter FloeSkillsTests
-swift test --filter V8TaskOwnershipTests
-
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
-  -destination 'generic/platform=iOS Simulator' build
+export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 2
+bash FloeAgent/scripts/pin_node_tools.sh
+bash FloeAgent/scripts/pin_node_tools.sh --check
+node --test FloeAgent/scripts/tests/node_host.test.cjs
 ```
 
-If the active full Xcode is named `Xcode-beta.app`, adjust `DEVELOPER_DIR`. A Command Line Tools-only `xcode-select` can compile some package targets but cannot provide iOS Simulator builds or Swift Testing macro plugins reliably.
+Check mode does not install resources or modify locks. Qualification covers environment, package, media, persistence and signed catalog paths; it does not replace App or device tests. Run commands sharing the SwiftPM scratch directory sequentially.
+
+For a full local App build when needed, use `bash scripts/local_build.sh` from this directory after installing XcodeGen and checking free space. Cloud CI owns the normal development-SDK and release-SDK App checks and heavy archives. See [complete build and acceptance instructions](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md).
+
+A Command Line Tools-only selection cannot provide iOS Simulator builds or all Swift Testing macro plugins reliably. Adjust the Xcode path to the installed full developer directory.
 
 ## Generated project rule
 

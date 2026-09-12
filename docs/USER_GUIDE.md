@@ -8,18 +8,12 @@ This guide includes the current development-branch workflow upgrade. See [scope,
 
 ## 1.7 开发功能与使用边界 / Development features
 
-开发分支已增加本地工作区视频入口：在 MP4/MOV/M4V 文件预览中打开“媒体工作台”，调整剪辑区间、速度/音量和导出设置，保存参数后可重开继续。导出后可切换播放处理结果。此入口仍待完整 App 与真机验收；共享队列和聊天附件回接尚未完成。
+The development branch adds a media-workbench action to local MP4/MOV/M4V workspace previews. It carries the source automatically and offers trim, speed/volume, export settings, saved edit parameters and output playback. Full App/device interaction checks, shared queues and chat attachment handoff remain open. Menu availability depends on the installed build; see [status](FLOE_1_7_IMPLEMENTATION_STATUS.md).
 
-The development branch adds a media-workbench action to local workspace video previews. It carries the source automatically, saves edit parameters and offers export playback. Full App/device interaction checks, shared queues and chat attachment handoff remain open.
-
-1.7 的环境、包管理和媒体工作台尚未完成全链路验收。已安装版本没有相应入口时，不要依据计划中的界面名称尝试操作。当前状态见[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
-
-- 环境按会话、项目、共享、基础层查找依赖；写入必须绑定当前环境，不应猜测第一个项目或临时目录。旧数据迁移完成前保留恢复副本。
-- Node 宿主与 npm/pnpm/yarn 启动已做定向验证；这不等于所有公共包可安装或可运行。原生 Linux 包不可直接在 iOS 执行。
-- 媒体转码及音频转换仅接受已支持的参数组合。成功应能重新打开真实输出；插帧、超分等增强只有运行器和资源可用时才能使用。
-- 软件包池和模型目录是候选清单，不能将条目数量当作已完成能力数。参见[兼容性说明](FLOE_1_7_COMPATIBILITY.md)。
-
-The 1.7 environment/package/media flows remain under integration. Existing menu labels depend on the installed build. Check supported parameters and real resource availability before processing; preserve source files and verify exported files by reopening them.
+- Dependencies resolve through session, project, shared and base layers. Writes belong to an explicit environment; preserve recovery copies until legacy migration is qualified.
+- The Node host and npm/pnpm/yarn entry points have focused tests. This does not establish compatibility with every public package. Linux native executables cannot run directly on iOS.
+- Supported media conversions apply their parameters and verify real output files. Enhancements require both an available runner and verified resources.
+- Package/model inventories contain candidates and exclusions. Counts are not completed capability counts; consult the [compatibility guide](FLOE_1_7_COMPATIBILITY.md) and [qualification matrix](FLOE_1_7_QUALIFICATION_MATRIX.md).
 
 ## 1. Install safely
 

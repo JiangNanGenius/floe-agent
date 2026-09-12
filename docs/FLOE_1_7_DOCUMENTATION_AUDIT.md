@@ -6,6 +6,8 @@
 
 本地忽略的 `DESIGN.md` 和 `docs/DEVELOPMENT_PLAN.md` 已补充 1.7 方向，但仍遵循仓库原有忽略规则，不强行纳入提交。网站在线内容不由这些 Markdown 自动证明已部署。floe-video 已更新为 1.0.1，同步简短变更说明，并经云端签名与本地校验；后续能力接通仍须继续维护。
 
+媒体工作台最小 App 的构建/模型测试说明见 [NativeMedia](../FloeAgent/Qualification/NativeMedia/README.md)；最新变更草稿见 [未发布变更](FLOE_1_7_CHANGELOG_DRAFT.md)。英文指南和工程构建说明已再次校对，默认采用本地定向测试与云端 App 构建。
+
 ## 文件登记
 
 | 文件 | 类别 | 本轮处理 |

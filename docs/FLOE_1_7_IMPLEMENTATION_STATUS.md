@@ -77,6 +77,14 @@ Branch: `codex/floe-1-7-integration-20260912`.
   recorded as completed provenance. Full weight, conversion and device qualification
   remains open; see the per-model matrix.
 
+- The minimal NativeMedia iOS Simulator App builds the production editor/player.
+  Its editor-model smoke passes save/reopen, trim/speed, dimensions, frame rate,
+  playable output and source preservation. Evidence:
+  `docs/evidence/floe-1.7/native-media-editor-model.json`; startup screenshot:
+  `docs/evidence/floe-1.7/native-media-workbench.png`. Automated tap/gesture
+  testing was unavailable through the current computer-control surface; no complete
+  workspace-navigation or device acceptance is claimed.
+
 ## Documentation
 
 See [build and acceptance](FLOE_1_7_BUILD_AND_ACCEPTANCE.md),

@@ -4,9 +4,9 @@ Floe Agent support is community and best-effort. Prerelease, development, and un
 
 ## 1.7 问题报告 / Upgrade reports
 
-1.7 仍在开发，先核对[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)与[兼容性说明](docs/FLOE_1_7_COMPATIBILITY.md)。报告环境/包问题时附环境层、包版本、失败阶段及脱敏错误；媒体问题附输入编码、尺寸、帧率、声道、操作参数和是否能重新播放输出。模型问题区分目录可见、安装成功、加载成功与推理成功。
+Floe 1.7 remains under integration. Check [status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [compatibility](docs/FLOE_1_7_COMPATIBILITY.md) first. For environment/package failures, include the layer, package version, failed stage and sanitized error. For media failures, include input codec, dimensions, frame rate, channels, requested operations and whether the output reopens. Distinguish model catalog visibility, installation, loading and successful inference.
 
-Include the exact commit/build and device/SDK. Preserve recoverable copies and failed transaction evidence; follow [recovery guidance](docs/FLOE_1_7_MIGRATION.md) before manually deleting state. Never attach credentials or private media without reviewing the export.
+Include the exact commit/build and device/SDK. Preserve recoverable copies and failed transaction evidence; follow [recovery guidance](docs/FLOE_1_7_MIGRATION.md) before deleting state. Never attach credentials or private media without reviewing the export.
 
 ## Where to ask
 

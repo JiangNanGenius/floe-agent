@@ -1,0 +1,31 @@
+name: FloeMediaUISmoke
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeAgent:
+    path: ../..
+targets:
+  FloeMediaUISmoke:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: ../../FloeApp/Media/MediaEditorView.swift
+      - path: ../../FloeApp/Media/MediaPlayerView.swift
+    dependencies:
+      - package: FloeAgent
+        product: FloeMedia
+      - package: FloeAgent
+        product: FloeTools
+      - package: FloeAgent
+        product: FloeCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.media-ui-smoke
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'

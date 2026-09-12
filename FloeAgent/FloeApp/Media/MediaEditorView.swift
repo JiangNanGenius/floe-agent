@@ -185,6 +185,7 @@ struct MediaEditorView: View {
             }
         }
         .navigationTitle("媒体工作台")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { model.cancel(); dismiss() } } }
         .task { await model.load() }
         .onDisappear { model.cancel() }

@@ -39,3 +39,7 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 | 分发 | 同一固定提交的开发/发布 SDK 构建、真机验收与可供 TestFlight 分发构建 |
 
 不以“资源下载成功”“工具返回文本成功”替代真实处理证据。密钥、令牌、私人媒体及未脱敏日志不得加入证据包。
+
+## 媒体工作台最小 App
+
+[NativeMedia](../FloeAgent/Qualification/NativeMedia/README.md) 编译生产工作台/播放器，使用合成视频检查编辑模型保存重开和真实导出。`--model-smoke` 产出 `media-model-results.json`，与宿主媒体测试、完整 App UI 和真机结果分别记录。该测试不能证明共享队列或聊天附件已接通。

@@ -16,6 +16,7 @@ public final class MediaPlayerModel: ObservableObject {
     @Published public private(set) var duration: Double = 0
     @Published public private(set) var currentTime: Double = 0
     @Published public private(set) var videoSize: CGSize = .zero
+    @Published public private(set) var frameRate = 30.0
 
     public let player = AVPlayer()
     private var timeObserver: Any?
@@ -35,7 +36,9 @@ public final class MediaPlayerModel: ObservableObject {
         if let track = try? await asset.loadTracks(withMediaType: .video).first,
            let size = try? await track.load(.naturalSize),
            let transform = try? await track.load(.preferredTransform) {
-            videoSize = size.applying(transform)
+            let displayed = CGRect(origin: .zero, size: size).applying(transform)
+            videoSize = CGSize(width: abs(displayed.width), height: abs(displayed.height))
+            if let fps = try? await track.load(.nominalFrameRate), fps > 0 { frameRate = Double(fps) }
         }
         installObservers()
         player.play()
@@ -80,6 +83,11 @@ public final class MediaPlayerModel: ObservableObject {
         }
     }
 
+    public func pause() {
+        player.pause()
+        isPlaying = false
+    }
+
     public func togglePlayback() {
         if isPlaying { player.pause() } else { player.play(); player.rate = Float(rate) }
         isPlaying.toggle()
@@ -110,7 +118,7 @@ public final class MediaPlayerModel: ObservableObject {
         // player reflects the choice for preview purposes.
     }
 
-    deinit {
+    isolated deinit {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
     }
@@ -131,13 +139,13 @@ public struct MediaPlayerView: View {
                 Color.black
                 VideoSurface(player: model.player)
             }
-            .frame(minHeight: 240)
             .aspectRatio(model.videoSize == .zero ? 16.0 / 9.0 : model.videoSize.width / max(model.videoSize.height, 1), contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             controls
         }
         .padding()
-        .task { await model.load(url: url) }
+        .task(id: url) { await model.load(url: url) }
+        .onDisappear { model.pause() }
         .fullScreenCover(isPresented: $isFullscreen) {
             ZStack {
                 Color.black.ignoresSafeArea()
@@ -156,23 +164,31 @@ public struct MediaPlayerView: View {
                 in: 0...max(model.duration, 0.001)
             )
             HStack(spacing: 16) {
-                Button { model.stepFrame(direction: -1, frameRate: 30) } label: { Image(systemName: "backward.frame") }
-                Button { model.togglePlayback() } label: { Image(systemName: model.isPlaying ? "pause.fill" : "play.fill") }
-                Button { model.stepFrame(direction: 1, frameRate: 30) } label: { Image(systemName: "forward.frame") }
-                Spacer()
-                Picker("Rate", selection: Binding(
-                    get: { model.rate },
-                    set: { model.setRate($0) }
-                )) {
-                    Text("0.5x").tag(0.5)
-                    Text("1x").tag(1.0)
-                    Text("1.5x").tag(1.5)
-                    Text("2x").tag(2.0)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
-                Button { isFullscreen.toggle() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                Button { model.stepFrame(direction: -1, frameRate: model.frameRate) } label: {
+                    Image(systemName: "backward.frame").frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel("上一帧")
+                Button { model.togglePlayback() } label: {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel(model.isPlaying ? "暂停" : "播放")
+                Button { model.stepFrame(direction: 1, frameRate: model.frameRate) } label: {
+                    Image(systemName: "forward.frame").frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel("下一帧")
+                Spacer(minLength: 0)
+                Button { isFullscreen.toggle() } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel("全屏播放")
             }
+            .buttonStyle(.borderless)
+            Picker("播放速度", selection: Binding(
+                get: { model.rate },
+                set: { model.setRate($0) }
+            )) {
+                Text("0.5x").tag(0.5)
+                Text("1x").tag(1.0)
+                Text("1.5x").tag(1.5)
+                Text("2x").tag(2.0)
+            }
+            .pickerStyle(.segmented)
         }
     }
 }

@@ -4,9 +4,9 @@ Thank you for helping build Floe Agent. The project ships prerelease builds, its
 
 ## Floe 1.7 integration workflow
 
-当前整合分支为 `codex/floe-1-7-integration-20260912`。先阅读[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)与[构建验收说明](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)，保留未验收修改、复现输入和恢复证据。不要用整分支覆盖重叠修改。
+The integration branch is `codex/floe-1-7-integration-20260912`. Read the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [build/acceptance guide](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Preserve unqualified changes, reproductions and recovery evidence; reconcile overlapping changes individually.
 
-Use focused local tests and cloud App builds. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output; do not turn an artifact upload into a release claim. Runtime lock check mode must remain read-only. Generated Xcode changes must match `project.yml`.
+Use focused local tests and cloud App builds. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output. Runtime lock checks must remain read-only. Generated Xcode changes must match `project.yml`. Uploading an artifact is not release acceptance.
 
 ## Before you start
 
@@ -19,7 +19,7 @@ Do not open a public issue for a vulnerability. Follow the private process in [S
 
 ## Development checkout
 
-The active implementation is maintained on `main`. Use:
+Use `main` for the shared baseline and the integration branch above for 1.7 work:
 
 ```bash
 git clone https://github.com/JiangNanGenius/floe-agent.git
