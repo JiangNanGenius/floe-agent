@@ -507,7 +507,7 @@ final class AppEnvironment: ObservableObject {
         // work. Removal remains approval-gated; bounded installation does not.
         registerFontTools(store: fontStore)
         // Image tools (Core Image processing).
-        registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        _ = registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Native canvas inspection and mutation tools. Canvas runs are scoped
         // back to their durable hidden assistant conversation at execution.
         registerCanvasAgentTools(environment: self)
