@@ -166,3 +166,44 @@ extension MediaExportTests {
         #expect((0..<Int(buffer.frameLength)).contains { abs(samples[0][$0]) > 0.1 })
     }
 }
+
+extension MediaExportTests {
+    @Test func frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await movie(at: root.appendingPathComponent("input.mov"))
+        let renderer = MediaRenderer(rootProvider: { root })
+        let jpeg = try await renderer.extractFrames(path: "input.mov", timestamps: [0,0.5], outputDirectory: "jpeg", format: "jpeg", maximumFrames: 2)
+        #expect(jpeg.count == 2)
+        #expect(try Array(Data(contentsOf: URL(fileURLWithPath: jpeg[0])).prefix(2)) == [0xff,0xd8])
+        let png = try await renderer.extractFrames(path: "input.mov", timestamps: [0], outputDirectory: "png", format: "png", maximumFrames: 1)
+        #expect(try Array(Data(contentsOf: URL(fileURLWithPath: png[0])).prefix(4)) == [137,80,78,71])
+        let token = CancellationToken(); token.cancel()
+        await #expect(throws: (any Error).self) { try await renderer.extractFrames(path: "input.mov", timestamps: [0], outputDirectory: "cancelled", format: "png", maximumFrames: 1, cancellation: token) }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("cancelled").path))
+        await #expect(throws: (any Error).self) { try await renderer.extractFrames(path: "input.mov", timestamps: [0], outputDirectory: "jpeg", format: "png", maximumFrames: 1) }
+        #expect(try Array(Data(contentsOf: URL(fileURLWithPath: jpeg[0])).prefix(2)) == [0xff,0xd8])
+    }
+
+    @Test func proxyPreservesAspectAndThumbnailCannotOverwriteSource() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await movie(at: root.appendingPathComponent("input.mov"))
+        let args = try JSONDecoder().decode(VideoProxyTool.Arguments.self, from: Data(#"{"input":"input.mov","output":"proxy.mp4","maximumDimension":32,"container":"mp4"}"#.utf8))
+        _ = try await VideoProxyTool().execute(args, context: ToolContext(runID: UUID(), workspaceRootURL: root, cancellation: CancellationToken()))
+        let tracks = try await AVURLAsset(url: root.appendingPathComponent("proxy.mp4")).loadTracks(withMediaType: .video)
+        let track = try #require(tracks.first)
+        let size = try await track.load(.naturalSize)
+        #expect(size.width == 32 && size.height == 24)
+        let before = try Data(contentsOf: root.appendingPathComponent("input.mov"))
+        let engine = MediaExportEngine(rootProvider: { root })
+        _ = try await engine.transcode(.init(input: "input.mov", output: "remux.mp4", container: "mp4", videoCodec: nil, audioCodec: nil, width: nil, height: nil, frameRate: nil, videoBitrate: nil, audioBitrate: nil, passthrough: true))
+        let remux = AVURLAsset(url: root.appendingPathComponent("remux.mp4"))
+        #expect(try await remux.load(.isPlayable))
+        #expect(abs(try await remux.load(.duration).seconds - 1) < 0.05)
+        await #expect(throws: (any Error).self) { try await engine.thumbnail(input: "input.mov", timeSeconds: 0, output: "input.mov", maximumDimension: 64) }
+        #expect(try Data(contentsOf: root.appendingPathComponent("input.mov")) == before)
+    }
+}

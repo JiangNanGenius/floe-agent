@@ -1,0 +1,156 @@
+◇ Test run started.
+◇ Suite "Signed model catalog and bundled Skills" started.
+◇ Test schemaTwoCatalogVerifiesEveryPublishedPackage() started.
+✔ Test schemaTwoCatalogVerifiesEveryPublishedPackage() passed after 0.010 seconds.
+✔ Suite "Signed model catalog and bundled Skills" passed after 0.010 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.011 seconds.
+◇ Test run started.
+◇ Suite "Job environment persistence" started.
+◇ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() started.
+✔ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() passed after 0.100 seconds.
+✔ Suite "Job environment persistence" passed after 0.100 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.101 seconds.
+◇ Test run started.
+◇ Suite "Publisher to client package installation" started.
+◇ Suite "Package integrity" started.
+◇ Suite "Package transaction recovery" started.
+◇ Suite "Package dependency constraints" started.
+◇ Test signedInstallUpgradeDependencyAndOwnedRemoval() started.
+◇ Test damagedDownloadNeverReachesInstalledState() started.
+◇ Test collisionsScriptsAndLocalEditsFailBeforeMutation() started.
+◇ Test emptyTrustStoreNeverAcceptsRepository() started.
+◇ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() started.
+◇ Test tarChecksTruncationAndChecksum() started.
+◇ Test recoveryValidatesAllBackupsBeforeChangingFiles() started.
+◇ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() started.
+◇ Test interruptedWriteRestoresOldAndRemovesNewFiles() started.
+◇ Test explicitRequestUpgradesAndConflictsFail() started.
+◇ Test acceptsGnuPGSignatureAndRejectsTampering() started.
+◇ Test committedFilesSurviveRecovery() started.
+◇ Test packagePathsRejectLinksAndTraversal() started.
+◇ Test choosesCompatibleVersionAndInstallsDependenciesFirst() started.
+◇ Test recoveryRejectsSymlinkedJournalDirectory() started.
+◇ Test alternativesAndConflictingVersionConstraints() started.
+✔ Test tarChecksTruncationAndChecksum() passed after 0.018 seconds.
+✔ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() passed after 0.018 seconds.
+✔ Test explicitRequestUpgradesAndConflictsFail() passed after 0.018 seconds.
+✔ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() passed after 0.018 seconds.
+✔ Test committedFilesSurviveRecovery() passed after 0.018 seconds.
+✔ Test choosesCompatibleVersionAndInstallsDependenciesFirst() passed after 0.018 seconds.
+✔ Test acceptsGnuPGSignatureAndRejectsTampering() passed after 0.018 seconds.
+✔ Test packagePathsRejectLinksAndTraversal() passed after 0.018 seconds.
+✔ Test emptyTrustStoreNeverAcceptsRepository() passed after 0.018 seconds.
+✔ Test interruptedWriteRestoresOldAndRemovesNewFiles() passed after 0.018 seconds.
+✔ Suite "Package integrity" passed after 0.019 seconds.
+✔ Test alternativesAndConflictingVersionConstraints() passed after 0.019 seconds.
+✔ Suite "Package dependency constraints" passed after 0.019 seconds.
+✔ Test recoveryRejectsSymlinkedJournalDirectory() passed after 0.019 seconds.
+✔ Test recoveryValidatesAllBackupsBeforeChangingFiles() passed after 0.019 seconds.
+✔ Suite "Package transaction recovery" passed after 0.020 seconds.
+✔ Test damagedDownloadNeverReachesInstalledState() passed after 0.027 seconds.
+✔ Test collisionsScriptsAndLocalEditsFailBeforeMutation() passed after 0.083 seconds.
+✔ Test signedInstallUpgradeDependencyAndOwnedRemoval() passed after 0.094 seconds.
+✔ Suite "Publisher to client package installation" passed after 0.095 seconds.
+✔ Test run with 16 tests in 4 suites passed after 0.095 seconds.
+◇ Test run started.
+◇ Suite "Bounded audio editing" started.
+◇ Suite "Model artifact readiness and ownership" started.
+◇ Suite "Real media exports" started.
+◇ Test trimFadesAndBothMixGainsReachRealSamples() started.
+◇ Test fullFileInspectionAndRunningCancellationAreBounded() started.
+◇ Test invalidEditsPreserveFilesAndStayInsideWorkspace() started.
+◇ Test audioConversionAppliesRateAndChannels() started.
+◇ Test corruptRegistryIsNotOverwrittenByInstall() started.
+◇ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() started.
+◇ Test validatesSizeAndRestoresInstalledStateAfterRestart() started.
+◇ Test requestedDimensionsAndFrameRateReachEncodedFile() started.
+◇ Test rejectsPendingAndTraversalBeforeDownload() started.
+◇ Test editsApplyTrimSpeedAndExportSettingsToActualFile() started.
+◇ Test unsupportedEditCannotReplaceExistingOutput() started.
+◇ Test speedChangesAudioAndVideoOnTheSameTimeline() started.
+◇ Test rejectedAndCancelledExportsPreserveFiles() started.
+◇ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() started.
+✔ Test corruptRegistryIsNotOverwrittenByInstall() passed after 0.224 seconds.
+✔ Test rejectsPendingAndTraversalBeforeDownload() passed after 0.224 seconds.
+✔ Test validatesSizeAndRestoresInstalledStateAfterRestart() passed after 0.224 seconds.
+✔ Test unsupportedEditCannotReplaceExistingOutput() passed after 0.224 seconds.
+✔ Test trimFadesAndBothMixGainsReachRealSamples() passed after 0.225 seconds.
+✔ Test invalidEditsPreserveFilesAndStayInsideWorkspace() passed after 0.225 seconds.
+✔ Suite "Model artifact readiness and ownership" passed after 0.225 seconds.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.226 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 0.750 seconds.
+✔ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() passed after 1.056 seconds.
+✔ Test editsApplyTrimSpeedAndExportSettingsToActualFile() passed after 1.318 seconds.
+✔ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() passed after 1.325 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 1.326 seconds.
+✔ Test speedChangesAudioAndVideoOnTheSameTimeline() passed after 1.401 seconds.
+✔ Suite "Real media exports" passed after 1.401 seconds.
+✔ Test fullFileInspectionAndRunningCancellationAreBounded() passed after 3.789 seconds.
+✔ Suite "Bounded audio editing" passed after 3.789 seconds.
+✔ Test run with 14 tests in 3 suites passed after 3.789 seconds.
+◇ Test run started.
+◇ Suite "Environment promotion" started.
+◇ Suite "Environment durability" started.
+◇ Test failedStopPreservesEnvironment() started.
+◇ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() started.
+◇ Test explicitEnvironmentCannotCrossWorkspace() started.
+◇ Test missingFileAndPathEscapeNeverMutateEitherLayer() started.
+◇ Test projectsAndCancellationRemainScoped() started.
+◇ Test casRetainsSharedBlobsAndCopiesAreIndependent() started.
+◇ Test registrySurvivesRestartAndMarksNewBase() started.
+◇ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() started.
+◇ Test sessionOwnershipIncludesWorkspace() started.
+◇ Test failedCASReferenceWriteDoesNotEnableCollection() started.
+◇ Test corruptCASIndexNeverAuthorizesCollection() started.
+◇ Test corruptRegistryIsPreserved() started.
+◇ Test inheritedRebuildBlocksExistingAndNewSessions() started.
+◇ Test failedCreationAndTransitionRollBackRegistryMemory() started.
+◇ Test projectDeletionPreservesDependentSessionAndFiles() started.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.072 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.073 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.073 seconds.
+✔ Test failedCASReferenceWriteDoesNotEnableCollection() passed after 0.072 seconds.
+✔ Test corruptCASIndexNeverAuthorizesCollection() passed after 0.072 seconds.
+✔ Test corruptRegistryIsPreserved() passed after 0.073 seconds.
+✔ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() passed after 0.073 seconds.
+✔ Test missingFileAndPathEscapeNeverMutateEitherLayer() passed after 0.073 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.074 seconds.
+✔ Test projectDeletionPreservesDependentSessionAndFiles() passed after 0.114 seconds.
+✔ Test failedCreationAndTransitionRollBackRegistryMemory() passed after 0.129 seconds.
+✔ Test sessionOwnershipIncludesWorkspace() passed after 0.132 seconds.
+✔ Test inheritedRebuildBlocksExistingAndNewSessions() passed after 0.132 seconds.
+✔ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() passed after 0.151 seconds.
+✔ Suite "Environment promotion" passed after 0.151 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.160 seconds.
+✔ Suite "Environment durability" passed after 0.160 seconds.
+✔ Test run with 15 tests in 2 suites passed after 0.160 seconds.
+
+Follow-up after remux cancellation routing and real remux output check:
+◇ Test run started.
+◇ Suite "Real media exports" started.
+◇ Suite "Bounded audio editing" started.
+◇ Test editsApplyTrimSpeedAndExportSettingsToActualFile() started.
+◇ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() started.
+◇ Test unsupportedEditCannotReplaceExistingOutput() started.
+◇ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() started.
+◇ Test audioConversionAppliesRateAndChannels() started.
+◇ Test speedChangesAudioAndVideoOnTheSameTimeline() started.
+◇ Test requestedDimensionsAndFrameRateReachEncodedFile() started.
+◇ Test rejectedAndCancelledExportsPreserveFiles() started.
+◇ Test invalidEditsPreserveFilesAndStayInsideWorkspace() started.
+◇ Test trimFadesAndBothMixGainsReachRealSamples() started.
+◇ Test fullFileInspectionAndRunningCancellationAreBounded() started.
+✔ Test unsupportedEditCannotReplaceExistingOutput() passed after 0.371 seconds.
+✔ Test invalidEditsPreserveFilesAndStayInsideWorkspace() passed after 0.372 seconds.
+✔ Test trimFadesAndBothMixGainsReachRealSamples() passed after 0.372 seconds.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.375 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 0.861 seconds.
+✔ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() passed after 1.152 seconds.
+✔ Test editsApplyTrimSpeedAndExportSettingsToActualFile() passed after 1.302 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 1.306 seconds.
+✔ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() passed after 1.314 seconds.
+✔ Test speedChangesAudioAndVideoOnTheSameTimeline() passed after 1.395 seconds.
+✔ Suite "Real media exports" passed after 1.396 seconds.
+✔ Test fullFileInspectionAndRunningCancellationAreBounded() passed after 5.283 seconds.
+✔ Suite "Bounded audio editing" passed after 5.284 seconds.
+✔ Test run with 11 tests in 2 suites passed after 5.285 seconds.

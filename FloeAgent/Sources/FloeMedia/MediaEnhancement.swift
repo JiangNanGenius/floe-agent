@@ -27,127 +27,133 @@ public actor AudioEngine {
         self.rootProvider = rootProvider
     }
 
-    public func inspect(path: String) throws -> Info {
-        let url = try resolve(path)
-        let file = try AVAudioFile(forReading: url)
+    public func inspect(path: String, cancellation: CancellationToken? = nil) throws -> Info {
+        let file = try AVAudioFile(forReading: resolve(path), commonFormat: .pcmFormatFloat32, interleaved: false)
         let format = file.processingFormat
-        let frames = file.length
-        let duration = format.sampleRate > 0 ? Double(frames) / format.sampleRate : 0
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(min(frames, 10_000_000)))
-        if let buffer {
-            try file.read(into: buffer)
-            var peak: Float = 0
-            var sumSquares: Double = 0
-            var count: Int = 0
-            if let channels = buffer.floatChannelData {
-                for channel in 0..<Int(buffer.format.channelCount) {
-                    let data = channels[channel]
-                    for index in 0..<Int(buffer.frameLength) {
-                        let value = abs(data[index])
-                        peak = max(peak, value)
-                        sumSquares += Double(value * value)
-                        count += 1
-                    }
+        guard format.sampleRate > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192) else {
+            throw FloeError.validationFailed("Audio format cannot be inspected")
+        }
+        var peak: Float = 0, sumSquares: Double = 0, count: Double = 0
+        while file.framePosition < file.length {
+            try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+            try file.read(into: buffer, frameCount: 8192)
+            guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { throw FloeError.validationFailed("Audio decoder made no progress") }
+            for channel in 0..<Int(format.channelCount) {
+                for index in 0..<Int(buffer.frameLength) {
+                    let value = channels[channel][index]
+                    guard value.isFinite else { throw FloeError.validationFailed("Audio contains non-finite samples") }
+                    peak = max(peak, abs(value)); sumSquares += Double(value) * Double(value); count += 1
                 }
             }
-            let rms = count > 0 ? Float((sumSquares / Double(count)).squareRoot()) : 0
-            let lufs = rms > 0 ? Float(20 * log10(rms) - 0.691) : -70
-            return Info(
-                durationSeconds: duration,
-                sampleRate: format.sampleRate,
-                channelCount: Int(format.channelCount),
-                peak: peak,
-                rms: rms,
-                estimatedLUFS: lufs
-            )
         }
-        return Info(durationSeconds: duration, sampleRate: format.sampleRate,
-                    channelCount: Int(format.channelCount), peak: 0, rms: 0, estimatedLUFS: -70)
+        let rms = count > 0 ? Float((sumSquares / count).squareRoot()) : 0
+        return Info(durationSeconds: Double(file.length) / format.sampleRate, sampleRate: format.sampleRate,
+                    channelCount: Int(format.channelCount), peak: peak, rms: rms,
+                    estimatedLUFS: rms > 0 ? Float(20 * log10(rms) - 0.691) : -70)
     }
 
-    /// Applies explicit operations and writes `outputPath`.
-    public func edit(
-        path: String,
-        outputPath: String,
-        operations: [String: Double],
-        fadeOutSeconds: Double?,
-        mixPath: String?
-    ) throws -> String {
-        let sourceURL = try resolve(path)
-        let outputURL = try resolveOutput(outputPath)
-        let source = try AVAudioFile(forReading: sourceURL)
-        let format = source.processingFormat
-        let totalFrames = source.length
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames)) else {
-            throw FloeError.internalError("could not allocate audio buffer")
+    /// Streams bounded PCM chunks to a temporary file, verifies it, then commits.
+    public func edit(path: String, outputPath: String, operations: [String: Double],
+                     fadeOutSeconds: Double?, mixPath: String?, cancellation: CancellationToken? = nil) throws -> String {
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        let sourceURL = try resolve(path), outputURL = try resolveOutput(outputPath)
+        let mixURL = try mixPath.map { try resolve($0) }
+        guard outputURL != sourceURL, outputURL != mixURL else { throw FloeError.validationFailed("Audio editing requires a separate output file") }
+        let supported: Set<String> = ["start", "end", "gain", "fadeIn", "fadeOut", "mixGain"]
+        guard Set(operations.keys).isSubset(of: supported), operations.values.allSatisfy(\.isFinite),
+              fadeOutSeconds?.isFinite != false else { throw FloeError.validationFailed("Unknown or non-finite audio operation") }
+        let source = try AVAudioFile(forReading: sourceURL, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let format = source.processingFormat, rate = source.processingFormat.sampleRate
+        guard rate.isFinite, (8000...192000).contains(rate), source.length > 0 else { throw FloeError.validationFailed("Audio input is empty or invalid") }
+        let duration = Double(source.length) / rate
+        let start = operations["start"] ?? 0, end = operations["end"] ?? duration
+        let gain = operations["gain"] ?? 1, mixGain = operations["mixGain"] ?? 1
+        let fadeIn = operations["fadeIn"] ?? 0, fadeOut = fadeOutSeconds ?? operations["fadeOut"] ?? 0
+        guard start >= 0, end > start, end <= duration, fadeIn >= 0, fadeOut >= 0,
+              fadeIn <= end - start, fadeOut <= end - start,
+              (0...16).contains(gain), (0...16).contains(mixGain) else {
+            throw FloeError.validationFailed("Audio trim/fades must fit the input and gains must be between 0 and 16")
         }
-        try source.read(into: buffer)
-        if let channels = buffer.floatChannelData {
-            let startFrame = Int((operations["start"] ?? 0) * format.sampleRate)
-            let endFrame = Int((operations["end"] ?? Double(totalFrames) / format.sampleRate) * format.sampleRate)
-            let lower = max(0, min(startFrame, Int(totalFrames)))
-            let upper = max(lower, min(endFrame, Int(totalFrames)))
-            let gain = Float(operations["gain"] ?? 1.0)
-            let fadeIn = Int((operations["fadeIn"] ?? 0) * format.sampleRate)
-            let fadeOut = Int((fadeOutSeconds ?? operations["fadeOut"] ?? 0) * format.sampleRate)
-            for channel in 0..<Int(format.channelCount) {
-                let data = channels[channel]
-                for index in lower..<upper {
-                    var value = data[index] * gain
-                    let relative = index - lower
-                    if fadeIn > 0, relative < fadeIn {
-                        value *= Float(relative) / Float(fadeIn)
-                    }
-                    if fadeOut > 0, (upper - index) < fadeOut {
-                        value *= Float(upper - index) / Float(fadeOut)
-                    }
-                    data[index - lower] = value
-                }
+        if mixURL == nil, operations["mixGain"] != nil { throw FloeError.validationFailed("mixGain requires a mix input") }
+        let lower = AVAudioFramePosition(start * rate), upper = min(source.length, AVAudioFramePosition(end * rate))
+        guard upper > lower else { throw FloeError.validationFailed("Audio trim is shorter than one sample") }
+        let mix = try mixURL.map { try AVAudioFile(forReading: $0, commonFormat: .pcmFormatFloat32, interleaved: false) }
+        if let mix {
+            guard mix.processingFormat.sampleRate == rate, mix.processingFormat.channelCount == format.channelCount else {
+                throw FloeError.validationFailed("Mix inputs must have matching sample rates and channel counts; convert them first")
             }
-            buffer.frameLength = AVAudioFrameCount(upper - lower)
         }
-        if let mixPath {
-            let mixURL = try resolve(mixPath)
-            let mixFile = try AVAudioFile(forReading: mixURL)
-            let mixBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames))
-            if let mixBuffer {
-                try mixFile.read(into: mixBuffer)
-                if let destination = buffer.floatChannelData, let source = mixBuffer.floatChannelData {
-                    let frames = min(Int(buffer.frameLength), Int(mixBuffer.frameLength))
-                    for channel in 0..<min(Int(format.channelCount), Int(mixBuffer.format.channelCount)) {
-                        for index in 0..<frames {
-                            destination[channel][index] = (destination[channel][index] + source[channel][index]) * 0.5
+        let container = outputURL.pathExtension.lowercased()
+        guard ["wav", "caf", "aif", "aiff", "m4a"].contains(container) else { throw FloeError.validationFailed("Audio edit outputs: wav, caf, aiff, m4a") }
+        var settings: [String: Any] = [AVSampleRateKey: rate, AVNumberOfChannelsKey: format.channelCount]
+        if container == "m4a" { settings[AVFormatIDKey] = kAudioFormatMPEG4AAC }
+        else {
+            settings[AVFormatIDKey] = kAudioFormatLinearPCM
+            settings[AVLinearPCMBitDepthKey] = 16
+            settings[AVLinearPCMIsFloatKey] = false
+            settings[AVLinearPCMIsBigEndianKey] = container == "aif" || container == "aiff"
+        }
+        let temporary = outputURL.deletingLastPathComponent().appendingPathComponent(".floe-audio-edit-\(UUID().uuidString).\(container)")
+        try FileManager.default.createDirectory(at: temporary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            let writer = try AVAudioFile(forWriting: temporary, settings: settings)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192),
+                  let mixBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192) else {
+                throw FloeError.internalError("Could not allocate audio chunk buffers")
+            }
+            source.framePosition = lower
+            while source.framePosition < upper {
+                try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+                let offset = source.framePosition - lower
+                try source.read(into: buffer, frameCount: AVAudioFrameCount(min(8192, upper - source.framePosition)))
+                guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { throw FloeError.validationFailed("Audio decoder made no progress") }
+                mixBuffer.frameLength = 0
+                if let mix, mix.framePosition < mix.length { try mix.read(into: mixBuffer, frameCount: buffer.frameLength) }
+                for channel in 0..<Int(format.channelCount) {
+                    for index in 0..<Int(buffer.frameLength) {
+                        let seconds = Double(offset + Int64(index)) / rate
+                        let remaining = Double(upper - lower - offset - Int64(index)) / rate
+                        var envelope = 1.0
+                        if fadeIn > 0 { envelope *= min(1, seconds / fadeIn) }
+                        if fadeOut > 0 { envelope *= min(1, remaining / fadeOut) }
+                        var value = Double(channels[channel][index]) * gain * envelope
+                        if index < Int(mixBuffer.frameLength), let mixed = mixBuffer.floatChannelData {
+                            value += Double(mixed[channel][index]) * mixGain
                         }
+                        guard value.isFinite else { throw FloeError.validationFailed("Audio contains non-finite samples") }
+                        channels[channel][index] = Float(max(-1, min(1, value)))
                     }
                 }
+                try writer.write(from: buffer)
             }
         }
-        let output = try AVAudioFile(forWriting: outputURL, settings: source.fileFormat.settings)
-        try output.write(from: buffer)
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        let verified = try AVAudioFile(forReading: temporary)
+        guard verified.length > 0, verified.fileFormat.sampleRate == rate,
+              verified.fileFormat.channelCount == format.channelCount,
+              abs(Double(verified.length) / rate - Double(upper - lower) / rate) < 0.1 else {
+            throw FloeError.validationFailed("Edited audio failed format or duration verification")
+        }
+        if FileManager.default.fileExists(atPath: outputURL.path) { _ = try FileManager.default.replaceItemAt(outputURL, withItemAt: temporary) }
+        else { try FileManager.default.moveItem(at: temporary, to: outputURL) }
         return outputURL.path
     }
 
     private func resolve(_ path: String) throws -> URL {
-        if path.hasPrefix("/") {
-            let url = URL(fileURLWithPath: path)
-            guard FileManager.default.fileExists(atPath: url.path) else { throw FloeError.notFound(path) }
-            return url
-        }
-        guard let root = rootProvider() else {
-            throw FloeError.invalidConfiguration("no workspace root for audio paths")
-        }
-        let url = root.appendingPathComponent(path)
+        let url = try resolveOutput(path)
         guard FileManager.default.fileExists(atPath: url.path) else { throw FloeError.notFound(path) }
         return url
     }
 
     private func resolveOutput(_ path: String) throws -> URL {
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        guard let root = rootProvider() else {
-            throw FloeError.invalidConfiguration("no workspace root for audio paths")
-        }
-        return root.appendingPathComponent(path)
+        guard !path.isEmpty, !path.contains("\0"), let root = rootProvider() else { throw FloeError.validationFailed("A workspace and audio path are required") }
+        let canonical = root.resolvingSymlinksInPath().standardizedFileURL
+        let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : canonical.appendingPathComponent(path)).resolvingSymlinksInPath().standardizedFileURL
+        guard url.path.hasPrefix(canonical.path + "/") else { throw FloeError.validationFailed("Audio path escapes workspace") }
+        return url
     }
+
 }
 #endif
 
@@ -325,7 +331,7 @@ public struct AudioInspectTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         #if canImport(AVFoundation)
         let engine = AudioEngine(rootProvider: { context.workspaceRootURL })
-        let info = try await engine.inspect(path: args.path)
+        let info = try await engine.inspect(path: args.path, cancellation: context.cancellation)
         let lines = [
             "durationSeconds=\(String(format: "%.3f", info.durationSeconds))",
             "sampleRate=\(String(format: "%.0f", info.sampleRate))",
@@ -355,7 +361,7 @@ public struct AudioEditTool: AgentTool {
 
     public static let name = "audio.edit"
     public static let toolDescription =
-        "Apply explicit audio operations and write a new file: start/end trim, gain, fadeIn/fadeOut seconds, and an optional mix with another file. Every parameter you pass is applied exactly; omitted parameters are not defaulted. Use audio.inspect first."
+        "Apply explicit audio operations and write a new file: start/end trim, gain, fadeIn/fadeOut seconds, and an optional mix with another file. Gains must be in 0...16; peaks clip to the normal PCM range. Mix inputs must match sample rate and channels. The output must be a separate wav, caf, aiff or m4a file. Use audio.inspect first."
     public static let parametersJSON = #"{"type":"object","properties":{"input":{"type":"string"},"output":{"type":"string"},"start":{"type":"number"},"end":{"type":"number"},"gain":{"type":"number"},"fadeIn":{"type":"number"},"fadeOut":{"type":"number"},"mixPath":{"type":"string"}},"required":["input","output"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -385,7 +391,7 @@ public struct AudioEditTool: AgentTool {
             outputPath: args.output,
             operations: operations,
             fadeOutSeconds: args.fadeOut,
-            mixPath: args.mixPath
+            mixPath: args.mixPath, cancellation: context.cancellation
         )
         return ToolExecutionOutput(digesting: "status=ok output=\(path)", exitStatus: 0)
         #else

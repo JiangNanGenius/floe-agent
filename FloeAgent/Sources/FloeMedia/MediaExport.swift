@@ -33,14 +33,24 @@ public actor MediaExportEngine {
         try await MediaTranscodePipeline.run(spec, input: resolve(spec.input), output: resolveOutput(spec.output), cancellation: cancellation)
     }
 
-    public func thumbnail(input: String, timeSeconds: Double, output: String, maximumDimension: Int) async throws -> String {
+    public func thumbnail(input: String, timeSeconds: Double, output: String, maximumDimension: Int, cancellation: CancellationToken? = nil) async throws -> String {
         let inputURL = try resolve(input)
         let outputURL = try resolveOutput(output)
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: inputURL))
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        guard inputURL != outputURL, outputURL.pathExtension.lowercased() == "png",
+              timeSeconds.isFinite, timeSeconds >= 0, (16...8192).contains(maximumDimension) else {
+            throw FloeError.validationFailed("Thumbnail needs a separate PNG output, finite time and dimension 16...8192")
+        }
+        let asset = AVURLAsset(url: inputURL)
+        let duration = try await asset.load(.duration).seconds
+        guard timeSeconds < duration else { throw FloeError.validationFailed("Thumbnail time is outside the video") }
+        let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: maximumDimension, height: maximumDimension)
         let image = try await generator.image(at: CMTime(seconds: timeSeconds, preferredTimescale: 600)).image
         guard let data = MediaImageEncoding.png(image) else { throw FloeError.internalError("could not encode thumbnail") }
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: outputURL, options: .atomic)
         return "status=ok output=\(output) timeSeconds=\(timeSeconds) maxDimension=\(maximumDimension)"
     }
@@ -161,7 +171,7 @@ public struct VideoThumbnailTool: AgentTool {
             input: args.input,
             timeSeconds: args.timeSeconds,
             output: args.output,
-            maximumDimension: args.maximumDimension
+            maximumDimension: args.maximumDimension, cancellation: context.cancellation
         )
         return ToolExecutionOutput(digesting: result, exitStatus: 0)
         #else

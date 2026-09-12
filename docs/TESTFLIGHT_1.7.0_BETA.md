@@ -41,3 +41,9 @@ beta.3 uses cooperative interpreter-thread cancellation. Nine commands plus
 interactive input/close pass in both Debug and Release minimal native Apps,
 including worker termination, unknown command, three-stage pipe, timeout and
 execution after cancel. Full application qualification remains separate.
+
+Build 146 / beta.3 was cancelled before upload to complete the exposed audio
+editing and frame-utility paths. The next candidate adds bounded audio editing,
+real per-input mix gains, verified PNG/JPEG batches, aspect-preserving proxies,
+source-preserving thumbnails and accepted-SDK directory-iteration compatibility.
+No previous candidate has reached TestFlight upload.

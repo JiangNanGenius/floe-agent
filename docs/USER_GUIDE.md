@@ -254,3 +254,9 @@ Ask to convert a workspace Markdown, DOCX, HTML, RTF or text file to another sup
 ### Visual editing and captions (1.7, in development)
 
 Open a workspace video and select the crop/rotate/captions entry in the media workbench. Add manual captions with source start/end times, then open the visual editor to adjust cropping, rotation, speed and caption placement/size. Saved and exported videos become new workspace files. See the [integration and qualification status](FLOE_1_7_VIDEO_EDITOR_INTEGRATION.md).
+
+### Audio and frame utilities (1.7 beta candidate)
+
+Ask the Agent to trim workspace audio, adjust gain, apply fades or mix two inputs. Mix inputs must share a sample rate and channel count; convert them first when needed. Gains range from 0 to 16 and summed peaks clip to the normal PCM range. Choose a separate WAV, CAF, AIFF or M4A output. Cancellation preserves the source and any existing output.
+
+Frame extraction writes actual PNG or JPEG files. Choose timestamps or an interval and a new output directory; the complete batch commits together and existing directories are preserved. Proxy videos retain their aspect ratio within the requested maximum dimension.

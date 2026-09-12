@@ -41,12 +41,27 @@ enum MediaTranscodePipeline {
         defer { try? FileManager.default.removeItem(at: temporary) }
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
         if spec.passthrough {
-            guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough),
-                  exporter.supportedFileTypes.contains(fileType) else {
-                throw FloeError.validationFailed("Input streams cannot be remuxed to this container")
+            let outputType = fileType.rawValue
+            // Construct AVFoundation state inside the export task; only its
+            // Sendable handle crosses the custom cancellation watcher.
+            let operation = Task {
+                let exportAsset = AVURLAsset(url: input)
+                let type = AVFileType(rawValue: outputType)
+                guard let exporter = AVAssetExportSession(asset: exportAsset, presetName: AVAssetExportPresetPassthrough),
+                      exporter.supportedFileTypes.contains(type) else {
+                    throw FloeError.validationFailed("Input streams cannot be remuxed to this container")
+                }
+                try await exporter.export(to: temporary, as: type)
             }
-            // Modern async export also propagates Swift task cancellation.
-            try await exporter.export(to: temporary, as: fileType)
+            let watcher = Task {
+                while !Task.isCancelled {
+                    if cancellation?.isCancelled == true { operation.cancel(); return }
+                    do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                }
+            }
+            defer { watcher.cancel() }
+            try await withTaskCancellationHandler { try await operation.value } onCancel: { operation.cancel() }
+
         } else {
             let natural = try await video.load(.naturalSize)
             let transform = try await video.load(.preferredTransform)

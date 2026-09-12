@@ -141,27 +141,26 @@ public struct VideoExtractFramesTool: AgentTool {
     public func validate(_ args: Arguments) throws {
         let hasTimestamps = !(args.timestamps ?? []).isEmpty
         let hasInterval = (args.everySeconds ?? 0) > 0
-        guard hasTimestamps || hasInterval else {
+        guard hasTimestamps != hasInterval, (args.timestamps != nil) != (args.everySeconds != nil) else {
             throw FloeError.validationFailed("provide timestamps or everySeconds")
         }
-        guard args.maximumFrames > 0 else {
+        guard (1...10000).contains(args.maximumFrames) else {
             throw FloeError.validationFailed("maximumFrames must be positive")
         }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
         var timestamps = args.timestamps ?? []
         if timestamps.isEmpty, let every = args.everySeconds {
-            let start = args.start ?? 0
-            let end = args.end ?? start
-            guard end > start else {
+            guard let start = args.start, let end = args.end, start.isFinite, end.isFinite, every.isFinite, every > 0, start >= 0, end > start else {
                 throw FloeError.validationFailed("everySeconds requires explicit start and end")
             }
-            var value = start
-            while value <= end, timestamps.count < args.maximumFrames {
-                timestamps.append(value)
-                value += every
+            let count = floor((end - start) / every) + 1
+            guard count.isFinite, count > 0, count <= Double(args.maximumFrames) else {
+                throw FloeError.validationFailed("Requested interval exceeds maximumFrames")
             }
+            timestamps = (0..<Int(count)).map { start + Double($0) * every }
         }
         let renderer = MediaRenderer(rootProvider: { context.workspaceRootURL })
         let written = try await renderer.extractFrames(
@@ -169,7 +168,7 @@ public struct VideoExtractFramesTool: AgentTool {
             timestamps: timestamps,
             outputDirectory: args.outputDirectory,
             format: args.format,
-            maximumFrames: args.maximumFrames
+            maximumFrames: args.maximumFrames, cancellation: context.cancellation
         )
         var lines = ["status=ok frames=\(written.count)"]
         lines.append(contentsOf: written.prefix(50).map { "frame=\($0)" })

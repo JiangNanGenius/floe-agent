@@ -433,35 +433,41 @@ public actor MediaRenderer {
     }
 
     /// Extracts frames at explicit timestamps (seconds), writing image files.
-    public func extractFrames(
-        path: String,
-        timestamps: [Double],
-        outputDirectory: String,
-        format: String,
-        maximumFrames: Int
-    ) async throws -> [String] {
-        guard timestamps.count <= maximumFrames else {
-            throw FloeError.validationFailed("frame request exceeds maximumFrames=\(maximumFrames)")
+    public func extractFrames(path: String, timestamps: [Double], outputDirectory: String,
+                              format: String, maximumFrames: Int, cancellation: CancellationToken? = nil) async throws -> [String] {
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        guard (1...10000).contains(maximumFrames), !timestamps.isEmpty, timestamps.count <= maximumFrames,
+              timestamps.allSatisfy({ $0.isFinite && $0 >= 0 }), ["png", "jpeg"].contains(format) else {
+            throw FloeError.validationFailed("Frame extraction requires finite timestamps, PNG/JPEG and an enforced frame limit")
         }
-        let url = try resolve(path)
+        let url = try resolve(path), directory = try resolveOutput(outputDirectory)
+        guard !FileManager.default.fileExists(atPath: directory.path) else {
+            throw FloeError.validationFailed("Choose a new frame output directory; existing files are preserved")
+        }
         let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        guard duration.isFinite, timestamps.allSatisfy({ $0 < duration }) else {
+            throw FloeError.validationFailed("Frame timestamps must be inside the video duration")
+        }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
-        let directory = try resolveOutput(outputDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var written: [String] = []
-        for timestamp in timestamps.sorted() {
-            let time = CMTime(seconds: timestamp, preferredTimescale: 600)
-            let image = try await generator.image(at: time).image
-                guard let data = MediaImageEncoding.png(image) else { continue }
-            let name = String(format: "frame-%010.3f.\(format)", timestamp)
-            let destination = directory.appendingPathComponent(name)
-            try data.write(to: destination, options: .atomic)
-            written.append(destination.path)
+        let staging = directory.deletingLastPathComponent().appendingPathComponent(".floe-frames-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var names: [String] = []
+        for (index, timestamp) in timestamps.sorted().enumerated() {
+            try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+            let image = try await generator.image(at: CMTime(seconds: timestamp, preferredTimescale: 600)).image
+            guard let data = MediaImageEncoding.encode(image, format: format) else { throw FloeError.internalError("Frame encoding failed") }
+            let name = String(format: "frame-%05d-%010.3f.\(format)", index, timestamp)
+            try data.write(to: staging.appendingPathComponent(name), options: .atomic)
+            names.append(name)
         }
-        return written
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        try FileManager.default.moveItem(at: staging, to: directory)
+        return names.map { directory.appendingPathComponent($0).path }
     }
 
     private func sourceTimeRange(plan: VideoEditPlan, asset: AVURLAsset, duration: CMTime) async throws -> CMTimeRange {

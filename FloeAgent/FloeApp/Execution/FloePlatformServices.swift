@@ -81,7 +81,7 @@ final class FloePlatformServices: @unchecked Sendable {
                 let manifest = try LayerManifest.loadChecked(from: root)
                 var bytes: Int64 = 0
                 if let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]) {
-                    for case let file as URL in files {
+                    while let file = files.nextObject() as? URL {
                         try Task.checkCancellation()
                         let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey])
                         if values.isRegularFile == true && values.isSymbolicLink != true {
