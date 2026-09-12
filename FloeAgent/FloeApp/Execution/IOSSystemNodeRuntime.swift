@@ -3,6 +3,7 @@
 import Foundation
 import FloeCore
 import FloeExecution
+import FloeTools
 
 final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
     static let shared = IOSSystemNodeRuntime()
