@@ -13,9 +13,9 @@
 //    dispatching, and the dispatcher passes them to child commands.
 //  - There is no fork/exec: "sudo", native ELF and long-running daemons are
 //    impossible on iOS. ios_setMiniRoot limits directory navigation; it is not a filesystem sandbox.
-//  - A one-shot run that exceeds its deadline cannot be forcibly reaped on
-//    another thread; the bridge sends SIGINT and reports a timeout while the
-//    worker thread finishes (same documented boundary as the JS engine).
+//  - Cancellation is cooperative: dash observes an owned-session flag on its
+//    execution thread. Other native commands may outlive the caller; worker
+//    state and resources remain retained until they actually finish.
 
 #import <Foundation/Foundation.h>
 

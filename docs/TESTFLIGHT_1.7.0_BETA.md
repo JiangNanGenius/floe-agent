@@ -34,3 +34,10 @@ These do not replace the full application tests or physical-device checks.
 - Full application regression, accepted-SDK archive, Apple processing and group visibility must pass for this exact source.
 
 See [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md), [compatibility matrix](FLOE_1_7_QUALIFICATION_MATRIX.md), [migration and recovery](FLOE_1_7_MIGRATION.md), and [screenshots](evidence/floe-1.7/SCREENSHOTS.md).
+
+Build 145 / beta.2 was also cancelled before upload after expanded native shell
+qualification reproduced unsafe cancellation of an infinite loop. Build 146 /
+beta.3 uses cooperative interpreter-thread cancellation. Nine commands plus
+interactive input/close pass in both Debug and Release minimal native Apps,
+including worker termination, unknown command, three-stage pipe, timeout and
+execution after cancel. Full application qualification remains separate.

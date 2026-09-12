@@ -53,24 +53,28 @@ Agent tools:  exec.shell   shell.*   apt            jobs.submit(exec.shell)
 
 `LocalShellBackend` is a value-typed protocol so the package never links
 iOS-only binary frameworks and tests can inject fakes. The app injects
-`IOSSystemShellBackend`; when the frameworks are absent the tool honestly
-reports `status=engineUnavailable` (exit 125) instead of pretending.
+`IOSSystemShellBackend`. Production builds require the pinned native frameworks; missing linkage fails the build. Runtime availability failures remain explicit.
 
 ### 2.1 One-shot execution
 
-`FloeShellRunCommand` (bridge) serializes runs with a process-wide lock,
-redirects the calling thread's `thread_stdout`/`thread_stderr` to temp files,
-sets the mini-root to the task workspace and runs `ios_system(command)` on a
-dedicated pthread with a watchdog. A timeout sends SIGINT and reports exit
-124 with partial output; the abandoned thread is documented (same boundary as
-the JS engine's timeout semantics).
+`FloeShellRunCommand` serializes one-shot runs, binds thread-local output to
+continuously drained pipes with a shared output cap, and runs ios_system on a
+worker thread. Cancellation and deadlines set a per-session flag. Floe's dash
+checks it on the interpreter thread and exits with 130; the caller receives the
+cancelled or timed-out outcome. The bridge does not invoke a process-global
+signal handler on the calling Swift executor.
+
+A blocking native command without a cooperative checkpoint can outlive the
+caller. Its context and active-worker record stay retained until it finishes;
+environment deletion must refuse while native work remains. This is dependency
+and lifecycle scoping, not strong isolation of native code.
 
 ### 2.2 Interactive sessions
 
 `FloeShellOpenSession` creates two pipes and runs the program on an NSThread
 with thread-local stdio bound to them. `shell.exchange` writes the input pipe
 and drains the output pipe non-blocking; EOF marks the session dead.
-`shell.signal` maps INT/TERM/KILL to `pthread_kill`. The session registry
+`shell.signal` requests cooperative cancellation for the selected session. Closing a session also closes its owned pipes; no process-terminating signal is sent. The session registry
 lives in `ShellSessionCenter` (run-scoped ownership) and expires through the
 shared `SessionExpiryScheduler`.
 

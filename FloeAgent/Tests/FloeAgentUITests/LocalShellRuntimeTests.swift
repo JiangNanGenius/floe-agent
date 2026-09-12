@@ -40,5 +40,28 @@ struct LocalShellRuntimeTests {
         #expect(stdout.utf8.count == 100)
         #expect(truncated)
     }
+    @Test(.timeLimit(.minutes(1))) func cancellationReturnsAndNextCommandRuns() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = IOSSystemShellBackend()
+        let token = CancellationToken()
+        let trigger = Task { try? await Task.sleep(for: .milliseconds(200)); token.cancel() }
+        defer { trigger.cancel() }
+        let cancelled = await backend.run(.init(command: "while :; do :; done", cwd: ".", rootURL: root, timeout: 5, sessionID: UUID().uuidString), cancellation: token)
+        #expect(cancelled == .cancelled)
+        let next = await backend.run(.init(command: "echo after-cancel", cwd: ".", rootURL: root, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .exited(let code, let output, _, _, _, _) = next else { Issue.record("Execution after cancellation failed"); return }
+        #expect(code == 0 && output == "after-cancel\n")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func loopTimeoutReturnsWithoutTerminatingCaller() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = await IOSSystemShellBackend().run(.init(command: "while :; do :; done", cwd: ".", rootURL: root, timeout: 0.2, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .timedOut = result else { Issue.record("Loop did not report timeout"); return }
+    }
+
 }
 #endif

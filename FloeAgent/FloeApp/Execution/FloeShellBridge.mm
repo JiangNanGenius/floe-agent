@@ -60,11 +60,24 @@ static NSCountedSet<NSString *> *FloeActiveWorkers(void) {
     dispatch_once(&once, ^{ workers = [NSCountedSet new]; });
     return workers;
 }
+static NSMutableSet<NSString *> *FloeCancelledWorkers(void) {
+    static NSMutableSet *workers;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ workers = [NSMutableSet new]; });
+    return workers;
+}
+extern "C" __attribute__((visibility("default"), used)) int floe_shell_should_cancel(void) {
+    NSString *sessionID = FloeShellCurrentSessionID();
+    if (!sessionID) return 0;
+    @synchronized (FloeCancelledWorkers()) { return [FloeCancelledWorkers() containsObject:sessionID] ? 1 : 0; }
+}
 static void FloeWorkerStarted(NSString *sessionID) {
+    @synchronized (FloeCancelledWorkers()) { [FloeCancelledWorkers() removeObject:sessionID]; }
     @synchronized (FloeActiveWorkers()) { [FloeActiveWorkers() addObject:sessionID]; }
 }
 static void FloeWorkerFinished(NSString *sessionID) {
     @synchronized (FloeActiveWorkers()) { [FloeActiveWorkers() removeObject:sessionID]; }
+    @synchronized (FloeCancelledWorkers()) { [FloeCancelledWorkers() removeObject:sessionID]; }
 }
 BOOL FloeShellHasActiveWorker(NSString *sessionID) {
     @synchronized (FloeActiveWorkers()) { return [FloeActiveWorkers() countForObject:sessionID] > 0; }
@@ -208,10 +221,12 @@ void *FloeRunThreadMain(void *rawContext) {
 }
 
 void FloeInterruptEngine(const char *sessionKey) {
-    // ios_kill controls the engine's command; a POSIX terminating signal
-    // directed at a pthread can terminate the entire hosting app.
-    ios_switchSession(sessionKey);
-    ios_kill();
+    // ios_kill invokes a process-global SIGINT handler on its calling thread.
+    // dash's handler may longjmp/exit that unrelated Swift executor thread.
+    // Request cooperative interruption; dash polls on its own execution thread.
+    if (!sessionKey) return;
+    NSString *sessionID = [NSString stringWithUTF8String:sessionKey];
+    @synchronized (FloeCancelledWorkers()) { [FloeCancelledWorkers() addObject:sessionID]; }
 }
 
 

@@ -206,6 +206,7 @@ evalstring(char *s, int flags)
 int
 evaltree(union node *n, int flags)
 {
+    floe_check_interrupt();
 	int checkexit = 0;
 	int (*evalfn)(union node *, int);
 	struct stackmark smark;

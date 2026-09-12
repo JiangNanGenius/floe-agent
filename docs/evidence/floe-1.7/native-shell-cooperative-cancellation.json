@@ -1,0 +1,85 @@
+{
+  "configuration": "Release",
+  "platform": "iOS 27 Simulator arm64",
+  "bridgeSHA256": "2a8c18f76ac4d20e091450ae47c384eb8f17afd1f9775baf675f7368714379ab",
+  "cases": [
+    {
+      "workerStopped": true,
+      "stdout": "scoped",
+      "status": 0,
+      "exit": 0,
+      "stderr": "",
+      "index": 2
+    },
+    {
+      "index": 3,
+      "exit": 0,
+      "status": 0,
+      "stderr": "",
+      "stdout": "unset",
+      "workerStopped": true
+    },
+    {
+      "exit": 7,
+      "index": 1,
+      "workerStopped": true,
+      "status": 0,
+      "stdout": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "stderr": ""
+    },
+    {
+      "status": 0,
+      "index": 0,
+      "exit": 0,
+      "stdout": "HELLO\nWORLD\n",
+      "stderr": "",
+      "workerStopped": true
+    },
+    {
+      "stdout": "FIRST\nTWO\n",
+      "exit": 0,
+      "stderr": "",
+      "workerStopped": true,
+      "index": 4,
+      "status": 0
+    },
+    {
+      "stdout": "",
+      "exit": 127,
+      "stderr": "dash: 1: floe_nonexistent_command_qualification: not found\n",
+      "workerStopped": true,
+      "index": 5,
+      "status": 0
+    },
+    {
+      "exit": 130,
+      "workerStopped": true,
+      "index": 6,
+      "stdout": "",
+      "stderr": "",
+      "status": 3
+    },
+    {
+      "index": 7,
+      "exit": 0,
+      "workerStopped": true,
+      "status": 0,
+      "stderr": "",
+      "stdout": "after-cancel\n"
+    },
+    {
+      "index": 8,
+      "exit": 130,
+      "stderr": "",
+      "stdout": "",
+      "workerStopped": true,
+      "status": 2
+    }
+  ],
+  "interactive": {
+    "opened": true,
+    "stdout": "received:interactive",
+    "workerStopped": true,
+    "passed": true
+  }
+}

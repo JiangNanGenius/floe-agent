@@ -53,7 +53,22 @@
 #include "mystring.h"
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
+#include <dlfcn.h>
 #endif
+
+/* Floe cancellation is observed only on this interpreter's execution thread.
+ * Never invoke onsig/onint from a Swift caller: they use this thread's jump
+ * context, and the upstream signal bridge can otherwise exit the caller. */
+void floe_check_interrupt(void)
+{
+#if TARGET_OS_IPHONE
+    int (*should_cancel)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "floe_shell_should_cancel");
+    if (should_cancel && should_cancel()) {
+        exitstatus = 130;
+        exraise(EXEXIT);
+    }
+#endif
+}
 
 /*
  * Sigmode records the current value of the signal handlers for the various

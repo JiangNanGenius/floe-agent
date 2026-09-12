@@ -1,0 +1,45 @@
+name: FloeShellSmoke
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeShellEngine:
+    path: ../../ThirdParty/FloeShellEngine
+targets:
+  FloeShellSmoke:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: ../../FloeApp/Execution/FloeShellBridge.mm
+      - path: ../../FloeApp/Resources/Shell/commandDictionary.plist
+      - path: ../../FloeApp/Resources/Shell/extraCommandsDictionary.plist
+    dependencies:
+      - framework: ../../Frameworks/dash.xcframework
+        embed: true
+        link: false
+      - framework: ../../Frameworks/dashA.xcframework
+        embed: true
+        link: false
+      - framework: ../../Frameworks/dashB.xcframework
+        embed: true
+        link: false
+      - framework: ../../Frameworks/dashC.xcframework
+        embed: true
+        link: false
+      - framework: ../../Frameworks/dashD.xcframework
+        embed: true
+        link: false
+      - framework: ../../Frameworks/dashE.xcframework
+        embed: true
+        link: false
+      - package: FloeShellEngine
+        product: FloeShellEngine
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.shell-smoke
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: ../../FloeApp/Execution/FloeShellBridge.h
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'

@@ -55,3 +55,4 @@ static inline int have_traps(void)
 {
 	return trapcnt;
 }
+void floe_check_interrupt(void);
