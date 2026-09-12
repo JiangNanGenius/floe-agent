@@ -2,18 +2,27 @@ name: FloeNodeSmoke
 options:
   deploymentTarget:
     iOS: '26.0'
+packages:
+  FloeAgentPackages:
+    path: ../..
 targets:
   FloeNodeSmoke:
     type: application
     platform: iOS
     sources:
       - App
+      - path: ../../FloeApp/Execution/IOSSystemNodeRuntime.swift
       - path: ../../FloeApp/Execution/FloeNodeBridge.mm
       - path: ../../FloeApp/Resources/NodeTools
         name: NodeTools
         type: folder
         buildPhase: resources
     dependencies:
+      - target: FloeExecution
+      - package: FloeAgentPackages
+        product: FloeTools
+      - package: FloeAgentPackages
+        product: FloeCore
       - framework: ../../Vendor/NodeMobile/NodeMobile.xcframework
         embed: true
     settings:
@@ -22,5 +31,22 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/../../FloeApp/Execution/FloeNodeBridge.h
         CLANG_CXX_LANGUAGE_STANDARD: c++17
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'
+
+  FloeExecution:
+    type: framework
+    platform: iOS
+    sources:
+      - path: ../../Sources/FloeExecution/NodeExecutionService.swift
+    dependencies:
+      - package: FloeAgentPackages
+        product: FloeCore
+      - package: FloeAgentPackages
+        product: FloeTools
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.node-contract-qualification
+        GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
         SWIFT_VERSION: '6.0'

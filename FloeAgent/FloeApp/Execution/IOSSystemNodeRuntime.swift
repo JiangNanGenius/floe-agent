@@ -14,6 +14,9 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
         guard isAvailable else {
             return .failed(message: "The bundled Node.js runtime is not linked in this build")
         }
+        guard request.maxOutputBytes > 0, request.timeout.isFinite, request.timeout > 0 else {
+            return .failed(message: "Node output limit and timeout must be positive")
+        }
         if cancellation?.isCancelled == true { return .cancelled }
         let started = Date()
         return await withCheckedContinuation { continuation in
@@ -29,7 +32,7 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
                     request.environment,
                     request.stdin.map { Data($0.utf8) },
                     request.timeout,
-                    request.maxOutputBytes,
+                    UInt(request.maxOutputBytes),
                     { cancellation?.isCancelled == true },
                     &stdout,
                     &stderr,
@@ -44,7 +47,7 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
                 let out = (stdout as String?) ?? ""
                 let err = (stderr as String?) ?? ""
                 switch status {
-                case .ok:
+                case .OK:
                     continuation.resume(returning: .exited(code: exitCode, stdout: out, stderr: err, durationMs: durationMs, truncated: truncated.boolValue))
                 case .timedOut:
                     continuation.resume(returning: .timedOut(partialStdout: out, partialStderr: err, durationMs: durationMs))

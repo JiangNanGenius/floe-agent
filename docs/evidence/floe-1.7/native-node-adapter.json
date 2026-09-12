@@ -1,0 +1,103 @@
+{
+  "platform": "iOS 27 Simulator arm64",
+  "scope": "Production bridge and Swift adapter with exact NodeExecutionService contract; not full FloeExecution linkage",
+  "bridge": [
+    {
+      "exit": 0,
+      "truncated": false,
+      "stdout": "scoped\n",
+      "status": 0,
+      "workerStopped": true,
+      "processCwdPreserved": true,
+      "index": 0,
+      "stderr": ""
+    },
+    {
+      "stderr": "",
+      "workerStopped": true,
+      "index": 1,
+      "processCwdPreserved": true,
+      "truncated": false,
+      "status": 0,
+      "exit": 0,
+      "stdout": "input-data"
+    },
+    {
+      "index": 2,
+      "truncated": true,
+      "stdout": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "exit": 0,
+      "stderr": "",
+      "status": 0,
+      "workerStopped": true,
+      "processCwdPreserved": true
+    },
+    {
+      "exit": 1,
+      "stdout": "",
+      "index": 3,
+      "status": 2,
+      "processCwdPreserved": true,
+      "truncated": false,
+      "stderr": "",
+      "workerStopped": true
+    },
+    {
+      "truncated": false,
+      "stdout": "alive\n",
+      "index": 4,
+      "workerStopped": true,
+      "processCwdPreserved": true,
+      "status": 0,
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "workerStopped": true,
+      "index": 5,
+      "processCwdPreserved": true,
+      "status": 0,
+      "stdout": "input-data",
+      "truncated": false,
+      "stderr": "",
+      "exit": 0
+    },
+    {
+      "workerStopped": true,
+      "index": 6,
+      "status": 3,
+      "truncated": false,
+      "stdout": "",
+      "stderr": "",
+      "exit": 1,
+      "processCwdPreserved": true
+    },
+    {
+      "index": 7,
+      "exit": 0,
+      "stdout": "after-cancel\n",
+      "truncated": false,
+      "status": 0,
+      "stderr": "",
+      "workerStopped": true,
+      "processCwdPreserved": true
+    },
+    {
+      "exit": 0,
+      "workerStopped": true,
+      "truncated": false,
+      "stdout": "scoped-file\n",
+      "stderr": "",
+      "index": 8,
+      "status": 0,
+      "processCwdPreserved": true
+    }
+  ],
+  "adapter": {
+    "timeoutThroughAdapter": true,
+    "rejectsNegativeLimit": true,
+    "stdinThroughAdapter": true,
+    "passed": true,
+    "cancelThroughAdapter": true
+  }
+}
