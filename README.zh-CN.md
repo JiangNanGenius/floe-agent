@@ -32,6 +32,12 @@ Floe 1.7 正在 `codex/floe-1-7-integration-20260912` 分支整合，重点是�
 
 参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[升级与恢复](docs/FLOE_1_7_MIGRATION.md)、[构建与验收](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)。历次版本记录保留在[文档索引](docs/README.md)。
 
+### 媒体工作台预览
+
+<img src="docs/evidence/floe-1.7/native-media-workbench.png" width="360" alt="媒体工作台预览">
+
+iOS 模拟器上的开发界面，使用合成测试素材。截图展示素材播放、逐帧控制、播放速度及保存后的剪辑区间；完整 App、真机和共享任务队列仍在验收。
+
 ## 为什么使用 Floe Agent
 
 - **自带模型。** 用户自行连接兼容服务商，并可分别设置 Agent、识图、生图和图片编辑模型。

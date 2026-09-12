@@ -21,6 +21,12 @@ The development branch adds a media-workbench action to local workspace video pr
 
 The 1.7 environment/package/media flows remain under integration. Existing menu labels depend on the installed build. Check supported parameters and real resource availability before processing; preserve source files and verify exported files by reopening them.
 
+### 媒体工作台：预览与剪辑区间
+
+<img src="evidence/floe-1.7/native-media-workbench.png" width="360" alt="媒体工作台：预览与剪辑区间">
+
+从工作区的 MP4/MOV/M4V 文件预览打开“媒体工作台”。图中展示素材播放器和重开后恢复的 1–5 秒剪辑区间；向下滚动可查看处理与导出设置。这是 iOS 模拟器开发界面，不代表发布验收完成。
+
 ## 1. 安全安装
 
 有测试邀请时优先使用 TestFlight。使用社区未签名 IPA 时，必须先核验 SHA-256 与构建证明、检查源码，再使用自己的证书签名。不要导入陌生分发者提供的证书、API Key、SSH 私钥或描述文件。

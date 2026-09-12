@@ -15,6 +15,12 @@ The development branch adds a media-workbench action to local MP4/MOV/M4V worksp
 - Supported media conversions apply their parameters and verify real output files. Enhancements require both an available runner and verified resources.
 - Package/model inventories contain candidates and exclusions. Counts are not completed capability counts; consult the [compatibility guide](FLOE_1_7_COMPATIBILITY.md) and [qualification matrix](FLOE_1_7_QUALIFICATION_MATRIX.md).
 
+### Media workbench: source and trim range
+
+<img src="evidence/floe-1.7/native-media-workbench.png" width="360" alt="Media workbench: source and trim range">
+
+Open a local MP4/MOV/M4V in workspace file preview, then choose the media workbench. The screenshot shows the source player and a restored 1–5 second trim range. Scroll down for edit and export settings. This is an iOS Simulator development preview, not release acceptance.
+
 ## 1. Install safely
 
 Use TestFlight when a testing invitation is available. If you use the community unsigned IPA, verify its SHA-256 and provenance, inspect the source, and sign it with your own certificate. Never import a certificate, API key, SSH key, or provisioning profile supplied by an unknown distributor.

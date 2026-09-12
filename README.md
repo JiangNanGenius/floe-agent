@@ -32,6 +32,12 @@ Environment ownership and persistence, signed repository fixtures, bounded media
 
 See [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [upgrade and recovery](docs/FLOE_1_7_MIGRATION.md), and [build and acceptance](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Existing version notes remain in the [documentation index](docs/README.md).
 
+### Media workbench preview
+
+<img src="docs/evidence/floe-1.7/native-media-workbench.png" width="360" alt="Media workbench preview">
+
+Development preview on iOS Simulator with a synthetic test clip. Source playback, frame controls, speed selection and the saved trim range are visible. Full App/device acceptance and the shared job queue remain in progress.
+
 ## Why Floe Agent
 
 - **Bring your own models.** Connect compatible providers with credentials you control. Agent, vision, image-generation, and image-editing roles can be configured independently.

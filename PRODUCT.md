@@ -14,6 +14,12 @@ Environment layers are `session > project > shared > base`. They organize depend
 
 The milestone remains unfinished. Candidate package/model catalogs must not be advertised as runnable downloads before signing, installation and real execution are verified. See [status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [compatibility](docs/FLOE_1_7_COMPATIBILITY.md).
 
+### Media workflow preview
+
+<img src="docs/evidence/floe-1.7/native-media-workbench.png" width="360" alt="Floe media workbench source player and saved trim range">
+
+The development workbench keeps source playback and editing parameters together. This iOS Simulator capture uses synthetic media; it illustrates the connected preview/trim surface, while complete navigation, shared jobs and device acceptance remain open. See the [user guide](docs/USER_GUIDE.md) for the current workflow.
+
 ## Purpose
 
 Floe Agent is a bring-your-own-key AI agent workspace for iPhone and iPad. It brings model conversations, Files documents, image operations, SSH terminals, and VNC sessions into one auditable task flow without requiring a Floe account or a Floe-operated proxy.
