@@ -29,21 +29,41 @@ public actor ContainerCAS {
 
     private var indexURL: URL { roots.casURL.appendingPathComponent("index.json") }
 
-    private func loadIfNeeded() {
+    private func loadIfNeeded() throws {
         guard !loaded else { return }
+        if fileManager.fileExists(atPath: indexURL.path) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let candidate = try decoder.decode(Index.self, from: Data(contentsOf: indexURL))
+            let keys = Set(candidate.refs.keys).union(candidate.bytes.keys).union(candidate.createdAt.keys)
+            guard keys.allSatisfy({ $0.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil }),
+                  candidate.refs.values.allSatisfy({ $0 >= 0 }),
+                  candidate.bytes.values.allSatisfy({ $0 >= 0 }),
+                  Set(candidate.refs.keys) == Set(candidate.bytes.keys),
+                  Set(candidate.createdAt.keys) == Set(candidate.bytes.keys) else {
+                throw FloeError.validationFailed("Corrupt CAS reference index; data retained")
+            }
+            index = candidate
+        } else {
+            if fileManager.fileExists(atPath: roots.casURL.path),
+               !(try fileManager.contentsOfDirectory(atPath: roots.casURL.path)).isEmpty {
+                throw FloeError.validationFailed("CAS reference index is missing; existing data retained")
+            }
+            index = Index(refs: [:], bytes: [:], createdAt: [:])
+        }
         loaded = true
-        guard let data = try? Data(floeContentsOf: indexURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        index = (try? decoder.decode(Index.self, from: data)) ?? Index(refs: [:], bytes: [:], createdAt: [:])
     }
 
-    private func persist() {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys]
-        if let data = try? encoder.encode(index) {
-            try? data.write(to: indexURL, options: .atomic)
+    private func persist() throws {
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(index).write(to: indexURL, options: .atomic)
+        } catch {
+            // Never allow an uncommitted in-memory count to authorize collection.
+            loaded = false
+            throw error
         }
     }
 
@@ -57,7 +77,7 @@ public actor ContainerCAS {
     /// SHA-256 digest.
     @discardableResult
     public func ingest(fileAt url: URL) throws -> String {
-        loadIfNeeded()
+        try loadIfNeeded()
         let digest = try FloeDigest.sha256Hex(ofFileAt: url)
         let destination = blobURL(digest)
         if !fileManager.fileExists(atPath: destination.path) {
@@ -65,25 +85,21 @@ public actor ContainerCAS {
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            do {
-                try fileManager.moveItem(at: url, to: destination)
-            } catch {
-                try fileManager.copyItem(at: url, to: destination)
-                try? fileManager.removeItem(at: url)
-            }
+            try fileManager.copyItem(at: url, to: destination)
             let size = (try? fileManager.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
             index.bytes[digest] = size
             index.createdAt[digest] = Date()
         }
         index.refs[digest, default: 0] += 1
-        persist()
+        try persist()
+        if url.standardizedFileURL != destination.standardizedFileURL { try? fileManager.removeItem(at: url) }
         return digest
     }
 
     /// Ingests raw data (for small manifests) and returns the digest.
     @discardableResult
     public func ingest(data: Data) throws -> String {
-        loadIfNeeded()
+        try loadIfNeeded()
         let digest = FloeDigest.sha256Hex(data)
         let destination = blobURL(digest)
         if !fileManager.fileExists(atPath: destination.path) {
@@ -96,13 +112,13 @@ public actor ContainerCAS {
             index.createdAt[digest] = Date()
         }
         index.refs[digest, default: 0] += 1
-        persist()
+        try persist()
         return digest
     }
 
     /// Materializes a blob at `destination`, preferring APFS clone, then copy. Writable files must never share an inode with CAS.
     public func link(digest: String, to destination: URL) throws {
-        loadIfNeeded()
+        try loadIfNeeded()
         guard digest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
             throw FloeError.validationFailed("Invalid CAS digest")
         }
@@ -120,18 +136,20 @@ public actor ContainerCAS {
     }
 
     /// Retains a set of blobs for one layer (idempotent per layer operation).
-    public func retain(_ digests: [String]) {
-        loadIfNeeded()
-        for digest in digests {
-            index.refs[digest, default: 0] += 1
+    public func retain(_ digests: [String]) throws {
+        try loadIfNeeded()
+        let unique = Set(digests)
+        guard unique.allSatisfy({ index.bytes[$0] != nil && fileManager.fileExists(atPath: blobURL($0).path) && index.refs[$0, default: 0] < Int.max }) else {
+            throw FloeError.validationFailed("Cannot retain missing CAS blobs")
         }
-        persist()
+        for digest in unique { index.refs[digest, default: 0] += 1 }
+        try persist()
     }
 
     /// Releases references previously retained for a layer.
-    public func release(_ digests: [String]) {
-        loadIfNeeded()
-        for digest in digests {
+    public func release(_ digests: [String]) throws {
+        try loadIfNeeded()
+        for digest in Set(digests) {
             guard let count = index.refs[digest] else { continue }
             if count <= 1 {
                 index.refs[digest] = 0
@@ -139,15 +157,15 @@ public actor ContainerCAS {
                 index.refs[digest] = count - 1
             }
         }
-        persist()
+        try persist()
     }
 
     /// Deletes unreferenced blobs older than the grace period.
     @discardableResult
-    public func garbageCollect(grace: TimeInterval = 7 * 24 * 3600, now: Date = Date()) -> Int64 {
-        loadIfNeeded()
+    public func garbageCollect(grace: TimeInterval = 7 * 24 * 3600, now: Date = Date()) throws -> Int64 {
+        try loadIfNeeded()
         var reclaimed: Int64 = 0
-        for digest in Array(index.bytes.keys) where index.refs[digest, default: 0] == 0 {
+        for digest in Array(index.bytes.keys) where index.refs[digest] == 0 {
             let created = index.createdAt[digest] ?? now
             guard now.timeIntervalSince(created) >= grace else { continue }
             let url = blobURL(digest)
@@ -159,12 +177,12 @@ public actor ContainerCAS {
             index.bytes.removeValue(forKey: digest)
             index.createdAt.removeValue(forKey: digest)
         }
-        persist()
+        try persist()
         return reclaimed
     }
 
-    public func stats() -> Stats {
-        loadIfNeeded()
+    public func stats() throws -> Stats {
+        try loadIfNeeded()
         let referenced = index.refs.filter { $0.value > 0 }.keys
         return Stats(
             blobCount: index.bytes.count,

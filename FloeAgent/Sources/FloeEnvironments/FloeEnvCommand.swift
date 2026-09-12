@@ -67,7 +67,7 @@ public struct FloeEnvCommand: Sendable {
             }
             return Result(output: "removed \(report.containerID) reclaimed=\(formatBytes(report.reclaimedBytes)) casReleased=\(report.casReleased)")
         case "gc":
-            let reclaimed = await lifecycle.garbageCollect()
+            let reclaimed = try await lifecycle.garbageCollect()
             return Result(output: "garbage collected reclaimed=\(formatBytes(reclaimed))")
         case "rebuild":
             guard let id = args.dropFirst().first else {
@@ -218,7 +218,7 @@ public struct FloeEnvCommand: Sendable {
             value /= 1024
             unit += 1
         }
-        return String(format: unit == 0 ? "%.0f%s" : "%.1f%s", value, units[unit])
+        return String(format: unit == 0 ? "%.0f%@" : "%.1f%@", value, units[unit])
     }
 
     public static let helpText = """

@@ -37,18 +37,18 @@ struct EnvironmentPersistenceTests {
         let cas = ContainerCAS(roots: EnvironmentRoots(rootURL: root))
         let bytes = Data("original".utf8)
         let digest = try await cas.ingest(data: bytes)
-        await cas.retain([digest])
+        try await cas.retain([digest])
         let copy = root.appendingPathComponent("editable")
         try await cas.link(digest: digest, to: copy)
         try Data("changed".utf8).write(to: copy)
         let second = root.appendingPathComponent("second")
         try await cas.link(digest: digest, to: second)
         #expect(try Data(contentsOf: second) == bytes)
-        await cas.release([digest])
-        #expect(await cas.garbageCollect(grace: 0) == 0)
-        await cas.release([digest])
-        #expect(await cas.garbageCollect(grace: 0) == Int64(bytes.count))
-        #expect(await cas.stats().blobCount == 0)
+        try await cas.release([digest])
+        #expect(try await cas.garbageCollect(grace: 0) == 0)
+        try await cas.release([digest])
+        #expect(try await cas.garbageCollect(grace: 0) == Int64(bytes.count))
+        #expect(try await cas.stats().blobCount == 0)
     }
 
     @Test func failedStopPreservesEnvironment() async throws {
@@ -95,5 +95,42 @@ extension EnvironmentPersistenceTests {
         await #expect(throws: (any Error).self) {
             try await coordinator.acquire(ToolContext(runID: UUID(), workspaceRootURL: root.appendingPathComponent("b"), cancellation: CancellationToken(), environmentID: first.context.environmentID))
         }
+    }
+}
+
+extension EnvironmentPersistenceTests {
+    @Test func corruptCASIndexNeverAuthorizesCollection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let initial = ContainerCAS(roots: roots)
+        let digest = try await initial.ingest(data: Data("retained".utf8))
+        let indexURL = roots.casURL.appendingPathComponent("index.json")
+        let corrupt = Data("invalid index".utf8)
+        try corrupt.write(to: indexURL)
+        let restarted = ContainerCAS(roots: roots)
+        do { _ = try await restarted.garbageCollect(grace: 0); Issue.record("Corrupt index allowed GC") } catch {}
+        #expect(try Data(contentsOf: indexURL) == corrupt)
+        #expect(FileManager.default.fileExists(atPath: roots.casURL.appendingPathComponent(String(digest.prefix(2))).appendingPathComponent(digest).path))
+    }
+
+    @Test func failedCASReferenceWriteDoesNotEnableCollection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let cas = ContainerCAS(roots: roots)
+        let digest = try await cas.ingest(data: Data("retained".utf8))
+        let indexURL = roots.casURL.appendingPathComponent("index.json")
+        let durable = try Data(contentsOf: indexURL)
+        try FileManager.default.removeItem(at: indexURL)
+        try FileManager.default.createDirectory(at: indexURL, withIntermediateDirectories: false)
+        do { try await cas.release([digest]); Issue.record("Index write failure ignored") } catch {}
+        do { _ = try await cas.garbageCollect(grace: 0); Issue.record("Uncommitted count used for GC") } catch {}
+        try FileManager.default.removeItem(at: indexURL)
+        try durable.write(to: indexURL)
+        #expect(try await cas.garbageCollect(grace: 0) == 0)
+        let copy = root.appendingPathComponent("verified")
+        try await cas.link(digest: digest, to: copy)
+        #expect(try Data(contentsOf: copy) == Data("retained".utf8))
     }
 }

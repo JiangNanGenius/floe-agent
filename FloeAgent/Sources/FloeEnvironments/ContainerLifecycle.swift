@@ -87,7 +87,14 @@ public actor ContainerLifecycle {
             throw error
         }
         let refs = manifest?.casRefs ?? []
-        await cas.release(refs)
+        do { try await cas.release(refs) }
+        catch {
+            // The removed environment remains recoverable in trash. Keep its
+            // durable CAS references instead of reporting a successful release.
+            FloeLogger(category: .tools).error("containerCASReferencesRetained id=\(record.id)")
+            return DestroyReport(containerID: record.id, kind: record.kind, reclaimedBytes: 0,
+                                 casReleased: 0, orphaned: orphaned)
+        }
         var reclaimed: Int64 = 0
         if fileManager.fileExists(atPath: trash.path) {
             do { try fileManager.removeItem(at: trash); reclaimed = bytes }
@@ -128,7 +135,7 @@ public actor ContainerLifecycle {
 
     /// Purges trash entries older than `grace` and runs CAS collection.
     @discardableResult
-    public func garbageCollect(grace: TimeInterval = 7 * 24 * 3600) async -> Int64 {
+    public func garbageCollect(grace: TimeInterval = 7 * 24 * 3600) async throws -> Int64 {
         var reclaimed: Int64 = 0
         let entries = (try? fileManager.contentsOfDirectory(
             at: roots.trashURL,
@@ -138,11 +145,12 @@ public actor ContainerLifecycle {
         for entry in entries {
             let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
             if now.timeIntervalSince(modified) >= grace {
-                reclaimed += directorySize(at: entry)
-                try? fileManager.removeItem(at: entry)
+                let bytes = directorySize(at: entry)
+                do { try fileManager.removeItem(at: entry); reclaimed += bytes }
+                catch { FloeLogger(category: .tools).error("containerTrashRetained name=\(entry.lastPathComponent)") }
             }
         }
-        reclaimed += await cas.garbageCollect(grace: grace)
+        reclaimed += try await cas.garbageCollect(grace: grace)
         return reclaimed
     }
 
