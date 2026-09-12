@@ -3,7 +3,8 @@
 set -euo pipefail
 floe_root="$(cd "$(dirname "$0")/.." && pwd)"
 floe_source="$floe_root/ThirdParty/DashIOS"
-floe_work="${FLOE_DASH_BUILD_ROOT:-/tmp/floe-dash-build}"
+floe_work_tag="$(printf '%s' "$floe_root" | shasum -a 256 | cut -c 1-12)"
+floe_work="${FLOE_DASH_BUILD_ROOT:-/tmp/floe-dash-build-$floe_work_tag}"
 floe_engine="$floe_root/ThirdParty/FloeShellEngine/.build/artifacts/floeshellengine/ios_system/ios_system.xcframework"
 mkdir -p "$floe_work" "$floe_root/Frameworks"
 if [ ! -d "$floe_engine" ]; then
@@ -17,7 +18,9 @@ for floe_helper in compile missing install-sh config.guess config.sub depcomp; d
   cp "$floe_aux/$floe_helper" "$floe_work/source/$floe_helper"
 done
 touch "$floe_work/source/aclocal.m4" "$floe_work/source/configure" "$floe_work/source/config.h.in" "$floe_work/source/Makefile.in" "$floe_work/source/src/Makefile.in"
-for floe_sdk in iphoneos iphonesimulator; do
+for floe_variant in iphoneos iphonesimulator iphonesimulator-x86_64; do
+  floe_sdk="$floe_variant"
+  if [ "$floe_variant" = iphonesimulator-x86_64 ]; then floe_sdk=iphonesimulator; fi
   floe_sdkroot="$(xcrun --sdk "$floe_sdk" --show-sdk-path)"
   floe_osxroot="$(xcrun --sdk macosx --show-sdk-path)"
   floe_target=arm64-apple-ios26.0
@@ -26,7 +29,8 @@ for floe_sdk in iphoneos iphonesimulator; do
     floe_target=arm64-apple-ios26.0-simulator
     floe_slice=ios-arm64_x86_64-simulator
   fi
-  floe_build="$floe_work/$floe_sdk"
+  if [ "$floe_variant" = iphonesimulator-x86_64 ]; then floe_target=x86_64-apple-ios26.0-simulator; fi
+  floe_build="$floe_work/$floe_variant"
   mkdir -p "$floe_build"
   # Autoconf's compiler flag handling does not preserve paths containing spaces.
   ln -sfn "$floe_engine" "$floe_work/ios_system.xcframework"
@@ -54,8 +58,12 @@ for floe_sdk in iphoneos iphonesimulator; do
   done
 done
 for floe_name in dash dashA dashB dashC dashD dashE; do
+  floe_universal="$floe_work/simulator-universal/$floe_name.framework"
+  mkdir -p "$floe_universal/Headers"
+  cp "$floe_work/iphonesimulator/$floe_name.framework/Info.plist" "$floe_universal/Info.plist"
+  lipo -create "$floe_work/iphonesimulator/$floe_name.framework/$floe_name" "$floe_work/iphonesimulator-x86_64/$floe_name.framework/$floe_name" -output "$floe_universal/$floe_name"
   floe_output="$floe_root/Frameworks/$floe_name.xcframework"
   # xcodebuild requires an absent output; only remove our generated framework.
   if [ -d "$floe_output" ]; then rm -rf "$floe_output"; fi
-  xcodebuild -create-xcframework -framework "$floe_work/iphoneos/$floe_name.framework" -framework "$floe_work/iphonesimulator/$floe_name.framework" -output "$floe_output"
+  xcodebuild -create-xcframework -framework "$floe_work/iphoneos/$floe_name.framework" -framework "$floe_universal" -output "$floe_output"
 done

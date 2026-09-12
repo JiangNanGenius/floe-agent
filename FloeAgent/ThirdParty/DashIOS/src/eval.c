@@ -634,7 +634,16 @@ evalpipe(union node *n, int flags)
 		ios_dup2(pip[1], STDOUT_FILENO);
 	}
 	// j == 0, special case (no need to call dup2):
-	evaltree(lplist[0]->n, flags | EV_NOFORK); // start the first command and wait for it to finish
+	/* A compound producer owns the pipe for its entire tree, not only its
+	 * first builtin (for example every iteration of a for loop). */
+	FILE *saved_in = NULL, *saved_out = NULL, *saved_err = NULL;
+	if (lplist[0]->n->type != NCMD)
+		ios_activateChildStreams(&saved_in, &saved_out, &saved_err);
+	evaltree(lplist[0]->n, flags | EV_NOFORK);
+	flushall();
+	if (saved_err) { if (thread_stderr != thread_stdout) fclose(thread_stderr); thread_stderr = saved_err; }
+	if (saved_out) { fclose(thread_stdout); thread_stdout = saved_out; }
+	if (saved_in) { fclose(thread_stdin); thread_stdin = saved_in; }
 	// Now wait for the last command at the end of the pipe to finish:
 	ios_waitpid(pid); 
 	ios_stopInteractive(); 

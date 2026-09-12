@@ -123,6 +123,7 @@ INCLUDE <sys/stat.h>
 INCLUDE "cd.h"
 INCLUDE "output.h"
 INCLUDE "var.h"
+INCLUDE "ios_error.h"
 MKINIT char **environ;
 INIT {
 	char **envp;
@@ -131,7 +132,11 @@ INIT {
 	struct stat64 st1, st2;
 
 	initvar();
+#if TARGET_OS_IPHONE
+	for (envp = environmentVariables(ios_currentPid()); *envp; envp++) {
+#else
 	for (envp = environ ; *envp ; envp++) {
+#endif
 		p = endofname(*envp);
 		if (p != *envp && *p == '=') {
 			setvareq(*envp, VEXPORT|VTEXTFIXED);

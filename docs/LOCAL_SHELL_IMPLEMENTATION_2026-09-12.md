@@ -3,7 +3,7 @@
 The user deferred the app release while adding more features. No tag, TestFlight
 upload or production release is part of this checkpoint.
 
-## Implemented in the working tree
+## Implemented on the feature branch
 
 - Validated shell input/cwd/environment, symlink-aware directory resolution,
   bounded/redacted agent output, session ownership/expiry and close races.
@@ -25,8 +25,7 @@ upload or production release is part of this checkpoint.
   payload and points catalogs at committed artifact revisions.
 - Canonical tool-name migration with historical dotted/wire aliases. Retained
   removed image/hash/SVG/text-edit runners for compatibility while omitting them
-  from discovery. Office skill source is updated; signed generated files require
-  the existing trusted signing workflow.
+  from discovery. Office skill source and trusted signed generated files are updated.
 
 ## Evidence so far
 
@@ -39,10 +38,17 @@ upload or production release is part of this checkpoint.
   Hub signatures, the WASI signature, artifact digest and matching bundled catalog.
 - iOS bridge compiled against the actual pinned header; the Swift shell backend
   and replacement-command source compiled in a focused host harness.
-- Real dash iOS/device and arm64 simulator frameworks built successfully.
+- Real dash iOS/device and universal arm64/x86_64 simulator frameworks built
+  successfully; `lipo -archs` confirmed both simulator architectures.
 - Minimal iOS simulator app and test bundle containing the native engine, dash,
   resources and bridge built successfully. Native test execution encountered
   simulator test-service startup failures; a build is not execution evidence.
+
+The isolated qualification branch is `codex/local-shell-qualification-20260912`.
+The latest focused bridge compile and all 17 regression tests passed again after
+command cancellation/lifetime changes. Full app CI is still pending; earlier CI
+exposed duplicate image source basenames, which have been fixed. Concurrent new
+feature work in the original workspace is not part of this qualification branch.
 
 ## Still required before claiming full completion
 

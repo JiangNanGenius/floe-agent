@@ -403,6 +403,15 @@ find_command(char *name, struct cmdentry *entry, int act, const char *path)
 	if (act & DO_REGBLTIN)
 		goto fail;
 
+#if TARGET_OS_IPHONE
+	/* ios_system commands are framework entry points, not PATH executables. */
+	if (ios_executable(name)) {
+		entry->cmdtype = CMDNORMAL;
+		entry->u.index = -1;
+		return;
+	}
+#endif
+
 	/* We have to search path. */
 	prev = -1;		/* where to start */
 	if (cmdp && cmdp->rehash) {	/* doing a rehash */

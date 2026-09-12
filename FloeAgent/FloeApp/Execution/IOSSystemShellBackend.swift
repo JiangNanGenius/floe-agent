@@ -80,6 +80,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         io?.close()
     }
     func signalSession(sessionID: String, signal: ShellSignal) async {
+        FloeShellCommandRegistry.shared.cancelCurrent(sessionID: sessionID)
         FloeShellSignalSession(sessionID, signal == .interrupt ? SIGINT : SIGTERM)
     }
     func resizeSession(sessionID: String, columns: Int, rows: Int) async {
@@ -150,6 +151,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         func close() {
             lock.withLock { closing = true }
             // The pump owns descriptor teardown and serializes it with reads/writes.
+            FloeShellCommandRegistry.shared.cancelCurrent(sessionID: id)
             FloeShellSignalSession(id, SIGTERM)
         }
     }

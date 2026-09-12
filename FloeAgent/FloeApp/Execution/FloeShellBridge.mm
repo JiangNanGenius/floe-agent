@@ -167,8 +167,11 @@ void *FloeRunThreadMain(void *rawContext) {
     @autoreleasepool {
         ios_switchSession(context->sessionKey);
         ios_setContext(context->sessionKey);
-        ios_fork();
+        // ios_fork holds the engine PID mutex until the creating thread
+        // publishes its ID. Complete that pair before dash can fork a pipeline.
+        const pid_t processID = ios_fork();
         FloeShellSetEnvironment(context->environment);
+        ios_storeThreadId(pthread_self());
         ios_setDirectoryURL([NSURL fileURLWithPath:context->workingDirectory]);
         ios_setStreams(context->input, context->output, context->error);
         thread_stdin = context->input;
@@ -176,6 +179,7 @@ void *FloeRunThreadMain(void *rawContext) {
         thread_stderr = context->error;
         ios_system(context->command);
         context->exitCode = (int32_t)ios_getCommandStatus();
+        ios_releaseThreadId(processID);
         fclose(context->output); context->output = nullptr;
         fclose(context->error); context->error = nullptr;
         context->outputCapture->finish();
@@ -333,8 +337,11 @@ void *FloeSessionThreadMain(void *rawContext) {
         FILE *output = fdopen(context->outputWriteFD, "w");
         ios_switchSession(context->sessionKey);
         ios_setContext(context->sessionKey);
-        ios_fork();
+        // ios_fork holds the engine PID mutex until the creating thread
+        // publishes its ID. Complete that pair before dash can fork a pipeline.
+        const pid_t processID = ios_fork();
         FloeShellSetEnvironment(context->environment);
+        ios_storeThreadId(pthread_self());
         ios_setStreams(input ?: stdin, output ?: stdout, output ?: stderr);
         thread_stdin = input ?: stdin;
         thread_stdout = output ?: stdout;
@@ -344,6 +351,7 @@ void *FloeSessionThreadMain(void *rawContext) {
         }
         ios_system(context->command);
         context->record.exitCode = ios_getCommandStatus();
+        ios_releaseThreadId(processID);
         context->record.finished = YES;
         if (output) { fflush(output); }
         if (input) fclose(input);
