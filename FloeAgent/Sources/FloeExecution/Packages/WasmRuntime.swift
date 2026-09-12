@@ -1,7 +1,7 @@
 // FloeExecution — WASM command runtime contract.
 // `pkg` installs sandboxed WASM commands from the signed capability catalog.
-// The runtime itself (WasmKit + WASI) lives in the app target so the package
-// stays free of iOS-only binary dependencies. Modules may read/write the
+// The interpreter runtime (WasmKit + WASI) is shared by app and package tests.
+// It requires no iOS-only binary dependencies. Modules may read/write the
 // workspace and /tmp, receive args/env/stdin, and have no sockets.
 
 import Foundation
