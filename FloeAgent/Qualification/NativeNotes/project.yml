@@ -1,0 +1,70 @@
+name: FloeNotesNativeQualification
+settings:
+  base:
+    ARCHS: arm64
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeAgent:
+    path: ../..
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit.git
+    revision: 1e2a163736dfa5a198e637ae44c114e1c6d5cc2d
+targets:
+  FloeNotesNativeQualification:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - ../../FloeApp/Notes/NotePageRenderer.swift
+      - ../../FloeApp/Notes/NotePencilView.swift
+      - ../../FloeApp/Notes/NotesExport.swift
+      - ../../FloeApp/Notes/NoteFileImporter.swift
+      - ../../FloeApp/Files/PDFKitAccess.swift
+      - ../../FloeApp/Files/FloePDFExceptionGuard.mm
+      - ../../FloeApp/Files/FloePDFExceptionGuard.h
+      - ../../FloeApp/Voice
+      - path: ../../FloeApp/Resources/Whisper
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: FloeAgent
+        product: FloeCore
+      - package: FloeAgent
+        product: FloeNotes
+      - package: WhisperKit
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.notes.qualification
+        SWIFT_VERSION: '6.0'
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: '1,2'
+        SWIFT_OBJC_BRIDGING_HEADER: App/Bridge.h
+        CODE_SIGNING_ALLOWED: NO
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Test local voice transcription.
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Test Apple speech fallback.
+  NativeNotesTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: FloeNotesNativeQualification
+      - package: FloeAgent
+        product: FloeNotes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.notes.tests
+        SWIFT_VERSION: '6.0'
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+schemes:
+  FloeNotesNativeQualification:
+    build:
+      targets:
+        FloeNotesNativeQualification: all
+        NativeNotesTests: [test]
+    test:
+      targets: [NativeNotesTests]

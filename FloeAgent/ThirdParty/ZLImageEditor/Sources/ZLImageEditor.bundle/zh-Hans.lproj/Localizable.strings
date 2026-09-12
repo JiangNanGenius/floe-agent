@@ -1,0 +1,24 @@
+"cancel" = "取消";
+"done" = "确定";
+"editFinish" = "完成";
+"revert" = "还原";
+"brightness" = "亮度";
+"contrast" = "对比度";
+"saturation" = "饱和度";
+"textStickerRemoveTips" = "拖到此处删除";
+"hudProcessing" = "正在处理";
+
+// Floe accessibility names for editor tools.
+"tool.draw" = "涂鸦";
+"tool.clip" = "裁剪";
+"tool.imageSticker" = "图片贴纸";
+"tool.textSticker" = "文字";
+"tool.mosaic" = "马赛克";
+"tool.filter" = "滤镜";
+"tool.adjust" = "调色";
+"floe.title" = "编辑图片";
+"floe.save" = "保存副本";
+"floe.undo" = "撤销";
+"floe.redo" = "重做";
+"floe.original" = "查看原图";
+"floe.originalBadge" = "原图";

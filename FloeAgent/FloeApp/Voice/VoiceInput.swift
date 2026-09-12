@@ -112,6 +112,7 @@ protocol SpeechAuthorizationProviding: Sendable {
 protocol SpeechTranscribing: Sendable {
     /// Ordered partial/final transcripts. Finishes when audio ends.
     var transcripts: AsyncStream<String> { get }
+    var failure: VoiceInputFailure? { get }
     /// Streams one captured buffer into the analyzer.
     /// This is deliberately synchronous: AVAudioEngine may reuse its tap
     /// buffer after the callback returns, and spawning one Task per buffer
@@ -119,6 +120,10 @@ protocol SpeechTranscribing: Sendable {
     func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?)
     /// Signals end of audio and lets the transcriber finish.
     func finishAudio() async
+}
+
+extension SpeechTranscribing {
+    var failure: VoiceInputFailure? { nil }
 }
 
 /// Audio capture seam (the only place AVAudioEngine may live).

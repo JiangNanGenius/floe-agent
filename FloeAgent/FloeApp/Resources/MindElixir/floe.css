@@ -1,0 +1,5 @@
+html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif}
+html{color-scheme:light dark}body{background:Canvas;color:CanvasText}
+#map{touch-action:none}button{min-width:44px;min-height:44px}
+me-tpc{min-height:28px;padding:10px 14px!important}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}

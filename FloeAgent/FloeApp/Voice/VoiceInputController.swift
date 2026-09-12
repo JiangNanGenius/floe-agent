@@ -177,7 +177,10 @@ final class VoiceInputController: ObservableObject {
             if let observation {
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await observation.value }
-                    group.addTask { try? await Task.sleep(for: .milliseconds(900)) }
+                    group.addTask {
+                        try? await Task.sleep(for: .milliseconds(900))
+                        if !Task.isCancelled { observation.cancel() }
+                    }
                     _ = await group.next()
                     group.cancelAll()
                 }
@@ -187,7 +190,10 @@ final class VoiceInputController: ObservableObject {
             self.transcriptTask = nil
             self.transcriber = nil
             self.startToken &+= 1
-            self.state = .idle
+            if let failure = activeTranscriber?.failure {
+                self.state = .failed(reason: failure)
+                self.diagnostics?.voiceFailed(reason: failure)
+            } else { self.state = .idle }
             self.stopTask = nil
             if wasListening { self.diagnostics?.voiceListeningStopped() }
         }

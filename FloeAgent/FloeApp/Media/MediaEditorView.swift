@@ -137,10 +137,12 @@ final class MediaEditorModel: ObservableObject {
 struct MediaEditorView: View {
     @StateObject private var model: MediaEditorModel
     @Environment(\.dismiss) private var dismiss
+    private let onExported: ((URL) -> Void)?
     @State private var previewOutput = false
     @State private var showVisualEditor = false
 
-    init(workspaceRoot: URL, previewURL: URL) {
+    init(workspaceRoot: URL, previewURL: URL, onExported: ((URL) -> Void)? = nil) {
+        self.onExported = onExported
         _model = StateObject(wrappedValue: MediaEditorModel(workspaceRoot: workspaceRoot, sourceURL: previewURL))
     }
 
@@ -195,7 +197,12 @@ struct MediaEditorView: View {
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { model.cancel(); dismiss() } } }
         .task { await model.load() }
         .fullScreenCover(isPresented: $showVisualEditor) {
-            FloeVisualVideoEditor(root: model.workspaceRoot, source: model.sourceURL)
+            FloeVisualVideoEditor(root: model.workspaceRoot, source: model.sourceURL) { url in
+                model.exportedURL = url
+            }
+        }
+        .onChange(of: model.exportedURL) { _, url in
+            if let url { onExported?(url) }
         }
         .onDisappear { model.cancel() }
     }
@@ -205,6 +212,7 @@ struct MediaEditorView: View {
 private struct FloeVisualVideoEditor: View {
     let root: URL
     let source: URL
+    let onExported: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var configuration = VideoEditingConfiguration.initial
     @State private var showEditor = false
@@ -340,6 +348,7 @@ private struct FloeVisualVideoEditor: View {
                 guard playable, seconds.isFinite, seconds > 0 else { throw FloeError.validationFailed("导出文件不可播放") }
                 try FileManager.default.moveItem(at: staging, to: destination)
                 output = destination
+                onExported(destination)
                 message = "已保存到工作区：" + destination.lastPathComponent
             } catch { message = "保存成片失败：" + error.localizedDescription }
         }

@@ -5,19 +5,52 @@ import VideoEditorKit
 
 @main struct SmokeApp: App {
     let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    @State private var imageSaved = false
+    @State private var imageEditorPresented = true
     var body: some Scene {
         WindowGroup {
             Group {
-                if ProcessInfo.processInfo.arguments.contains("--library-editor") {
+                if ProcessInfo.processInfo.arguments.contains("--image-editor") {
+                    if imageSaved {
+                        Text("图像副本已保存").accessibilityIdentifier("image.export.saved")
+                    } else {
+                        Text("编辑已关闭").accessibilityIdentifier("image.editor.closed")
+                            .fullScreenCover(isPresented: $imageEditorPresented) {
+                                FloeImageEditorView(sourceURL: imageFixtureURL) { data in
+                                    try data.write(to: root.appendingPathComponent("image-editor-output.png"), options: .atomic)
+                                    imageSaved = true
+                                    imageEditorPresented = false
+                                }
+                            }
+                    }
+                } else if ProcessInfo.processInfo.arguments.contains("--library-editor") {
                     VideoEditorView("Floe", sourceVideoURL: root.appendingPathComponent("input.mov"), configuration: .init(transcription: .init()))
                 } else {
                     NavigationStack { MediaEditorView(workspaceRoot: root, previewURL: root.appendingPathComponent("input.mov")) }
                 }
             }
+                .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--light") ? .light : .dark)
                 .task {
                     if ProcessInfo.processInfo.arguments.contains("--model-smoke") { await qualifyModel() }
                 }
         }
+    }
+
+    @MainActor private var imageFixtureURL: URL {
+        let url = root.appendingPathComponent("image-editor-source.png")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 600), format: format).image { context in
+                UIColor.systemTeal.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+                UIColor.systemOrange.setFill()
+                context.fill(CGRect(x: 100, y: 100, width: 300, height: 250))
+                ("Floe 图像工作台" as NSString).draw(at: CGPoint(x: 80, y: 450), withAttributes: [.font: UIFont.systemFont(ofSize: 40), .foregroundColor: UIColor.white])
+            }
+            try? image.pngData()?.write(to: url, options: .atomic)
+        }
+        return url
     }
 
     @MainActor private func qualifyModel() async {

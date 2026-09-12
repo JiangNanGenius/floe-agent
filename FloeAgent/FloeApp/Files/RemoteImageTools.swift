@@ -1287,26 +1287,6 @@ struct PDFFromImagesTool: AgentTool {
     }
 }
 
-/// Process-wide gate for PDFKit, which is not thread-safe: agent-loop tools
-/// parse/draw/serialize while the main-thread reader displays its own
-/// document, and thread migration of PDFKit objects crashes. Every PDFKit
-/// touch runs on one dedicated serial queue (thread affinity), and nested
-/// calls re-enter directly. Never await while holding it.
-enum PDFKitGate {
-    private static let queueKey = DispatchSpecificKey<Void>()
-    private static let queue: DispatchQueue = {
-        let queue = DispatchQueue(label: "org.floeagent.pdfkit", qos: .userInitiated)
-        queue.setSpecific(key: queueKey, value: ())
-        return queue
-    }()
-
-    static func run<T>(_ work: () throws -> T) rethrows -> T {
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            return try work()
-        }
-        return try queue.sync { try work() }
-    }
-}
 
 enum PDFToolSupport {
     static func validatePath(_ path: String) throws {

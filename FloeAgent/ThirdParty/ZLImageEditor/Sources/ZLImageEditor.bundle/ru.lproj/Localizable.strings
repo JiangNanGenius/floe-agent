@@ -1,0 +1,24 @@
+"cancel" = "Отмена";
+"done" = "Готово";
+"editFinish" = "Готово";
+"revert" = "Отменить";
+"brightness" = "Яркость";
+"contrast" = "Контраст";
+"saturation" = "Насыщенность";
+"textStickerRemoveTips" = "Перетащите сюда, чтобы удалить";
+"hudProcessing" = "Обработка";
+
+// Floe accessibility names for editor tools.
+"tool.draw" = "Draw";
+"tool.clip" = "Crop";
+"tool.imageSticker" = "Image sticker";
+"tool.textSticker" = "Text";
+"tool.mosaic" = "Mosaic";
+"tool.filter" = "Filters";
+"tool.adjust" = "Adjust";
+"floe.title" = "Edit image";
+"floe.save" = "Save copy";
+"floe.undo" = "Undo";
+"floe.redo" = "Redo";
+"floe.original" = "Original";
+"floe.originalBadge" = "Original";

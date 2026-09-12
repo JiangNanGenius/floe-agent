@@ -3,6 +3,8 @@ options:
   deploymentTarget:
     iOS: '26.0'
 packages:
+  ZLImageEditor:
+    path: ../../ThirdParty/ZLImageEditor
   VideoEditorKit:
     path: ../../ThirdParty/VideoEditorKit
   FloeAgent:
@@ -13,9 +15,11 @@ targets:
     platform: iOS
     sources:
       - App
+      - path: ../../FloeApp/Media/FloeImageEditorView.swift
       - path: ../../FloeApp/Media/MediaEditorView.swift
       - path: ../../FloeApp/Media/MediaPlayerView.swift
     dependencies:
+      - package: ZLImageEditor
       - package: VideoEditorKit
       - package: FloeAgent
         product: FloeMedia
@@ -33,6 +37,31 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         SWIFT_VERSION: '6.0'
 
+  FloeImageEditorUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ImageUITests]
+    dependencies:
+      - target: FloeMediaUISmoke
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.image-editor-uitests
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'
+  FloeImageEditorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [ImageTests]
+    dependencies:
+      - package: ZLImageEditor
+      - target: FloeMediaUISmoke
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.image-editor-tests
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'
   FloeVideoEditorTests:
     type: bundle.unit-test
     platform: iOS
@@ -57,6 +86,10 @@ schemes:
       targets:
         FloeMediaUISmoke: all
         FloeVideoEditorTests: [test]
+        FloeImageEditorTests: [test]
+        FloeImageEditorUITests: [test]
     test:
       targets:
         - FloeVideoEditorTests
+        - FloeImageEditorTests
+        - FloeImageEditorUITests

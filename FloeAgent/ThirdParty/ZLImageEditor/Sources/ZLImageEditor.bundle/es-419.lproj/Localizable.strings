@@ -1,0 +1,24 @@
+"cancel" = "Cancelar";
+"done" = "Hecho";
+"editFinish" = "Hecho";
+"revert" = "Deshacer";
+"brightness" = "Brillo";
+"contrast" = "Contraste";
+"saturation" = "Saturación";
+"textStickerRemoveTips" = "Arrastra aquí para eliminar";
+"hudProcessing" = "Procesando";
+
+// Floe accessibility names for editor tools.
+"tool.draw" = "Draw";
+"tool.clip" = "Crop";
+"tool.imageSticker" = "Image sticker";
+"tool.textSticker" = "Text";
+"tool.mosaic" = "Mosaic";
+"tool.filter" = "Filters";
+"tool.adjust" = "Adjust";
+"floe.title" = "Edit image";
+"floe.save" = "Save copy";
+"floe.undo" = "Undo";
+"floe.redo" = "Redo";
+"floe.original" = "Original";
+"floe.originalBadge" = "Original";

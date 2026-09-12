@@ -21,8 +21,13 @@ options:
   generateEmptyDirectories: true
 
 packages:
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit.git
+    revision: 1e2a163736dfa5a198e637ae44c114e1c6d5cc2d
   FloeAgentPackages:
     path: .  # Local Swift package (root Package.swift)
+  ZLImageEditor:
+    path: ThirdParty/ZLImageEditor
   VideoEditorKit:
     path: ThirdParty/VideoEditorKit
   FloeShellEngine:
@@ -47,6 +52,8 @@ targets:
           - Resources/DocumentConversion
           - Resources/Fonts/Bundled
           - Resources/NodeTools
+          - Resources/MindElixir
+          - Resources/Whisper
       - path: FloeApp/Resources/Capabilities
         type: folder
         buildPhase: resources
@@ -70,6 +77,14 @@ targets:
         type: folder
         buildPhase: resources
         optional: true
+      - path: FloeApp/Resources/Whisper
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/MindElixir
+        type: folder
+        buildPhase: resources
+      - path: ThirdParty/MindElixir/LICENSE
+        buildPhase: resources
       - path: ThirdParty/RoyalVNCKit/LICENSE
         buildPhase: resources
     info:
@@ -143,6 +158,8 @@ targets:
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
+      - package: WhisperKit
+        product: WhisperKit
       - framework: Vendor/PDFium/PDFium.xcframework
         embed: true
       - framework: Vendor/LibArchive/LibArchive.xcframework
@@ -444,8 +461,11 @@ targets:
       - package: FloeAgentPackages
         product: FloePackages
       - package: VideoEditorKit
+      - package: ZLImageEditor
       - package: FloeAgentPackages
         product: FloeMedia
+      - package: FloeAgentPackages
+        product: FloeNotes
       - package: FloeAgentPackages
         product: FloeGit
       - package: FloeAgentPackages
@@ -500,7 +520,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
         MARKETING_VERSION: "1.7.0"
-        CURRENT_PROJECT_VERSION: "147"
+        CURRENT_PROJECT_VERSION: "148"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -558,7 +578,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
         MARKETING_VERSION: "1.7.0"
-        CURRENT_PROJECT_VERSION: "147"
+        CURRENT_PROJECT_VERSION: "148"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -603,7 +623,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
         MARKETING_VERSION: "1.7.0"
-        CURRENT_PROJECT_VERSION: "147"
+        CURRENT_PROJECT_VERSION: "148"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -643,7 +663,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
         MARKETING_VERSION: "1.7.0"
-        CURRENT_PROJECT_VERSION: "147"
+        CURRENT_PROJECT_VERSION: "148"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:

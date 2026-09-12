@@ -17,6 +17,7 @@ final class OfficeFileSession: ObservableObject {
     @Published private(set) var readOnly = true
     @Published private(set) var hasUncommittedChanges = false
     @Published var error: String?
+    @Published private(set) var drawingMode = false
     private var workspace: SecurityScopedDocumentWorkspace?
     private var session: DocumentSession?
     private var operating = false
@@ -55,6 +56,76 @@ final class OfficeFileSession: ObservableObject {
     var supportsAttachmentInsertion: Bool {
         guard !readOnly, let session else { return false }
         return ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].contains(session.workingURL.pathExtension.lowercased())
+    }
+
+    var exportFormats: [String] {
+        guard let controller, controller.responds(to: NSSelectorFromString("exportDocumentWithFormat:completion:")), let session else { return [] }
+        switch session.workingURL.pathExtension.lowercased() {
+        case "doc", "docx", "odt", "rtf": return ["pdf", "docx", "odt", "rtf", "txt"]
+        case "ppt", "pptx", "odp": return ["pdf", "pptx", "odp"]
+        case "xls", "xlsx", "ods": return ["pdf", "xlsx", "ods"]
+        default: return []
+        }
+    }
+    var supportsPresentation: Bool {
+        guard let controller, controller.responds(to: NSSelectorFromString("startPresentationWithCompletion:")), let session else { return false }
+        return ["ppt", "pptx", "odp"].contains(session.workingURL.pathExtension.lowercased())
+    }
+
+    var supportsDrawing: Bool {
+        !readOnly && controller?.responds(to: NSSelectorFromString("setDrawingMode:completion:")) == true
+    }
+    func toggleDrawing() async throws {
+        guard canAct, supportsDrawing, let controller else { throw CocoaError(.featureUnsupported) }
+        let enabled = !drawingMode
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let callback: @convention(block) (NSError?) -> Void = { error in
+                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+            }
+            _ = controller.perform(NSSelectorFromString("setDrawingMode:completion:"), with: NSNumber(value: enabled), with: callback as AnyObject)
+        }
+        drawingMode = enabled
+    }
+
+    func exportDocument(format: String) async throws -> URL {
+        guard canAct, exportFormats.contains(format), let controller else { throw CocoaError(.featureUnsupported) }
+        operating = true; phase = .saving
+        defer { operating = false; phase = runtimeFailed ? .failed : .ready }
+        #if canImport(FloeOfficeNative)
+        if !readOnly, let native = controller as? FloeOfficeNativeViewController {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                native.saveWorkingCopy { error in
+                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                }
+            }
+        }
+        #endif
+        // The shipped host is pinned separately. A selector capability check keeps old hosts
+        // functional until the newly compiled host is qualified, without rewriting its headers.
+        let output: URL = try await withCheckedThrowingContinuation { continuation in
+            let callback: @convention(block) (NSURL?, NSError?) -> Void = { url, error in
+                if let error { continuation.resume(throwing: error) }
+                else if let url { continuation.resume(returning: url as URL) }
+                else { continuation.resume(throwing: CocoaError(.fileWriteUnknown)) }
+            }
+            _ = controller.perform(NSSelectorFromString("exportDocumentWithFormat:completion:"), with: format as NSString, with: callback as AnyObject)
+        }
+        if format == "pdf" {
+            guard let pdf = CGPDFDocument(output as CFURL), pdf.numberOfPages > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        } else if ["docx", "pptx", "xlsx"].contains(format) {
+            _ = try OfficeDocumentService.inspect(url: output)
+        }
+        return output
+    }
+
+    func startPresentation() async throws {
+        guard canAct, supportsPresentation, let controller else { throw CocoaError(.featureUnsupported) }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let callback: @convention(block) (NSError?) -> Void = { error in
+                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+            }
+            _ = controller.perform(NSSelectorFromString("startPresentationWithCompletion:"), with: callback as AnyObject)
+        }
     }
 
     func insertAttachment(_ url: URL) async throws {
@@ -485,6 +556,7 @@ struct OfficeDocumentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var confirmingDiscard = false
+    @State private var convertedExport: OfficeConvertedExport?
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
     @State private var exportSucceeded = false
@@ -510,6 +582,20 @@ struct OfficeDocumentEditorView: View {
                             .accessibilityIdentifier("office.editor.insertAttachment")
                     }
                 }
+                if session.supportsDrawing {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(session.drawingMode ? "结束批注" : "画笔批注", systemImage: "pencil.tip") {
+                            Task { do { try await session.toggleDrawing() } catch { session.error = error.localizedDescription } }
+                        }.disabled(!session.canAct).accessibilityIdentifier("office.drawing.toggle")
+                    }
+                }
+                if session.supportsPresentation {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("放映", systemImage: "play.rectangle") {
+                            Task { do { try await session.startPresentation() } catch { session.error = error.localizedDescription } }
+                        }.disabled(!session.canAct).accessibilityIdentifier("office.presentation.start")
+                    }
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回") {
                         if session.phase == .failed { dismiss() }
@@ -522,6 +608,18 @@ struct OfficeDocumentEditorView: View {
                     Menu {
                         Button("保存并返回") {
                             Task { if await session.saveAndReturn() { onSaved?(); dismiss() } }
+                        }
+                        if !session.exportFormats.isEmpty {
+                            Menu("导出格式", systemImage: "square.and.arrow.up") {
+                                ForEach(session.exportFormats, id: \.self) { format in
+                                    Button(format.uppercased()) {
+                                        Task {
+                                            do { convertedExport = .init(url: try await session.exportDocument(format: format)) }
+                                            catch { session.error = error.localizedDescription }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Button("另存副本…", systemImage: "doc.on.doc") {
                             Task { export = await session.prepareSaveCopy() }
@@ -537,6 +635,7 @@ struct OfficeDocumentEditorView: View {
             }
             .interactiveDismissDisabled()
             .task { await session.enterEditing() }
+            .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
             .sheet(isPresented: $choosingWorkspaceAttachment) {
                 OfficeWorkspaceAttachmentPicker(environment: environment) { url in
                     try await session.insertAttachment(url)
@@ -624,5 +723,16 @@ struct OfficeCopyDestinationPicker: UIViewControllerRepresentable {
         }
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finish(false) }
     }
+}
+private struct OfficeConvertedExport: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+private struct OfficeConvertedExportShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 #endif

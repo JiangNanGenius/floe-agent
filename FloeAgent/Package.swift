@@ -29,6 +29,7 @@ let package = Package(
         .library(name: "FloeEnvironments", targets: ["FloeEnvironments"]),
         .library(name: "FloePackages", targets: ["FloePackages"]),
         .library(name: "FloeMedia", targets: ["FloeMedia"]),
+        .library(name: "FloeNotes", targets: ["FloeNotes"]),
         .library(name: "FloeGit", targets: ["FloeGit"]),
         .library(name: "FloeLocalModelCatalog", targets: ["FloeLocalModelCatalog"]),
         .library(name: "FloeLocalModels", targets: ["FloeLocalModels"])
@@ -448,6 +449,13 @@ let package = Package(
                 .enableUpcomingFeature("InferSendableFromCaptures"),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault")
             ]
+        ),
+
+        .target(
+            name: "FloeNotes",
+            dependencies: [.product(name: "GRDB", package: "GRDB.swift"), .product(name: "Crypto", package: "swift-crypto")],
+            path: "Sources/FloeNotes",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
         .target(

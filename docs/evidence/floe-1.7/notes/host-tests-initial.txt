@@ -1,0 +1,229 @@
+Updating https://github.com/orlandos-nl/Citadel.git
+Updated https://github.com/orlandos-nl/Citadel.git (0.70s)
+Updating https://github.com/ml-explore/mlx-swift-lm.git
+Updated https://github.com/ml-explore/mlx-swift-lm.git (0.90s)
+Updating https://github.com/royalapplications/CryptoSwift.git
+Updated https://github.com/royalapplications/CryptoSwift.git (0.62s)
+Updating https://github.com/tayloraswift/swift-png
+Updating https://github.com/apple/swift-nio.git
+Updating https://github.com/apple/swift-log.git
+Updating https://github.com/tayloraswift/swift-jpeg
+Updating https://github.com/apple/swift-crypto.git
+Updating https://github.com/swiftlang/swift-syntax.git
+Updated https://github.com/apple/swift-crypto.git (0.78s)
+Updating https://github.com/apple/swift-system
+Updated https://github.com/apple/swift-nio.git (1.22s)
+Updating https://github.com/attaswift/BigInt.git
+Updated https://github.com/tayloraswift/swift-png (1.29s)
+Updated https://github.com/apple/swift-log.git (1.28s)
+Updated https://github.com/swiftlang/swift-syntax.git (1.42s)
+Updated https://github.com/tayloraswift/swift-jpeg (1.43s)
+Updating https://github.com/tsolomko/SWCompression.git
+Updating https://github.com/Wellz26/swift-nio-ssh.git
+Updated https://github.com/apple/swift-system (0.69s)
+Updating https://github.com/kishikawakatsumi/SMBClient.git
+Updating https://github.com/ibrahimcetin/libgit2.git
+Updating https://github.com/ibrahimcetin/SwiftGitX.git
+Updated https://github.com/attaswift/BigInt.git (0.59s)
+Updating https://github.com/migueldeicaza/SwiftTerm.git
+Updated https://github.com/Wellz26/swift-nio-ssh.git (0.54s)
+Updating https://github.com/groue/GRDB.swift.git
+Updated https://github.com/tsolomko/SWCompression.git (0.60s)
+Updating https://github.com/huggingface/swift-transformers.git
+Updated https://github.com/kishikawakatsumi/SMBClient.git (0.54s)
+Updating https://github.com/weichsel/ZIPFoundation.git
+Updated https://github.com/ibrahimcetin/SwiftGitX.git (0.64s)
+Updated https://github.com/ibrahimcetin/libgit2.git (0.65s)
+Updating https://github.com/ml-explore/mlx-swift
+Updated https://github.com/huggingface/swift-transformers.git (0.60s)
+Updated https://github.com/groue/GRDB.swift.git (0.67s)
+Updated https://github.com/weichsel/ZIPFoundation.git (0.60s)
+Updated https://github.com/migueldeicaza/SwiftTerm.git (0.99s)
+Updated https://github.com/ml-explore/mlx-swift (0.97s)
+Computing version for https://github.com/ml-explore/mlx-swift
+Computed https://github.com/ml-explore/mlx-swift at 0.31.4 (6.06s)
+Updating https://github.com/apple/swift-numerics
+Updated https://github.com/apple/swift-numerics (0.71s)
+Computing version for https://github.com/apple/swift-crypto.git
+Computed https://github.com/apple/swift-crypto.git at 3.15.1 (1.86s)
+Updating https://github.com/apple/swift-asn1.git
+Updated https://github.com/apple/swift-asn1.git (0.55s)
+Computing version for https://github.com/apple/swift-nio.git
+Computed https://github.com/apple/swift-nio.git at 2.88.0 (1.24s)
+Updating https://github.com/apple/swift-collections.git
+Updating https://github.com/apple/swift-atomics.git
+Updated https://github.com/apple/swift-collections.git (0.63s)
+Updated https://github.com/apple/swift-atomics.git (0.65s)
+Computing version for https://github.com/Wellz26/swift-nio-ssh.git
+Computed https://github.com/Wellz26/swift-nio-ssh.git at 0.3.6 (1.40s)
+Computing version for https://github.com/apple/swift-system
+Computed https://github.com/apple/swift-system at 1.8.0 (0.46s)
+Computing version for https://github.com/kishikawakatsumi/SMBClient.git
+Computed https://github.com/kishikawakatsumi/SMBClient.git at 0.2.1 (0.55s)
+Computing version for https://github.com/ibrahimcetin/libgit2.git
+Computed https://github.com/ibrahimcetin/libgit2.git at 1.9.2 (0.57s)
+Computing version for https://github.com/ibrahimcetin/SwiftGitX.git
+Computed https://github.com/ibrahimcetin/SwiftGitX.git at 0.4.0 (0.40s)
+Computing version for https://github.com/huggingface/swift-transformers.git
+Computed https://github.com/huggingface/swift-transformers.git at 1.3.0 (0.50s)
+Updating https://github.com/huggingface/swift-huggingface.git
+Updating https://github.com/ibireme/yyjson.git
+Updating https://github.com/huggingface/swift-jinja.git
+Updated https://github.com/huggingface/swift-jinja.git (0.69s)
+Updated https://github.com/ibireme/yyjson.git (0.70s)
+Updated https://github.com/huggingface/swift-huggingface.git (0.71s)
+Computing version for https://github.com/tsolomko/SWCompression.git
+Computed https://github.com/tsolomko/SWCompression.git at 4.9.1 (1.33s)
+Updating https://github.com/tsolomko/BitByteData
+Updated https://github.com/tsolomko/BitByteData (0.66s)
+Computing version for https://github.com/weichsel/ZIPFoundation.git
+warning: 'zipfoundation': /Package@swift-5.9.swift:23:61: warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+21 |     name: "ZIPFoundation",
+22 |     platforms: [
+23 |         .macOS(.v10_13), .iOS(.v12), .tvOS(.v12), .watchOS(.v4), .visionOS(.v1)
+   |                                                             `- warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+24 |     ],
+25 |     products: [
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+Computed https://github.com/weichsel/ZIPFoundation.git at 0.9.20 (3.25s)
+Computing version for https://github.com/migueldeicaza/SwiftTerm.git
+Computed https://github.com/migueldeicaza/SwiftTerm.git at 1.10.0 (0.55s)
+Updating https://github.com/apple/swift-argument-parser
+Updated https://github.com/apple/swift-argument-parser (0.85s)
+Computing version for https://github.com/groue/GRDB.swift.git
+Computed https://github.com/groue/GRDB.swift.git at 7.8.0 (1.91s)
+Computing version for https://github.com/ibireme/yyjson.git
+Computed https://github.com/ibireme/yyjson.git at 0.12.0 (0.71s)
+Computing version for https://github.com/tsolomko/BitByteData
+Computed https://github.com/tsolomko/BitByteData at 2.1.0 (0.41s)
+Computing version for https://github.com/tayloraswift/swift-jpeg
+Computed https://github.com/tayloraswift/swift-jpeg at 2.1.0 (0.38s)
+Computing version for https://github.com/huggingface/swift-huggingface.git
+Computed https://github.com/huggingface/swift-huggingface.git at 0.10.1 (0.40s)
+Updating https://github.com/mattt/EventSource.git
+Updated https://github.com/mattt/EventSource.git (0.55s)
+Computing version for https://github.com/swiftlang/swift-syntax.git
+Computed https://github.com/swiftlang/swift-syntax.git at 603.0.2 (1.30s)
+Computing version for https://github.com/apple/swift-atomics.git
+Computed https://github.com/apple/swift-atomics.git at 1.3.1 (0.39s)
+Computing version for https://github.com/apple/swift-numerics
+Computed https://github.com/apple/swift-numerics at 1.1.1 (0.41s)
+Computing version for https://github.com/attaswift/BigInt.git
+warning: 'bigint': /Package.swift:18:19: warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+16 |         .iOS(.v12),
+17 |         .tvOS(.v12),
+18 |         .watchOS(.v4),
+   |                   `- warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+19 |         .macCatalyst(.v13),
+20 |         .visionOS(.v1),
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+Computed https://github.com/attaswift/BigInt.git at 5.7.0 (0.42s)
+Computing version for https://github.com/apple/swift-asn1.git
+Computed https://github.com/apple/swift-asn1.git at 1.7.2 (0.94s)
+Computing version for https://github.com/mattt/EventSource.git
+Computed https://github.com/mattt/EventSource.git at 1.5.1 (0.44s)
+Computing version for https://github.com/tayloraswift/swift-png
+Computed https://github.com/tayloraswift/swift-png at 4.5.1 (0.44s)
+Updating https://github.com/rarestype/h
+Updated https://github.com/rarestype/h (0.55s)
+Computing version for https://github.com/rarestype/h
+Computed https://github.com/rarestype/h at 1.0.1 (1.11s)
+Computing version for https://github.com/apple/swift-collections.git
+Computed https://github.com/apple/swift-collections.git at 1.6.0 (0.83s)
+Computing version for https://github.com/huggingface/swift-jinja.git
+Computed https://github.com/huggingface/swift-jinja.git at 2.5.0 (0.47s)
+Computing version for https://github.com/apple/swift-argument-parser
+Computed https://github.com/apple/swift-argument-parser at 1.8.2 (0.44s)
+Computing version for https://github.com/apple/swift-log.git
+Computed https://github.com/apple/swift-log.git at 1.15.1 (0.41s)
+Working copy of https://github.com/huggingface/swift-huggingface.git resolved at 0.10.1
+Working copy of https://github.com/apple/swift-log.git resolved at 1.15.1
+Working copy of https://github.com/apple/swift-asn1.git resolved at 1.7.2
+Working copy of https://github.com/huggingface/swift-jinja.git resolved at 2.5.0
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 186]
+[Planning deferred tasks]
+[8 / 44] swift-crypto_Crypto
+[13 / 44]
+[15 / 46] Crypto
+[17 / 79]
+[19 / 79] GRDB
+[21 / 79] GRDB
+[22 / 79]
+[25 / 81] GRDB
+[26 / 81] GRDB
+[28 / 81]
+[28 / 81] GRDB
+[29 / 81] GRDB
+[31 / 81]
+[32 / 81] GRDB
+[33 / 81]
+[34 / 81]
+[35 / 81] GRDB
+[37 / 81] GRDB
+[39 / 81] GRDB
+[40 / 81]
+[41 / 81]
+[42 / 81]
+[44 / 81] Crypto
+[45 / 81] Crypto
+[47 / 83] Crypto
+[50 / 83] Crypto
+[52 / 84] FloeNotes
+[53 / 84] Crypto
+[53 / 84] FloeNotes
+[55 / 88] Crypto
+[57 / 88] FloeNotes
+[58 / 88] GRDB
+[59 / 88] FloeNotes
+[61 / 88] FloeNotes
+[67 / 88] FloeNotes
+[69 / 88] NotesTests-product
+[71 / 88] FloeNotes
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Package.swift: FloeNotes: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[78 / 89]
+[78 / 89] NotesTests-product
+[79 / 116]
+[81 / 116]
+[83 / 116]
+[86 / 116]
+[87 / 116]
+[89 / 116]
+[90 / 116]
+[91 / 116]
+[93 / 116]
+[94 / 116]
+[96 / 116]
+[98 / 116]
+[101 / 116]
+[102 / 116]
+[105 / 116] NotesTests-product
+[106 / 116] NotesTests-product
+[110 / 116] NotesTests-product
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Qualification/Notes/Package.swift: NotesTests-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/usr/lib' not found
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Qualification/Notes/Package.swift: NotesTests-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[112 / 116] NotesTests-product
+[114 / 116] NotesTests-product
+Build complete! (74.27秒)
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite NotesStoreTests started.
+◇ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() started.
+◇ Test durableHistoryAndCAS() started.
+◇ Test receiptsSurviveRestartWithoutDuplicateEdits() started.
+◇ Test mindMapRejectsCyclesWithoutChangingPersistedTree() started.
+◇ Test assistantScopesAndTrashAreIndependentFromChat() started.
+◇ Test rejectedBatchIsAtomicAndStaleEditsFail() started.
+✔ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() passed after 0.021 seconds.
+✔ Test mindMapRejectsCyclesWithoutChangingPersistedTree() passed after 0.022 seconds.
+✔ Test receiptsSurviveRestartWithoutDuplicateEdits() passed after 0.022 seconds.
+✔ Test rejectedBatchIsAtomicAndStaleEditsFail() passed after 0.025 seconds.
+✔ Test assistantScopesAndTrashAreIndependentFromChat() passed after 0.026 seconds.
+✔ Test durableHistoryAndCAS() passed after 0.032 seconds.
+✔ Suite NotesStoreTests passed after 0.032 seconds.
+✔ Test run with 6 tests in 1 suite passed after 0.032 seconds.

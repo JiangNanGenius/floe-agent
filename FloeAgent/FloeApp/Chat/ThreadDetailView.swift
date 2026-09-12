@@ -23,6 +23,13 @@ private struct ThreadScrollMetrics: Equatable {
     let bottomDistance: Double
 }
 
+/// A user-selected context staged for review in the regular composer; never auto-sends.
+struct ThreadComposerInput: Identifiable {
+    let id = UUID()
+    let text: String
+    let attachments: [AttachmentRef]
+}
+
 /// The canonical thread: messages + run events for one conversation.
 struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
@@ -40,8 +47,15 @@ struct ThreadDetailView: View {
     @State private var structuredExport: TaskExportFile?
     @State private var exporting = false
     @State private var showsChecklist = false
+    @State private var consumedInputID: UUID?
+    private let composerInput: ThreadComposerInput?
+    private let embedded: Bool
+    private let onInputConsumed: (UUID) -> Void
 
-    init(conversationID: UUID, center: ConversationCenter) {
+    init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
+        self.composerInput = composerInput
+        self.embedded = embedded
+        self.onInputConsumed = onInputConsumed
         _viewModel = StateObject(
             wrappedValue: ThreadDetailViewModel(conversationID: conversationID, center: center)
         )
@@ -87,8 +101,16 @@ struct ThreadDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { stateToolbar }
         .task {
-            viewModel.selectedRunID = router.selectedRunID
+            if !embedded { viewModel.selectedRunID = router.selectedRunID }
             await viewModel.load()
+        }
+        .task(id: composerInput?.id) {
+            guard let input = composerInput, consumedInputID != input.id else { return }
+            viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + input.text
+            let existing = Set(viewModel.attachments.map(\.id))
+            viewModel.attachments.append(contentsOf: input.attachments.filter { !existing.contains($0.id) })
+            consumedInputID = input.id
+            onInputConsumed(input.id)
         }
         .onDisappear { viewModel.stopLiveUpdates() }
         .sheet(item: $structuredExport) { file in

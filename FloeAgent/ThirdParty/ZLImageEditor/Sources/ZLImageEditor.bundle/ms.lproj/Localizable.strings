@@ -1,0 +1,24 @@
+"cancel" = "Batal";
+"done" = "Selesai";
+"editFinish" = "Selesai";
+"revert" = "Buat asal";
+"brightness" = "Kecerahan";
+"contrast" = "Contrast";
+"saturation" = "Ketepuan";
+"textStickerRemoveTips" = "Seret ke sini untuk mengalih keluar";
+"hudProcessing" = "Sedang diproses";
+
+// Floe accessibility names for editor tools.
+"tool.draw" = "Draw";
+"tool.clip" = "Crop";
+"tool.imageSticker" = "Image sticker";
+"tool.textSticker" = "Text";
+"tool.mosaic" = "Mosaic";
+"tool.filter" = "Filters";
+"tool.adjust" = "Adjust";
+"floe.title" = "Edit image";
+"floe.save" = "Save copy";
+"floe.undo" = "Undo";
+"floe.redo" = "Redo";
+"floe.original" = "Original";
+"floe.originalBadge" = "Original";

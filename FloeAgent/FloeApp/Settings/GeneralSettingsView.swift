@@ -36,6 +36,7 @@ struct GeneralSettingsView: View {
             }
 
             Section("语音输入") {
+                NavigationLink("Whisper 与语音识别") { WhisperSettingsView() }
                 Picker("识别语言", selection: $voiceLanguage) {
                     Text("自动").tag(VoiceRecognitionLanguage.automatic.rawValue)
                     Text("简体中文").tag(VoiceRecognitionLanguage.simplifiedChinese.rawValue)

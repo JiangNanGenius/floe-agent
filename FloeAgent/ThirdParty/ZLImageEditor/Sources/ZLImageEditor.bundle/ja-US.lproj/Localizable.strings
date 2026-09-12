@@ -1,0 +1,24 @@
+"cancel" = "キャンセル";
+"done" = "確定";
+"editFinish" = "完了";
+"revert" = "元に戻す";
+"brightness" = "明るさ";
+"contrast" = "コントラスト";
+"saturation" = "暖かさ";
+"textStickerRemoveTips" = "ここにドラッグして削除します";
+"hudProcessing" = "処理中";
+
+// Floe accessibility names for editor tools.
+"tool.draw" = "Draw";
+"tool.clip" = "Crop";
+"tool.imageSticker" = "Image sticker";
+"tool.textSticker" = "Text";
+"tool.mosaic" = "Mosaic";
+"tool.filter" = "Filters";
+"tool.adjust" = "Adjust";
+"floe.title" = "Edit image";
+"floe.save" = "Save copy";
+"floe.undo" = "Undo";
+"floe.redo" = "Redo";
+"floe.original" = "Original";
+"floe.originalBadge" = "Original";

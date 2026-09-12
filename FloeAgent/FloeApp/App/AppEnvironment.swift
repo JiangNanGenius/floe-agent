@@ -632,6 +632,7 @@ final class AppEnvironment: ObservableObject {
             )
             return try Data(floeContentsOf: temporary)
         }
+        NotesToolRegistration.register()
         MediaToolRegistration.register(
             appBuild: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "dev",
             modelProvider: { await MediaModelCatalogService.shared.report() },

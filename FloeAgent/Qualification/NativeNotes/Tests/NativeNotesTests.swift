@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: MPL-2.0
+import XCTest
+import UIKit
+import PencilKit
+import FloeNotes
+@testable import FloeNotesNativeQualification
+
+@MainActor final class NativeNotesTests: XCTestCase {
+    func testPDFExportRetainsPagesInkAndText() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var document = NoteDocument(title: "中文课件批注")
+        document.pages = [NotePage(width: 400, height: 600, paper: .plain, elements: [
+            .init(frame: .init(x: 35, y: 35, width: 320, height: 100), text: "普通话 English 123", fontSize: 26)
+        ]), NotePage(width: 600, height: 400, paper: .grid)]
+        let points = [CGPoint(x: 30, y: 180), CGPoint(x: 350, y: 180)].enumerated().map { index, point in
+            PKStrokePoint(location: point, timeOffset: Double(index), size: CGSize(width: 12, height: 12), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+        }
+        let ink = PKDrawing(strokes: [PKStroke(ink: PKInk(.pen, color: .black), path: PKStrokePath(controlPoints: points, creationDate: Date()))])
+        let inkURL = root.appendingPathComponent("ink.drawing")
+        try ink.dataRepresentation().write(to: inkURL)
+        document.pages[0].drawingResourceID = try await store.importResource(from: inkURL, mediaType: "application/vnd.apple.pencilkit")
+        document = try await store.create(document)
+        var progress: [Int] = []
+        let artifact = try await NotesExport.pdf(document: document, store: store) { page, _ in progress.append(page) }
+        defer { try? FileManager.default.removeItem(at: artifact.url.deletingLastPathComponent()) }
+        let pdf = try XCTUnwrap(CGPDFDocument(artifact.url as CFURL))
+        XCTAssertEqual(pdf.numberOfPages, 2)
+        XCTAssertEqual(progress, [1, 2])
+        XCTAssertEqual(pdf.page(at: 1)?.getBoxRect(.mediaBox).size, CGSize(width: 400, height: 600))
+        XCTAssertEqual(pdf.page(at: 2)?.getBoxRect(.mediaBox).size, CGSize(width: 600, height: 400))
+        let imported = try await NoteFileImporter.importFile(artifact.url, notebookID: nil, store: store)
+        XCTAssertTrue(imported.pages[0].extractedText?.contains("English") == true)
+        let savedImport = try await store.create(imported)
+        let second = try await NotesExport.pdf(document: savedImport, store: store) { _, _ in }
+        defer { try? FileManager.default.removeItem(at: second.url.deletingLastPathComponent()) }
+        let reopened = try await NoteFileImporter.importFile(second.url, notebookID: nil, store: store)
+        XCTAssertTrue(reopened.pages[0].extractedText?.contains("English") == true, "PDF backgrounds must remain searchable after annotation export")
+        let rendered = try await NoteFileImporter.background(page: imported.pages[0], store: store)
+        let image = try XCTUnwrap(rendered.flatMap { UIImage(data: $0) })
+        let imageAttachment = XCTAttachment(image: image)
+        imageAttachment.name = "annotated-pdf-export-page-1"; imageAttachment.lifetime = .keepAlways
+        add(imageAttachment)
+        // Stroke pixels must survive flattening into a re-readable PDF.
+        let crop = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { context in
+            context.cgContext.translateBy(x: -200, y: -180)
+            image.draw(in: CGRect(x: 0, y: 0, width: 400, height: 600))
+        }
+        let pixels = try XCTUnwrap(crop.cgImage?.dataProvider?.data) as Data
+        XCTAssertTrue(pixels.prefix(3).allSatisfy { $0 < 80 })
+    }
+
+    func testCorruptInkFailsWithoutReplacingSource() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let url = root.appendingPathComponent("broken.drawing")
+        let bytes = Data("not a PencilKit drawing".utf8)
+        try bytes.write(to: url)
+        let resource = try await store.importResource(from: url, mediaType: "application/vnd.apple.pencilkit")
+        var document = NoteDocument(title: "损坏笔迹")
+        document.pages[0].drawingResourceID = resource
+        document = try await store.create(document)
+        do {
+            _ = try await NotesExport.pdf(document: document, store: store) { _, _ in }
+            XCTFail("Corrupt ink must not become a successful empty export")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        let saved = try await store.document(document.id)
+        XCTAssertEqual(saved.pages[0].drawingResourceID, resource)
+    }
+
+    func testWhisperManifestIsPinnedAndMultilingual() async throws {
+        let manifest = try await WhisperModelStore.shared.manifest()
+        XCTAssertEqual(manifest.id, "whisper-small-multilingual")
+        XCTAssertEqual(manifest.sourceRevision.count, 40)
+        XCTAssertTrue(manifest.files.contains { $0.path == "tokenizer/tokenizer.json" })
+        XCTAssertTrue(manifest.files.contains { $0.path == "model/AudioEncoder.mlmodelc/weights/weight.bin" })
+        XCTAssertTrue(manifest.files.allSatisfy { $0.sha256.count == 64 && $0.url.path.contains("/resolve/") })
+    }
+}

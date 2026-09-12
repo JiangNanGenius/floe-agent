@@ -101,6 +101,7 @@ private struct FloeAgentCommands: Commands {
         CommandMenu("导航") {
             Button("工作台") { router.navigate(to: .home) }
                 .keyboardShortcut("1", modifiers: [.command, .shift])
+            Button("手记") { router.openMore(.notes) }
             Button("创意模式") { router.openMore(.creative) }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
             Button("任务中心") { router.openMore(.runs) }
@@ -620,6 +621,9 @@ struct RootView: View {
                     Label("任务中心", systemImage: "checklist")
                         .tag(SidebarSelection.workbench(.overview))
                         .accessibilityIdentifier("sidebar.task_center")
+                    Label("手记", systemImage: "book.pages")
+                        .tag(SidebarSelection.more(.notes))
+                        .accessibilityIdentifier("sidebar.notes")
                     Label("创意模式", systemImage: "rectangle.and.pencil.and.ellipsis")
                         .tag(SidebarSelection.more(.creative))
                         .accessibilityIdentifier("sidebar.creative")
@@ -1064,6 +1068,8 @@ private struct MoreDestinationView: View {
 
     var body: some View {
         switch sub {
+        case .notes:
+            NotesRootView()
         case .creative:
             CreativeModeHubView()
         case .runs:

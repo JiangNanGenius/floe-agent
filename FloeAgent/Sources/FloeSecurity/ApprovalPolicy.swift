@@ -250,6 +250,9 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if Self.isExplicitlyAuthorizedSSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSandboxedSSH(action) { return true }
         if Self.isExplicitlyAuthorizedHostMaintenance(action) { return true }
+        if action.toolCall.toolName == "image.svgDocument",
+           let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
+           object["operation"] as? String == "inspect" { return true }
         guard ["document.pdf.edit"].contains(action.toolCall.toolName),
               let object = try? JSONSerialization.jsonObject(
                   with: action.toolCall.argumentsJSON

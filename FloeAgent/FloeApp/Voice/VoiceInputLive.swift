@@ -35,6 +35,12 @@ struct SystemSpeechAuthorizationProvider: SpeechAuthorizationProviding {
     }
 
     func requestSpeechRecognitionAccess() async -> Bool {
+        #if canImport(WhisperKit)
+        if await WhisperModelStore.shared.isInstalled() { return true }
+        #endif
+        return await Self.requestAppleAccess()
+    }
+    static func requestAppleAccess() async -> Bool {
         await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { status in
                 continuation.resume(returning: status == .authorized)
@@ -451,6 +457,18 @@ extension VoiceInputController {
                 )
                 let language = stored.flatMap(VoiceRecognitionLanguage.init(rawValue:))
                     ?? .automatic
+                #if canImport(WhisperKit)
+                do {
+                    let local = try await WhisperStreamingTranscriber.make(language: language, diagnostics: diagnostics)
+                    FloeLogger(category: .app).info("voiceBackendSelected domain=voice backend=whisperLocal")
+                    return local
+                } catch is CancellationError { throw CancellationError() }
+                catch {
+                    guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else {
+                        throw VoiceSessionError.failure(.speechPermissionDenied)
+                    }
+                }
+                #endif
                 FloeLogger(category: .app).info("voiceBackendSelected domain=voice backend=sfSpeechRecognizer")
                 return try StreamingSpeechRecognizerTranscriber(
                     locale: language.locale,

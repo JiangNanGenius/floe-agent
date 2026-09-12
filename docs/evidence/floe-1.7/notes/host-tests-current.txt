@@ -1,0 +1,49 @@
+Working copy of https://github.com/huggingface/swift-jinja.git resolved at 2.4.2
+Working copy of https://github.com/huggingface/swift-huggingface.git resolved at 0.9.0
+Working copy of https://github.com/apple/swift-log.git resolved at 1.15.0
+Working copy of https://github.com/apple/swift-asn1.git resolved at 1.7.1
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 186]
+[Planning deferred tasks]
+[Starting]
+[1 / 6]
+[1 / 7] Crypto
+[2 / 6] FloeNotes
+[3 / 7] FloeNotes
+[5 / 7] FloeNotes
+[10 / 17] FloeNotes
+[11 / 17] FloeNotes
+[13 / 20] swift-crypto_Crypto
+[14 / 20] GRDB
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Package.swift: FloeNotes: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[15 / 20] FloeNotes
+[16 / 19] NotesTests-product
+[17 / 19] NotesTests-product
+[19 / 22] NotesTests-product
+[20 / 22] NotesTests-product
+[25 / 26] NotesTests-product
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Qualification/Notes/Package.swift: NotesTests-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/usr/lib' not found
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Qualification/Notes/Package.swift: NotesTests-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[26 / 27] NotesTests-product
+[27 / 27] NotesTests-product
+Build complete! (41.52秒)
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite NotesStoreTests started.
+◇ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() started.
+◇ Test rejectedBatchIsAtomicAndStaleEditsFail() started.
+◇ Test durableHistoryAndCAS() started.
+◇ Test mindMapRejectsCyclesWithoutChangingPersistedTree() started.
+◇ Test assistantScopesAndTrashAreIndependentFromChat() started.
+◇ Test receiptsSurviveRestartWithoutDuplicateEdits() started.
+✔ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() passed after 0.175 seconds.
+✔ Test mindMapRejectsCyclesWithoutChangingPersistedTree() passed after 0.185 seconds.
+✔ Test receiptsSurviveRestartWithoutDuplicateEdits() passed after 0.193 seconds.
+✔ Test rejectedBatchIsAtomicAndStaleEditsFail() passed after 0.194 seconds.
+✔ Test assistantScopesAndTrashAreIndependentFromChat() passed after 0.197 seconds.
+✔ Test durableHistoryAndCAS() passed after 0.244 seconds.
+✔ Suite NotesStoreTests passed after 0.245 seconds.
+✔ Test run with 6 tests in 1 suite passed after 0.246 seconds.

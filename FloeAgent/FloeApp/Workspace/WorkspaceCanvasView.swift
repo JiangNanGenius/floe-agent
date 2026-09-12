@@ -2906,6 +2906,13 @@ private struct CanvasKeyboardActionsKey: FocusedValueKey {
 
 private struct CanvasImageEditorPresentation: Identifiable {
     let id: UUID
+    let documentID: UUID
+}
+
+private struct CanvasVideoEditorPresentation: Identifiable {
+    let id: UUID
+    let documentID: UUID
+    let source: URL
 }
 
 private struct CanvasDeletionRequest: Identifiable {
@@ -2999,6 +3006,8 @@ struct WorkspaceCanvasView: View {
     @State private var isImportingArtifacts = false
     @State private var showsInspector = false
     @State private var imageEditorPresentation: CanvasImageEditorPresentation?
+    @State private var videoEditorPresentation: CanvasVideoEditorPresentation?
+    @State private var importedVideoExports = Set<URL>()
     @State private var showsMediaJobs = false
     @State private var directorPresentation: Canvas3DDirectorPresentation?
     @State private var canvasJobs: [MediaGenerationJob] = []
@@ -3153,11 +3162,21 @@ struct WorkspaceCanvasView: View {
             if let node = store.selectedDocument?.nodes.first(where: {
                 $0.id == presentation.id && $0.kind == .image
             }) {
-                CanvasLocalImageEditor(store: store, node: node) { resultID in
+                CanvasLocalImageEditor(store: store, node: node, documentID: presentation.documentID) { resultID in
                     selectedNodeIDs = [resultID]
                     imageEditorPresentation = nil
                 }
                 .environmentObject(environment)
+            }
+        }
+        .sheet(item: $videoEditorPresentation) { presentation in
+            NavigationStack {
+                MediaEditorView(
+                    workspaceRoot: presentation.source.deletingLastPathComponent(),
+                    previewURL: presentation.source
+                ) { url in
+                    Task { await attachEditedVideo(url, presentation: presentation) }
+                }
             }
         }
         .sheet(isPresented: $showsMediaJobs) {
@@ -3825,10 +3844,19 @@ struct WorkspaceCanvasView: View {
                        selectedNodeIDs.contains($0.id)
                            && $0.kind == .image && $0.asset != nil
                    }) {
-                    Button("裁剪与变换", systemImage: "crop.rotate") {
+                    Button("编辑图片", systemImage: "slider.horizontal.3") {
                         imageEditorPresentation = CanvasImageEditorPresentation(
-                            id: selected.id
+                            id: selected.id, documentID: store.project.selectedDocumentID
                         )
+                    }
+                }
+                if selectedNodeIDs.count == 1,
+                   let document = store.selectedDocument,
+                   let selected = document.nodes.first(where: {
+                       selectedNodeIDs.contains($0.id) && $0.kind == .video
+                   }), let source = CanvasAssetNodeContent.localURL(for: selected) {
+                    Button("剪辑与字幕", systemImage: "film") {
+                        videoEditorPresentation = .init(id: selected.id, documentID: document.id, source: source)
                     }
                 }
                 Button("复制到剪贴板", action: copySelection)
@@ -3966,6 +3994,37 @@ struct WorkspaceCanvasView: View {
     }
 
     @MainActor
+    private func attachEditedVideo(_ url: URL, presentation: CanvasVideoEditorPresentation) async {
+        guard importedVideoExports.insert(url).inserted else { return }
+        do {
+            let ingestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
+            let record = try await ingestion.importLocalFile(url)
+            guard store.selectedDocument?.id == presentation.documentID,
+                  let source = store.selectedDocument?.nodes.first(where: { $0.id == presentation.id }) else {
+                store.saveError = "视频已保存到素材库；原画布已切换，请从素材库插入。"
+                return
+            }
+            let reference = CanvasAssetReference(
+                id: record.id, contentHash: record.contentHash,
+                localRelativePath: record.localRelativePath,
+                mimeType: record.mimeType, byteCount: record.byteCount
+            )
+            let id = store.addAsset(reference, kind: .video,
+                at: CGPoint(x: source.x + source.width + 100, y: source.y),
+                displayName: record.displayName,
+                metadata: ["derivedFromNodeID": source.id.uuidString, "artifactOrigin": "video-editor"])
+            guard store.selectedDocument?.nodes.contains(where: { $0.id == id }) == true else {
+                store.saveError = "视频已保存到素材库，但未能加入画布。请从素材库重新插入。"
+                return
+            }
+            store.connect(source.id, to: id, kind: .generatedFrom)
+            selectedNodeIDs = [id]
+        } catch {
+            importedVideoExports.remove(url)
+            store.saveError = "视频已导出，但加入画布失败：" + error.localizedDescription
+        }
+    }
+
     private func insertImportedArtifacts(_ imported: [(CreativeAssetRecord, CanvasNodeKind)]) {
         guard !imported.isEmpty else { return }
         let origin = artifactImportPoint ?? canvasPoint(visibleCanvasCenter)
@@ -6775,124 +6834,24 @@ private struct CanvasMediaJobCenter: View {
 }
 
 private struct CanvasLocalImageEditor: View {
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var store: CanvasDocumentStore
     let node: FloeCanvasNode
+    let documentID: UUID
     let onSave: (UUID) -> Void
 
-    @State private var cropInset = 0.0
-    @State private var rotation = 0.0
-    @State private var preview: UIImage?
-    @State private var sourceImage: CGImage?
-    @State private var isSaving = false
-    @State private var error: String?
-
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Group {
-                    if let preview {
-                        Image(uiImage: preview)
-                            .resizable()
-                            .scaledToFit()
-                    } else {
-                        ContentUnavailableView(
-                            "图片不可用", systemImage: "photo",
-                            description: Text("请先确认这份素材已下载到本机。")
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(FloeTheme.readingSurface)
-
-                Form {
-                    Section("裁剪") {
-                        Slider(value: $cropInset, in: 0...0.3, step: 0.025)
-                        LabeledContent("四边内缩", value: "\(Int(cropInset * 100))%")
-                        HStack {
-                            Button("原图") { cropInset = 0 }
-                            Button("轻裁 10%") { cropInset = 0.1 }
-                            Button("聚焦 20%") { cropInset = 0.2 }
-                        }
-                    }
-                    Section("旋转") {
-                        Slider(value: $rotation, in: -180...180, step: 1)
-                        LabeledContent("角度", value: "\(Int(rotation))°")
-                        HStack {
-                            Button("左转 90°") { rotation = -90 }
-                            Button("复位") { rotation = 0 }
-                            Button("右转 90°") { rotation = 90 }
-                        }
-                    }
-                    Text("保存会创建一份新的素材和结果节点，原图与连接关系保持不变。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxHeight: 330)
-            }
-            .navigationTitle("裁剪与变换")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        Task { await saveDerivedImage() }
-                    } label: {
-                        if isSaving { ProgressView() } else { Text("保存副本") }
-                    }
-                    .disabled(sourceImage == nil || isSaving)
-                }
-            }
-            .task { loadSource() }
-            .onChange(of: cropInset) { _, _ in renderPreview() }
-            .onChange(of: rotation) { _, _ in renderPreview() }
-            .alert("无法编辑图片", isPresented: Binding(
-                get: { error != nil }, set: { if !$0 { error = nil } }
-            )) { Button("完成", role: .cancel) {} } message: { Text(error ?? "") }
-        }
-    }
-
-    private func loadSource() {
-        guard let url = CanvasAssetNodeContent.localURL(for: node),
-              let image = UIImage(contentsOfFile: url.path)?.cgImage else {
-            sourceImage = nil
-            preview = nil
-            return
-        }
-        sourceImage = image
-        renderPreview()
-    }
-
-    private func renderPreview() {
-        guard let sourceImage else { return }
-        do {
-            var rendered = sourceImage
-            if cropInset > 0 {
-                rendered = try ImagePipeline().apply(
-                    .crop(rect: .init(
-                        x: cropInset, y: cropInset,
-                        width: 1 - cropInset * 2, height: 1 - cropInset * 2
-                    )),
-                    to: rendered
-                )
-            }
-            if rotation != 0 {
-                rendered = try ImagePipeline().apply(.rotate(degrees: rotation), to: rendered)
-            }
-            preview = UIImage(cgImage: rendered)
-        } catch {
-            self.error = error.localizedDescription
+        FloeImageEditorView(sourceURL: CanvasAssetNodeContent.localURL(for: node)) { data in
+            try await saveDerivedImage(data)
         }
     }
 
     @MainActor
-    private func saveDerivedImage() async {
-        guard let preview, let data = preview.pngData() else { return }
-        isSaving = true
-        defer { isSaving = false }
+    private func saveDerivedImage(_ data: Data) async throws {
+        guard store.selectedDocument?.id == documentID,
+              store.selectedDocument?.nodes.contains(where: { $0.id == node.id }) == true else {
+            throw FloeError.validationFailed("原画布或素材已改变，请重新打开图片编辑器。")
+        }
         var writtenTarget: URL?
         do {
             let support = try FileManager.default.url(
@@ -6917,6 +6876,12 @@ private struct CanvasLocalImageEditor: View {
                 mimeType: "image/png", localRelativePath: "Materials/\(filename)",
                 byteCount: Int64(data.count), tags: ["画布编辑"], referenceCount: 0
             ))
+            // A registered asset remains recoverable in the library if the canvas changes.
+            writtenTarget = nil
+            guard store.selectedDocument?.id == documentID,
+                  store.selectedDocument?.nodes.contains(where: { $0.id == node.id }) == true else {
+                throw FloeError.validationFailed("图片已保存到素材库；原画布已改变，请从素材库插入。")
+            }
             let reference = CanvasAssetReference(
                 id: assetID, contentHash: hash,
                 localRelativePath: "Materials/\(filename)",
@@ -6926,18 +6891,18 @@ private struct CanvasLocalImageEditor: View {
                 reference, kind: .image,
                 at: CGPoint(x: node.x + node.width + 100, y: node.y)
             )
+            guard store.selectedDocument?.nodes.contains(where: { $0.id == resultID }) == true else {
+                throw FloeError.validationFailed("图片已保存到素材库，但未能加入画布。请从素材库重新插入。")
+            }
             store.updateNodeMetadata(resultID, values: [
                 "derivedFromNodeID": node.id.uuidString,
-                "cropInset": String(cropInset),
-                "rotationDegrees": String(rotation)
+                "editor": "ZLImageEditor-3.0.0", "editFormat": "flattened-png"
             ])
             store.connect(node.id, to: resultID, kind: .generatedFrom)
             onSave(resultID)
         } catch {
-            if let writtenTarget {
-                try? FileManager.default.removeItem(at: writtenTarget)
-            }
-            self.error = error.localizedDescription
+            if let writtenTarget { try? FileManager.default.removeItem(at: writtenTarget) }
+            throw error
         }
     }
 }
@@ -7549,8 +7514,13 @@ private struct CanvasAssetNodeContent: View {
                 appropriateFor: nil,
                 create: false
               ) else { return nil }
-        return support.appendingPathComponent("FloeAgent", isDirectory: true)
-            .appendingPathComponent(relativePath)
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let url = root.appendingPathComponent(relativePath)
+            .resolvingSymlinksInPath().standardizedFileURL
+        guard url.path.hasPrefix(root.path + "/"),
+              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+        return url
     }
 
     private var fileURL: URL? { Self.localURL(for: node) }
@@ -8269,6 +8239,7 @@ private struct CanvasTriangleShape: Shape {
 /// control or unrelated system administration tools.
 private struct CanvasAgentFloatingPanel: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: CanvasDocumentStore
 
     let workspace: WorkspaceRecord?
@@ -8365,16 +8336,16 @@ private struct CanvasAgentFloatingPanel: View {
             }
             Spacer()
             Button {
-                withAnimation(.snappy) { isCollapsed.toggle() }
+                withAnimation(reduceMotion ? nil : .snappy) { isCollapsed.toggle() }
             } label: {
                 Image(systemName: isCollapsed ? "chevron.up" : "chevron.down")
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isCollapsed ? "展开画布助手" : "收起画布助手")
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("关闭画布助手")
@@ -8401,7 +8372,7 @@ private struct CanvasAgentFloatingPanel: View {
                 }
         )
         .onTapGesture(count: 2) {
-            withAnimation(.snappy) { offset = .zero }
+            withAnimation(reduceMotion ? nil : .snappy) { offset = .zero }
         }
     }
 
@@ -8553,6 +8524,7 @@ private struct SharedCanvasAgentConversation: View {
     @State private var prompt = ""
     @State private var dictationPrefix = ""
     @State private var insertedRunIDs = Set<UUID>()
+    @State private var visibleTimelineCount = 30
 
     init(
         conversationID: UUID,
@@ -8631,9 +8603,18 @@ private struct SharedCanvasAgentConversation: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 18)
                 }
-                ForEach(Array(viewModel.timeline.suffix(30))) { item in
-                    timelineRow(item)
+                if viewModel.timeline.count > visibleTimelineCount {
+                    Button("查看更早的对话", systemImage: "clock.arrow.circlepath") {
+                        visibleTimelineCount += 30
+                    }
+                    .font(.caption)
+                    .frame(minHeight: 44)
                 }
+                ForEach(Array(viewModel.timeline.suffix(visibleTimelineCount))) { item in
+                    timelineRow(item)
+                        .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 6)))
+                }
+
                 if viewModel.isRunning {
                     HStack(spacing: 8) {
                         ProgressView()
@@ -8653,6 +8634,7 @@ private struct SharedCanvasAgentConversation: View {
                 }
             }
             .padding(14)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: viewModel.timeline.map(\.id))
         }
     }
 
@@ -8702,7 +8684,7 @@ private struct SharedCanvasAgentConversation: View {
                     Image(systemName: "microphone.circle")
                         .font(.title2)
                         .foregroundStyle(FloeTheme.primary)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .disabled(voiceInput.state == .requestingPermission
@@ -8716,15 +8698,16 @@ private struct SharedCanvasAgentConversation: View {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 44, height: 44)
                         .background(FloeTheme.primary, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .padding(4)
+                .accessibilityLabel("发送到画布助手")
                 .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                           || viewModel.selectedModelID == nil)
             }
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             HStack {
                 if viewModel.isRunning {
@@ -8795,7 +8778,7 @@ private struct SharedCanvasAgentConversation: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var canvasVoiceError: String? {
@@ -8849,7 +8832,11 @@ private struct SharedCanvasAgentConversation: View {
         case .missingFinalMessage:
             Label("模型未返回最终文本", systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
-        case .liveReasoning, .liveAssistantTail, .liveThinking:
+        case .liveReasoning:
+            ReasoningBlockView(text: viewModel.liveReasoningText, isStreaming: true)
+        case .liveAssistantTail:
+            AssistantMessageView(text: viewModel.liveStreamedText, isStreaming: true)
+        case .liveThinking:
             HStack { ProgressView(); Text("正在处理…") }
                 .font(.caption).foregroundStyle(.secondary)
         case .approval(let approval):
@@ -8862,10 +8849,14 @@ private struct SharedCanvasAgentConversation: View {
     private func messageBubble(title: String, text: String, isUser: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            Text(text).textSelection(.enabled)
+            if isUser {
+                Text(text).textSelection(.enabled)
+            } else {
+                AssistantMessageView(text: text)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(isUser ? 11 : 0)
+        .padding(isUser ? 12 : 0)
         .background(
             isUser ? FloeTheme.primary.opacity(0.10) : Color.clear,
             in: RoundedRectangle(cornerRadius: 12)

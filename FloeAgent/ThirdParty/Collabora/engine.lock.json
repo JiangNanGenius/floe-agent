@@ -1,30 +1,30 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "xlsx-modern-ole-anchor-host-compiled-runtime-pending",
+  "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending",
   "qualifiedHostArtifact": {
-    "runID": "34354533462",
+    "runID": "34722048321",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10105275358,
-    "workflowCommit": "1038603eb6400be39289cb87a5ddaeec81f40dcb",
-    "archiveSHA256": "a23dede0fa245ab5b41120c04e9c709dbb9cdbcf2d135b37718a18f611996c42",
-    "executableSHA256": "b4c675d9de6135556467e9732830682dac7b5fb1734ca02c45283acad43396e9",
+    "artifactID": 10307165243,
+    "workflowCommit": "5911fd3155bdfbf78c461bcd647116bd9b79bbee",
+    "archiveSHA256": "e8296799aa87728e27ada539c2311a6db72794d0d00e2bea6d03126f0c5b21b5",
+    "executableSHA256": "9a6974d5fb361feca16c64dc3319b90de9626fd5b5c783573baf4e8c54d3c795",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
-      "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
-      "FloeOfficeNative.mm": "3b01a57ef31a010170e6bdd40d87e69e3197701d8216850e5c88c9e9bc356840",
-      "FloeOfficeAttachment.cpp": "660402ee84b7a55c53fabdb7ae2f8ba1b12177e3058c39a90ec057892b5d4811",
-      "FloeOfficeAttachment.hxx": "6a3c976e41df1ec3c7d339c3762522c46b3cc8b23574522559f8b83e60e7088e"
+      "FloeOfficeNative.h": "200329ef305f7c8a764e54c923b7fcc17a50c274d3163c40f2e990c4ff955ce6",
+      "FloeOfficeNative.mm": "e09c0fc6ea517d9435aef0cf21db5f0c4624b58fd1e97c1b59656422809d1665",
+      "FloeOfficeAttachment.cpp": "281c55eb6ccb6ae85092ade38a7debe30cd2d010e76e0cbbcd3d88bcc42bfde8",
+      "FloeOfficeAttachment.hxx": "0fe8268cd8bb8355593d662b1cd19e707a8ea5a03068d359c0ef1edfb67b8a76"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "b60ea4fde5add413542ead2d591ccada26af8f03cc7bd5e5fa684d63da004d7b",
+    "manifestSHA256": "184fa59edb588eed194595406094937ff1268077e3fd837c81d5e497de0ae737",
     "frameworkAuxiliarySHA256": {
-      "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+      "Headers/FloeOfficeNative.h": "200329ef305f7c8a764e54c923b7fcc17a50c274d3163c40f2e990c4ff955ce6",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "e3b21fcb94865972fb8908dcce886fc39e73f28e20bf1439cbb70a0139a3ec00"
     },
-    "note": "Compiled, linked and Swift-imported pinned native host. Runtime roundtrip, full fidelity and physical-device acceptance remain separate gates.",
+    "note": "Native export, presentation and vector annotation APIs compiled, linked and Swift-imported. Runtime fidelity and physical-device acceptance remain pending.",
     "filterOverlay": {
       "patchSHA256": "2177e3a5b73d8182599f54ac06a2209c06b6f50364c3bbc114587d0a40dbd19f",
       "sourceFiles": {
@@ -69,9 +69,9 @@
           "patchedSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f"
         }
       },
-      "archiveSHA256": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
+      "archiveSHA256": "77ed9b5ca7a06f5d048e094ad94d7a61832d0aef648f935a6a44ae5b2d3addb0",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
+      "selectedArchiveSHA256": "77ed9b5ca7a06f5d048e094ad94d7a61832d0aef648f935a6a44ae5b2d3addb0",
       "headerDependencies": {
         "mdds": {
           "url": "https://dev-www.libreoffice.org/src/mdds-3.1.0.tar.xz",
@@ -86,7 +86,7 @@
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "1ee1992016fe8b19b8cd8e75e559ed65f39c24e508f0ff95ba4bb0fdd3f89de0",
+          "archiveSHA256": "5e8953f157b29b67734eea7e02d8b619f435635cce025d1122412e9e49a843e6",
           "objectSHA256ByMember": {
             "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77"
           },
@@ -97,8 +97,8 @@
         }
       },
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
-        "libooxlo.a": "1ee1992016fe8b19b8cd8e75e559ed65f39c24e508f0ff95ba4bb0fdd3f89de0"
+        "libscfiltlo.a": "77ed9b5ca7a06f5d048e094ad94d7a61832d0aef648f935a6a44ae5b2d3addb0",
+        "libooxlo.a": "5e8953f157b29b67734eea7e02d8b619f435635cce025d1122412e9e49a843e6"
       }
     }
   },
