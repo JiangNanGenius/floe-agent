@@ -31,6 +31,7 @@ targets:
       - ../../FloeApp/Files/FloePDFExceptionGuard.mm
       - ../../FloeApp/Files/FloePDFExceptionGuard.h
       - ../../FloeApp/Voice
+      - ../../FloeApp/Media/AudioTranscribeTool.swift
       - path: ../../FloeApp/Resources/Whisper
         type: folder
         buildPhase: resources
@@ -44,6 +45,10 @@ targets:
         product: FloeNotes
       - package: FloeAgent
         product: FloeDocuments
+      - package: FloeAgent
+        product: FloeTools
+      - package: FloeAgent
+        product: FloeWorkspace
       - package: WhisperKit
         product: WhisperKit
     settings:

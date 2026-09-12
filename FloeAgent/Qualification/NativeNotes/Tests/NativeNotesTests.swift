@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import XCTest
+import AVFoundation
 import UIKit
 import PencilKit
 import SwiftUI
@@ -8,6 +9,50 @@ import FloeNotes
 @testable import FloeNotesNativeQualification
 
 @MainActor final class NativeNotesTests: XCTestCase {
+    func testCaptionExportsPreserveTimingAndEscapeSourceMarkup() throws {
+        let segments = [TimedSpeechSegment(start: 1.125, end: 3.5, text: "普通话 <English> & 123", words: [])]
+        let srt = String(decoding: try SpeechCaptionExport.data(segments: segments, format: "srt"), as: UTF8.self)
+        XCTAssertTrue(srt.contains("00:00:01,125 --> 00:00:03,500"))
+        XCTAssertTrue(srt.contains("普通话 &lt;English&gt; &amp; 123"))
+        let vtt = String(decoding: try SpeechCaptionExport.data(segments: segments, format: "vtt"), as: UTF8.self)
+        XCTAssertTrue(vtt.hasPrefix("WEBVTT\n\n"))
+        XCTAssertTrue(vtt.contains("00:00:01.125 --> 00:00:03.500"))
+        let reopened = try JSONDecoder().decode([TimedSpeechSegment].self, from: SpeechCaptionExport.data(segments: segments, format: "json"))
+        XCTAssertEqual(reopened.first?.text, segments.first?.text)
+        XCTAssertEqual(reopened.first?.start, 1.125)
+    }
+
+    func testSpeechChunkResamplesStereoAndPreservesDelayedTrackTiming() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("stereo.caf")
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000))
+            buffer.frameLength = 48000
+            for channel in 0..<2 {
+                let samples = try XCTUnwrap(buffer.floatChannelData?[channel])
+                for index in 0..<48000 { samples[index] = Float(sin(Double(index) * 2 * .pi * 440 / 48000) * 0.4) }
+            }
+            try file.write(from: buffer)
+        }
+        let asset = AVURLAsset(url: url)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let sourceTrack = try XCTUnwrap(tracks.first)
+        let composition = AVMutableComposition()
+        let track = try XCTUnwrap(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid))
+        try track.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 1, preferredTimescale: 48000)),
+                                  of: sourceTrack, at: CMTime(seconds: 2, preferredTimescale: 48000))
+        let samples = try SpeechAudioChunk.read(asset: composition, track: track, start: 0, duration: 3)
+        XCTAssertEqual(samples.count, 48000)
+        XCTAssertLessThan(samples.prefix(30000).map { abs($0) }.max() ?? 1, 0.001)
+        let energy = samples.suffix(12000).reduce(Float(0)) { $0 + $1 * $1 } / 12000
+        XCTAssertGreaterThan(energy, 0.02)
+        XCTAssertThrowsError(try SpeechAudioChunk.read(asset: composition, track: track, start: 0, duration: 26))
+    }
+
     func testBundledMindMapRendersDocumentTextWithoutInterpretingMarkup() async throws {
         var document = NoteDocument(kind: .mindMap, title: "导图")
         let title = "<img src=x> 经济学 English"

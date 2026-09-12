@@ -265,7 +265,7 @@ private struct FloeVisualVideoEditor: View {
             .fullScreenCover(isPresented: $showEditor) {
                 VideoEditorView("媒体工作台", sourceVideoURL: source,
                     editingConfiguration: configuration,
-                    configuration: .init(transcription: .init()),
+                    configuration: .init(transcription: .init(provider: FloeVideoTranscriptionProvider(root: root))),
                     onSavedVideo: { saved in
                         configuration = saved.editingConfiguration
                         persist()
