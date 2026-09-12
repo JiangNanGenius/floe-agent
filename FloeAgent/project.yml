@@ -44,6 +44,7 @@ targets:
           - Resources/LibArchiveLicenses
           - Resources/DocumentConversion
           - Resources/Fonts/Bundled
+          - Resources/NodeTools
       - path: FloeApp/Resources/Capabilities
         type: folder
         buildPhase: resources
@@ -146,6 +147,8 @@ targets:
         embed: false
       - sdk: libz.tbd
       - sdk: libc++.tbd
+      - framework: Vendor/NodeMobile/NodeMobile.xcframework
+        embed: true
       - framework: Vendor/Python.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_asyncio.xcframework

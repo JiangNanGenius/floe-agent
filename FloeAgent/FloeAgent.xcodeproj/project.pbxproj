@@ -23,7 +23,7 @@
 		07D75CCBF1B9602AD64F5709 /* pandas__libs_tslibs_ccalendar.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */; };
 		086E743FC13CE9DA2BD91D05 /* _csv.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; };
 		089D513D837438C091ED08A0 /* FloeSkills in Frameworks */ = {isa = PBXBuildFile; productRef = 5B057579F6C5787F1EF9F172 /* FloeSkills */; };
-		08C1D1CFB085F7933B03B84F /* FloeShellEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 923643E245C0A12DF9647622 /* FloeShellEngine */; };
+		08C1D1CFB085F7933B03B84F /* FloeMedia in Frameworks */ = {isa = PBXBuildFile; productRef = 99123BAA56849843BF717395 /* FloeMedia */; };
 		08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */; };
 		08F47781D4B996B2696C8989 /* HomeLaunchpadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */; };
 		09D32302D5EB9204F8E9467B /* pandas__libs_index.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F59B5D886E094D81CE9B9DF0 /* pandas__libs_index.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -66,7 +66,7 @@
 		1BE8EAF7BEFC52CFA4846703 /* SkillDreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 224C3D6B873B21963949DAA8 /* SkillDreamService.swift */; };
 		1BFB86E5498B5928EA67A105 /* pandas__libs_tslibs_conversion.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5E1C6CDF2484A37A543FEFD5 /* pandas__libs_tslibs_conversion.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1D722ACF9ED7E3EE1478A17C /* pandas__libs_sas.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */; };
-		1DAE6DE83A3980067040AF3F /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
+		1DAE6DE83A3980067040AF3F /* FloePackages in Frameworks */ = {isa = PBXBuildFile; productRef = 6B5C3F1CF8AF92A12DF3BDA8 /* FloePackages */; };
 		1DEB2C1ECE52FB4594BAB549 /* unicodedata.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1E05D8457E28FCCBFB3AEC55 /* termios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3C2891331FDB42F816478E56 /* termios.xcframework */; };
 		1E91E2AB9058241938BF0D6A /* _dbm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A0E5089889969429F874CF6 /* _dbm.xcframework */; };
@@ -83,10 +83,12 @@
 		2552449B3F6DFD39F032C0FF /* _bz2.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */; };
 		269EB71ABE6367FE65DD217B /* _pocketfft_umath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		26C37EDDEEC8B637A4BD6D40 /* FloeNodeBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 29A21A1899BAF10ED177AF24 /* FloeNodeBridge.mm */; };
 		26EB4B8494CDF24AE52E1006 /* regex__regex.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6520AE8AEB23423CED3B500 /* regex__regex.xcframework */; };
 		27855675D9ACDFE95B27B41E /* AppleCapabilitiesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C8A30D0D7D561C3E9BE4EC0 /* AppleCapabilitiesSettingsView.swift */; };
 		2939AB869D58351E507444A9 /* _sha2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE19791AC2454F6739825F8F /* _sha2.xcframework */; };
 		293F87E7D63F9F4FE1674785 /* _bounded_integers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9B83A57D75B2264625E7B8B6 /* _bounded_integers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		29713E78A2F7479851CD325A /* IOSSystemNodeRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302D81B12BD70148923C79D1 /* IOSSystemNodeRuntime.swift */; };
 		2A13232B1933B91BD7195B9D /* ProviderListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */; };
 		2A28A5D2E585FE372E6AA7E8 /* FloeShellCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */; };
 		2A2BD3D420AE0BDD0039FA1F /* Capabilities in Resources */ = {isa = PBXBuildFile; fileRef = 35310CD2A0EE3E66298E8709 /* Capabilities */; };
@@ -114,6 +116,7 @@
 		33744B55369D187E0173FB77 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = B1B02F2500B5B465399C11B7 /* FloePersistence */; };
 		338C444A5850EEA55FE92B63 /* HomeOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */; };
 		34485AB274BA660CE72C46D6 /* TaskScheduleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D008574B5C037321A6B5540 /* TaskScheduleSheet.swift */; };
+		347CB20519779F854B419183 /* NodeMobile.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 444491022995AB6B0ED4E5E8 /* NodeMobile.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		355AA35003F049409539C002 /* JobDownloadCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F88A71725F1461BFF49E6BFC /* JobDownloadCoordinator.swift */; };
 		3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */; };
 		362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; };
@@ -146,6 +149,7 @@
 		44549AE8F5937ED7F55B253B /* pandas__libs_internals.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */; };
 		448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */; };
 		44F125A88372998BD75A01C9 /* uuid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 7EB83CE4E7FCE787665DFBBB /* uuid.min.js */; };
+		4602C406C6F7D1047179E992 /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
 		460E577E2CEF8945AA055F27 /* _md5.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 538FB08A4DD774D6AEFCF28F /* _md5.xcframework */; };
 		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
 		4737AA1E27662463EC52AFA1 /* pandas__libs_tslibs_strptime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -162,6 +166,7 @@
 		4EEFA3CD704D9B31D968EF08 /* pandas__libs_tslibs_vectorized.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4F3EF265CBE408F15A161E09 /* pandas__libs_json.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4FCDF1DDA235217013082223 /* pandas__libs_tslibs_timezones.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */; };
+		504258FC47B23F164C439211 /* MediaEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */; };
 		50558E86B5111DFA1FD0B6CE /* zstandard_backend_c.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A042C89A9C3804838987595F /* zstandard_backend_c.xcframework */; };
 		506CDFCC048706B248694DED /* pandas__libs_parsers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F54DB2628B40757C8BB129CA /* pandas__libs_parsers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		50BD5CED8F06FC57DAFB3DED /* _heapq.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -193,6 +198,7 @@
 		5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */; };
 		5EA814A1C794BD7B9937E81F /* _elementtree.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */; };
 		5EC927DA176A4AC49EDACEFB /* pandas__libs_tslibs_base.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1DD0388E916D7E0F76DFC992 /* pandas__libs_tslibs_base.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		5EEDF12D0F1E55466D74580A /* NodeTools in Resources */ = {isa = PBXBuildFile; fileRef = 9CDF7C34B3636489EEB0BC07 /* NodeTools */; };
 		5F735BD9B9C3A7B9896FBD30 /* pandas__libs_arrays.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C4933430B71290D5D6717191 /* pandas__libs_arrays.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5F7840F49827B094F2E4E771 /* CanvasAgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63EB5024B1FD6F3B9E73BBBF /* CanvasAgentTools.swift */; };
 		6011EEEE797CCCCBAFE79990 /* Python.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -232,9 +238,11 @@
 		6EFA9ED6557018D9EC2EFFC6 /* FileTreeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */; };
 		6EFE06F5EE84FD76D6026BBA /* pandas__libs_writers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6FC89A1BACBA33278669A2C9 /* CameraPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */; };
+		6FF01C96215EA2C610CD26C1 /* FloeGit in Frameworks */ = {isa = PBXBuildFile; productRef = E6A81719803BDDE4E13451F3 /* FloeGit */; };
 		700E0E333832B9669753A226 /* FloePDFiumBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 0F445AF25FACF2975FCE8934 /* FloePDFiumBridge.mm */; };
 		7019692CCE4AC0CD840E1152 /* RichArtifactView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */; };
 		702783ECBD4DCFFA7CF6DE20 /* pandas__libs_interval.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */; };
+		70480066DC808EE0970F5AFB /* MediaPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */; };
 		704C53FCB539119929E7F94B /* _operand_flag_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C4778F6E6793ACD2D5FB6C14 /* _operand_flag_tests.xcframework */; };
 		70B0244D522DFFA14861A337 /* FloeScreenShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E388FA201B460E867D612C38 /* FloeScreenShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		70F286B37F24BC80A411B04F /* _lsprof.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47008301B5CA511920D10074 /* _lsprof.xcframework */; };
@@ -281,7 +289,7 @@
 		89B023C074580181D49D192A /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */; };
 		89D986DE42E1C09CD2DB6309 /* zlib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 71091AA54C5E2F667D6469A6 /* zlib.xcframework */; };
 		8A5FBFFF464A8A9E1D02A598 /* pandas__libs_tslibs_dtypes.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		8BDBF9D426DD621EA4ECB830 /* FloeGit in Frameworks */ = {isa = PBXBuildFile; productRef = E6A81719803BDDE4E13451F3 /* FloeGit */; };
+		8BDBF9D426DD621EA4ECB830 /* FloeEnvironments in Frameworks */ = {isa = PBXBuildFile; productRef = 2F0A9E4EFBAFF9A3D9916D67 /* FloeEnvironments */; };
 		8D61411A5B776C8E0AA26D73 /* pandas__libs_writers.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */; };
 		8D7C4CF1B8FC0F1CCEF94B1D /* pyexpat.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; };
 		8E0BC24E5E805CDA91CD7360 /* _simd.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 57DF4046AFC20EF6F331D170 /* _simd.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -331,6 +339,7 @@
 		A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */; };
 		A5C100B39388D49632E01BAF /* FloeCPythonBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */; };
 		A5FEE395C7135D52DF0FF81F /* _csv.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A68817564DEC432882795A34 /* MediaModelCatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F67BD7208FE43B7F6716AA9 /* MediaModelCatalogService.swift */; };
 		A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */; };
 		A6D87AEAF17E29AFBE84784D /* _dbm.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 6A0E5089889969429F874CF6 /* _dbm.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A6F758931339A9ED0EFC4947 /* pandas__libs_tslib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B32CD3F6C61FCE56B91D237E /* pandas__libs_tslib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -393,6 +402,7 @@
 		C2A979185D804135CE278ADA /* FloeSyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = 42F46C3ACBB2BE695D007080 /* FloeSyncCore */; };
 		C3D0912C27625AA81B6DA7D2 /* bit_generator.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74012AF12E05312093931759 /* bit_generator.xcframework */; };
 		C445C408875C00830EEC5993 /* pandas__libs_join.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */; };
+		C4D763B0620180A890A44E5C /* FloePlatformServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3AEE5793F42AA8E356F322 /* FloePlatformServices.swift */; };
 		C5BCA4D53959F1B96E82F8B1 /* ExecutionEnvironmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */; };
 		C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */; };
 		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
@@ -480,6 +490,7 @@
 		EEAF07E93D7D0C103F0EA346 /* pandas__libs_tslibs_timedeltas.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */; };
 		EEB68AFF7BCD15C86059B496 /* _mt19937.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */; };
 		EEC769EBC4DFA463E3844163 /* extraCommandsDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = C298297A7E2B2DE1AAF2AF86 /* extraCommandsDictionary.plist */; };
+		EF3607E56FFC264531A6ADC2 /* FloeShellEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 923643E245C0A12DF9647622 /* FloeShellEngine */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
@@ -500,6 +511,7 @@
 		F82E48692303DF4C244E90D1 /* pandas__libs_pandas_datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4C045D240779DF5FC64D438 /* CreativeAssetIngestionTests.swift */; };
 		F97E858A6A5915882FA5E428 /* RemoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */; };
+		F9A6735CD79C6425F26116D5 /* NodeMobile.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 444491022995AB6B0ED4E5E8 /* NodeMobile.xcframework */; };
 		F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */; };
 		F9C5C70EED6308C06945D286 /* pandas__libs_tslibs_period.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F912D5604B202108A44A81E6 /* pandas__libs_tslibs_period.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FAA2BBDBE71E38BA0E378507 /* _opcode.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DFAFEA945AD87107AD86523A /* _opcode.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -558,6 +570,7 @@
 			dstSubfolderSpec = 10;
 			files = (
 				231450C31B4BABA097EDE191 /* PDFium.xcframework in Embed Frameworks */,
+				347CB20519779F854B419183 /* NodeMobile.xcframework in Embed Frameworks */,
 				6011EEEE797CCCCBAFE79990 /* Python.xcframework in Embed Frameworks */,
 				B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */,
 				9932D9C05CE68E26BE063A03 /* _contextvars.xcframework in Embed Frameworks */,
@@ -698,6 +711,7 @@
 
 /* Begin PBXFileReference section */
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
+		016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlayerView.swift; sourceTree = "<group>"; };
 		018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARFixtures.generated.swift; sourceTree = "<group>"; };
 		020723F1965651F1C7D6CD77 /* LocalShellRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalShellRuntimeTests.swift; sourceTree = "<group>"; };
 		03482FFDDB47C3482FD2326D /* DomainSkillLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainSkillLibrary.swift; sourceTree = "<group>"; };
@@ -735,6 +749,7 @@
 		16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _zoneinfo.xcframework; path = Vendor/PythonExtensions/_zoneinfo.xcframework; sourceTree = "<group>"; };
 		16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDreamService.swift; sourceTree = "<group>"; };
 		176A2DE26290AB545E404ADE /* lapack_lite.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lapack_lite.xcframework; path = Vendor/PythonExtensions/lapack_lite.xcframework; sourceTree = "<group>"; };
+		17A05679A6CD241257F69CDD /* FloeNodeBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeNodeBridge.h; sourceTree = "<group>"; };
 		17C3D097583898D825656EEA /* BundledFontRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledFontRegistrar.swift; sourceTree = "<group>"; };
 		17F136474D0FB91E6F810317 /* ThreadDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailView.swift; sourceTree = "<group>"; };
 		183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageInspectToolTests.swift; sourceTree = "<group>"; };
@@ -769,6 +784,7 @@
 		28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _asyncio.xcframework; path = Vendor/PythonExtensions/_asyncio.xcframework; sourceTree = "<group>"; };
 		28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _mt19937.xcframework; path = Vendor/PythonExtensions/_mt19937.xcframework; sourceTree = "<group>"; };
 		293AE960803DF52F2523348D /* dashD.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashD.xcframework; path = Frameworks/dashD.xcframework; sourceTree = "<group>"; };
+		29A21A1899BAF10ED177AF24 /* FloeNodeBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloeNodeBridge.mm; sourceTree = "<group>"; };
 		2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_groupby.xcframework; path = Vendor/PythonExtensions/pandas__libs_groupby.xcframework; sourceTree = "<group>"; };
 		2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportantFileShortcutTests.swift; sourceTree = "<group>"; };
@@ -778,6 +794,7 @@
 		2DBCBE0360D88F15438CA23F /* RemoteImageTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageTools.swift; sourceTree = "<group>"; };
 		2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
 		2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettingsUITests.swift; sourceTree = "<group>"; };
+		302D81B12BD70148923C79D1 /* IOSSystemNodeRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSystemNodeRuntime.swift; sourceTree = "<group>"; };
 		30E546884B42CDF2BB96931B /* UserMessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageBubble.swift; sourceTree = "<group>"; };
 		31D98DFED3D114A699F77361 /* AssistantMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageView.swift; sourceTree = "<group>"; };
 		3319E3323937D58167E59374 /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
@@ -812,6 +829,7 @@
 		42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeBlockView.swift; sourceTree = "<group>"; };
 		42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeView.swift; sourceTree = "<group>"; };
 		436B2C5C853B7C60DCEF2059 /* ApprovalModelBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalModelBackend.swift; sourceTree = "<group>"; };
+		444491022995AB6B0ED4E5E8 /* NodeMobile.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NodeMobile.xcframework; path = Vendor/NodeMobile/NodeMobile.xcframework; sourceTree = "<group>"; };
 		454525682D752CA18BC08BD3 /* pandas__libs_tslibs_tzconversion.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_tzconversion.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_tzconversion.xcframework; sourceTree = "<group>"; };
 		457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_internals.xcframework; path = Vendor/PythonExtensions/pandas__libs_internals.xcframework; sourceTree = "<group>"; };
 		4591C06F1D70A373B8D8BD05 /* _struct_ufunc_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _struct_ufunc_tests.xcframework; path = Vendor/PythonExtensions/_struct_ufunc_tests.xcframework; sourceTree = "<group>"; };
@@ -821,6 +839,7 @@
 		474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_byteswap.xcframework; path = Vendor/PythonExtensions/pandas__libs_byteswap.xcframework; sourceTree = "<group>"; };
 		4946D26E8EA2D8E70FF337DB /* _multibytecodec.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _multibytecodec.xcframework; path = Vendor/PythonExtensions/_multibytecodec.xcframework; sourceTree = "<group>"; };
 		4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = unicodedata.xcframework; path = Vendor/PythonExtensions/unicodedata.xcframework; sourceTree = "<group>"; };
+		4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaEditorView.swift; sourceTree = "<group>"; };
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
 		4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsCenter.swift; sourceTree = "<group>"; };
 		4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timedeltas.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timedeltas.xcframework; sourceTree = "<group>"; };
@@ -922,6 +941,7 @@
 		8E8EBFAB4ED3E3A0AC4E178A /* CanvasSavedImageBatchCommitPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasSavedImageBatchCommitPlanner.swift; sourceTree = "<group>"; };
 		8EEDB221C5E3501DEF3F7015 /* select.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = select.xcframework; path = Vendor/PythonExtensions/select.xcframework; sourceTree = "<group>"; };
 		8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAgentUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		8F67BD7208FE43B7F6716AA9 /* MediaModelCatalogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaModelCatalogService.swift; sourceTree = "<group>"; };
 		8FBC9F374C911EA91D944FB0 /* MoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreView.swift; sourceTree = "<group>"; };
 		8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDocumentOperations.swift; sourceTree = "<group>"; };
 		913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timezones.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timezones.xcframework; sourceTree = "<group>"; };
@@ -937,6 +957,7 @@
 		9B83A57D75B2264625E7B8B6 /* _bounded_integers.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _bounded_integers.xcframework; path = Vendor/PythonExtensions/_bounded_integers.xcframework; sourceTree = "<group>"; };
 		9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		9B923E6C40B9B0CB6BE969E7 /* mtrand.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = mtrand.xcframework; path = Vendor/PythonExtensions/mtrand.xcframework; sourceTree = "<group>"; };
+		9CDF7C34B3636489EEB0BC07 /* NodeTools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = NodeTools; path = FloeApp/Resources/NodeTools; sourceTree = SOURCE_ROOT; };
 		9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorViewModel.swift; sourceTree = "<group>"; };
 		9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPickerView.swift; sourceTree = "<group>"; };
 		9E7484DF188E2D750D6F5E1D /* AllWorkspacesFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllWorkspacesFilesView.swift; sourceTree = "<group>"; };
@@ -1052,6 +1073,7 @@
 		EBFC00F1FCA508F70838C348 /* _uuid.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _uuid.xcframework; path = Vendor/PythonExtensions/_uuid.xcframework; sourceTree = "<group>"; };
 		EC0B76B524CD1FC5833106AE /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		EE446478DBD5263458338578 /* fcntl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = fcntl.xcframework; path = Vendor/PythonExtensions/fcntl.xcframework; sourceTree = "<group>"; };
+		EF3AEE5793F42AA8E356F322 /* FloePlatformServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloePlatformServices.swift; sourceTree = "<group>"; };
 		F056190E229F36B3FC87CD73 /* _csv.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _csv.xcframework; path = Vendor/PythonExtensions/_csv.xcframework; sourceTree = "<group>"; };
 		F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadComposerView.swift; sourceTree = "<group>"; };
 		F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackTokenStore.swift; sourceTree = "<group>"; };
@@ -1109,6 +1131,7 @@
 				2BBF22D90B958D418033B3CB /* LibArchive.xcframework in Frameworks */,
 				41F8F5B12F2A29237D33FEEC /* libz.tbd in Frameworks */,
 				8246227426A04558FB1837BF /* libc++.tbd in Frameworks */,
+				F9A6735CD79C6425F26116D5 /* NodeMobile.xcframework in Frameworks */,
 				B81C50AA905334687754F195 /* Python.xcframework in Frameworks */,
 				50D04ECF856C858F6A84FEAB /* _asyncio.xcframework in Frameworks */,
 				CD6A7E5B11E0E3CB9A32061C /* _contextvars.xcframework in Frameworks */,
@@ -1252,9 +1275,12 @@
 				6351CFE8FFBB071B71F5A3D2 /* FloeMarkdown in Frameworks */,
 				5B7645F8BEC4BA09E98FA7CA /* FloeWorkspace in Frameworks */,
 				5BB820EF2110E8C73542D2C2 /* FloeExecution in Frameworks */,
-				8BDBF9D426DD621EA4ECB830 /* FloeGit in Frameworks */,
-				1DAE6DE83A3980067040AF3F /* FloeLocalModels in Frameworks */,
-				08C1D1CFB085F7933B03B84F /* FloeShellEngine in Frameworks */,
+				8BDBF9D426DD621EA4ECB830 /* FloeEnvironments in Frameworks */,
+				1DAE6DE83A3980067040AF3F /* FloePackages in Frameworks */,
+				08C1D1CFB085F7933B03B84F /* FloeMedia in Frameworks */,
+				6FF01C96215EA2C610CD26C1 /* FloeGit in Frameworks */,
+				4602C406C6F7D1047179E992 /* FloeLocalModels in Frameworks */,
+				EF3607E56FFC264531A6ADC2 /* FloeShellEngine in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1269,9 +1295,13 @@
 				0B2D5DED5D4B408F395DC2A4 /* FloeApp-Bridging-Header.h */,
 				FC00A178D3BFF39807097F6A /* FloeCPythonBridge.h */,
 				A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */,
+				17A05679A6CD241257F69CDD /* FloeNodeBridge.h */,
+				29A21A1899BAF10ED177AF24 /* FloeNodeBridge.mm */,
+				EF3AEE5793F42AA8E356F322 /* FloePlatformServices.swift */,
 				BD21A10D592EBFDF538C2C85 /* FloeShellBridge.h */,
 				1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */,
 				828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */,
+				302D81B12BD70148923C79D1 /* IOSSystemNodeRuntime.swift */,
 				27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */,
 				242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */,
 			);
@@ -1300,6 +1330,16 @@
 				A9A791AA53691DDDBA9E92CB /* Info.plist */,
 			);
 			path = FloeWidgets;
+			sourceTree = "<group>";
+		};
+		0CA70AC476DB00A2326D7095 /* Media */ = {
+			isa = PBXGroup;
+			children = (
+				4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */,
+				8F67BD7208FE43B7F6716AA9 /* MediaModelCatalogService.swift */,
+				016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */,
+			);
+			path = Media;
 			sourceTree = "<group>";
 		};
 		148A98B4C66AA93AB345AB92 /* FloeAgentUITests */ = {
@@ -1753,6 +1793,7 @@
 				BBD2144374FF4E9AD173B157 /* mmap.xcframework */,
 				9B923E6C40B9B0CB6BE969E7 /* mtrand.xcframework */,
 				16030A4301BD8E0707D3446F /* multidict__multidict.xcframework */,
+				444491022995AB6B0ED4E5E8 /* NodeMobile.xcframework */,
 				705BF3479430A93FD0851E2D /* pandas__libs__cyutility.xcframework */,
 				851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */,
 				C4933430B71290D5D6717191 /* pandas__libs_arrays.xcframework */,
@@ -1905,6 +1946,7 @@
 				7742ABB57F0581ADFC5F1AD5 /* Fonts */,
 				6981ED2BB91A3718E09C6710 /* Home */,
 				35B34449845BA5764B611925 /* Hosts */,
+				0CA70AC476DB00A2326D7095 /* Media */,
 				7B19447D8C5B6A2F99893BA7 /* Memory */,
 				D85ACCE5253C50F1DE5BBD2A /* More */,
 				29EDD33747CA9DDAA4B71002 /* Onboarding */,
@@ -1945,6 +1987,7 @@
 				2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */,
 				213BDC1E4C8F7172D210CA91 /* LibArchiveLicenses */,
 				A6797B7DAA890D6378153058 /* Localizable.xcstrings */,
+				9CDF7C34B3636489EEB0BC07 /* NodeTools */,
 				A837399A8DE937C9827D4EFA /* PDFiumLicenses */,
 				926B95CD92D851FFE3BB0DFE /* python */,
 				B52C94351F1E33240FA5A1D5 /* Fonts */,
@@ -2058,6 +2101,9 @@
 				94B845AC13D8F637547A4AB0 /* FloeMarkdown */,
 				88998EEAC884C7033D8C41A8 /* FloeWorkspace */,
 				59DBBD5C35D97EBB383798F6 /* FloeExecution */,
+				2F0A9E4EFBAFF9A3D9916D67 /* FloeEnvironments */,
+				6B5C3F1CF8AF92A12DF3BDA8 /* FloePackages */,
+				99123BAA56849843BF717395 /* FloeMedia */,
 				E6A81719803BDDE4E13451F3 /* FloeGit */,
 				A0ED3E17200948E8978373F2 /* FloeLocalModels */,
 				923643E245C0A12DF9647622 /* FloeShellEngine */,
@@ -2232,6 +2278,7 @@
 				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
 				8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
+				5EEDF12D0F1E55466D74580A /* NodeTools in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
 				B64AAD73B34ED0DC62DB552E /* commandDictionary.plist in Resources */,
 				72F687318496A3451661FD31 /* dayjs.min.js in Resources */,
@@ -2354,8 +2401,10 @@
 				E2667D676B12957E2787BD59 /* FilesViewModel.swift in Sources */,
 				C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */,
 				A5C100B39388D49632E01BAF /* FloeCPythonBridge.m in Sources */,
+				26C37EDDEEC8B637A4BD6D40 /* FloeNodeBridge.mm in Sources */,
 				9BA3B9A6FA78531B9263C768 /* FloePDFExceptionGuard.mm in Sources */,
 				700E0E333832B9669753A226 /* FloePDFiumBridge.mm in Sources */,
+				C4D763B0620180A890A44E5C /* FloePlatformServices.swift in Sources */,
 				66A06EF450BB006193BCBA2F /* FloeShellBridge.mm in Sources */,
 				2A28A5D2E585FE372E6AA7E8 /* FloeShellCommands.swift in Sources */,
 				FBA76463B171719B586A0436 /* FloeShortcuts.swift in Sources */,
@@ -2370,6 +2419,7 @@
 				C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */,
 				2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */,
 				EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */,
+				29713E78A2F7479851CD325A /* IOSSystemNodeRuntime.swift in Sources */,
 				B3B23C39470308057F0D0761 /* IOSSystemShellBackend.swift in Sources */,
 				08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */,
 				4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */,
@@ -2384,6 +2434,9 @@
 				17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */,
 				C7051607961D03C6E8BA402D /* MailTools.swift in Sources */,
 				9CBCAF14A029D5BAF1B3ADCA /* MarkdownRendererView.swift in Sources */,
+				504258FC47B23F164C439211 /* MediaEditorView.swift in Sources */,
+				A68817564DEC432882795A34 /* MediaModelCatalogService.swift in Sources */,
+				70480066DC808EE0970F5AFB /* MediaPlayerView.swift in Sources */,
 				075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */,
 				1BDE99A924FBC27B74F7940A /* MemoryView.swift in Sources */,
 				BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */,
@@ -2589,6 +2642,7 @@
 					"\"Frameworks\"",
 					"\"Vendor\"",
 					"\"Vendor/LibArchive\"",
+					"\"Vendor/NodeMobile\"",
 					"\"Vendor/PDFium\"",
 					"\"Vendor/PythonExtensions\"",
 				);
@@ -2906,6 +2960,7 @@
 					"\"Frameworks\"",
 					"\"Vendor\"",
 					"\"Vendor/LibArchive\"",
+					"\"Vendor/NodeMobile\"",
 					"\"Vendor/PDFium\"",
 					"\"Vendor/PythonExtensions\"",
 				);
@@ -3091,6 +3146,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		2F0A9E4EFBAFF9A3D9916D67 /* FloeEnvironments */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeEnvironments;
+		};
 		42091B03632EF4B82CED17C8 /* FloeDocuments */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeDocuments;
@@ -3106,6 +3165,10 @@
 		5B057579F6C5787F1EF9F172 /* FloeSkills */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeSkills;
+		};
+		6B5C3F1CF8AF92A12DF3BDA8 /* FloePackages */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloePackages;
 		};
 		6D3CC5A66BC37258D46FDF3D /* FloeModels */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -3142,6 +3205,10 @@
 		94B845AC13D8F637547A4AB0 /* FloeMarkdown */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeMarkdown;
+		};
+		99123BAA56849843BF717395 /* FloeMedia */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeMedia;
 		};
 		A0ED3E17200948E8978373F2 /* FloeLocalModels */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -362,6 +362,9 @@ final class AppEnvironment: ObservableObject {
                 terminateWorkers: { id in
                     try await environmentExecutions.stopAndWait(environmentID: id)
                     try await FloeShellCommandRegistry.shared.waitForWorkers(environmentID: id)
+                    guard !FloeNodeHasActiveTask(id) else {
+                        throw FloeError.validationFailed("Node worker has not stopped; environment data was retained")
+                    }
                 }
             )
         )

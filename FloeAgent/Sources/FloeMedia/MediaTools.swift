@@ -215,10 +215,12 @@ public enum MediaToolRegistration {
         ToolCatalog.register(VideoExtractFramesTool.self)
         registry.register(VideoExtractFramesTool())
         #endif
-        ToolCatalog.register(VideoInterpolateTool.self)
-        registry.register(VideoInterpolateTool(processor: frameProcessing ?? UnavailableFrameProcessing()))
-        ToolCatalog.register(VideoSuperResolutionTool.self)
-        registry.register(VideoSuperResolutionTool(processor: frameProcessing ?? UnavailableFrameProcessing()))
+        if let frameProcessing {
+            ToolCatalog.register(VideoInterpolateTool.self)
+            registry.register(VideoInterpolateTool(processor: frameProcessing))
+            ToolCatalog.register(VideoSuperResolutionTool.self)
+            registry.register(VideoSuperResolutionTool(processor: frameProcessing))
+        }
         ToolCatalog.register(AudioInspectTool.self)
         registry.register(AudioInspectTool())
         ToolCatalog.register(AudioEditTool.self)

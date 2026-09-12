@@ -1,0 +1,11 @@
+✔ one host repeats workers, preserves cwd/env/stdin and bounds output (191.478083ms)
+✔ running cancellation and CPU timeout stop the worker before next job (327.648667ms)
+✔ pinned package manager entry points start on the shared host (917.092375ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1608.272208

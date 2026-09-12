@@ -55,3 +55,10 @@ FloeApp/Resources/python/
 # Bundled fonts: reproducible build inputs staged by scripts/fonts/fetch_fonts.py
 Vendor/Fonts/
 FloeApp/Resources/Fonts/Bundled/
+
+# Reproducible Node runtime and package-manager inputs (lock + host remain tracked).
+Vendor/NodeMobile/
+FloeApp/Resources/NodeTools/npm/
+FloeApp/Resources/NodeTools/pnpm/
+FloeApp/Resources/NodeTools/yarn/
+Qualification/NativeNode/FloeNodeSmoke.xcodeproj/

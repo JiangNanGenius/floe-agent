@@ -1,0 +1,26 @@
+name: FloeNodeSmoke
+options:
+  deploymentTarget:
+    iOS: '26.0'
+targets:
+  FloeNodeSmoke:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: ../../FloeApp/Execution/FloeNodeBridge.mm
+      - path: ../../FloeApp/Resources/NodeTools
+        name: NodeTools
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - framework: ../../Vendor/NodeMobile/NodeMobile.xcframework
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.node-smoke
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/../../FloeApp/Execution/FloeNodeBridge.h
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'

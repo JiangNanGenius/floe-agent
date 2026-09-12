@@ -6,8 +6,8 @@ import AVFoundation
 #endif
 
 #if canImport(AVFoundation)
-/// Export-oriented media tools. Every parameter is explicit; there are no
-/// default codecs, resolutions or bitrates.
+/// Export-oriented media tools with verified outputs. Unspecified video dimensions
+/// and frame rate follow the source; encoding defaults to H.264 and AAC.
 public actor MediaExportEngine {
     private let rootProvider: @Sendable () -> URL?
 
@@ -94,7 +94,7 @@ public struct VideoTranscodeTool: AgentTool {
 
     public static let name = "video.transcode"
     public static let toolDescription =
-        "Transcode or remux a video with explicit parameters: container (mp4, mov, m4v, caf, wav), optional codecs, dimensions, frame rate and bitrates. Set remuxOnly=true to copy streams without re-encoding when the container allows it. No parameters are defaulted; unsupported requests fail with the container/codec the device rejected."
+        "Transcode video to mp4, mov or m4v with optional codecs, dimensions, frame rate and bitrates. Defaults: source dimensions and frame rate, H.264 video and AAC audio. remuxOnly=true copies streams and rejects encoding parameters. Unsupported combinations fail before replacing the output."
     public static let parametersJSON = #"{"type":"object","properties":{"input":{"type":"string"},"output":{"type":"string"},"container":{"type":"string"},"videoCodec":{"type":"string"},"audioCodec":{"type":"string"},"width":{"type":"integer"},"height":{"type":"integer"},"frameRate":{"type":"number"},"videoBitrate":{"type":"integer"},"audioBitrate":{"type":"integer"},"remuxOnly":{"type":"boolean"}},"required":["input","output","container"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true

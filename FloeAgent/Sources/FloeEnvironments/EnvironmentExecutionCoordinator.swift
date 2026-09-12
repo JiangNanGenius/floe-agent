@@ -58,6 +58,7 @@ public actor EnvironmentExecutionCoordinator {
         context.environmentID = record.id
         context.environment = ToolEnvironment(id: record.id, writableLayerURL: writable,
             layerURLs: stack.layers.map(\.url), variables: [
+                "FLOE_ENVIRONMENT_ID": record.id,
                 "HOME": home.path, "TMPDIR": temporary.path,
                 "PATH": (binPaths.map(\.path) + ["/usr/bin", "/bin"]).joined(separator: ":"),
                 "PYTHONPATH": stack.pythonSearchPaths().map(\.path).joined(separator: ":"),

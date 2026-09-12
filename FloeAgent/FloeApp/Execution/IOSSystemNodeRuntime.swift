@@ -20,6 +20,7 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
                 var stdout: NSString?
                 var stderr: NSString?
                 var exitCode: Int32 = 0
+                var truncated: ObjCBool = false
                 let status = FloeNodeRun(
                     request.entryScript,
                     request.arguments,
@@ -28,9 +29,11 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
                     request.stdin.map { Data($0.utf8) },
                     request.timeout,
                     request.maxOutputBytes,
+                    { cancellation?.isCancelled == true },
                     &stdout,
                     &stderr,
-                    &exitCode
+                    &exitCode,
+                    &truncated
                 )
                 if cancellation?.isCancelled == true {
                     continuation.resume(returning: .cancelled)
@@ -41,13 +44,13 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
                 let err = (stderr as String?) ?? ""
                 switch status {
                 case .ok:
-                    continuation.resume(returning: .exited(code: exitCode, stdout: out, stderr: err, durationMs: durationMs))
+                    continuation.resume(returning: .exited(code: exitCode, stdout: out, stderr: err, durationMs: durationMs, truncated: truncated.boolValue))
                 case .timedOut:
                     continuation.resume(returning: .timedOut(partialStdout: out, partialStderr: err, durationMs: durationMs))
                 case .cancelled:
                     continuation.resume(returning: .cancelled)
                 default:
-                    continuation.resume(returning: .failed(message: "The Node runtime is unavailable"))
+                    continuation.resume(returning: .failed(message: err.isEmpty ? "The Node runtime is unavailable or still stopping" : err))
                 }
             }
         }

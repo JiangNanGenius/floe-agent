@@ -130,9 +130,10 @@ final class FloePlatformServices: @unchecked Sendable {
                 )
                 let outcome = await nodeRuntime.run(request, cancellation: context.cancellation)
                 switch outcome {
-                case .exited(let code, let out, let err, _):
+                case .exited(let code, let out, let err, _, let truncated):
                     if !out.isEmpty { FloeShellWrite(stdout, out.hasSuffix("\n") ? out : out + "\n") }
                     if !err.isEmpty { FloeShellWrite(stderr, err.hasSuffix("\n") ? err : err + "\n") }
+                    if truncated { FloeShellWrite(stderr, "[Node output truncated]\n") }
                     return code
                 case .timedOut(let out, let err, _):
                     if !out.isEmpty { FloeShellWrite(stdout, out) }

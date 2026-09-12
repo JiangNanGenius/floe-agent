@@ -1,5 +1,6 @@
 import Foundation
 import FloeCore
+import FloeTools
 
 /// Node.js runtime contract. The app injects a nodejs-mobile-backed
 /// implementation; the shell routes `node`, `npm`, `npx`, `pnpm` and `yarn`
@@ -34,7 +35,7 @@ public struct NodeRunRequest: Sendable {
 }
 
 public enum NodeRunOutcome: Sendable, Equatable {
-    case exited(code: Int32, stdout: String, stderr: String, durationMs: Int)
+    case exited(code: Int32, stdout: String, stderr: String, durationMs: Int, truncated: Bool = false)
     case timedOut(partialStdout: String, partialStderr: String, durationMs: Int)
     case cancelled
     case failed(message: String)
@@ -60,8 +61,8 @@ public struct UnavailableNodeRuntime: NodeRuntime {
 public enum NodeBundledTool: String, Sendable, CaseIterable {
     case npm = "npm/bin/npm-cli.js"
     case npx = "npm/bin/npx-cli.js"
-    case pnpm = "pnpm/pnpm.cjs"
-    case pnpx = "pnpm/pnpx.cjs"
+    case pnpm = "pnpm/bin/pnpm.cjs"
+    case pnpx = "pnpm/bin/pnpx.cjs"
     case yarn = "yarn/bin/yarn.js"
 
     public static func tool(for command: String) -> NodeBundledTool? {

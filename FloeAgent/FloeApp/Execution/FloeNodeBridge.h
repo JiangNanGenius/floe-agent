@@ -10,6 +10,9 @@
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef NS_ENUM(NSInteger, FloeNodeBridgeStatus) {
     FloeNodeBridgeStatusOK = 0,
@@ -28,15 +31,21 @@ FloeNodeBridgeStatus FloeNodeRun(
     NSData * _Nullable stdinData,
     NSTimeInterval timeout,
     NSUInteger maxOutputBytes,
+    BOOL (^ _Nullable shouldCancel)(void),
     NSString * _Nullable * _Nullable outStdout,
     NSString * _Nullable * _Nullable outStderr,
-    int32_t *outExitCode
+    int32_t *outExitCode,
+    BOOL *outTruncated
 );
 
 BOOL FloeNodeRuntimeAvailable(void);
+BOOL FloeNodeHasActiveTask(NSString *environmentID);
 
 /// Absolute path of the bundled tool entry point for a command name
 /// (`npm`, `npx`, `pnpm`, `pnpx`, `yarn`), or nil.
 NSString * _Nullable FloeNodeBundledToolPath(NSString *command);
 
+#ifdef __cplusplus
+}
+#endif
 NS_ASSUME_NONNULL_END

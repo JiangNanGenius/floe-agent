@@ -30,6 +30,13 @@ Branch: `codex/floe-1-7-integration-20260912`.
 - Unconnected frame enhancements now fail instead of returning deferred success;
   injected frame processors are routed through the tool registry.
 
+- `aea3fb6`: first environment/media integration checkpoint, pushed. CI run
+  `34695828782`: Linux passed; both App jobs stopped at stale generated Xcode project.
+  The next checkpoint regenerates the project and adds the pinned Node framework.
+- Native Node host: eight iOS Simulator cases pass, plus three host suites including
+  the pinned npm/pnpm/yarn entry points. See `FLOE_1_7_NODE_RUNTIME.md` and evidence.
+  Check mode also preserved lock bytes and modification time.
+
 ## Remaining acceptance gates
 
 - Complete App build and native shell runtime tests; previous minimal App reproduced
@@ -37,7 +44,8 @@ Branch: `codex/floe-1-7-integration-20260912`.
   interactive cancellation and complete runtime scenarios remain open.
 - Durable background job context, Python/WASM installer routing, scoped native worker
   shutdown, environment migrations/templates/promotion/quota durability.
-- Node singleton host, native packaging, bounded IO and cancellation.
+- Node full-App linkage, interactive shell input forwarding, cross-runtime cwd,
+  package installation compatibility and physical-device profiling.
 - End-to-end signed apt repository, transactional installation, compatible package pool.
 - Real media export/enhancement, model resources/runners, and per-capability device evidence.
 - Lightweight workbench, file/attachment navigation, persistent edits and shared jobs.

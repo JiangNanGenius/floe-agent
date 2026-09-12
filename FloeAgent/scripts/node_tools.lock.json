@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 2,
+  "runtime": {
+    "name": "nodejs-mobile",
+    "version": "18.20.4",
+    "url": "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/v18.20.4/nodejs-mobile-v18.20.4-ios.zip",
+    "sha256": "8c5ca3a0d1e38de7f182a5642593e82593b820efd375a14b3ecafc4bcfee620e",
+    "abi": 108,
+    "provenance": "Official GitHub release asset fetched over HTTPS; publisher has no separate digest. This reviewed digest pins subsequent builds.",
+    "license": {
+      "source": "https://raw.githubusercontent.com/nodejs-mobile/nodejs-mobile/v18.20.4/LICENSE",
+      "file": "NodeMobile-LICENSE.txt",
+      "sha256": "66233b87054d6bca9b0c2f23b027bb2caf1ebd961a6f981616d098dade33af34"
+    }
+  },
+  "tools": [
+    {
+      "name": "npm",
+      "version": "10.9.2",
+      "url": "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz",
+      "sha256": "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4",
+      "integrity": "sha512-iriPEPIkoMYUy3F6f3wwSZAU93E0Eg6cHwIR6jzzOXWSy+SD/rOODEs74cVONHKSx2obXtuUoyidVEhISrisgQ==",
+      "entry": "bin/npm-cli.js"
+    },
+    {
+      "name": "pnpm",
+      "version": "9.15.9",
+      "url": "https://registry.npmjs.org/pnpm/-/pnpm-9.15.9.tgz",
+      "sha256": "cf86a7ad764406395d4286a6d09d730711720acc6d93e9dce9ac7ac4dc4a28a7",
+      "integrity": "sha512-aARhQYk8ZvrQHAeSMRKOmvuJ74fiaR1p5NQO7iKJiClf1GghgbrlW1hBjDolO95lpQXsfF+UA+zlzDzTfc8lMQ==",
+      "entry": "bin/pnpm.cjs"
+    },
+    {
+      "name": "yarn",
+      "version": "1.22.22",
+      "url": "https://registry.npmjs.org/yarn/-/yarn-1.22.22.tgz",
+      "sha256": "c17d3797fb9a9115bf375e31bfd30058cac6bc9c3b8807a3d8cb2094794b51ca",
+      "integrity": "sha512-prL3kGtyG7o9Z9Sv8IPfBNrWTDmXB4Qbes8A9rEzt6wkJV8mUvoirjU0Mp3GGAU06Y0XQyA3/2/RQFVuK7MTfg==",
+      "entry": "bin/yarn.js"
+    }
+  ]
+}

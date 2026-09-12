@@ -103,3 +103,7 @@ echo "Installed CPython 3.13-b10 runtime in Vendor/ and FloeApp/Resources/python
 
 # The local terminal needs the POSIX interpreter in addition to ios_system.
 bash "$(dirname "$0")/build_dash_ios.sh"
+
+# The app links the same reviewed Node runtime and package managers in every build.
+bash "$(dirname "$0")/pin_node_tools.sh" --check || bash "$(dirname "$0")/pin_node_tools.sh"
+bash "$(dirname "$0")/pin_node_tools.sh" --check
