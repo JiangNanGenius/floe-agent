@@ -103,6 +103,7 @@ public struct MindMapNode: Codable, Hashable, Identifiable, Sendable {
     public var direction: Int?
     public var branchColor: String?
     public var hyperLink: String?
+    public var isAIGenerated: Bool?
     public var source: NoteSourceReference?
     public init(id: UUID = UUID(), parentID: UUID? = nil, title: String, note: String = "", order: Int = 0,
                 isCollapsed: Bool = false, color: String? = nil, imageResourceID: UUID? = nil,

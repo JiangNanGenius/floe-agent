@@ -134,6 +134,8 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/PlatformQualificationDiagnostics" --timeout 1200 -- swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
+      - name: Qualify durable Notes storage and editable archives
+        run: python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/NotesQualificationDiagnostics" --timeout 1200 -- swift test --package-path Qualification/Notes --scratch-path .build --force-resolved-versions --jobs 4
       - name: Upload platform qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -142,6 +144,7 @@ jobs:
           path: |
             FloeAgent/platform-qualification.log
             ${{ runner.temp }}/PlatformQualificationDiagnostics
+            ${{ runner.temp }}/NotesQualificationDiagnostics
 
 
       - name: Install Xcode Metal toolchain

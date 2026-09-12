@@ -2,10 +2,39 @@
 import XCTest
 import UIKit
 import PencilKit
+import SwiftUI
+import WebKit
 import FloeNotes
 @testable import FloeNotesNativeQualification
 
 @MainActor final class NativeNotesTests: XCTestCase {
+    func testBundledMindMapRendersDocumentTextWithoutInterpretingMarkup() async throws {
+        var document = NoteDocument(kind: .mindMap, title: "导图")
+        let title = "<img src=x> 经济学 English"
+        document.nodes[0].title = title
+        let host = UIHostingController(rootView: NoteMindMapView(document: document, onEdit: { _, _ in document }, onHistory: { _ in }, onError: { XCTFail($0) }))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKey() }
+        host.view.layoutIfNeeded()
+        func find(_ view: UIView) -> WKWebView? {
+            if let web = view as? WKWebView { return web }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if let web = find(host.view), let text = try? await web.callAsyncJavaScript("return document.querySelector('me-tpc .text')?.textContent", arguments: [:], in: nil, contentWorld: .page) as? String,
+               text == title {
+                let images = try await web.callAsyncJavaScript("return document.querySelectorAll('me-tpc img').length", arguments: [:], in: nil, contentWorld: .page) as? Int
+                XCTAssertEqual(images, 0)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("Bundled map did not render the native document")
+    }
     func testLongBilingualAnswerPaginatesWithoutLosingEditableText() throws {
         let answer = String(repeating: "普通话与 English learning，保留全部解释。\n", count: 400)
         let pages = NotesTextLayout.pages(text: answer, source: nil)

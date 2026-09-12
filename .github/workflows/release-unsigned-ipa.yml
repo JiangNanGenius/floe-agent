@@ -136,19 +136,20 @@ jobs:
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/javascript-engine" -- swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/javascript-tool" -- swift test --filter 'FloeExecutionTests.JavaScriptExecutionToolTests'
 
+      - name: Qualify environment, package, media and Node release modules
+        run: |
+          python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/platform" --timeout 1200 -- swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
+          python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes" --timeout 1200 -- swift test --package-path Qualification/Notes --scratch-path .build --force-resolved-versions --jobs 4
+          grep -E 'Test run with [1-9][0-9]* tests? .*passed' platform-qualification.log
+          node --test scripts/tests/node_host.test.cjs
+
       - name: Preserve Swift regression output and stall diagnostics
-        if: always() && steps.verified_ci.outputs.run_id == ''
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: swift-regression-diagnostics-${{ github.run_id }}
           path: ${{ runner.temp }}/SwiftTestDiagnostics
           if-no-files-found: ignore
-
-      - name: Qualify environment, package, media and Node release modules
-        run: |
-          swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
-          grep -E 'Test run with [1-9][0-9]* tests? .*passed' platform-qualification.log
-          node --test scripts/tests/node_host.test.cjs
 
       - name: Build iOS simulator release gate
         run: |

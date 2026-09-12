@@ -240,7 +240,8 @@ struct NotesDocumentEditor: View {
             for (offset, additional) in pages.dropFirst().enumerated() { edits.append(.insertPage(additional, at: index + offset + 1)) }
             session.apply(edits, title: "保存 AI 回答", documentID: document.id)
         } else if insert, document.kind == .mindMap, let root = document.nodes.first(where: { $0.parentID == nil }) {
-            let node = MindMapNode(parentID: root.id, title: "AI 整理", note: text, order: document.nodes.filter { $0.parentID == root.id }.count, source: source)
+            var node = MindMapNode(parentID: root.id, title: "AI 整理", note: text, order: document.nodes.filter { $0.parentID == root.id }.count, source: source)
+            node.isAIGenerated = true
             session.apply([.upsertNode(node)], title: "保存 AI 回答", documentID: document.id)
         } else {
             var value = NoteDocument(notebookID: document.notebookID, title: "\(document.title) · 整理")

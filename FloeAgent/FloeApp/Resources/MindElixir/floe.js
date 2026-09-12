@@ -28,6 +28,7 @@
       if (value.hyperLink) node.hyperLink = value.hyperLink;
       if (value.style?.background) node.color = value.style.background;
       // Metadata is supplied only by the native model; never HTML from a pasted node.
+      if (value.metadata?.isAIGenerated !== undefined) node.isAIGenerated = value.metadata.isAIGenerated;
       if (value.metadata?.source) node.source = value.metadata.source;
       if (value.metadata?.imageResourceID) node.imageResourceID = value.metadata.imageResourceID;
       nodes.push(node);
@@ -43,7 +44,7 @@
     const nodes = payload.document.nodes;
     const lookup = new Map(nodes.map(n => [n.id, {
       id:n.id, topic:n.title, note:n.note, expanded:!n.isCollapsed, children:[],
-      style:n.style || (n.color ? {background:n.color} : {}), tags:n.tags, icons:n.icons, direction:n.direction, branchColor:n.branchColor, hyperLink:n.hyperLink, metadata:{source:n.source, imageResourceID:n.imageResourceID}
+      style:n.style || (n.color ? {background:n.color} : {}), tags:n.tags, icons:n.icons, direction:n.direction, branchColor:n.branchColor, hyperLink:n.hyperLink, metadata:{source:n.source, imageResourceID:n.imageResourceID, isAIGenerated:n.isAIGenerated}
     }]));
     let root;
     for (const node of [...nodes].sort((a,b) => a.order-b.order)) {

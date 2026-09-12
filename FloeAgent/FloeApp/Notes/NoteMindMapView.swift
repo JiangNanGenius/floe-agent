@@ -54,8 +54,12 @@ struct NoteMindMapView: UIViewRepresentable {
                 let data = try JSONEncoder().encode(document)
                 let object = try JSONSerialization.jsonObject(with: data)
                 lastRender = signature
-                web.callAsyncJavaScript("window.floeRender(payload)", arguments: ["payload": ["document": object, "dark": parent.colorScheme == .dark]], in: nil, contentWorld: .page) { [weak self] result in
-                    if case .failure(let error) = result { self?.parent.onError(error.localizedDescription) }
+                let payload: [String: Any] = ["document": object, "dark": parent.colorScheme == .dark]
+                Task { @MainActor [weak self, weak web] in
+                    guard let web else { return }
+                    do {
+                        _ = try await web.callAsyncJavaScript("window.floeRender(payload)", arguments: ["payload": payload], in: nil, contentWorld: .page)
+                    } catch { self?.parent.onError(error.localizedDescription) }
                 }
             } catch { parent.onError(error.localizedDescription) }
         }

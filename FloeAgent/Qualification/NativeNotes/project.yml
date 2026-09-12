@@ -34,6 +34,9 @@ targets:
       - path: ../../FloeApp/Resources/Whisper
         type: folder
         buildPhase: resources
+      - path: ../../FloeApp/Resources/MindElixir
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: FloeAgent
         product: FloeCore

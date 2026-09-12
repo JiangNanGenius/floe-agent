@@ -100,7 +100,19 @@ final class AppEnvironment: ObservableObject {
     /// and the apt capability layer.
     let managedPythonInstaller: ManagedPythonInstallService?
     /// apt/pkg capability catalog and reviewed install routing.
-    let capabilityInstaller: CapabilityInstaller
+    // SkillsCenter needs the fully initialized environment. Resolve this
+    // dependency only when tool registration first asks for the installer.
+    lazy var capabilityInstaller = CapabilityInstaller(
+        catalog: CapabilityCatalog.bundled(),
+        pythonInstaller: managedPythonInstaller,
+        http: HTTPRequestService(),
+        packagesRoot: capabilityRoot,
+        skillInstaller: SkillCenterCapabilityAdapter(center: skillsCenter),
+        fontInstaller: FontStoreCapabilityAdapter(store: fontStore),
+        modelInstaller: nil,
+        wasmStore: wasmCapabilities
+    )
+    private let capabilityRoot: URL
     private let wasmCapabilities: SignedWasmCapabilityStore?
     /// Long-lived visible WebKit session shared by UI and browser tools.
     let browserCenter: BrowserSessionCenter
@@ -326,18 +338,10 @@ final class AppEnvironment: ObservableObject {
         self.managedPythonInstaller = managedPython
         let capabilityRoot = ((try? FloeArtifactStore.root()) ?? URL(fileURLWithPath: NSTemporaryDirectory()))
             .appendingPathComponent("Packages", isDirectory: true)
+        self.capabilityRoot = capabilityRoot
         let wasmCapabilities = BundledWasmCapabilities.load(root: capabilityRoot)
         self.wasmCapabilities = wasmCapabilities
-        self.capabilityInstaller = CapabilityInstaller(
-            catalog: CapabilityCatalog.bundled(),
-            pythonInstaller: managedPython,
-            http: HTTPRequestService(),
-            packagesRoot: capabilityRoot,
-            skillInstaller: SkillCenterCapabilityAdapter(center: skillsCenter),
-            fontInstaller: FontStoreCapabilityAdapter(store: fontStore),
-            modelInstaller: nil,
-            wasmStore: wasmCapabilities
-        )
+
 
         // Container substrate: layered environments, apt/dpkg and media
         // services. Configured before tool registration so the shell command
