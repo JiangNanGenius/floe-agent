@@ -36,13 +36,7 @@ import FloeNotes
                 sourcePDF = nil; sourcePage = nil
                 background = (try await NoteFileImporter.background(page: page, store: store)).flatMap { UIImage(data: $0) }
             }
-            var images: [UUID: UIImage] = [:]
-            for id in Set(page.elements.compactMap(\.resourceID)) {
-                let url = try await store.resourceURL(id)
-                let data = try await Task.detached { try Data(contentsOf: url) }.value
-                guard let image = UIImage(data: data) else { throw NoteError.resourceUnavailable }
-                images[id] = image
-            }
+            let images = try await NoteFileImporter.elementImages(page: page, store: store).compactMapValues { UIImage(data: $0) }
             let drawing: PKDrawing?
             if let id = page.drawingResourceID {
                 let url = try await store.resourceURL(id)

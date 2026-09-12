@@ -8,9 +8,30 @@ import UniformTypeIdentifiers
 import FloeNotes
 
 enum NoteFileImporter {
+    static func elementImages(page: NotePage, store: NotesStore) async throws -> [UUID: Data] {
+        let ids = Set(page.elements.filter { $0.kind == .image }.compactMap(\.resourceID))
+        // Share a 16-megapixel decoded-image budget across the current page.
+        let maximum = min(2048, max(128, Int(sqrt(16_777_216 / Double(max(1, ids.count))))))
+        var result: [UUID: Data] = [:]
+        for id in ids {
+            try Task.checkCancellation()
+            let url = try await store.resourceURL(id)
+            result[id] = try await Task.detached(priority: .userInitiated) {
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: maximum] as CFDictionary),
+                      let data = UIImage(cgImage: image).pngData() else { throw NoteError.resourceUnavailable }
+                return data
+            }.value
+        }
+        return result
+    }
     static func importFile(_ url: URL, notebookID: UUID?, store: NotesStore) async throws -> NoteDocument {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
+        if url.pathExtension.lowercased() == "floenote" {
+            return try await NotesArchive.importDocument(from: url, notebookID: notebookID, store: store)
+        }
         let type = try url.resourceValues(forKeys: [.contentTypeKey]).contentType
         let officeExtensions = ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"]
         if officeExtensions.contains(url.pathExtension.lowercased()) {

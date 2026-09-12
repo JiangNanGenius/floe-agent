@@ -2,11 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>org.floeagent.ios.refresh</string>
@@ -35,6 +30,11 @@
 	<string>$(FLOE_GITHUB_OAUTH_CLIENT_ID)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.</string>
 	<key>NSBonjourServices</key>
@@ -87,30 +87,53 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>UTExportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>org.floeagent.canvas</string>
-			<key>UTTypeDescription</key>
-			<string>Floe Canvas</string>
-			<key>UTTypeConformsTo</key>
-			<array><string>public.data</string></array>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array><string>floecanvas</string></array>
-				<key>public.mime-type</key>
-				<string>application/vnd.floe.canvas</string>
-			</dict>
-		</dict>
-	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Floe Note</string>
+			<key>UTTypeIdentifier</key>
+			<string>org.floeagent.note</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>floenote</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.floe.note</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Floe Canvas</string>
+			<key>UTTypeIdentifier</key>
+			<string>org.floeagent.canvas</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>floecanvas</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.floe.canvas</string>
+			</dict>
+		</dict>
 	</array>
 </dict>
 </plist>

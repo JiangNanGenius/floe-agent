@@ -99,4 +99,39 @@ struct NotesStoreTests {
         #expect(try await store.search("%").map(\.id) == [value.id])
         #expect(try await store.search("' OR 1=1 --").isEmpty)
     }
+
+    @Test func editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root.appendingPathComponent("source"))
+        let resourceFile = root.appendingPathComponent("ink.drawing")
+        let bytes = Data("unique opaque PencilKit fixture 987654321".utf8)
+        try bytes.write(to: resourceFile)
+        let resource = try await store.importResource(from: resourceFile, mediaType: "application/test")
+        var value = NoteDocument(title: "课件 English")
+        value.pages[0].drawingResourceID = resource
+        value.pages[0].elements = [.init(text: "批注", source: .init(documentID: value.id, revision: 1, pageID: value.pages[0].id), isAIGenerated: true)]
+        value = try await store.create(value)
+        let archive = root.appendingPathComponent("document.floenote")
+        try await NotesArchive.export(document: value, store: store, to: archive)
+        let destination = try NotesStore(root: root.appendingPathComponent("destination"))
+        let draft = try await NotesArchive.importDocument(from: archive, notebookID: nil, store: destination)
+        let imported = try await destination.create(draft)
+        #expect(imported.id != value.id)
+        #expect(imported.pages[0].elements[0].source?.documentID == imported.id)
+        #expect(imported.pages[0].elements[0].isAIGenerated)
+        let restoredResource = try #require(imported.pages[0].drawingResourceID)
+        let restoredURL = try await destination.resourceURL(restoredResource)
+        #expect(try Data(contentsOf: restoredURL) == bytes)
+        #expect(try await destination.assistantConversation(documentID: imported.id) == nil)
+        var damaged = try Data(contentsOf: archive)
+        let range = try #require(damaged.range(of: bytes))
+        damaged[range.lowerBound] ^= 1
+        let bad = root.appendingPathComponent("damaged.floenote")
+        try damaged.write(to: bad)
+        await #expect(throws: (any Error).self) {
+            try await NotesArchive.importDocument(from: bad, notebookID: nil, store: destination)
+        }
+        #expect(try await destination.documents().count == 1)
+        #expect(try await store.document(value.id) == value)
+    }
 }

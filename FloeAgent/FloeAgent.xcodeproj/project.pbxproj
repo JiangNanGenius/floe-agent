@@ -72,7 +72,6 @@
 		1BFB86E5498B5928EA67A105 /* pandas__libs_tslibs_conversion.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5E1C6CDF2484A37A543FEFD5 /* pandas__libs_tslibs_conversion.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1D722ACF9ED7E3EE1478A17C /* pandas__libs_sas.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */; };
 		1DAE6DE83A3980067040AF3F /* FloeEnvironments in Frameworks */ = {isa = PBXBuildFile; productRef = 2F0A9E4EFBAFF9A3D9916D67 /* FloeEnvironments */; };
-		1DE2F63C6F188B4A9203E13F /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = 91B5DE5AC386AC1BB46ACF6D /* LICENSE */; };
 		1DEB2C1ECE52FB4594BAB549 /* unicodedata.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1E05D8457E28FCCBFB3AEC55 /* termios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3C2891331FDB42F816478E56 /* termios.xcframework */; };
 		1E91E2AB9058241938BF0D6A /* _dbm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A0E5089889969429F874CF6 /* _dbm.xcframework */; };
@@ -114,6 +113,7 @@
 		2FFE13E6D27462B4E600BCFA /* ConversationSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37ADB29366F2D423D0507E05 /* ConversationSearchView.swift */; };
 		30EECC8CBB688887DC731E91 /* pandas__libs_pandas_datetime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */; };
 		30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FBC9F374C911EA91D944FB0 /* MoreView.swift */; };
+		30FD0FEA4A7230A40A214672 /* NoteElementInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A9CCB047EB72AD2922ED38 /* NoteElementInspector.swift */; };
 		311AEDE3D09FC84B37113EAD /* frozenlist__frozenlist.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 45BFF6DBD374D777C39302B6 /* frozenlist__frozenlist.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		313555104A755FCB1D5ABD01 /* dashA.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 703BE45E358D57D074DC5538 /* dashA.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		31A880D7E77E4D90E1CA89EF /* WorkspaceCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */; };
@@ -964,6 +964,7 @@
 		8351C46DA1F3C3E41CF3739B /* WhisperModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelStore.swift; sourceTree = "<group>"; };
 		83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideLauncherView.swift; sourceTree = "<group>"; };
 		8496EE48316FEA0DF993901A /* CapabilityStoreAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityStoreAdapters.swift; sourceTree = "<group>"; };
+		84A9CCB047EB72AD2922ED38 /* NoteElementInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteElementInspector.swift; sourceTree = "<group>"; };
 		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
 		851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_algos.xcframework; path = Vendor/PythonExtensions/pandas__libs_algos.xcframework; sourceTree = "<group>"; };
 		855EFD5014DCA004E8103D32 /* _sha3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sha3.xcframework; path = Vendor/PythonExtensions/_sha3.xcframework; sourceTree = "<group>"; };
@@ -989,7 +990,6 @@
 		8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDocumentOperations.swift; sourceTree = "<group>"; };
 		913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timezones.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timezones.xcframework; sourceTree = "<group>"; };
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		91B5DE5AC386AC1BB46ACF6D /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		926B95CD92D851FFE3BB0DFE /* python */ = {isa = PBXFileReference; lastKnownFileType = folder; name = python; path = FloeApp/Resources/python; sourceTree = SOURCE_ROOT; };
 		931809561A553D3D4D78ABA6 /* NotesOfficeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesOfficeView.swift; sourceTree = "<group>"; };
 		93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailConnectorTests.swift; sourceTree = "<group>"; };
@@ -1380,14 +1380,6 @@
 			path = Platform;
 			sourceTree = "<group>";
 		};
-		0999BEC8DA4337DA1EE5501D /* MindElixir */ = {
-			isa = PBXGroup;
-			children = (
-				91B5DE5AC386AC1BB46ACF6D /* LICENSE */,
-			);
-			path = MindElixir;
-			sourceTree = "<group>";
-		};
 		0A6ACED6DF1FFB1737C49427 /* FloeWidgets */ = {
 			isa = PBXGroup;
 			children = (
@@ -1773,7 +1765,6 @@
 		81D9D572716013B7E9483B58 /* ThirdParty */ = {
 			isa = PBXGroup;
 			children = (
-				0999BEC8DA4337DA1EE5501D /* MindElixir */,
 				5DBB570906C287634081D825 /* RoyalVNCKit */,
 			);
 			path = ThirdParty;
@@ -1926,6 +1917,7 @@
 		A375B99644CCF9CEA924D972 /* Notes */ = {
 			isa = PBXGroup;
 			children = (
+				84A9CCB047EB72AD2922ED38 /* NoteElementInspector.swift */,
 				12C1ABF02CBBFDC44F9B0577 /* NoteFileImporter.swift */,
 				AF9D25DEB0932DA8E5EDDB52 /* NoteMindMapView.swift */,
 				49CB9C8F1ACA4A5878C21531 /* NotePageRenderer.swift */,
@@ -2382,7 +2374,6 @@
 				2A2BD3D420AE0BDD0039FA1F /* Capabilities in Resources */,
 				6429C2AE431431EA55322D1E /* DocumentConversion in Resources */,
 				F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */,
-				1DE2F63C6F188B4A9203E13F /* LICENSE in Resources */,
 				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
 				8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
@@ -2558,6 +2549,7 @@
 				30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */,
 				42924454C7187541E75FE29D /* MoreViewModel.swift in Sources */,
 				2EB4F0026F6D3C7036234EB2 /* NetworkStatusMonitor.swift in Sources */,
+				30FD0FEA4A7230A40A214672 /* NoteElementInspector.swift in Sources */,
 				D235FC7B7E50E4FD24FA01A6 /* NoteFileImporter.swift in Sources */,
 				C41C0603DDC569D6809A2469 /* NoteMindMapView.swift in Sources */,
 				0F3A1DCCD2C006D6704EB16E /* NotePageRenderer.swift in Sources */,

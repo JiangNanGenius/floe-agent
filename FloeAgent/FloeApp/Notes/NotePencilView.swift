@@ -16,6 +16,7 @@ struct NotePencilView: UIViewRepresentable {
     var captureSelectionRequest: UUID? = nil
     var regionSelection = false
     var onSelectionCapture: (CGRect, Data) -> Void = { _, _ in }
+    var elementImages: [UUID: Data] = [:]
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
     func makeUIView(context: Context) -> PKCanvasView {
@@ -94,12 +95,13 @@ struct NotePencilView: UIViewRepresentable {
             coordinator.loadedDrawing = drawing
             coordinator.isApplying = false
         }
-        if coordinator.loadedBackground != background || coordinator.elements != page.elements || coordinator.paper != page.paper {
+        if coordinator.loadedBackground != background || coordinator.elements != page.elements || coordinator.paper != page.paper || coordinator.loadedImages != elementImages {
+            coordinator.loadedImages = elementImages
             coordinator.loadedBackground = background; coordinator.elements = page.elements; coordinator.paper = page.paper
             let size = CGSize(width: page.width, height: page.height)
             let format = UIGraphicsImageRendererFormat(); format.scale = min(2, 2048 / max(size.width, size.height))
             coordinator.backdrop?.image = UIGraphicsImageRenderer(size: size, format: format).image { context in
-                NotePageRenderer.draw(page, background: background.flatMap { UIImage(data: $0) })
+                NotePageRenderer.draw(page, background: background.flatMap { UIImage(data: $0) }, images: elementImages.compactMapValues { UIImage(data: $0) })
             }
         }
         if !coordinator.didFit, canvas.bounds.width > 0 {
@@ -112,6 +114,7 @@ struct NotePencilView: UIViewRepresentable {
         weak var backdrop: UIImageView?
         var loadedDrawing: Data?
         var loadedBackground: Data?
+        var loadedImages: [UUID: Data] = [:]
         var elements: [NoteElement] = []
         var paper: NotePage.Paper?
         var isApplying = false

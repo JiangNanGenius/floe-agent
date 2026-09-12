@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import SwiftUI
 import PencilKit
+import UniformTypeIdentifiers
 import FloeNotes
 
 struct NotesDocumentEditor: View {
@@ -10,6 +11,9 @@ struct NotesDocumentEditor: View {
     @State private var pageID: UUID?
     @State private var drawing: Data?
     @State private var background: Data?
+    @State private var elementImages: [UUID: Data] = [:]
+    @State private var importingImage = false
+    @State private var inspectingElement: NoteElement?
     @State private var loadedPageID: UUID?
     @State private var tool: InkTool = .pen
     @State private var showPages = false
@@ -84,7 +88,7 @@ struct NotesDocumentEditor: View {
                     }, deleteSelectionRequest: deleteSelectionRequest,
                                    onSelectionCount: { selectedStrokeCount = $0 },
                                    captureSelectionRequest: captureSelectionRequest, regionSelection: tool == .region,
-                                   onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) })
+                                   onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) }, elementImages: elementImages)
                         .id(page.id)
                         .onChange(of: page.id) { _, _ in
                             selectedStrokeCount = 0
@@ -107,9 +111,34 @@ struct NotesDocumentEditor: View {
                     ink = data
                 } else { ink = nil }
                 let image = try await NoteFileImporter.background(page: page, store: store)
+                let images = try await NoteFileImporter.elementImages(page: page, store: store)
                 try Task.checkCancellation()
-                drawing = ink; background = image; loadedPageID = page.id
+                drawing = ink; background = image; elementImages = images; loadedPageID = page.id
             } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
+        }
+        .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
+            guard let page, let store = session.store else { return }
+            Task {
+                do {
+                    let imported = try await NoteFileImporter.importFile(result.get(), notebookID: nil, store: store)
+                    guard let image = imported.pages.first, let resource = image.backgroundResourceID else { throw NoteError.resourceUnavailable }
+                    let width = min(page.width * 0.6, image.width)
+                    let height = min(page.height * 0.6, width * image.height / image.width)
+                    let element = NoteElement(kind: .image, frame: .init(x: 40, y: 60, width: width, height: height), resourceID: resource)
+                    session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入图片", documentID: document.id)
+                } catch { session.errorMessage = error.localizedDescription }
+            }
+        }
+        .sheet(item: $inspectingElement) { element in
+            if let page {
+                NoteElementInspector(element: element, page: page, save: { updated in
+                    session.apply([.upsertElement(pageID: page.id, element: updated)], title: "编辑页面内容", documentID: document.id)
+                    inspectingElement = nil
+                }, delete: {
+                    session.apply([.deleteElements(pageID: page.id, ids: [element.id])], title: "删除页面内容", documentID: document.id)
+                    inspectingElement = nil
+                })
+            }
         }
         .sheet(item: $exportArtifact) { artifact in
             NotesShareSheet(url: artifact.url)
@@ -160,13 +189,21 @@ struct NotesDocumentEditor: View {
         }
     }
 
-    private func exportDocument() {
+    private func exportDocument(editable: Bool = false) {
         guard let store = session.store, exportTask == nil else { return }
         let snapshot = document
         exportTask = Task {
             defer { exportTask = nil; exportProgress = "" }
             do {
-                if snapshot.kind == .notebook {
+                if editable {
+                    exportProgress = "正在打包可编辑手记…"
+                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-export-\(UUID().uuidString)", isDirectory: true)
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    let url = folder.appendingPathComponent(NotesExport.fileName(snapshot.title)).appendingPathExtension("floenote")
+                    do { try await NotesArchive.export(document: snapshot, store: store, to: url) }
+                    catch { try? FileManager.default.removeItem(at: folder); throw error }
+                    exportArtifact = NotesExport.Artifact(url: url)
+                } else if snapshot.kind == .notebook {
                     exportArtifact = try await NotesExport.pdf(document: snapshot, store: store) { page, total in
                         exportProgress = "正在导出 \(page) / \(total) 页"
                     }
@@ -218,12 +255,17 @@ struct NotesDocumentEditor: View {
             Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
                 .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                 .disabled(!session.canRedo || session.pendingWrites > 0)
-            if document.kind != .office {
+            Group {
                 if exportTask != nil {
                     Button("取消导出", systemImage: "xmark.circle") { exportTask?.cancel() }
                         .help(exportProgress)
                 } else {
-                    Button("导出", systemImage: "square.and.arrow.up") { exportDocument() }
+                    Menu {
+                        Button("可编辑手记归档") { exportDocument(editable: true) }
+                        if document.kind != .office {
+                            Button(document.kind == .notebook ? "PDF" : "Markdown 大纲") { exportDocument() }
+                        }
+                    } label: { Label("导出", systemImage: "square.and.arrow.up") }
                         .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                         .disabled(session.pendingWrites > 0 || session.unsavedDocumentIDs.contains(document.id))
                 }
@@ -258,6 +300,16 @@ struct NotesDocumentEditor: View {
                 }
                 Button("文字", systemImage: "textformat") { editedElement = nil; textDraft = ""; showText = true }.frame(minHeight: 44)
                 Menu {
+                    Button("图片", systemImage: "photo") { importingImage = true }
+                    ForEach([NoteElement.Kind.rectangle, .ellipse, .line, .arrow], id: \.self) { kind in
+                        Button(kind == .rectangle ? "矩形" : kind == .ellipse ? "椭圆" : kind == .line ? "直线" : "箭头") {
+                            guard let page else { return }
+                            let element = NoteElement(kind: kind, frame: .init(x: 60, y: 80, width: min(240, page.width * 0.5), height: 120))
+                            session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入形状", documentID: document.id)
+                        }
+                    }
+                } label: { Label("插入", systemImage: "plus.square").frame(minHeight: 44) }
+                Menu {
                     Toggle("手指书写", isOn: $fingerDrawing)
                     if let page {
                         Picker("纸张", selection: Binding(get: { page.paper }, set: { paper in
@@ -272,8 +324,8 @@ struct NotesDocumentEditor: View {
                             var updated = page; updated.isBookmarked.toggle()
                             session.apply([.updatePage(updated)], title: "书签", documentID: document.id)
                         }
-                        ForEach(page.elements.filter { $0.kind == .text }) { element in
-                            Button("编辑：\(element.text.prefix(20))") { editedElement = element; textDraft = element.text; showText = true }
+                        ForEach(Array(page.elements.enumerated()), id: \.element.id) { index, element in
+                            Button("\(index + 1). \(element.kind == .text ? String(element.text.prefix(20)) : element.kind.rawValue)") { inspectingElement = element }
                         }
                     }
                     Button("新增页面", systemImage: "doc.badge.plus") {

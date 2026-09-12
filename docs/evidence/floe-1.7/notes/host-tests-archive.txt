@@ -1,0 +1,96 @@
+warning: 'zipfoundation': /Volumes/TECLAST/IOS AI AGENT/FloeAgent/.build/checkouts/ZIPFoundation/Package@swift-5.9.swift:23:61: warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+21 |     name: "ZIPFoundation",
+22 |     platforms: [
+23 |         .macOS(.v10_13), .iOS(.v12), .tvOS(.v12), .watchOS(.v4), .visionOS(.v1)
+   |                                                             `- warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+24 |     ],
+25 |     products: [
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+warning: 'bigint': /Volumes/TECLAST/IOS AI AGENT/FloeAgent/.build/checkouts/BigInt/Package.swift:18:19: warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+16 |         .iOS(.v12),
+17 |         .tvOS(.v12),
+18 |         .watchOS(.v4),
+   |                   `- warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+19 |         .macCatalyst(.v13),
+20 |         .visionOS(.v1),
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+Building for debugging...
+[Computing dependencies]
+[Provisioning 6 / 14]
+[Constructing description]
+[Pre-planning 1 / 245]
+[Planning deferred tasks]
+[2 / 46] ZIPFoundation
+[11 / 59] FloeNotes
+[17 / 71] swift-crypto_Crypto
+[24 / 73] ZIPFoundation_ZIPFoundation
+[27 / 73]
+[29 / 73]
+[32 / 76] Crypto
+[32 / 77] ZIPFoundation
+[34 / 94] GRDB
+[35 / 103] Crypto
+[38 / 103] ZIPFoundation
+[43 / 103] ZIPFoundation
+[49 / 103] GRDB
+[50 / 103] ZIPFoundation
+[52 / 103] ZIPFoundation
+[57 / 103] GRDB
+[59 / 103] ZIPFoundation
+[60 / 103] ZIPFoundation
+[62 / 103] GRDB
+[63 / 103] GRDB
+[66 / 103] GRDB
+[67 / 103] GRDB
+[69 / 103] GRDB
+[70 / 103] GRDB
+[71 / 103] Crypto
+[72 / 103] Crypto
+[74 / 109] Crypto
+[75 / 109] Crypto
+[76 / 109] Crypto
+[77 / 109] Crypto
+[79 / 109]
+[80 / 110] Crypto
+[81 / 110] ZIPFoundation
+[82 / 110] ZIPFoundation
+[83 / 110] Crypto
+[84 / 110] FloeNotes
+[87 / 115] FloeNotes
+[89 / 115] FloeNotes
+[95 / 115] FloeNotes
+[97 / 115] NotesTests-product
+[99 / 115] FloeNotes
+[104 / 115]
+[104 / 115] NotesTests-product
+[107 / 118] NotesTests-product
+[108 / 118] NotesTests-product
+[112 / 118] NotesTests-product
+[114 / 118] NotesTests-product
+[116 / 118] NotesTests-product
+Build complete! (47.97秒)
+Test Suite 'All tests' started at 2026-09-13 08:43:39.048.
+Test Suite 'All tests' passed at 2026-09-13 08:43:39.053.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.005) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite NotesStoreTests started.
+◇ Test durableHistoryAndCAS() started.
+◇ Test rejectedBatchIsAtomicAndStaleEditsFail() started.
+◇ Test mindMapRejectsCyclesWithoutChangingPersistedTree() started.
+◇ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() started.
+◇ Test assistantScopesAndTrashAreIndependentFromChat() started.
+◇ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() started.
+◇ Test receiptsSurviveRestartWithoutDuplicateEdits() started.
+✔ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() passed after 0.034 seconds.
+✔ Test mindMapRejectsCyclesWithoutChangingPersistedTree() passed after 0.039 seconds.
+✔ Test receiptsSurviveRestartWithoutDuplicateEdits() passed after 0.039 seconds.
+✔ Test rejectedBatchIsAtomicAndStaleEditsFail() passed after 0.043 seconds.
+✔ Test assistantScopesAndTrashAreIndependentFromChat() passed after 0.043 seconds.
+✔ Test durableHistoryAndCAS() passed after 0.052 seconds.
+✔ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() passed after 0.070 seconds.
+✔ Suite NotesStoreTests passed after 0.070 seconds.
+✔ Test run with 7 tests in 1 suite passed after 0.071 seconds.

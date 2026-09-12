@@ -83,8 +83,6 @@ targets:
       - path: FloeApp/Resources/MindElixir
         type: folder
         buildPhase: resources
-      - path: ThirdParty/MindElixir/LICENSE
-        buildPhase: resources
       - path: ThirdParty/RoyalVNCKit/LICENSE
         buildPhase: resources
     info:
@@ -93,6 +91,14 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UTExportedTypeDeclarations:
+          - UTTypeIdentifier: org.floeagent.note
+            UTTypeDescription: Floe Note
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - floenote
+              public.mime-type: application/vnd.floe.note
           - UTTypeIdentifier: org.floeagent.canvas
             UTTypeDescription: Floe Canvas
             UTTypeConformsTo:

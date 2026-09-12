@@ -58,7 +58,7 @@ struct NotesRootView: View {
                             Button("Excel 表格") { creation = .sheet }
                             Button("PowerPoint 演示文稿") { creation = .slides }
                         }
-                        Button("导入 PDF、Office 或图片", systemImage: "square.and.arrow.down") { importing = true }
+                        Button("导入手记、PDF、Office 或图片", systemImage: "square.and.arrow.down") { importing = true }
                     } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
                     .accessibilityLabel("新建或导入")
                     .accessibilityIdentifier("notes.create")
@@ -84,7 +84,7 @@ struct NotesRootView: View {
                         }
                 }.presentationDetents([.medium])
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) }) { result in
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, UTType(exportedAs: "org.floeagent.note", conformingTo: .data)] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) }) { result in
                 Task {
                     do {
                         let url = try result.get()
