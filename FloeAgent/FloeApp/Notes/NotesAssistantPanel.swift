@@ -8,6 +8,7 @@ struct NotesAssistantPanel: View {
     let document: NoteDocument
     let store: NotesStore
     let close: () -> Void
+    var onSaveAnswer: ((String) -> Void)? = nil
     var composerInput: ThreadComposerInput? = nil
     var onInputConsumed: (UUID) -> Void = { _ in }
     @EnvironmentObject private var environment: AppEnvironment
@@ -29,7 +30,7 @@ struct NotesAssistantPanel: View {
             }.padding(.horizontal)
             Divider()
             if let conversationID {
-                ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter, composerInput: composerInput, embedded: true, onInputConsumed: onInputConsumed)
+                ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter, composerInput: composerInput, embedded: true, onSaveToNotes: onSaveAnswer, onInputConsumed: onInputConsumed)
             } else if let failure {
                 ContentUnavailableView {
                     Label("助手无法打开", systemImage: "exclamationmark.bubble")

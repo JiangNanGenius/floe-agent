@@ -1,0 +1,45 @@
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 245]
+[Planning deferred tasks]
+[Starting]
+[1 / 1]
+[3 / 19] GRDB
+[5 / 11] FloeNotes
+[8 / 14] FloeNotes
+[10 / 18] FloeNotes
+[14 / 19] FloeNotes
+[16 / 24] FloeNotes
+[18 / 24] NotesTests-product
+[20 / 26] NotesTests-product
+[24 / 30] NotesTests-product
+[26 / 30] NotesTests-product
+[27 / 30] NotesTests-product
+[28 / 30] NotesTests-product
+Build complete! (15.33秒)
+Test Suite 'All tests' started at 2026-09-13 08:58:27.648.
+Test Suite 'All tests' passed at 2026-09-13 08:58:27.730.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.083) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite NotesStoreTests started.
+◇ Test rejectedBatchIsAtomicAndStaleEditsFail() started.
+◇ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() started.
+◇ Test receiptsSurviveRestartWithoutDuplicateEdits() started.
+◇ Test mindMapRejectsCyclesWithoutChangingPersistedTree() started.
+◇ Test assistantScopesAndTrashAreIndependentFromChat() started.
+◇ Test durableHistoryAndCAS() started.
+◇ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() started.
+◇ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() started.
+✔ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() passed after 0.045 seconds.
+✔ Test receiptsSurviveRestartWithoutDuplicateEdits() passed after 0.046 seconds.
+✔ Test mindMapRejectsCyclesWithoutChangingPersistedTree() passed after 0.048 seconds.
+✔ Test rejectedBatchIsAtomicAndStaleEditsFail() passed after 0.049 seconds.
+✔ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() passed after 0.050 seconds.
+✔ Test assistantScopesAndTrashAreIndependentFromChat() passed after 0.051 seconds.
+✔ Test durableHistoryAndCAS() passed after 0.055 seconds.
+✔ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() passed after 0.068 seconds.
+✔ Suite NotesStoreTests passed after 0.068 seconds.
+✔ Test run with 8 tests in 1 suite passed after 0.069 seconds.

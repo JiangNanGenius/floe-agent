@@ -49,12 +49,14 @@ struct ThreadDetailView: View {
     @State private var showsChecklist = false
     @State private var consumedInputID: UUID?
     private let composerInput: ThreadComposerInput?
+    private let onSaveToNotes: ((String) -> Void)?
     private let embedded: Bool
     private let onInputConsumed: (UUID) -> Void
 
-    init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
+    init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, onSaveToNotes: ((String) -> Void)? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
         self.composerInput = composerInput
         self.embedded = embedded
+        self.onSaveToNotes = onSaveToNotes
         self.onInputConsumed = onInputConsumed
         _viewModel = StateObject(
             wrappedValue: ThreadDetailViewModel(conversationID: conversationID, center: center)
@@ -445,7 +447,7 @@ struct ThreadDetailView: View {
             MessageBubble(message: message)
 
         case .assistantMessage(let text, _):
-            AssistantMessageView(text: text, isStreaming: false)
+            AssistantMessageView(text: text, isStreaming: false, onSaveToNotes: onSaveToNotes)
 
         case .event(let event):
             ThreadEventView(

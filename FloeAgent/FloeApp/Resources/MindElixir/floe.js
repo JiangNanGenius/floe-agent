@@ -8,6 +8,7 @@
     if (!ids.has(id)) ids.set(id, crypto.randomUUID());
     return ids.get(id);
   };
+  const escapeText = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
   const send = value => window.webkit.messageHandlers.floeNotes.postMessage(value);
   function commit() {
     if (applying || pending || !map) return;
@@ -53,7 +54,7 @@
     if (!map) {
       const Engine = MindElixir.default;
       map = new Engine({el:'#map',direction:2,editable:true,allowUndo:false,toolBar:true,
-        keypress:true,contextMenu:{locale:'zh_CN'},newTopicName:'新主题',
+        keypress:true,contextMenu:{locale:'zh_CN'},newTopicName:'新主题',markdown:escapeText,
         theme:payload.dark ? Engine.DARK_THEME : Engine.THEME});
       map.init(data);
       map.bus.addListener('operation', operation => { if (operation.name !== 'beginEdit') commit(); });

@@ -134,4 +134,24 @@ struct NotesStoreTests {
         #expect(try await destination.documents().count == 1)
         #expect(try await store.document(value.id) == value)
     }
+
+    @Test func deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var value = NoteDocument(kind: .mindMap, title: "课程")
+        let center = value.nodes[0].id
+        let nodes = (0..<3).map { MindMapNode(parentID: center, title: "Topic \($0)", order: $0) }
+        value.nodes += nodes
+        value.nodes[1].style = ["fontWeight": "bold", "background": "#123456"]
+        value.nodes[1].tags = ["重点"]
+        value.summaries = [.init(label: "复习", parent: center, start: 0, end: 2)]
+        value = try await store.create(value)
+        let deleted = try await store.apply(.init(documentID: value.id, expectedRevision: value.revision, title: "删除主题", edits: [.deleteBranch(nodes[1].id)]))
+        #expect(deleted.summaries?.first?.end == 1)
+        #expect(deleted.summaries?.first?.label == "复习")
+        let restored = try await store.undo(value.id, expectedRevision: deleted.revision)
+        #expect(restored.nodes == value.nodes)
+        #expect(restored.summaries == value.summaries)
+        #expect(try await NotesStore(root: root).document(value.id).nodes == value.nodes)
+    }
 }

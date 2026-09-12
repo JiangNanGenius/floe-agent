@@ -18,6 +18,7 @@ struct AssistantMessageView: View {
     /// True while the owning run is non-terminal (incremental tail
     /// reparse instead of full-document parse per token).
     var isStreaming: Bool = false
+    var onSaveToNotes: ((String) -> Void)? = nil
 
     @EnvironmentObject private var speechService: SpeechService
 
@@ -28,6 +29,10 @@ struct AssistantMessageView: View {
                 HStack(spacing: 12) {
                     readAloudButton
                     copyButton
+                    if let onSaveToNotes {
+                        Button("保存到手记", systemImage: "square.and.arrow.down") { onSaveToNotes(text) }
+                            .font(FloeTheme.Typography.metadata).frame(minHeight: FloeTheme.minimumTarget)
+                    }
                 }
             }
         }

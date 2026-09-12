@@ -57,9 +57,12 @@ public enum NoteEdit: Codable, Hashable, Sendable {
             guard Set(ids).isSubset(of: Set(document.pages[index].elements.map(\.id))) else { throw NoteError.notFound }
             document.pages[index].elements.removeAll { ids.contains($0.id) }
         case .upsertNode(let node):
+            let previous = document.nodes
             if let index = document.nodes.firstIndex(where: { $0.id == node.id }) { document.nodes[index] = node }
             else { document.nodes.append(node) }
+            reanchorSummaries(previous: previous, document: &document)
         case .deleteBranch(let id):
+            let previous = document.nodes
             guard let node = document.nodes.first(where: { $0.id == id }), node.parentID != nil else {
                 throw NoteError.invalidOperation("不能删除中心主题；可以重命名或清空其分支。")
             }
@@ -73,12 +76,34 @@ public enum NoteEdit: Codable, Hashable, Sendable {
             }
             document.nodes.removeAll { removed.contains($0.id) }
             document.connections.removeAll { removed.contains($0.from) || removed.contains($0.to) }
+            reanchorSummaries(previous: previous, document: &document)
         case .upsertConnection(let edge):
             if let index = document.connections.firstIndex(where: { $0.id == edge.id }) { document.connections[index] = edge }
             else { document.connections.append(edge) }
         case .deleteConnection(let id):
             guard document.connections.contains(where: { $0.id == id }) else { throw NoteError.notFound }
             document.connections.removeAll { $0.id == id }
+        }
+    }
+
+    /// Keep summaries attached to their surviving child topics, not stale array offsets.
+    private func reanchorSummaries(previous: [MindMapNode], document: inout NoteDocument) {
+        guard let summaries = document.summaries else { return }
+        let old = Dictionary(grouping: previous, by: \.parentID)
+        let current = Dictionary(grouping: document.nodes, by: \.parentID)
+        let ids = Set(document.nodes.map(\.id))
+        func ordered(_ nodes: [MindMapNode]) -> [MindMapNode] {
+            nodes.sorted { $0.order == $1.order ? $0.id.uuidString < $1.id.uuidString : $0.order < $1.order }
+        }
+        document.summaries = summaries.compactMap { original in
+            guard ids.contains(original.parent) else { return nil }
+            let children = ordered(old[original.parent] ?? [])
+            guard original.start >= 0, original.end >= original.start, original.end < children.count else { return nil }
+            let covered = Set(children[original.start...original.end].map(\.id))
+            let positions = ordered(current[original.parent] ?? []).enumerated().filter { covered.contains($0.element.id) }.map(\.offset)
+            guard let start = positions.first, let end = positions.last else { return nil }
+            var value = original; value.start = start; value.end = end
+            return value
         }
     }
 

@@ -11,8 +11,8 @@
 - PencilKit 默认仅 Pencil 书写；手指书写单独开启。27 使用原生选中笔迹 ID，26 提供 AI 区域选择兼容入口。
 - 选区合成页面背景与笔迹，并把来源、页码、区域坐标及真实图片送到现有完整聊天输入框，发送前仍可修改和选择模型。
 - 手记独立助手复用现有任务与权限服务；普通对话可通过显式选择引用手记，默认只读。
-- PDF 导出按页处理、保留批注、重新读取输出；思维导图支持 Markdown 大纲导出。
-- Mind Elixir 5.15.1 的本地桥接、节点/关联线编辑与事务保存；布局、样式和概要持久化正在补齐。
+- PDF 导出按页处理、保留批注、重新读取输出；思维导图支持 Markdown 大纲导出。`.floenote` 可编辑归档保留资源与来源身份，校验后导入独立副本。
+- Mind Elixir 5.15.1 的本地桥接、节点/关联线编辑与事务保存；布局、样式和概要持久化，以及 Agent 完整结构编辑已写入；完整交互仍需验收。
 - Office 编辑后将经过保存的副本晋升为新的手记资源，原资源保持可恢复。
 - 原生 Office 新增 PDF/Office/RTF/TXT 转换、演示放映及矢量画笔接口；应用依照宿主实际接口显示操作。
 - WhisperKit 固定提交，Whisper Small 多语言的 27 个模型/分词器资源逐文件固定来源与摘要，约 491 MB 按需下载。
@@ -21,8 +21,9 @@
 ## 当前证据
 
 - `Qualification/Notes` 的 6 项主机测试通过：保存恢复、撤销重做、资源去重、事务失败/过期修改、幂等回执、权限/回收站、导图循环和中文检索。
-  原始记录：`evidence/floe-1.7/notes/host-tests-initial.txt`。该记录是早期组件快照，后续修改需重新运行。
-- 原生手记、PDF 与 Whisper 定向工程可编译；第一次 iPad 测试因模拟器 testmanagerd 连接失败而未执行测试用例，正在使用新的专用实例继续。
+  新增的可编辑归档往返与篡改拒绝测试通过，共 7 项；记录 `evidence/floe-1.7/notes/host-tests-archive.txt`。
+  早期原始记录：`evidence/floe-1.7/notes/host-tests-initial.txt`。该记录是早期组件快照，后续修改需重新运行。
+- 原生定向工程在云端运行 `34723388987` 通过 Xcode 27 与 Xcode 26.6 的 iPad/iPhone 四种组合，每种 3 项测试。固定提交 `6897ce045981b28450ffba55eb3ac399bc2e16c9`，验证 PDF 笔迹与可搜索文字、损坏笔迹拒绝及 Whisper 资源清单；不包含 Whisper 推理或完整 App UI。后续归档、页面图片和回答保存修改仍需新一轮验收。
 - Office 原生宿主云端构建 `34722048321` 成功；固定提交 `5911fd3155bdfbf78c461bcd647116bd9b79bbee`。
   产物校验通过 4785 个文件及 178 个目录。仅表示宿主编译、链接、Swift 导入及资产完整性，不表示真机操作通过。
 
@@ -39,3 +40,9 @@
 
 组件测试使用 `.keepAlways` 留存可视证据。完整应用截图优先 iPad，补充 iPhone，记录设备、系统、场景与对应代码版本。
 组件验证页或旧版界面不能作为新版本完整产品截图。去除敏感信息后，将符合最终界面的图片用于中英文 README、使用说明和版本说明。
+
+## 已保留的图片证据
+
+![iPad 27 重新读取导出 PDF 中的中文、英文和真实笔迹](evidence/floe-1.7/notes/ipad27-export-text-and-ink.png)
+
+这张图来自上述固定提交的导出文件，不是完整手记界面截图。来源测试：`NativeNotesTests/testPDFExportRetainsPagesInkAndText()`；设备与结果见同目录 `ipad27-component-summary.json`。

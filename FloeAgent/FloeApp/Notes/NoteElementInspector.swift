@@ -8,15 +8,26 @@ struct NoteElementInspector: View {
     let page: NotePage
     let save: (NoteElement) -> Void
     let delete: () -> Void
+    let openSource: ((NoteSourceReference) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
-    init(element: NoteElement, page: NotePage, save: @escaping (NoteElement) -> Void, delete: @escaping () -> Void) {
+    init(element: NoteElement, page: NotePage, save: @escaping (NoteElement) -> Void, delete: @escaping () -> Void, openSource: ((NoteSourceReference) -> Void)? = nil) {
         _draft = State(initialValue: element); self.page = page; self.save = save; self.delete = delete
+        self.openSource = openSource
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if let source = draft.source {
+                    Section("来源") {
+                        Label(draft.isAIGenerated ? "AI 生成的整理" : "引用内容", systemImage: "quote.opening")
+                        Text("引用版本：\(source.revision)").font(.caption).foregroundStyle(.secondary)
+                        if source.space == .notes, let openSource {
+                            Button("打开源资料的当前页面") { openSource(source) }
+                        }
+                    }
+                }
                 if draft.kind == .text {
                     Section("文字") {
                         TextEditor(text: $draft.text).frame(minHeight: 160)

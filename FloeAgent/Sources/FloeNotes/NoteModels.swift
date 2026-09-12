@@ -134,6 +134,9 @@ public struct MindMapSummary: Codable, Hashable, Identifiable, Sendable {
     public var start: Int
     public var end: Int
     public var style: [String: String]?
+    public init(id: UUID = UUID(), label: String, parent: UUID, start: Int, end: Int, style: [String: String]? = nil) {
+        self.id = id; self.label = label; self.parent = parent; self.start = start; self.end = end; self.style = style
+    }
 }
 
 public struct Notebook: Codable, Hashable, Identifiable, Sendable {
@@ -188,13 +191,16 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         }
         guard Set(pages.map(\.id)).count == pages.count,
               Set(nodes.map(\.id)).count == nodes.count,
-              Set(connections.map(\.id)).count == connections.count else {
+              Set(connections.map(\.id)).count == connections.count,
+              Set((summaries ?? []).map(\.id)).count == (summaries ?? []).count,
+              pages.count <= 5_000, connections.count <= 10_000, (summaries ?? []).count <= 10_000 else {
             throw NoteError.invalidDocument("文档包含重复标识。")
         }
         for page in pages {
             guard page.width.isFinite, page.height.isFinite, page.width > 0, page.height > 0,
                   page.width <= 16_384, page.height <= 16_384,
-                  Set(page.elements.map(\.id)).count == page.elements.count else {
+                  Set(page.elements.map(\.id)).count == page.elements.count, page.elements.count <= 2_000,
+                  page.elements.filter({ $0.kind == .image }).count <= 64 else {
                 throw NoteError.invalidDocument("页面尺寸或内容标识无效。")
             }
             if let index = page.pdfPageIndex, index < 0 || page.backgroundResourceID == nil {
@@ -208,6 +214,9 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                     throw NoteError.invalidDocument("图片缺少资源引用。")
                 }
             }
+        }
+        if kind != .mindMap, mindMapDirection != nil || !(summaries ?? []).isEmpty {
+            throw NoteError.invalidDocument("普通手记不能包含导图布局。")
         }
         switch kind {
         case .office:
@@ -229,7 +238,8 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
             guard mindMapDirection == nil || (0...2).contains(mindMapDirection!) else { throw NoteError.invalidDocument("导图方向无效。") }
             let permittedStyles: Set<String> = ["fontSize", "fontFamily", "color", "background", "fontWeight", "width", "border", "textDecoration"]
             for node in nodes {
-                guard (node.style ?? [:]).allSatisfy({ permittedStyles.contains($0.key) && $0.value.utf8.count <= 256 }),
+                guard node.order >= 0, node.title.utf8.count <= 65_536, node.note.utf8.count <= 65_536,
+                      (node.style ?? [:]).allSatisfy({ permittedStyles.contains($0.key) && $0.value.utf8.count <= 256 }),
                       node.direction == nil || node.direction == 0 || node.direction == 1,
                       (node.tags ?? []).count <= 100, (node.icons ?? []).count <= 100 else {
                     throw NoteError.invalidDocument("导图样式无效。")
@@ -251,7 +261,8 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
             }
             for summary in summaries ?? [] {
                 let count = nodes.filter { $0.parentID == summary.parent }.count
-                guard lookup[summary.parent] != nil, summary.start >= 0, summary.end >= summary.start, summary.end < count else {
+                guard lookup[summary.parent] != nil, summary.start >= 0, summary.end >= summary.start, summary.end < count, summary.label.utf8.count <= 65_536,
+                      (summary.style ?? [:]).count <= 32, (summary.style ?? [:]).allSatisfy({ $0.key.utf8.count <= 64 && $0.value.utf8.count <= 256 }) else {
                     throw NoteError.invalidDocument("导图概要范围无效。")
                 }
             }
@@ -261,7 +272,9 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                         throw NoteError.invalidDocument("导图关联线位置无效。")
                     }
                 }
-                guard edge.from != edge.to, lookup[edge.from] != nil, lookup[edge.to] != nil else {
+                guard edge.title.utf8.count <= 65_536, (edge.style ?? [:]).count <= 32,
+                      (edge.style ?? [:]).allSatisfy({ $0.key.utf8.count <= 64 && $0.value.utf8.count <= 256 }),
+                      edge.from != edge.to, lookup[edge.from] != nil, lookup[edge.to] != nil else {
                     throw NoteError.invalidDocument("导图关联节点无效。")
                 }
             }

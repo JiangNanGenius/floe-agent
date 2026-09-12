@@ -11,11 +11,17 @@ struct NotesRootView: View {
     @State private var newTitle = ""
     @State private var creation: Creation?
     @State private var importing = false
+    @State private var renaming: RenameTarget?
     @State private var selectedBook: UUID?
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     private enum SectionFilter: String, CaseIterable {
         case recent = "最近", all = "全部内容", maps = "思维导图", favorites = "收藏", trash = "回收站"
+    }
+    private struct RenameTarget: Identifiable {
+        let id: UUID
+        let title: String
+        let notebook: Bool
     }
     private enum Creation: String, Identifiable {
         case note = "新建手记", map = "新建思维导图", notebook = "新建笔记本"
@@ -63,6 +69,13 @@ struct NotesRootView: View {
                     .accessibilityLabel("新建或导入")
                     .accessibilityIdentifier("notes.create")
                     .disabled(session.store == nil)
+                }
+            }
+            .sheet(item: $renaming) { target in
+                NotesRenameSheet(title: target.title) { name in
+                    if target.notebook { session.renameNotebook(target.id, title: name) }
+                    else { session.apply([.rename(name)], title: "重命名", documentID: target.id) }
+                    renaming = nil
                 }
             }
             .sheet(item: $creation) { kind in
@@ -117,6 +130,10 @@ struct NotesRootView: View {
                     Text("所有笔记本").tag(Optional<UUID>.none)
                     ForEach(session.notebooks) { Text($0.title).tag(Optional($0.id)) }
                 }.pickerStyle(.menu)
+                if let book = session.notebooks.first(where: { $0.id == selectedBook }) {
+                    Button("重命名笔记本", systemImage: "pencil") { renaming = .init(id: book.id, title: book.title, notebook: true) }
+                        .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                }
             }.padding(.horizontal)
             List {
                 ForEach(filtered) { document in
@@ -139,6 +156,7 @@ struct NotesRootView: View {
                         if document.deletedAt != nil {
                             Button("恢复", systemImage: "arrow.uturn.backward") { session.trash(document, restore: true) }
                         } else {
+                            Button("重命名", systemImage: "pencil") { renaming = .init(id: document.id, title: document.title, notebook: false) }
                             Button(document.isFavorite ? "取消收藏" : "收藏", systemImage: "star") {
                                 session.apply([.favorite(!document.isFavorite)], title: "收藏", documentID: document.id)
                             }
@@ -177,6 +195,25 @@ struct NotesRootView: View {
             return matchesSection && (selectedBook == nil || value.notebookID == selectedBook)
                 && (query.isEmpty || value.searchableText.localizedStandardContains(query))
         }
+    }
+}
+private struct NotesRenameSheet: View {
+    @State private var name: String
+    let save: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    init(title: String, save: @escaping (String) -> Void) { _name = State(initialValue: title); self.save = save }
+    var body: some View {
+        NavigationStack {
+            Form { TextField("名称", text: $name) }
+                .navigationTitle("重命名")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") { save(name.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+        }.presentationDetents([.medium])
     }
 }
 #endif

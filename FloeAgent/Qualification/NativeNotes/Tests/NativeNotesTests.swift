@@ -6,6 +6,20 @@ import FloeNotes
 @testable import FloeNotesNativeQualification
 
 @MainActor final class NativeNotesTests: XCTestCase {
+    func testLongBilingualAnswerPaginatesWithoutLosingEditableText() throws {
+        let answer = String(repeating: "普通话与 English learning，保留全部解释。\n", count: 400)
+        let pages = NotesTextLayout.pages(text: answer, source: nil)
+        XCTAssertGreaterThan(pages.count, 1)
+        XCTAssertEqual(pages.flatMap(\.elements).map(\.text).joined(), answer)
+        XCTAssertTrue(pages.flatMap(\.elements).allSatisfy(\.isAIGenerated))
+        for page in pages {
+            for element in page.elements {
+                let bounds = (element.text as NSString).boundingRect(with: CGSize(width: element.frame.width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: UIFont.systemFont(ofSize: element.fontSize)], context: nil)
+                XCTAssertLessThanOrEqual(ceil(bounds.height), element.frame.height)
+            }
+        }
+    }
     func testPDFExportRetainsPagesInkAndText() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

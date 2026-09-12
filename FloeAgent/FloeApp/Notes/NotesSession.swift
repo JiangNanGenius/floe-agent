@@ -15,6 +15,7 @@ final class NotesSession {
     private(set) var pendingWrites = 0
     private(set) var canUndo = false
     private(set) var canRedo = false
+    var requestedPageID: UUID?
     var errorMessage: String?
     private(set) var unsavedDocumentIDs: Set<UUID> = []
     private(set) var recoverableInkDocumentIDs: Set<UUID> = []
@@ -70,6 +71,19 @@ final class NotesSession {
         do { try await reload() } catch { errorMessage = error.localizedDescription }
     }
 
+    func openSource(_ source: NoteSourceReference) async {
+        guard source.space == .notes, let store else { errorMessage = "此引用不属于手记。"; return }
+        do {
+            let value = try await store.document(source.documentID)
+            guard value.deletedAt == nil else { throw NoteError.invalidOperation("引用资料在回收站中，请先恢复。") }
+            if let pageID = source.pageID, !value.pages.contains(where: { $0.id == pageID }) {
+                throw NoteError.invalidOperation("引用页面已被删除，可以在源手记中撤销相应删除操作。")
+            }
+            await select(value)
+            requestedPageID = source.pageID
+        } catch { errorMessage = error.localizedDescription }
+    }
+
     func create(kind: NoteDocument.Kind, title: String, notebookID: UUID?) {
         enqueue { [self] in
             guard let store else { return }
@@ -87,6 +101,14 @@ final class NotesSession {
         enqueue { [self] in
             guard let store else { return }
             try await store.createNotebook(title: title)
+            try await reload()
+        }
+    }
+
+    func renameNotebook(_ id: UUID, title: String) {
+        enqueue { [self] in
+            guard let store else { return }
+            try await store.renameNotebook(id, title: title)
             try await reload()
         }
     }

@@ -58,6 +58,18 @@ public actor NotesStore {
         return book
     }
 
+    public func renameNotebook(_ id: UUID, title: String) throws {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.utf8.count <= 4096 else { throw NoteError.invalidOperation("笔记本名称为空或过长。") }
+        try database.write { db in
+            guard let body = try Data.fetchOne(db, sql: "SELECT body FROM notebooks WHERE id=?", arguments: [id.uuidString]) else { throw NoteError.notFound }
+            var book = try decoder.decode(Notebook.self, from: body)
+            book.title = title
+            try db.execute(sql: "UPDATE notebooks SET body=? WHERE id=?", arguments: [try encoder.encode(book), id.uuidString])
+        }
+        publishChange()
+    }
+
     public func documents(includeTrash: Bool = false) throws -> [NoteDocument] {
         try database.read { db in
             try Data.fetchAll(db, sql: "SELECT body FROM documents \(includeTrash ? "" : "WHERE deleted IS NULL") ORDER BY updated DESC")

@@ -21,6 +21,12 @@ targets:
       - ../../FloeApp/Notes/NotePencilView.swift
       - ../../FloeApp/Notes/NotesExport.swift
       - ../../FloeApp/Notes/NoteFileImporter.swift
+      - ../../FloeApp/Notes/NoteElementInspector.swift
+      - ../../FloeApp/Notes/NotesTextLayout.swift
+      - ../../FloeApp/Notes/NotesAnswerSaveSheet.swift
+      - ../../FloeApp/Notes/NotesRepository.swift
+      - ../../FloeApp/Notes/NotesSession.swift
+      - ../../FloeApp/Notes/NoteMindMapView.swift
       - ../../FloeApp/Files/PDFKitAccess.swift
       - ../../FloeApp/Files/FloePDFExceptionGuard.mm
       - ../../FloeApp/Files/FloePDFExceptionGuard.h
@@ -33,6 +39,8 @@ targets:
         product: FloeCore
       - package: FloeAgent
         product: FloeNotes
+      - package: FloeAgent
+        product: FloeDocuments
       - package: WhisperKit
         product: WhisperKit
     settings:

@@ -77,6 +77,8 @@ final class OfficeFileSession: ObservableObject {
     }
     func toggleDrawing() async throws {
         guard canAct, supportsDrawing, let controller else { throw CocoaError(.featureUnsupported) }
+        operating = true
+        defer { finishOperation() }
         let enabled = !drawingMode
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let callback: @convention(block) (NSError?) -> Void = { error in
@@ -90,7 +92,7 @@ final class OfficeFileSession: ObservableObject {
     func exportDocument(format: String) async throws -> URL {
         guard canAct, exportFormats.contains(format), let controller else { throw CocoaError(.featureUnsupported) }
         operating = true; phase = .saving
-        defer { operating = false; phase = runtimeFailed ? .failed : .ready }
+        defer { phase = runtimeFailed || self.controller == nil ? .failed : .ready; finishOperation() }
         #if canImport(FloeOfficeNative)
         if !readOnly, let native = controller as? FloeOfficeNativeViewController {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -120,6 +122,8 @@ final class OfficeFileSession: ObservableObject {
 
     func startPresentation() async throws {
         guard canAct, supportsPresentation, let controller else { throw CocoaError(.featureUnsupported) }
+        operating = true
+        defer { finishOperation() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let callback: @convention(block) (NSError?) -> Void = { error in
                 if let error { continuation.resume(throwing: error) } else { continuation.resume() }
@@ -441,6 +445,7 @@ final class OfficeFileSession: ObservableObject {
     private func activate(readOnly: Bool) async throws {
         guard let session else { throw CocoaError(.fileReadUnknown) }
         self.readOnly = readOnly
+        drawingMode = false
         phase = .loading
         error = nil
         #if canImport(FloeOfficeNative)

@@ -5,7 +5,8 @@ import PackageDescription
 
 let package = Package(
     name: "ZLImageEditor",
-    platforms: [.iOS(.v10)],
+    // Floe ships on iOS 26+; its native editor chrome uses modern UIKit.
+    platforms: [.iOS("26.0")],
     products: [
         // Products define the executables and libraries a package produces, and make them visible to other packages.
         .library(

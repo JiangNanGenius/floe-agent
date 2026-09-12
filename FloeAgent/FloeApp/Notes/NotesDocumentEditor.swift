@@ -25,6 +25,8 @@ struct NotesDocumentEditor: View {
     @State private var selectedStrokeCount = 0
     @State private var deleteSelectionRequest: UUID?
     @State private var captureSelectionRequest: UUID?
+    @State private var answerToSave: String?
+    @State private var answerSource: NoteSourceReference?
     @State private var assistantInput: ThreadComposerInput?
     @State private var exportArtifact: NotesExport.Artifact?
     @State private var exportTask: Task<Void, Never>?
@@ -53,13 +55,13 @@ struct NotesDocumentEditor: View {
                 editorContent
                 if showAssistant, geometry.size.width >= 850, let store = session.store {
                     Divider()
-                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
+                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
                         .frame(width: min(430, geometry.size.width * 0.42))
                 }
             }
             .sheet(isPresented: Binding(get: { showAssistant && geometry.size.width < 850 }, set: { if !$0 { showAssistant = false } })) {
                 if let store = session.store {
-                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
+                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
                 }
             }
         }
@@ -100,6 +102,11 @@ struct NotesDocumentEditor: View {
             }
         }
         .background(Color(uiColor: .secondarySystemBackground))
+        .onChange(of: session.requestedPageID, initial: true) { _, value in
+            if let value, document.pages.contains(where: { $0.id == value }) {
+                pageID = value; session.requestedPageID = nil
+            }
+        }
         .task(id: "\(page?.id.uuidString ?? ""):\(page?.drawingResourceID?.uuidString ?? ""):\(session.pendingWrites)") {
             guard document.kind == .notebook, let page, let store = session.store, session.pendingWrites == 0 else { return }
             do {
@@ -137,7 +144,18 @@ struct NotesDocumentEditor: View {
                 }, delete: {
                     session.apply([.deleteElements(pageID: page.id, ids: [element.id])], title: "删除页面内容", documentID: document.id)
                     inspectingElement = nil
+                }, openSource: { source in
+                    inspectingElement = nil
+                    Task { await session.openSource(source) }
                 })
+            }
+        }
+        .sheet(isPresented: Binding(get: { answerToSave != nil }, set: { if !$0 { answerToSave = nil } })) {
+            if let answerToSave {
+                NotesAnswerSaveSheet(text: answerToSave, canInsert: document.kind == .notebook || document.kind == .mindMap) { text, insert in
+                    saveAnswer(text, insert: insert)
+                    self.answerToSave = nil
+                }
             }
         }
         .sheet(item: $exportArtifact) { artifact in
@@ -212,9 +230,29 @@ struct NotesDocumentEditor: View {
         }
     }
 
+    private func saveAnswer(_ text: String, insert: Bool) {
+        let source = answerSource ?? NoteSourceReference(documentID: document.id, revision: document.revision, pageID: page?.id)
+        if insert, document.kind == .notebook, let page {
+            let pages = NotesTextLayout.pages(text: text, source: source, width: page.width, height: page.height)
+            guard let first = pages.first?.elements.first else { return }
+            var edits: [NoteEdit] = [.upsertElement(pageID: page.id, element: first)]
+            let index = document.pages.firstIndex(where: { $0.id == page.id }) ?? 0
+            for (offset, additional) in pages.dropFirst().enumerated() { edits.append(.insertPage(additional, at: index + offset + 1)) }
+            session.apply(edits, title: "保存 AI 回答", documentID: document.id)
+        } else if insert, document.kind == .mindMap, let root = document.nodes.first(where: { $0.parentID == nil }) {
+            let node = MindMapNode(parentID: root.id, title: "AI 整理", note: text, order: document.nodes.filter { $0.parentID == root.id }.count, source: source)
+            session.apply([.upsertNode(node)], title: "保存 AI 回答", documentID: document.id)
+        } else {
+            var value = NoteDocument(notebookID: document.notebookID, title: "\(document.title) · 整理")
+            value.pages = NotesTextLayout.pages(text: text, source: source)
+            session.importDocument(value)
+        }
+    }
+
     private func stageSelection(page: NotePage, bounds: CGRect, image: Data) {
         do {
             let attachment = try environment.filesCenter.registerPhotoData(image, displayName: "手记选区.png")
+            answerSource = NoteSourceReference(documentID: document.id, revision: document.revision, pageID: page.id, region: .init(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height))
             let index = (document.pages.firstIndex(where: { $0.id == page.id }) ?? 0) + 1
             let text = page.elements.filter {
                 CGRect(x: $0.frame.x, y: $0.frame.y, width: $0.frame.width, height: $0.frame.height).intersects(bounds)

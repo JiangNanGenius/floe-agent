@@ -9,6 +9,10 @@
 
 ## Local patches
 
+Raise the vendored package deployment target to iOS 26, matching Floe. The host
+minimum does not override a Swift package target; keeping upstream iOS 10 caused
+modern system colors and SF Symbols in Floe chrome to fail SDK compatibility builds.
+
 Remove automatic JPEG recompression after editing. Floe writes and verifies PNG
 copies, preserving alpha and avoiding an undocumented lossy encode before export.
 The original crop, drawing, text, mosaic, filter and adjustment renderers are retained.
