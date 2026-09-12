@@ -1,8 +1,8 @@
 # Official Skill Hub / 官方技能中心
 
-Only `JiangNanGenius/floe-agent/skill-hub` may update the three reserved official
-IDs: `floe-pdf`, `floe-office`, `floe-network`. Other guides remain app-owned.
-三个官方 ID 仅从本目录更新；其他系统指南随 App 发布。
+Only `JiangNanGenius/floe-agent/skill-hub` may update the four reserved official
+IDs: `floe-pdf`, `floe-office`, `floe-network`, `floe-video`. Other guides remain app-owned.
+四个官方 ID 仅从本目录更新；其他系统指南随 App 发布。
 Fresh installs seed the bundled official copies offline. App upgrades also
 advance older, unmodified official installs to the app-bundled version, preserving
 disabled state and explicit uninstall choices. Newer installed versions are never
@@ -40,6 +40,6 @@ not a third-party marketplace, payment system or native plugin loader.
 
 ## 1.7 media catalog integration
 
-`floe-video` and the media model catalog are under integration. Their source descriptions are not proof that the App has connected every runner, model download or background-job path. The existing 33 model entries remain candidates pending resource, license and device qualification; see [compatibility](../docs/FLOE_1_7_COMPATIBILITY.md).
+`floe-video` and the media model catalog are under integration. Their source descriptions are not proof that the App has connected every runner, model download or background-job path. The 33 model records include three exclusions (AMT, E2FGVI and GPEN); all remaining candidates still require resource, license and device qualification; see [compatibility](../docs/FLOE_1_7_COMPATIBILITY.md).
 
 Skill content changes require a version increment and brief bilingual change notes, then regeneration and signature verification through this hub's publication workflow. Do not hand-edit signed archives/catalogs or advertise unconnected tools as available.

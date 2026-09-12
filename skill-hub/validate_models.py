@@ -26,9 +26,9 @@ ALLOWED = {
     "MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "ISC", "MPL-2.0",
     "EPL-1.0", "0BSD", "Zlib", "CC0-1.0", "Unlicense", "Public-Domain",
 }
-REJECTED = {"GPL", "GPL-2.0", "GPL-3.0", "LGPL", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "S-Lab", "CC-BY-NC"}
+REJECTED = {"GPL", "GPL-2.0", "GPL-3.0", "LGPL", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "S-Lab", "CC-BY-NC", "CC-BY-NC-4.0"}
 HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
-STATUSES = {"ready", "pending-assets", "license-check"}
+STATUSES = {"ready", "pending-assets", "license-check", "excluded"}
 
 
 def main() -> int:
@@ -51,6 +51,10 @@ def main() -> int:
         if not model.get("capability"):
             errors.append(f"{identifier}: capability is required")
         license_name = model.get("license")
+        if status == "excluded":
+            if model.get("files") or not model.get("notes"):
+                errors.append(f"{identifier}: excluded entries require a reason and no downloadable files")
+            continue
         if license_name in REJECTED:
             errors.append(f"{identifier}: license {license_name} is not allowed")
         if status == "ready":

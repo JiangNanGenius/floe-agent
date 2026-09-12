@@ -50,3 +50,22 @@ class ReleaseMetadataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ModelExclusionTests(unittest.TestCase):
+    def test_excluded_models_require_reason_and_no_files(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import build
+        entry = {"id": "floe/test", "skillID": "floe-video", "capability": "video.interpolate",
+                 "license": "CC-BY-NC-4.0", "status": "excluded", "notes": "Not in the current distribution scope", "files": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(build, 'ROOT', root):
+                for change, accepted in [({}, True), ({"notes": ""}, False), ({"files": [{"url": "https://example.invalid/file"}]}, False), ({"status": "pending-assets"}, False)]:
+                    (root / 'models.json').write_text(json.dumps({"models": [dict(entry, **change)]}))
+                    if accepted:
+                        self.assertEqual(len(build.load_models()), 1)
+                    else:
+                        with self.assertRaises(ValueError):
+                            build.load_models()

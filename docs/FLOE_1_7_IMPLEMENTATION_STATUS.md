@@ -70,6 +70,13 @@ Branch: `codex/floe-1-7-integration-20260912`.
   pass, including edited-file parameters and synchronized audio/video duration.
   Evidence: `docs/evidence/floe-1.7/media-edit-qualification.txt`.
 
+- The 33 model records now reference fixed commits and license evidence from
+  31 upstream repositories. AMT/E2FGVI are excluded from this distribution scope
+  because of non-commercial terms without additional permission; GPEN is excluded
+  pending a verifiable distribution grant. Missing conversion scripts are no longer
+  recorded as completed provenance. Full weight, conversion and device qualification
+  remains open; see the per-model matrix.
+
 ## Documentation
 
 See [build and acceptance](FLOE_1_7_BUILD_AND_ACCEPTANCE.md),

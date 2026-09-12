@@ -124,7 +124,7 @@ def load_models():
     """
     allowed = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "ISC", "MPL-2.0",
                "EPL-1.0", "0BSD", "Zlib", "CC0-1.0", "Unlicense", "Public-Domain"}
-    rejected = {"GPL", "GPL-2.0", "GPL-3.0", "LGPL", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "S-Lab", "CC-BY-NC"}
+    rejected = {"GPL", "GPL-2.0", "GPL-3.0", "LGPL", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "S-Lab", "CC-BY-NC", "CC-BY-NC-4.0"}
     path = ROOT / "models.json"
     if not path.exists():
         return []
@@ -141,9 +141,13 @@ def load_models():
         if not model.get("capability"):
             raise ValueError(f"{identifier}: capability is required")
         license_name = model.get("license")
+        status = model.get("status", "pending-assets")
+        if status == "excluded":
+            if model.get("files") or not model.get("notes"):
+                raise ValueError(f"{identifier}: excluded entries require a reason and no downloadable files")
+            continue
         if license_name in rejected:
             raise ValueError(f"{identifier}: rejected license {license_name}")
-        status = model.get("status", "pending-assets")
         if status not in {"ready", "pending-assets", "license-check"}:
             raise ValueError(f"{identifier}: unknown status {status}")
         if status == "ready":

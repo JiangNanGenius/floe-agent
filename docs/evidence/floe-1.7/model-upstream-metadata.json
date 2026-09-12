@@ -1,0 +1,314 @@
+{
+  "scope": "Upstream repository metadata; NOT weight-license or inference qualification",
+  "repositories": [
+    {
+      "repository": "ChaoningZhang/MobileSAM",
+      "source": "https://github.com/ChaoningZhang/MobileSAM",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "f706ad9c4eb7f219c00d9050e46328518ffb65d2",
+      "archived": false,
+      "licenseURL": "https://github.com/ChaoningZhang/MobileSAM/blob/f706ad9c4eb7f219c00d9050e46328518ffb65d2/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/ChaoningZhang/MobileSAM/blob/f706ad9c4eb7f219c00d9050e46328518ffb65d2/README.md"
+    },
+    {
+      "repository": "DepthAnything/Depth-Anything-V2",
+      "source": "https://github.com/DepthAnything/Depth-Anything-V2",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf",
+      "archived": false,
+      "licenseURL": "https://github.com/DepthAnything/Depth-Anything-V2/blob/a561b849ebae10a6f5ef49e26c83cbbcd36c71bf/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/DepthAnything/Depth-Anything-V2/blob/a561b849ebae10a6f5ef49e26c83cbbcd36c71bf/README.md"
+    },
+    {
+      "repository": "JingyunLiang/SwinIR",
+      "source": "https://github.com/JingyunLiang/SwinIR",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "6545850fbf8df298df73d81f3e8cba638787c8bd",
+      "archived": false,
+      "licenseURL": "https://github.com/JingyunLiang/SwinIR/blob/6545850fbf8df298df73d81f3e8cba638787c8bd/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/JingyunLiang/SwinIR/blob/6545850fbf8df298df73d81f3e8cba638787c8bd/README.md"
+    },
+    {
+      "repository": "MCG-NKU/AMT",
+      "source": "https://github.com/MCG-NKU/AMT",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "70f988fbfc0d3d458beba1ee49caf876e57968fe",
+      "archived": false,
+      "licenseURL": "https://github.com/MCG-NKU/AMT/blob/70f988fbfc0d3d458beba1ee49caf876e57968fe/LICENSE",
+      "codeLicense": "NOASSERTION",
+      "readmeURL": "https://github.com/MCG-NKU/AMT/blob/70f988fbfc0d3d458beba1ee49caf876e57968fe/README.md"
+    },
+    {
+      "repository": "MCG-NKU/E2FGVI",
+      "source": "https://github.com/MCG-NKU/E2FGVI",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "709cbe319edc21b8a365a28e14cba595a93d62cf",
+      "archived": false,
+      "licenseURL": "https://github.com/MCG-NKU/E2FGVI/blob/709cbe319edc21b8a365a28e14cba595a93d62cf/LICENSE",
+      "codeLicense": "NOASSERTION",
+      "readmeURL": "https://github.com/MCG-NKU/E2FGVI/blob/709cbe319edc21b8a365a28e14cba595a93d62cf/README.md"
+    },
+    {
+      "repository": "Megvii-BaseDetection/YOLOX",
+      "source": "https://github.com/Megvii-BaseDetection/YOLOX",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "6ddff4824372906469a7fae2dc3206c7aa4bbaee",
+      "archived": false,
+      "licenseURL": "https://github.com/Megvii-BaseDetection/YOLOX/blob/6ddff4824372906469a7fae2dc3206c7aa4bbaee/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/Megvii-BaseDetection/YOLOX/blob/6ddff4824372906469a7fae2dc3206c7aa4bbaee/README.md"
+    },
+    {
+      "repository": "PaddlePaddle/PaddleOCR",
+      "source": "https://github.com/PaddlePaddle/PaddleOCR",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "2661c7c0ef5c613e8f93c6e93b2e052399f0f854",
+      "archived": false,
+      "licenseURL": "https://github.com/PaddlePaddle/PaddleOCR/blob/2661c7c0ef5c613e8f93c6e93b2e052399f0f854/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/PaddlePaddle/PaddleOCR/blob/2661c7c0ef5c613e8f93c6e93b2e052399f0f854/README.md"
+    },
+    {
+      "repository": "Rikorose/DeepFilterNet",
+      "source": "https://github.com/Rikorose/DeepFilterNet",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+      "archived": false,
+      "licenseURL": "https://github.com/Rikorose/DeepFilterNet/blob/d375b2d8309e0935d165700c91da9de862a99c31/LICENSE",
+      "codeLicense": "NOASSERTION",
+      "readmeURL": "https://github.com/Rikorose/DeepFilterNet/blob/d375b2d8309e0935d165700c91da9de862a99c31/README.md"
+    },
+    {
+      "repository": "Saafke/EDSR_Tensorflow",
+      "source": "https://github.com/Saafke/EDSR_Tensorflow",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "06c7bd65b0305c2955328f8f2721ea86c341f660",
+      "archived": false,
+      "licenseURL": "https://github.com/Saafke/EDSR_Tensorflow/blob/06c7bd65b0305c2955328f8f2721ea86c341f660/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/Saafke/EDSR_Tensorflow/blob/06c7bd65b0305c2955328f8f2721ea86c341f660/README.md"
+    },
+    {
+      "repository": "TencentARC/GFPGAN",
+      "source": "https://github.com/TencentARC/GFPGAN",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "7552a7791caad982045a7bbe5634bbf1cd5c8679",
+      "archived": false,
+      "licenseURL": "https://github.com/TencentARC/GFPGAN/blob/7552a7791caad982045a7bbe5634bbf1cd5c8679/LICENSE",
+      "codeLicense": "NOASSERTION",
+      "readmeURL": "https://github.com/TencentARC/GFPGAN/blob/7552a7791caad982045a7bbe5634bbf1cd5c8679/README.md"
+    },
+    {
+      "repository": "XPixelGroup/HAT",
+      "source": "https://github.com/XPixelGroup/HAT",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "1638a9a822581657811867bf670717f8371fc3e5",
+      "archived": false,
+      "licenseURL": "https://github.com/XPixelGroup/HAT/blob/1638a9a822581657811867bf670717f8371fc3e5/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/XPixelGroup/HAT/blob/1638a9a822581657811867bf670717f8371fc3e5/README.md"
+    },
+    {
+      "repository": "advimman/lama",
+      "source": "https://github.com/advimman/lama",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "786f5936b27fb3dacd2b1ad799e4de968ea697e7",
+      "archived": false,
+      "licenseURL": "https://github.com/advimman/lama/blob/786f5936b27fb3dacd2b1ad799e4de968ea697e7/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/advimman/lama/blob/786f5936b27fb3dacd2b1ad799e4de968ea697e7/README.md"
+    },
+    {
+      "repository": "cszn/SCUNet",
+      "source": "https://github.com/cszn/SCUNet",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "52e440a80a655b01e0b41e9dd9bfe599bc11625e",
+      "archived": false,
+      "licenseURL": "https://github.com/cszn/SCUNet/blob/52e440a80a655b01e0b41e9dd9bfe599bc11625e/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/cszn/SCUNet/blob/52e440a80a655b01e0b41e9dd9bfe599bc11625e/README.md"
+    },
+    {
+      "repository": "deezer/spleeter",
+      "source": "https://github.com/deezer/spleeter",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "c8854001ac8acad34a9bc2bd15f28475541828b1",
+      "archived": false,
+      "licenseURL": "https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/README.md"
+    },
+    {
+      "repository": "facebookresearch/demucs",
+      "source": "https://github.com/facebookresearch/demucs",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "e976d93ecc3865e5757426930257e200846a520a",
+      "archived": true,
+      "licenseURL": "https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/README.md"
+    },
+    {
+      "repository": "facebookresearch/sam2",
+      "source": "https://github.com/facebookresearch/sam2",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
+      "archived": false,
+      "licenseURL": "https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/LICENSE",
+      "codeLicense": "NOASSERTION",
+      "readmeURL": "https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/README.md"
+    },
+    {
+      "repository": "google-research/frame-interpolation",
+      "source": "https://github.com/google-research/frame-interpolation",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "69f8708f08e62c2edf46a27616a4bfcf083e2076",
+      "archived": true,
+      "licenseURL": "https://github.com/google-research/frame-interpolation/blob/69f8708f08e62c2edf46a27616a4bfcf083e2076/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/google-research/frame-interpolation/blob/69f8708f08e62c2edf46a27616a4bfcf083e2076/README.md"
+    },
+    {
+      "repository": "hongyuanyu/SPAN",
+      "source": "https://github.com/hongyuanyu/SPAN",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "c77a5917759f09e66fbc7124220c5afc5ee221e5",
+      "archived": false,
+      "licenseURL": "https://github.com/hongyuanyu/SPAN/blob/c77a5917759f09e66fbc7124220c5afc5ee221e5/LICENSE.txt",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/hongyuanyu/SPAN/blob/c77a5917759f09e66fbc7124220c5afc5ee221e5/README.md"
+    },
+    {
+      "repository": "hzwer/Practical-RIFE",
+      "source": "https://github.com/hzwer/Practical-RIFE",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "bbfd2ea90910789a860ea3e2b32a240cd577b75e",
+      "archived": false,
+      "licenseURL": "https://github.com/hzwer/Practical-RIFE/blob/bbfd2ea90910789a860ea3e2b32a240cd577b75e/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/hzwer/Practical-RIFE/blob/bbfd2ea90910789a860ea3e2b32a240cd577b75e/README.md"
+    },
+    {
+      "repository": "jantic/DeOldify",
+      "source": "https://github.com/jantic/DeOldify",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "5f86c28923799036ad4b1bf7af8c629ac65efd75",
+      "archived": true,
+      "licenseURL": "https://github.com/jantic/DeOldify/blob/5f86c28923799036ad4b1bf7af8c629ac65efd75/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/jantic/DeOldify/blob/5f86c28923799036ad4b1bf7af8c629ac65efd75/README.md"
+    },
+    {
+      "repository": "ltkong218/IFRNet",
+      "source": "https://github.com/ltkong218/IFRNet",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "b117bcafcf074b2de756b882f8a6ca02c3169bfe",
+      "archived": false,
+      "licenseURL": "https://github.com/ltkong218/IFRNet/blob/b117bcafcf074b2de756b882f8a6ca02c3169bfe/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/ltkong218/IFRNet/blob/b117bcafcf074b2de756b882f8a6ca02c3169bfe/README.md"
+    },
+    {
+      "repository": "megvii-research/NAFNet",
+      "source": "https://github.com/megvii-research/NAFNet",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "2b4af71ebe098a92a75910c233a3965a3e93ede4",
+      "archived": false,
+      "licenseURL": "https://github.com/megvii-research/NAFNet/blob/2b4af71ebe098a92a75910c233a3965a3e93ede4/LICENSE",
+      "codeLicense": "NOASSERTION",
+      "readmeURL": "https://github.com/megvii-research/NAFNet/blob/2b4af71ebe098a92a75910c233a3965a3e93ede4/readme.md"
+    },
+    {
+      "repository": "nagadomi/waifu2x",
+      "source": "https://github.com/nagadomi/waifu2x",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "cc385f97a9debfe611316aabfd5d8bb30ba2dbeb",
+      "archived": false,
+      "licenseURL": "https://github.com/nagadomi/waifu2x/blob/cc385f97a9debfe611316aabfd5d8bb30ba2dbeb/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/nagadomi/waifu2x/blob/cc385f97a9debfe611316aabfd5d8bb30ba2dbeb/README.md"
+    },
+    {
+      "repository": "openai/whisper",
+      "source": "https://github.com/openai/whisper",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "86098128c0b4f24f0e2aa2994de830614b474227",
+      "archived": false,
+      "licenseURL": "https://github.com/openai/whisper/blob/86098128c0b4f24f0e2aa2994de830614b474227/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/openai/whisper/blob/86098128c0b4f24f0e2aa2994de830614b474227/README.md"
+    },
+    {
+      "repository": "piddnad/DDColor",
+      "source": "https://github.com/piddnad/DDColor",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "2adb63f2656ac41cbdf7b894cddd94121a3faf13",
+      "archived": false,
+      "licenseURL": "https://github.com/piddnad/DDColor/blob/2adb63f2656ac41cbdf7b894cddd94121a3faf13/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/piddnad/DDColor/blob/2adb63f2656ac41cbdf7b894cddd94121a3faf13/README.md"
+    },
+    {
+      "repository": "soCzech/TransNetV2",
+      "source": "https://github.com/soCzech/TransNetV2",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed",
+      "archived": false,
+      "licenseURL": "https://github.com/soCzech/TransNetV2/blob/85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed/LICENSE",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/soCzech/TransNetV2/blob/85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed/README.md"
+    },
+    {
+      "repository": "swz30/Restormer",
+      "source": "https://github.com/swz30/Restormer",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "68dc6ac472db26f16361150cb7a96a1bc87da93f",
+      "archived": false,
+      "licenseURL": "https://github.com/swz30/Restormer/blob/68dc6ac472db26f16361150cb7a96a1bc87da93f/LICENSE.md",
+      "codeLicense": "MIT",
+      "readmeURL": "https://github.com/swz30/Restormer/blob/68dc6ac472db26f16361150cb7a96a1bc87da93f/README.md"
+    },
+    {
+      "repository": "xinntao/ESRGAN",
+      "source": "https://github.com/xinntao/ESRGAN",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "73e9b634cf987f5996ac2dd33f4050922398a921",
+      "archived": false,
+      "licenseURL": "https://github.com/xinntao/ESRGAN/blob/73e9b634cf987f5996ac2dd33f4050922398a921/LICENSE",
+      "codeLicense": "Apache-2.0",
+      "readmeURL": "https://github.com/xinntao/ESRGAN/blob/73e9b634cf987f5996ac2dd33f4050922398a921/README.md"
+    },
+    {
+      "repository": "xinntao/Real-ESRGAN",
+      "source": "https://github.com/xinntao/Real-ESRGAN",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
+      "archived": false,
+      "licenseURL": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE",
+      "codeLicense": "BSD-3-Clause",
+      "readmeURL": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/README.md"
+    },
+    {
+      "repository": "xiph/rnnoise",
+      "source": "https://github.com/xiph/rnnoise",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "70f1d256acd4b34a572f999a05c87bf00b67730d",
+      "archived": false,
+      "licenseURL": "https://github.com/xiph/rnnoise/blob/70f1d256acd4b34a572f999a05c87bf00b67730d/COPYING",
+      "codeLicense": "BSD-3-Clause",
+      "readmeURL": "https://github.com/xiph/rnnoise/blob/70f1d256acd4b34a572f999a05c87bf00b67730d/README"
+    },
+    {
+      "repository": "yangxy/GPEN",
+      "source": "https://github.com/yangxy/GPEN",
+      "assessment": "Source metadata only; weights, conversion and device inference remain unqualified",
+      "commit": "2c736702983368847fb544d234a22ac7cff25802",
+      "archived": false,
+      "licenseStatus": "not retrieved; manual review required",
+      "readmeURL": "https://github.com/yangxy/GPEN/blob/2c736702983368847fb544d234a22ac7cff25802/README.md"
+    }
+  ]
+}
