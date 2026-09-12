@@ -566,6 +566,67 @@ static void ServerReady() {
             [weakSelf.saveReceipts reject:requestID];
     }];
 }
+- (void)exportDocumentWithFormat:(NSString *)format completion:(void (^)(NSURL *, NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office exports are main-queue owned");
+    if (self.closing || self.closed || self.insertingAttachment || self.saveReceipts.activeRequestID ||
+        !self.editor.webView || self.editor.document->fakeClientFd < 0 ||
+        ![@[@"pdf", @"docx", @"odt", @"rtf", @"txt", @"pptx", @"odp", @"xlsx", @"ods"] containsObject:format]) {
+        completion(nil, OfficeError(30, @"Finish the current operation before exporting.")); return;
+    }
+    // Reuse the exclusive engine-operation guard: close and save cannot race this worker.
+    self.insertingAttachment = YES;
+    self.editor.view.userInteractionEnabled = NO;
+    const unsigned documentID = self.editor.document->appDocId;
+    NSURL *folder = [[[self.workingFileURL URLByDeletingLastPathComponent] URLByAppendingPathComponent:@"exports" isDirectory:YES]
+        URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    NSString *name = [[self.workingFileURL.lastPathComponent stringByDeletingPathExtension] stringByAppendingPathExtension:format];
+    NSURL *output = [folder URLByAppendingPathComponent:name];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            NSError *failure = nil;
+            if ([NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:&failure]) {
+                try {
+                    FloeExportDocument([documentID]() -> COKitDocument * {
+                        DocumentData *data = DocumentData::getIfExists(documentID);
+                        return data ? data->loKitDocument : nullptr;
+                    }, output.absoluteString.UTF8String, format.UTF8String);
+                    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:output.path error:&failure];
+                    if (!failure && (![attributes[NSFileType] isEqual:NSFileTypeRegular] || [attributes[NSFileSize] unsignedLongLongValue] == 0))
+                        failure = OfficeError(31, @"The exported file is empty or unavailable.");
+                } catch (...) { failure = OfficeError(32, @"Office could not convert this document to the selected format."); }
+            }
+            if (failure) [NSFileManager.defaultManager removeItemAtURL:folder error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.insertingAttachment = NO;
+                if (!self.closed && !self.closing) self.editor.view.userInteractionEnabled = YES;
+                completion(failure ? nil : output, failure);
+            });
+        }
+    });
+}
+- (void)startPresentationWithCompletion:(void (^)(NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office presentation is main-queue owned");
+    if (self.closing || self.closed || self.insertingAttachment || !self.editor.webView ||
+        ![@[@"ppt", @"pptx", @"odp"] containsObject:self.workingFileURL.pathExtension.lowercaseString]) {
+        completion(OfficeError(33, @"An open presentation is required.")); return;
+    }
+    NSString *script = @"(() => { const app = window.app; if (!app || !app.map || app.map.getDocType() !== 'presentation' || !app.socket.connected()) return false; app.map.fire(window.canvasSlideshowEnabled ? 'newfullscreen' : 'fullscreen'); return true; })()";
+    [self.editor.webView evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
+        completion(error ?: ([value isKindOfClass:NSNumber.class] && [value boolValue] ? nil : OfficeError(34, @"The presentation is not ready.")));
+    }];
+}
+- (void)setDrawingMode:(NSNumber *)enabled completion:(void (^)(NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office drawing is main-queue owned");
+    if (self.readOnly || self.closing || self.closed || self.insertingAttachment || !self.editor.webView) {
+        completion(OfficeError(35, @"Open the document for editing before annotating.")); return;
+    }
+    NSString *command = enabled.boolValue ? @".uno:Freeline_Unfilled" : @".uno:SelectObject";
+    NSData *encoded = [NSJSONSerialization dataWithJSONObject:@[command] options:0 error:nil];
+    NSString *argument = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
+    NSString *script = [NSString stringWithFormat:@"(() => { const map = window.app && window.app.map; if (!map || !map.isEditMode() || typeof map.sendUnoCommand !== 'function') return false; map.sendUnoCommand((%@)[0]); return true; })()", argument];
+    [self.editor.webView evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
+        completion(error ?: ([value isKindOfClass:NSNumber.class] && [value boolValue] ? nil : OfficeError(36, @"The drawing tool is not ready.")));
+    }];
 - (void)cancelPendingSave {
     [self.saveReceipts cancel];
 }

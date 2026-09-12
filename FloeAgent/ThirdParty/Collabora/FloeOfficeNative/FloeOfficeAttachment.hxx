@@ -23,3 +23,7 @@ struct FloeEmbeddedAttachment {
 std::vector<FloeEmbeddedAttachment> FloeListAttachments(const std::function<COKitDocument *()> &lookupDocument);
 void FloeExportAttachment(const std::function<COKitDocument *()> &lookupDocument,
                              const std::string &identifier, const std::string &destinationURL);
+
+// Export to a new private file without changing the live document's URL or format.
+void FloeExportDocument(const std::function<COKitDocument *()> &lookupDocument,
+                       const std::string &destinationURL, const std::string &format);

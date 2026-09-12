@@ -39,6 +39,13 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// persistence result. The caller still coordinates original-file writeback.
 /// Only one explicit request is admitted at a time; no autosave can complete it.
 - (void)saveWorkingCopyWithCompletion:(void (^)(NSError * _Nullable error))completion;
+/// Export to a new private file. Save the working copy first to flush pending editor input.
+/// Completion confirms a nonempty file; the client additionally validates its format.
+- (void)exportDocumentWithFormat:(NSString *)format completion:(void (^)(NSURL * _Nullable fileURL, NSError * _Nullable error))completion;
+/// Start the engine's actual presentation surface; completion acknowledges dispatch only.
+- (void)startPresentationWithCompletion:(void (^)(NSError * _Nullable error))completion;
+/// Uses Office's editable vector freehand shape tool, so annotations follow normal save/export.
+- (void)setDrawingMode:(NSNumber *)enabled completion:(void (^)(NSError * _Nullable error))completion;
 /// Stop waiting for an explicit save. An already running engine save may still
 /// finish in its private files; this never cancels or commits the original file.
 - (void)cancelPendingSave;

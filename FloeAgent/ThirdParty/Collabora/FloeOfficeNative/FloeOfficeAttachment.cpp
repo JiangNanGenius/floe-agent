@@ -539,3 +539,41 @@ void FloeExportAttachment(const std::function<COKitDocument *()> &lookupDocument
         throw std::runtime_error("This attachment is no longer present. Refresh the attachment list.");
     FloeReadPackage(shell, name, &destinationURL);
 }
+
+#include <com/sun/star/frame/XStorable.hpp>
+void FloeExportDocument(const std::function<COKitDocument *()> &lookupDocument,
+                       const std::string &destinationURL, const std::string &format) {
+    SolarMutexGuard guard;
+    auto shell = FloeOfficeShell(lookupDocument);
+    auto document = lookupDocument();
+    if (!document) throw std::runtime_error("Document closed before export.");
+    OUString filter;
+    switch (document->getDocumentType()) {
+        case COKitDocumentType::TEXT:
+            if (format == "pdf") filter = u"writer_pdf_Export"_ustr;
+            else if (format == "docx") filter = u"Office Open XML Text"_ustr;
+            else if (format == "odt") filter = u"writer8"_ustr;
+            else if (format == "rtf") filter = u"Rich Text Format"_ustr;
+            else if (format == "txt") filter = u"Text (encoded)"_ustr;
+            break;
+        case COKitDocumentType::PRESENTATION:
+            if (format == "pdf") filter = u"impress_pdf_Export"_ustr;
+            else if (format == "pptx") filter = u"Impress MS PowerPoint 2007 XML"_ustr;
+            else if (format == "odp") filter = u"impress8"_ustr;
+            break;
+        case COKitDocumentType::SPREADSHEET:
+            if (format == "pdf") filter = u"calc_pdf_Export"_ustr;
+            else if (format == "xlsx") filter = u"Calc MS Excel 2007 XML"_ustr;
+            else if (format == "ods") filter = u"calc8"_ustr;
+            break;
+        default: break;
+    }
+    if (filter.isEmpty()) throw std::runtime_error("Unsupported document export format.");
+    css::uno::Reference<css::frame::XStorable> storable(shell->GetModel(), css::uno::UNO_QUERY_THROW);
+    css::uno::Sequence<css::beans::PropertyValue> properties{
+        comphelper::makePropertyValue(u"FilterName"_ustr, filter),
+        comphelper::makePropertyValue(u"Overwrite"_ustr, false),
+        comphelper::makePropertyValue(u"FilterOptions"_ustr, format == "txt" ? u"UTF8,LF"_ustr : OUString())
+    };
+    storable->storeToURL(FloeUNOString(destinationURL), properties);
+}
