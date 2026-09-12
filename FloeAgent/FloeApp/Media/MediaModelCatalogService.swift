@@ -15,10 +15,16 @@ actor MediaModelCatalogService {
     private var cached: ModelArtifactCatalog?
     private var lastRefresh: Date?
     private var catalogURL: URL?
+    private var signatureURL: URL?
     private var boundStore: ModelArtifactStore?
 
-    func configure(catalogURL: URL?) {
+    func configure(catalogURL: URL?, signatureURL: URL? = nil) {
+        if self.catalogURL != catalogURL {
+            cached = nil
+            lastRefresh = nil
+        }
         self.catalogURL = catalogURL
+        self.signatureURL = signatureURL ?? catalogURL?.deletingLastPathComponent().appendingPathComponent("catalog.sig")
     }
 
     func bind(store: ModelArtifactStore) {
@@ -30,10 +36,10 @@ actor MediaModelCatalogService {
         if !forceRefresh, let cached, let lastRefresh, Date().timeIntervalSince(lastRefresh) < 3600 {
             return cached
         }
-        guard let catalogURL else { return cached }
+        guard let catalogURL, let signatureURL else { return cached }
         do {
             let catalogData = try await fetch(catalogURL)
-            let signatureData = try await fetch(catalogURL.appendingPathExtension("sig"))
+            let signatureData = try await fetch(signatureURL)
             guard try verify(catalogData: catalogData, signatureData: signatureData) else {
                 FloeLogger(category: .tools).error("modelCatalogSignatureInvalid")
                 return cached
@@ -56,10 +62,10 @@ actor MediaModelCatalogService {
         } else {
             installedIDs = []
         }
-        let installed = (catalog?.models ?? []).filter { installedIDs.contains($0.id) }.map {
+        let installed = (catalog?.models ?? []).filter { $0.isInstallable && installedIDs.contains($0.id) }.map {
             MediaCapabilities.Model(id: $0.id, capability: $0.capability, installed: true, kind: $0.kind, license: $0.license)
         }
-        let available = (catalog?.models ?? []).filter { !installedIDs.contains($0.id) }.map {
+        let available = (catalog?.models ?? []).filter { $0.isInstallable && !installedIDs.contains($0.id) }.map {
             MediaCapabilities.Model(id: $0.id, capability: $0.capability, installed: false, kind: $0.kind, license: $0.license)
         }
         return (installed, available)
@@ -71,6 +77,7 @@ actor MediaModelCatalogService {
             var models: [ModelArtifact]?
         }
         let envelope = try JSONDecoder().decode(Envelope.self, from: catalogData)
+        guard envelope.schemaVersion == 2 else { throw FloeError.validationFailed("Unsupported model catalog schema") }
         return ModelArtifactCatalog(
             models: envelope.models ?? [],
             catalogSHA256: FloeDigest.sha256Hex(catalogData)

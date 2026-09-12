@@ -50,6 +50,18 @@ Branch: `codex/floe-1-7-integration-20260912`.
   The end-to-end fixture exposed and fixed a missing Debian ar archive header
   in the repository publisher. Production source provisioning remains open.
 
+- `3d3aa55`: transactional package checkpoint; `0d47ac4`: cloud-signed
+  floe-video 1.0.1 artifacts, pulled and verified locally with `build.py --check`.
+  The Skill now advertises only verified conversion paths. Signing is a branch
+  artifact update, not an App release or model inference qualification.
+
+- Model catalog wiring now uses `catalog.sig` and filters pending assets from
+  installable results. Resource installs reject unsafe paths, size mismatches and
+  corrupt registries. Capability output distinguishes installed from runnable.
+  Thirty focused tests pass, including three model-resource tests and verification
+  of every package in the signed v2 Skill catalog. These are resource-management
+  tests, not model inference or per-environment model-lifecycle acceptance.
+
 ## Documentation
 
 See [build and acceptance](FLOE_1_7_BUILD_AND_ACCEPTANCE.md),

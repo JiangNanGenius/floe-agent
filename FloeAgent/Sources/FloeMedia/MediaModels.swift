@@ -30,6 +30,7 @@ public struct ModelArtifact: Codable, Sendable, Hashable, Identifiable {
     public var convertedBy: String?
     public var platforms: [String]?
     public var notes: String?
+    public var status: String?
 
     public init(
         id: String,
@@ -43,7 +44,8 @@ public struct ModelArtifact: Codable, Sendable, Hashable, Identifiable {
         source: String? = nil,
         convertedBy: String? = nil,
         platforms: [String]? = nil,
-        notes: String? = nil
+        notes: String? = nil,
+        status: String? = nil
     ) {
         self.id = id
         self.version = version
@@ -57,10 +59,25 @@ public struct ModelArtifact: Codable, Sendable, Hashable, Identifiable {
         self.convertedBy = convertedBy
         self.platforms = platforms
         self.notes = notes
+        self.status = status
+    }
+
+    /// Catalog presence alone does not make an artifact installable.
+    public var isInstallable: Bool {
+        status == "ready" && !files.isEmpty && !(license ?? "").isEmpty && files.allSatisfy {
+            guard let url = URL(string: $0.url) else { return false }
+            return url.scheme == "https" && url.host != nil && url.user == nil && url.password == nil
+                && $0.sha256.count == 64 && $0.sha256.allSatisfy(\.isHexDigit)
+                && ($0.sizeBytes ?? 0) > 0
+        }
     }
 
     public var totalBytes: Int64 {
-        files.reduce(0) { $0 + ($1.sizeBytes ?? 0) }
+        files.reduce(0) { total, file in
+            let size = max(0, file.sizeBytes ?? 0)
+            let (sum, overflow) = total.addingReportingOverflow(size)
+            return overflow ? Int64.max : sum
+        }
     }
 }
 
@@ -156,6 +173,7 @@ public actor ModelArtifactStore {
     private let downloader: Downloader
     private let limits: Limits
     private let fileManager = FileManager.default
+    private var mutationActive = false
 
     public init(rootURL: URL, downloader: @escaping Downloader, limits: Limits = Limits()) {
         self.rootURL = rootURL
@@ -166,9 +184,14 @@ public actor ModelArtifactStore {
     private var manifestURL: URL { rootURL.appendingPathComponent("installed-models.json") }
 
     public func installed() -> [InstalledModel] {
-        guard let data = try? Data(floeContentsOf: manifestURL),
-              let models = try? decoder().decode([InstalledModel].self, from: data) else {
-            return []
+        (try? installedChecked()) ?? []
+    }
+
+    private func installedChecked() throws -> [InstalledModel] {
+        guard fileManager.fileExists(atPath: manifestURL.path) else { return [] }
+        let models = try decoder().decode([InstalledModel].self, from: Data(floeContentsOf: manifestURL))
+        guard Set(models.map(\.id)).count == models.count else {
+            throw FloeError.validationFailed("Duplicate installed model records")
         }
         return models.sorted { $0.id < $1.id }
     }
@@ -185,13 +208,23 @@ public actor ModelArtifactStore {
         scope: InstalledModel.Scope,
         cancellation: CancellationToken?
     ) async throws -> InstalledModel {
-        guard !artifact.files.isEmpty else {
-            throw FloeError.validationFailed("model \(artifact.id) has no files")
+        guard !mutationActive else { throw FloeError.validationFailed("Another model mutation is active") }
+        mutationActive = true
+        defer { mutationActive = false }
+        guard artifact.isInstallable else {
+            throw FloeError.validationFailed("model \(artifact.id) is not a verified ready artifact")
         }
-        let destination = rootURL
-            .appendingPathComponent(scope.rawValue, isDirectory: true)
-            .appendingPathComponent(artifact.id, isDirectory: true)
-            .appendingPathComponent(artifact.version, isDirectory: true)
+        guard !artifact.version.contains("/"), Set(artifact.files.map(\.path)).count == artifact.files.count else {
+            throw FloeError.validationFailed("Invalid model version or duplicate file path")
+        }
+        let existingModels = try installedChecked()
+        let destination = try safePath("\(scope.rawValue)/\(artifact.id)/\(artifact.version)", beneath: rootURL)
+        for file in artifact.files {
+            _ = try safePath(file.path, beneath: destination)
+            guard let size = file.sizeBytes, size <= limits.maximumFileBytes else {
+                throw FloeError.validationFailed("Model file exceeds the download limit")
+            }
+        }
         let staging = destination.deletingLastPathComponent()
             .appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
@@ -203,6 +236,13 @@ public actor ModelArtifactStore {
                     throw FloeError.validationFailed("invalid model file URL: \(file.path)")
                 }
                 let data = try await downloader(url, limits.maximumFileBytes)
+                try cancellation?.throwIfCancelled()
+                guard Int64(data.count) <= limits.maximumFileBytes, Int64(data.count) == file.sizeBytes else {
+                    throw FloeError.validationFailed("Model file size differs from the signed catalog")
+                }
+                guard Int64(data.count) <= limits.maximumTotalBytes - total else {
+                    throw FloeError.validationFailed("Model exceeds the total download limit")
+                }
                 total += Int64(data.count)
                 guard total <= limits.maximumTotalBytes else {
                     throw FloeError.validationFailed("model exceeds the \(limits.maximumTotalBytes)-byte limit")
@@ -211,14 +251,18 @@ public actor ModelArtifactStore {
                 guard digest.caseInsensitiveCompare(file.sha256) == .orderedSame else {
                     throw FloeError.validationFailed("sha256 mismatch for \(file.path)")
                 }
-                let target = staging.appendingPathComponent(file.path)
+                let target = try safePath(file.path, beneath: staging)
                 try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: target, options: .atomic)
             }
-            try? fileManager.removeItem(at: destination)
+            // Never replace a registered model until explicit removal has completed.
+            guard !fileManager.fileExists(atPath: destination.path), !existingModels.contains(where: { $0.id == artifact.id }) else {
+                throw FloeError.validationFailed("Model already installed; remove it before installing another version")
+            }
+            try cancellation?.throwIfCancelled()
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fileManager.moveItem(at: staging, to: destination)
-            var models = installed()
+            var models = existingModels
             models.removeAll { $0.id == artifact.id }
             let record = InstalledModel(
                 id: artifact.id,
@@ -230,7 +274,11 @@ public actor ModelArtifactStore {
                 license: artifact.license
             )
             models.append(record)
-            try persist(models)
+            do { try persist(models) }
+            catch {
+                try? fileManager.moveItem(at: destination, to: staging)
+                throw error
+            }
             return record
         } catch {
             try? fileManager.removeItem(at: staging)
@@ -240,13 +288,21 @@ public actor ModelArtifactStore {
 
     /// Removes one model install and deletes its files.
     public func remove(id: String) throws {
-        var models = installed()
+        guard !mutationActive else { throw FloeError.validationFailed("Another model mutation is active") }
+        var models = try installedChecked()
         guard let record = models.first(where: { $0.id == id }) else {
             throw FloeError.notFound("model \(id)")
         }
-        try? fileManager.removeItem(atPath: record.rootPath)
+        let expected = try safePath("\(record.scope.rawValue)/\(record.id)/\(record.version)", beneath: rootURL)
+        guard expected.standardizedFileURL.path == URL(fileURLWithPath: record.rootPath).standardizedFileURL.path else {
+            throw FloeError.validationFailed("Installed model path does not match its ownership")
+        }
+        let trash = expected.deletingLastPathComponent().appendingPathComponent(".removing-\(UUID().uuidString)")
+        try fileManager.moveItem(at: expected, to: trash)
         models.removeAll { $0.id == id }
-        try persist(models)
+        do { try persist(models) }
+        catch { try? fileManager.moveItem(at: trash, to: expected); throw error }
+        try fileManager.removeItem(at: trash)
     }
 
     public func status() -> String {
@@ -255,6 +311,23 @@ public actor ModelArtifactStore {
         return models.map {
             "\($0.id) \($0.version) capability=\($0.capability) scope=\($0.scope.rawValue) path=\($0.rootPath)"
         }.joined(separator: "\n")
+    }
+
+    private func safePath(_ relative: String, beneath root: URL) throws -> URL {
+        let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
+        guard !relative.contains("\\"), !relative.contains("\0"),
+              !parts.contains(".."), !parts.contains("."), !parts.contains("") else {
+            throw FloeError.validationFailed("Invalid model artifact path")
+        }
+        var current = root.resolvingSymlinksInPath().standardizedFileURL
+        for part in parts {
+            current.appendPathComponent(String(part))
+            if let attrs = try? fileManager.attributesOfItem(atPath: current.path),
+               attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+                throw FloeError.validationFailed("Model artifact path crosses a symbolic link")
+            }
+        }
+        return current
     }
 
     private func persist(_ models: [InstalledModel]) throws {
@@ -331,7 +404,7 @@ public struct MediaModelsTool: AgentTool {
             for model in installed {
                 lines.append("installed id=\(model.id) version=\(model.version) capability=\(model.capability) scope=\(model.scope.rawValue)")
             }
-            for artifact in catalog?.models ?? [] where !installed.contains(where: { $0.id == artifact.id }) {
+            for artifact in catalog?.models ?? [] where artifact.isInstallable && !installed.contains(where: { $0.id == artifact.id }) {
                 if let capability = args.capability, artifact.capability != capability { continue }
                 lines.append("available id=\(artifact.id) version=\(artifact.version) capability=\(artifact.capability) bytes=\(artifact.totalBytes) license=\(artifact.license ?? "unknown")")
             }
@@ -341,7 +414,9 @@ public struct MediaModelsTool: AgentTool {
             guard let id = args.id, let artifact = catalog?.model(id: id) else {
                 throw FloeError.notFound("model \(args.id ?? "") is not in the signed catalog")
             }
-            let scope = args.scope.flatMap(InstalledModel.Scope.init(rawValue:)) ?? .shared
+            guard let rawScope = args.scope, let scope = InstalledModel.Scope(rawValue: rawScope) else {
+                throw FloeError.validationFailed("An explicit valid model install scope is required")
+            }
             let record = try await store.install(artifact, scope: scope, cancellation: context.cancellation)
             return ToolExecutionOutput(
                 digesting: "installed id=\(record.id) version=\(record.version) scope=\(record.scope.rawValue) path=\(record.rootPath)",

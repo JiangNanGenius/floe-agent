@@ -636,6 +636,9 @@ final class AppEnvironment: ObservableObject {
             modelCatalogProvider: { await MediaModelCatalogService.shared.catalog() }
         )
         Task {
+            await MediaModelCatalogService.shared.configure(
+                catalogURL: URL(string: "https://raw.githubusercontent.com/\(OfficialSkillHub.owner)/\(OfficialSkillHub.repository)/main/\(OfficialSkillHub.catalogPath)")
+            )
             await MediaModelCatalogService.shared.bind(store: mediaModelStore)
             _ = await MediaModelCatalogService.shared.catalog()
         }

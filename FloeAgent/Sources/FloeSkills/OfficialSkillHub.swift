@@ -83,7 +83,7 @@ public enum OfficialSkillHub {
               let proof = Data(base64Encoded: envelope.signature),
               key.isValidSignature(proof, for: bytes) else { throw Failure.signature }
         let catalog = try JSONDecoder().decode(Catalog.self, from: bytes)
-        guard catalog.schemaVersion == 1, catalog.publisher == owner,
+        guard [1, 2].contains(catalog.schemaVersion), catalog.publisher == owner,
               catalog.packages.count == skillIDs.count,
               Set(catalog.packages.map(\.id)) == skillIDs else { throw Failure.catalog }
         for package in catalog.packages {

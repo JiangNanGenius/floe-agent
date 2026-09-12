@@ -4,7 +4,7 @@
 
 当前版本状态统一引用 [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。历史发布与证据不可回写成新版本成功结果；第三方许可/来源及签名生成产物保留各自流程。旧专题在对应功能变化时更新正文，不用统一日期掩盖内容年龄。
 
-本地忽略的 `DESIGN.md` 和 `docs/DEVELOPMENT_PLAN.md` 已补充 1.7 方向，但仍遵循仓库原有忽略规则，不强行纳入提交。网站在线内容不由这些 Markdown 自动证明已部署。签名 floe-video 的更新还须同步版本、简短变更说明及签名，属于后续功能接通工作。
+本地忽略的 `DESIGN.md` 和 `docs/DEVELOPMENT_PLAN.md` 已补充 1.7 方向，但仍遵循仓库原有忽略规则，不强行纳入提交。网站在线内容不由这些 Markdown 自动证明已部署。floe-video 已更新为 1.0.1，同步简短变更说明，并经云端签名与本地校验；后续能力接通仍须继续维护。
 
 ## 文件登记
 
@@ -139,4 +139,4 @@
 | [skill-hub/sources/floe-network/SKILL.md](../skill-hub/sources/floe-network/SKILL.md) | 可发布 Skill | 既有技能说明保留；行为变化时同步版本与签名 |
 | [skill-hub/sources/floe-office/SKILL.md](../skill-hub/sources/floe-office/SKILL.md) | 可发布 Skill | 既有技能说明保留；行为变化时同步版本与签名 |
 | [skill-hub/sources/floe-pdf/SKILL.md](../skill-hub/sources/floe-pdf/SKILL.md) | 可发布 Skill | 既有技能说明保留；行为变化时同步版本与签名 |
-| [skill-hub/sources/floe-video/SKILL.md](../skill-hub/sources/floe-video/SKILL.md) | 可发布 Skill | 版本/签名流程维护；floe-video 能力描述仍待专项校正 |
+| [skill-hub/sources/floe-video/SKILL.md](../skill-hub/sources/floe-video/SKILL.md) | 可发布 Skill | 1.0.1 已校正能力描述，云端签名与本地验证通过 |

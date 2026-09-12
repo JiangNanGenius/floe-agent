@@ -1,0 +1,48 @@
+Floe 1.7 resource/catalog checkpoint after 0d47ac4
+Xcode 27 beta, macOS host; 30 tests across five test products.
+Model inference and device acceptance NOT EXECUTED.
+
+✔ Test schemaTwoCatalogVerifiesEveryPublishedPackage() passed after 0.011 seconds.
+✔ Suite "Signed model catalog and bundled Skills" passed after 0.012 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.013 seconds.
+✔ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() passed after 0.093 seconds.
+✔ Suite "Job environment persistence" passed after 0.093 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.093 seconds.
+✔ Test recoveryRejectsSymlinkedJournalDirectory() passed after 0.023 seconds.
+✔ Test committedFilesSurviveRecovery() passed after 0.024 seconds.
+✔ Test tarChecksTruncationAndChecksum() passed after 0.023 seconds.
+✔ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() passed after 0.024 seconds.
+✔ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() passed after 0.023 seconds.
+✔ Test explicitRequestUpgradesAndConflictsFail() passed after 0.023 seconds.
+✔ Test acceptsGnuPGSignatureAndRejectsTampering() passed after 0.024 seconds.
+✔ Test alternativesAndConflictingVersionConstraints() passed after 0.023 seconds.
+✔ Test choosesCompatibleVersionAndInstallsDependenciesFirst() passed after 0.023 seconds.
+✔ Test packagePathsRejectLinksAndTraversal() passed after 0.024 seconds.
+✔ Suite "Package dependency constraints" passed after 0.025 seconds.
+✔ Test interruptedWriteRestoresOldAndRemovesNewFiles() passed after 0.025 seconds.
+✔ Test emptyTrustStoreNeverAcceptsRepository() passed after 0.028 seconds.
+✔ Suite "Package integrity" passed after 0.029 seconds.
+✔ Test recoveryValidatesAllBackupsBeforeChangingFiles() passed after 0.030 seconds.
+✔ Suite "Package transaction recovery" passed after 0.031 seconds.
+✔ Test damagedDownloadNeverReachesInstalledState() passed after 0.036 seconds.
+✔ Test collisionsScriptsAndLocalEditsFailBeforeMutation() passed after 0.100 seconds.
+✔ Test signedInstallUpgradeDependencyAndOwnedRemoval() passed after 0.111 seconds.
+✔ Suite "Publisher to client package installation" passed after 0.111 seconds.
+✔ Test run with 16 tests in 4 suites passed after 0.112 seconds.
+✔ Test rejectsPendingAndTraversalBeforeDownload() passed after 0.004 seconds.
+✔ Test corruptRegistryIsNotOverwrittenByInstall() passed after 0.011 seconds.
+✔ Test validatesSizeAndRestoresInstalledStateAfterRestart() passed after 0.014 seconds.
+✔ Suite "Model artifact readiness and ownership" passed after 0.014 seconds.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.219 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 0.583 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 0.821 seconds.
+✔ Suite "Real media exports" passed after 0.821 seconds.
+✔ Test run with 6 tests in 2 suites passed after 0.821 seconds.
+✔ Test corruptRegistryIsPreserved() passed after 0.012 seconds.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.023 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.037 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.040 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.047 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.129 seconds.
+✔ Suite "Environment durability" passed after 0.130 seconds.
+✔ Test run with 6 tests in 1 suite passed after 0.130 seconds.

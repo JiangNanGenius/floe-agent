@@ -32,6 +32,19 @@ public struct MediaCapabilities: Sendable, Codable {
         public var installed: Bool
         public var kind: String
         public var license: String?
+        public var runnable: Bool
+        public var unavailableReason: String?
+
+        public init(id: String, capability: String, installed: Bool, kind: String, license: String?,
+                    runnable: Bool = false, unavailableReason: String? = "Model inference runner has not been qualified") {
+            self.id = id
+            self.capability = capability
+            self.installed = installed
+            self.kind = kind
+            self.license = license
+            self.runnable = runnable
+            self.unavailableReason = unavailableReason
+        }
     }
 
     public var osVersion: String
