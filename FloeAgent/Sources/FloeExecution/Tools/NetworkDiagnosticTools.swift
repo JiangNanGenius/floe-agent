@@ -11,7 +11,7 @@ private enum NetworkDiagnosticSupport {
     static func localOutput(_ text: String) -> ToolExecutionOutput {
         ToolExecutionOutput(
             summary: "executionTarget=device\n" + text,
-            fullOutputSHA256: Digest.sha256Hex(Data(text.utf8)),
+            fullOutputSHA256: FloeDigest.sha256Hex(Data(text.utf8)),
             exitStatus: 0
         )
     }

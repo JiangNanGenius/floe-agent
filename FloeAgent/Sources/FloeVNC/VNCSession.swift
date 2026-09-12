@@ -207,7 +207,7 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
         guard !encoded.isEmpty, encoded.count <= 8 * 1_024 * 1_024 else {
             throw FloeError.validationFailed("VNC screenshot exceeds 8 MiB")
         }
-        let digest = SHA256.hash(data: encoded).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(encoded)
         return VNCFrameCapture(
             data: encoded,
             sha256: digest,

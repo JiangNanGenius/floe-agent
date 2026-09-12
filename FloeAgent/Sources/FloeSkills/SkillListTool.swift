@@ -49,7 +49,7 @@ public struct SkillListTool: AgentTool {
             throw FloeError.validationFailed("One skill's metadata exceeds the response budget; shorten its metadata")
         }
         return .init(summary: String(decoding: data, as: UTF8.self),
-            fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
             maximumSummaryCharacters: 262_144)
     }
 }

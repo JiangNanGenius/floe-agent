@@ -58,7 +58,7 @@ private enum CloudWorkspaceToolSupport {
     static func output(_ data: Data) -> ToolExecutionOutput {
         let bounded = data.prefix(256 * 1024)
         let summary = String(decoding: bounded, as: UTF8.self)
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         return ToolExecutionOutput(summary: summary, fullOutputSHA256: digest)
     }
 }

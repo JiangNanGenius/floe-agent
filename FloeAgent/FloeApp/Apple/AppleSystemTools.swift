@@ -15,8 +15,7 @@ import FloeWorkspace
 
 private enum AppleToolOutput {
     static func make(_ text: String, exitStatus: Int32 = 0) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: exitStatus)
+        return ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
     }
 
     static func date(_ value: String?) throws -> Date? {
@@ -781,7 +780,7 @@ struct AppleCameraCaptureTool: AgentTool {
         }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: [.atomic])
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         return AppleToolOutput.make("status=ok path=\(relativePath) bytes=\(data.count) sha256=\(digest)")
     }
 }

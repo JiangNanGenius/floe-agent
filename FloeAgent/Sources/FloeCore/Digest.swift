@@ -3,8 +3,9 @@ import Crypto
 
 /// Shared digest helpers. One implementation replaces the inline
 /// `SHA256.hash(...).map { String(format: "%02x", $0) }` copies scattered
-/// across tools and services.
-public enum Digest {
+/// across tools and services. Named `FloeDigest` to avoid colliding with
+/// `Crypto.Digest` in files that import swift-crypto directly.
+public enum FloeDigest {
     public static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }

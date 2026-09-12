@@ -41,8 +41,7 @@ private enum OfficeToolSupport {
     }
 
     static func output(_ text: String, exitStatus: Int32 = 0) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: exitStatus)
+        return ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
     }
 
     static func validatePath(_ path: String, extension expected: String? = nil) throws {

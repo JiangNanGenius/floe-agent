@@ -304,7 +304,7 @@ public actor WebSearchService {
     }
 
     private static func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        FloeDigest.sha256Hex(data)
     }
 
     private static func hmac(key: Data, value: Data) -> Data {

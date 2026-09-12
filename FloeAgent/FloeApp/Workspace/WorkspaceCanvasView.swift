@@ -6907,7 +6907,7 @@ private struct CanvasLocalImageEditor: View {
             let target = directory.appendingPathComponent(filename)
             try data.write(to: target, options: .atomic)
             writtenTarget = target
-            let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let hash = FloeDigest.sha256Hex(data)
             try await environment.creativeAssetStore.save(CreativeAssetRecord(
                 id: assetID, contentHash: hash, kind: .image,
                 displayName: "\(node.text.isEmpty ? "画布图片" : node.text) 编辑",

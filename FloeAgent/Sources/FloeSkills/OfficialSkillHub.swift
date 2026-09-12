@@ -1,6 +1,7 @@
 import Foundation
 import Crypto
 import ZIPFoundation
+import FloeCore
 
 /// The signed catalog is data, never a source of new trust roots or native code.
 public enum OfficialSkillHub {
@@ -165,6 +166,6 @@ public enum OfficialSkillHub {
     }
 
     private static func digest(_ bytes: Data) -> String {
-        SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        FloeDigest.sha256Hex(bytes)
     }
 }

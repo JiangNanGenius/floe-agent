@@ -106,7 +106,7 @@ public struct SkillSearchTool: AgentTool {
         guard data.count <= 262_144 else {
             throw FloeError.validationFailed("Skill search response is too large; use fewer queries or skill.list for paginated metadata")
         }
-        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), maximumSummaryCharacters: 262_144)
+        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: FloeDigest.sha256Hex(data), maximumSummaryCharacters: 262_144)
     }
 }
 
@@ -144,7 +144,7 @@ public struct SkillReadTool: AgentTool {
         }
         let data = try JSONEncoder().encode(rows)
         guard data.count <= 262_144 else { throw FloeError.validationFailed("Skill response exceeds 256 KiB; use skill.list for the inventory or read one exact id with a smaller limit") }
-        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), maximumSummaryCharacters: 262_144)
+        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: FloeDigest.sha256Hex(data), maximumSummaryCharacters: 262_144)
     }
 }
 
@@ -196,5 +196,5 @@ public struct SkillManageTool: AgentTool {
 }
 
 private func skillOutput(_ text: String) -> ToolExecutionOutput {
-    ToolExecutionOutput(summary: text, fullOutputSHA256: SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined())
+    ToolExecutionOutput(summary: text, fullOutputSHA256: FloeDigest.sha256Hex(Data(text.utf8)))
 }

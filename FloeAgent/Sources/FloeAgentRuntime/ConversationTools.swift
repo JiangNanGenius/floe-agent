@@ -140,8 +140,7 @@ public struct ConversationSearchTool: AgentTool {
     }
 
     static func output(_ value: String, exitStatus: Int32 = 0) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: value, fullOutputSHA256: digest, exitStatus: exitStatus)
+        return ToolExecutionOutput(digesting: value, exitStatus: exitStatus)
     }
 }
 

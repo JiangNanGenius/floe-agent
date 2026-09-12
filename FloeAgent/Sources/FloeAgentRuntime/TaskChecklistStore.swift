@@ -135,7 +135,7 @@ public actor TaskChecklistStore {
         try update.validate()
         guard !operationID.isEmpty, operationID.utf8.count <= 256 else { throw FloeError.validationFailed("A durable tool call ID is required") }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        let digest = SHA256.hash(data: try encoder.encode(update)).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(try encoder.encode(update))
         return try await database.writer { db in
             guard let conversation = try String.fetchOne(db, sql: "SELECT conversation_id FROM runs WHERE id = ?", arguments: [runID.uuidString]),
                   let conversationID = UUID(uuidString: conversation) else { throw FloeError.validationFailed("Run has no owning task") }

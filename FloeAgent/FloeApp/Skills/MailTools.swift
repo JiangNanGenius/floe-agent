@@ -13,7 +13,7 @@ private enum MailToolReply {
         return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self),
                                    fullOutputSHA256: digest(data), exitStatus: exitStatus, requiresUserAction: needsUser)
     }
-    static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+    static func digest(_ data: Data) -> String { FloeDigest.sha256Hex(data) }
     static func failure(_ error: Error) throws -> ToolExecutionOutput {
         let failure = error as? MailFailure
         let keychainFailure = error is KeychainStoreError

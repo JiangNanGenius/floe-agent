@@ -27,7 +27,7 @@ private enum RemoteHostingSupport {
     static func output(_ data: Data) -> ToolExecutionOutput {
         ToolExecutionOutput(
             summary: String(decoding: data.prefix(256 * 1024), as: UTF8.self),
-            fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            fullOutputSHA256: FloeDigest.sha256Hex(data)
         )
     }
 }

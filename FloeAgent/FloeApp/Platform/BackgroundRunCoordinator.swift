@@ -14,6 +14,17 @@ extension Notification.Name {
     static let floeOpenConversation = Notification.Name("org.floeagent.open-conversation")
 }
 
+/// Exponential media-refresh backoff: 15s doubling per retry, capped at 30
+/// minutes. Extracted because two scheduling paths previously duplicated the
+/// same formula.
+enum MediaRetryBackoff {
+    static let maximum: TimeInterval = 30 * 60
+
+    static func delay(afterRetryCount count: Int) -> TimeInterval {
+        min(maximum, pow(2, Double(min(count, 8))) * 15)
+    }
+}
+
 struct BackgroundExecutionSurfaceTransition: Sendable, Equatable {
     var stopsPictureInPicture: Bool
     var stopsScreenShare: Bool
@@ -1263,8 +1274,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     $0.lastPolledAt = now
                     $0.retryCount += 1
                     $0.lastError = error.localizedDescription
-                    let delay = min(30 * 60.0, pow(2, Double(min($0.retryCount, 8))) * 15)
-                    $0.nextPollAt = now.addingTimeInterval(delay)
+                    $0.nextPollAt = now.addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
                 }
             }
         }
@@ -2171,7 +2181,7 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
                 let store = MediaGenerationJobStore(database: database)
                 let data = try? Data(contentsOf: destination, options: .mappedIfSafe)
                 let hash = data.map {
-                    SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+                    FloeDigest.sha256Hex($0)
                 } ?? assetID.uuidString
                 let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize)
                     .map(Int64.init) ?? 0
@@ -2220,7 +2230,7 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
             _ = try? await store.transition(id: jobID, to: job.state) {
                 $0.retryCount += 1
                 $0.lastError = message
-                $0.nextPollAt = now.addingTimeInterval(min(30 * 60, pow(2, Double(min($0.retryCount, 8))) * 15))
+                $0.nextPollAt = now.addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
             }
         }
     }

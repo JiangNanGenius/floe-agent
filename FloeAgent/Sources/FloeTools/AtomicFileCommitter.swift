@@ -84,7 +84,7 @@ public enum AtomicFileCommitter {
         return FileCommitReceipt(
             url: destination,
             byteCount: data.count,
-            sha256: Digest.sha256Hex(data),
+            sha256: FloeDigest.sha256Hex(data),
             replacedExisting: existed
         )
     }
@@ -119,7 +119,7 @@ public enum AtomicFileCommitter {
         } else {
             try fileManager.moveItem(at: stagedFile, to: destination)
         }
-        let digest = (try? Digest.sha256Hex(ofFileAt: destination)) ?? ""
+        let digest = (try? FloeDigest.sha256Hex(ofFileAt: destination)) ?? ""
         return FileCommitReceipt(
             url: destination,
             byteCount: byteCount,
@@ -138,7 +138,7 @@ public enum AtomicFileCommitter {
             }
         case .replaceIfUnchanged(let expectedSHA256, let expectedMTime, let tolerance):
             if let expectedSHA256 {
-                let actual = try Digest.sha256Hex(ofFileAt: destination)
+                let actual = try FloeDigest.sha256Hex(ofFileAt: destination)
                 guard actual == expectedSHA256.lowercased() else {
                     throw FloeError.validationFailed("Write conflict: the file changed since it was read")
                 }

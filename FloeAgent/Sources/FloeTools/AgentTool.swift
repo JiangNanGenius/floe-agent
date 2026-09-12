@@ -124,4 +124,23 @@ public struct ToolExecutionOutput: Sendable {
         self.artifacts = artifacts
         self.requiresUserAction = requiresUserAction
     }
+
+    /// Convenience factory for the common "digest the summary" case, so tools
+    /// stop re-implementing the same two lines.
+    public init(
+        digesting summary: String,
+        exitStatus: Int32? = nil,
+        artifacts: [ToolArtifactReference] = [],
+        requiresUserAction: Bool = false,
+        maximumSummaryCharacters: Int = 4096
+    ) {
+        self.init(
+            summary: summary,
+            fullOutputSHA256: FloeDigest.sha256Hex(Data(summary.utf8)),
+            exitStatus: exitStatus,
+            artifacts: artifacts,
+            requiresUserAction: requiresUserAction,
+            maximumSummaryCharacters: maximumSummaryCharacters
+        )
+    }
 }

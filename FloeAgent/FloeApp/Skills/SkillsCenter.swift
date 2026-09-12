@@ -394,7 +394,7 @@ final class SkillsCenter: ObservableObject {
                   envelope.files == sourceEnvelope.files else {
                 throw FloeError.validationFailed("The rewrite attempted to expand skill permissions")
             }
-            let sourceDigest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let sourceDigest = FloeDigest.sha256Hex(data)
             let temporary = FileManager.default.temporaryDirectory
                 .appendingPathComponent("floe-finder-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: temporary) }
@@ -481,7 +481,7 @@ final class SkillsCenter: ObservableObject {
                     .sorted { $0.relativePath < $1.relativePath }
                 for script in scripts {
                     guard let data = snapshot.files[script.relativePath] else { continue }
-                    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    let digest = FloeDigest.sha256Hex(data)
                     preapprovedPythonScriptSHA256.insert(digest)
                 }
                 if !scripts.isEmpty {

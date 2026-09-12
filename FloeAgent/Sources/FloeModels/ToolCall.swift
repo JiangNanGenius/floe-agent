@@ -70,7 +70,7 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
         var copy = self
         var data = Data(runID.uuidString.utf8)
         data.append(Data(id.utf8))
-        copy.idempotencyKey = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        copy.idempotencyKey = FloeDigest.sha256Hex(data)
         return copy
     }
 }

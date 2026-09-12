@@ -14,7 +14,7 @@ private func jobsOutput(_ payload: some Encodable) throws -> ToolExecutionOutput
     let data = try encoder.encode(payload)
     return ToolExecutionOutput(
         summary: String(decoding: data, as: UTF8.self),
-        fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+        fullOutputSHA256: FloeDigest.sha256Hex(data),
         maximumSummaryCharacters: 262_144
     )
 }

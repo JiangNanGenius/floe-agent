@@ -1078,7 +1078,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         let id = UUID()
         let name = "\(id.uuidString).jpg"
         try data.write(to: artifactDirectory.appendingPathComponent(name), options: .atomic)
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         return BrowserArtifactReference(
             id: id,
             relativePath: "BrowserArtifacts/\(name)",

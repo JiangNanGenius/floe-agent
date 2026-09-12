@@ -98,7 +98,7 @@ public struct SVGDocumentTool: AgentTool {
                 try? FileManager.default.removeItem(at: outputURL)
                 return Self.output("status=error error=saved SVG could not be reopened", code: 2)
             }
-            let sha = SHA256.hash(data: reopened).map { String(format: "%02x", $0) }.joined()
+            let sha = FloeDigest.sha256Hex(reopened)
             return Self.output("status=saved path=\(outputPath) bytes=\(reopened.count) sha256=\(sha)\n\(report)", code: 0)
         }
     }
@@ -136,8 +136,7 @@ public struct SVGDocumentTool: AgentTool {
     }
 
     private static func output(_ text: String, code: Int32) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: code)
+        return ToolExecutionOutput(digesting: text, exitStatus: code)
     }
 }
 

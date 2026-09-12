@@ -74,7 +74,7 @@ enum DeviceICMPTraceroute {
             seconds: 10,
             timeoutMessage: "device traceroute DNS resolution timed out after 10s"
         ) {
-            try DeviceICMPPing.resolveIPv4(target)
+            try HostResolver.ipv4Addresses(target)
         }
         guard let sAddr = addresses.first else {
             throw FloeError.validationFailed("device traceroute supports IPv4 targets only and \(target) has no A record")
@@ -179,7 +179,7 @@ enum DeviceICMPTraceroute {
         }
         return DeviceTracerouteReport(
             target: target,
-            resolvedAddress: DeviceICMPPing.addressString(sAddr: sAddr),
+            resolvedAddress: HostResolver.presentation(sAddr),
             maxHops: maxHops,
             hops: hops
         )

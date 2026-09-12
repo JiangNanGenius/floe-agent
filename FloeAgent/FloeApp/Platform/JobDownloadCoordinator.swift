@@ -186,7 +186,10 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
     private func settle(jobID: UUID, staging: URL, statusCode: Int, contentType: String) async {
         let store = BackgroundJobStore(database: database)
         do {
-            guard let job = try await store.job(id: jobID), job.state == .running else { return }
+            guard let job = try await store.job(id: jobID), job.state == .running else {
+                clearBookkeeping(for: jobID)
+                return
+            }
             let args = try JSONDecoder().decode(URLDownloadTool.Arguments.self, from: job.payloadJSON)
             let cap = args.maxBytes ?? Self.defaultMaxBytes
             let byteCount = (try? staging.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
@@ -271,7 +274,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             }
             guard let destination else { return }
 
-            let digest = (try? Digest.sha256Hex(ofFileAt: destination)) ?? ""
+            let digest = (try? FloeDigest.sha256Hex(ofFileAt: destination)) ?? ""
             var summaryText = "status=ok path=\(workspaceRelative ?? destination.path) statusCode=\(statusCode) contentType=\(contentType) bytes=\(byteCount) sha256=\(digest)"
             if let fallbackNote { summaryText += "\nnote=\(fallbackNote)" }
             let finalSummary = summaryText

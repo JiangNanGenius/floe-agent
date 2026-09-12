@@ -158,7 +158,6 @@ public struct RemoteConnectionCloseTool: AgentTool {
 
 private extension RemoteConnectionOpenTool {
     static func output(_ text: String, _ status: Int32) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: status)
+        return ToolExecutionOutput(digesting: text, exitStatus: status)
     }
 }

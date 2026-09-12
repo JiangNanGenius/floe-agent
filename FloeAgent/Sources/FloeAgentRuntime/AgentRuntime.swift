@@ -1560,7 +1560,7 @@ public actor FloeAgentRuntime {
         let url = root.appendingPathComponent(artifact.relativePath)
         guard let data = try? Data(floeContentsOf: url, options: [.mappedIfSafe]),
               data.count == artifact.byteCount else { return nil }
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         guard digest == artifact.sha256.lowercased() else { return nil }
         return .imageData(mimeType: artifact.mimeType, base64: data.base64EncodedString())
     }
@@ -3408,7 +3408,7 @@ public actor FloeAgentRuntime {
     }
 
     private static func digest(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        FloeDigest.sha256Hex(data)
     }
 
     // MARK: Audit
@@ -3772,7 +3772,7 @@ struct ToolLoopGuard {
     }
 
     private static func digest(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        FloeDigest.sha256Hex(data)
     }
 }
 

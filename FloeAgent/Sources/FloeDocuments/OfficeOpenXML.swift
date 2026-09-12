@@ -475,6 +475,29 @@ private enum XMLTextCodec {
     }
 }
 
+/// Canonical display value for one worksheet cell, shared by the inspect and
+/// readSheet readers so the two cannot drift (formula wins over any cached
+/// value; shared strings, booleans and inline strings decode identically).
+enum OOXMLCellDecoder {
+    static func displayValue(
+        type: String?,
+        rawValue: String,
+        formula: String?,
+        sharedStrings: [String]
+    ) -> String {
+        if let formula, !formula.isEmpty { return "=" + formula }
+        switch type {
+        case "s":
+            guard let index = Int(rawValue), sharedStrings.indices.contains(index) else { return "" }
+            return sharedStrings[index]
+        case "b":
+            return rawValue == "1" ? "true" : "false"
+        default:
+            return rawValue
+        }
+    }
+}
+
 private enum XLSXCellCodec {
     static func fields(
         source: String,
@@ -487,18 +510,15 @@ private enum XLSXCellCodec {
             guard let reference = XMLText.attribute("r", inOpeningElement: cell) else { return nil }
             let type = XMLText.attribute("t", inOpeningElement: cell)
             let formula = XMLTextCodec.textContents(cell, tag: "f").first
-            let value: String
-            if let formula, !formula.isEmpty {
-                value = "=" + formula
-            } else if type == "s",
-                      let raw = XMLTextCodec.textContents(cell, tag: "v").first,
-                      let index = Int(raw), sharedStrings.indices.contains(index) {
-                value = sharedStrings[index]
-            } else if type == "inlineStr" {
-                value = XMLTextCodec.textContents(cell, tag: "t").joined()
+            let rawValue: String
+            if type == "inlineStr" {
+                rawValue = XMLTextCodec.textContents(cell, tag: "t").joined()
             } else {
-                value = XMLTextCodec.textContents(cell, tag: "v").first ?? ""
+                rawValue = XMLTextCodec.textContents(cell, tag: "v").first ?? ""
             }
+            let value = OOXMLCellDecoder.displayValue(
+                type: type, rawValue: rawValue, formula: formula, sharedStrings: sharedStrings
+            )
             return OfficeEditableField(
                 id: "\(entry)|c|\(reference)", section: section, label: reference, text: value
             )

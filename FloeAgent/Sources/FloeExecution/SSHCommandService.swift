@@ -42,28 +42,8 @@ public struct SSHCommandService: Sendable {
     ) async throws -> SSHExecResult {
         if cancellation?.isCancelled == true { throw SSHExecError.cancelled }
 
-        let resolvedID: UUID
-        if let hostID {
-            resolvedID = hostID
-        } else if let fallback = try await defaultHostProvider() {
-            resolvedID = fallback
-        } else {
-            throw RemotePythonError.noHostConfigured
-        }
-        guard try await hostResolver(resolvedID) != nil else {
-            throw RemotePythonError.hostNotFound(resolvedID)
-        }
-
-        let session: any RemotePythonSession
-        do {
-            session = try await sessionFactory(resolvedID)
-        } catch let error as RemotePythonError {
-            throw error
-        } catch {
-            throw RemotePythonError.connectionFailed(
-                SecretRedactor.redact(error.localizedDescription)
-            )
-        }
+        let resolvedID = try await resolveHostID(hostID)
+        let session = try await makeSession(hostID: resolvedID)
         return try await session.execute(
             command,
             timeout: timeout,

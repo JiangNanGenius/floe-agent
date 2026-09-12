@@ -159,7 +159,7 @@ enum DeviceICMPPing {
             seconds: 10,
             timeoutMessage: "device ping DNS resolution timed out after 10s"
         ) {
-            try resolveIPv4(target)
+            try HostResolver.ipv4Addresses(target)
         }
         guard let sAddr = addresses.first else {
             throw FloeError.validationFailed("device ping supports IPv4 targets only and \(target) has no A record")
@@ -174,37 +174,6 @@ enum DeviceICMPPing {
                 cancellation: cancellation
             )
         }.value
-    }
-
-    /// Blocking getaddrinfo for A records (datagram ICMPv4 socket). Returns
-    /// sin_addr values in network byte order.
-    static func resolveIPv4(_ target: String) throws -> [UInt32] {
-        var hints = addrinfo()
-        hints.ai_family = AF_INET
-        hints.ai_socktype = SOCK_DGRAM
-        var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(target, nil, &hints, &result) == 0, let first = result else {
-            throw FloeError.validationFailed("Device DNS lookup failed for ping target")
-        }
-        defer { freeaddrinfo(first) }
-        var addresses: [UInt32] = []
-        var cursor: UnsafeMutablePointer<addrinfo>? = first
-        while let current = cursor {
-            if current.pointee.ai_family == AF_INET,
-               current.pointee.ai_addrlen >= socklen_t(MemoryLayout<sockaddr_in>.size) {
-                let address = current.pointee.ai_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
-                addresses.append(address.sin_addr.s_addr)
-            }
-            cursor = current.pointee.ai_next
-        }
-        return addresses
-    }
-
-    static func addressString(sAddr: UInt32) -> String {
-        var address = in_addr(s_addr: sAddr)
-        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-        inet_ntop(AF_INET, &address, &buffer, socklen_t(INET_ADDRSTRLEN))
-        return String(cString: buffer)
     }
 
     private static func monotonicSeconds() -> TimeInterval {
@@ -268,7 +237,7 @@ enum DeviceICMPPing {
             replies.append(reply)
             sleepIntervalRemainder(since: sentAt, isLast: sequence == count - 1, cancellation: cancellation)
         }
-        return DevicePingReport(target: target, resolvedAddress: addressString(sAddr: sAddr), replies: replies)
+        return DevicePingReport(target: target, resolvedAddress: HostResolver.presentation(sAddr), replies: replies)
     }
 
     /// Waits up to `timeoutSeconds` for the matching echo reply, ignoring

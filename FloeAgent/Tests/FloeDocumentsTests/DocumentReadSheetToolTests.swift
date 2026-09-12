@@ -98,10 +98,10 @@ struct DocumentReadSheetToolTests {
         #expect(output.summary.contains("sheet=Data rows=2 shown=2"))
         #expect(output.summary.contains("Hello\t\tInline"))
         #expect(output.summary.contains("true\t42"))
-        // Formula without a cached value reads as the formula (matching
-        // office.inspect); a cached value still wins.
+        // Formulas display as "=FORMULA" in both readers; cached values are
+        // not trusted (our own writer never emits them).
         #expect(output.summary.contains("=SUM(B2:B2)"))
-        #expect(output.summary.contains("\t84"))
+        #expect(output.summary.contains("=B2*2"))
     }
 
     private static func makeWorkbook(at url: URL) throws {

@@ -44,13 +44,25 @@ public actor RawRemoteConnectionService {
             throw FloeError.validationFailed("A valid host and TCP port are required")
         }
         let client = RawTCPConnection(host: NWEndpoint.Host(host), port: networkPort, telnet: kind == .telnet)
-        try await client.connect(timeout: timeout)
+        do {
+            try await withTaskCancellationHandler {
+                try await client.connect(timeout: timeout)
+            } onCancel: {
+                client.close()
+            }
+        } catch {
+            // Never leak a half-open socket when connect fails or the caller
+            // cancels mid-handshake.
+            client.close()
+            throw error
+        }
         let id = UUID()
         sessions[id] = Entry(runID: runID, kind: kind, client: client,
                              host: host, port: port, expiresAt: Date().addingTimeInterval(30 * 60))
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(30 * 60))
-            await self?.expire(sessionID: id)
+        Task {
+            await SessionExpiryScheduler.shared.schedule(id: id, after: 30 * 60) { [weak self] in
+                await self?.expire(sessionID: id)
+            }
         }
         return id
     }

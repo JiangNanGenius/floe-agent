@@ -2441,7 +2441,7 @@ final class ConversationCenter: ObservableObject {
             guard !existingReferences.contains(reference) else { continue }
             let summary = String((payload["summary"] ?? payload["tool"] ?? "Successful tool result").prefix(1_000))
             let material = (payload["tool"] ?? "") + "|" + (inputsByCallID[payload["id"] ?? ""] ?? "") + "|" + (payload["outputDigest"].flatMap { $0.isEmpty ? nil : $0 } ?? payload["summary"] ?? "")
-            let fingerprint = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+            let fingerprint = FloeDigest.sha256Hex(Data(material.utf8))
             guard knownFingerprints.insert(fingerprint).inserted else { continue }
             newEvidence.append(GoalEvidence(
                 kind: .toolResult,

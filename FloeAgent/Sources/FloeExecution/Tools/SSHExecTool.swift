@@ -153,8 +153,7 @@ public struct SSHExecTool: AgentTool {
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: exitStatus)
+        return ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
     }
 }
 
@@ -270,6 +269,6 @@ public struct SSHRemoteTaskCancelTool: AgentTool {
         guard context.approvalGrantID != nil else { throw FloeError.validationFailed("Task cancellation requires approval") }
         let state = try await remoteAgent.cancel(taskID: args.taskID, hostID: args.hostID.flatMap(UUID.init(uuidString:)), cancellation: context.cancellation)
         let data = try JSONSerialization.data(withJSONObject: ["taskID": args.taskID, "state": state, "nextTool": "ssh.taskStatus"], options: [.sortedKeys])
-        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: FloeDigest.sha256Hex(data))
     }
 }

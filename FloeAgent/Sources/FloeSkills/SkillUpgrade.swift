@@ -1,5 +1,6 @@
 import Foundation
 import Crypto
+import FloeCore
 
 /// Explicit source identity. The mutable ref is resolved once, and every file
 /// thereafter is fetched from the resulting immutable commit.
@@ -137,7 +138,7 @@ public enum GitHubSkillDownload {
             let bytes = try await fetch(source, commit, parent.isEmpty ? path : parent + "/" + path)
             total += bytes.count
             guard bytes.count <= 2_097_152, total <= 8_388_608 else { throw SkillUpgradeError.invalidInventory }
-            let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let hash = FloeDigest.sha256Hex(bytes)
             guard hash == inventory.files[path]?.lowercased() else { throw SkillUpgradeError.hashMismatch(path) }
             files[path] = bytes
         }

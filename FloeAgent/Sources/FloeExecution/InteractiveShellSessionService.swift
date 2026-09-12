@@ -284,10 +284,10 @@ public actor InteractiveShellSessionService {
     }
 
     private func scheduleExpiry(_ sessionID: UUID) {
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.sessionLifetime))
-            guard let self else { return }
-            await self.expire(sessionID)
+        Task {
+            await SessionExpiryScheduler.shared.schedule(id: sessionID, after: Self.sessionLifetime) { [weak self] in
+                await self?.expire(sessionID)
+            }
         }
     }
 

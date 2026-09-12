@@ -172,3 +172,38 @@ public struct WorkspacePathGuard: Sendable {
         return (attributes[.size] as? NSNumber)?.intValue
     }
 }
+
+/// Access-specific policy applied on top of path resolution. The guard's
+/// configured defaults previously shadowed larger tool limits (a 10 MiB
+/// default made a tool's own 64 MiB check unreachable); callers now state the
+/// cap they mean, once.
+public enum WorkspacePathAccess: Sendable {
+    case read(maxBytes: Int)
+    case createNew
+    case replace(consent: Bool)
+}
+
+public extension WorkspacePathGuard {
+    func resolve(_ path: String, for access: WorkspacePathAccess) throws -> URL {
+        let url = try resolve(path)
+        switch access {
+        case .read(let maxBytes):
+            if let values = try? url.resourceValues(forKeys: [.isDirectoryKey]),
+               values.isDirectory == true {
+                throw WorkspaceToolError.isDirectory(path)
+            }
+            if let size = try fileSize(url), size > maxBytes {
+                throw WorkspaceToolError.tooLarge(limit: maxBytes)
+            }
+        case .createNew:
+            guard !FileManager.default.fileExists(atPath: url.path) else {
+                throw WorkspaceToolError.alreadyExists(path)
+            }
+        case .replace(let consent):
+            if !consent, FileManager.default.fileExists(atPath: url.path) {
+                throw WorkspaceToolError.alreadyExistsOverwritable(path)
+            }
+        }
+        return url
+    }
+}

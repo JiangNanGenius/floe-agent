@@ -49,7 +49,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         } ?? []
         return ToolExecutionOutput(
             summary: summary,
-            fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
             artifacts: artifacts,
             requiresUserAction: result.status == .needsUser
         )

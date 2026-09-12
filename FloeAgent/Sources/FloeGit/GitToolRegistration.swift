@@ -93,7 +93,7 @@ private enum GitToolOutput {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(value)
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         return ToolExecutionOutput(
             summary: String(decoding: data.prefix(256 * 1024), as: UTF8.self),
             fullOutputSHA256: digest
@@ -102,7 +102,7 @@ private enum GitToolOutput {
 
     static func text(_ value: String) -> ToolExecutionOutput {
         let data = Data(value.utf8)
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         return ToolExecutionOutput(summary: value, fullOutputSHA256: digest)
     }
 }

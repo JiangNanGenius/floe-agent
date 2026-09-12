@@ -220,7 +220,7 @@ struct RemoteImageInspectTool: AgentTool {
         }
         let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
         if usesArtifactStore {
-            let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let actual = FloeDigest.sha256Hex(data)
             guard actual == expectedSHA256?.lowercased() else {
                 throw FloeError.validationFailed("Artifact digest does not match the producing tool result")
             }
@@ -484,7 +484,7 @@ struct RemoteImageModelsTool: AgentTool {
             throw FloeError.validationFailed("Image catalog page is too large; request a smaller limit")
         }
         return ToolExecutionOutput(summary: text,
-            fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
             exitStatus: 0, maximumSummaryCharacters: 262_144)
     }
 }
@@ -654,7 +654,7 @@ struct PDFInspectTool: AgentTool {
                 : Array(0..<min(document.pageCount, 12))
             return (document, requested)
         }
-        let digest = SHA256.hash(data: inputData).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(inputData)
         let native = try await Task.detached { try FloePDFiumBridge.inspect(inputData, pages: requested.map { NSNumber(value: $0 + 1) }) }.value
         let summary = try PDFKitGate.run { () throws -> String in
             var lines = ["pages=\(document.pageCount)", "sha256=\(digest)",
@@ -912,7 +912,7 @@ struct PDFEditTool: AgentTool {
         let userPassword = try await password(args.userPasswordRef, context: context)
         let ownerPassword = try await password(args.ownerPasswordRef, context: context)
         if let expected = args.expectedSHA256 {
-            let current = SHA256.hash(data: originalInput).map { String(format: "%02x", $0) }.joined()
+            let current = FloeDigest.sha256Hex(originalInput)
             guard current == expected.lowercased() else { throw FloeError.validationFailed("PDF changed since inspection; inspect the current revision") }
         }
         try context.authorizeWorkspacePath(args.outputPath)
@@ -1334,9 +1334,9 @@ enum PDFToolSupport {
             throw FloeError.invalidConfiguration("No task workspace is available")
         }
         try context.authorizeWorkspacePath(path)
-        let url = try WorkspacePathGuard(rootURL: root).resolve(path)
+        let url = try WorkspacePathGuard(rootURL: root).resolve(path, for: .read(maxBytes: FileLimits.pdf))
         let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
-        guard data.count <= 64 * 1_024 * 1_024 else {
+        guard data.count <= FileLimits.pdf else {
             throw FloeError.validationFailed("Input is not a bounded readable PDF")
         }
         return data
@@ -1350,9 +1350,9 @@ enum PDFToolSupport {
             throw FloeError.invalidConfiguration("No task workspace is available")
         }
         try context.authorizeWorkspacePath(path)
-        let url = try WorkspacePathGuard(rootURL: root).resolve(path)
+        let url = try WorkspacePathGuard(rootURL: root).resolve(path, for: .read(maxBytes: FileLimits.pdf))
         let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
-        guard data.count <= 64 * 1_024 * 1_024 else {
+        guard data.count <= FileLimits.pdf else {
             throw FloeError.validationFailed("Input is not a bounded readable PDF")
         }
         return try PDFKitGate.run {
@@ -1438,7 +1438,7 @@ enum PDFToolSupport {
     }
 
     static func output(_ text: String, status: Int32) -> ToolExecutionOutput {
-        ToolExecutionOutput(summary: text, fullOutputSHA256: Digest.sha256Hex(Data(text.utf8)), exitStatus: status)
+        ToolExecutionOutput(summary: text, fullOutputSHA256: FloeDigest.sha256Hex(Data(text.utf8)), exitStatus: status)
     }
 }
 

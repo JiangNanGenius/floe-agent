@@ -67,7 +67,7 @@ public enum FloeArtifactStore {
             throw FloeError.validationFailed("Artifact exceeds the \(maxBytes)-byte limit")
         }
         if let expectedSHA256 {
-            let actual = try Digest.sha256Hex(ofFileAt: resolved)
+            let actual = try FloeDigest.sha256Hex(ofFileAt: resolved)
             guard actual == expectedSHA256.lowercased() else {
                 throw FloeError.validationFailed("Artifact digest changed since it was produced; regenerate it")
             }

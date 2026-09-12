@@ -45,7 +45,7 @@ private func checklistOutput(_ checklist: TaskChecklist?) throws -> ToolExecutio
     // checklists and pointless readPlan round-trips.
     if let checklist { summary += "\n" + checklist.lifecycleHint }
     return .init(summary: summary,
-                 fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+                 fullOutputSHA256: FloeDigest.sha256Hex(data),
                  maximumSummaryCharacters: 262_144)
 }
 

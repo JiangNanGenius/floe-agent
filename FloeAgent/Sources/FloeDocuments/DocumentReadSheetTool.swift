@@ -85,8 +85,7 @@ public struct DocumentReadSheetTool: AgentTool {
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: exitStatus)
+        return ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
     }
 }
 
@@ -399,14 +398,15 @@ private final class WorksheetXMLParser: XMLCollector {
               row <= maximumRows,
               column < maximumColumns else { return }
         rowCount = max(rowCount, row)
-        // Our own workbook writer emits formulas without cached values; expose
-        // the formula itself (like office.inspect does) instead of an empty
-        // cell. External producers with a cached <v> keep their computed value.
-        if currentValue.isEmpty, !currentFormula.isEmpty {
-            cells[row, default: [:]][column] = "=" + currentFormula
-        } else {
-            cells[row, default: [:]][column] = decodedValue(currentValue, type: currentType)
-        }
+        // One shared decoder with office.inspect: formulas display as
+        // "=FORMULA" (cached values are not trusted) and shared strings,
+        // booleans and inline strings decode identically in both readers.
+        cells[row, default: [:]][column] = OOXMLCellDecoder.displayValue(
+            type: currentType,
+            rawValue: currentValue,
+            formula: currentFormula,
+            sharedStrings: sharedStrings
+        )
     }
 
     func renderedRows() -> [[String]] {
@@ -414,18 +414,6 @@ private final class WorksheetXMLParser: XMLCollector {
         return (1...min(rowCount, maximumRows)).map { row in
             guard let rowCells = cells[row], let lastColumn = rowCells.keys.max() else { return [] }
             return (0...lastColumn).map { rowCells[$0] ?? "" }
-        }
-    }
-
-    private func decodedValue(_ rawValue: String, type: String?) -> String {
-        switch type {
-        case "s":
-            guard let index = Int(rawValue), sharedStrings.indices.contains(index) else { return "" }
-            return sharedStrings[index]
-        case "b":
-            return rawValue == "1" ? "true" : "false"
-        default:
-            return rawValue
         }
     }
 

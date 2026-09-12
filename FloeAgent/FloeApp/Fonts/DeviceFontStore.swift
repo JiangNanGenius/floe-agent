@@ -115,7 +115,7 @@ actor DeviceFontStore {
 
     private func persist(data: Data, extension ext: String) throws -> ManagedFontRecord {
         try ensureDirectory()
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         let destination = rootURL.appendingPathComponent("\(digest).\(ext)")
         if !FileManager.default.fileExists(atPath: destination.path) {
             let temporary = rootURL.appendingPathComponent(".\(UUID().uuidString).\(ext)")
@@ -229,8 +229,7 @@ private enum PublicFontDownloader {
 
 private enum FontToolOutput {
     static func make(_ text: String) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: 0)
+        return ToolExecutionOutput(digesting: text, exitStatus: 0)
     }
 }
 

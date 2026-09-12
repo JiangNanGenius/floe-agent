@@ -34,7 +34,7 @@ public struct SSHInspectTargetTool: AgentTool {
         )
         let data = try JSONEncoder().encode(inspection)
         let text = String(decoding: data, as: UTF8.self)
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: 0)
     }
 }

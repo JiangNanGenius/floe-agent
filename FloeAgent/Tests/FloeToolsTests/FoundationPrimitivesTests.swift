@@ -1,13 +1,14 @@
 import Foundation
 import Testing
+import FloeCore
 @testable import FloeTools
 
 struct FoundationPrimitivesTests {
     @Test("Digest matches the standard SHA-256 vector")
     func digestVector() {
-        #expect(Digest.sha256Hex(Data("abc".utf8))
+        #expect(FloeDigest.sha256Hex(Data("abc".utf8))
             == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-        #expect(Digest.shortSHA256(Data("abc".utf8), length: 8) == "ba7816bf")
+        #expect(FloeDigest.shortSHA256(Data("abc".utf8), length: 8) == "ba7816bf")
     }
 
     @Test("AtomicFileCommitter refuses an existing destination without consent")
@@ -95,7 +96,7 @@ struct FoundationPrimitivesTests {
             "GeneratedImages/cat.png",
             allowed: [.generatedImages],
             maxBytes: 1024,
-            expectedSHA256: Digest.sha256Hex(bytes),
+            expectedSHA256: FloeDigest.sha256Hex(bytes),
             root: root
         )
         #expect(data == bytes)

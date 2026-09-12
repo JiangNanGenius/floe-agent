@@ -158,7 +158,7 @@ public enum MemoryVectorMath {
 
 public enum MemoryContentDigest {
     public static func make(_ content: String) -> String {
-        SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+        FloeDigest.sha256Hex(Data(content.utf8))
     }
 }
 

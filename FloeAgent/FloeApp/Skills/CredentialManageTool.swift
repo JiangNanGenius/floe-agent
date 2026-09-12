@@ -137,8 +137,7 @@ struct CredentialManageTool: AgentTool {
     }
 
     private static func output(_ text: String) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: 0)
+        return ToolExecutionOutput(digesting: text, exitStatus: 0)
     }
 }
 

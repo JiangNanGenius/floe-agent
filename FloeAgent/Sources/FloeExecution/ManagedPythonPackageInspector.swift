@@ -67,7 +67,7 @@ public enum ManagedPythonPackageInspector {
               wheelHTTP.statusCode == 200 else {
             throw FloeError.validationFailed("Could not download a bounded wheel for \(spec)")
         }
-        let actualSHA = SHA256.hash(data: wheelData).map { String(format: "%02x", $0) }.joined()
+        let actualSHA = FloeDigest.sha256Hex(wheelData)
         guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
             throw FloeError.validationFailed("PyPI wheel digest mismatch for \(spec)")
         }

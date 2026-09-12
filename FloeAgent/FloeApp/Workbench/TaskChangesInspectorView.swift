@@ -5,6 +5,7 @@ import SwiftUI
 import Crypto
 import FloeModels
 import FloePersistence
+import FloeCore
 
 @MainActor
 private final class TaskChangesInspectorModel: ObservableObject {
@@ -88,7 +89,7 @@ private final class TaskChangesInspectorModel: ObservableObject {
             .appendingPathComponent(artifact.relativePath, isDirectory: false)
         let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
         guard data.count == artifact.byteCount else { return nil }
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(data)
         guard digest == artifact.sha256.lowercased() else { return nil }
         return String(data: data, encoding: .utf8)
     }

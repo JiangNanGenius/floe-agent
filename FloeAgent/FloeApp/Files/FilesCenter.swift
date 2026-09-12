@@ -377,7 +377,7 @@ final class FilesCenter: ObservableObject {
                     : "Edited \(index + 1).\(ext)",
                 uti: isPNG ? UTType.png.identifier : UTType.jpeg.identifier,
                 byteCount: data.count,
-                sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+                sha256: FloeDigest.sha256Hex(data),
                 storage: .applicationSupport,
                 relativePath: relative
             )

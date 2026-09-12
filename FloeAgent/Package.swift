@@ -110,7 +110,9 @@ let package = Package(
 
         .target(
             name: "FloeCore",
-            dependencies: [],
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
             path: "Sources/FloeCore",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

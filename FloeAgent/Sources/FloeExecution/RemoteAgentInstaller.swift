@@ -106,7 +106,7 @@ public struct RemoteAgentInstaller: Sendable {
               let pkcs12 = Data(base64Encoded: response.pkcs12),
               let serverCA = Data(base64Encoded: response.serverCA)
         else { throw FloeError.validationFailed("Advanced-link enrollment failed: \(result.stderr.prefix(512))") }
-        let fingerprint = SHA256.hash(data: serverCA).map { String(format: "%02x", $0) }.joined()
+        let fingerprint = FloeDigest.sha256Hex(serverCA)
         return AdvancedRemoteEnrollment(
             link: AdvancedRemoteLink(id: UUID(), hostID: hostID, deviceID: deviceID, endpoint: endpoint, port: RemoteAgentPayload.mutualTLSPort, serverCAFingerprint: fingerprint, createdAt: Date()),
             pkcs12: pkcs12, password: response.password, serverCA: serverCA

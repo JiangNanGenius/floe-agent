@@ -330,7 +330,7 @@ public actor MCPRemoteClient {
             throw MCPClientError.responseTooLarge(Self.maximumResponseBytes)
         }
         let summary = Self.summary(from: result, fallback: fullData)
-        let digest = SHA256.hash(data: fullData).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(fullData)
         let isError = (result as? [String: Any])?["isError"] as? Bool ?? false
         return ToolExecutionOutput(
             summary: summary,

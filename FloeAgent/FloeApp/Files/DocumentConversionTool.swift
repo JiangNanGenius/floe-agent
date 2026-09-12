@@ -91,7 +91,7 @@ enum DocumentFileConverter {
         try context.cancellation.throwIfCancelled()
         guard !result.data.isEmpty, result.data.count <= maximumBytes else { throw FloeError.validationFailed("Conversion produced empty or oversized output") }
         try PDFToolSupport.write(result.data, to: args.outputPath, context: context)
-        let digest = SHA256.hash(data: result.data).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(result.data)
         // Bounded status only: never put converted document text back in context.
         let warnings = result.warnings.prefix(8).map { String($0.prefix(400)) }.joined(separator: " | ")
         return PDFToolSupport.output("converted=\(args.outputPath) format=\(args.format) bytes=\(result.data.count) sha256=\(digest) originalPreserved=true offline=true modelRewrite=false warnings=\(warnings)", status: 0)

@@ -5,6 +5,7 @@ import WebKit
 import CryptoKit
 import FloeExecution
 import FloeModels
+import FloeCore
 
 struct RichArtifactGallery: View {
     let artifacts: [ToolArtifactReference]
@@ -131,7 +132,7 @@ private struct RichArtifactView: View {
             error = "无法读取产物"
             return
         }
-        let digest = SHA256.hash(data: loaded).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(loaded)
         guard digest == artifact.sha256.lowercased() else {
             error = "产物校验失败"
             return

@@ -51,7 +51,7 @@ enum PDFOperationJournal {
     /// Short digest prefix used for cross-referencing instructions with
     /// inspect/render evidence without storing document content.
     static func digest(_ data: Data) -> String {
-        String(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined().prefix(16))
+        String(FloeDigest.sha256Hex(data).prefix(16))
     }
 
     private static func timestamp() -> String {

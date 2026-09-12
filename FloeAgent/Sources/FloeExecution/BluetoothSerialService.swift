@@ -281,9 +281,10 @@ public final class CoreBluetoothSerialService: NSObject, BluetoothSerialServicin
             runID: request.runID, peripheral: peripheral, write: write, notify: notify
         )
         _ = request.gate.resume(returning: sessionID)
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(30 * 60))
-            self?.expire(sessionID: sessionID)
+        Task {
+            await SessionExpiryScheduler.shared.schedule(id: sessionID, after: 30 * 60) { [weak self] in
+                await MainActor.run { self?.expire(sessionID: sessionID) }
+            }
         }
     }
 

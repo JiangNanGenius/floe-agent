@@ -97,13 +97,12 @@ public struct CryptoHashTool: AgentTool {
         case "sha384": hex = SHA384.hash(data: data).map { String(format: "%02x", $0) }.joined()
         case "sha1": hex = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
         case "md5": hex = Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        default: hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        default: hex = FloeDigest.sha256Hex(data)
         }
         return Self.output("status=ok algorithm=\(args.algorithm.lowercased()) source=\(source) bytes=\(data.count) digest=\(hex)", exitStatus: 0)
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: exitStatus)
+        return ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
     }
 }

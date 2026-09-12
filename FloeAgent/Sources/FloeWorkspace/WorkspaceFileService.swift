@@ -780,7 +780,7 @@ public struct WorkspaceFileService: Sendable {
     }
 
     static func sha256Hex(of data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        FloeDigest.sha256Hex(data)
     }
 
     static func normalizedRelativePath(_ path: String) -> String {

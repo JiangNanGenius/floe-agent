@@ -64,7 +64,6 @@ public struct SSHBootstrapRemoteAgentTool: AgentTool {
     }
 
     private static func output(_ text: String, code: Int32) -> ToolExecutionOutput {
-        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: code)
+        return ToolExecutionOutput(digesting: text, exitStatus: code)
     }
 }

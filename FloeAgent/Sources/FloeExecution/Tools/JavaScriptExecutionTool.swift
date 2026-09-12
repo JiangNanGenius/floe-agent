@@ -128,6 +128,6 @@ public struct JavaScriptExecutionTool: AgentTool {
     }
 
     private static func sha256Hex(of text: String) -> String {
-        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        FloeDigest.sha256Hex(Data(text.utf8))
     }
 }

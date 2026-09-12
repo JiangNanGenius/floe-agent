@@ -195,7 +195,7 @@ public struct PresentationArtifactTool: AgentTool {
         guard document.count <= 1 * 1_024 * 1_024 else {
             throw FloeError.validationFailed("rendered presentation exceeds 1 MiB")
         }
-        let digest = SHA256.hash(data: document).map { String(format: "%02x", $0) }.joined()
+        let digest = FloeDigest.sha256Hex(document)
         let id = UUID()
         let relativeDirectory = "PresentationArtifacts/\(context.runID.uuidString)"
         let root = try rootURLProvider().standardizedFileURL

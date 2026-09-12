@@ -150,7 +150,7 @@ actor CreativeAssetIngestionService {
         license: String?,
         tags: [String]
     ) async throws -> CreativeAssetRecord {
-        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let hash = FloeDigest.sha256Hex(data)
         if let existing = try await assetStore.asset(contentHash: hash),
            let relative = existing.localRelativePath,
            FileManager.default.fileExists(atPath: try localURL(relativePath: relative).path) {
