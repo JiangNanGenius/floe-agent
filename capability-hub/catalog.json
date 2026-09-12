@@ -1,0 +1,1 @@
+{"packages":[{"command":"floe-text","id":"floe/wasm-text","minimumAppVersion":"1.6.7","sha256":"f06cebf6a534afe813bda56584eedc4133edacfd36e31915df9aaa9f10cefe31","url":"https://raw.githubusercontent.com/JiangNanGenius/floe-agent/91082f38a2cae89a98bfe7cfaef8d75f9597f3ae/capability-hub/packages/floe-text/1.0.0/floe-text.wasm","version":"1.0.0"}],"schemaVersion":1}
