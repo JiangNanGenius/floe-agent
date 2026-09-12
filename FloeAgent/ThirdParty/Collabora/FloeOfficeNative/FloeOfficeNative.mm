@@ -627,6 +627,7 @@ static void ServerReady() {
     [self.editor.webView evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
         completion(error ?: ([value isKindOfClass:NSNumber.class] && [value boolValue] ? nil : OfficeError(36, @"The drawing tool is not ready.")));
     }];
+}
 - (void)cancelPendingSave {
     [self.saveReceipts cancel];
 }
