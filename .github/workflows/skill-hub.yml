@@ -15,11 +15,14 @@ permissions:
   contents: read
 jobs:
   verify:
+    needs: publish
+    if: ${{ always() && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: ${{ needs.publish.outputs.commit || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -40,6 +43,8 @@ jobs:
             fi
           fi
   publish:
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
     if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-latest
     permissions:
@@ -55,6 +60,7 @@ jobs:
           FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
         run: python skill-hub/build.py
       - name: Commit signed artifacts
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -63,7 +69,9 @@ jobs:
             FloeAgent/Sources/FloeSkills/OfficialSkillHubKeys.generated.swift
           if git diff --cached --quiet; then
             echo "No signed artifact changes"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git commit -m "Publish signed official skill packages"
           git push origin "HEAD:${{ github.ref_name }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
