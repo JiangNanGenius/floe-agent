@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 import stat
 import subprocess
 import tempfile
+import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -196,10 +197,21 @@ def main():
         return
     # gh uses the developer's existing login or the CI job's read-only token.
     # Credentials never enter the command, artifact, or application resources.
-    with tempfile.TemporaryDirectory(prefix='floe-office-download-') as temporary:
-        subprocess.run(['gh', 'run', 'download', pin['runID'], '--repo', 'JiangNanGenius/floe-agent',
-                        '--name', pin['artifactName'], '--dir', temporary], check=True)
-        finish(install(Path(temporary) / 'OfficeNativeHost.zip', destination))
+    for attempt in range(3):
+        # A failed download may leave a partial ZIP. Retry in a fresh directory;
+        # signature/digest/install failures are never retried or bypassed.
+        with tempfile.TemporaryDirectory(prefix='floe-office-download-') as temporary:
+            try:
+                subprocess.run(['gh', 'run', 'download', pin['runID'], '--repo', 'JiangNanGenius/floe-agent',
+                                '--name', pin['artifactName'], '--dir', temporary], check=True, timeout=600)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                if attempt == 2:
+                    raise
+                print(f'Office artifact download interrupted; retry {attempt + 2}/3')
+                time.sleep(5 * (attempt + 1))
+                continue
+            finish(install(Path(temporary) / 'OfficeNativeHost.zip', destination))
+            return
 
 
 if __name__ == '__main__':
