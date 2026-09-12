@@ -88,7 +88,7 @@ static void FloeEnsureEngineInitialized(void) {
 void FloeShellSetEnvironment(NSDictionary<NSString *, NSString *> *environment) {
     [environment enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
         if (key.length == 0 || [key containsString:@"="]) { return; }
-        setenv(key.UTF8String, value.UTF8String, 1);
+        ios_setenv(key.UTF8String, value.UTF8String, 1);
     }];
 }
 
@@ -143,6 +143,7 @@ struct FloeRunContext {
     const char *command = nullptr;
     char *sessionKey = nullptr;
     __strong NSString *workingDirectory;
+    __strong NSDictionary<NSString *, NSString *> *environment;
     FILE *input = nullptr;
     FILE *output = nullptr;
     FILE *error = nullptr;
@@ -166,6 +167,8 @@ void *FloeRunThreadMain(void *rawContext) {
     @autoreleasepool {
         ios_switchSession(context->sessionKey);
         ios_setContext(context->sessionKey);
+        ios_fork();
+        FloeShellSetEnvironment(context->environment);
         ios_setDirectoryURL([NSURL fileURLWithPath:context->workingDirectory]);
         ios_setStreams(context->input, context->output, context->error);
         thread_stdin = context->input;
@@ -219,7 +222,6 @@ FloeShellBridgeStatus FloeShellRunCommand(
         NSString *stdinPath = [tempRoot stringByAppendingPathComponent:@"stdin"];
         [fileManager createFileAtPath:stdinPath contents:(stdinData ?: [NSData data]) attributes:nil];
 
-        FloeShellSetEnvironment(environment);
         if (rootPath.length > 0) { ios_setMiniRoot(rootPath); }
         NSString *originalDirectory = [fileManager currentDirectoryPath];
         if (rootPath.length > 0) { [fileManager changeCurrentDirectoryPath:rootPath]; }
@@ -234,6 +236,7 @@ FloeShellBridgeStatus FloeShellRunCommand(
         context->command = strdup(fullCommand.UTF8String);
         context->sessionKey = strdup(sessionID.UTF8String);
         context->workingDirectory = workingDirectory;
+        context->environment = environment;
         context->input = fopen(stdinPath.fileSystemRepresentation, "rb");
         int outPipe[2] = {-1, -1}, errPipe[2] = {-1, -1};
         if (pipe(outPipe) != 0 || pipe(errPipe) != 0) {
@@ -319,6 +322,7 @@ struct FloeSessionThreadContext {
     int outputWriteFD;
     char *rootPath;
     char *sessionKey;
+    __strong NSDictionary<NSString *, NSString *> *environment;
     __strong FloeShellSessionRecord *record;
 };
 
@@ -329,6 +333,8 @@ void *FloeSessionThreadMain(void *rawContext) {
         FILE *output = fdopen(context->outputWriteFD, "w");
         ios_switchSession(context->sessionKey);
         ios_setContext(context->sessionKey);
+        ios_fork();
+        FloeShellSetEnvironment(context->environment);
         ios_setStreams(input ?: stdin, output ?: stdout, output ?: stderr);
         thread_stdin = input ?: stdin;
         thread_stdout = output ?: stdout;
@@ -371,7 +377,6 @@ BOOL FloeShellOpenSession(
     }
     fcntl(inputPipe[1], F_SETNOSIGPIPE, 1);
     fcntl(outputPipe[1], F_SETNOSIGPIPE, 1);
-    FloeShellSetEnvironment(environment);
     if (rootPath.length > 0) { ios_setMiniRoot(rootPath); }
 
     FloeSessionThreadContext *context = new FloeSessionThreadContext();
@@ -380,6 +385,7 @@ BOOL FloeShellOpenSession(
     context->outputWriteFD = outputPipe[1];
     context->rootPath = workingDirectory.length > 0 ? strdup(workingDirectory.UTF8String) : NULL;
     context->sessionKey = strdup(sessionID.UTF8String);
+    context->environment = environment;
 
     NSThread *thread = [[NSThread alloc] initWithBlock:^{
         pthread_t pthread = pthread_self();

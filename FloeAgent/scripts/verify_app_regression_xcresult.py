@@ -21,6 +21,7 @@ SUITE_MINIMUMS = {
     "MailConnectorTests": 5,
     "SkillLifecycleTests": 15,
     "LocalPythonRuntimeTests": 2,
+    "LocalShellRuntimeTests": 3,
 }
 
 
