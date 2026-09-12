@@ -43,6 +43,8 @@ final class HomeLaunchpadViewModel: ObservableObject {
     @Published var agentMode: AgentExecutionMode = .agent
     @Published var attachments: [AttachmentRef] = []
     @Published var draftPolicy = DraftTaskPolicy()
+    /// Select Notes before sending without creating a blank conversation.
+    @Published private(set) var draftConversationID = UUID()
     /// Single-flight send guard (double-tap safe).
     @Published private(set) var isSending = false
     /// Honest error surface for the last failed send.
@@ -157,6 +159,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
             }
             draft = ""
             attachments = []
+            draftConversationID = UUID()
             actionError = nil
             await load()
             return conversationID
@@ -182,6 +185,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
             attachments: stagedAttachments,
             executionMode: agentMode,
             initialPolicy: draftPolicy,
+            newConversationID: draftConversationID,
             startOrigin: .explicitUserAction
         )
         return started.conversationID

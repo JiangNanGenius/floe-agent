@@ -1,0 +1,151 @@
+Building for debugging...
+[Computing dependencies]
+[Provisioning 4 / 39]
+[Provisioning 19 / 39]
+[Provisioning 39 / 39]
+[Constructing description]
+[Pre-planning 1 / 775]
+[Planning 147 / 775]
+[Planning 422 / 775]
+[Planning 682 / 775]
+[Planning deferred tasks]
+[Constructing 49 / 1819]
+[Starting]
+[1 / 71] SWCompression
+[10 / 83] GRDB
+[12 / 84] ZIPFoundation
+[13 / 101] ZIPFoundation
+[13 / 102] BitByteData
+[14 / 110] GRDB
+[14 / 119] ZIPFoundation
+[15 / 119] Crypto
+[18 / 123] BitByteData
+[20 / 123] ZIPFoundation
+[25 / 125] BitByteData
+[29 / 127] ZIPFoundation
+[34 / 127] ZIPFoundation
+[36 / 127] ZIPFoundation
+[38 / 127] GRDB
+[41 / 127] GRDB
+[42 / 127] GRDB
+[43 / 127] GRDB
+[44 / 127] GRDB
+[45 / 127] GRDB
+[46 / 127] FloePlatformQualification_PackageTests
+[47 / 126] FloePlatformQualification_PackageTests
+[48 / 126] Crypto
+[50 / 126] Crypto
+[52 / 129] FloeCore
+[53 / 129] Crypto
+[53 / 129] FloeCore
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[56 / 138] FloeCore
+[57 / 138] FloeCore
+[59 / 138] FloeCore
+[62 / 138] FloeCore
+[63 / 139] FloeCore
+[66 / 139] FloeCore
+[67 / 142] FloeCore
+[68 / 142] FloeModels
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[70 / 150] FloeModels
+[71 / 150] FloeModels
+[72 / 150] FloeModels
+[73 / 150] FloeModels
+[76 / 150] FloeModels
+[77 / 151] FloeModels
+[79 / 151] FloeModels
+[81 / 155] FloeTools
+[82 / 155] FloeTools
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[88 / 173] FloeModels
+[89 / 172] FloeTools
+[91 / 172] FloeTools
+[94 / 176] FloeSecurity
+[94 / 177] FloeTools
+[101 / 177] FloeTools
+[102 / 179] FloeMedia
+[102 / 183] FloeEnvironments
+[103 / 185] FloeSkills
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[104 / 186] FloeTools
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[106 / 188] FloeEnvironments
+[107 / 189] FloeSkills
+[111 / 190] FloeTools
+[120 / 193] FloeEnvironments
+[121 / 197] FloeTools
+[124 / 197] FloeSecurity
+[125 / 200] FloeSecurity
+[126 / 200] FloeSecurity
+[128 / 200] FloeSecurity
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[129 / 209] FloePersistence
+[129 / 209] FloeSecurity
+[131 / 209] FloeSecurity
+[133 / 209] FloePersistence
+[135 / 212] FloeSecurity
+[140 / 214] FloePersistence
+[141 / 212] PersistenceTests-product
+[143 / 212] FloePersistence
+[145 / 212] FloePersistence
+[146 / 213] MediaTests-product
+[146 / 215] FloePersistence
+[150 / 219] BitByteData
+[152 / 219] BitByteData
+[154 / 221] SWCompression
+[154 / 221] FloeMedia
+[155 / 221] SWCompression
+[158 / 230] SWCompression
+[159 / 230] SWCompression
+[160 / 230] SWCompression
+[162 / 232] SWCompression
+[165 / 232] SWCompression
+[167 / 235] FloePackages
+[167 / 235] SWCompression
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[169 / 236] SWCompression
+[171 / 236] FloePackages
+[174 / 236] BitByteData
+[177 / 239] SWCompression
+[178 / 239] ZIPFoundation
+[179 / 239] ZIPFoundation
+[181 / 239] GRDB
+[182 / 239] ZIPFoundation
+[184 / 239] SWCompression
+[185 / 239] FloeModels
+[187 / 239] FloeSecurity
+[189 / 237] FloeSkills
+[190 / 236] EnvironmentTests-product
+[192 / 236] SkillHubTests-product
+[198 / 236] SkillHubTests-product
+[198 / 236] EnvironmentTests-product
+[204 / 239] EnvironmentTests-product
+[207 / 244] PersistenceTests-product
+[209 / 246] MediaTests-product
+[209 / 246] PersistenceTests-product
+[212 / 248] PersistenceTests-product
+[213 / 248] PersistenceTests-product
+[220 / 246] PersistenceTests-product
+[228 / 247] MediaTests-product
+[231 / 249] PackageTests-product
+[233 / 255] PersistenceTests-product
+[236 / 253] MediaTests-product
+[238 / 249] MediaTests-product
+[238 / 249] PackageTests-product
+[241 / 250] PackageTests-product
+[244 / 247] PackageTests-product
+[245 / 247] PackageTests-product
+Build complete! (125.16秒)
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Draft Notes launch identity" started.
+◇ Test reservedIdentityCreatesOnceAndCannotReplaceExistingTask() started.
+◇ Test failedPreflightKeepsDraftIdentityReusableWithoutBlankTask() started.
+✔ Test failedPreflightKeepsDraftIdentityReusableWithoutBlankTask() passed after 0.144 seconds.
+✔ Test reservedIdentityCreatesOnceAndCannotReplaceExistingTask() passed after 0.156 seconds.
+✔ Suite "Draft Notes launch identity" passed after 0.156 seconds.
+✔ Test run with 2 tests in 1 suite passed after 0.156 seconds.

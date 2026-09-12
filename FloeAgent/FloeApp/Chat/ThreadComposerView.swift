@@ -18,6 +18,7 @@ import FloeCore
 import FloeModels
 import FloeAgentRuntime
 import FloeLocalModels
+import FloeNotes
 
 /// How the next run should execute. Forward-looking selection surface;
 /// the runtime mapping lands with the workspace tasks (T04/T05).
@@ -154,6 +155,8 @@ struct ThreadComposerView: View {
     /// Changes when the composer is reused for another conversation. Local
     /// transient errors must not leak into the next task.
     var contextID: UUID? = nil
+    /// An unsent Home draft may select Notes without mounting a task workspace.
+    var notesDraftID: UUID? = nil
 
     @State private var isPickerPresented = false
     @State private var isNotesPickerPresented = false
@@ -208,14 +211,7 @@ struct ThreadComposerView: View {
             }
         }
         .sheet(isPresented: $isNotesPickerPresented) {
-            if let contextID {
-                NotesKnowledgePicker(conversationID: contextID) { document, store in
-                    if let attachment = try await NotesKnowledgeAttachment.prepare(document: document, store: store, files: environment.filesCenter) {
-                        attachments.append(attachment)
-                    }
-                    draft += (draft.isEmpty ? "" : "\n\n") + NotesKnowledgeAttachment.reference(document)
-                }
-            }
+            notesKnowledgeSheet
         }
         .sheet(isPresented: $isWorkspacePickerPresented) {
             NavigationStack {
@@ -345,6 +341,19 @@ struct ThreadComposerView: View {
     /// User-comprehensible voice notice for the current state, if any.
     /// Permission failures carry a Settings jump entry; the draft remains
     /// fully editable in every failure mode.
+    @ViewBuilder private var notesKnowledgeSheet: some View {
+        if let notesID = contextID ?? notesDraftID {
+            NotesKnowledgePicker(conversationID: notesID, onSelect: attachNote)
+        }
+    }
+
+    private func attachNote(_ document: NoteDocument, _ store: NotesStore) async throws {
+        if let attachment = try await NotesKnowledgeAttachment.prepare(document: document, store: store, files: environment.filesCenter) {
+            attachments.append(attachment)
+        }
+        draft += (draft.isEmpty ? "" : "\n\n") + NotesKnowledgeAttachment.reference(document)
+    }
+
     private var voiceNotice: (message: LocalizedStringKey, isPermission: Bool)? {
         switch voiceInput.state {
         case .unavailable:
@@ -553,7 +562,7 @@ struct ThreadComposerView: View {
                         Label("composer.attachment.camera", systemImage: "camera")
                     }
                 }
-                if contextID != nil {
+                if contextID != nil || notesDraftID != nil {
                     Button("手记资料", systemImage: "book.pages") { isNotesPickerPresented = true }
                 }
                 Button {

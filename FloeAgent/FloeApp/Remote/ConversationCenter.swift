@@ -1228,6 +1228,7 @@ final class ConversationCenter: ObservableObject {
         attachments: [AttachmentRef] = [],
         executionMode: AgentExecutionMode = .agent,
         initialPolicy: DraftTaskPolicy? = nil,
+        newConversationID: UUID? = nil,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationTask {
         let ingress = SecretIngressScanner.scan(goal)
@@ -1248,6 +1249,7 @@ final class ConversationCenter: ObservableObject {
         )
         let runID = UUID()
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
+            newConversationID: newConversationID,
             conversationTitle: title,
             runID: runID,
             goal: trimmed,

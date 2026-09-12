@@ -14,6 +14,9 @@ import FloeModels
 /// a non-nil identifier must already exist.
 public struct RunLaunchRequest: Sendable, Hashable {
     public var conversationID: UUID?
+    /// Native draft identity used for preselected resource grants. It creates
+    /// a new row only; an existing conversation must never be replaced.
+    public var newConversationID: UUID?
     public var conversationTitle: String
     public var runID: UUID
     public var goal: String
@@ -38,6 +41,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
 
     public init(
         conversationID: UUID? = nil,
+        newConversationID: UUID? = nil,
         conversationTitle: String = "",
         runID: UUID = UUID(),
         goal: String,
@@ -56,6 +60,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         startedAt: Date = Date()
     ) {
         self.conversationID = conversationID
+        self.newConversationID = newConversationID
         self.conversationTitle = conversationTitle
         self.runID = runID
         self.goal = goal
@@ -117,6 +122,9 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
     }
 
     public func prepare(_ request: RunLaunchRequest) async throws -> PreparedRun {
+        guard request.conversationID == nil || request.newConversationID == nil else {
+            throw FloeError.validationFailed("Choose an existing or a new conversation identity, not both")
+        }
         let goal = request.goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !goal.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
@@ -201,7 +209,7 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 createdConversation = false
             } else {
                 conversation = ConversationRecord(
-                    id: UUID(),
+                    id: request.newConversationID ?? UUID(),
                     title: request.conversationTitle,
                     createdAt: now,
                     updatedAt: now
