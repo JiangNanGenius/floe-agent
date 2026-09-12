@@ -686,8 +686,6 @@ struct RootView: View {
             }
             Divider()
             HStack(spacing: 8) {
-                Label("账户", systemImage: "person.crop.circle")
-                Spacer()
                 Button {
                     router.presentedSettings = true
                 } label: {
@@ -697,6 +695,7 @@ struct RootView: View {
                 .frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("more.settings")
                 .accessibilityIdentifier("sidebar.settings")
+                Spacer()
             }
             .padding(.horizontal, 16)
         }
