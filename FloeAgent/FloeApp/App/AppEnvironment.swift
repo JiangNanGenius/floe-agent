@@ -15,6 +15,9 @@ import FloeSecurity
 import FloeSync
 import FloeWorkspace
 import FloeExecution
+import FloeEnvironments
+import FloePackages
+import FloeMedia
 import FloeSSH
 import FloeVNC
 import FloeSkills
@@ -334,6 +337,79 @@ final class AppEnvironment: ObservableObject {
             wasmStore: wasmCapabilities
         )
 
+        // Container substrate: layered environments, apt/dpkg and media
+        // services. Configured before tool registration so the shell command
+        // registry can resolve the active container.
+        let environmentRoots = EnvironmentRoots()
+        let environmentRegistry = EnvironmentRegistry(
+            baseRevision: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "dev"
+        )
+        let containerCAS = ContainerCAS(roots: environmentRoots)
+        let containerLifecycle = ContainerLifecycle(
+            roots: environmentRoots,
+            registry: environmentRegistry,
+            cas: containerCAS,
+            hooks: ContainerLifecycle.Hooks(
+                stopSessions: { [weak self] _ in await self?.shellSessionCenter.closeAllSessions() },
+                cancelJobs: { _ in },
+                terminateWorkers: { _ in }
+            )
+        )
+        let containerPromote = ContainerPromote(
+            roots: environmentRoots,
+            registry: environmentRegistry,
+            cas: containerCAS
+        )
+        let packageHTTP = HTTPRequestService()
+        let aptEngine = AptEngine(
+            downloader: AptEngine.Downloader { url, maxBytes in
+                let temp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("floe-apt-\(UUID().uuidString)")
+                defer { try? FileManager.default.removeItem(at: temp) }
+                _ = try await packageHTTP.download(
+                    url: url,
+                    timeout: 120,
+                    maxBytes: min(maxBytes, 64 * 1024 * 1024),
+                    to: temp
+                )
+                return try Data(floeContentsOf: temp)
+            }
+        )
+        Task {
+            try? await environmentRegistry.prepare()
+            _ = try? await environmentRegistry.ensureProjectContainer(
+                workspaceID: "default",
+                workspaceRootPath: NSTemporaryDirectory()
+            )
+        }
+        FloePlatformServices.shared.configure(
+            registry: environmentRegistry,
+            lifecycle: containerLifecycle,
+            cas: containerCAS,
+            promote: containerPromote,
+            aptEngine: aptEngine,
+            contextProvider: { [weak environmentRegistry] in
+                guard let environmentRegistry else { return nil }
+                guard let record = await environmentRegistry.all().first(where: { $0.kind == .project }) else {
+                    return nil
+                }
+                let layerURL = environmentRoots.layerURL(id: record.id, kind: .project)
+                return PackagesCLI.Context(
+                    container: AptEngine.Container(
+                        id: record.id,
+                        rootURL: environmentRoots.rootURL,
+                        layerURL: layerURL,
+                        layerKind: .project,
+                        baseRevision: record.baseRevision
+                    ),
+                    sources: AptSources.read(inContainerAt: layerURL),
+                    layerURL: layerURL,
+                    installed: DpkgDatabase.merged(layers: [(.project, layerURL)])
+                )
+            },
+            baseSliceURL: nil
+        )
+
         self.localModelsCenter.onCatalogChanged = { [weak self] in
             await self?.localModelRuntime.unload(modelID: nil)
             await self?.conversationCenter.reload()
@@ -535,6 +611,33 @@ final class AppEnvironment: ObservableObject {
         )
         FloeShellCommands.install()
         Task { await FloeShellCommands.refreshPythonCommands() }
+        // Media surface: capabilities, inspection, editing, export,
+        // interpolation/super resolution and signed-catalog model management.
+        let mediaModelRoot = ((try? FloeArtifactStore.root()) ?? FileManager.default.temporaryDirectory)
+            .appendingPathComponent("MediaModels", isDirectory: true)
+        let mediaModelStore = ModelArtifactStore(rootURL: mediaModelRoot) { url, maxBytes in
+            let service = HTTPRequestService()
+            let temporary = FileManager.default.temporaryDirectory
+                .appendingPathComponent("floe-model-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            _ = try await service.download(
+                url: url,
+                timeout: 600,
+                maxBytes: Int(min(maxBytes, 512 * 1024 * 1024)),
+                to: temporary
+            )
+            return try Data(floeContentsOf: temporary)
+        }
+        MediaToolRegistration.register(
+            appBuild: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "dev",
+            modelProvider: { await MediaModelCatalogService.shared.report() },
+            modelStore: mediaModelStore,
+            modelCatalogProvider: { await MediaModelCatalogService.shared.catalog() }
+        )
+        Task {
+            await MediaModelCatalogService.shared.bind(store: mediaModelStore)
+            _ = await MediaModelCatalogService.shared.catalog()
+        }
         // Background jobs (jobs.*): long downloads and Python data work run
         // off the run's critical path. Registered after the execution tools so
         // submit-time availability checks see every supported target runner.

@@ -188,6 +188,18 @@ public actor ShellSessionCenter {
         }
     }
 
+    /// Closes every live session. Container teardown uses this hook; session
+    /// tagging by container is applied when the run context carries an
+    /// environment identifier.
+    public func closeAllSessions() async {
+        let all = Array(sessions.values)
+        for entry in all {
+            sessions.removeValue(forKey: entry.sessionID)
+            await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
+            await backend.closeSession(sessionID: entry.sessionID)
+        }
+    }
+
     private func scheduleExpiry(for sessionID: String, schedulerID: UUID) async {
         await SessionExpiryScheduler.shared.schedule(id: schedulerID, after: configuration.sessionLifetime) { [weak self] in
             await self?.expire(sessionID: sessionID, schedulerID: schedulerID)

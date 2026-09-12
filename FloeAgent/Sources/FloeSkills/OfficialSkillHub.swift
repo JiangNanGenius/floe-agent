@@ -8,7 +8,7 @@ public enum OfficialSkillHub {
     public static let owner = "JiangNanGenius"
     public static let repository = "floe-agent"
     public static let catalogPath = "skill-hub/catalog.json"
-    public static let skillIDs: Set<String> = ["floe-pdf", "floe-office", "floe-network"]
+    public static let skillIDs: Set<String> = ["floe-pdf", "floe-office", "floe-network", "floe-video"]
     /// App-signed bundles may advance an unmodified official install offline.
     /// This does not authorize imports, downgrades, or same-version rewrites.
     public static func acceptsBundledUpgrade(id: String, sourceURL: String?,

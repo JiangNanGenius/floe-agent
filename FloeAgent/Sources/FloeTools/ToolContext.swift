@@ -7,6 +7,10 @@ import FloeModels
 /// Per-execution context handed to every tool.
 public struct ToolContext: Sendable {
     public var runID: UUID
+    /// Container/environment the run executes in. Tools that install or
+    /// execute packages (exec.shell, apt, pip, npm) resolve their writable
+    /// layer from this identifier; nil means the default project container.
+    public var environmentID: String?
     /// Durable provider call identifier. Remote/durable tools use it as an
     /// idempotency key so reconnecting never starts the same action twice.
     public var toolCallID: String?
@@ -40,9 +44,11 @@ public struct ToolContext: Sendable {
         workspaceRootURL: URL? = nil,
         allowedWorkspacePaths: [String] = [],
         cancellation: CancellationToken,
-        childBudget: ChildBudgetContext? = nil
+        childBudget: ChildBudgetContext? = nil,
+        environmentID: String? = nil
     ) {
         self.runID = runID
+        self.environmentID = environmentID
         self.toolCallID = toolCallID
         self.approvalGrantID = approvalGrantID
         self.scope = scope

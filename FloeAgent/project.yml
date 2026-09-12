@@ -63,6 +63,10 @@ targets:
         type: folder
         buildPhase: resources
         optional: true
+      - path: FloeApp/Resources/NodeTools
+        type: folder
+        buildPhase: resources
+        optional: true
       - path: ThirdParty/RoyalVNCKit/LICENSE
         buildPhase: resources
     info:
@@ -430,6 +434,12 @@ targets:
         product: FloeWorkspace
       - package: FloeAgentPackages
         product: FloeExecution
+      - package: FloeAgentPackages
+        product: FloeEnvironments
+      - package: FloeAgentPackages
+        product: FloePackages
+      - package: FloeAgentPackages
+        product: FloeMedia
       - package: FloeAgentPackages
         product: FloeGit
       - package: FloeAgentPackages

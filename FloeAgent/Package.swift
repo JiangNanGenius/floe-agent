@@ -26,6 +26,9 @@ let package = Package(
         .library(name: "FloeMarkdown", targets: ["FloeMarkdown"]),
         .library(name: "FloeWorkspace", targets: ["FloeWorkspace"]),
         .library(name: "FloeExecution", targets: ["FloeExecution"]),
+        .library(name: "FloeEnvironments", targets: ["FloeEnvironments"]),
+        .library(name: "FloePackages", targets: ["FloePackages"]),
+        .library(name: "FloeMedia", targets: ["FloeMedia"]),
         .library(name: "FloeGit", targets: ["FloeGit"]),
         .library(name: "FloeLocalModelCatalog", targets: ["FloeLocalModelCatalog"]),
         .library(name: "FloeLocalModels", targets: ["FloeLocalModels"])
@@ -411,6 +414,46 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeWorkspace",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloeEnvironments",
+            dependencies: ["FloeCore", "FloeTools"],
+            path: "Sources/FloeEnvironments",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloePackages",
+            dependencies: [
+                "FloeCore", "FloeTools",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "SWCompression", package: "SWCompression")
+            ],
+            path: "Sources/FloePackages",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloeMedia",
+            dependencies: ["FloeCore", "FloeTools"],
+            path: "Sources/FloeMedia",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),
