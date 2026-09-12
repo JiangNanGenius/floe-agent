@@ -1,0 +1,26 @@
+◇ Test run started.
+◇ Suite "Environment durability" started.
+◇ Test failedCASReferenceWriteDoesNotEnableCollection() started.
+◇ Test corruptCASIndexNeverAuthorizesCollection() started.
+◇ Test registrySurvivesRestartAndMarksNewBase() started.
+◇ Test failedCreationAndTransitionRollBackRegistryMemory() started.
+◇ Test sessionOwnershipIncludesWorkspace() started.
+◇ Test projectsAndCancellationRemainScoped() started.
+◇ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() started.
+◇ Test corruptRegistryIsPreserved() started.
+◇ Test failedStopPreservesEnvironment() started.
+◇ Test casRetainsSharedBlobsAndCopiesAreIndependent() started.
+◇ Test explicitEnvironmentCannotCrossWorkspace() started.
+✔ Test corruptRegistryIsPreserved() passed after 0.091 seconds.
+✔ Test corruptCASIndexNeverAuthorizesCollection() passed after 0.092 seconds.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.091 seconds.
+✔ Test failedCASReferenceWriteDoesNotEnableCollection() passed after 0.092 seconds.
+✔ Test failedCreationAndTransitionRollBackRegistryMemory() passed after 0.128 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.153 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.184 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.186 seconds.
+✔ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() passed after 0.290 seconds.
+✔ Test sessionOwnershipIncludesWorkspace() passed after 0.296 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.319 seconds.
+✔ Suite "Environment durability" passed after 0.319 seconds.
+✔ Test run with 11 tests in 1 suite passed after 0.320 seconds.

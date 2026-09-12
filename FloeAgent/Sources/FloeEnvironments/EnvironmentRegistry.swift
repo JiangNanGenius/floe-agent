@@ -66,6 +66,11 @@ public actor EnvironmentRegistry {
         baseRevision = revision
     }
 
+    public func layerURL(for id: String) -> URL? {
+        guard let record = records[id] else { return nil }
+        return roots.layerURL(id: record.id, kind: record.kind)
+    }
+
     public func all() -> [ContainerRecord] {
         records.values.sorted { $0.lastUsedAt > $1.lastUsedAt }
     }
@@ -99,10 +104,14 @@ public actor EnvironmentRegistry {
             baseRevision: baseRevision,
             templateID: templateID
         )
-        records[record.id] = record
-        try materialize(record, seedFrom: templateID)
+        do {
+            try materialize(record, seedFrom: templateID)
+            try saveRecord(record)
+        } catch {
+            try? fileManager.removeItem(at: roots.layerURL(id: record.id, kind: record.kind))
+            throw error
+        }
         rememberWorkspaceRoot(workspaceID: workspaceID, path: workspaceRootPath, containerID: record.id)
-        try persist()
         return record
     }
 
@@ -116,13 +125,18 @@ public actor EnvironmentRegistry {
         inheritFromProject: Bool = true
     ) throws -> ContainerRecord {
         try prepare()
-        if let existing = records.values.first(where: { $0.kind == .session && $0.ownerID == conversationID }) {
-            touch(existing.id)
-            return records[existing.id] ?? existing
-        }
         var parent: ContainerRecord?
         if inheritFromProject, let workspaceID {
-            parent = records.values.first { $0.kind == .project && $0.ownerID == workspaceID }
+            if let workspaceRootPath {
+                parent = try ensureProjectContainer(workspaceID: workspaceID, workspaceRootPath: workspaceRootPath)
+            } else {
+                parent = records.values.first { $0.kind == .project && $0.ownerID == workspaceID }
+                guard parent != nil else { throw FloeError.notFound("Session project environment") }
+            }
+        }
+        if let existing = records.values.first(where: { $0.kind == .session && $0.ownerID == conversationID && $0.parentID == parent?.id }) {
+            touch(existing.id)
+            return records[existing.id] ?? existing
         }
         var record = ContainerRecord(
             kind: .session,
@@ -131,40 +145,54 @@ public actor EnvironmentRegistry {
             parentID: parent?.id,
             templateID: parent?.templateID
         )
-        records[record.id] = record
-        try materialize(record, seedFrom: parent?.id)
-        if let workspaceID, let workspaceRootPath {
-            rememberWorkspaceRoot(workspaceID: workspaceID, path: workspaceRootPath, containerID: record.id)
+        do {
+            try materialize(record, seedFrom: parent?.id)
+            try saveRecord(record)
+        } catch {
+            try? fileManager.removeItem(at: roots.layerURL(id: record.id, kind: record.kind))
+            throw error
         }
-        try persist()
         return record
     }
 
     /// Commits the writable layer of `sourceID` into a new template.
     @discardableResult
     public func createTemplate(from sourceID: String, name: String) throws -> ContainerRecord {
-        guard let source = records[sourceID] else {
-            throw FloeError.notFound("container \(sourceID)")
+        try prepare()
+        guard let source = records[sourceID] else { throw FloeError.notFound("container \(sourceID)") }
+        guard source.state != .deleting, !source.requiresRebuild else {
+            throw FloeError.validationFailed("Source environment is deleting or requires rebuild")
         }
-        if let existing = template(named: name) { return existing }
-        var template = ContainerRecord(
-            kind: .template,
-            name: name,
-            baseRevision: source.baseRevision
-        )
-        records[template.id] = template
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, template(named: name) == nil else {
+            throw FloeError.validationFailed("Template name is empty or already exists")
+        }
         let sourceURL = roots.layerURL(id: source.id, kind: source.kind)
+        guard var manifest = try LayerManifest.loadChecked(from: sourceURL) else {
+            throw FloeError.validationFailed("Source layer manifest is missing")
+        }
+        var template = ContainerRecord(kind: .template, name: name, baseRevision: source.baseRevision)
         let destinationURL = roots.layerURL(id: template.id, kind: .template)
-        try cloneOrCopyDirectory(from: sourceURL, to: destinationURL)
-        if var manifest = LayerManifest.load(from: sourceURL) {
+        do {
+            try cloneOrCopyDirectory(from: sourceURL, to: destinationURL)
             manifest.kind = .shared
             manifest.id = template.id
+            // Template files are independent APFS clones/copies. They do not
+            // own source-layer cache references and remain valid after GC.
+            manifest.casRefs = []
+            for index in manifest.packages.indices { manifest.packages[index].layer = .shared }
             try manifest.write(to: destinationURL)
+            template.packageCount = manifest.packages.count
+            let files = fileManager.enumerator(at: destinationURL, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
+            while let file = files?.nextObject() as? URL {
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if values.isRegularFile == true { template.bytes += Int64(values.fileSize ?? 0) }
+            }
+            try saveRecord(template)
+            return template
+        } catch {
+            try? fileManager.removeItem(at: destinationURL)
+            throw error
         }
-        template.packageCount = LayerManifest.load(from: destinationURL)?.packages.count ?? 0
-        records[template.id] = template
-        try persist()
-        return template
     }
 
     @discardableResult
@@ -177,11 +205,17 @@ public actor EnvironmentRegistry {
         return record
     }
 
+    private func saveRecord(_ record: ContainerRecord) throws {
+        let previous = records[record.id]
+        records[record.id] = record
+        do { try persist() }
+        catch { records[record.id] = previous; throw error }
+    }
+
     public func transition(id: String, state: ContainerState) throws {
         guard var record = records[id] else { return }
         record.state = state
-        records[id] = record
-        try persist()
+        try saveRecord(record)
     }
 
     public func touch(_ id: String, at date: Date = Date()) {
@@ -194,24 +228,22 @@ public actor EnvironmentRegistry {
         guard var record = records[id] else { return }
         record.bytes = bytes
         record.packageCount = packageCount
-        records[id] = record
-        try persist()
+        try saveRecord(record)
     }
 
     public func markRebuild(id: String, reason: String) throws {
         guard var record = records[id] else { return }
         record.requiresRebuild = true
         record.rebuildReason = reason
-        records[id] = record
-        try persist()
+        try saveRecord(record)
     }
 
     public func clearRebuild(id: String) throws {
         guard var record = records[id] else { return }
         record.requiresRebuild = false
         record.rebuildReason = nil
-        records[id] = record
-        try persist()
+        record.baseRevision = baseRevision
+        try saveRecord(record)
     }
 
     // MARK: - Layer stack resolution
@@ -312,11 +344,12 @@ public actor EnvironmentRegistry {
     }
 
     private func cloneOrCopyDirectory(from source: URL, to destination: URL) throws {
-        try? fileManager.removeItem(at: destination)
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw FloeError.validationFailed("Template destination already exists")
+        }
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-            return
+            throw FloeError.notFound("Template source directory")
         }
         #if canImport(Darwin)
         if clonefile(source.path, destination.path, 0) == 0 { return }

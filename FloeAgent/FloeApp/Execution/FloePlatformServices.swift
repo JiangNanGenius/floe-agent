@@ -55,6 +55,49 @@ final class FloePlatformServices: @unchecked Sendable {
         lock.unlock()
     }
 
+    struct EnvironmentReport: Identifiable, Sendable {
+        var id: String { record.id }
+        let record: ContainerRecord
+        let packages: [InstalledPackage]
+        let bytes: Int64
+    }
+
+    func prepareWorkspaceEnvironment(root: URL) async throws {
+        guard let registry = lock.withLock({ registry }) else { return }
+        let canonical = root.resolvingSymlinksInPath().standardizedFileURL
+        let owner = FloeDigest.sha256Hex(Data(canonical.path.utf8))
+        _ = try await registry.ensureProjectContainer(workspaceID: owner, workspaceRootPath: canonical.path)
+    }
+
+    func environmentReports() async throws -> [EnvironmentReport] {
+        guard let registry = lock.withLock({ registry }) else {
+            throw FloeError.invalidConfiguration("Environment service is unavailable")
+        }
+        try await registry.prepare()
+        var reports: [EnvironmentReport] = []
+        for record in await registry.all() {
+            guard let root = await registry.layerURL(for: record.id) else { continue }
+            let report = try await Task.detached(priority: .utility) {
+                let manifest = try LayerManifest.loadChecked(from: root)
+                var bytes: Int64 = 0
+                if let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]) {
+                    for case let file as URL in files {
+                        try Task.checkCancellation()
+                        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey])
+                        if values.isRegularFile == true && values.isSymbolicLink != true {
+                            let (sum, overflow) = bytes.addingReportingOverflow(Int64(values.fileSize ?? 0))
+                            guard !overflow else { throw FloeError.validationFailed("Environment size overflow") }
+                            bytes = sum
+                        }
+                    }
+                }
+                return EnvironmentReport(record: record, packages: manifest?.packages ?? [], bytes: bytes)
+            }.value
+            reports.append(report)
+        }
+        return reports
+    }
+
     var isConfigured: Bool {
         lock.lock(); defer { lock.unlock() }
         return configured

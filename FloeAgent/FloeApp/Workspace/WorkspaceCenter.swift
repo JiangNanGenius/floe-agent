@@ -321,6 +321,10 @@ final class WorkspaceCenter: ObservableObject {
             return
         }
 
+        do { try await FloePlatformServices.shared.prepareWorkspaceEnvironment(root: url) }
+        catch { url.stopAccessingSecurityScopedResource(); throw error }
+        guard generation == openGeneration else { url.stopAccessingSecurityScopedResource(); return }
+
         // Stop accessing the previously opened root before switching.
         closeCurrentWorkspace(invalidatePendingOpen: false)
 

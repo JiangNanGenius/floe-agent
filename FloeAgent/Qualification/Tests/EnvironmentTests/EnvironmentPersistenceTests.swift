@@ -134,3 +134,57 @@ extension EnvironmentPersistenceTests {
         #expect(try Data(contentsOf: copy) == Data("retained".utf8))
     }
 }
+
+extension EnvironmentPersistenceTests {
+    @Test func sessionOwnershipIncludesWorkspace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = EnvironmentRegistry(roots: EnvironmentRoots(rootURL: root), baseRevision: "one")
+        let a = try await registry.ensureSessionContainer(conversationID: "same-chat", workspaceID: "a", workspaceRootPath: "/a")
+        let b = try await registry.ensureSessionContainer(conversationID: "same-chat", workspaceID: "b", workspaceRootPath: "/b")
+        #expect(a.id != b.id)
+        #expect(a.parentID != b.parentID)
+        #expect(try await registry.ensureSessionContainer(conversationID: "same-chat", workspaceID: "a", workspaceRootPath: "/a").id == a.id)
+    }
+    @Test func failedCreationAndTransitionRollBackRegistryMemory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        let project = try await registry.ensureProjectContainer(workspaceID: "a", workspaceRootPath: "/a")
+        try FileManager.default.removeItem(at: roots.registryURL)
+        try FileManager.default.createDirectory(at: roots.registryURL, withIntermediateDirectories: false)
+        do { try await registry.transition(id: project.id, state: .deleting); Issue.record("Failed transition accepted") } catch {}
+        #expect(await registry.record(id: project.id)?.state == .active)
+        do { _ = try await registry.ensureProjectContainer(workspaceID: "b", workspaceRootPath: "/b"); Issue.record("Failed creation accepted") } catch {}
+        #expect(await registry.containersOwned(by: "b").isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: roots.containersURL.path).count == 1)
+    }
+}
+
+extension EnvironmentPersistenceTests {
+    @Test func templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        let cas = ContainerCAS(roots: roots)
+        let source = try await registry.ensureProjectContainer(workspaceID: "a", workspaceRootPath: "/a")
+        let sourceURL = roots.layerURL(id: source.id, kind: .project)
+        let digest = try await cas.ingest(data: Data("template-data".utf8))
+        try await cas.link(digest: digest, to: sourceURL.appendingPathComponent("usr/lib/value"))
+        var manifest = try #require(try LayerManifest.loadChecked(from: sourceURL))
+        manifest.casRefs = [digest]
+        try manifest.write(to: sourceURL)
+        let template = try await registry.createTemplate(from: source.id, name: "saved")
+        try await cas.release([digest])
+        _ = try await cas.garbageCollect(grace: 0)
+        let templateURL = roots.layerURL(id: template.id, kind: .template)
+        #expect(try Data(contentsOf: templateURL.appendingPathComponent("usr/lib/value")) == Data("template-data".utf8))
+        #expect(try LayerManifest.loadChecked(from: templateURL)?.casRefs.isEmpty == true)
+        do { _ = try await registry.createTemplate(from: source.id, name: "saved"); Issue.record("Duplicate template accepted") } catch {}
+        let restarted = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        try await restarted.prepare()
+        #expect(await restarted.template(named: "saved")?.id == template.id)
+    }
+}
