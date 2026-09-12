@@ -51,6 +51,7 @@ struct NotePencilView: UIViewRepresentable {
         canvas.drawingGestureRecognizer.isEnabled = !regionSelection
         canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
         canvas.tool = tool
+        #if compiler(>=6.4)
         if #available(iOS 27.0, *) {
             if let request = deleteSelectionRequest, request != coordinator.handledDeleteRequest {
                 coordinator.handledDeleteRequest = request
@@ -86,6 +87,7 @@ struct NotePencilView: UIViewRepresentable {
                 if let data = image.pngData() { coordinator.parent.onSelectionCapture(bounds, data) }
             }
         }
+        #endif
         if coordinator.loadedDrawing != drawing, !coordinator.isUsingTool {
             coordinator.isApplying = true
             canvas.drawing = drawing.flatMap { try? PKDrawing(data: $0) } ?? PKDrawing()
@@ -158,10 +160,12 @@ struct NotePencilView: UIViewRepresentable {
             if let data = pendingDrawing { pendingDrawing = nil; parent.onDrawing(data) }
         }
         func canvasViewSelectionDidChange(_ canvasView: PKCanvasView) {
+            #if compiler(>=6.4)
             if #available(iOS 27.0, *) {
                 let count = canvasView.selection.count
                 DispatchQueue.main.async { [weak self] in self?.parent.onSelectionCount(count) }
             }
+            #endif
         }
         init(parent: NotePencilView) { self.parent = parent }
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {

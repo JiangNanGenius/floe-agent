@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Synchronization
 import AVFoundation
 import FloeCore
 import FloeTools
@@ -70,17 +71,19 @@ struct AudioEditTests {
         let retained = Data("existing output".utf8)
         try retained.write(to: root.appendingPathComponent("out.wav"))
         let token = CancellationToken()
-        let task = Task.detached { try await engine.edit(path: "long.wav", outputPath: "out.wav", operations: [:], fadeOutSeconds: nil, mixPath: nil, cancellation: token) }
-        let deadline = Date().addingTimeInterval(5)
-        var started = false
-        while Date() < deadline {
-            if try FileManager.default.contentsOfDirectory(atPath: root.path).contains(where: { $0.hasPrefix(".floe-audio-edit-") }) { started = true; break }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        token.cancel()
-        #expect(started)
-        do { _ = try await task.value; Issue.record("Running audio edit ignored cancellation") }
-        catch FloeError.cancelled {} catch { Issue.record("Unexpected audio error: \(error)") }
+        let observed = Mutex<Double>(0)
+        // Cancel synchronously after a real chunk reaches the writer. Polling for a
+        // temporary file races a fast CI runner and can cancel an already committed edit.
+        do {
+            _ = try await engine.edit(path: "long.wav", outputPath: "out.wav", operations: [:],
+                                      fadeOutSeconds: nil, mixPath: nil, cancellation: token) { fraction in
+                observed.withLock { $0 = fraction }
+                token.cancel()
+            }
+            Issue.record("Running audio edit ignored cancellation")
+        } catch FloeError.cancelled {} catch { Issue.record("Unexpected audio error: \(error)") }
+        let fraction = observed.withLock { $0 }
+        #expect(fraction > 0 && fraction < 1)
         #expect(try Data(contentsOf: root.appendingPathComponent("out.wav")) == retained)
         #expect(try !FileManager.default.contentsOfDirectory(atPath: root.path).contains(where: { $0.hasPrefix(".floe-audio-edit-") }))
     }

@@ -54,7 +54,8 @@ public actor AudioEngine {
 
     /// Streams bounded PCM chunks to a temporary file, verifies it, then commits.
     public func edit(path: String, outputPath: String, operations: [String: Double],
-                     fadeOutSeconds: Double?, mixPath: String?, cancellation: CancellationToken? = nil) throws -> String {
+                     fadeOutSeconds: Double?, mixPath: String?, cancellation: CancellationToken? = nil,
+                     progress: @Sendable (Double) -> Void = { _ in }) throws -> String {
         try cancellation?.throwIfCancelled(); try Task.checkCancellation()
         let sourceURL = try resolve(path), outputURL = try resolveOutput(outputPath)
         let mixURL = try mixPath.map { try resolve($0) }
@@ -126,6 +127,7 @@ public actor AudioEngine {
                     }
                 }
                 try writer.write(from: buffer)
+                progress(Double(source.framePosition - lower) / Double(upper - lower))
             }
         }
         try cancellation?.throwIfCancelled(); try Task.checkCancellation()

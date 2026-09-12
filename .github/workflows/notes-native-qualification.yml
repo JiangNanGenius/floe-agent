@@ -1,0 +1,59 @@
+name: Qualify Notes on iPad and iPhone
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: notes-native-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  notes:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: xcode-27
+            xcode: Xcode_27.0
+          - runner: macos-26
+            xcode: Xcode_26.6
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - name: Generate native component project
+        run: |
+          brew install xcodegen
+          xcodegen generate --spec FloeAgent/Qualification/NativeNotes/project.yml
+      - name: Test iPad first, then iPhone
+        shell: bash
+        run: |
+          set -o pipefail
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/notes-devices.json"
+          for family in iPad iPhone; do
+            destination=$(python3 - "$family" "$RUNNER_TEMP/notes-devices.json" <<'PY'
+          import json, sys
+          values = json.load(open(sys.argv[2]))['devices']
+          candidates = [d for group in values.values() for d in group if d['name'].startswith(sys.argv[1])]
+          preferred = sorted(candidates, key=lambda d: ('Air 13' not in d['name'], 'Pro' not in d['name'], d['name']))
+          if not preferred: raise SystemExit('No simulator for ' + sys.argv[1])
+          print(preferred[0]['udid'])
+          PY
+          )
+            xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
+              -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
+              -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
+              -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log"
+            result=${PIPESTATUS[0]}
+            if [ "$result" -ne 0 ]; then exit "$result"; fi
+          done
+      - name: Preserve results and test images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notes-native-${{ matrix.xcode }}-${{ github.sha }}
+          path: |
+            notes-*.xcresult
+            notes-*.log
+            ${{ runner.temp }}/notes-devices.json
