@@ -249,3 +249,8 @@ Expanded long reasoning uses its own scrolling reading area with beginning/lates
 ### Convert existing files (this test release)
 
 Ask to convert a workspace Markdown, DOCX, HTML, RTF or text file to another supported format, or to PDF, while keeping the source. Floe passes file paths to its bundled offline converter rather than asking the model to rewrite the body. Results are saved as new files; only compact status and warnings return to the model. Local images are embedded. Searchable PDF input exports text in page order; scans need OCR first. Complex page geometry, floating objects and formatting that Markdown cannot represent are not guaranteed to survive. Open the output to inspect it.
+
+
+### Visual editing and captions (1.7, in development)
+
+Open a workspace video and select the crop/rotate/captions entry in the media workbench. Add manual captions with source start/end times, then open the visual editor to adjust cropping, rotation, speed and caption placement/size. Saved and exported videos become new workspace files. See the [integration and qualification status](FLOE_1_7_VIDEO_EDITOR_INTEGRATION.md).

@@ -3,6 +3,8 @@ options:
   deploymentTarget:
     iOS: '26.0'
 packages:
+  VideoEditorKit:
+    path: ../../ThirdParty/VideoEditorKit
   FloeAgent:
     path: ../..
 targets:
@@ -14,6 +16,7 @@ targets:
       - path: ../../FloeApp/Media/MediaEditorView.swift
       - path: ../../FloeApp/Media/MediaPlayerView.swift
     dependencies:
+      - package: VideoEditorKit
       - package: FloeAgent
         product: FloeMedia
       - package: FloeAgent
@@ -29,3 +32,31 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         CODE_SIGNING_ALLOWED: NO
         SWIFT_VERSION: '6.0'
+
+  FloeVideoEditorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../../ThirdParty/VideoEditorKit/Tests/VideoEditorKitTests/Support
+      - path: ../../ThirdParty/VideoEditorKit/Tests/VideoEditorKitTests/Models/VideoEditorTests.swift
+      - path: ../../ThirdParty/VideoEditorKit/Tests/VideoEditorKitTests/TranscriptTimeMapperTests.swift
+      - path: ../../ThirdParty/VideoEditorKit/Tests/VideoEditorKitTests/TranscriptDocumentTests.swift
+      - path: ../../ThirdParty/VideoEditorKit/Tests/VideoEditorKitTests/VideoEditingConfigurationTests.swift
+    dependencies:
+      - package: VideoEditorKit
+      - target: FloeMediaUISmoke
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.video-editor-tests
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'
+schemes:
+  FloeMediaUISmoke:
+    build:
+      targets:
+        FloeMediaUISmoke: all
+        FloeVideoEditorTests: [test]
+    test:
+      targets:
+        - FloeVideoEditorTests

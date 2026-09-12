@@ -5,6 +5,7 @@ import AVFoundation
 import FloeCore
 import FloeMedia
 import FloeTools
+import VideoEditorKit
 
 @MainActor
 final class MediaEditorModel: ObservableObject {
@@ -137,6 +138,7 @@ struct MediaEditorView: View {
     @StateObject private var model: MediaEditorModel
     @Environment(\.dismiss) private var dismiss
     @State private var previewOutput = false
+    @State private var showVisualEditor = false
 
     init(workspaceRoot: URL, previewURL: URL) {
         _model = StateObject(wrappedValue: MediaEditorModel(workspaceRoot: workspaceRoot, sourceURL: previewURL))
@@ -144,6 +146,10 @@ struct MediaEditorView: View {
 
     var body: some View {
         Form {
+            Section("可视化编辑") {
+                Button("剪裁、旋转与添加字幕") { showVisualEditor = true }
+                    .disabled(model.isExporting)
+            }
             Section("预览") {
                 if model.exportedURL != nil {
                     Toggle("播放处理后的文件", isOn: $previewOutput)
@@ -188,7 +194,155 @@ struct MediaEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { model.cancel(); dismiss() } } }
         .task { await model.load() }
+        .fullScreenCover(isPresented: $showVisualEditor) {
+            FloeVisualVideoEditor(root: model.workspaceRoot, source: model.sourceURL)
+        }
         .onDisappear { model.cancel() }
+    }
+}
+
+/// Workspace adapter for the pinned MIT VideoEditorKit. Manual captions stay on device.
+private struct FloeVisualVideoEditor: View {
+    let root: URL
+    let source: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var configuration = VideoEditingConfiguration.initial
+    @State private var showEditor = false
+    @State private var text = ""
+    @State private var start = 0.0
+    @State private var end = 1.0
+    @State private var duration = 0.0
+    @State private var message = ""
+    @State private var loaded = false
+    @State private var copying = false
+    @State private var output: URL?
+
+    private var projectURL: URL {
+        root.appendingPathComponent(".floe-media-edits").appendingPathComponent(
+            FloeDigest.sha256Hex(Data(source.path.utf8)) + "-visual.json")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("手工字幕") {
+                    TextField("字幕文字（支持中文）", text: $text, axis: .vertical)
+                    LabeledContent("素材起点（秒）") { TextField("起点", value: $start, format: .number) }
+                    LabeledContent("素材终点（秒）") { TextField("终点", value: $end, format: .number) }
+                    Button("添加字幕") { addCaption() }.disabled(!loaded || copying)
+                    Text("时间以原素材为准；进入编辑器后可调整字幕文字、位置和大小。裁剪和变速会重新映射字幕时间。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    ForEach(configuration.transcript.document?.segments ?? []) { segment in
+                        HStack {
+                            Text(segment.editedText)
+                            Spacer()
+                            Text("\(segment.timeMapping.sourceStartTime, specifier: "%.1f")–\(segment.timeMapping.sourceEndTime, specifier: "%.1f") 秒").font(.caption)
+                            Button(role: .destructive) {
+                                configuration.transcript.document?.segments.removeAll { $0.id == segment.id }
+                            } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+                        }
+                    }
+                }
+                Section {
+                    Button("打开可视化编辑器") { showEditor = true }.disabled(!loaded || copying)
+                    Button("保存工程参数") { persist() }.disabled(!loaded || copying)
+                    if copying { ProgressView("验证并保存到工作区…") }
+                    if !message.isEmpty { Text(message).font(.footnote).textSelection(.enabled) }
+                    if let output { MediaPlayerView(url: output) }
+                }
+            }
+            .navigationTitle("剪裁与字幕")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(copying) } }
+            .task { await load() }
+            .fullScreenCover(isPresented: $showEditor) {
+                VideoEditorView("媒体工作台", sourceVideoURL: source,
+                    editingConfiguration: configuration,
+                    configuration: .init(transcription: .init()),
+                    onSavedVideo: { saved in
+                        configuration = saved.editingConfiguration
+                        persist()
+                        receive(saved.url)
+                    }, onExportedVideoURL: { receive($0) })
+            }
+        }
+        .interactiveDismissDisabled(copying)
+    }
+
+    private func owned(_ url: URL) throws {
+        guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(
+            root.resolvingSymlinksInPath().standardizedFileURL.path + "/") else {
+            throw FloeError.validationFailed("路径越出当前工作区")
+        }
+    }
+
+    private func load() async {
+        do {
+            try owned(source); try owned(projectURL)
+            duration = try await AVURLAsset(url: source).load(.duration).seconds
+            guard duration.isFinite, duration > 0 else { throw FloeError.validationFailed("素材时长无效") }
+            end = min(3, duration)
+            configuration.trim = .init(lowerBound: 0, upperBound: duration)
+            if FileManager.default.fileExists(atPath: projectURL.path) {
+                configuration = try JSONDecoder().decode(VideoEditingConfiguration.self, from: Data(contentsOf: projectURL))
+            }
+            guard configuration.trim.lowerBound.isFinite, configuration.trim.upperBound.isFinite,
+                  configuration.trim.lowerBound >= 0, configuration.trim.upperBound > configuration.trim.lowerBound,
+                  configuration.trim.upperBound <= duration, configuration.playback.rate.isFinite,
+                  configuration.playback.rate > 0 else { throw FloeError.validationFailed("保存的剪辑范围或速度无效") }
+            loaded = true
+        } catch { message = error.localizedDescription }
+    }
+
+    private func addCaption() {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.count <= 2000, start.isFinite, end.isFinite,
+              start >= 0, end > start, end <= duration else {
+            message = "请输入字幕及有效的素材时间范围（单条最多 2000 字）"; return
+        }
+        var document = configuration.transcript.document ?? TranscriptDocument()
+        guard document.segments.count < 200 else { message = "单个工程最多添加 200 条字幕"; return }
+        guard !document.segments.contains(where: { start < $0.timeMapping.sourceEndTime && end > $0.timeMapping.sourceStartTime }) else {
+            message = "字幕时间不能重叠，请调整起止时间"; return
+        }
+        document.segments.append(.init(id: UUID(), timeMapping: .init(sourceStartTime: start, sourceEndTime: end), originalText: value, editedText: value))
+        document.segments.sort { $0.timeMapping.sourceStartTime < $1.timeMapping.sourceStartTime }
+        configuration.transcript = .init(featureState: .loaded, document: EditorTranscriptRemappingCoordinator.remap(document, trimRange: configuration.trim.lowerBound...configuration.trim.upperBound, playbackRate: configuration.playback.rate))
+        text = ""
+        persist()
+    }
+
+    private func persist() {
+        do {
+            try owned(projectURL)
+            try FileManager.default.createDirectory(at: projectURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(configuration).write(to: projectURL, options: .atomic)
+            message = "工程参数已保存；成片请在编辑器内保存或导出"
+        } catch { message = "保存工程失败：" + error.localizedDescription }
+    }
+
+    private func receive(_ url: URL) {
+        guard !copying else { message = "请等待当前文件保存完成"; return }
+        copying = true
+        Task { @MainActor in
+            defer { copying = false }
+            let destination = source.deletingLastPathComponent().appendingPathComponent(
+                source.deletingPathExtension().lastPathComponent + "-visual-" + UUID().uuidString + ".mp4")
+            let staging = destination.deletingLastPathComponent().appendingPathComponent(".floe-export-" + UUID().uuidString + ".mp4")
+            defer { try? FileManager.default.removeItem(at: staging) }
+            do {
+                try owned(destination); try owned(staging)
+                try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.copyItem(at: url, to: staging)
+                }.value
+                let asset = AVURLAsset(url: staging)
+                let playable = try await asset.load(.isPlayable)
+                let seconds = try await asset.load(.duration).seconds
+                guard playable, seconds.isFinite, seconds > 0 else { throw FloeError.validationFailed("导出文件不可播放") }
+                try FileManager.default.moveItem(at: staging, to: destination)
+                output = destination
+                message = "已保存到工作区：" + destination.lastPathComponent
+            } catch { message = "保存成片失败：" + error.localizedDescription }
+        }
     }
 }
 #endif

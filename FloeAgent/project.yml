@@ -23,6 +23,8 @@ options:
 packages:
   FloeAgentPackages:
     path: .  # Local Swift package (root Package.swift)
+  VideoEditorKit:
+    path: ThirdParty/VideoEditorKit
   FloeShellEngine:
     path: ThirdParty/FloeShellEngine
 
@@ -441,6 +443,7 @@ targets:
         product: FloeEnvironments
       - package: FloeAgentPackages
         product: FloePackages
+      - package: VideoEditorKit
       - package: FloeAgentPackages
         product: FloeMedia
       - package: FloeAgentPackages

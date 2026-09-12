@@ -58,6 +58,7 @@ for pin in sorted(pins, key=lambda p: p["identity"]):
 # and redistribution wrapper explicit so an App Store build cannot silently
 # omit them from the license inventory.
 rows.extend([
+    ("VideoEditorKit", "c917b1e99ddc631b754a43704c05dfe3836e8183", "MIT", "https://github.com/didisouzacosta/VideoEditorKit"),
     ("ios_system command bus and BSD commands", "v3.0.4 manifest / v3.0.2 binaries", "BSD-3-Clause", "https://github.com/holzschu/ios_system"),
     ("dash iOS", "0.5.11.5 + iOS port", "BSD-3-Clause", "https://github.com/holzschu/dash_iOS"),
     ("WasmKit runtime", "0.2.2 + Floe budget patch", "MIT", "https://github.com/swiftwasm/WasmKit/tree/0.2.2"),

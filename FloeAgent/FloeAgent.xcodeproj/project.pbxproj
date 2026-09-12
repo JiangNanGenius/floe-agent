@@ -23,7 +23,7 @@
 		07D75CCBF1B9602AD64F5709 /* pandas__libs_tslibs_ccalendar.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */; };
 		086E743FC13CE9DA2BD91D05 /* _csv.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; };
 		089D513D837438C091ED08A0 /* FloeSkills in Frameworks */ = {isa = PBXBuildFile; productRef = 5B057579F6C5787F1EF9F172 /* FloeSkills */; };
-		08C1D1CFB085F7933B03B84F /* FloeMedia in Frameworks */ = {isa = PBXBuildFile; productRef = 99123BAA56849843BF717395 /* FloeMedia */; };
+		08C1D1CFB085F7933B03B84F /* VideoEditorKit in Frameworks */ = {isa = PBXBuildFile; productRef = 59FE2C4283FCCAD8BE650BF4 /* VideoEditorKit */; };
 		08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */; };
 		08F47781D4B996B2696C8989 /* HomeLaunchpadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */; };
 		09D32302D5EB9204F8E9467B /* pandas__libs_index.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F59B5D886E094D81CE9B9DF0 /* pandas__libs_index.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -149,7 +149,7 @@
 		44549AE8F5937ED7F55B253B /* pandas__libs_internals.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */; };
 		448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */; };
 		44F125A88372998BD75A01C9 /* uuid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 7EB83CE4E7FCE787665DFBBB /* uuid.min.js */; };
-		4602C406C6F7D1047179E992 /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
+		4602C406C6F7D1047179E992 /* FloeGit in Frameworks */ = {isa = PBXBuildFile; productRef = E6A81719803BDDE4E13451F3 /* FloeGit */; };
 		460E577E2CEF8945AA055F27 /* _md5.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 538FB08A4DD774D6AEFCF28F /* _md5.xcframework */; };
 		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
 		4737AA1E27662463EC52AFA1 /* pandas__libs_tslibs_strptime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -238,7 +238,7 @@
 		6EFA9ED6557018D9EC2EFFC6 /* FileTreeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */; };
 		6EFE06F5EE84FD76D6026BBA /* pandas__libs_writers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6FC89A1BACBA33278669A2C9 /* CameraPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */; };
-		6FF01C96215EA2C610CD26C1 /* FloeGit in Frameworks */ = {isa = PBXBuildFile; productRef = E6A81719803BDDE4E13451F3 /* FloeGit */; };
+		6FF01C96215EA2C610CD26C1 /* FloeMedia in Frameworks */ = {isa = PBXBuildFile; productRef = 99123BAA56849843BF717395 /* FloeMedia */; };
 		700E0E333832B9669753A226 /* FloePDFiumBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 0F445AF25FACF2975FCE8934 /* FloePDFiumBridge.mm */; };
 		7019692CCE4AC0CD840E1152 /* RichArtifactView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */; };
 		702783ECBD4DCFFA7CF6DE20 /* pandas__libs_interval.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */; };
@@ -338,6 +338,7 @@
 		A2569988835F69EC8662FC58 /* pandas__libs_groupby.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */; };
 		A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */; };
 		A5C100B39388D49632E01BAF /* FloeCPythonBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */; };
+		A5D9B7533A42072342C3DE84 /* FloeShellEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 923643E245C0A12DF9647622 /* FloeShellEngine */; };
 		A5FEE395C7135D52DF0FF81F /* _csv.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A68817564DEC432882795A34 /* MediaModelCatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F67BD7208FE43B7F6716AA9 /* MediaModelCatalogService.swift */; };
 		A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */; };
@@ -490,7 +491,7 @@
 		EEAF07E93D7D0C103F0EA346 /* pandas__libs_tslibs_timedeltas.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */; };
 		EEB68AFF7BCD15C86059B496 /* _mt19937.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */; };
 		EEC769EBC4DFA463E3844163 /* extraCommandsDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = C298297A7E2B2DE1AAF2AF86 /* extraCommandsDictionary.plist */; };
-		EF3607E56FFC264531A6ADC2 /* FloeShellEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 923643E245C0A12DF9647622 /* FloeShellEngine */; };
+		EF3607E56FFC264531A6ADC2 /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
@@ -775,6 +776,7 @@
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
 		238052542CCEFF5EA4FF6DC3 /* Bundled */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Bundled; path = FloeApp/Resources/Fonts/Bundled; sourceTree = SOURCE_ROOT; };
 		242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WasmKitCommandRuntime.swift; sourceTree = "<group>"; };
+		246EA34B7FE3FA2E2297DE6D /* VideoEditorKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VideoEditorKit; path = ThirdParty/VideoEditorKit; sourceTree = SOURCE_ROOT; };
 		251662A9C6AD6E96E2C40543 /* pandas__libs_tslibs_fields.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_fields.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_fields.xcframework; sourceTree = "<group>"; };
 		26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = RARFixtures.LICENSE.txt; sourceTree = "<group>"; };
 		276A4BD225189F342404A19B /* PDFium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PDFium.xcframework; path = Vendor/PDFium/PDFium.xcframework; sourceTree = "<group>"; };
@@ -1277,10 +1279,11 @@
 				5BB820EF2110E8C73542D2C2 /* FloeExecution in Frameworks */,
 				8BDBF9D426DD621EA4ECB830 /* FloeEnvironments in Frameworks */,
 				1DAE6DE83A3980067040AF3F /* FloePackages in Frameworks */,
-				08C1D1CFB085F7933B03B84F /* FloeMedia in Frameworks */,
-				6FF01C96215EA2C610CD26C1 /* FloeGit in Frameworks */,
-				4602C406C6F7D1047179E992 /* FloeLocalModels in Frameworks */,
-				EF3607E56FFC264531A6ADC2 /* FloeShellEngine in Frameworks */,
+				08C1D1CFB085F7933B03B84F /* VideoEditorKit in Frameworks */,
+				6FF01C96215EA2C610CD26C1 /* FloeMedia in Frameworks */,
+				4602C406C6F7D1047179E992 /* FloeGit in Frameworks */,
+				EF3607E56FFC264531A6ADC2 /* FloeLocalModels in Frameworks */,
+				A5D9B7533A42072342C3DE84 /* FloeShellEngine in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1928,6 +1931,7 @@
 			children = (
 				4B364052541A17BBD46A6C70 /* FloeAgent */,
 				D40292BBF7F05D18D0071749 /* FloeShellEngine */,
+				246EA34B7FE3FA2E2297DE6D /* VideoEditorKit */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -2103,6 +2107,7 @@
 				59DBBD5C35D97EBB383798F6 /* FloeExecution */,
 				2F0A9E4EFBAFF9A3D9916D67 /* FloeEnvironments */,
 				6B5C3F1CF8AF92A12DF3BDA8 /* FloePackages */,
+				59FE2C4283FCCAD8BE650BF4 /* VideoEditorKit */,
 				99123BAA56849843BF717395 /* FloeMedia */,
 				E6A81719803BDDE4E13451F3 /* FloeGit */,
 				A0ED3E17200948E8978373F2 /* FloeLocalModels */,
@@ -2249,6 +2254,7 @@
 			packageReferences = (
 				22A88FCEEDE1E3AC97A571ED /* XCLocalSwiftPackageReference "." */,
 				CDC86C45CC43B317BBCDD8C4 /* XCLocalSwiftPackageReference "ThirdParty/FloeShellEngine" */,
+				C69664255F48D2F368EB791C /* XCLocalSwiftPackageReference "ThirdParty/VideoEditorKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D2F4766B4780E506300D05AC /* Products */;
@@ -3139,6 +3145,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = .;
 		};
+		C69664255F48D2F368EB791C /* XCLocalSwiftPackageReference "ThirdParty/VideoEditorKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ThirdParty/VideoEditorKit;
+		};
 		CDC86C45CC43B317BBCDD8C4 /* XCLocalSwiftPackageReference "ThirdParty/FloeShellEngine" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ThirdParty/FloeShellEngine;
@@ -3161,6 +3171,10 @@
 		59DBBD5C35D97EBB383798F6 /* FloeExecution */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeExecution;
+		};
+		59FE2C4283FCCAD8BE650BF4 /* VideoEditorKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VideoEditorKit;
 		};
 		5B057579F6C5787F1EF9F172 /* FloeSkills */ = {
 			isa = XCSwiftPackageProductDependency;

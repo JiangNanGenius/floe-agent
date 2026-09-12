@@ -1,12 +1,19 @@
 import SwiftUI
 import AVFoundation
 import FloeMedia
+import VideoEditorKit
 
 @main struct SmokeApp: App {
     let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     var body: some Scene {
         WindowGroup {
-            NavigationStack { MediaEditorView(workspaceRoot: root, previewURL: root.appendingPathComponent("input.mov")) }
+            Group {
+                if ProcessInfo.processInfo.arguments.contains("--library-editor") {
+                    VideoEditorView("Floe", sourceVideoURL: root.appendingPathComponent("input.mov"), configuration: .init(transcription: .init()))
+                } else {
+                    NavigationStack { MediaEditorView(workspaceRoot: root, previewURL: root.appendingPathComponent("input.mov")) }
+                }
+            }
                 .task {
                     if ProcessInfo.processInfo.arguments.contains("--model-smoke") { await qualifyModel() }
                 }

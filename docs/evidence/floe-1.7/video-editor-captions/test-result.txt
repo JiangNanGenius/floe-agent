@@ -1,0 +1,7 @@
+◇ Test run started.
+◇ Suite "VideoEditorTests" started.
+◇ Test floeChineseCaptionIsBurnedIntoExportOnlyWithinItsTimeRange() started.
+✔ Test floeChineseCaptionIsBurnedIntoExportOnlyWithinItsTimeRange() passed after 5.689 seconds.
+✔ Suite "VideoEditorTests" passed after 5.704 seconds.
+✔ Test run with 1 test in 1 suite passed after 5.705 seconds.
+** TEST SUCCEEDED **
