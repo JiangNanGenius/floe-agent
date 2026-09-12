@@ -49,6 +49,13 @@ public struct LayerManifest: Codable, Sendable {
         return try? decoder.decode(LayerManifest.self, from: data)
     }
 
+    public static func loadChecked(from layerURL: URL) throws -> LayerManifest? {
+        let url = layerURL.appendingPathComponent(Self.fileName)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(LayerManifest.self, from: Data(contentsOf: url))
+    }
+
     public func write(to layerURL: URL) throws {
         let url = layerURL.appendingPathComponent(Self.fileName)
         try FileManager.default.createDirectory(

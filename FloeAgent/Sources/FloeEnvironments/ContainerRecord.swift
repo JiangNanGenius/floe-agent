@@ -100,6 +100,7 @@ public struct InstalledPackage: Codable, Sendable, Hashable {
     public var requiresBase: String?
     public var depends: String?
     public var preDepends: String?
+    public var fileDigests: [String: String]?
     public var files: [String]
 
     public init(
@@ -114,7 +115,8 @@ public struct InstalledPackage: Codable, Sendable, Hashable {
         requiresBase: String? = nil,
         files: [String] = [],
         depends: String? = nil,
-        preDepends: String? = nil
+        preDepends: String? = nil,
+        fileDigests: [String: String]? = nil
     ) {
         self.name = name
         self.version = version
@@ -127,6 +129,7 @@ public struct InstalledPackage: Codable, Sendable, Hashable {
         self.requiresBase = requiresBase
         self.depends = depends
         self.preDepends = preDepends
+        self.fileDigests = fileDigests
         self.files = files
     }
 }

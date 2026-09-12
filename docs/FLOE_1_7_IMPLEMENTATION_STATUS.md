@@ -42,10 +42,11 @@ Branch: `codex/floe-1-7-integration-20260912`.
   non-executable pin script directly. The next change invokes it through Bash.
   The release-SDK job also found an unavailable super-resolution probe type;
   the unused probe is removed while that runner remains unavailable.
-- Current local package work passes 23 qualification tests: six environment,
-  thirteen package (integrity/hold, transaction recovery, dependency resolution,
+- Current local package work passes 26 qualification tests: six environment,
+  sixteen package (integrity/hold, transaction recovery, dependency resolution,
   publisher-to-client installs), three media and one persistence test. This is
-  working-tree evidence, not acceptance of an immutable release commit.
+  checkpoint evidence, not acceptance of a release build. See
+  `docs/evidence/floe-1.7/package-qualification.txt`.
   The end-to-end fixture exposed and fixed a missing Debian ar archive header
   in the repository publisher. Production source provisioning remains open.
 
@@ -64,7 +65,8 @@ and [documentation audit](FLOE_1_7_DOCUMENTATION_AUDIT.md).
   shutdown, environment migrations/templates/promotion/quota durability.
 - Node full-App linkage, interactive shell input forwarding, cross-runtime cwd,
   package installation compatibility and physical-device profiling.
-- End-to-end signed apt repository, transactional installation, compatible package pool.
+- Production signed apt source provisioning, full transactional interruption/rollback
+  acceptance and compatible package pool; signed publisher/client fixtures pass.
 - Real media export/enhancement, model resources/runners, and per-capability device evidence.
 - Lightweight workbench, file/attachment navigation, persistent edits and shared jobs.
 - Full legacy regression, immutable CI/SDK/device checks and distribution build.

@@ -1,1 +1,19 @@
-{"capabilities":[],"id":"floe-video","platforms":["ios"],"pythonPackages":[],"schemaVersion":1,"scriptRuntime":"none","tools":["media.capabilities","media.models","video.inspect","video.edit","video.transcode","video.remux","video.extractFrames","video.thumbnail","video.proxy","video.interpolate","video.superResolution","audio.inspect","audio.edit","audio.convert","audio.mix"],"version":"1.0.0"}
+{
+  "capabilities": [],
+  "id": "floe-video",
+  "platforms": [
+    "ios"
+  ],
+  "pythonPackages": [],
+  "schemaVersion": 1,
+  "scriptRuntime": "none",
+  "tools": [
+    "media.capabilities",
+    "video.inspect",
+    "video.transcode",
+    "video.remux",
+    "audio.inspect",
+    "audio.convert"
+  ],
+  "version": "1.0.1"
+}

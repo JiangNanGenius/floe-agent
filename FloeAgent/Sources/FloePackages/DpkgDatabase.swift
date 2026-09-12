@@ -42,7 +42,7 @@ public enum DpkgDatabase {
             self.installedFiles = installedFiles
         }
 
-        public var isInstalled: Bool { status.contains("installed") }
+        public var isInstalled: Bool { status.split(separator: " ").last == "installed" }
         public var isHalfConfigured: Bool { status.contains("half-configured") }
         public var isUnpacked: Bool { status.contains("unpacked") }
     }

@@ -49,7 +49,7 @@ public struct AptPackage: Sendable, Equatable {
             description: stanza["Description"],
             section: stanza["Section"],
             license: stanza["License"],
-            requiresBase: stanza["Floe-Requires-Base"] ?? stanza["Floe-MinAppVersion"],
+            requiresBase: stanza["Floe-Requires-Base"],
             source: stanza["Source"],
             component: component,
             repository: repository
@@ -68,7 +68,17 @@ public struct AptRelease: Sendable {
 
     public static func parse(_ stanza: Deb822) -> AptRelease? {
         guard let suite = stanza["Suite"] ?? stanza["Codename"] else { return nil }
-        let formatter = ISO8601DateFormatter()
+        func parseDate(_ value: String) -> Date? {
+            if let date = ISO8601DateFormatter().date(from: value) { return date }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            formatter.isLenient = false
+            return formatter.date(from: value)
+        }
+        // A malformed expiry must not turn an expiring signed index into a timeless one.
+        if let value = stanza["Valid-Until"], parseDate(value) == nil { return nil }
         var hashes: [String: String] = [:]
         if let sha256 = stanza["SHA256"] {
             for line in sha256.split(separator: "\n") {
@@ -80,8 +90,8 @@ public struct AptRelease: Sendable {
         return AptRelease(
             suite: suite,
             codename: stanza["Codename"] ?? suite,
-            date: stanza["Date"].flatMap { formatter.date(from: $0) },
-            validUntil: stanza["Valid-Until"].flatMap { formatter.date(from: $0) },
+            date: stanza["Date"].flatMap { parseDate($0) },
+            validUntil: stanza["Valid-Until"].flatMap { parseDate($0) },
             architectures: (stanza["Architectures"] ?? "").split(separator: " ").map(String.init),
             components: (stanza["Components"] ?? "").split(separator: " ").map(String.init),
             hashes: hashes

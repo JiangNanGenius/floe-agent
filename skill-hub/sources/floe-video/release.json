@@ -1,9 +1,9 @@
 {
-  "description": "On-device video and audio studio: inspect, play, edit, transcode, interpolate, super resolve and restore, with skill-hub managed models.",
+  "description": "Inspect media and use verified video transcode, remux and audio conversion paths; check device and model readiness before processing.",
   "minimumAppVersion": "1.7.0",
   "name": "Video Studio",
   "releaseNotes": {
-    "zh-Hans": "视频处理正式加入 skill-hub：Apple 原生 VTFrameProcessor/MetalFX 能力发现、非破坏编辑计划、内嵌播放器与时间线编辑器，以及经签名目录管理的插帧/超分等模型。",
-    "en": "Video arrives in skill-hub: Apple-native VTFrameProcessor/MetalFX capability discovery, non-destructive edit plans, the in-app player and timeline editor, and signed-catalog managed models for interpolation, super resolution and restoration."
+    "zh-Hans": "1.0.1：先检查能力与资源，移除未接通编辑和模型功能的可用声明。",
+    "en": "1.0.1: Check capabilities and resources first; remove availability claims for unconnected editing and model paths."
   }
 }

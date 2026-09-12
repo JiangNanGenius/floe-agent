@@ -51,3 +51,13 @@ extension PackageIntegrityTests {
         #expect(try await restored.held(container: first).isEmpty)
     }
 }
+
+extension PackageIntegrityTests {
+    @Test func releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() throws {
+        let release = try #require(AptRelease.parse(Deb822.parse(stanza: "Suite: test\nDate: Sat, 12 Sep 2026 12:00:00 UTC\nValid-Until: Sun, 13 Sep 2026 12:00:00 UTC\n")))
+        #expect(release.date != nil)
+        #expect(release.validUntil != nil)
+        #expect(!release.isValid(at: Date(timeIntervalSince1970: 2_000_000_000)))
+        #expect(AptRelease.parse(Deb822.parse(stanza: "Suite: test\nValid-Until: invalid\n")) == nil)
+    }
+}

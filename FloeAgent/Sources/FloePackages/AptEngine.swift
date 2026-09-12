@@ -80,6 +80,7 @@ public actor AptEngine {
     private let trustedKeys: [OpenPGP.Key]
     private let signatureVerifier: (@Sendable (Data, Data, [OpenPGP.Key]) throws -> Void)?
     private var indexes: [String: [String: [AptPackage]]] = [:]
+    private var mutating = Set<String>()
     private var releaseBySource: [String: AptRelease] = [:]
 
     public init(
@@ -218,27 +219,7 @@ public actor AptEngine {
 
     /// Resolves the install set for `names` (bounded, first-match).
     public func resolve(_ names: [String], installed: [String: String], container: Container) throws -> [AptPackage] {
-        var selected: [String: AptPackage] = [:]
-        var queue = names
-        var visited = Set<String>()
-        while let name = queue.popLast() {
-            if visited.contains(name) { continue }
-            visited.insert(name)
-            if installed[name] != nil { continue }
-            guard let candidate = bestPackage(named: name, container: container) else {
-                // Virtual package via Provides.
-                if let provider = allPackages(container: container).first(where: { provides($0, name) }) {
-                    selected[provider.name] = provider
-                    queue.append(contentsOf: dependencyNames(provider.depends))
-                    continue
-                }
-                throw AptError.unresolved(name)
-            }
-            selected[candidate.name] = candidate
-            queue.append(contentsOf: dependencyNames(candidate.preDepends))
-            queue.append(contentsOf: dependencyNames(candidate.depends))
-        }
-        return selected.values.sorted { $0.name < $1.name }
+        try PackageDependencyResolver.resolve(names, available: allPackages(container: container), installed: installed, architecture: container.architecture)
     }
 
     public func bestPackage(named name: String, container: Container) -> AptPackage? {
@@ -273,99 +254,149 @@ public actor AptEngine {
         container: Container,
         packageReview: @Sendable (_ package: AptPackage) -> Bool = { _ in true }
     ) async throws -> [Step] {
-        let installed = DpkgDatabase.merged(layers: [(container.layerKind, container.layerURL)])
-        let installedVersions = Dictionary(uniqueKeysWithValues: installed.map { ($0.name, $0.version) })
+        guard mutating.insert(container.id).inserted else { throw AptError.conflict("another package transaction is active") }
+        defer { mutating.remove(container.id) }
+        try PackageTransaction.recover(root: container.layerURL)
+        let installed = DpkgDatabase.readStatus(at: container.layerURL)
+        let installedVersions = Dictionary(uniqueKeysWithValues: installed.filter(\.isInstalled).map { ($0.name, $0.version) })
         let resolved = try resolve(names, installed: installedVersions, container: container)
-        var steps: [Step] = []
-        var manifest = LayerManifest.load(from: container.layerURL)
+        guard !resolved.isEmpty else { return [] }
+        var manifest = try LayerManifest.loadChecked(from: container.layerURL)
             ?? LayerManifest(id: container.id, kind: container.layerKind, baseRevision: container.baseRevision)
+        var prepared: [(AptPackage, DebArchive.Payload, [String])] = []
+        var paths = Set([LayerManifest.fileName, "var/lib/dpkg/status"])
+        let owners = installed.reduce(into: [String: String]()) { result, package in
+            for file in package.installedFiles { result[file] = package.name }
+        }
+        var claimed: [String: String] = [:]
         for package in resolved {
+            try Task.checkCancellation()
             guard try !held(container: container).contains(package.name) else { throw AptError.held(package.name) }
             guard packageReview(package) else { throw AptError.conflict("review rejected \(package.name)") }
-            guard let packageURL = URL(string: package.filename.hasPrefix("http") ? package.filename : repositoryURL(for: package) ) else {
-                throw AptError.unresolved(package.filename)
-            }
+            _ = try PackageDependencyResolver.Requirement(package.name)
+            if let base = package.requiresBase, base != container.baseRevision { throw AptError.conflict("\(package.name) requires base \(base)") }
+            guard let packageURL = URL(string: package.filename.hasPrefix("https://") ? package.filename : repositoryURL(for: package)) else { throw AptError.unresolved(package.filename) }
             let data = try await downloader.fetch(packageURL, 256 * 1024 * 1024)
+            try Task.checkCancellation()
             try AptIndex.validateDeb(data: data, package: package, digest: { FloeDigest.sha256Hex(Data($0)) })
             let payload = try DebArchive.read(data: data)
-            switch DebArchive.installability(of: payload) {
-            case .nativePayload:
-                throw AptError.nativePayload(package.name)
-            case .compatible, .dataOnly:
-                break
+            guard payload.control["Package"] == package.name, payload.control["Version"] == package.version,
+                  payload.control["Architecture"] == package.architecture else { throw AptError.conflict("downloaded package identity differs from signed index") }
+            guard payload.scripts.isEmpty else { throw AptError.scriptFailed(package.name, 126) }
+            guard !payload.controlEntries.contains(where: { ($0.path as NSString).lastPathComponent == "conffiles" && !$0.data.isEmpty }) else {
+                throw AptError.conflict("conffiles migration is not supported by this package build")
             }
-            let files = try unpack(payload: payload, into: container)
-            let entry = DpkgDatabase.StatusEntry(
-                name: package.name,
-                version: package.version,
-                architecture: package.architecture,
-                status: "install ok unpacked",
-                summary: package.description?.split(separator: "\n").first.map(String.init),
-                license: package.license,
-                source: package.source,
-                layer: container.layerKind,
-                requiresBase: package.requiresBase,
-                installedFiles: files
-            )
-            var entries = DpkgDatabase.readStatus(at: container.layerURL)
-            entries.removeAll { $0.name == package.name }
-            entries.append(entry)
-            try DpkgDatabase.writeStatus(entries, at: container.layerURL)
-            try DpkgDatabase.writeInfoFiles(for: entry, at: container.layerURL)
-            if let postinst = payload.scripts["postinst"] {
-                let code = await scriptRunner.run(postinst, ["configure"], container)
-                if code != 0 { throw AptError.scriptFailed(package.name, code) }
+            if DebArchive.installability(of: payload) == .nativePayload { throw AptError.nativePayload(package.name) }
+            var files: [String] = []
+            for entry in payload.dataEntries {
+                var path = entry.path.hasPrefix("./") ? String(entry.path.dropFirst(2)) : entry.path
+                if entry.kind == .directory && (path.isEmpty || path == ".") { continue }
+                if entry.kind == .directory { while path.hasSuffix("/") { path.removeLast() } }
+                guard !path.hasPrefix(PackageTransaction.directoryName), !path.hasPrefix("var/lib/dpkg/"),
+                      !path.hasPrefix("var/lib/apt/"), !path.hasPrefix("opt/floe/") else { throw AptError.conflict("package targets reserved state") }
+                let destination = try PackageTransaction.location(path, root: container.layerURL)
+                guard entry.kind == .file || entry.kind == .directory else { throw AptError.conflict("archive links and special files require a compatible package build") }
+                guard entry.kind == .file else { continue }
+                if let owner = owners[path], owner != package.name { throw AptError.conflict("\(path) belongs to \(owner)") }
+                if let owner = claimed[path], owner != package.name { throw AptError.conflict("multiple packages claim \(path)") }
+                if FileManager.default.fileExists(atPath: destination.path), owners[path] == nil { throw AptError.conflict("\(path) is an existing unowned file") }
+                if let old = manifest.packages.first(where: { $0.name == package.name }), let digest = old.fileDigests?[path],
+                   FileManager.default.fileExists(atPath: destination.path), FloeDigest.sha256Hex(try Data(contentsOf: destination)) != digest {
+                    throw AptError.conflict("\(path) was modified locally; preserve or restore it before upgrading")
+                }
+                guard !files.contains(path) else { throw AptError.conflict("duplicate archive file \(path)") }
+                claimed[path] = package.name; files.append(path); paths.insert(path)
             }
-            var configured = entry
-            configured.status = "install ok installed"
-            var updated = DpkgDatabase.readStatus(at: container.layerURL)
-            updated.removeAll { $0.name == package.name }
-            updated.append(configured)
-            try DpkgDatabase.writeStatus(updated, at: container.layerURL)
-            manifest.packages.removeAll { $0.name == package.name }
-            manifest.packages.append(InstalledPackage(
-                name: package.name,
-                version: package.version,
-                architecture: package.architecture,
-                layer: container.layerKind,
-                summary: package.description?.split(separator: "\n").first.map(String.init),
-                license: package.license,
-                source: package.source,
-                requiresBase: package.requiresBase,
-                files: files,
-                depends: package.depends,
-                preDepends: package.preDepends
-            ))
-            steps.append(Step(package: package.name, version: package.version, action: "install", detail: nil))
+            for old in installed.first(where: { $0.name == package.name })?.installedFiles ?? [] {
+                let url = try PackageTransaction.location(old, root: container.layerURL)
+                if let digest = manifest.packages.first(where: { $0.name == package.name })?.fileDigests?[old],
+                   FileManager.default.fileExists(atPath: url.path), FloeDigest.sha256Hex(try Data(contentsOf: url)) != digest {
+                    throw AptError.conflict("\(old) was modified locally; upgrade was cancelled")
+                }
+                paths.insert(old)
+            }
+            paths.insert("var/lib/dpkg/info/\(package.name).list")
+            paths.insert("var/lib/dpkg/info/\(package.name).md5sums")
+            prepared.append((package, payload, files))
         }
-        try manifest.write(to: container.layerURL)
-        return steps
+        let transaction = try PackageTransaction(root: container.layerURL, paths: Array(paths))
+        do {
+            var entries = installed
+            var steps: [Step] = []
+            for (package, payload, files) in prepared {
+                try Task.checkCancellation()
+                for old in installed.first(where: { $0.name == package.name })?.installedFiles ?? [] where !files.contains(old) {
+                    try transaction.remove(old)
+                }
+                var digests: [String: String] = [:]
+                for entry in payload.dataEntries where entry.kind == .file {
+                    let path = entry.path.hasPrefix("./") ? String(entry.path.dropFirst(2)) : entry.path
+                    try transaction.write(entry.data, to: path, mode: Int(entry.mode))
+                    digests[path] = FloeDigest.sha256Hex(entry.data)
+                }
+                let entry = DpkgDatabase.StatusEntry(name: package.name, version: package.version,
+                    architecture: package.architecture, summary: package.description, license: package.license,
+                    source: package.source, layer: container.layerKind, requiresBase: package.requiresBase, installedFiles: files)
+                entries.removeAll { $0.name == package.name }; entries.append(entry)
+                try DpkgDatabase.writeInfoFiles(for: entry, at: container.layerURL)
+                manifest.packages.removeAll { $0.name == package.name }
+                manifest.packages.append(InstalledPackage(name: package.name, version: package.version, architecture: package.architecture,
+                    layer: container.layerKind, summary: package.description, license: package.license, source: package.source,
+                    requiresBase: package.requiresBase, files: files, depends: package.depends, preDepends: package.preDepends, fileDigests: digests))
+                steps.append(Step(package: package.name, version: package.version, action: installedVersions[package.name] == nil ? "install" : "upgrade", detail: nil))
+            }
+            try DpkgDatabase.writeStatus(entries, at: container.layerURL)
+            try manifest.write(to: container.layerURL)
+            try transaction.commit()
+            return steps
+        } catch {
+            do { try PackageTransaction.recover(root: container.layerURL) }
+            catch { throw AptError.conflict("package recovery failed; journal retained: \(error)") }
+            throw error
+        }
     }
 
-    /// Removes packages that live in the container's own layer.
+    /// Removes owned payload files. Shared directories and unrelated files survive.
     public func remove(_ names: [String], container: Container, purge: Bool) throws -> [Step] {
-        var manifest = LayerManifest.load(from: container.layerURL)
-            ?? LayerManifest(id: container.id, kind: container.layerKind, baseRevision: container.baseRevision)
+        guard mutating.insert(container.id).inserted else { throw AptError.conflict("another package transaction is active") }
+        defer { mutating.remove(container.id) }
+        try PackageTransaction.recover(root: container.layerURL)
+        guard var manifest = try LayerManifest.loadChecked(from: container.layerURL) else { throw AptError.notInstalled(names.first ?? "") }
         var entries = DpkgDatabase.readStatus(at: container.layerURL)
+        let removing = Set(names)
+        for package in manifest.packages where !removing.contains(package.name) {
+            for group in try PackageDependencyResolver.groups(package.depends) + PackageDependencyResolver.groups(package.preDepends) {
+                if group.contains(where: { removing.contains($0.name) }) && !group.contains(where: { dependency in
+                    !removing.contains(dependency.name) && entries.contains { $0.name == dependency.name && dependency.accepts($0.version) }
+                }) { throw AptError.conflict("\(package.name) still depends on a requested package") }
+            }
+        }
+        var paths = Set([LayerManifest.fileName, "var/lib/dpkg/status"])
         var steps: [Step] = []
-        for name in names {
-            guard let index = manifest.packages.firstIndex(where: { $0.name == name }) else {
-                let stackOwned = DpkgDatabase.merged(layers: [(container.layerKind, container.layerURL)])
-                    .first { $0.name == name }
-                throw stackOwned == nil ? AptError.notInstalled(name) : AptError.conflict("\(name) is owned by a lower layer; use --layer to target it")
+        for name in removing.sorted() {
+            guard let package = manifest.packages.first(where: { $0.name == name }) else { throw AptError.notInstalled(name) }
+            guard try !held(container: container).contains(name) else { throw AptError.held(name) }
+            for file in package.files {
+                guard !manifest.packages.contains(where: { $0.name != name && $0.files.contains(file) }) else { throw AptError.conflict("\(file) has another owner") }
+                let url = try PackageTransaction.location(file, root: container.layerURL)
+                if let digest = package.fileDigests?[file], FileManager.default.fileExists(atPath: url.path),
+                   FloeDigest.sha256Hex(try Data(contentsOf: url)) != digest { throw AptError.conflict("\(file) was modified locally; removal was cancelled") }
+                paths.insert(file)
             }
-            let package = manifest.packages[index]
-            for file in package.files where purge {
-                let url = container.layerURL.appendingPathComponent(file)
-                try? FileManager.default.removeItem(at: url)
-            }
-            manifest.packages.remove(at: index)
-            entries.removeAll { $0.name == name }
+            paths.insert("var/lib/dpkg/info/\(name).list"); paths.insert("var/lib/dpkg/info/\(name).md5sums")
             steps.append(Step(package: name, version: package.version, action: purge ? "purge" : "remove", detail: nil))
         }
-        try DpkgDatabase.writeStatus(entries, at: container.layerURL)
-        try manifest.write(to: container.layerURL)
-        return steps
+        let transaction = try PackageTransaction(root: container.layerURL, paths: Array(paths))
+        do {
+            for path in paths where path != LayerManifest.fileName && path != "var/lib/dpkg/status" { try transaction.remove(path) }
+            manifest.packages.removeAll { removing.contains($0.name) }; entries.removeAll { removing.contains($0.name) }
+            try DpkgDatabase.writeStatus(entries, at: container.layerURL); try manifest.write(to: container.layerURL)
+            try transaction.commit(); return steps
+        } catch {
+            do { try PackageTransaction.recover(root: container.layerURL) }
+            catch { throw AptError.conflict("package recovery failed; journal retained: \(error)") }
+            throw error
+        }
     }
 
     /// Upgrade plan for installed packages that have newer candidates.
@@ -399,36 +430,4 @@ public actor AptEngine {
         package.repository.hasSuffix("/") ? package.repository + package.filename : package.repository + "/" + package.filename
     }
 
-    /// Unpacks data entries into the layer with path and overwrite safety.
-    private func unpack(payload: DebArchive.Payload, into container: Container) throws -> [String] {
-        var files: [String] = []
-        let root = container.layerURL
-        for entry in payload.dataEntries {
-            switch entry.kind {
-            case .file, .directory:
-                break
-            case .symlink, .hardlink:
-                continue
-            case .other:
-                continue
-            }
-            let normalized = entry.path.hasPrefix("./") ? String(entry.path.dropFirst(2)) : entry.path
-            guard !normalized.isEmpty else { continue }
-            guard !normalized.hasPrefix("/"), !normalized.split(separator: "/").contains("..") else {
-                throw AptError.conflict("unsafe path in archive: \(entry.path)")
-            }
-            let destination = root.appendingPathComponent(normalized)
-            if entry.kind == .directory {
-                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-                continue
-            }
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try entry.data.write(to: destination, options: .atomic)
-            files.append(normalized)
-        }
-        return files
-    }
 }

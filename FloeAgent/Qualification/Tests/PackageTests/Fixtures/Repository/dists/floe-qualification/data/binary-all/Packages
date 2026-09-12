@@ -1,0 +1,40 @@
+Package: floe-collision
+Version: 1.0
+Architecture: all
+Description: Qualification fixture
+Filename: pool/data/floe-collision_1.0_all.deb
+Size: 494
+SHA256: a1c766f41217e3be7af456bf11716a972133b6917fbe7f09df419e01e7012bcf
+
+Package: floe-dependent
+Version: 1.0
+Architecture: all
+Description: Qualification fixture
+Depends: floe-fixture (>= 2)
+Filename: pool/data/floe-dependent_1.0_all.deb
+Size: 514
+SHA256: deccf39e8254e4459a77e37b3ee3117434f287eff999919db697c862902d44fb
+
+Package: floe-fixture
+Version: 1.0
+Architecture: all
+Description: Qualification fixture
+Filename: pool/data/floe-fixture_1.0_all.deb
+Size: 488
+SHA256: 0cd2773a9b6922f3ea309a7c3820eb81e74d51ef0fa017c08de2229e851dfeec
+
+Package: floe-fixture
+Version: 2.0
+Architecture: all
+Description: Qualification fixture
+Filename: pool/data/floe-fixture_2.0_all.deb
+Size: 486
+SHA256: 0ab87fe9fcd0703857077878cee5513d721f3392ecea0dfa980b029b2ae901a1
+
+Package: floe-scripted
+Version: 1.0
+Architecture: all
+Description: Qualification fixture
+Filename: pool/data/floe-scripted_1.0_all.deb
+Size: 538
+SHA256: f916d698d0732fcd9f15a3c374de7b6735a6f8db6f9c2421de8278440cde1a99

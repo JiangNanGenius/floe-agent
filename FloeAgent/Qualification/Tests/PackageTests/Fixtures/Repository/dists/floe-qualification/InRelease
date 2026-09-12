@@ -1,0 +1,22 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: Floe
+Label: Floe
+Suite: floe-qualification
+Codename: floe-qualification
+Date: Sat, 12 Sep 2026 14:06:00 UTC
+Architectures: all
+Components: data
+Description: Floe local capability repository
+SHA256:
+ 2a02af8152065cd67a0a866478d9b5a2700afe0208fe5d41752b09340946e9ba             1123 data/binary-all/Packages
+ 9f4b7435a58d9485f2466c3434463ade536bce8b900ef09c4b414bbe2c458e4c              436 data/binary-all/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iJEEARYIADkWIQRH7lnkrcfRnig3+7Aq09MhKaTDDwUCaqVcShsUgAAAAAAEAA5t
+YW51MiwyLjUrMS4xMiwwLDMACgkQKtPTISmkww9GHQEAozqAM1XJ0CZXSIqSVRj7
+U6RSDXO3u10mXi3CE3OBJoMBAMQzwMuLS3soSkqe+3ZFv862zJcw+sCkoFVllq4l
+7pwG
+=DYMo
+-----END PGP SIGNATURE-----

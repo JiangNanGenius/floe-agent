@@ -101,7 +101,7 @@ def build_deb(package_dir: pathlib.Path, component: str) -> dict | None:
     control_tar_gz = gzip.compress(tar_bytes(control_entries), mtime=0)
 
     deb = (
-        ar_member("debian-binary", b"2.0\n")
+        b"!<arch>\n" + ar_member("debian-binary", b"2.0\n")
         + ar_member("control.tar.gz", control_tar_gz)
         + ar_member("data.tar.gz", data_tar_gz)
     )
@@ -123,7 +123,7 @@ def gzip_deterministic(data: bytes) -> bytes:
     return buffer.getvalue()
 
 
-def main() -> int:
+def build_repository() -> int:
     if not POOL.is_dir():
         print(f"no pool directory at {POOL}; nothing to build")
         return 0
@@ -149,16 +149,19 @@ def main() -> int:
         component_packages = [p for p in packages if p["_component"] == component]
         if not component_packages:
             continue
-        stanzas = []
-        for package in component_packages:
-            lines = [f"{key}: {value}" for key, value in package.items() if not key.startswith("_")]
-            stanzas.append("\n".join(lines))
-        document = "\n\n".join(stanzas) + "\n"
-        architecture = component_packages[0].get("Architecture", "all")
-        index_dir = REPO / "dists" / SUITE / component / f"binary-{architecture}"
-        index_dir.mkdir(parents=True, exist_ok=True)
-        (index_dir / "Packages").write_bytes(document.encode())
-        (index_dir / "Packages.gz").write_bytes(gzip_deterministic(document.encode()))
+        architectures = sorted({p.get("Architecture", "all") for p in component_packages})
+        for architecture in architectures:
+            # Architecture-independent entries remain available to each native index.
+            selected = [p for p in component_packages if p.get("Architecture", "all") in {architecture, "all"}]
+            stanzas = []
+            for package in selected:
+                lines = [f"{key}: {value}" for key, value in package.items() if not key.startswith("_")]
+                stanzas.append("\n".join(lines))
+            document = "\n\n".join(stanzas) + "\n"
+            index_dir = REPO / "dists" / SUITE / component / f"binary-{architecture}"
+            index_dir.mkdir(parents=True, exist_ok=True)
+            (index_dir / "Packages").write_bytes(document.encode())
+            (index_dir / "Packages.gz").write_bytes(gzip_deterministic(document.encode()))
 
     release_lines = [
         f"Origin: Floe",
@@ -166,7 +169,7 @@ def main() -> int:
         f"Suite: {SUITE}",
         f"Codename: {SUITE}",
         f"Date: {time.strftime('%a, %d %b %Y %H:%M:%S UTC', time.gmtime())}",
-        f"Architectures: all arm64",
+        f"Architectures: {' '.join(sorted({p.get('Architecture', 'all') for p in packages}))}",
         f"Components: {' '.join(sorted({p['_component'] for p in packages}))}",
         f"Description: Floe local capability repository",
         "SHA256:",
@@ -213,6 +216,36 @@ def main() -> int:
     (REPO / "catalog.json").write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
     print(f"built {len(packages)} packages for suite {SUITE}")
     return 0
+
+
+def main() -> int:
+    global REPO
+    key = os.environ.get("FLOE_REPO_SIGNING_KEY")
+    if not (key and pathlib.Path(key).is_file()) and os.environ.get("FLOE_REPO_ALLOW_UNSIGNED") != "1":
+        raise RuntimeError("A production repository requires FLOE_REPO_SIGNING_KEY (OpenPGP)")
+    if not POOL.is_dir():
+        print(f"no pool directory at {POOL}; nothing to build")
+        return 0
+    destination = REPO
+    with tempfile.TemporaryDirectory(prefix=".repo-stage-", dir=POOL) as temporary:
+        REPO = pathlib.Path(temporary) / "repo"
+        try:
+            result = build_repository()
+            if not (REPO / "catalog.json").is_file(): return result
+            backup = pathlib.Path(tempfile.mkdtemp(prefix=".repo-recovery-", dir=POOL))
+            previous = backup / "repo"
+            try:
+                if destination.exists(): destination.rename(previous)
+                try: REPO.rename(destination)
+                except BaseException:
+                    if previous.exists(): previous.rename(destination)
+                    raise
+            except BaseException:
+                # Retain any recovery directory if a rollback itself fails.
+                raise
+            else: shutil.rmtree(backup)
+            return result
+        finally: REPO = destination
 
 
 if __name__ == "__main__":
