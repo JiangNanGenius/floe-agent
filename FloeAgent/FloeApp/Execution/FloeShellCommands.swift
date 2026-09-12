@@ -226,12 +226,11 @@ enum FloeShellCommands {
         registerHash(registry)
         registerNetwork(registry)
         registerPackages(registry)
+        registerWasm(registry)
         registry.register("git") { _, _, stderr in
             FloeShellWrite(stderr, "git: use the git.* agent tools (libgit2) or an approved remote host\n")
             return 127
         }
-        FloePlatformServices.shared.registerCommands(in: registry)
-    }
     }
 
     static func refreshPythonCommands() async {
