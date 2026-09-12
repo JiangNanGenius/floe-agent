@@ -32,6 +32,14 @@ Floe 1.7 正在 `codex/floe-1-7-integration-20260912` 分支整合，重点是�
 
 参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[升级与恢复](docs/FLOE_1_7_MIGRATION.md)、[构建与验收](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)。历次版本记录保留在[文档索引](docs/README.md)。
 
+下一 1.7 候选还接入了固定版本的 MIT ZLImageEditor，并重做为 Floe 原生图像工作台，提供裁剪、涂鸦、文字、马赛克、滤镜和调色。画布视频节点复用现有视频编辑器。参见[图像编辑集成与验收边界](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md)。
+
+### 手记、Office 与本地语音（开发候选）
+
+手记是优先于创意模式的独立工作区，使用独立资料存储与撤销历史，复用 Floe 的模型、工具和权限服务。已接入 PDF/图片批注、思维导图、Office 文件编辑、选区提问与可编辑归档；进一步集成与完整应用验收仍在进行。全项目以 iPadOS 27 为首要体验，iPhone 同步验证，26 保持兼容。
+
+语音输入已接入按需下载的多语言 Whisper Small，无法使用时回退 Apple 识别；资源安装不等于混合中英识别质量已验收。最新证据、限制和剩余内容见[本轮实施记录](docs/FLOE_1_7_CONTINUATION_STATUS.md)。
+
 ### 媒体工作台预览
 
 <img src="docs/evidence/floe-1.7/native-media-workbench.png" width="360" alt="媒体工作台预览">

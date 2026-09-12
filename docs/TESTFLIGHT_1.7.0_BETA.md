@@ -62,4 +62,24 @@ device acceptance remain open; this is an internal beta, not full-plan acceptanc
 - Fixed source: `2cd030c2121ef48214da312ad310c74ae1c72324`.
 - Immutable tag: `v1.7.0-beta.4`; tag/version/build preflight passed.
 - Cloud run: [34711460906](https://github.com/JiangNanGenius/floe-agent/actions/runs/34711460906).
-- Uploaded/Apple VALID/internal-group visibility: not yet confirmed.
+- Cancelled before upload after the Swift regression stage stopped producing
+  output for approximately 14 minutes. Complete logs reveal an SVG inspection
+  approval regression and an execution-test stall; no App build or upload passed.
+  The SVG inspection exemption is restored in the next source revision, while
+  the execution stall requires reproduction and qualification before another tag.
+
+## Build 148 / beta.5 candidate
+
+Restores the existing read-only SVG inspection approval rule that was lost during
+tool consolidation. Focused host tests pass: 83 security-policy tests and 147
+execution tests, with the two JavaScript deadline suites kept separate as in the
+release workflow. The temporary test harness links production sources and the
+PDF fixtures; these results do not replace the complete cloud suite.
+
+The cloud stall has not reproduced in this focused run. Release tests now retain
+their complete output, sample owned Swift test processes after 90 seconds without
+test output, and fail after 180 seconds without output or the overall deadline.
+The wrapper preserves test exit codes and terminates its own process group on a
+deadline. Three subprocess checks cover output/exit propagation, timeout and
+child cleanup. No tests are skipped beyond the pre-existing isolated JavaScript
+suites, which still run separately. Fresh cloud verification remains required.

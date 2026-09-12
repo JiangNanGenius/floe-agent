@@ -284,3 +284,38 @@ workspace/task rows; the actual appearance entry is Settings → General.
 Completed calls can remain folded while a newly running tool stays visible:
 
 <img src="evidence/floe-1.7/interface/thread-folded-active.png" width="360" alt="Folded completed calls with visible current activity and an error result">
+
+
+## Canvas image and video workbenches (1.7 development)
+
+Select a local image and choose **Edit image**. The image workbench opens directly,
+with crop, drawing, text, mosaic, filters and adjustments. Undo, redo and original
+comparison stay accessible above the image. **Save copy** verifies a new PNG and
+returns it to the canvas as a derived asset; the source remains unchanged. The
+interface follows light/dark appearance. Layers are flattened on export.
+
+Select a local video and choose **Editing and captions** to reuse the workspace
+video editor. Verified exports become derived canvas nodes. If the originating
+canvas changes, the result remains in the material library instead of being
+inserted into a different document. Full-App and physical-device acceptance
+remain separate from the native fixture tests.
+
+The Canvas Assistant now uses the main chat's Markdown, live reasoning and tool
+frames, and provides access to earlier conversation records.
+
+
+## 1.7 development candidate: Notes and local speech
+
+These instructions describe the integration branch. Check the [implementation record](FLOE_1_7_CONTINUATION_STATUS.md) for full-app, device and TestFlight status.
+
+The sidebar orders New Task, Task Center, Notes (手记), Creative mode and Plugins / Skills above projects and tasks. Settings remains at the bottom left. Notes and Canvas keep separate content management; there is no additional top-level Library destination.
+
+- Use the Notes plus menu to create notebooks, pages, mind maps or Office files, or import PDF, images, Office files and `.floenote` archives. Search, notebook filters, favorites, rename/move and trash recovery organize content.
+- Pencil drawing is the default. Finger drawing is enabled separately in the writing toolbar. Insert text, images and shapes; adjust page elements using their position, size and color controls.
+- On version 27, select ink with the native lasso and choose Ask Floe, or use AI region selection for page content. The actual image and source coordinates enter the assistant composer for review before sending. Select a model capable of handling the supplied image.
+- Save an assistant response as editable content or a new organized note. Long answers paginate and retain AI/source identity. Source links open the current source page.
+- Export a readable PDF or an editable `.floenote` archive; mind maps also export Markdown outlines. Archive import creates an independent copy with validated resources, without importing conversation permissions or undo history.
+- Office uses the existing native engine. Export, drawing and presentation controls depend on host capabilities. Recovery can create an independent document. Actual Word ink persistence and PowerPoint presentation behavior still require full-app device acceptance.
+- A regular conversation can explicitly attach Notes material, read-only by default. `notes.read`, `notes.search` and `notes.edit` use only that conversation's selected scope.
+
+Settings → General contains system/light/dark appearance and Whisper management. The multilingual Small model is an on-demand download of about 491 MB. When Whisper is unavailable, recognition falls back to Apple and its system permissions. Mixed Mandarin/English quality, long recordings and unified media transcription are still under validation.

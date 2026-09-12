@@ -1,0 +1,27 @@
+name: Diagnose platform test execution
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/floe-1-7-integration-20260912']
+    paths: ['.github/workflows/platform-test-diagnostics.yml']
+permissions:
+  contents: read
+jobs:
+  platform:
+    runs-on: xcode-27
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run real platform tests with owned-process diagnostics
+        run: |
+          python3 FloeAgent/scripts/run_test_with_diagnostics.py \
+            --output-dir "$RUNNER_TEMP/platform-diagnostics" --timeout 1200 --stall-timeout 180 \
+            -- swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 4
+      - name: Keep logs and samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/platform-diagnostics

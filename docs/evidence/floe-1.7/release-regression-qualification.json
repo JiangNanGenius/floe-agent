@@ -1,0 +1,26 @@
+{
+  "date": "2026-09-13",
+  "kind": "focused-host-regression",
+  "securityTestsPassed": 83,
+  "executionTestsPassed": 147,
+  "executionSuitesExcluded": [
+    "JavaScriptEngineTests",
+    "JavaScriptExecutionToolTests"
+  ],
+  "harness": "Temporary Swift package linking the repository source/test trees and FloeApp PDF fixtures. These two JavaScript suites remain separate release gates.",
+  "sourceTreeSHA256": "6db8bbdf14d3e0eca9ad88b3d162ebc2ccb9ab85544d3f26e323a1557c9fd447",
+  "testTreeSHA256": "64ed296612cc48f78ca0b42408914127796c5579da08976a31db0eee746e661e",
+  "watchdogChecksPassed": [
+    "exit code and output preservation",
+    "overall timeout",
+    "stalled test and owned child-process cleanup"
+  ],
+  "realSwiftCommandThroughWatchdog": {
+    "exitCode": 0,
+    "reason": "exited",
+    "elapsedSeconds": 24.66,
+    "testsStarted": true
+  },
+  "cloudBoundary": "beta.4 cancelled before upload after SVG policy failure and an execution-test stall. Focused host tests pass after restoring the SVG inspection rule; cloud stall root cause not established.",
+  "fullAppOrDeviceAcceptance": false
+}

@@ -35,3 +35,9 @@ Floe 的适配补齐手工字幕的时间映射；对没有逐词时间戳的字
 <img src="evidence/floe-1.7/native-visual-video-editor.png" width="360" alt="Development visual video editor" />
 
 可视化编辑器开发截图，已加载合成测试素材。
+
+## 画布入口（下一候选）
+
+本机视频节点的 **剪辑与字幕** 入口复用同一 MediaEditorView。基础和可视化导出
+均通过统一回调交给画布，登记素材后创建衍生节点。导出时捕获原画布和节点标识，
+画布变化时将结果保留在素材库，避免插入错误文档。此入口尚待完整 App 交互验收。

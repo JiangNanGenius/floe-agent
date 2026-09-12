@@ -133,13 +133,15 @@ jobs:
       - name: Qualify environment, package, media and job modules
         run: |
           set -o pipefail
-          swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
+          python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/PlatformQualificationDiagnostics" --timeout 1200 -- swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
       - name: Upload platform qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: platform-qualification-${{ github.sha }}
-          path: FloeAgent/platform-qualification.log
+          path: |
+            FloeAgent/platform-qualification.log
+            ${{ runner.temp }}/PlatformQualificationDiagnostics
 
 
       - name: Install Xcode Metal toolchain

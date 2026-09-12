@@ -32,6 +32,15 @@ Environment ownership and persistence, signed repository fixtures, bounded media
 
 See [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [upgrade and recovery](docs/FLOE_1_7_MIGRATION.md), and [build and acceptance](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Existing version notes remain in the [documentation index](docs/README.md).
 
+The next 1.7 candidate also integrates a pinned MIT ZLImageEditor with a Floe-native image workbench: crop, drawing, text, mosaic, filters and color adjustments. Canvas video nodes reuse the existing video editor. See the [image editor integration and acceptance boundaries](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md).
+
+
+### Notes, Office and local speech (development candidate)
+
+Notes (手记) is a separate workspace above Creative mode, with its own durable content and undo history while sharing Floe models, tools and permissions. PDF/image annotation, mind maps, Office editing, selection questions and editable archives are being integrated. The whole app prioritizes iPadOS 27, also validates iPhone, and keeps version 26 compatible.
+
+Voice input now has an on-demand multilingual Whisper Small path with Apple recognition fallback. Installing resources does not establish bilingual transcription quality. See the [current implementation and evidence record](docs/FLOE_1_7_CONTINUATION_STATUS.md) for remaining work; a complete 1.7 TestFlight build has not yet been delivered.
+
 ### Media workbench preview
 
 <img src="docs/evidence/floe-1.7/native-media-workbench.png" width="360" alt="Media workbench preview">

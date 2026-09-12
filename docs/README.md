@@ -9,6 +9,7 @@
 | 文档 | 阅读目的 |
 |---|---|
 | [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 本轮改动与分发前剩余工作 |
+| [本轮继续实施状态](FLOE_1_7_CONTINUATION_STATUS.md) | 手记、Office、Whisper 与剩余验收事实 |
 | [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md) | 已验证路径、固定提交和剩余门槛 |
 | [构建与验收](FLOE_1_7_BUILD_AND_ACCEPTANCE.md) | 本地定向测试、云端 SDK 构建和 TestFlight 门槛 |
 | [迁移与恢复](FLOE_1_7_MIGRATION.md) | 分层语义、数据保护和故障恢复限制 |
@@ -67,3 +68,5 @@
 
 - [Video editor integration](FLOE_1_7_VIDEO_EDITOR_INTEGRATION.md)
 - [Screenshot archive](evidence/floe-1.7/SCREENSHOTS.md)
+
+- [Floe 1.7 图像编辑器：来源、使用与验证边界](FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md)
