@@ -93,17 +93,24 @@ and [documentation audit](FLOE_1_7_DOCUMENTATION_AUDIT.md).
 
 ## Remaining acceptance gates
 
-- Complete App build and native shell runtime tests; previous minimal App reproduced
-  pipe/environment defects are closed by the four-case smoke above; multi-stage pipelines,
-  interactive cancellation and complete runtime scenarios remain open.
-- Durable background job context, Python/WASM installer routing, scoped native worker
-  shutdown, environment migrations/templates/promotion/quota durability.
+- Complete App build and native shell runtime regressions. Minimal-App Debug and
+  Release qualification now covers multi-stage pipelines, interactive input/close,
+  cancellation and timeout with stopped workers; blocking native commands and
+  physical-device runtime acceptance remain open.
+- Full-App background job context, Python/WASM installer routing, scoped native
+  worker shutdown, migration/restart and quota acceptance. Host tests cover
+  template independence, promotion recovery and selected lifecycle failure paths;
+  cross-registry/CAS deletion recovery is not fully qualified.
 - Node full-App linkage, interactive shell input forwarding, cross-runtime cwd,
   package installation compatibility and physical-device profiling.
 - Production signed apt source provisioning, full transactional interruption/rollback
   acceptance and compatible package pool; signed publisher/client fixtures pass.
-- Real media export/enhancement, model resources/runners, and per-capability device evidence.
-- Lightweight workbench, file/attachment navigation, persistent edits and shared jobs.
+- Full-App and device media acceptance, enhancement runners and per-capability
+  device evidence. Real host exports and focused native editor outputs pass;
+  background operation, space pressure and long-video memory remain unqualified.
+- Complete workspace/attachment navigation and shared jobs. Focused native
+  workbench tests cover saved edits, trim/export and timed Chinese captions;
+  Agent-to-workbench task visibility and conversation handoff remain open.
 - Full legacy regression, immutable CI/SDK/device checks and distribution build.
 
 No release, model readiness, native runtime acceptance or complete-plan success is

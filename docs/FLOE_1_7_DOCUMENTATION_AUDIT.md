@@ -142,3 +142,9 @@
 | [skill-hub/sources/floe-office/SKILL.md](../skill-hub/sources/floe-office/SKILL.md) | 可发布 Skill | 既有技能说明保留；行为变化时同步版本与签名 |
 | [skill-hub/sources/floe-pdf/SKILL.md](../skill-hub/sources/floe-pdf/SKILL.md) | 可发布 Skill | 既有技能说明保留；行为变化时同步版本与签名 |
 | [skill-hub/sources/floe-video/SKILL.md](../skill-hub/sources/floe-video/SKILL.md) | 可发布 Skill | 1.0.1 已校正能力描述，云端签名与本地验证通过 |
+
+## 2026-09-13 界面与分发记录核对
+
+补充通用里的日夜主题、项目/会话容器管理、思考与工具组交互说明及合成样本截图。工程验收和迁移说明同步记录 49 项模块测试、两项原生界面测试的边界。文档索引中六个指向未纳入版本控制的本地资料链接改为明确的本地资料标记，不把这些旧规划误当成可访问的仓库文档。
+
+TestFlight beta.4 固定在 `2cd030c2121ef48214da312ad310c74ae1c72324`，版本 1.7.0 / build 147；云端工作流 [34711460906](https://github.com/JiangNanGenius/floe-agent/actions/runs/34711460906) 已启动，尚未获得上传或 Apple 处理完成结果。后续文档提交不会移动这个标签。

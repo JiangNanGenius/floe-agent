@@ -58,3 +58,8 @@ boundary. Final native component compilation also passes after adding conversati
 titles to container rows. Full-App cloud builds and Apple processing remain pending.
 Production apt provisioning, the complete model capability matrix and physical
 device acceptance remain open; this is an internal beta, not full-plan acceptance.
+
+- Fixed source: `2cd030c2121ef48214da312ad310c74ae1c72324`.
+- Immutable tag: `v1.7.0-beta.4`; tag/version/build preflight passed.
+- Cloud run: [34711460906](https://github.com/JiangNanGenius/floe-agent/actions/runs/34711460906).
+- Uploaded/Apple VALID/internal-group visibility: not yet confirmed.

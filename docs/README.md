@@ -14,6 +14,8 @@
 | [迁移与恢复](FLOE_1_7_MIGRATION.md) | 分层语义、数据保护和故障恢复限制 |
 | [兼容性说明](FLOE_1_7_COMPATIBILITY.md) | 包、编码器、模型的真实支持范围 |
 | [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md) | 15 个包、33 个模型逐项状态与待验证门槛 |
+| [TestFlight 候选记录](TESTFLIGHT_1.7.0_BETA.md) | 固定版本、构建尝试与 Apple 处理结果 |
+| [界面截图与交互测试](evidence/floe-1.7/interface/README.md) | 通用里的日夜主题、思考框和连续工具折叠 |
 | [Node 运行时](FLOE_1_7_NODE_RUNTIME.md) | 常驻宿主、依赖 pin 和验证证据 |
 | [文档维护清单](FLOE_1_7_DOCUMENTATION_AUDIT.md) | 当前说明、历史档案与生成内容的维护归属 |
 
@@ -26,14 +28,14 @@
 | [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md) | 总体架构 |
 | [ARCHITECTURE_LOCAL_SHELL.md](ARCHITECTURE_LOCAL_SHELL.md) | 本地 Shell / 终端 / apt·pkg 能力层架构（安全边界、Linux 兼容性、第三方许可） |
 | [PLAN_LOCAL_SHELL.md](PLAN_LOCAL_SHELL.md) | 本地 Shell 实现记录与遗留事项 |
-| [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) | 里程碑计划（§11 的 on-device 代码排除已由本地 Shell 架构取代） |
+| `DEVELOPMENT_PLAN.md`（本地资料，未随仓库分发） | 里程碑计划（§11 的 on-device 代码排除已由本地 Shell 架构取代） |
 | [FLOE_BROWSER_PROTOCOL.md](FLOE_BROWSER_PROTOCOL.md) | 浏览器自动化协议 |
 | [MAIL_CONNECTOR.md](MAIL_CONNECTOR.md) | 邮件连接器 |
 | [CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md)（+zh-CN） | 画布与素材架构 |
 | [INTERNAL_PROMPT_AUDIT.md](INTERNAL_PROMPT_AUDIT.md) | 内部提示词审计 |
 | [HARNESS_TIER3_DESIGN.md](HARNESS_TIER3_DESIGN.md) | 快照回滚/模型 failover/hooks 的 Tier-3 设计（对标 OpenCode/Claude Code/Kimi Code） |
 | [TOOL_CLOSURE_IMPLEMENTATION.md](TOOL_CLOSURE_IMPLEMENTATION.md) | 工具闭环实现 |
-| [../FloeAgent/docs/](../FloeAgent/docs/) | 工程侧架构（HARNESS_PROMPT_PROTOCOL 等） |
+| `../FloeAgent/docs/`（本地资料，未随仓库分发） | 工程侧架构（HARNESS_PROMPT_PROTOCOL 等） |
 | [../FloeAgent/README.md](../FloeAgent/README.md) | 构建说明与模块图 |
 | [../skill-hub/](../skill-hub/) / [../ios-wheelhouse/](../ios-wheelhouse/README.md) | 官方技能中心 / iOS wheel 产线 |
 
@@ -46,8 +48,8 @@
 
 ## 历史研究（结论以现行代码为准）
 
-- [FRAMEWORK_AUDIT_2026-08-13.md](FRAMEWORK_AUDIT_2026-08-13.md)、[SPIKE_MYLLM_APP_REVIEW_RESEARCH_2026-08-22.md](SPIKE_MYLLM_APP_REVIEW_RESEARCH_2026-08-22.md)、[reviews/CODEX_*.md](reviews/)
-- [ALPHA_DAILY_PLAN.md](ALPHA_DAILY_PLAN.md)、[MEDIA_MODEL_CATALOG_2026-09-08.md](MEDIA_MODEL_CATALOG_2026-09-08.md)（目录随版本更新）
+- `FRAMEWORK_AUDIT_2026-08-13.md`（本地资料，未随仓库分发）、`SPIKE_MYLLM_APP_REVIEW_RESEARCH_2026-08-22.md`（本地资料，未随仓库分发）、`reviews/CODEX_*.md`（本地资料，未随仓库分发）
+- `ALPHA_DAILY_PLAN.md`（本地资料，未随仓库分发）、[MEDIA_MODEL_CATALOG_2026-09-08.md](MEDIA_MODEL_CATALOG_2026-09-08.md)（目录随版本更新）
 - ⚠️ `../FloeAgent/docs/ARCHITECTURE_EXECUTION.md` 中"本轮不做本地 Python"的 P3 结论是**历史结论**；现状为 BeeWare CPython 内嵌 + ios-wheelhouse，见 [USER_GUIDE](USER_GUIDE.md) 与 [../ios-wheelhouse/README.md](../ios-wheelhouse/README.md)。
 
 ## 实施跟踪（当前里程碑）
