@@ -561,7 +561,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub assets after TestFlight transport accepts the upload
-    if: github.event_name == 'push' || inputs.publish
+    if: (github.event_name == 'push' && !contains(needs.build-verify-release.outputs.tag, '-beta.')) || inputs.publish
     needs: [build-verify-release, testflight]
     runs-on: ubuntu-latest
     permissions:

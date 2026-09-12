@@ -5,8 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TAG="${1:-${GITHUB_REF_NAME:-}}"
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "error: release tag must be SemVer in the form v1.2.3 (received '$TAG')" >&2
+if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?$ ]]; then
+    echo "error: release tag must be SemVer in the form v1.2.3 or v1.2.3-beta.1 (received '$TAG')" >&2
     exit 1
 fi
 if ! git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
@@ -32,7 +32,7 @@ if [[ -z "$VERSION" || -z "$BUILD" || -z "$BUNDLE_ID" || ! "$BUILD" =~ ^[0-9]+$ 
     echo "error: version, integer build, and bundle identifier are required in project.yml" >&2
     exit 1
 fi
-if [[ "$TAG" != "v$VERSION" ]]; then
+if [[ "${TAG%%-beta.*}" != "v$VERSION" ]]; then
     echo "error: tag '$TAG' does not match MARKETING_VERSION '$VERSION'" >&2
     exit 1
 fi

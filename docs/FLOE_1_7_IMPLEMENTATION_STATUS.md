@@ -109,3 +109,17 @@ and [documentation audit](FLOE_1_7_DOCUMENTATION_AUDIT.md).
 No release, model readiness, native runtime acceptance or complete-plan success is
 implied by these checkpoints. Source presence and successful downloads are not
 execution evidence.
+
+## TestFlight preparation checkpoint
+
+- Candidate version: 1.7.0 (144); beta tag is not created until the source is fixed. Beta tags suppress automatic public GitHub release publication.
+- VideoEditorKit is pinned and integrated with manual timed captions; the native Chinese-caption pixel test passes before/during/after checks. See FLOE_1_7_VIDEO_EDITOR_INTEGRATION.md.
+- Sidebar footer now contains only the settings button; screenshots are retained in user guides.
+- Native Node cwd tests: 9 cases pass; 4 host tests pass. Full App CI additionally found the missing CancellationToken import and Int/UInt bridge mismatch; both are corrected in source.
+- CAS index corruption and failed reference writes now fail closed. Ingest preserves its source until the reference index is durable. Trash removal counts only successful deletions; failed CAS releases retain trash and references. Thirty-five module tests pass, including 8 environment tests.
+- Workspace opening now creates its own project environment; settings includes environment records, installed layer packages and measured storage usage. App acceptance of these additions remains pending.
+- App Store Connect discovery 34705408935 confirmed latest VALID upload 1.6.6 (142). No 1.7 TestFlight upload is claimed.
+
+The original remaining acceptance gates still apply. This checkpoint does not qualify all 15 media model capability classes or all 15 native package pool entries.
+
+- Follow-up native qualification: 9 bridge cases and 4 Swift adapter checks pass. Environment qualification now runs 11 tests, adding cross-workspace session ownership, registry write-failure rollback and template independence after CAS collection. See `native-node-adapter.json` and `environment-template-qualification.txt` in the evidence directory. Full App cloud verification remains required.
