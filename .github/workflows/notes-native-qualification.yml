@@ -1,6 +1,9 @@
 name: Qualify Notes on iPad and iPhone
 on:
   workflow_dispatch:
+  push:
+    branches: ['codex/floe-1-7-integration-20260912']
+    paths: ['.github/workflows/notes-native-qualification.yml']
 permissions:
   contents: read
 concurrency:
