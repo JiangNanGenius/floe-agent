@@ -71,6 +71,7 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
             "TMPDIR": containerRoot.appendingPathComponent("tmp").path,
             "NODE_PATH": nodeModules,
             "PATH": "\(bin):/usr/local/bin:/usr/bin:/bin",
+            "npm_config_prefix": containerRoot.appendingPathComponent("usr").path,
             "npm_config_cache": containerRoot.appendingPathComponent("var/npm").path,
             "PNPM_HOME": containerRoot.appendingPathComponent("usr").path,
             "npm_config_store_dir": containerRoot.appendingPathComponent("opt/pnpm-store").path,

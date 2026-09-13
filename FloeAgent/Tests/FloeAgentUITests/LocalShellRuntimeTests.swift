@@ -8,6 +8,20 @@ import FloeTools
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test(.timeLimit(.minutes(1))) func pipelineTimeoutDrainsAndNextCommandRuns() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = IOSSystemShellBackend()
+        let first = await backend.run(.init(command: "while :; do printf data; done | cat", cwd: ".", rootURL: root,
+            timeout: 0.2, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .timedOut = first else { Issue.record("Expected pipeline timeout: \(first)"); return }
+        let next = await backend.run(.init(command: "printf after-pipeline", cwd: ".", rootURL: root,
+            timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .exited(let code, let out, _, _, _, _) = next else { Issue.record("Pipeline retained its output stream: \(next)"); return }
+        #expect(code == 0 && out == "after-pipeline")
+    }
+
     @Test(.timeLimit(.minutes(2))) func httpsThroughCurlPythonAndNode() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

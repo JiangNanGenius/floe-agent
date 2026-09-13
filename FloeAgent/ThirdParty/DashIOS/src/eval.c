@@ -72,6 +72,13 @@
 
 
 int evalskip;			/* set if we are skipping commands */
+#if TARGET_OS_IPHONE
+/* Reserve an ios_system PID only after expansion resolves an external command.
+ * Unknown commands must never leave an unpublished PID locked indefinitely. */
+static int floe_pipeline_pid = -1;
+static int floe_async_consumer = 0;
+static int floe_async_consumer_failed = 0;
+#endif
 STATIC int skipcount;		/* number of levels to skip */
 MKINIT int loopnest;		/* current loop nesting level */
 static int funcline;		/* starting line number of current function, or 0 if not in a function */
@@ -620,29 +627,41 @@ evalpipe(union node *n, int flags)
 		lplist[i] = lp;
 		i++;
 	}
-    /* A missing literal consumer never starts an ios_system thread. Reject it
-     * before ios_fork, otherwise its unpublished PID stays -1 and ios_waitpid
-     * spins forever, blocking every later Floe shell command. */
-    union node *consumer = lplist[pipelen - 1]->n;
-    if (consumer->type == NCMD && consumer->ncmd.args && goodname(consumer->ncmd.args->narg.text)) {
-        struct cmdentry entry;
-        find_command(consumer->ncmd.args->narg.text, &entry, DO_ERR, pathval());
-        if (entry.cmdtype == CMDUNKNOWN) {
+    for (int j = 1; j < pipelen; j++) {
+        if (lplist[j]->n->type != NCMD) {
+            sh_warnx("compound pipeline consumers are not supported by this iOS shell; use a Python/Node script or a temporary file");
             free(lplist);
-            return 127;
+            return 2;
         }
     }
+    int previous_pipeline_pid = floe_pipeline_pid;
+    int previous_async_consumer = floe_async_consumer;
+    floe_pipeline_pid = -1;
 	flags &= ~EV_EXIT; // do not exit after each command
 	// Try: call all commands, but wait for last one in the pipe. 
 	// Question is: how? make evaltree return pid, wait for all pid? 
-	int pid = ios_fork();
 	for (int j = pipelen - 1; j >= 1; j--) {
 		if (pipe(pip) < 0) {
 			sh_error("Pipe call failed");
 		}
 		// Create stdin for the command:
 		ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
+        floe_async_consumer = 1;
+        floe_async_consumer_failed = 0;
 		evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
+        floe_async_consumer = previous_async_consumer;
+        if (floe_async_consumer_failed) {
+            FILE *old_in = NULL, *old_out = NULL, *old_err = NULL;
+            ios_activateChildStreams(&old_in, &old_out, &old_err);
+            if (old_err) { if (thread_stderr != thread_stdout) fclose(thread_stderr); thread_stderr = old_err; }
+            if (old_out) { fclose(thread_stdout); thread_stdout = old_out; }
+            if (old_in) { fclose(thread_stdin); thread_stdin = old_in; }
+            close(pip[1]);
+            if (floe_pipeline_pid >= 0) ios_waitpid(floe_pipeline_pid);
+            floe_pipeline_pid = previous_pipeline_pid;
+            free(lplist);
+            return exitstatus;
+        }
 		// Create stdout for the next command:
 		ios_dup2(pip[1], STDOUT_FILENO);
 	}
@@ -652,16 +671,28 @@ evalpipe(union node *n, int flags)
 	FILE *saved_in = NULL, *saved_out = NULL, *saved_err = NULL;
 	if (lplist[0]->n->type != NCMD)
 		ios_activateChildStreams(&saved_in, &saved_out, &saved_err);
-	evaltree(lplist[0]->n, flags | EV_NOFORK);
-	flushall();
+    /* EXEXIT from cooperative cancellation must close the producer's pipe
+     * before unwinding; otherwise the consumer waits forever for EOF. */
+    struct jmploc pipeline_handler;
+    struct jmploc *previous_handler = handler;
+    int interrupted = setjmp(pipeline_handler.loc);
+    if (!interrupted) {
+        handler = &pipeline_handler;
+        evaltree(lplist[0]->n, flags | EV_NOFORK);
+        flushall();
+    }
+    handler = previous_handler;
 	if (saved_err) { if (thread_stderr != thread_stdout) fclose(thread_stderr); thread_stderr = saved_err; }
 	if (saved_out) { fclose(thread_stdout); thread_stdout = saved_out; }
 	if (saved_in) { fclose(thread_stdin); thread_stdin = saved_in; }
 	// Now wait for the last command at the end of the pipe to finish:
-	ios_waitpid(pid); 
-	ios_stopInteractive(); 
+    if (floe_pipeline_pid >= 0) ios_waitpid(floe_pipeline_pid);
+	ios_stopInteractive();
 	status = ios_getCommandStatus();
+    floe_pipeline_pid = previous_pipeline_pid;
+    floe_async_consumer = previous_async_consumer;
 	free(lplist);
+    if (interrupted) longjmp(handler->loc, 1);
 #endif
 	return status;
 }
@@ -954,6 +985,9 @@ bail:
 	/* Execute the command. */
 	switch (cmdentry.cmdtype) {
 	case CMDUNKNOWN:
+#if TARGET_OS_IPHONE
+        if ((flags & EV_NOFORK) && floe_async_consumer) floe_async_consumer_failed = 1;
+#endif
 		status = 127;
 #ifdef FLUSHERR
 		flushout(&errout);
@@ -972,6 +1006,7 @@ bail:
 			ios_stopInteractive(); 
 			break;
 		} else {
+            if (floe_pipeline_pid < 0) floe_pipeline_pid = ios_fork();
 			ios_execv(argv[0], argv);
 			break;
 		}
@@ -987,6 +1022,14 @@ bail:
 #endif
 
 	case CMDBUILTIN:
+#if TARGET_OS_IPHONE
+        if ((flags & EV_NOFORK) && floe_async_consumer) {
+            sh_warnx("builtin pipeline consumers are not supported by this iOS shell; use a script or redirect a temporary file");
+            floe_async_consumer_failed = 1;
+            status = 2;
+            goto bail;
+        }
+#endif
 		if (evalbltin(cmdentry.u.cmd, argc, argv, flags) &&
 		    !(exception == EXERROR && spclbltin <= 0)) {
 raise:
@@ -995,6 +1038,14 @@ raise:
 		break;
 
 	case CMDFUNCTION:
+#if TARGET_OS_IPHONE
+        if ((flags & EV_NOFORK) && floe_async_consumer) {
+            sh_warnx("function pipeline consumers are not supported by this iOS shell; use a script or redirect a temporary file");
+            floe_async_consumer_failed = 1;
+            status = 2;
+            goto bail;
+        }
+#endif
 		if (evalfun(cmdentry.u.func, argc, argv, flags))
 			goto raise;
 		break;

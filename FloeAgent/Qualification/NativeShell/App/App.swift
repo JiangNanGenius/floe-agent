@@ -12,14 +12,17 @@ func runSmoke() {
  expanded += ["dash -c 'printf \"one\\ntwo\\n\" | tr a-z A-Z | sed s/ONE/FIRST/'", "dash -c 'floe_nonexistent_command_qualification'", "dash -c 'while :; do :; done'"]
  expanded += ["dash -c 'echo after-cancel'", "dash -c 'while :; do :; done'"]
  expanded += ["dash -c 'printf data | floe_missing_pipeline_command'", "dash -c 'printf after_missing_pipe'"]
- for index in [2, 3, 1, 0, 4, 5, 6, 7, 8, 9, 10] {
+ expanded += ["dash -c 'cmd=floe-missing-command; printf data | \"$cmd\"'", "dash -c 'printf after_expanded_missing'", "dash -c 'printf data | read line'", "dash -c 'printf after_builtin_consumer'"]
+ expanded += ["dash -c 'cmd=cat; printf variable-consumer | \"$cmd\"'", "dash -c 'printf data | floe-missing-middle | cat'", "dash -c 'printf after_missing_middle'", "dash -c 'printf data | while read x; do echo \"$x\"; done'", "dash -c 'printf after_compound_consumer'"]
+ expanded += ["dash -c 'while :; do printf data; done | cat'", "dash -c 'printf after_pipeline_timeout'"]
+ for index in [2, 3, 1, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] {
   let command = expanded[index]
   var out: NSString?, err: NSString?, code: Int32 = -1
   let env: [String: String] = index == 2 ? ["FLOE_SHELL_TEST_SCOPE": "scoped"] : [:]
   let input = index == 1 ? Data(String(repeating: "a", count: 32768).utf8) : nil
   let sessionID = UUID().uuidString
   let started = Date()
-  let status = FloeShellRunCommand(command, root.path, root.path, sessionID, env, input, index == 8 ? 0.2 : 5, 100, { index == 6 && Date().timeIntervalSince(started) > 0.2 }, &out, &err, &code)
+  let status = FloeShellRunCommand(command, root.path, root.path, sessionID, env, input, (index == 8 || index == 20) ? 0.2 : 5, 100, { index == 6 && Date().timeIntervalSince(started) > 0.2 }, &out, &err, &code)
   let deadline = Date().addingTimeInterval(3)
   while FloeShellHasActiveWorker(sessionID) && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
   results.append(["index":index,"status":status.rawValue,"exit":code,"stdout":out ?? "","stderr":err ?? "", "workerStopped": !FloeShellHasActiveWorker(sessionID)])

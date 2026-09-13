@@ -19,3 +19,5 @@ calls ios_kill, whose pinned v3.0.2 implementation may invoke a process-global
 SIGINT handler on the caller thread. Native qualification covers cancellation,
 timeout, subsequent execution and interactive input/close. Other blocking
 native commands still require their own cooperative cancellation support.
+
+Floe feedback repair (2026-09-14): pipeline PIDs are allocated only after command expansion resolves an external command. Missing and unsupported consumers close pending streams; unsafe builtin/function/compound consumers report exit 2. Compound-producer exception unwinding closes/restores pipe streams before joining the consumer, preventing a cancelled producer from retaining an EOF waiter. Native iOS simulator evidence is in `docs/validation/floe-156-feedback/shell-results.json` at the repository root.

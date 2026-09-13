@@ -1,6 +1,6 @@
 {
-  "stdout" : "received:interactive",
+  "passed" : true,
   "opened" : true,
   "workerStopped" : true,
-  "passed" : true
+  "stdout" : "received:interactive"
 }

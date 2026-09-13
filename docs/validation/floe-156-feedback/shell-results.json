@@ -1,90 +1,178 @@
 [
   {
-    "stdout" : "scoped",
-    "status" : 0,
     "index" : 2,
     "stderr" : "",
+    "workerStopped" : true,
+    "status" : 0,
     "exit" : 0,
+    "stdout" : "scoped"
+  },
+  {
+    "index" : 3,
+    "status" : 0,
+    "stdout" : "unset",
+    "exit" : 0,
+    "stderr" : "",
     "workerStopped" : true
   },
   {
-    "exit" : 0,
+    "stdout" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "status" : 0,
-    "index" : 3,
-    "stdout" : "unset",
     "workerStopped" : true,
+    "index" : 1,
+    "exit" : 7,
     "stderr" : ""
   },
   {
-    "exit" : 7,
-    "stderr" : "",
-    "workerStopped" : true,
-    "index" : 1,
-    "status" : 0,
-    "stdout" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  },
-  {
-    "exit" : 0,
-    "status" : 0,
     "stdout" : "HELLO\nWORLD\n",
     "stderr" : "",
-    "index" : 0,
-    "workerStopped" : true
-  },
-  {
-    "stderr" : "",
-    "stdout" : "FIRST\nTWO\n",
-    "index" : 4,
     "exit" : 0,
     "workerStopped" : true,
+    "index" : 0,
     "status" : 0
   },
   {
-    "workerStopped" : true,
-    "stdout" : "",
-    "status" : 0,
-    "index" : 5,
-    "stderr" : "dash: 1: floe_nonexistent_command_qualification: not found\n",
-    "exit" : 127
-  },
-  {
-    "index" : 6,
-    "stdout" : "",
-    "stderr" : "",
-    "workerStopped" : true,
-    "status" : 3,
-    "exit" : 130
-  },
-  {
     "exit" : 0,
     "stderr" : "",
     "workerStopped" : true,
-    "index" : 7,
+    "index" : 4,
     "status" : 0,
-    "stdout" : "after-cancel\n"
+    "stdout" : "FIRST\nTWO\n"
   },
   {
-    "stdout" : "",
+    "exit" : 127,
+    "index" : 5,
+    "status" : 0,
     "workerStopped" : true,
+    "stdout" : "",
+    "stderr" : "dash: 1: floe_nonexistent_command_qualification: not found\n"
+  },
+  {
     "exit" : 130,
+    "index" : 6,
+    "workerStopped" : true,
+    "status" : 3,
+    "stdout" : "",
+    "stderr" : ""
+  },
+  {
+    "stdout" : "after-cancel\n",
+    "workerStopped" : true,
+    "exit" : 0,
     "stderr" : "",
+    "index" : 7,
+    "status" : 0
+  },
+  {
+    "stderr" : "",
+    "exit" : 130,
     "status" : 2,
+    "workerStopped" : true,
+    "stdout" : "",
     "index" : 8
   },
   {
+    "stderr" : "dash: 1: floe_missing_pipeline_command: not found\n",
     "exit" : 127,
     "status" : 0,
     "index" : 9,
     "workerStopped" : true,
-    "stdout" : "",
-    "stderr" : "dash: 0: floe_missing_pipeline_command: not found\n"
+    "stdout" : ""
   },
   {
     "stdout" : "after_missing_pipe",
-    "stderr" : "",
+    "status" : 0,
     "workerStopped" : true,
     "index" : 10,
+    "exit" : 0,
+    "stderr" : ""
+  },
+  {
     "status" : 0,
-    "exit" : 0
+    "index" : 11,
+    "exit" : 127,
+    "stderr" : "dash: 1: floe-missing-command: not found\n",
+    "workerStopped" : true,
+    "stdout" : ""
+  },
+  {
+    "workerStopped" : true,
+    "exit" : 0,
+    "stdout" : "after_expanded_missing",
+    "index" : 12,
+    "status" : 0,
+    "stderr" : ""
+  },
+  {
+    "exit" : 2,
+    "workerStopped" : true,
+    "status" : 0,
+    "stderr" : "dash: 1: builtin pipeline consumers are not supported by this iOS shell; use a script or redirect a ",
+    "index" : 13,
+    "stdout" : ""
+  },
+  {
+    "index" : 14,
+    "stdout" : "after_builtin_consumer",
+    "status" : 0,
+    "exit" : 0,
+    "stderr" : "",
+    "workerStopped" : true
+  },
+  {
+    "index" : 15,
+    "workerStopped" : true,
+    "stderr" : "",
+    "exit" : 0,
+    "status" : 0,
+    "stdout" : "variable-consumer"
+  },
+  {
+    "exit" : 127,
+    "workerStopped" : true,
+    "status" : 0,
+    "index" : 16,
+    "stdout" : "",
+    "stderr" : "dash: 1: floe-missing-middle: not found\n"
+  },
+  {
+    "status" : 0,
+    "stderr" : "",
+    "workerStopped" : true,
+    "exit" : 0,
+    "stdout" : "after_missing_middle",
+    "index" : 17
+  },
+  {
+    "index" : 18,
+    "exit" : 2,
+    "stderr" : "dash: 0: compound pipeline consumers are not supported by this iOS shell; use a Python\/Node script o",
+    "workerStopped" : true,
+    "status" : 0,
+    "stdout" : ""
+  },
+  {
+    "index" : 19,
+    "exit" : 0,
+    "status" : 0,
+    "stderr" : "",
+    "workerStopped" : true,
+    "stdout" : "after_compound_consumer"
+  },
+  {
+    "workerStopped" : true,
+    "stdout" : "datadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadata",
+    "stderr" : "",
+    "index" : 20,
+    "status" : 2,
+    "exit" : 130
+  },
+  {
+    "exit" : 0,
+    "stdout" : "after_pipeline_timeout",
+    "status" : 0,
+    "index" : 21,
+    "stderr" : "",
+    "workerStopped" : true
   }
 ]
