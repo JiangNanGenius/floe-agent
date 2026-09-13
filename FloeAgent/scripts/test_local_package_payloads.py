@@ -21,6 +21,7 @@ def load(name, path):
 
 
 deb = load('deb', ROOT / 'Sources/FloeExecution/Resources/deb_extract.py')
+install = load('install', ROOT / 'Sources/FloeExecution/Resources/managed_package_install.py')
 remove = load('remove', ROOT / 'Sources/FloeExecution/Resources/managed_package_remove.py')
 wheels = load('wheels', ROOT / 'scripts/install_python_bundled_packages.py')
 
@@ -133,6 +134,65 @@ class PayloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 remove.remove_distribution(root, 'pkg')
             self.assertTrue((root / 'pkg-1.0.dist-info/METADATA').exists())
+
+    def test_python_upgrade_removes_old_metadata_and_retains_namespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, incoming, merged = [root / x for x in ('target', 'incoming', 'merged')]
+            target.mkdir(); incoming.mkdir()
+            (target / 'namespace').mkdir(); (incoming / 'namespace').mkdir()
+            (target / 'namespace/owned.py').write_text('old')
+            (target / 'namespace/other.py').write_text('other')
+            self.make_distribution(target, 'pkg', ['namespace/owned.py'])
+            self.make_distribution(target, 'other', ['namespace/other.py'])
+            (incoming / 'namespace/owned.py').write_text('new')
+            self.make_distribution(incoming, 'pkg', ['namespace/owned.py'])
+            info = incoming / 'pkg-1.0.dist-info'
+            (info / 'METADATA').write_text('Name: pkg\nVersion: 2.0\n')
+            (info / 'RECORD').write_text((info / 'RECORD').read_text().replace('pkg-1.0', 'pkg-2.0'))
+            info.rename(incoming / 'pkg-2.0.dist-info')
+            install.merge(target, incoming, merged)
+            self.assertEqual((merged / 'namespace/owned.py').read_text(), 'new')
+            self.assertEqual((merged / 'namespace/other.py').read_text(), 'other')
+            self.assertFalse((merged / 'pkg-1.0.dist-info').exists())
+            self.assertEqual(install.distributions(merged)['pkg'].version, '2.0')
+
+    def test_python_conflict_preserves_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, incoming, merged = [root / x for x in ('target', 'incoming', 'merged')]
+            target.mkdir(); incoming.mkdir()
+            (target / 'shared.py').write_text('old')
+            self.make_distribution(target, 'existing', ['shared.py'])
+            (incoming / 'shared.py').write_text('new')
+            self.make_distribution(incoming, 'incoming', ['shared.py'])
+            with self.assertRaises(ValueError): install.merge(target, incoming, merged)
+            self.assertEqual((target / 'shared.py').read_text(), 'old')
+
+    def test_python_process_interruption_restores_previous_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'site-packages'
+            target.mkdir(); (target / 'new.py').write_text('new')
+            transaction = root / '.floe-python-transaction'
+            backup = transaction / 'backup'
+            backup.mkdir(parents=True); (backup / 'old.py').write_text('old')
+            install.write_journal(transaction, {'phase': 'committing', 'had_original': True})
+            install.recover(target)
+            self.assertEqual((target / 'old.py').read_text(), 'old')
+            self.assertFalse((target / 'new.py').exists())
+            self.assertFalse(transaction.exists())
+
+    def test_python_native_rejection_can_recover_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def fake_pip(args):
+                incoming = Path(args[args.index('--target') + 1]); incoming.mkdir()
+                (incoming / 'bad.so').write_bytes(b'bad')
+                return 0
+            with self.assertRaises(ValueError): install.install(['bad'], root / 'site-packages', fake_pip)
+            self.assertFalse((root / '.floe-python-transaction').exists())
+            self.assertFalse((root / 'site-packages').exists())
 
 
 if __name__ == '__main__':

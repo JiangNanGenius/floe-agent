@@ -22,6 +22,7 @@ SUITE_MINIMUMS = {
     "SkillLifecycleTests": 15,
     "LocalPythonRuntimeTests": 2,
     "LocalShellRuntimeTests": 3,
+    "EnvironmentLanguagePackageTests": 1,
 }
 
 

@@ -34,65 +34,33 @@ public struct ManagedPythonInstallService: Sendable {
     /// Builds the installer program that runs inside the managed CPython
     /// process. The private installer phase flag permits pip only for this
     /// exact program; agent scripts remain blocked by the audit hook.
-    private static func installerScript(packageJSON: String) -> String {
-        """
-        import json, sys, os, shutil, tempfile
-        from pip._internal.cli.main import main as _floe_pip
+    private static func installerScript(packageJSON: String?, recoverOnly: Bool = false) -> String? {
+        guard let url = Bundle.module.url(forResource: "managed_package_install", withExtension: "py"),
+              let source = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return source + "\n" + """
+        import sys
         _target = os.environ.get('FLOE_PYTHON_PACKAGE_TARGET') or next((p for p in sys.path if p.endswith('PythonPackages')), None)
         if not _target:
             raise RuntimeError('Managed package directory is unavailable')
         _layer = os.environ.get('FLOE_PYTHON_WRITABLE_LAYER')
         if _layer and os.path.commonpath([os.path.realpath(_target), os.path.realpath(_layer)]) != os.path.realpath(_layer):
             raise RuntimeError('Managed package directory escapes its environment')
-        _specs = json.loads(\(String(reflecting: packageJSON)))
-        _parent = os.path.dirname(_target)
-        os.makedirs(_parent, exist_ok=True)
-        os.makedirs(_target, exist_ok=True)
-        _stage = tempfile.mkdtemp(prefix='floe-pip-stage-', dir=_parent)
-        _backup = tempfile.mkdtemp(prefix='floe-pip-backup-', dir=_parent)
-        _cache = os.path.join(_parent, 'PythonPackageCache')
-        os.makedirs(_cache, exist_ok=True)
-        _args = ['install', '--disable-pip-version-check', '--no-input',
-                 '--only-binary=:all:', '--platform=any', '--implementation=py',
-                 '--abi=none', '--cache-dir', _cache, '--target', _stage] + _specs
-        try:
-            _code = _floe_pip(_args)
-            if _code != 0:
-                raise RuntimeError(f'Managed package install failed with exit code {_code}')
-            _native = []
-            for _root, _dirs, _files in os.walk(_stage):
-                for _file in _files:
-                    if _file.lower().endswith(('.so', '.dylib', '.a', '.framework', '.bundle')):
-                        _native.append(os.path.join(_root, _file))
-            if _native:
-                raise RuntimeError('Managed package contains prohibited native artifacts')
-            _distributions = sorted(
-                _name[:-10] for _name in os.listdir(_stage)
-                if _name.lower().endswith('.dist-info')
-            )
-            _installed = []
-            try:
-                for _name in os.listdir(_stage):
-                    _source = os.path.join(_stage, _name)
-                    _destination = os.path.join(_target, _name)
-                    if os.path.lexists(_destination):
-                        shutil.move(_destination, os.path.join(_backup, _name))
-                    shutil.move(_source, _destination)
-                    _installed.append(_name)
-            except BaseException:
-                for _name in _installed:
-                    _destination = os.path.join(_target, _name)
-                    if os.path.isdir(_destination): shutil.rmtree(_destination, ignore_errors=True)
-                    elif os.path.lexists(_destination): os.remove(_destination)
-                for _name in os.listdir(_backup):
-                    shutil.move(os.path.join(_backup, _name), os.path.join(_target, _name))
-                raise
-            print('managedPackages=' + ','.join(_specs))
-            print('resolvedDistributions=' + ','.join(_distributions))
-        finally:
-            shutil.rmtree(_stage, ignore_errors=True)
-            shutil.rmtree(_backup, ignore_errors=True)
-        """
+        """ + "\n" + (recoverOnly ? "recover(Path(_target))" : "install(json.loads(\(String(reflecting: packageJSON ?? "[]"))), Path(_target))")
+    }
+
+    /// Called before inventory or removal so a process interruption cannot hide the previous generation.
+    public func recover(environment: ToolEnvironment) async throws {
+        guard let script = Self.installerScript(packageJSON: nil, recoverOnly: true) else {
+            throw FloeError.invalidConfiguration("Python recovery resource is unavailable")
+        }
+        let result = await python.run(.init(script: script, timeout: 30, maxOutputBytes: 4096,
+            allowsManagedPackageInstaller: true, pythonContext: Self.executionContext(environment)), cancellation: nil)
+        switch result {
+        case .ok: return
+        case .jsException(let message, _): throw FloeError.validationFailed(message)
+        case .timedOut: throw FloeError.validationFailed("Python recovery has not completed; files were retained")
+        case .cancelled: throw CancellationError()
+        }
     }
 
     public func install(
@@ -113,8 +81,11 @@ public struct ManagedPythonInstallService: Sendable {
             }
         }
         let encoded = (try? JSONEncoder().encode(uniqueSpecs)).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
+        guard let script = Self.installerScript(packageJSON: encoded) else {
+            return .failed(message: "Managed Python installer resource is unavailable")
+        }
         let request = ScriptExecutionRequest(
-            script: Self.installerScript(packageJSON: encoded),
+            script: script,
             inputJSON: nil,
             timeout: timeout,
             maxOutputBytes: maxOutputBytes,
@@ -139,6 +110,10 @@ public struct ManagedPythonInstallService: Sendable {
     /// RECORD lists, then the dist-info directory. Bundled (read-only)
     /// distributions cannot be removed and report a clear failure.
     public func uninstall(distribution: String, environment: ToolEnvironment? = nil, cancellation: CancellationToken? = nil) async -> Outcome {
+        if let environment {
+            do { try await recover(environment: environment) }
+            catch { return .failed(message: error.localizedDescription) }
+        }
         guard let url = Bundle.module.url(forResource: "managed_package_remove", withExtension: "py"),
               let script = try? String(contentsOf: url, encoding: .utf8),
               let data = try? JSONEncoder().encode(["distribution": distribution]) else {

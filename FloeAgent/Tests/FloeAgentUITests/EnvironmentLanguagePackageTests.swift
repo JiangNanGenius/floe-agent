@@ -20,6 +20,10 @@ struct EnvironmentLanguagePackageTests {
         let manager = EnvironmentLanguagePackageService(coordinator: coordinator, python: ManagedPythonInstallService(python: python))
         for (language, specification, name) in [(EnvironmentLanguagePackageService.Language.python, "colorama==0.4.6", "colorama"), (.node, "is-number@7.0.0", "is-number")] {
             _ = try await manager.change(environmentID: second.id, language: language, specification: specification, remove: false)
+            if language == .python {
+                _ = try await manager.change(environmentID: second.id, language: .python, specification: "colorama==0.4.5", remove: false)
+                _ = try await manager.change(environmentID: second.id, language: .python, specification: specification, remove: false)
+            }
             let installed = try await manager.packages(environmentID: second.id, language: language)
             #expect(installed.contains { $0.name == name && $0.writable })
             #expect(try await manager.packages(environmentID: first.id, language: language).isEmpty)

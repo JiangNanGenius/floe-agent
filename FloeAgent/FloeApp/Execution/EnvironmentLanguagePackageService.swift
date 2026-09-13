@@ -34,6 +34,7 @@ actor EnvironmentLanguagePackageService {
         do {
             guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
             if language == .node { try nodeInstaller().recover(environment) }
+            else if let python { try await python.recover(environment: environment) }
             var result: [Package] = []
             for (index, layer) in environment.layerURLs.enumerated() {
                 let root = try contained(language == .python ? "usr/lib/floe-python/site-packages" : "usr/lib/node_modules", in: layer)
