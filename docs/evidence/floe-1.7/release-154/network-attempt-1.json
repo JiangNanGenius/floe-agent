@@ -1,0 +1,17 @@
+{
+  "run": 34751651142,
+  "attempt": 1,
+  "source": "eb2213f5a9961b75d29cd683b7c578b42f2f5d92",
+  "build": 154,
+  "conclusion": "failure",
+  "failed_step": "Resolve and verify pinned dependencies",
+  "cause": "Could not resolve host: github.com",
+  "affected_submodules": [
+    "GRDB.swift/SQLiteCustom/src",
+    "SWCompression/Tests/Test Files"
+  ],
+  "retained_lock_schema": 3,
+  "committed_pins_matched": 33,
+  "uploaded": false,
+  "retry": "same immutable tag and build"
+}
