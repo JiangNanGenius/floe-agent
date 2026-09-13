@@ -22,8 +22,9 @@ struct NotePencilView: UIViewRepresentable {
     func makeUIView(context: Context) -> PKCanvasView {
         let canvas = NotesPKCanvasView()
         canvas.pageSize = CGSize(width: page.width, height: page.height)
-        canvas.backgroundColor = .white
-        canvas.isOpaque = true
+        // The page backdrop owns paper/PDF pixels; PencilKit only draws the ink above it.
+        canvas.backgroundColor = .clear
+        canvas.isOpaque = false
         canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
         canvas.tool = tool
         canvas.delegate = context.coordinator

@@ -1,0 +1,203 @@
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 775]
+[Planning 144 / 775]
+[Planning 392 / 775]
+[Planning 756 / 775]
+[Planning deferred tasks]
+[Constructing 346 / 1819]
+[Starting]
+[1 / 1]
+[1 / 6] GRDB_GRDB
+[1 / 23] SWCompression
+[5 / 69] FloeEnvironments
+[7 / 57] FloeSkills
+[7 / 39] PackageTests-product
+[16 / 29] PackageTests-product
+[17 / 28] EnvironmentTests-product
+[17 / 27] PersistenceTests-product
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[17 / 26] FloeMedia
+[19 / 28] FloeMedia
+[23 / 30] FloeMedia
+[23 / 33] FloeMedia
+[25 / 35] FloeMedia
+[27 / 35] FloeMedia
+[29 / 34] MediaTests-product
+[33 / 38] MediaTests-product
+[35 / 41] MediaTests-product
+[37 / 41] MediaTests-product
+[38 / 41] MediaTests-product
+[39 / 41] MediaTests-product
+Build complete! (39.44秒)
+Test Suite 'All tests' started at 2026-09-13 11:25:29.041.
+Test Suite 'All tests' passed at 2026-09-13 11:25:29.089.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.048) seconds
+Test Suite 'All tests' started at 2026-09-13 11:25:29.541.
+Test Suite 'All tests' passed at 2026-09-13 11:25:29.544.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.003) seconds
+Test Suite 'All tests' started at 2026-09-13 11:25:29.785.
+Test Suite 'All tests' passed at 2026-09-13 11:25:29.787.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+Test Suite 'All tests' started at 2026-09-13 11:25:30.170.
+Test Suite 'All tests' passed at 2026-09-13 11:25:30.173.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.003) seconds
+Test Suite 'All tests' started at 2026-09-13 11:25:30.434.
+Test Suite 'All tests' passed at 2026-09-13 11:25:30.439.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.005) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Signed model catalog and bundled Skills" started.
+◇ Test schemaTwoCatalogVerifiesEveryPublishedPackage() started.
+✔ Test schemaTwoCatalogVerifiesEveryPublishedPackage() passed after 0.033 seconds.
+✔ Suite "Signed model catalog and bundled Skills" passed after 0.033 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.034 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Job environment persistence" started.
+◇ Suite "Draft Notes launch identity" started.
+◇ Test failedPreflightKeepsDraftIdentityReusableWithoutBlankTask() started.
+◇ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() started.
+◇ Test reservedIdentityCreatesOnceAndCannotReplaceExistingTask() started.
+✔ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() passed after 0.186 seconds.
+✔ Suite "Job environment persistence" passed after 0.186 seconds.
+✔ Test failedPreflightKeepsDraftIdentityReusableWithoutBlankTask() passed after 0.199 seconds.
+✔ Test reservedIdentityCreatesOnceAndCannotReplaceExistingTask() passed after 0.206 seconds.
+✔ Suite "Draft Notes launch identity" passed after 0.207 seconds.
+✔ Test run with 3 tests in 2 suites passed after 0.207 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Package integrity" started.
+◇ Suite "Package dependency constraints" started.
+◇ Suite "Package transaction recovery" started.
+◇ Suite "Publisher to client package installation" started.
+◇ Suite "Environment management API" started.
+◇ Test explicitRequestUpgradesAndConflictsFail() started.
+◇ Test alternativesAndConflictingVersionConstraints() started.
+◇ Test emptyTrustStoreNeverAcceptsRepository() started.
+◇ Test recoveryValidatesAllBackupsBeforeChangingFiles() started.
+◇ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() started.
+◇ Test interruptedWriteRestoresOldAndRemovesNewFiles() started.
+◇ Test acceptsGnuPGSignatureAndRejectsTampering() started.
+◇ Test recoveryRejectsSymlinkedJournalDirectory() started.
+◇ Test choosesCompatibleVersionAndInstallsDependenciesFirst() started.
+◇ Test committedFilesSurviveRecovery() started.
+◇ Test tarChecksTruncationAndChecksum() started.
+◇ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() started.
+◇ Test packagePathsRejectLinksAndTraversal() started.
+◇ Test collisionsScriptsAndLocalEditsFailBeforeMutation() started.
+◇ Test damagedDownloadNeverReachesInstalledState() started.
+◇ Test selectedEnvironmentHoldAndLifecycleNeverAffectOtherProject() started.
+◇ Test signedInstallUpgradeDependencyAndOwnedRemoval() started.
+◇ Test inheritedPackagesAreSeparateAndReadOnlyInSelectedSession() started.
+✔ Test alternativesAndConflictingVersionConstraints() passed after 0.022 seconds.
+✔ Test explicitRequestUpgradesAndConflictsFail() passed after 0.025 seconds.
+✔ Test choosesCompatibleVersionAndInstallsDependenciesFirst() passed after 0.026 seconds.
+✔ Test recoveryRejectsSymlinkedJournalDirectory() passed after 0.026 seconds.
+✔ Test tarChecksTruncationAndChecksum() passed after 0.026 seconds.
+✔ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() passed after 0.026 seconds.
+✔ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() passed after 0.026 seconds.
+✔ Test committedFilesSurviveRecovery() passed after 0.026 seconds.
+✔ Test packagePathsRejectLinksAndTraversal() passed after 0.026 seconds.
+✔ Test acceptsGnuPGSignatureAndRejectsTampering() passed after 0.026 seconds.
+✔ Test emptyTrustStoreNeverAcceptsRepository() passed after 0.026 seconds.
+✔ Suite "Package dependency constraints" passed after 0.026 seconds.
+✔ Suite "Package integrity" passed after 0.027 seconds.
+✔ Test interruptedWriteRestoresOldAndRemovesNewFiles() passed after 0.027 seconds.
+✔ Test recoveryValidatesAllBackupsBeforeChangingFiles() passed after 0.027 seconds.
+✔ Suite "Package transaction recovery" passed after 0.027 seconds.
+✔ Test damagedDownloadNeverReachesInstalledState() passed after 0.037 seconds.
+✔ Test inheritedPackagesAreSeparateAndReadOnlyInSelectedSession() passed after 0.076 seconds.
+✔ Test selectedEnvironmentHoldAndLifecycleNeverAffectOtherProject() passed after 0.113 seconds.
+✔ Suite "Environment management API" passed after 0.126 seconds.
+✔ Test collisionsScriptsAndLocalEditsFailBeforeMutation() passed after 0.157 seconds.
+✔ Test signedInstallUpgradeDependencyAndOwnedRemoval() passed after 0.164 seconds.
+✔ Suite "Publisher to client package installation" passed after 0.177 seconds.
+✔ Test run with 18 tests in 5 suites passed after 0.178 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Bounded audio editing" started.
+◇ Test fullFileInspectionAndRunningCancellationAreBounded() started.
+◇ Suite "Real media exports" started.
+◇ Suite "Model artifact readiness and ownership" started.
+◇ Test invalidEditsPreserveFilesAndStayInsideWorkspace() started.
+◇ Test trimFadesAndBothMixGainsReachRealSamples() started.
+◇ Test unsupportedEditCannotReplaceExistingOutput() started.
+◇ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() started.
+◇ Test requestedDimensionsAndFrameRateReachEncodedFile() started.
+◇ Test speedChangesAudioAndVideoOnTheSameTimeline() started.
+◇ Test rejectedAndCancelledExportsPreserveFiles() started.
+◇ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() started.
+◇ Test audioConversionAppliesRateAndChannels() started.
+◇ Test rejectsPendingAndTraversalBeforeDownload() started.
+◇ Test validatesSizeAndRestoresInstalledStateAfterRestart() started.
+◇ Test editsApplyTrimSpeedAndExportSettingsToActualFile() started.
+◇ Test corruptRegistryIsNotOverwrittenByInstall() started.
+◇ Test cancellingActiveTranscodeJoinsReadersAndPreservesExistingOutput() started.
+◇ Test concurrentTranscodesDrainWithoutBlockingOtherTasks() started.
+2026-09-13 11:25:31.864 swiftpm-testing-helper[47307:27747772] Audio files cannot be non-interleaved. Ignoring setting AVLinearPCMIsNonInterleaved YES.
+2026-09-13 11:25:31.935 swiftpm-testing-helper[47307:27747777] Audio files cannot be non-interleaved. Ignoring setting AVLinearPCMIsNonInterleaved YES.
+✔ Test unsupportedEditCannotReplaceExistingOutput() passed after 0.411 seconds.
+✔ Test trimFadesAndBothMixGainsReachRealSamples() passed after 0.413 seconds.
+✔ Test invalidEditsPreserveFilesAndStayInsideWorkspace() passed after 0.413 seconds.
+✔ Test rejectsPendingAndTraversalBeforeDownload() passed after 0.413 seconds.
+✔ Test validatesSizeAndRestoresInstalledStateAfterRestart() passed after 0.413 seconds.
+✔ Test corruptRegistryIsNotOverwrittenByInstall() passed after 0.413 seconds.
+✔ Suite "Model artifact readiness and ownership" passed after 0.833 seconds.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.839 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 1.290 seconds.
+✔ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() passed after 1.786 seconds.
+✔ Test cancellingActiveTranscodeJoinsReadersAndPreservesExistingOutput() passed after 2.312 seconds.
+✔ Test editsApplyTrimSpeedAndExportSettingsToActualFile() passed after 2.377 seconds.
+✔ Test concurrentTranscodesDrainWithoutBlockingOtherTasks() passed after 2.385 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 2.399 seconds.
+✔ Test speedChangesAudioAndVideoOnTheSameTimeline() passed after 2.417 seconds.
+✔ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() passed after 2.419 seconds.
+✔ Suite "Real media exports" passed after 2.420 seconds.
+✔ Test fullFileInspectionAndRunningCancellationAreBounded() passed after 4.546 seconds.
+✔ Suite "Bounded audio editing" passed after 4.546 seconds.
+✔ Test run with 16 tests in 3 suites passed after 4.546 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Environment promotion" started.
+◇ Suite "Environment durability" started.
+◇ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() started.
+◇ Test missingFileAndPathEscapeNeverMutateEitherLayer() started.
+◇ Test projectDeletionPreservesDependentSessionAndFiles() started.
+◇ Test failedStopPreservesEnvironment() started.
+◇ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() started.
+◇ Test casRetainsSharedBlobsAndCopiesAreIndependent() started.
+◇ Test corruptCASIndexNeverAuthorizesCollection() started.
+◇ Test failedCreationAndTransitionRollBackRegistryMemory() started.
+◇ Test registrySurvivesRestartAndMarksNewBase() started.
+◇ Test inheritedRebuildBlocksExistingAndNewSessions() started.
+◇ Test sessionOwnershipIncludesWorkspace() started.
+◇ Test corruptRegistryIsPreserved() started.
+◇ Test failedCASReferenceWriteDoesNotEnableCollection() started.
+◇ Test explicitEnvironmentCannotCrossWorkspace() started.
+◇ Test projectsAndCancellationRemainScoped() started.
+✔ Test corruptCASIndexNeverAuthorizesCollection() passed after 0.094 seconds.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.094 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.094 seconds.
+✔ Test failedCreationAndTransitionRollBackRegistryMemory() passed after 0.094 seconds.
+✔ Test corruptRegistryIsPreserved() passed after 0.094 seconds.
+✔ Test missingFileAndPathEscapeNeverMutateEitherLayer() passed after 0.094 seconds.
+✔ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() passed after 0.094 seconds.
+✔ Test projectDeletionPreservesDependentSessionAndFiles() passed after 0.098 seconds.
+✔ Test failedCASReferenceWriteDoesNotEnableCollection() passed after 0.099 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.128 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.170 seconds.
+✔ Test inheritedRebuildBlocksExistingAndNewSessions() passed after 0.252 seconds.
+✔ Test sessionOwnershipIncludesWorkspace() passed after 0.263 seconds.
+✔ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() passed after 0.278 seconds.
+✔ Suite "Environment promotion" passed after 0.279 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.222 seconds.
+✔ Suite "Environment durability" passed after 0.316 seconds.
+✔ Test run with 15 tests in 2 suites passed after 0.317 seconds.
+{"exitCode": 0, "reason": "exited", "elapsedSeconds": 65.253, "testsStarted": true}

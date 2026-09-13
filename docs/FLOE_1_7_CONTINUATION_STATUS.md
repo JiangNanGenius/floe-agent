@@ -24,6 +24,9 @@
 
 ## 当前证据
 
+- `34730102365` 在 `f5ec5bc` 仍未通过：云端 SDK 27 beta 6 的 provider 内部重新进入 cooperative executor，外层自定义 actor executor 不能消除阻塞。保留 `media-stall-f5ec/` 采样。现将实际 `copyNextSampleBuffer` 与样本写入整体放入每路独立 GCD worker，单样本缓冲、取消后等待退出；修正后本地 53 项平台测试通过（约 65 秒），记录 `platform-worker-tests.txt`。新的云端执行待确认。
+- PencilKit 书写层改为透明叠加，由页面底图绘制纸张/PDF，避免不透明书写层遮盖课件；本地原生定向编译通过，屏幕级显示待确认。
+
 - `34728799329` 在 `0a38e84` 的云端测试仍发生停顿。采样表明原生 async provider 内部依然同步调用 `copyNextSampleBuffer`，不能只靠改成 async 消除线程池阻塞。每条音视频传输改为 GCD 支持的独立串行执行器，保留并发处理与取消等待；当前本地完整 53 项平台测试通过，记录 `platform-executor-tests.txt`，旧失败在 `media-stall-0a38/`，新云端结果待确认。
 - `34728860282` 的 SDK 26 测试报告普通单元测试无权执行屏幕级 UI 截图。屏幕采集已移到正式 UI 测试 target，组件测试继续验证 DOM、文件和独立撤销；新增竖屏、横屏和关闭小窗后的显示测试，限定单项超时并留存图片。本地原生 UI 测试工程编译通过，运行结果待确认。
 

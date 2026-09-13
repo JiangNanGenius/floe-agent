@@ -145,103 +145,88 @@ enum MediaTranscodePipeline {
 
     private static func transfer(reader: AVAssetReader, writer: AVAssetWriter,
                                  streams: [(AVAssetReaderOutput, AVAssetWriterInput)], cancellation: CancellationToken?) async throws {
-        if #available(macOS 26, iOS 26, tvOS 26, visionOS 26, *) {
-            // Native providers suspend while reading, instead of blocking the cooperative executor.
-            // Each stream has its own task so video backpressure cannot prevent audio from draining.
-            let transfers = streams.map { source, destination in
-                MediaAsyncSampleTransfer(source: reader.outputProvider(for: source), destination: writer.inputReceiver(for: destination))
-            }
-            let control = MediaTransferControl(reader: reader, writer: writer)
-            guard writer.startWriting(), reader.startReading() else {
-                control.cancel()
-                throw writer.error ?? reader.error ?? FloeError.internalError("Could not start media processing")
-            }
-            writer.startSession(atSourceTime: .zero)
-            let watcher = Task {
-                while !Task.isCancelled {
-                    if cancellation?.isCancelled == true { control.cancel(); return }
-                    do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
-                }
-            }
-            defer { watcher.cancel() }
-            try await withTaskCancellationHandler {
-                do {
-                    try await withThrowingTaskGroup(of: Void.self) { group in
-                        for transfer in transfers { group.addTask { try await transfer.run(cancellation: cancellation) } }
-                        do { for try await _ in group { } }
-                        catch { control.cancel(); group.cancelAll(); throw error }
-                    }
-                    try cancellation?.throwIfCancelled(); try Task.checkCancellation()
-                    try await control.finish()
-                } catch { control.cancel(); throw error }
-            } onCancel: { control.cancel() }
-        } else {
-            // Compatibility for the package's macOS 15 host target; the iOS app starts at 26.
-            for (source, destination) in streams { reader.add(source); writer.add(destination) }
-            guard writer.startWriting(), reader.startReading() else { throw writer.error ?? reader.error ?? FloeError.internalError("Could not start media processing") }
-            writer.startSession(atSourceTime: .zero)
-            do {
-                var pending = Set(streams.indices)
-                while !pending.isEmpty {
-                    try cancellation?.throwIfCancelled(); try Task.checkCancellation()
-                    var madeProgress = false
-                    for index in pending.sorted() where streams[index].1.isReadyForMoreMediaData {
-                        let (source, destination) = streams[index]
-                        let appended: Bool? = autoreleasepool {
-                            guard let sample = source.copyNextSampleBuffer() else { return nil }
-                            return destination.append(sample)
-                        }
-                        if let appended {
-                            guard appended else { throw writer.error ?? FloeError.internalError("Media sample write failed") }
-                        } else {
-                            guard reader.status != .failed else { throw reader.error ?? FloeError.internalError("Media sample read failed") }
-                            destination.markAsFinished(); pending.remove(index)
-                        }
-                        madeProgress = true
-                    }
-                    guard writer.status != .failed else { throw writer.error ?? FloeError.internalError("Media writer failed") }
-                    if !madeProgress { try await Task.sleep(for: .milliseconds(2)) }
-                }
-                await writer.finishWriting()
-                guard writer.status == .completed else { throw writer.error ?? FloeError.internalError("Media writer did not finish") }
-            } catch { reader.cancelReading(); writer.cancelWriting(); throw error }
+        // Provider.next() still enters a cooperative executor in some SDK 27 builds.
+        // Native blocking sample I/O therefore runs on dedicated GCD workers.
+        for (source, destination) in streams { reader.add(source); writer.add(destination) }
+        let control = MediaTransferControl(reader: reader, writer: writer)
+        let transfers = streams.map { MediaSampleTransfer(source: $0.0, destination: $0.1, control: control) }
+        guard writer.startWriting(), reader.startReading() else {
+            control.cancel()
+            throw writer.error ?? reader.error ?? FloeError.internalError("Could not start media processing")
         }
+        writer.startSession(atSourceTime: .zero)
+        let watcher = Task {
+            while !Task.isCancelled {
+                if cancellation?.isCancelled == true { control.cancel(); return }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+        }
+        defer { watcher.cancel() }
+        try await withTaskCancellationHandler {
+            do {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for transfer in transfers { group.addTask { try await transfer.run(cancellation: cancellation) } }
+                    do { for try await _ in group { } }
+                    catch { control.cancel(); group.cancelAll(); throw error }
+                }
+                try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+                try await control.finish()
+            } catch { control.cancel(); throw error }
+        } onCancel: { control.cancel() }
     }
-
 }
 
-@available(macOS 26, iOS 26, tvOS 26, visionOS 26, *)
-private actor MediaAsyncSampleTransfer {
-    // Provider.next() may synchronously enter CoreMedia even though its API is async.
-    // A GCD-backed executor lets blocking I/O grow worker threads without consuming
-    // Swift's bounded cooperative pool (which must remain available for cancellation).
-    nonisolated private let executor = MediaSampleExecutor()
-    nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
-    let source: AVAssetReaderOutput.Provider<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>>
-    let destination: AVAssetWriterInput.SampleBufferReceiver
-    init(source: sending AVAssetReaderOutput.Provider<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>>,
-         destination: sending AVAssetWriterInput.SampleBufferReceiver) {
-        self.source = source; self.destination = destination
+/// Each stream owns one serial worker and retains at most one sample. Blocking
+/// calls never execute on Swift's cooperative pool. The continuation resumes only
+/// after the worker leaves, including after cancellation; no sample memory escapes.
+private final class MediaSampleTransfer: @unchecked Sendable {
+    private let source: AVAssetReaderOutput
+    private let destination: AVAssetWriterInput
+    private let control: MediaTransferControl
+    private let queue = DispatchQueue(label: "org.floe.media.sample-transfer", qos: .userInitiated)
+    init(source: AVAssetReaderOutput, destination: AVAssetWriterInput, control: MediaTransferControl) {
+        self.source = source; self.destination = destination; self.control = control
     }
     func run(cancellation: CancellationToken?) async throws {
-        while let sample = try await source.next() {
-            try cancellation?.throwIfCancelled(); try Task.checkCancellation()
-            try await destination.append(sample)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            queue.async { [self] in
+                do {
+                    while true {
+                        try cancellation?.throwIfCancelled()
+                        if control.writer.status == .cancelled || control.reader.status == .cancelled { throw CancellationError() }
+                        guard control.writer.status == .writing else {
+                            throw control.writer.error ?? FloeError.internalError("Media writer stopped before stream completion")
+                        }
+                        guard destination.isReadyForMoreMediaData else {
+                            // Only the dedicated worker waits; cancellation and other
+                            // streams remain schedulable and no samples accumulate.
+                            Thread.sleep(forTimeInterval: 0.002)
+                            continue
+                        }
+                        let hasSample = try autoreleasepool { () throws -> Bool in
+                            guard let sample = source.copyNextSampleBuffer() else {
+                                if control.reader.status == .cancelled { throw CancellationError() }
+                                guard control.reader.status != .failed else {
+                                    throw control.reader.error ?? FloeError.internalError("Media sample read failed")
+                                }
+                                return false
+                            }
+                            guard destination.append(sample) else {
+                                throw control.writer.error ?? FloeError.internalError("Media sample write failed")
+                            }
+                            return true
+                        }
+                        if !hasSample { destination.markAsFinished(); break }
+                    }
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
         }
-        destination.finish()
-    }
-}
-
-private final class MediaSampleExecutor: SerialExecutor, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "org.floe.media.sample-transfer", qos: .userInitiated)
-    func enqueue(_ job: consuming ExecutorJob) {
-        let job = UnownedJob(job)
-        queue.async { job.runSynchronously(on: self.asUnownedSerialExecutor()) }
     }
 }
 
 /// AVFoundation owns synchronization of cancelReading/cancelWriting with pending I/O.
-/// The wrapper stays alive until all provider tasks and writer completion have returned.
+/// The wrapper stays alive until all sample workers and writer completion have returned.
 private final class MediaTransferControl: @unchecked Sendable {
     let reader: AVAssetReader
     let writer: AVAssetWriter
