@@ -38,13 +38,13 @@ struct ExecutionEnvironmentView: View {
                 .frame(minHeight: FloeTheme.minimumTarget)
             }
 
-            Section("环境与软件包") {
+            Section("settings.exec.packages") {
                 NavigationLink {
                     EnvironmentManagerView(ownerTitles: Dictionary(uniqueKeysWithValues:
                         center.environment.conversationCenter.conversations.map { ($0.id.uuidString, $0.title) }
                     ))
                 } label: {
-                    Label("项目与会话容器管理", systemImage: "shippingbox")
+                    Label("environment.manager.entry", systemImage: "shippingbox")
                 }
                 Text("查看每层依赖与容量，安装或卸载软件包，停止、恢复环境和保存模板。")
                     .font(.subheadline).foregroundStyle(.secondary)

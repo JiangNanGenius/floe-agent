@@ -103,3 +103,7 @@ The package/model qualification matrix remains explicit; unbuilt resources are n
 Build 149 failed its automated Swift gate and was not uploaded. Cloud sampling confirmed cooperative workers blocked while draining WASM output; its network timeout also failed under contention. Build 150 separates blocking WASM/DNS work from Swift task scheduling, tests task cancellation, parallel commands and lookup deadlines, and updates the explicit Canvas tool-set assertion for the four scoped Notes tools.
 
 All release gates remain required. The next fixed candidate is `v1.7.0-beta.7`; upload and Apple processing are still pending. Device testing follows internal TestFlight availability and belongs to the user.
+
+## Build 151 / beta.8 preparation
+
+Build 150 completed the full concurrent Swift run without the earlier WASM stall. Only `FloeCoreTests` failed, because 21 appearance/environment catalog keys lacked the required namespace. The next candidate renames those keys and their UI references, preserves English and Chinese translations, and explicitly localizes the dynamic hold/unhold label. The original completeness rules remain intact. No TestFlight upload occurred for 150.

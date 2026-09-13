@@ -1,0 +1,10 @@
+◇ Test run started.
+◇ Suite "FloeCore.LocalizationCompleteness" started.
+◇ Test "Catalog exists and is non-empty" started.
+◇ Test "Every key has a non-empty en and zh-Hans value" started.
+◇ Test "Keys follow the dotted-namespacing convention" started.
+✔ Test "Catalog exists and is non-empty" passed after 0.024 seconds.
+✔ Test "Every key has a non-empty en and zh-Hans value" passed after 0.026 seconds.
+✔ Test "Keys follow the dotted-namespacing convention" passed after 0.028 seconds.
+✔ Suite "FloeCore.LocalizationCompleteness" passed after 0.028 seconds.
+✔ Test run with 3 tests in 1 suite passed after 0.029 seconds.

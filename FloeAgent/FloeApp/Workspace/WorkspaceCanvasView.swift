@@ -6753,7 +6753,7 @@ private struct CanvasMediaJobCenter: View {
                             if workingJobID == job.id {
                                 ProgressView().controlSize(.small)
                             } else if !job.state.isTerminal {
-                                Button("取消任务", role: .destructive) { pendingCancellation = job }
+                                Button("action.cancel_task", role: .destructive) { pendingCancellation = job }
                             } else if [.failed, .expired, .cancelled].contains(job.state) {
                                 Button("重新生成") { pendingRetry = job }
                             }
@@ -6771,7 +6771,7 @@ private struct CanvasMediaJobCenter: View {
             get: { pendingCancellation != nil },
             set: { if !$0 { pendingCancellation = nil } }
         )) {
-            Button("取消任务", role: .destructive) {
+            Button("action.cancel_task", role: .destructive) {
                 guard let job = pendingCancellation else { return }
                 pendingCancellation = nil
                 run(job, action: onCancel)

@@ -137,7 +137,7 @@
         }
       }
     },
-    "日间与夜间主题": {
+    "settings.appearance.day_night": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -154,7 +154,7 @@
         }
       }
     },
-    "容器与软件包": {
+    "environment.manager.title": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -171,7 +171,7 @@
         }
       }
     },
-    "项目与会话容器管理": {
+    "environment.manager.entry": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -188,7 +188,7 @@
         }
       }
     },
-    "环境与软件包": {
+    "settings.exec.packages": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -205,7 +205,7 @@
         }
       }
     },
-    "所选环境": {
+    "environment.manager.selected": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -222,7 +222,7 @@
         }
       }
     },
-    "本层已安装": {
+    "environment.packages.installed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -239,7 +239,7 @@
         }
       }
     },
-    "从父层继承 · 只读": {
+    "environment.packages.inherited": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -256,7 +256,7 @@
         }
       }
     },
-    "可安装的软件包": {
+    "environment.packages.available": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -273,7 +273,7 @@
         }
       }
     },
-    "验证并刷新软件源": {
+    "environment.packages.refresh": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -290,7 +290,7 @@
         }
       }
     },
-    "固定版本": {
+    "environment.packages.hold": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -307,7 +307,7 @@
         }
       }
     },
-    "解除固定": {
+    "environment.packages.unhold": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -324,7 +324,7 @@
         }
       }
     },
-    "卸载": {
+    "action.uninstall": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -341,7 +341,7 @@
         }
       }
     },
-    "安装": {
+    "environment.packages.install": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -358,7 +358,7 @@
         }
       }
     },
-    "容器生命周期": {
+    "environment.lifecycle.title": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -375,7 +375,7 @@
         }
       }
     },
-    "保存为模板": {
+    "environment.template.save": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -392,7 +392,7 @@
         }
       }
     },
-    "模板名称": {
+    "environment.template.name": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -409,7 +409,7 @@
         }
       }
     },
-    "删除此容器": {
+    "environment.delete.action": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -426,7 +426,7 @@
         }
       }
     },
-    "停止任务并删除": {
+    "environment.delete.stop_and_delete": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -443,7 +443,7 @@
         }
       }
     },
-    "重新读取": {
+    "action.reload": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -460,7 +460,7 @@
         }
       }
     },
-    "软件包任务": {
+    "environment.packages.tasks": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -477,7 +477,7 @@
         }
       }
     },
-    "取消任务": {
+    "action.cancel_task": {
       "extractionState": "manual",
       "localizations": {
         "en": {

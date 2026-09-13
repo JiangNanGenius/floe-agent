@@ -403,7 +403,7 @@ struct LocalModelsSettingsView: View {
                                     ProgressView().controlSize(.small)
                                     Text("正在加载…").font(.caption).foregroundStyle(.secondary)
                                 case .ready(let id) where id == entry.id:
-                                    Button("卸载") { center.unload(entry) }
+                                    Button("action.uninstall") { center.unload(entry) }
                                         .buttonStyle(.borderless)
                                         .accessibilityIdentifier("localModel.unload.\(entry.id)")
                                 default:

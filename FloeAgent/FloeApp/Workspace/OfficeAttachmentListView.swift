@@ -27,7 +27,7 @@ struct OfficeAttachmentListView: View {
             List {
                 if let error {
                     Text(error).foregroundStyle(.secondary)
-                    Button("重新读取") { Task { await load() } }.disabled(busy || loading)
+                    Button("action.reload") { Task { await load() } }.disabled(busy || loading)
                 }
                 ForEach(attachments) { attachment in
                     HStack {

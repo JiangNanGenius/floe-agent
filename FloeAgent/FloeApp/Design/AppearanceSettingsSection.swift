@@ -25,10 +25,10 @@ struct AppearanceSettingsSection: View {
                  ? "自动随系统外观切换。定时或日落切换可在 iOS「设置 → 显示与亮度 → 自动」中设置。"
                  : "当前已固定外观，选择「自动」即可恢复跟随系统。")
                 .font(.footnote).foregroundStyle(.secondary)
-        } header: { Text("日间与夜间主题") }
+        } header: { Text("settings.appearance.day_night") }
     }
     private var appearancePicker: some View {
-        Picker("日间与夜间主题", selection: $selection) {
+        Picker("settings.appearance.day_night", selection: $selection) {
             ForEach(AppearancePreference.allCases, id: \.self) { preference in
                 Text(title(preference)).tag(preference)
             }

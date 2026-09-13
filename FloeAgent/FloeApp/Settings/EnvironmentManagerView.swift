@@ -86,7 +86,7 @@ struct EnvironmentManagerView: View {
                 ContentUnavailableView("尚无项目或会话环境", systemImage: "shippingbox", description: Text("打开工作区或在会话中运行本地工具后，对应环境会出现在这里。"))
             }
         }
-        .navigationTitle("容器与软件包")
+        .navigationTitle("environment.manager.title")
         .searchable(text: $query, prompt: "搜索环境名称或 ID")
         .refreshable { await reload() }
         .toolbar { Button("刷新", systemImage: "arrow.clockwise") { Task { await reload() } }.disabled(loading) }
@@ -136,7 +136,7 @@ private struct EnvironmentDetailView: View {
 
     var body: some View {
         List {
-            Section("所选环境") {
+            Section("environment.manager.selected") {
                 LabeledContent("类型", value: EnvironmentManagerView.title(record.kind))
                 LabeledContent("状态", value: EnvironmentManagerView.state(record.state))
                 if let issue = (current ?? report).issue { Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive) }
@@ -150,18 +150,18 @@ private struct EnvironmentDetailView: View {
                 }.font(.caption)
             }
             if busy { ProgressView("正在处理…") }
-            if let error { Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive); Button("重新读取") { Task { await reload() } } } }
+            if let error { Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive); Button("action.reload") { Task { await reload() } } } }
             if let message = jobs.messages[report.id] {
-                Section("软件包任务") {
+                Section("environment.packages.tasks") {
                     Text(message).font(.subheadline).textSelection(.enabled)
                         .foregroundStyle(jobs.failures.contains(report.id) ? FloeTheme.destructive : .primary)
                     if jobs.running.contains(report.id) {
                         ProgressView("正在处理所选环境")
-                        Button("取消任务", role: .cancel) { jobs.cancel(id: report.id) }
+                        Button("action.cancel_task", role: .cancel) { jobs.cancel(id: report.id) }
                     }
                 }
             }
-            Section("本层已安装") {
+            Section("environment.packages.installed") {
                 if let packages {
                     if packages.installed.isEmpty { Text("此层尚未安装软件包").foregroundStyle(.secondary) }
                     ForEach(packages.installed.filter { matches($0.name) }, id: \.name) { package in
@@ -169,32 +169,32 @@ private struct EnvironmentDetailView: View {
                             LabeledContent(package.name, value: package.version)
                             if let summary = package.summary { Text(summary).font(.caption).foregroundStyle(.secondary) }
                             HStack {
-                                Button(packages.held.contains(package.name) ? "解除固定" : "固定版本") {
+                                Button(LocalizedStringKey(packages.held.contains(package.name) ? "environment.packages.unhold" : "environment.packages.hold")) {
                                     start(packages.held.contains(package.name) ? .unhold(package.name) : .hold(package.name), "更新版本固定状态…")
                                 }.buttonStyle(.borderless)
                                 Spacer()
-                                Button("卸载", role: .destructive) { pendingRemoval = package.name }.buttonStyle(.borderless)
+                                Button("action.uninstall", role: .destructive) { pendingRemoval = package.name }.buttonStyle(.borderless)
                             }.font(.subheadline).disabled(!writable)
                         }.padding(.vertical, 4)
                     }
                 } else { Text("正在读取依赖…").foregroundStyle(.secondary) }
             }
             if let packages, !packages.inherited.isEmpty {
-                Section("从父层继承 · 只读") {
+                Section("environment.packages.inherited") {
                     ForEach(packages.inherited.filter { matches($0.name) }, id: \.name) { package in
                         LabeledContent { Text("\(package.version) · \(package.layer.rawValue)").foregroundStyle(.secondary) } label: { Label(package.name, systemImage: "arrow.down.forward") }
                     }
                 }
             }
-            Section("可安装的软件包") {
-                Button("验证并刷新软件源", systemImage: "arrow.clockwise") { start(.refresh, "正在下载并验证软件源…") }.disabled(!writable)
+            Section("environment.packages.available") {
+                Button("environment.packages.refresh", systemImage: "arrow.clockwise") { start(.refresh, "正在下载并验证软件源…") }.disabled(!writable)
                 if let packages {
                     if packages.available.isEmpty { Text("尚无经过验证的软件包索引。刷新成功后，可在此选择安装。").font(.subheadline).foregroundStyle(.secondary) }
                     ForEach(Array(packages.available.filter { matches($0.name) }.enumerated()), id: \.offset) { _, package in
                         HStack {
                             VStack(alignment: .leading, spacing: 4) { Text(package.name); Text(package.version).font(.caption).foregroundStyle(.secondary) }
                             Spacer()
-                            Button("安装") { start(.install(package.name + "=" + package.version), "正在安装 \(package.name)…") }.buttonStyle(.bordered).disabled(!writable)
+                            Button("environment.packages.install") { start(.install(package.name + "=" + package.version), "正在安装 \(package.name)…") }.buttonStyle(.bordered).disabled(!writable)
                         }
                     }
                     DisclosureGroup("软件源（\(packages.sources.count)）") {
@@ -204,19 +204,19 @@ private struct EnvironmentDetailView: View {
                 }
             }
             if record.kind.isWritableLayer {
-                Section("容器生命周期") {
+                Section("environment.lifecycle.title") {
                     Button(record.state == .stopped ? "恢复环境" : "停止此环境的任务", systemImage: record.state == .stopped ? "play" : "stop") {
                         perform {
                             if record.state == .stopped { try await FloePlatformServices.shared.resumeEnvironment(id: report.id) }
                             else { try await FloePlatformServices.shared.stopEnvironment(id: report.id) }
                         }
                     }.disabled(busy || record.state == .deleting)
-                    TextField("模板名称", text: $templateName)
-                    Button("保存为模板", systemImage: "doc.on.doc") {
+                    TextField("environment.template.name", text: $templateName)
+                    Button("environment.template.save", systemImage: "doc.on.doc") {
                         perform { try await FloePlatformServices.shared.saveEnvironmentTemplate(id: report.id, name: templateName); templateName = "" }
                     }.disabled(busy || jobs.running.contains(report.id) || record.state != .stopped || record.requiresRebuild || templateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Text("先停止环境，再保存模板，确保依赖副本一致。").font(.caption).foregroundStyle(.secondary)
-                    Button("删除此容器", role: .destructive) { confirmDelete = true }.disabled(busy)
+                    Button("environment.delete.action", role: .destructive) { confirmDelete = true }.disabled(busy)
                 }
             }
         }
@@ -230,7 +230,7 @@ private struct EnvironmentDetailView: View {
             Button("取消", role: .cancel) { pendingRemoval = nil }
         } message: { Text("仅修改当前环境。若其他软件包依赖它，卸载会被拒绝。") }
         .confirmationDialog("删除此容器？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("停止任务并删除", role: .destructive) {
+            Button("environment.delete.stop_and_delete", role: .destructive) {
                 perform { try await FloePlatformServices.shared.deleteEnvironment(id: report.id); dismiss() }
             }
         } message: { Text("将停止此环境的任务并删除其依赖和容器数据。有子会话的项目须先清理子会话；停止失败时保留数据。") }
