@@ -4,7 +4,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from resolved_pins import resolved_pins
+from resolved_pins import resolved_pins, application_pins, verify_resolution
 
 
 class ResolvedPinsTests(unittest.TestCase):
@@ -39,6 +39,28 @@ class ResolvedPinsTests(unittest.TestCase):
     def test_duplicate_identity_fails(self):
         with self.assertRaises(ValueError):
             resolved_pins({"version": 3, "pins": [self.current["pins"][0]] * 2})
+
+    def test_host_resolution_keeps_app_only_pin_in_distribution_inventory(self):
+        project = (Path(__file__).resolve().parents[2] / "project.yml").read_text()
+        app = application_pins(project)
+        expected = resolved_pins(self.current)
+        host = [p for p in expected if p["identity"] not in {p["identity"] for p in app}]
+        self.assertEqual(verify_resolution(host, expected, app), expected)
+        self.assertEqual(verify_resolution(expected, expected, app), expected)
+
+    def test_host_missing_or_changed_pin_and_app_drift_fail(self):
+        expected = resolved_pins(self.current)
+        app = application_pins((Path(__file__).resolve().parents[2] / "project.yml").read_text())
+        host = [p for p in expected if p["identity"] not in {p["identity"] for p in app}]
+        changed = [{**host[0], "state": {"revision": "0" * 40}}, *host[1:]]
+        wrong_app = [{**app[0], "state": {"revision": "0" * 40}}]
+        for current, application in ((host[1:], app), (changed, app), (host, wrong_app)):
+            with self.subTest(current=current), self.assertRaises(ValueError):
+                verify_resolution(current, expected, application)
+
+    def test_mutable_application_declaration_fails(self):
+        with self.assertRaises(ValueError):
+            application_pins("packages:\n  Test:\n    url: https://example.org/Test.git\n    branch: main\n")
 
 
 if __name__ == "__main__":

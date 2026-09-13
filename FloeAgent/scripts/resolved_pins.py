@@ -4,6 +4,7 @@ SwiftPM's ResolvedPackagesStore supports v1 (object.pins) and v2/v3
 (top-level pins). Xcode may serialize an existing resolution using v1.
 """
 from urllib.parse import urlsplit
+import re
 
 
 def resolved_pins(document):
@@ -37,3 +38,42 @@ def resolved_pins(document):
             raise ValueError(f"Mutable branch dependency: {identity}")
         result.append({"identity": identity, "location": location, "state": state})
     return sorted(result, key=lambda pin: pin["identity"])
+
+
+def application_pins(project):
+    """Read immutable remote packages from XcodeGen's packages section.
+
+    The app has WhisperKit; the host Swift package does not. Local packages
+    have no remote pin. Reject unsupported remote declarations explicitly.
+    """
+    section = re.search(r"(?ms)^packages:\n(.*?)(?=^\S|\Z)", project)
+    if section is None:
+        raise ValueError("XcodeGen packages section missing")
+    pins = []
+    for name, body in re.findall(r"(?ms)^  ([^ :]+):\n(.*?)(?=^  [^ ]|\Z)", section[1]):
+        if re.search(r"^    path:", body, re.M):
+            continue
+        url = re.search(r"^    url: (\S+)\s*$", body, re.M)
+        revision = re.search(r"^    revision: ([0-9a-f]{40})\s*$", body, re.M)
+        if url is None or revision is None:
+            raise ValueError(f"Xcode package must use an immutable revision: {name}")
+        pins.append({"repositoryURL": url[1], "state": {"revision": revision[1]}})
+    return resolved_pins({"version": 1, "object": {"pins": pins}}) if pins else []
+
+
+def verify_resolution(current, committed, app_only):
+    expected = {p["identity"]: p for p in committed}
+    actual = {p["identity"]: p for p in current}
+    app = {p["identity"]: p for p in app_only}
+    for identity, pin in app.items():
+        if expected.get(identity) != pin:
+            raise ValueError(f"Xcode app pin differs from committed lock: {identity}")
+    for identity, pin in actual.items():
+        if expected.get(identity) != pin:
+            raise ValueError(f"Resolved dependency differs from committed lock: {identity}")
+    for identity in expected.keys() - actual.keys():
+        if identity not in app:
+            raise ValueError(f"Committed host dependency missing: {identity}")
+    # Include application-only dependencies in the distribution inventory even
+    # when swift package resolve removes them from the host lock representation.
+    return sorted({**actual, **app}.values(), key=lambda p: p["identity"])

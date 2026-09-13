@@ -16,7 +16,7 @@ fi
 python3 - <<'PY'
 import json, subprocess, sys
 sys.path.insert(0, "scripts")
-from resolved_pins import resolved_pins
+from resolved_pins import resolved_pins, application_pins, verify_resolution
 
 with open("Package.resolved") as f:
     resolved = json.load(f)
@@ -24,8 +24,9 @@ with open("Package.resolved") as f:
 pins = resolved_pins(resolved)
 committed = json.loads(subprocess.check_output(
     ["git", "show", "HEAD:FloeAgent/Package.resolved"], text=True))
-if pins != resolved_pins(committed):
-    sys.exit("error: resolved dependencies differ from the committed lock file")
+with open("project.yml") as f:
+    app_pins = application_pins(f.read())
+pins = verify_resolution(pins, resolved_pins(committed), app_pins)
 errors = []
 for pin in pins:
     state = pin.get("state", {})

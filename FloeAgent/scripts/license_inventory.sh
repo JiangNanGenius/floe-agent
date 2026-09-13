@@ -11,13 +11,17 @@ OUTPUT="LICENSES-THIRD-PARTY.md"
 python3 - <<'PY'
 import json, subprocess, sys
 sys.path.insert(0, "scripts")
-from resolved_pins import resolved_pins
+from resolved_pins import resolved_pins, application_pins, verify_resolution
 
 ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "MPL-2.0", "ISC", "0BSD", "Zlib", "OFL-1.1"}
 GPL_FAMILY = {"GPL-2.0", "GPL-3.0", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0"}
 
 with open("Package.resolved") as f:
     pins = resolved_pins(json.load(f))
+committed = json.loads(subprocess.check_output(
+    ["git", "show", "HEAD:FloeAgent/Package.resolved"], text=True))
+with open("project.yml") as f:
+    pins = verify_resolution(pins, resolved_pins(committed), application_pins(f.read()))
 
 rows = []
 violations = []

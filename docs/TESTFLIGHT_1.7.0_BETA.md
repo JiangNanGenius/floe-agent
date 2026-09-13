@@ -2,11 +2,11 @@
 
 ## Current preparation — 2026-09-13
 
-**Not uploaded.** Current immutable candidate: **1.7.0 (154)**, tag `v1.7.0-beta.11`, source `eb2213f5a9961b75d29cd683b7c578b42f2f5d92`. [Release run 34751651142](https://github.com/JiangNanGenius/floe-agent/actions/runs/34751651142) is retrying after the first attempt could not resolve `github.com` while cloning two dependency submodules. The retained cloud lock matches all 33 committed pins; the retry uses the same source and build number.
+**Not uploaded.** Current candidate: **1.7.0 (155)**, tag `v1.7.0-beta.12`. Build 154 attempt 1 failed on cloud DNS; attempt 2 completed downloads but exposed an overly strict host/app lock comparison. WhisperKit is an immutable Xcode-only dependency. Build 155 validates its `project.yml` revision separately, retains it in distribution licenses and still rejects host dependency drift. Eight tests and end-to-end checks against the actual cloud lock pass.
 
 The last completed full-App gate is build 152: 1244 Swift test executions, the SDK 27 simulator Release build and all 135 focused App regressions passed. The latest Notes component screenshots and SDK 27/26 iPad/iPhone evidence are from [`4550b6d`](https://github.com/JiangNanGenius/floe-agent/actions/runs/34742130370); component qualification is distinct from full-App and physical-device acceptance. Final TestFlight text and checks are tracked in [the release description](RELEASE_NOTES_1.7.0.md).
 
-After signed upload, Apple processing, beta notes, the existing internal Floe QA group and `IN_BETA_TESTING` must be verified for build 154 before reporting availability. Physical-device checks belong to the user after installation. After successful delivery, merge this integration branch into `main` and remove only branches whose tips are already included; preserve branches with independent work and occupied worktrees. No public App Store release is included.
+After signed upload, Apple processing, beta notes, the existing internal Floe QA group and `IN_BETA_TESTING` must be verified for build 155 before reporting availability. Physical-device checks belong to the user after installation. After successful delivery, merge this integration branch into `main` and remove only branches whose tips are already included; preserve branches with independent work and occupied worktrees. No public App Store release is included.
 
 ## Build 154 — beta.11
 

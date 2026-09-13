@@ -1,0 +1,8 @@
+8 parser and host/app pin-boundary regression tests passed.
+End-to-end pin_check.sh and license_inventory.sh passed using:
+- committed combined lock: 33 pins
+- actual build 154 attempt 2 host lock: 32 pins
+- v1 serialization of that actual host lock: 32 pins
+Each inventory includes the project.yml-pinned WhisperKit dependency and contains 197 entries.
+All three inventories are byte-identical.
+Changing or omitting host dependencies, or changing the Xcode app revision, still fails.
