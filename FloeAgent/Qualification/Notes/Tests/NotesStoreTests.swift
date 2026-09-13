@@ -96,6 +96,17 @@ struct NotesStoreTests {
         #expect(try await reopened.apply(batch, authorizedConversationID: second).title == "Late")
     }
 
+    @Test func mindMapImageBudgetRejectsExcessResources() throws {
+        var document = NoteDocument(kind: .mindMap, title: "Illustrated")
+        let root = document.nodes[0].id
+        for index in 0..<64 {
+            document.nodes.append(MindMapNode(parentID: root, title: "Image \(index)", order: index, imageResourceID: UUID()))
+        }
+        try document.validate()
+        document.nodes.append(MindMapNode(parentID: root, title: "Too many", order: 64, imageResourceID: UUID()))
+        #expect(throws: (any Error).self) { try document.validate() }
+    }
+
     @Test func mindMapRejectsCyclesWithoutChangingPersistedTree() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

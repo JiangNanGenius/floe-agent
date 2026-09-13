@@ -12,6 +12,9 @@ struct NotesDocumentEditor: View {
     @State private var drawing: Data?
     @State private var background: Data?
     @State private var elementImages: [UUID: Data] = [:]
+    @State private var mapImages: [UUID: Data] = [:]
+    @State private var selectedMapNodeID: UUID?
+    @State private var mapImageTargetID: UUID?
     @State private var importingImage = false
     @State private var inspectingElement: NoteElement?
     @State private var loadedPageID: UUID?
@@ -48,6 +51,16 @@ struct NotesDocumentEditor: View {
         }
     }
     private var page: NotePage? { document.pages.first { $0.id == pageID } ?? document.pages.first }
+    private var mapImageIDs: Set<UUID> { Set(document.nodes.compactMap(\.imageResourceID)) }
+    private var selectedMapNode: MindMapNode? {
+        if let id = selectedMapNodeID { return document.nodes.first { $0.id == id } }
+        return document.nodes.first { $0.parentID == nil }
+    }
+    private var pageLoadID: String {
+        var ids = [page?.drawingResourceID, page?.backgroundResourceID].compactMap { $0 }
+        ids += page?.elements.compactMap(\.resourceID) ?? []
+        return "\(page?.id.uuidString ?? ""):" + ids.map(\.uuidString).sorted().joined(separator: ":") + ":\(session.pendingWrites)"
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -77,7 +90,8 @@ struct NotesDocumentEditor: View {
                 if showOutline { MindMapOutlineView(session: session, document: document) }
                 else { NoteMindMapView(document: document, onEdit: { edits, revision in
                     try await session.commit(edits, documentID: document.id, expectedRevision: revision)
-                }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 }) }
+                }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 },
+                   images: mapImages, onSelection: { selectedMapNodeID = $0 }) }
             } else if let page {
                 writingTools
                 Divider()
@@ -107,7 +121,16 @@ struct NotesDocumentEditor: View {
                 pageID = value; session.requestedPageID = nil
             }
         }
-        .task(id: "\(page?.id.uuidString ?? ""):\(page?.drawingResourceID?.uuidString ?? ""):\(session.pendingWrites)") {
+        .task(id: mapImageIDs) {
+            guard document.kind == .mindMap, let store = session.store else { return }
+            do {
+                let images = try await NoteFileImporter.images(resourceIDs: mapImageIDs, store: store)
+                try Task.checkCancellation()
+                mapImages = images
+            } catch is CancellationError { }
+            catch { session.errorMessage = error.localizedDescription }
+        }
+        .task(id: pageLoadID) {
             guard document.kind == .notebook, let page, let store = session.store, session.pendingWrites == 0 else { return }
             do {
                 let ink: Data?
@@ -124,15 +147,22 @@ struct NotesDocumentEditor: View {
             } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
         }
         .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
-            guard let page, let store = session.store else { return }
+            guard let store = session.store else { return }
             Task {
                 do {
                     let imported = try await NoteFileImporter.importFile(result.get(), notebookID: nil, store: store)
                     guard let image = imported.pages.first, let resource = image.backgroundResourceID else { throw NoteError.resourceUnavailable }
-                    let width = min(page.width * 0.6, image.width)
-                    let height = min(page.height * 0.6, width * image.height / image.width)
-                    let element = NoteElement(kind: .image, frame: .init(x: 40, y: 60, width: width, height: height), resourceID: resource)
-                    session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入图片", documentID: document.id)
+                    if document.kind == .mindMap {
+                        let current = try await store.document(document.id)
+                        guard let target = mapImageTargetID, var node = current.nodes.first(where: { $0.id == target }) else { throw NoteError.notFound }
+                        node.imageResourceID = resource
+                        _ = try await session.commit([.upsertNode(node)], documentID: current.id, expectedRevision: current.revision)
+                    } else if let page {
+                        let width = min(page.width * 0.6, image.width)
+                        let height = min(page.height * 0.6, width * image.height / image.width)
+                        let element = NoteElement(kind: .image, frame: .init(x: 40, y: 60, width: width, height: height), resourceID: resource)
+                        session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入图片", documentID: document.id)
+                    }
                 } catch { session.errorMessage = error.localizedDescription }
             }
         }
@@ -313,6 +343,25 @@ struct NotesDocumentEditor: View {
                 Button("页面", systemImage: "rectangle.stack") { showPages = true }
                     .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
             } else if document.kind == .mindMap {
+                Menu {
+                    if let node = selectedMapNode {
+                        Button("插入或替换图片：\(node.title)") {
+                            mapImageTargetID = node.id; importingImage = true
+                        }
+                        if node.imageResourceID != nil {
+                            Button("移除主题图片", role: .destructive) {
+                                Task {
+                                    do {
+                                        var edited = node; edited.imageResourceID = nil
+                                        _ = try await session.commit([.upsertNode(edited)], documentID: document.id, expectedRevision: document.revision)
+                                    } catch { session.errorMessage = error.localizedDescription }
+                                }
+                            }
+                        }
+                    }
+                } label: { Label("主题图片", systemImage: "photo") }
+                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .disabled(selectedMapNode == nil || session.pendingWrites > 0)
                 Button(showOutline ? "导图" : "大纲", systemImage: showOutline ? "point.3.connected.trianglepath.dotted" : "list.bullet.indent") { showOutline.toggle() }
                     .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
             }

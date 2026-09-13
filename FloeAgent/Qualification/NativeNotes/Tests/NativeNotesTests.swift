@@ -79,6 +79,25 @@ import FloeNotes
                 attachment.name = "Notes mind map component — literal Chinese and English text"
                 attachment.lifetime = .keepAlways
                 add(attachment)
+                let imageID = UUID()
+                let picture = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 40)).image { context in
+                    UIColor.systemBlue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 80, height: 40))
+                }
+                var updated = document; updated.revision += 1; updated.nodes[0].imageResourceID = imageID
+                let illustrated = updated
+                host.rootView = NoteMindMapView(document: illustrated, onEdit: { _, _ in illustrated }, onHistory: { _ in }, onError: { XCTFail($0) },
+                                               images: [imageID: try XCTUnwrap(picture.pngData())])
+                let imageDeadline = Date().addingTimeInterval(10)
+                var imageLoaded = false
+                while Date() < imageDeadline {
+                    imageLoaded = (try? await web.callAsyncJavaScript("return Array.from(document.querySelectorAll('me-tpc img')).some(img => img.src.startsWith('data:image/png;') && img.naturalWidth === 80)", arguments: [:], in: nil, contentWorld: .page)) as? Bool == true
+                    if imageLoaded { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                XCTAssertTrue(imageLoaded, "Native image resource did not render in the topic")
+                let illustratedSnapshot = XCTAttachment(image: try await web.takeSnapshot(configuration: nil))
+                illustratedSnapshot.name = "Notes mind map component — embedded image"
+                illustratedSnapshot.lifetime = .keepAlways; add(illustratedSnapshot)
                 return
             }
             try await Task.sleep(for: .milliseconds(100))

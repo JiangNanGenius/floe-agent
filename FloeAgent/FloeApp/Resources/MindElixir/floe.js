@@ -39,12 +39,13 @@
     send({type:'edit', documentID, revision, nodes, connections, direction:data.direction ?? 2, summaries});
   }
   window.floeRender = payload => {
+    const selection = (map?.currentNodes || []).map(element => uuid(element.nodeObj.id));
     applying = true; pending = false; ids.clear();
     try {
     documentID = payload.document.id; revision = payload.document.revision;
     const nodes = payload.document.nodes;
     const lookup = new Map(nodes.map(n => [n.id, {
-      id:n.id, topic:n.title, note:n.note, expanded:!n.isCollapsed, children:[],
+      id:n.id, topic:n.title, note:n.note, expanded:!n.isCollapsed, children:[], image:(payload.images || {})[n.imageResourceID],
       style:n.style || (n.color ? {background:n.color} : {}), tags:n.tags, icons:n.icons, direction:n.direction, branchColor:n.branchColor, hyperLink:n.hyperLink, metadata:{source:n.source, imageResourceID:n.imageResourceID, isAIGenerated:n.isAIGenerated}
     }]));
     let root;
@@ -65,6 +66,9 @@
       instance.init(data); map = instance;
       map.bus.addListener('operation', operation => { if (operation.name !== 'beginEdit') commit(); });
       map.bus.addListener('expandNode', commit);
+      const reportSelection = () => send({type:'selection',documentID,revision,nodeID:map.currentNodes[0] ? uuid(map.currentNodes[0].nodeObj.id) : null});
+      map.bus.addListener('selectNodes', reportSelection);
+      map.bus.addListener('unselectNodes', reportSelection);
       document.addEventListener('keydown', event => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
           event.preventDefault(); event.stopImmediatePropagation();
@@ -74,6 +78,8 @@
     } else {
       map.refresh(data); map.editable = true;
       map.changeTheme(payload.dark ? MindElixir.default.DARK_THEME : MindElixir.default.THEME);
+      const elements = selection.filter(id => lookup.has(id)).flatMap(id => { try { return [map.findEle(id)]; } catch { return []; } });
+      if (elements.length) map.selectNodes(elements);
     }
     } finally { applying = false; }
   };

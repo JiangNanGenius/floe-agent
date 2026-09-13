@@ -10,6 +10,10 @@ import FloeNotes
 enum NoteFileImporter {
     static func elementImages(page: NotePage, store: NotesStore) async throws -> [UUID: Data] {
         let ids = Set(page.elements.filter { $0.kind == .image }.compactMap(\.resourceID))
+        return try await images(resourceIDs: ids, store: store)
+    }
+    static func images(resourceIDs ids: Set<UUID>, store: NotesStore) async throws -> [UUID: Data] {
+        guard ids.count <= 64 else { throw NoteError.invalidOperation("单页或导图最多显示 64 张图片，请拆分内容。") }
         // Share a 16-megapixel decoded-image budget across the current page.
         let maximum = min(2048, max(128, Int(sqrt(16_777_216 / Double(max(1, ids.count))))))
         var result: [UUID: Data] = [:]

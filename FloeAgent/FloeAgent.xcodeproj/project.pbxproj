@@ -245,6 +245,7 @@
 		6D83BA7D46587647E3075CB7 /* pandas__libs_parsers.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F54DB2628B40757C8BB129CA /* pandas__libs_parsers.xcframework */; };
 		6D8FE713EAEEE8B03C51798E /* pandas__libs_tslibs_timestamps.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0EC05C4A2D3FF390E3DBFCB0 /* pandas__libs_tslibs_timestamps.xcframework */; };
 		6E0CE7E31A041E1ED1440133 /* math.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB881F2DC155C2D3A5681681 /* math.xcframework */; };
+		6E35ADC25DC97B976CA965E9 /* AudioTranscribeTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = D405CD4463D90454D1362D71 /* AudioTranscribeTool.swift */; };
 		6E3F12597AECF29A35D51CB3 /* pandas__libs_testing.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1AA60BB315BB5872C44504C2 /* pandas__libs_testing.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6E438B5B53DA64FF688B9F37 /* _bisect.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */; };
 		6EFA9ED6557018D9EC2EFFC6 /* FileTreeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */; };
@@ -325,9 +326,11 @@
 		93AE4E65731A89CBCF346E33 /* math.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BB881F2DC155C2D3A5681681 /* math.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		93EC91B1C5DF8EEC49FB6914 /* _struct.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B7B559ED19BFCC88432C6828 /* _struct.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		93FA80998EEEFE39B4DC4B80 /* _struct_ufunc_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4591C06F1D70A373B8D8BD05 /* _struct_ufunc_tests.xcframework */; };
+		93FBA12D3BE2E1BCF61C8A5A /* FloeVideoTranscriptionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B88B3B92169B66C2BF9343 /* FloeVideoTranscriptionProvider.swift */; };
 		944E3FB5C585C549D0629B3E /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = F083763A8E3CC5FC0CCEEF1A /* FloeCore */; };
 		9480F3B70B2928BD0DAD3631 /* AppleSystemTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B4E7317E7E655E86990C5D1 /* AppleSystemTools.swift */; };
 		9484845FCE5ED5231B66713F /* DataManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */; };
+		95C7EE2314494636553D9598 /* FileSpeechTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13C9AD3FD971F1CDA6F5EBF4 /* FileSpeechTranscriber.swift */; };
 		96E82AE4BDD74EF81543A495 /* AppearanceSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0E5940DD8BE562FA25E8D7 /* AppearanceSettingsSection.swift */; };
 		97D3E78758C847D8E6B7F1BB /* RARArchiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */; };
 		98BD8CC5877E2714FF8979F3 /* _lzma.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -366,6 +369,7 @@
 		A778949A4707059C79A4E425 /* mmap.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A87756F725A536CC9A367D09 /* _queue.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 6388FC90DDE87F9FF1B56161 /* _queue.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AA54218F4AB9D8E87385CECB /* _codecs_kr.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1B58E0C473AABBF23BEBD6E0 /* _codecs_kr.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AA60E63E6C44DAACB2A2A12D /* NotesKnowledgeAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADE79F616E839CB00E1B21F /* NotesKnowledgeAttachment.swift */; };
 		AB3605779C6F0C4864D85CE2 /* VNCViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */; };
 		AB7BCBD6DC7FD37ADEF2C945 /* RuntimeDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */; };
 		ABAF2700584FE5E93C50DA1B /* FloeDocuments in Frameworks */ = {isa = PBXBuildFile; productRef = 42091B03632EF4B82CED17C8 /* FloeDocuments */; };
@@ -421,6 +425,7 @@
 		C274EA9CDC12ED51AAA7181E /* _struct_ufunc_tests.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4591C06F1D70A373B8D8BD05 /* _struct_ufunc_tests.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C289286498042D0530D1590B /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
 		C2A979185D804135CE278ADA /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
+		C3CA63395F49CC24FAB55908 /* SpeechCaptionExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB46FFBBC7F5F1AFDEB107E4 /* SpeechCaptionExport.swift */; };
 		C3D0912C27625AA81B6DA7D2 /* bit_generator.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74012AF12E05312093931759 /* bit_generator.xcframework */; };
 		C41C0603DDC569D6809A2469 /* NoteMindMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF9D25DEB0932DA8E5EDDB52 /* NoteMindMapView.swift */; };
 		C445C408875C00830EEC5993 /* pandas__libs_join.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */; };
@@ -774,6 +779,7 @@
 		129A22985CBD64DE5DB664FF /* native-host.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "native-host.xcconfig"; sourceTree = "<group>"; };
 		12C1ABF02CBBFDC44F9B0577 /* NoteFileImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteFileImporter.swift; sourceTree = "<group>"; };
 		12C202262489FD354A0B595A /* _random.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _random.xcframework; path = Vendor/PythonExtensions/_random.xcframework; sourceTree = "<group>"; };
+		13C9AD3FD971F1CDA6F5EBF4 /* FileSpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSpeechTranscriber.swift; sourceTree = "<group>"; };
 		1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_dtypes.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_dtypes.xcframework; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
 		15BCD6B2D8B8AB9B011DA0AB /* CreativeMediaModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeMediaModelsTests.swift; sourceTree = "<group>"; };
@@ -783,6 +789,7 @@
 		16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDreamService.swift; sourceTree = "<group>"; };
 		176A2DE26290AB545E404ADE /* lapack_lite.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lapack_lite.xcframework; path = Vendor/PythonExtensions/lapack_lite.xcframework; sourceTree = "<group>"; };
 		17A05679A6CD241257F69CDD /* FloeNodeBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeNodeBridge.h; sourceTree = "<group>"; };
+		17B88B3B92169B66C2BF9343 /* FloeVideoTranscriptionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeVideoTranscriptionProvider.swift; sourceTree = "<group>"; };
 		17C3D097583898D825656EEA /* BundledFontRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledFontRegistrar.swift; sourceTree = "<group>"; };
 		17F136474D0FB91E6F810317 /* ThreadDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailView.swift; sourceTree = "<group>"; };
 		1838729ECF5E85526DF5F217 /* NotesRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesRootView.swift; sourceTree = "<group>"; };
@@ -953,6 +960,7 @@
 		7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_interval.xcframework; path = Vendor/PythonExtensions/pandas__libs_interval.xcframework; sourceTree = "<group>"; };
 		7A23E7E08860487A8333BE4F /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFUnlockTool.swift; sourceTree = "<group>"; };
+		7ADE79F616E839CB00E1B21F /* NotesKnowledgeAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesKnowledgeAttachment.swift; sourceTree = "<group>"; };
 		7C35CB7DEF065BEA95D23CB4 /* _sha1.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sha1.xcframework; path = Vendor/PythonExtensions/_sha1.xcframework; sourceTree = "<group>"; };
 		7C7B72A5E39B57AC2C0495F8 /* pandas__libs_hashtable.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_hashtable.xcframework; path = Vendor/PythonExtensions/pandas__libs_hashtable.xcframework; sourceTree = "<group>"; };
 		7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCSessionOwner.swift; sourceTree = "<group>"; };
@@ -1087,6 +1095,7 @@
 		D3239F632B3D2E2DF7F9BBA8 /* LocalModelsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelsSettingsView.swift; sourceTree = "<group>"; };
 		D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _pocketfft_umath.xcframework; path = Vendor/PythonExtensions/_pocketfft_umath.xcframework; sourceTree = "<group>"; };
 		D40292BBF7F05D18D0071749 /* FloeShellEngine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeShellEngine; path = ThirdParty/FloeShellEngine; sourceTree = SOURCE_ROOT; };
+		D405CD4463D90454D1362D71 /* AudioTranscribeTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioTranscribeTool.swift; sourceTree = "<group>"; };
 		D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeAssetIngestionService.swift; sourceTree = "<group>"; };
 		D469D627A123A3676681A3F3 /* SidebarCollapseGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarCollapseGesture.swift; sourceTree = "<group>"; };
 		D499B038C15DC8EA198B669A /* BrowserModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserModels.swift; sourceTree = "<group>"; };
@@ -1146,6 +1155,7 @@
 		F912D5604B202108A44A81E6 /* pandas__libs_tslibs_period.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_period.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_period.xcframework; sourceTree = "<group>"; };
 		FAB44464D488A732056E8D96 /* ScreenShareGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShareGuideView.swift; sourceTree = "<group>"; };
 		FB4679E77F7EF6B2EA20794E /* WhisperStreamingTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperStreamingTranscriber.swift; sourceTree = "<group>"; };
+		FB46FFBBC7F5F1AFDEB107E4 /* SpeechCaptionExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechCaptionExport.swift; sourceTree = "<group>"; };
 		FB89286479C930C2ED16EFF6 /* NotesTextLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesTextLayout.swift; sourceTree = "<group>"; };
 		FBD2CBE0215EF9478D86E581 /* BackgroundVideoService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundVideoService.swift; sourceTree = "<group>"; };
 		FC00A178D3BFF39807097F6A /* FloeCPythonBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeCPythonBridge.h; sourceTree = "<group>"; };
@@ -1397,7 +1407,9 @@
 		0CA70AC476DB00A2326D7095 /* Media */ = {
 			isa = PBXGroup;
 			children = (
+				D405CD4463D90454D1362D71 /* AudioTranscribeTool.swift */,
 				A3C3CC090EE8725611E64C35 /* FloeImageEditorView.swift */,
+				17B88B3B92169B66C2BF9343 /* FloeVideoTranscriptionProvider.swift */,
 				4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */,
 				8F67BD7208FE43B7F6716AA9 /* MediaModelCatalogService.swift */,
 				016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */,
@@ -1931,6 +1943,7 @@
 				63BB8791E564E4D0D1E236D2 /* NotesAssistantPanel.swift */,
 				A4896739DCF1CC3D7F68DFA4 /* NotesDocumentEditor.swift */,
 				FC237C9A630761F0880A780A /* NotesExport.swift */,
+				7ADE79F616E839CB00E1B21F /* NotesKnowledgeAttachment.swift */,
 				247E8EC43E8E35A02BD9D4C6 /* NotesKnowledgePicker.swift */,
 				931809561A553D3D4D78ABA6 /* NotesOfficeView.swift */,
 				51E3758CCEC79AE4FCA6D6B4 /* NotesRepository.swift */,
@@ -1991,6 +2004,8 @@
 		D06A0D2A834810C09C15E49C /* Voice */ = {
 			isa = PBXGroup;
 			children = (
+				13C9AD3FD971F1CDA6F5EBF4 /* FileSpeechTranscriber.swift */,
+				FB46FFBBC7F5F1AFDEB107E4 /* SpeechCaptionExport.swift */,
 				1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */,
 				D6980E6E2001E2C4508A503A /* VoiceInputController.swift */,
 				58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */,
@@ -2459,6 +2474,7 @@
 				53C5DF929A29A202B41358EA /* ApprovalModelBackend.swift in Sources */,
 				67E0B11F77FD1726248D939B /* ArchiveCompressedBridge.swift in Sources */,
 				C7B7EEE61A3D6CEC98A41E7B /* AssistantMessageView.swift in Sources */,
+				6E35ADC25DC97B976CA965E9 /* AudioTranscribeTool.swift in Sources */,
 				ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */,
 				0F1C7B7F861DC76B9B119C05 /* AuxiliarySettingsView.swift in Sources */,
 				F699556D1AC6F3CE795CD7C3 /* BackgroundExecutionSettingsView.swift in Sources */,
@@ -2503,6 +2519,7 @@
 				6CC9C3F3F49E9B42F280C04F /* FeedbackUploadService.swift in Sources */,
 				3B9C61151DBDF65A67B112C4 /* FileInspectorView.swift in Sources */,
 				AE62B83850265049A67A47F4 /* FilePreviewView.swift in Sources */,
+				95C7EE2314494636553D9598 /* FileSpeechTranscriber.swift in Sources */,
 				B122E4C91387683F2EDBC728 /* FileTreeView.swift in Sources */,
 				6EFA9ED6557018D9EC2EFFC6 /* FileTreeViewModel.swift in Sources */,
 				5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */,
@@ -2520,6 +2537,7 @@
 				2A28A5D2E585FE372E6AA7E8 /* FloeShellCommands.swift in Sources */,
 				FBA76463B171719B586A0436 /* FloeShortcuts.swift in Sources */,
 				A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */,
+				93FBA12D3BE2E1BCF61C8A5A /* FloeVideoTranscriptionProvider.swift in Sources */,
 				53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */,
 				C05674B6B497CF027A4FCBEF /* GitHubSettingsView.swift in Sources */,
 				08F47781D4B996B2696C8989 /* HomeLaunchpadView.swift in Sources */,
@@ -2565,6 +2583,7 @@
 				22954380286977B87E12A258 /* NotesAssistantPanel.swift in Sources */,
 				3C49818CC0422F6C4B047C11 /* NotesDocumentEditor.swift in Sources */,
 				866BA77E0D2C71789223F734 /* NotesExport.swift in Sources */,
+				AA60E63E6C44DAACB2A2A12D /* NotesKnowledgeAttachment.swift in Sources */,
 				B9209D676C9FD45524B01776 /* NotesKnowledgePicker.swift in Sources */,
 				8A1DC131203E20C7D4FCA1CB /* NotesOfficeView.swift in Sources */,
 				2EDE28250D1308B8F85CA363 /* NotesRepository.swift in Sources */,
@@ -2617,6 +2636,7 @@
 				6746445A87576F1AE979702A /* SkillsView.swift in Sources */,
 				62D36041B800B1494EAD83D2 /* SourceControlCenter.swift in Sources */,
 				BD05424A3DC9EEFFC7A42878 /* SourceControlView.swift in Sources */,
+				C3CA63395F49CC24FAB55908 /* SpeechCaptionExport.swift in Sources */,
 				F444F9DCEFD14D81F09899AF /* SpeechService.swift in Sources */,
 				88B730D8D33C92B2D1F5A906 /* StepGroupView.swift in Sources */,
 				60E0C3F854C4FA5869FA041D /* SyncSettingsView.swift in Sources */,

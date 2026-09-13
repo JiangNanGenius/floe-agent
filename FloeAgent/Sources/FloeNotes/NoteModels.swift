@@ -231,6 +231,9 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                 throw NoteError.invalidDocument("笔记至少需要一页，且不能包含导图节点。")
             }
         case .mindMap:
+            guard Set(nodes.compactMap(\.imageResourceID)).count <= 64 else {
+                throw NoteError.invalidDocument("一张导图最多使用 64 张不同的图片，请拆分导图。")
+            }
             guard pages.isEmpty, !nodes.isEmpty, nodes.count <= 10_000, officeResourceID == nil, officeFileName == nil,
                   nodes.filter({ $0.parentID == nil }).count == 1 else {
                 throw NoteError.invalidDocument("导图需要唯一中心主题。")
