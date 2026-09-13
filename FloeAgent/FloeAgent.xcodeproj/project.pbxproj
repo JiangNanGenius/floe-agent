@@ -15,6 +15,7 @@
 		044422FCA30CEF5DE011D5DB /* _pcg64.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */; };
 		049E8BCE4058423CD444FC1A /* _opcode.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DFAFEA945AD87107AD86523A /* _opcode.xcframework */; };
 		0508FA44AF2D75EF015ADA06 /* _sha3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 855EFD5014DCA004E8103D32 /* _sha3.xcframework */; };
+		05825834C3827B7ED11B314B /* EnvironmentLanguagePackageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A809A3D1E4CFC7C591315E2A /* EnvironmentLanguagePackageService.swift */; };
 		061821C1F7D4A03DB59A26C4 /* _sha1.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7C35CB7DEF065BEA95D23CB4 /* _sha1.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0661A7AD44F6F98E8B035DBE /* pandas__libs_groupby.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0698EEE9614E076C9AFEED3A /* FeedbackReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */; };
@@ -533,6 +534,7 @@
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
 		F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 566A108E33736D5DD705D005 /* pdf-lib.min.js */; };
 		F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */; };
+		F09FD775B840D59E2B42E1E7 /* EnvironmentLanguagePackagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 071FC3AA22AFB29B2D3A03C6 /* EnvironmentLanguagePackagesView.swift */; };
 		F104E60D7F5F901DAF62D0D4 /* MindMapTopicInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0156F84BD5669B8A565170 /* MindMapTopicInspector.swift */; };
 		F1F4FEA5795C0509165D8A62 /* pandas__libs_ops_dispatch.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F21AD42E26BA47E7C2A1129D /* LocalTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09130318B26A8CC203740EA0 /* LocalTerminalView.swift */; };
@@ -545,6 +547,7 @@
 		F444F9DCEFD14D81F09899AF /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0B76B524CD1FC5833106AE /* SpeechService.swift */; };
 		F596996B4E07126E4DBCEF65 /* pandas__libs_tslibs_timezones.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F6784CC2BD16D0D850C7B22B /* _lzma.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; };
+		F690B61828157A005A899F41 /* EnvironmentLanguagePackageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD2CFD611878BC20AF443EB /* EnvironmentLanguagePackageTests.swift */; };
 		F699556D1AC6F3CE795CD7C3 /* BackgroundExecutionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6C97DCAC2474410B4480C7 /* BackgroundExecutionSettingsView.swift */; };
 		F82E48692303DF4C244E90D1 /* pandas__libs_pandas_datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4C045D240779DF5FC64D438 /* CreativeAssetIngestionTests.swift */; };
@@ -759,6 +762,7 @@
 		053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_ccalendar.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_ccalendar.xcframework; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
 		0666A055F3421665937B663C /* CredentialManageTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialManageTool.swift; sourceTree = "<group>"; };
+		071FC3AA22AFB29B2D3A03C6 /* EnvironmentLanguagePackagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentLanguagePackagesView.swift; sourceTree = "<group>"; };
 		0759DE46F499DE82B08079EC /* pandas__libs_ops.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_ops.xcframework; path = Vendor/PythonExtensions/pandas__libs_ops.xcframework; sourceTree = "<group>"; };
 		078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _multiarray_tests.xcframework; path = Vendor/PythonExtensions/_multiarray_tests.xcframework; sourceTree = "<group>"; };
 		085605503DC285FC91B0449B /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
@@ -1045,6 +1049,7 @@
 		A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		A7642BD043053C610E612722 /* PDFKitAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFKitAccess.swift; sourceTree = "<group>"; };
 		A7705977F9297EBCC83FC679 /* FloeScreenShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeScreenShare.entitlements; sourceTree = "<group>"; };
+		A809A3D1E4CFC7C591315E2A /* EnvironmentLanguagePackageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentLanguagePackageService.swift; sourceTree = "<group>"; };
 		A837399A8DE937C9827D4EFA /* PDFiumLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PDFiumLicenses; path = FloeApp/Resources/PDFiumLicenses; sourceTree = SOURCE_ROOT; };
 		A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _statistics.xcframework; path = Vendor/PythonExtensions/_statistics.xcframework; sourceTree = "<group>"; };
 		A9882EA32564305D017F2566 /* TextFileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextFileEditorView.swift; sourceTree = "<group>"; };
@@ -1116,6 +1121,7 @@
 		DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCenter.swift; sourceTree = "<group>"; };
 		DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorView.swift; sourceTree = "<group>"; };
+		DBD2CFD611878BC20AF443EB /* EnvironmentLanguagePackageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentLanguagePackageTests.swift; sourceTree = "<group>"; };
 		DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserURLPolicy.swift; sourceTree = "<group>"; };
 		DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeAttachmentListView.swift; sourceTree = "<group>"; };
 		DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManagementView.swift; sourceTree = "<group>"; };
@@ -1371,6 +1377,7 @@
 			children = (
 				8496EE48316FEA0DF993901A /* CapabilityStoreAdapters.swift */,
 				37342E477B47F8A9B76D15B6 /* CPythonLocalRuntime.swift */,
+				A809A3D1E4CFC7C591315E2A /* EnvironmentLanguagePackageService.swift */,
 				0B2D5DED5D4B408F395DC2A4 /* FloeApp-Bridging-Header.h */,
 				FC00A178D3BFF39807097F6A /* FloeCPythonBridge.h */,
 				A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */,
@@ -1434,6 +1441,7 @@
 				71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */,
 				C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */,
 				A4C045D240779DF5FC64D438 /* CreativeAssetIngestionTests.swift */,
+				DBD2CFD611878BC20AF443EB /* EnvironmentLanguagePackageTests.swift */,
 				52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */,
 				6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */,
 				2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */,
@@ -1619,6 +1627,7 @@
 				67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */,
 				CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */,
 				36E68916820B033030E49814 /* DocumentRecoveryListView.swift */,
+				071FC3AA22AFB29B2D3A03C6 /* EnvironmentLanguagePackagesView.swift */,
 				708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */,
 				1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */,
 				533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */,
@@ -2522,6 +2531,8 @@
 				53B27391A46184754D48D72B /* DocumentRecoveryListView.swift in Sources */,
 				640A6E1C865CD29BBC93B547 /* DomainSkillLibrary.swift in Sources */,
 				C7F85CE15D1A3A53A80ED1CF /* DraftTaskPermissionsSheet.swift in Sources */,
+				05825834C3827B7ED11B314B /* EnvironmentLanguagePackageService.swift in Sources */,
+				F09FD775B840D59E2B42E1E7 /* EnvironmentLanguagePackagesView.swift in Sources */,
 				16803A444C43C3B228DB9373 /* EnvironmentManagerView.swift in Sources */,
 				7E68D5161A58FBD3F6C55FAF /* ErrorEventView.swift in Sources */,
 				C5BCA4D53959F1B96E82F8B1 /* ExecutionEnvironmentView.swift in Sources */,
@@ -2694,6 +2705,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F690B61828157A005A899F41 /* EnvironmentLanguagePackageTests.swift in Sources */,
 				5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */,
 				912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */,
 				6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */,

@@ -42,6 +42,21 @@ public actor EnvironmentExecutionCoordinator {
                     workspaceID: workspaceID, workspaceRootPath: workspace.path)
             } else { record = project }
         }
+        return try await lease(original, record: record)
+    }
+
+    /// Explicit user-selected environment for the dependency manager, independent of the active chat.
+    public func acquireManagement(environmentID: String, cancellation: CancellationToken) async throws -> ToolEnvironmentLease {
+        try cancellation.throwIfCancelled()
+        try await registry.prepare()
+        guard let record = await registry.record(id: environmentID) else {
+            throw FloeError.notFound("Execution environment \(environmentID)")
+        }
+        let context = ToolContext(runID: UUID(), cancellation: cancellation, environmentID: environmentID)
+        return try await lease(context, record: record)
+    }
+
+    private func lease(_ original: ToolContext, record: ContainerRecord) async throws -> ToolEnvironmentLease {
         let stack = await registry.layerStack(for: record.id, bundledBaseURL: bundledBaseURL)
         guard let latest = await registry.record(id: record.id), latest.state == .active,
               !latest.requiresRebuild, !stopping.contains(record.id) else {

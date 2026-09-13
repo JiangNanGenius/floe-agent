@@ -1,0 +1,46 @@
+#if canImport(UIKit)
+import Foundation
+import Testing
+import FloeExecution
+import FloeEnvironments
+import FloeTools
+@testable import FloeApp
+
+@Suite("Environment language dependency management", .serialized)
+struct EnvironmentLanguagePackageTests {
+    @Test(.timeLimit(.minutes(5))) func installImportAndRemoveInSelectedEnvironment() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "package-test")
+        let coordinator = EnvironmentExecutionCoordinator(roots: roots, registry: registry)
+        let first = try await registry.ensureProjectContainer(workspaceID: "first", workspaceRootPath: "/first")
+        let second = try await registry.ensureProjectContainer(workspaceID: "second", workspaceRootPath: "/second")
+        let python = try #require(CPythonServiceFactory.make())
+        let manager = EnvironmentLanguagePackageService(coordinator: coordinator, python: ManagedPythonInstallService(python: python))
+        for (language, specification, name) in [(EnvironmentLanguagePackageService.Language.python, "colorama==0.4.6", "colorama"), (.node, "is-number@7.0.0", "is-number")] {
+            _ = try await manager.change(environmentID: second.id, language: language, specification: specification, remove: false)
+            let installed = try await manager.packages(environmentID: second.id, language: language)
+            #expect(installed.contains { $0.name == name && $0.writable })
+            #expect(try await manager.packages(environmentID: first.id, language: language).isEmpty)
+            let lease = try await coordinator.acquireManagement(environmentID: second.id, cancellation: CancellationToken())
+            let environment = try #require(lease.context.environment)
+            if language == .python {
+                let outcome = await python.run(.init(script: "import colorama; print(colorama.__version__)", timeout: 10,
+                    pythonContext: ManagedPythonInstallService.executionContext(environment)), cancellation: nil)
+                if case .ok(_, let stdout, _, _, _, _) = outcome { #expect(stdout.contains("0.4.6")) }
+                else { Issue.record("Installed Python dependency could not be imported: \(outcome)") }
+            } else {
+                let outcome = await IOSSystemNodeRuntime.shared.run(.init(entryScript: nil,
+                    arguments: ["-e", "console.log(require('is-number')('42'))"], workingDirectory: root,
+                    environment: environment.variables, timeout: 10), cancellation: nil)
+                if case .exited(let code, let stdout, _, _, _) = outcome { #expect(code == 0 && stdout == "true\n") }
+                else { Issue.record("Installed Node dependency could not be imported: \(outcome)") }
+            }
+            await lease.finish()
+            _ = try await manager.change(environmentID: second.id, language: language, specification: name, remove: true)
+            #expect(try await manager.packages(environmentID: second.id, language: language).contains { $0.name == name } == false)
+        }
+    }
+}
+#endif

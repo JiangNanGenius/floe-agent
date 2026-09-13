@@ -222,4 +222,24 @@ extension EnvironmentPersistenceTests {
         var explicit = context; explicit.environmentID = id
         await #expect(throws: (any Error).self) { try await coordinator.acquire(explicit) }
     }
+    @Test func managementSelectionAndDeletionLease() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "test")
+        let coordinator = EnvironmentExecutionCoordinator(roots: roots, registry: registry)
+        let first = try await registry.ensureProjectContainer(workspaceID: "a", workspaceRootPath: "/a")
+        let second = try await registry.ensureProjectContainer(workspaceID: "b", workspaceRootPath: "/b")
+        let token = CancellationToken()
+        let lease = try await coordinator.acquireManagement(environmentID: second.id, cancellation: token)
+        #expect(lease.context.environment?.id == second.id)
+        #expect(lease.context.environment?.writableLayerURL == roots.layerURL(id: second.id, kind: .project))
+        #expect(lease.context.environment?.layerURLs.contains(roots.layerURL(id: first.id, kind: .project)) == false)
+        do { try await coordinator.stopAndWait(environmentID: second.id, timeout: .milliseconds(20)); Issue.record("Management lease was ignored") } catch {}
+        #expect(token.isCancelled)
+        await lease.finish()
+        try await coordinator.stopAndWait(environmentID: second.id)
+        do { _ = try await coordinator.acquireManagement(environmentID: "missing", cancellation: CancellationToken()); Issue.record("Missing environment selected a fallback") } catch {}
+    }
+
 }

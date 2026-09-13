@@ -27,6 +27,7 @@ final class FloePlatformServices: @unchecked Sendable {
     private var mediaRenderer: Any?
     private var baseSliceURL: URL?
     private var management: EnvironmentManagementService?
+    private var languageManagement: EnvironmentLanguagePackageService?
     private var configured = false
 
     func configure(
@@ -36,9 +37,11 @@ final class FloePlatformServices: @unchecked Sendable {
         promote: ContainerPromote,
         aptEngine: AptEngine,
         contextProvider: @escaping @Sendable () async -> PackagesCLI.Context?,
-        baseSliceURL: URL?
+        baseSliceURL: URL?,
+        languageManagement: EnvironmentLanguagePackageService
     ) {
         lock.lock()
+        self.languageManagement = languageManagement
         self.registry = registry
         self.lifecycle = lifecycle
         self.cas = cas
@@ -110,6 +113,12 @@ final class FloePlatformServices: @unchecked Sendable {
     typealias PackageAction = EnvironmentManagementService.PackageAction
     private func managementService() throws -> EnvironmentManagementService {
         guard let service = lock.withLock({ management }) else { throw FloeError.invalidConfiguration("Environment service unavailable") }
+        return service
+    }
+    func languagePackageService() throws -> EnvironmentLanguagePackageService {
+        guard let service = lock.withLock({ languageManagement }) else {
+            throw FloeError.invalidConfiguration("语言依赖管理尚未就绪")
+        }
         return service
     }
     func packageReport(id: String) async throws -> PackageReport { try await managementService().packageReport(id: id) }

@@ -138,7 +138,7 @@ public struct ManagedPythonInstallService: Sendable {
     /// Removes an installed distribution by deleting exactly the files its
     /// RECORD lists, then the dist-info directory. Bundled (read-only)
     /// distributions cannot be removed and report a clear failure.
-    public func uninstall(distribution: String, environment: ToolEnvironment? = nil) async -> Outcome {
+    public func uninstall(distribution: String, environment: ToolEnvironment? = nil, cancellation: CancellationToken? = nil) async -> Outcome {
         guard let url = Bundle.module.url(forResource: "managed_package_remove", withExtension: "py"),
               let script = try? String(contentsOf: url, encoding: .utf8),
               let data = try? JSONEncoder().encode(["distribution": distribution]) else {
@@ -152,7 +152,7 @@ public struct ManagedPythonInstallService: Sendable {
             allowsManagedPackageInstaller: true,
             pythonContext: Self.executionContext(environment)
         )
-        let outcome = await python.run(request, cancellation: nil)
+        let outcome = await python.run(request, cancellation: cancellation)
         switch outcome {
         case .ok(_, let stdout, let stderr, _, _, _):
             await packagesChanged()

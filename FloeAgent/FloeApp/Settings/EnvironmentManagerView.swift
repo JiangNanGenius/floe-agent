@@ -14,13 +14,17 @@ import FloePackages
     private var tasks: [String: Task<Void, Never>] = [:]
 
     func start(id: String, title: String, action: FloePlatformServices.PackageAction) {
+        start(id: id, title: title) { try await FloePlatformServices.shared.managePackage(id: id, action: action) }
+    }
+
+    func start(id: String, title: String, operation: @escaping @Sendable () async throws -> String) {
         guard !running.contains(id) else { return }
         running.insert(id)
         messages[id] = title
         failures.remove(id)
         tasks[id] = Task {
-            do { messages[id] = try await FloePlatformServices.shared.managePackage(id: id, action: action) }
-            catch is CancellationError { messages[id] = "任务已取消，未提交的更改已回收" }
+            do { messages[id] = try await operation() }
+            catch is CancellationError { messages[id] = "任务已取消；重新读取依赖以确认当前状态" }
             catch { messages[id] = String(describing: error); failures.insert(id) }
             running.remove(id)
             tasks[id] = nil
@@ -166,6 +170,17 @@ private struct EnvironmentDetailView: View {
                         Button("action.cancel_task", role: .cancel) { jobs.cancel(id: report.id) }
                     }
                 }
+            }
+            Section("语言依赖") {
+                ForEach(EnvironmentLanguagePackageService.Language.allCases) { language in
+                    NavigationLink {
+                        EnvironmentLanguagePackagesView(environmentID: report.id, language: language)
+                    } label: {
+                        Label(language.title, systemImage: language == .python ? "terminal" : "curlybraces")
+                    }
+                }
+                Text("从 PyPI 或 npm 安装到所选环境，自动继承父层依赖。无需配置 apt 软件源。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("environment.packages.installed") {
                 if let packages {

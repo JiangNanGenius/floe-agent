@@ -3,7 +3,7 @@ import Darwin
 import FloeExecution
 import FloeTools
 @main struct SmokeApp: App {
- var body: some Scene { WindowGroup { Text("Floe Node smoke").task { await Task.detached { runSmoke() }.value; await runAdapterSmoke() } } }
+ var body: some Scene { WindowGroup { Text("Floe Node smoke").task { await Task.detached { runSmoke() }.value; await runAdapterSmoke(); await runPackageSmoke() } } }
 }
 func runSmoke() {
  let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -68,4 +68,37 @@ func runAdapterSmoke() async {
  } else { checks["verifiedHTTPS"] = false }
  checks["passed"] = checks.values.allSatisfy { $0 }
  if let data = try? JSONEncoder().encode(checks) { try? data.write(to: root.appendingPathComponent("node-adapter-results.json"), options: .atomic) }
+}
+
+func runPackageSmoke() async {
+ let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+ let packageRoot = root.appendingPathComponent("node-package-qualification")
+ var checks: [String: Bool] = [:]
+ do {
+  try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+  guard let npm = FloeNodeBundledToolPath("npm") else { throw NSError(domain: "npmMissing", code: 1) }
+  let environment = ToolEnvironment(id: "node-package-qualification", writableLayerURL: packageRoot, layerURLs: [packageRoot], variables: ["FLOE_ENVIRONMENT_ID": "node-package-qualification"])
+  let installer = ManagedNodeInstallService(runtime: IOSSystemNodeRuntime.shared, npmEntry: npm) { env, directory in
+   IOSSystemNodeRuntime.defaultEnvironment(containerRoot: env.writableLayerURL, workspaceRoot: directory)
+  }
+  let token = CancellationToken()
+  _ = try await installer.change(environment, specification: "is-number@7.0.0", remove: false, cancellation: token)
+  let metadata = packageRoot.appendingPathComponent("usr/lib/node_modules/is-number/package.json")
+  checks["installedIntoSelectedLayer"] = FileManager.default.fileExists(atPath: metadata.path)
+  let request = NodeRunRequest(entryScript: nil, arguments: ["-e", "console.log(require('is-number')('42'))"], workingDirectory: root,
+   environment: IOSSystemNodeRuntime.defaultEnvironment(containerRoot: packageRoot, workspaceRoot: root), timeout: 10)
+  if case .exited(let code, let out, _, _, _) = await IOSSystemNodeRuntime.shared.run(request, cancellation: nil) {
+   checks["moduleActuallyRuns"] = code == 0 && out == "true\n"
+  } else { checks["moduleActuallyRuns"] = false }
+  let old = try Data(contentsOf: metadata)
+  do { _ = try await installer.change(environment, specification: "is-number@0.0.0-floe-missing", remove: false, cancellation: token); checks["failedInstallPreservesPackage"] = false }
+  catch { checks["failedInstallPreservesPackage"] = (try? Data(contentsOf: metadata)) == old }
+  _ = try await installer.change(environment, specification: "is-number", remove: true, cancellation: token)
+  checks["removedFromSelectedLayer"] = !FileManager.default.fileExists(atPath: metadata.path)
+ } catch {
+  checks["unexpectedFailure"] = false
+  try? Data(error.localizedDescription.utf8).write(to: root.appendingPathComponent("node-package-error.txt"))
+ }
+ checks["passed"] = checks.values.allSatisfy { $0 }
+ if let data = try? JSONEncoder().encode(checks) { try? data.write(to: root.appendingPathComponent("node-package-results.json"), options: .atomic) }
 }

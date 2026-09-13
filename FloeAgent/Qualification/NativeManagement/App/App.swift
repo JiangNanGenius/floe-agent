@@ -51,10 +51,29 @@ final class FloePlatformServices: @unchecked Sendable {
         _ = try await registry.ensureSessionContainer(conversationID: "字幕处理", workspaceID: "demo-a", workspaceRootPath: "/Synthetic/Floe 项目")
         return await registry.all().map { EnvironmentReport(record: $0, packages: [], bytes: 0) }
     }
+    func languagePackageService() throws -> EnvironmentLanguagePackageService { EnvironmentLanguagePackageService() }
     func packageReport(id: String) async throws -> PackageReport { try await management.packageReport(id: id) }
     func managePackage(id: String, action: PackageAction) async throws -> String { try await management.managePackage(id: id, action: action) }
     func stopEnvironment(id: String) async throws { try await management.stopEnvironment(id: id) }
     func resumeEnvironment(id: String) async throws { try await management.resumeEnvironment(id: id) }
     func deleteEnvironment(id: String) async throws { try await management.deleteEnvironment(id: id) }
     func saveEnvironmentTemplate(id: String, name: String) async throws { try await management.saveEnvironmentTemplate(id: id, name: name) }
+}
+
+/// This visual fixture has no embedded language runtimes. Never simulate successful installs.
+actor EnvironmentLanguagePackageService {
+    enum Language: String, CaseIterable, Identifiable, Sendable {
+        case python, node
+        var id: String { rawValue }
+        var title: String { self == .python ? "Python · PyPI" : "Node.js · npm" }
+    }
+    struct Package: Identifiable, Sendable {
+        let id: String; let name: String; let version: String; let layerID: String; let writable: Bool
+    }
+    func packages(environmentID: String, language: Language) async throws -> [Package] {
+        throw FloeError.invalidConfiguration("此界面验证应用未附带语言运行时；安装验证使用完整 App")
+    }
+    func change(environmentID: String, language: Language, specification: String, remove: Bool) async throws -> String {
+        throw FloeError.invalidConfiguration("此界面验证应用不能安装软件包")
+    }
 }

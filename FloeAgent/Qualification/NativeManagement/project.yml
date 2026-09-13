@@ -19,6 +19,7 @@ targets:
       - path: ../../FloeApp/Design/FloeTheme.swift
       - path: ../../FloeApp/Design/AppearanceSettingsSection.swift
       - path: ../../FloeApp/Settings/EnvironmentManagerView.swift
+      - path: ../../FloeApp/Settings/EnvironmentLanguagePackagesView.swift
     dependencies:
       - package: FloeAgent
         product: FloePackages

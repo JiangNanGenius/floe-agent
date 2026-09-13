@@ -418,7 +418,8 @@ final class AppEnvironment: ObservableObject {
                     installed: DpkgDatabase.merged(layers: stack.layers.map { ($0.kind, $0.url) })
                 )
             },
-            baseSliceURL: nil
+            baseSliceURL: nil,
+            languageManagement: EnvironmentLanguagePackageService(coordinator: environmentExecutions, python: managedPython)
         )
 
         self.localModelsCenter.onCatalogChanged = { [weak self] in
