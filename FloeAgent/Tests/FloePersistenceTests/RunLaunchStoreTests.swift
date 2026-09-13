@@ -7,6 +7,23 @@ import FloeModels
 
 @Suite("FloePersistence.RunLaunchStore")
 struct RunLaunchStoreTests {
+    @Test("Durable diagnostics retain run status without exporting goals or tool content")
+    func diagnosticSummaryExcludesContents() async throws {
+        let db = try await database()
+        let conversation = UUID(), run = UUID()
+        try await SQLiteConversationStore(database: db).saveConversation(.init(id: conversation, title: "private-title", createdAt: Date(), updatedAt: Date()))
+        let store = SQLiteRunStore(database: db)
+        try await store.saveRun(.init(id: run, conversationID: conversation, state: "failed", goal: "private-goal", startedAt: Date()))
+        try await store.appendEvent(runID: run, kind: .toolResult, payloadJSON: #"{"status":"failed","output":"private-tool-output"}"#)
+        let summaries = try await store.diagnosticRunSummaries()
+        let text = summaries.joined(separator: "\n")
+        #expect(summaries.count == 1)
+        #expect(text.contains(run.uuidString))
+        #expect(text.contains("state=failed"))
+        #expect(text.contains("receipts[failed=1]"))
+        #expect(!text.contains("private-"))
+    }
+
     private func database() async throws -> DatabaseManager {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()

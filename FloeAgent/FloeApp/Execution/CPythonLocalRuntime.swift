@@ -4,6 +4,7 @@ import FloeExecution
 import FloeTools
 
 private struct CPythonBridgeResponse: Sendable {
+    var resultJSON: String?
     var status: String
     var stdout: String
     var stderr: String
@@ -13,6 +14,7 @@ private struct CPythonBridgeResponse: Sendable {
     var durationMs: Int
 
     init(_ response: [String: Any]) {
+        resultJSON = response["resultJSON"] as? String
         status = response["status"] as? String ?? "exception"
         stdout = response["stdout"] as? String ?? ""
         stderr = response["stderr"] as? String ?? ""
@@ -52,6 +54,7 @@ private actor CPythonRaceGate {
 /// Objective-C bridge's property-list response to Floe's execution contract.
 actor CPythonLocalRuntime {
     static let shared = CPythonLocalRuntime()
+    private static let interpreterQueue = DispatchQueue(label: "org.floeagent.cpython", qos: .userInitiated)
 
     func version() -> String? {
         try? FloeCPythonBridge.runtimeVersion()
@@ -66,15 +69,26 @@ actor CPythonLocalRuntime {
         // The interactive tool clamps to 30s; jobs.submit background work may
         // legitimately run longer, so the runtime ceiling sits above both.
         let timeout = max(0.05, min(request.timeout, 600))
-        Task.detached(priority: .userInitiated) {
+        let contextJSON = request.pythonContext.flatMap { try? JSONEncoder().encode($0) }.map { String(decoding: $0, as: UTF8.self) }
+        let deadline = Date().addingTimeInterval(timeout)
+        Self.interpreterQueue.async {
+            guard Date() < deadline else {
+                Task { await gate.resolve(.timedOut(Int(timeout * 1_000))) }; return
+            }
+            if cancellation?.isCancelled == true {
+                Task { await gate.resolve(.response(CPythonBridgeResponse(["status": "cancelled"]))) }
+                return
+            }
             let raw = FloeCPythonBridge.runScript(
                 request.script,
                 inputJSON: request.inputJSON,
+                contextJSON: contextJSON,
                 timeout: timeout,
                 maxOutputBytes: request.maxOutputBytes,
                 allowPackageInstaller: request.allowsManagedPackageInstaller
             )
-            await gate.resolve(.response(CPythonBridgeResponse(raw)))
+            let response = CPythonBridgeResponse(raw)
+            Task { await gate.resolve(.response(response)) }
         }
         Task.detached {
             try? await Task.sleep(for: .seconds(timeout))
@@ -91,7 +105,7 @@ actor CPythonLocalRuntime {
         switch response.status {
         case "ok":
             return .ok(
-                resultJSON: nil,
+                resultJSON: response.resultJSON,
                 stdout: response.stdout,
                 stderr: response.stderr,
                 truncated: response.truncated,

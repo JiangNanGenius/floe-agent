@@ -112,13 +112,13 @@ struct JavaScriptExecutionToolTests {
         #expect(!stdoutSection.contains("boom-err"))
     }
 
-    @Test("A JS exception returns an ok result carrying the error status")
+    @Test("A JS exception returns a failed receipt with the original error")
     func jsExceptionMapping() async throws {
         registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
         let call = try makeCall(#"{"script":"throw new Error('kaboom');"}"#)
         let result = try await executor.execute(call, context: makeContext())
-        #expect(result.status == .ok)
+        #expect(result.status == .failed)
         #expect(result.outputSummary.contains("status=exception"))
         #expect(result.outputSummary.contains("kaboom"))
         #expect(result.exitStatus == 1)
@@ -137,7 +137,7 @@ struct JavaScriptExecutionToolTests {
         )
         let result = try await executor.execute(call, context: makeContext())
         let elapsed = Date().timeIntervalSince(started)
-        #expect(result.status == .ok)
+        #expect(result.status == .failed)
         #expect(result.outputSummary.contains("status=timedOut"))
         #expect(result.outputSummary.contains("afterMs=500"))
         #expect(result.exitStatus == 124)

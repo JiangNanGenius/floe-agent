@@ -58,7 +58,7 @@ public struct LocalShellTool: AgentTool {
 
     public static let name = "exec.shell"
     public static let toolDescription =
-        "Run a bounded local Unix shell command through Floe's on-device shell (POSIX sh: pipelines, redirections, globs, variables, &&/||). File tools, text tools, archives, hashing, python3, git, network diagnostics and the apt/pkg package commands are available; the working root is the current task workspace. Use jobs.submit with this tool for long-running commands, and shell.open/shell.exchange for interactive sessions. Output is capped; exit codes follow shell conventions (124 timeout, 126 blocked, 127 command not found). sudo is unavailable, and native ELF binaries cannot run on iOS."
+        "Execute local Unix commands or a multi-line POSIX shell script. Use for file/text processing, batch edits, loops, pipelines, redirections, globs, variables and &&/||; compose commands in one script when appropriate. Includes text/archive/hash commands, python3, node, git, network diagnostics and managed package commands in the current task workspace. Check unfamiliar commands with command -v. Use jobs.submit for long-running commands, or shell.open/shell.exchange for a persistent session. Output is capped; inspect exit status (124 timeout, 126 blocked, 127 not found). This is the iOS-hosted POSIX command environment; sudo and native Linux ELF binaries are unavailable."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "command":{"type":"string","description":"Shell command line (max 16 KiB). Pipelines and redirections supported."},

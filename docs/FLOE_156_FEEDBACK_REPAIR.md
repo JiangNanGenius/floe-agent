@@ -17,15 +17,19 @@ This branch implements the September 14 feedback plan. It is not a release or a 
 - Repair optional checklist argument decoding; keep volatile runtime metadata after conversation/tool history without starting another user turn.
 - Add persistent pen/highlighter color and width controls; include page images in Notes cover previews.
 - Keep the Office editor mounted until the owning Notes resource commit succeeds.
-- Remove per-frame PiP logging that displaced task diagnostics.
+- Remove per-frame PiP logging that displaced task diagnostics; export bounded durable run IDs, states and receipt counts without conversation content.
+- Keep authorized shell schemas available at task start, describe POSIX command workflows and add Linux/Unix discovery synonyms. Unsupported command names are resolved at execution rather than rejecting quoted script data.
+- Pass Python cwd, environment, dependency paths, argv and stdin into a serial native interpreter worker; restore state and remove project imports after execution. Support `python3 -m`, piped scripts and `printJSON`/shell exit codes.
+- Add actual iOS shell loops/pipelines/exported environment/Python/Node/repeated-run and stdin qualification cases.
 
 ## Evidence
 
 - Both user JSONL exports inspected including final turns. Shell receipts contradict the self-report claim that Node is absent: a file printed v18.20.4. Timeout receipts were marked ok by the outer executor.
 - Official-service read API verified using existing local credentials, without printing credentials. Latest report is version 1.7.0 build 156; 1,024 of 1,268 lines are PiP records and the relevant task run IDs are absent.
+- The embedded Python runner script passed local two-project import/env/stdin/resultJSON/state-restoration checks. iOS host qualification remains pending.
 - Existing Node host regression: 4 tests passed locally. This does not establish iOS bridge or App integration success.
 - Changed Swift files passed parser checks; Whisper background coordinator passed a standalone Swift 6 type check with the local iOS 27 SDK. Full App acceptance remains pending.
-- First checkpoint ebaa361 cloud run 34783445188 passed platform/Notes qualification, Linux build, native-host checks and App timeline/Canvas/PiP tests. Complete CI and the later edits still require qualification.
+- First checkpoint ebaa361 cloud run 34783445188 passed platform/Notes qualification, Linux build, native-host checks and App timeline/Canvas/PiP tests. The 135 selected App regressions passed. The package test stage exposed two obsolete JavaScript assertions requiring successful receipts for exceptions/timeouts; these now require failed receipts while retaining the error/exit code. Complete CI and the later edits still require qualification.
 - Local package test attempt cancelled when SwiftPM planned an 11,129-step rebuild; heavy checks belong in cloud CI. Its incidental Package.resolved changes were reverted.
 
 ## Remaining gates

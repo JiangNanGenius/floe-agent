@@ -224,6 +224,7 @@ static BOOL FloeEnsurePython(NSError **error) {
 
 + (NSDictionary<NSString *,id> *)runScript:(NSString *)script
                                   inputJSON:(NSString *)inputJSON
+                                contextJSON:(NSString *)contextJSON
                                      timeout:(NSTimeInterval)timeout
                               maxOutputBytes:(NSInteger)maxOutputBytes
                        allowPackageInstaller:(BOOL)allowPackageInstaller {
@@ -244,7 +245,10 @@ static BOOL FloeEnsurePython(NSError **error) {
     PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
     PyObject *source = PyUnicode_FromString(script.UTF8String);
     PyObject *input = PyUnicode_FromString((inputJSON ?: @"null").UTF8String);
-    PyObject *seconds = PyFloat_FromDouble(MAX(0.05, MIN(timeout, 30.0)));
+    PyObject *context = PyUnicode_FromString((contextJSON ?: @"{}").UTF8String);
+    PyDict_SetItemString(globals, "_floe_context_json", context);
+    Py_DECREF(context);
+    PyObject *seconds = PyFloat_FromDouble(MAX(0.05, MIN(timeout, 600.0)));
     PyObject *limit = PyLong_FromLongLong(MAX(1, MIN(maxOutputBytes, 262144)));
     PyDict_SetItemString(globals, "_floe_script", source);
     PyDict_SetItemString(globals, "_floe_input_json", input);
@@ -253,7 +257,7 @@ static BOOL FloeEnsurePython(NSError **error) {
     Py_DECREF(source); Py_DECREF(input); Py_DECREF(seconds); Py_DECREF(limit);
 
     static const char *runner =
-        "import io as _io, json as _json, sys as _sys, time as _time, traceback as _tb\n"
+        "import io as _io, json as _json, sys as _sys, os as _os, time as _time, traceback as _tb\n"
         "class _FloeBudget:\n"
         " def __init__(self, cap): self.remaining=cap\n"
         "class _FloeSink:\n"
@@ -270,15 +274,36 @@ static BOOL FloeEnsurePython(NSError **error) {
         "def _floe_trace(frame,event,arg):\n"
         " if _time.monotonic()>_floe_deadline: raise TimeoutError('Local Python time limit exceeded')\n"
         " return _floe_trace\n"
-        "_floe_status='ok'; _floe_error=''\n"
+        "_floe_status='ok'; _floe_error=''; _floe_printed=None\n"
+        "def _floe_printJSON(value):\n"
+        " global _floe_printed\n"
+        " _floe_printed=_json.dumps(value,ensure_ascii=False)\n"
+        "_floe_context=_json.loads(_floe_context_json)\n"
+        "_floe_cwd=_os.getcwd(); _floe_env=dict(_os.environ); _floe_path=list(_sys.path); _floe_stdin=_sys.stdin; _floe_argv=_sys.argv\n"
+        "_floe_search=[p for p in _floe_context.get('environment',{}).get('PYTHONPATH','').split(_os.pathsep) if p]\n"
         "try:\n"
         " _sys.stdout,_sys.stderr=_floe_out,_floe_err; _sys.settrace(_floe_trace)\n"
-        " _floe_globals={'__builtins__':__builtins__,'input':_json.loads(_floe_input_json)}\n"
+        " if _floe_context.get('workingDirectory'): _os.chdir(_floe_context['workingDirectory'])\n"
+        " _os.environ.update(_floe_context.get('environment',{}))\n"
+        " _sys.path[:]=_floe_search+_floe_path\n"
+        " if _floe_context.get('workingDirectory'): _sys.path.insert(0,_floe_context['workingDirectory'])\n"
+        " if 'standardInput' in _floe_context: _sys.stdin=_io.TextIOWrapper(_io.BytesIO(_floe_context['standardInput'].encode('utf-8')),encoding='utf-8')\n"
+        " if 'arguments' in _floe_context: _sys.argv=_floe_context['arguments']\n"
+        " _floe_globals={'__builtins__':__builtins__,'__name__':'__main__','printJSON':_floe_printJSON}\n"
+        " if _floe_input_json!='null': _floe_globals['input']=_json.loads(_floe_input_json)\n"
         " exec(compile(_floe_script,'<floe-local-python>','exec'),_floe_globals,_floe_globals)\n"
         "except TimeoutError as exc: _floe_status='timedOut'; _floe_error=str(exc)\n"
         "except BaseException as exc: _floe_status='exception'; _floe_error=''.join(_tb.format_exception_only(type(exc),exc)).strip()\n"
-        "finally: _sys.settrace(None); _sys.stdout,_sys.stderr=_floe_old_out,_floe_old_err\n"
-        "_floe_result=_json.dumps({'status':_floe_status,'error':_floe_error,'stdout':_floe_out.value(),'stderr':_floe_err.value(),'truncated':_floe_out.truncated,'stderrTruncated':_floe_err.truncated},ensure_ascii=False)\n";
+        "finally:\n"
+        " _sys.settrace(None); _sys.stdout,_sys.stderr=_floe_old_out,_floe_old_err\n"
+        " _sys.stdin=_floe_stdin; _sys.argv=_floe_argv; _sys.path[:]=_floe_path\n"
+        " _os.environ.clear(); _os.environ.update(_floe_env); _os.chdir(_floe_cwd)\n"
+        " _floe_roots=[_os.path.realpath(p)+_os.sep for p in _floe_search+[_floe_context.get('workingDirectory') or ''] if p]\n"
+        " for _floe_name,_floe_module in list(_sys.modules.items()):\n"
+        "  _floe_file=getattr(_floe_module,'__file__',None)\n"
+        "  _floe_locations=([_floe_file] if isinstance(_floe_file,str) else [])+list(getattr(_floe_module,'__path__',[]) or [])\n"
+        "  if any(isinstance(p,str) and any((_os.path.realpath(p)+_os.sep).startswith(r) for r in _floe_roots) for p in _floe_locations): _sys.modules.pop(_floe_name,None)\n"
+        "_floe_result=_json.dumps({'status':_floe_status,'resultJSON':_floe_printed,'error':_floe_error,'stdout':_floe_out.value(),'stderr':_floe_err.value(),'truncated':_floe_out.truncated,'stderrTruncated':_floe_err.truncated},ensure_ascii=False)\n";
 
     PyObject *execution = PyRun_String(runner, Py_file_input, globals, globals);
     FloeAllowsPackageInstaller = 0;

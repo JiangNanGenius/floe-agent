@@ -37,7 +37,7 @@ public enum ToolAliasTable {
         "executor": ["ssh", "executor", "执行命令", "运行命令"],
         "hosts": ["主机", "server", "连接配置"],
         "terminal": ["终端", "terminal", "交互", "telnet", "串口"],
-        "shell": ["shell", "sh", "bash", "命令", "脚本", "管道", "command", "terminal"],
+        "shell": ["shell", "sh", "bash", "linux", "unix", "posix", "命令", "脚本", "管道", "批量处理", "command", "terminal"],
         "packages": ["apt", "package", "packages", "包", "安装", "pip", "dpkg", "pkg"],
         "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
         "pdf": ["pdf"],

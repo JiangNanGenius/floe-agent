@@ -302,6 +302,37 @@ public actor SQLiteRunStore: RunStore {
         }
     }
 
+    /// Bounded diagnostics from durable records, independent of the rolling
+    /// device log. Never select goals, conversation text, arguments or outputs.
+    public func diagnosticRunSummaries(limit: Int = 20) async throws -> [String] {
+        try await database.reader { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT id, state, started_at FROM runs ORDER BY started_at DESC, id LIMIT ?", arguments: [min(50, max(1, limit))])
+            return try rows.compactMap { row -> String? in
+                guard let id = UUID(uuidString: row["id"]) else { return nil }
+                let rawState: String = row["state"]
+                let state = rawState.count <= 32 && rawState.allSatisfy({ $0.isASCII && $0.isLetter }) ? rawState : "unknown"
+                let events = try Row.fetchAll(db, sql: "SELECT kind, COUNT(*) AS total FROM run_events WHERE run_id = ? GROUP BY kind", arguments: [id.uuidString])
+                let known = Set(["status", "toolRequest", "toolResult", "error", "reasoning", "assistantText", "usage"])
+                let counts = events.compactMap { event -> String? in
+                    let kind: String = event["kind"], total: Int = event["total"]
+                    return known.contains(kind) ? "\(kind)=\(total)" : nil
+                }.sorted().joined(separator: " ")
+                let outcomes = try Row.fetchAll(db, sql: """
+                    SELECT json_extract(payload_json, '$.status') AS outcome, COUNT(*) AS total
+                    FROM run_events WHERE run_id = ? AND kind = 'toolResult' AND json_valid(payload_json)
+                    GROUP BY outcome
+                    """, arguments: [id.uuidString])
+                let receipts = outcomes.map { result -> String in
+                    let value: String? = result["outcome"], total: Int = result["total"]
+                    let status = value.flatMap { ["ok", "failed", "cancelled", "denied", "needsUser"].contains($0) ? $0 : nil } ?? "unknown"
+                    return "\(status)=\(total)"
+                }.sorted().joined(separator: " ")
+                let time = try PersistenceCodec.decodeDate(row["started_at"])
+                return "run=\(id.uuidString) started=\(ISO8601DateFormatter().string(from: time)) state=\(state) events[\(counts)] receipts[\(receipts)]"
+            }
+        }
+    }
+
     public func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord] {
         try await database.reader { db in
             try Row.fetchAll(

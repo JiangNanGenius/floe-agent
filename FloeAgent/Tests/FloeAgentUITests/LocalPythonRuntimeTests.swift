@@ -1,10 +1,43 @@
 #if canImport(SwiftUI) && canImport(UIKit)
+import Foundation
 import Testing
 import FloeExecution
 @testable import FloeApp
 
 @Suite("FloeApp.BundledPython", .serialized)
 struct LocalPythonRuntimeTests {
+    @Test("Python execution restores cwd, imports, environment and stdin between projects")
+    func projectExecutionScope() async throws {
+        let service = try #require(CPythonServiceFactory.make())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for value in ["first", "second"] {
+            let directory = root.appendingPathComponent(value)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try "value = '\(value)'".write(to: directory.appendingPathComponent("floe_scope_probe.py"), atomically: true, encoding: .utf8)
+            let outcome = await service.run(.init(script: """
+                import os, sys, floe_scope_probe
+                assert floe_scope_probe.value == os.environ['FLOE_PYTHON_SCOPE']
+                assert input() == 'stdin-data'
+                assert sys.stdin.read() == 'remainder'
+                printJSON({'scope': floe_scope_probe.value})
+                """, pythonContext: .init(workingDirectory: directory.path,
+                    environment: ["FLOE_PYTHON_SCOPE": value, "PYTHONPATH": directory.path],
+                    standardInput: "stdin-data\nremainder")), cancellation: nil)
+            guard case .ok(let result, _, _, _, _, _) = outcome else { Issue.record("Scoped Python failed: \(outcome)"); return }
+            #expect(result?.contains(value) == true)
+        }
+        let final = await service.run(.init(script: """
+            import os, sys
+            assert 'FLOE_PYTHON_SCOPE' not in os.environ
+            assert 'floe_scope_probe' not in sys.modules
+            print('restored')
+            """), cancellation: nil)
+        guard case .ok(_, let output, _, _, _, _) = final else { Issue.record("Python scope was not restored"); return }
+        #expect(output.contains("restored"))
+    }
+
     @Test("pandas runs natively inside the actual Floe CPython runtime offline")
     @MainActor func nativePandasWorkflow() async throws {
         let service = try #require(CPythonServiceFactory.make())

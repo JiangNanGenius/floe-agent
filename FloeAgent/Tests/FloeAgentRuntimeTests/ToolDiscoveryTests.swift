@@ -45,11 +45,21 @@ struct ToolDiscoveryTests {
         let limited = ToolDiscovery.index([descriptor("workspace.readFile")])
         #expect(!limited.contains("checklist.updatePlan"))
         #expect(!limited.contains("exec.localPython"))
+        #expect(!limited.contains("exec.shell"))
         #expect(!limited.contains("skill.list"))
         let complete = ToolDiscovery.index(["checklist.readPlan", "checklist.updatePlan", "skill.list"].map(descriptor))
         #expect(complete.contains("Revise the same checklist"))
         #expect(complete.contains("A checklist never enables Goal mode"))
         #expect(complete.contains("skill.list"))
+    }
+
+    @Test func authorizedShellStaysDiscoverableWithoutLoadingEveryCommandTool() {
+        let available = [descriptor("workspace.readFile"), descriptor("exec.shell")]
+        let bounded = ToolDiscovery.bounded(available, priority: ["workspace.readFile"], maxTools: 1)
+        #expect(bounded.map(\.name) == ["exec.shell"])
+        #expect(ToolDiscovery.index(available).contains("general local execution entry point"))
+        #expect(ToolDiscovery.matches(query: "linux", descriptors: available).map(\.name).contains("exec.shell"))
+        #expect(ToolDiscovery.bounded([descriptor("workspace.readFile")], priority: []).allSatisfy { $0.name != "exec.shell" })
     }
 
     @Test func directoryDistinguishesOwnershipFromWorkflowGuidance() throws {

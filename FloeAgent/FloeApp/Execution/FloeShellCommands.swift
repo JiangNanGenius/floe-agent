@@ -301,13 +301,36 @@ enum FloeShellCommands {
                 FloeShellWrite(stderr, "python3: the bundled CPython runtime is unavailable\n")
                 return 127
             }
-            if arguments.contains("--version") {
+            if arguments.dropFirst().first == "--version" || arguments.dropFirst().first == "-V" {
                 FloeShellWrite(stdout, "Python 3.13 (Floe bundled)\n")
                 return 0
             }
+            guard let context = registry.context else {
+                FloeShellWrite(stderr, "python3: no workspace is attached\n"); return 2
+            }
+            var standardInput: String? = nil
+            if let input = FloeShellCommandRegistry.input, !input.isTerminal, !context.interactiveSession {
+                guard let value = await input.readAsync(cancellation: context.cancellation) else {
+                    FloeShellWrite(stderr, "python3: stdin exceeds 256 KiB or could not be read\n"); return context.cancellation.isCancelled ? 130 : 2
+                }
+                standardInput = value
+            }
             var script: String?
+            var argv = Array(arguments.dropFirst())
             if arguments.count >= 3, arguments[1] == "-c" {
                 script = arguments[2]
+                argv = ["-c"] + Array(arguments.dropFirst(3))
+            } else if arguments.count >= 3, arguments[1] == "-m" {
+                let moduleData = try? JSONEncoder().encode(arguments[2])
+                guard let moduleData else { return 2 }
+                script = "import runpy, json, base64; runpy.run_module(json.loads(base64.b64decode('\(moduleData.base64EncodedString())')), run_name='__main__', alter_sys=True)"
+                argv = Array(arguments.dropFirst(2))
+            } else if arguments.count == 1 || arguments[1] == "-" {
+                guard let standardInput else {
+                    FloeShellWrite(stderr, "python3: interactive REPL is unavailable; use -c, -m or a script file\n"); return 2
+                }
+                script = standardInput
+                argv = ["-"] + Array(arguments.dropFirst(2))
             } else if arguments.count >= 2, !arguments[1].hasPrefix("-") {
                 guard let context = registry.context else {
                     FloeShellWrite(stderr, "python3: no workspace is attached\n")
@@ -330,7 +353,6 @@ enum FloeShellCommands {
                 FloeShellWrite(stderr, "python3: use -c <code> or python3 <file.py>; interactive stdin is not supported by this command yet\n")
                 return 2
             }
-            let argv = arguments[1] == "-c" ? ["-c"] + Array(arguments.dropFirst(3)) : Array(arguments.dropFirst())
             let argvData = (try? JSONEncoder().encode(argv)) ?? Data("[]".utf8)
             let wrapper = """
             import sys as _floe_sys, json as _floe_json, base64 as _floe_base64
@@ -348,7 +370,10 @@ enum FloeShellCommands {
             finally:
                 _floe_sys.argv = _floe_argv
             """
-            let request = ScriptExecutionRequest(script: wrapper, timeout: 30, maxOutputBytes: 256 * 1024)
+            let variables = (context.environment?.variables ?? [:]).merging(context.shellVariables) { _, value in value }
+            let request = ScriptExecutionRequest(script: wrapper, timeout: 30, maxOutputBytes: 256 * 1024,
+                pythonContext: .init(workingDirectory: context.workingDirectory.path, environment: variables,
+                    standardInput: (arguments.count == 1 || arguments[1] == "-") ? "" : standardInput, arguments: argv))
             let outcome = await python.run(request, cancellation: registry.context?.cancellation)
             switch outcome {
             case .ok(let resultJSON, let out, let errText, _, _, _):

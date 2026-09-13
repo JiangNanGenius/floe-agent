@@ -238,7 +238,7 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let key = downloadTask.taskDescription else { return }
         do {
-            guard let response = downloadTask.response as? HTTPURLResponse, response.statusCode == 200 else { throw WhisperModelStore.Failure.corrupt }
+            guard let response = downloadTask.response as? HTTPURLResponse, (response.statusCode == 200 || response.statusCode == 206) else { throw WhisperModelStore.Failure.corrupt }
             let target = try file(key, suffix: ".download")
             if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
             try FileManager.default.moveItem(at: location, to: target)

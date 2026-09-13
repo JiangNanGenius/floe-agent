@@ -28,21 +28,14 @@ public struct ShellCommandPolicy: Sendable {
 
     public init(gate: CatastrophicActionGate? = nil) {
         self.gate = gate
+        // Unsupported command names are resolved by the shell (exit 127).
+        // A word such as "sudo" inside quoted Python/text input is data, not
+        // evidence that a privileged command is being invoked.
         let raw: [(String, String, String)] = [
             (
                 "shell-curl-pipe",
                 #"(?i)\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh|dash|python3?|perl|ruby)\b"#,
                 "Piping a download directly into an interpreter is blocked. Download the file, inspect it, then run it explicitly with its own approval."
-            ),
-            (
-                "shell-sudo",
-                #"(?i)(^|[\s;&|])sudo([\s]|$)"#,
-                "sudo is unavailable in the iOS sandbox. Use an explicitly approved command instead."
-            ),
-            (
-                "shell-power",
-                #"(?i)(^|[\s;&|])(shutdown|reboot|halt|poweroff)([\s]|$)"#,
-                "System power commands are unavailable on iOS."
             ),
             (
                 "shell-device-write",

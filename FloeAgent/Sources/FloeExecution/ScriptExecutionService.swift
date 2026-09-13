@@ -6,9 +6,22 @@
 import Foundation
 import FloeTools
 
+/// Invocation-local CPython state, restored when the interpreter finishes.
+public struct PythonExecutionContext: Sendable, Codable {
+    public var workingDirectory: String?
+    public var environment: [String: String]
+    public var standardInput: String?
+    public var arguments: [String]?
+    public init(workingDirectory: String? = nil, environment: [String: String] = [:], standardInput: String? = nil, arguments: [String]? = nil) {
+        self.workingDirectory = workingDirectory; self.environment = environment
+        self.standardInput = standardInput; self.arguments = arguments
+    }
+}
+
 /// One bounded script execution.
 public struct ScriptExecutionRequest: Sendable {
     /// Script source (≤64 KiB, same scale as toolArgumentsMaxBytes).
+    public var pythonContext: PythonExecutionContext?
     public var script: String
     /// Optional JSON input, injected into the script as `input`.
     public var inputJSON: String?
@@ -26,8 +39,10 @@ public struct ScriptExecutionRequest: Sendable {
         inputJSON: String? = nil,
         timeout: TimeInterval = 10,
         maxOutputBytes: Int = 64 * 1024,
-        allowsManagedPackageInstaller: Bool = false
+        allowsManagedPackageInstaller: Bool = false,
+        pythonContext: PythonExecutionContext? = nil
     ) {
+        self.pythonContext = pythonContext
         self.script = script
         self.inputJSON = inputJSON
         self.timeout = timeout

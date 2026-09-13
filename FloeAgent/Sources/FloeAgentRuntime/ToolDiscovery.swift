@@ -5,6 +5,7 @@ import FloeCore
 /// Provider-independent deferred schemas. Search uses only executable tools
 /// already inside this run's permission/skill ceiling.
 enum ToolDiscovery {
+    static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "exec.shell"]
     static let name = "tools.search"
     static let listName = "tools.list"
     static var listDescriptor: ToolCatalog.Descriptor {
@@ -139,6 +140,9 @@ enum ToolDiscovery {
         if names.isSuperset(of: ["skill.search", "skill.read"]) {
             lines.append("Guides provide optional workflow help via \(n("skill.search"))/\(n("skill.read")). Known tool calls do not require a guide; reuse a guide already read at the current revision.")
         }
+        if names.contains("exec.shell") {
+            lines.append("\(n("exec.shell")) is the general local execution entry point, with its schema kept available when authorized. Use POSIX shell commands and scripts for file/text processing, loops, pipelines and combining Python or Node operations in the current workspace. Choose shell when it expresses the task naturally; there is no requirement to split a command workflow into many specialized tools. Inspect available commands with command -v before relying on an unfamiliar utility. \(n("shell.open"))/\(n("shell.exchange")) provide persistent sessions when available. Shell calls retain the same permissions and result checks as other tools.")
+        }
         if names.contains("exec.localPython") {
             lines.append("Local Python execution is \(n("exec.localPython")); it is a different environment from SSH Executor or interactive Terminal.")
         }
@@ -147,7 +151,7 @@ enum ToolDiscovery {
 
     /// Discovery is a presentation budget, never an authority grant.
     static func bounded(_ descriptors: [ToolCatalog.Descriptor], priority: [String], pinned: Set<String> = [], maxTools: Int = 23, maxBytes: Int = 23_000) -> [ToolCatalog.Descriptor] {
-        let core: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan"]
+        let core = coreNames
         let ranks = Dictionary(priority.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         let ordered = descriptors.sorted {
             let a = core.contains($0.name) || pinned.contains($0.name)

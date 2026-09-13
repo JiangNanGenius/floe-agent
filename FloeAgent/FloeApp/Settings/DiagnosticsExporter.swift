@@ -12,6 +12,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import FloeCore
+import FloePersistence
 
 @MainActor
 enum DiagnosticsExporter {
@@ -61,6 +62,11 @@ enum DiagnosticsExporter {
         lines.append("keychain: \(describe(center.keychainState))")
         lines.append("== System runtime evidence ==")
         lines.append(RuntimeDiagnostics.shared.report())
+        lines.append("== Recent durable task summaries (no transcript or tool contents) ==")
+        do {
+            let summaries = try await SQLiteRunStore(database: center.environment.database).diagnosticRunSummaries()
+            lines.append(summaries.isEmpty ? "No recorded runs" : summaries.joined(separator: "\n"))
+        } catch { lines.append("Durable task summaries unavailable") }
 
         let logText = FloeLogger.buffer.renderedText()
         if !logText.isEmpty {
