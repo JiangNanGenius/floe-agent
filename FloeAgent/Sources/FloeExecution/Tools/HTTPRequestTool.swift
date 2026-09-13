@@ -5,7 +5,7 @@ import Crypto
 import FloeCore
 import FloeTools
 
-/// Sends a bounded request (GET/POST/PUT/DELETE/HEAD) to a public HTTPS URL.
+/// Sends a bounded request (GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS) to a public HTTPS URL.
 /// Always side-effecting and network-flagged.
 public struct HTTPRequestTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
@@ -38,16 +38,16 @@ public struct HTTPRequestTool: AgentTool {
 
     public static let name = "network.http"
     public static let toolDescription =
-        "Send a bounded HTTP request with full method/headers/body control for APIs, status checks and non-browser HTTP. Public endpoints require HTTPS. Set localNetwork for user-requested LAN diagnostics, including local HTTP. Metadata/link-local endpoints are blocked and every redirect is revalidated. When the goal is reading a web page as content, use web.fetch instead."
+        "Send a bounded HTTP request with full method/headers/body control for APIs, status checks and non-browser HTTP. Public endpoints require HTTPS. Set localNetwork for user-requested LAN diagnostics, including local HTTP. Metadata/link-local endpoints are blocked and every redirect is revalidated. Use raw HTML/JSON and observed links, forms or API documentation to discover endpoints; do not invent them. Returns status, final URL and selected pagination/cache/retry headers. Cookies are not shared between calls; use an environment-scoped shell/Python/Node session for stateful workflows. When reading page content, use web.fetch. Browser rendering is only needed when required page behavior cannot be obtained through HTTP."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "url": {"type": "string", "description": "HTTPS URL or local HTTP diagnostic endpoint"},
         "localNetwork": {"type": "boolean", "description": "Enable only for a local-network target requested by the user"},
-        "method": {"type": "string", "description": "HTTP method: GET (default), POST, PUT, DELETE, HEAD"},
+        "method": {"type": "string", "description": "HTTP method: GET (default), POST, PUT, PATCH, DELETE, HEAD, OPTIONS"},
         "headers": {"type": "string", "description": "Optional JSON object of header name/value pairs"},
-        "body": {"type": "string", "description": "Optional request body (for POST/PUT/DELETE)"},
+        "body": {"type": "string", "description": "Optional request body (for POST/PUT/PATCH/DELETE)"},
         "timeout": {"type": "number", "description": "Timeout in seconds (default 30, max 120)"},
         "maxResponseBytes": {"type": "integer", "description": "Response body cap in bytes (default 65536, max 262144)"}
       },
@@ -111,8 +111,11 @@ public struct HTTPRequestTool: AgentTool {
                 maxResponseBytes: args.maxResponseBytes ?? Self.defaultMaxResponseBytes
             )
             var summary = "statusCode=\(response.statusCode) contentType=\(response.contentType) truncated=\(response.truncated)\n"
+            if let finalURL = response.finalURL { summary += "finalURL=\(finalURL)\n" }
+            let metadata = try JSONSerialization.data(withJSONObject: response.headers, options: [.sortedKeys])
+            summary += "headers=\(String(decoding: metadata, as: UTF8.self))\n"
             summary += response.body
-            return Self.output(summary, exitStatus: 0)
+            return Self.output(summary, exitStatus: (200...399).contains(response.statusCode) ? 0 : 22)
         } catch let error as HTTPRequestError {
             return Self.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         } catch {

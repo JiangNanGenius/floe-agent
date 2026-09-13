@@ -195,13 +195,21 @@ final class FloePlatformServices: @unchecked Sendable {
                     }
                     stdin = value
                 }
+                var variables = environment.merging(context.environment?.variables ?? [:]) { _, resolved in resolved }
+                    .merging(context.shellVariables) { _, shell in shell }
+                // Ownership metadata is supplied by the resolver, never by an export.
+                if let id = context.environment?.id { variables["FLOE_ENVIRONMENT_ID"] = id }
+                let liveInput: Int32?
+                if context.interactiveSession, let stream = FloeShellCommandRegistry.input?.stream {
+                    liveInput = fileno(stream)
+                } else { liveInput = nil }
                 let request = NodeRunRequest(
                     entryScript: entry,
                     arguments: userArguments,
                     workingDirectory: context.workingDirectory,
-                    environment: environment.merging(context.environment?.variables ?? [:]) { _, resolved in resolved }
-                        .merging(context.shellVariables) { _, shell in shell },
+                    environment: variables,
                     stdin: stdin,
+                    stdinFileDescriptor: liveInput,
                     timeout: 300,
                     maxOutputBytes: 256 * 1024
                 )

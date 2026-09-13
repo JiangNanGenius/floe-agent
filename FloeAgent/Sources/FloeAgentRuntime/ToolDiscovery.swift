@@ -140,6 +140,9 @@ enum ToolDiscovery {
         if names.isSuperset(of: ["skill.search", "skill.read"]) {
             lines.append("Guides provide optional workflow help via \(n("skill.search"))/\(n("skill.read")). Known tool calls do not require a guide; reuse a guide already read at the current revision.")
         }
+        if names.contains("network.http") {
+            lines.append("For web tasks, prefer direct HTTP when sufficient: use \(n("network.http")) for raw HTML, documented or observed API endpoints, JSON, forms and pagination. Do not invent endpoints or claim a successful action without checking its HTTP result. \(n("web.fetch")) extracts readable content; use raw HTTP to inspect links, forms or script references that extraction omits. For multi-request state, parsing or batch work, use authorized shell curl/Python/Node with session files scoped to the current workspace. Use the browser when JavaScript rendering, browser login or a user interaction is actually required; do not bypass access controls or a challenge. A short response alone is not a reason to launch the browser.")
+        }
         if names.contains("browser.panel") {
             lines.append("Browser tools and local previews do not open the user interface. Only when a concrete interaction needs the user's help, use \(n("browser.panel")) action=requestUser with a clear reason. Routine navigation and progress reporting should remain in the background.")
         }

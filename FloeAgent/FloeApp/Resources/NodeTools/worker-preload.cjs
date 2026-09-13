@@ -46,16 +46,42 @@ if (!isMainThread && workerData?.floeJob) {
   const { Readable } = require('node:stream');
   const bytes = Buffer.from(workerData.stdin ?? '', 'base64');
   let position = 0;
-  const input = new Readable({ read(size) {
+  const streamFD = Number.isInteger(workerData.stdinFD) ? workerData.stdinFD : null;
+  // Native input is a private O_NONBLOCK pipe. Never dispatch a blocking fs
+  // read to libuv: Worker.terminate would then wait for stdin EOF indefinitely.
+  const input = streamFD !== null ? new Readable({ read(size) {
+    const stream = this;
+    const poll = () => {
+      if (stream.destroyed) return;
+      const buffer = Buffer.allocUnsafe(Math.min(size, 65536));
+      try {
+        const count = readSync(streamFD, buffer, 0, buffer.length, null);
+        stream.push(count ? buffer.subarray(0, count) : null);
+      } catch (error) {
+        if (error.code === 'EAGAIN' || error.code === 'EWOULDBLOCK') setTimeout(poll, 20);
+        else stream.destroy(error);
+      }
+    };
+    poll();
+  } }) : new Readable({ read(size) {
     if (position >= bytes.length) { this.push(null); return; }
     const end = Math.min(bytes.length, position + size);
     this.push(bytes.subarray(position, end)); position = end;
   } });
-  input.fd = 0; input.isTTY = false;
+  input.fd = 0;
+  input.isTTY = false;
   Object.defineProperty(process, 'stdin', { configurable: true, value: input });
   const readFileSync = fs.readFileSync;
   fs.readFileSync = function(file, options) {
     if (file !== 0) return readFileSync.apply(this, arguments);
+    if (streamFD !== null) {
+      const chunks = [], buffer = Buffer.allocUnsafe(65536);
+      let count;
+      while ((count = fs.readSync(0, buffer, 0, buffer.length)) > 0) chunks.push(Buffer.from(buffer.subarray(0, count)));
+      const data = Buffer.concat(chunks);
+      const encoding = typeof options === 'string' ? options : options?.encoding;
+      return encoding ? data.toString(encoding) : data;
+    }
     const data = bytes.subarray(position); position = bytes.length;
     const encoding = typeof options === 'string' ? options : options?.encoding;
     return encoding ? data.toString(encoding) : Buffer.from(data);
@@ -63,6 +89,16 @@ if (!isMainThread && workerData?.floeJob) {
   const readSync = fs.readSync;
   fs.readSync = function(fd, buffer, offset, length) {
     if (fd !== 0) return readSync.apply(this, arguments);
+    if (streamFD !== null) {
+      const sleeper = new Int32Array(new SharedArrayBuffer(4));
+      while (true) {
+        try { return readSync.call(this, streamFD, buffer, offset, length); }
+        catch (error) {
+          if (error.code !== 'EAGAIN' && error.code !== 'EWOULDBLOCK') throw error;
+          Atomics.wait(sleeper, 0, 0, 20); // Interruptible by Worker.terminate.
+        }
+      }
+    }
     if (typeof offset === 'object') { length = offset.length; offset = offset.offset; }
     offset ??= 0; length ??= buffer.byteLength - offset;
     const count = Math.min(length, bytes.length - position);

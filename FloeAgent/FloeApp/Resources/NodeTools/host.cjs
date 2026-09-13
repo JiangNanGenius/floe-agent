@@ -28,13 +28,16 @@ function start(job) {
     const path = require('node:path');
     if (typeof job.cwd !== 'string' || !path.isAbsolute(job.cwd) || !require('node:fs').statSync(job.cwd).isDirectory()) throw Error('A valid absolute working directory is required');
     const data = { floeJob: true, stdin: job.stdin ?? '', cwd: job.cwd, args: job.args };
+    if (Number.isInteger(job.stdinFD) && job.stdinFD >= 3) data.stdinFD = job.stdinFD;
     if (job.entry) data.entry = path.resolve(job.cwd, job.entry);
     else if (['-e', '--eval', '-p', '--print'].includes(job.args[0])) {
       if (typeof job.args[1] !== 'string') throw Error('JavaScript source is required');
       data.source = job.args[1]; data.print = ['-p', '--print'].includes(job.args[0]); data.args = job.args.slice(2);
     } else if (['-v', '--version'].includes(job.args[0])) data.source = 'console.log(process.version)';
     else if (job.args[0] === '-' || !job.args.length) {
-      data.source = Buffer.from(job.stdin ?? '', 'base64').toString('utf8'); data.stdin = ''; data.args = job.args.slice(1);
+      if (data.stdinFD !== undefined) data.sourceFromStdin = true;
+      else data.source = Buffer.from(job.stdin ?? '', 'base64').toString('utf8');
+      data.stdin = ''; data.args = job.args.slice(1);
     }
     else if (job.args[0] && !job.args[0].startsWith('-')) { data.entry = path.resolve(job.cwd, job.args[0]); data.args = job.args.slice(1); }
     else throw Error('Supported Node invocation: script, -e, -p or --version');

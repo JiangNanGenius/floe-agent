@@ -62,6 +62,15 @@ struct ToolDiscoveryTests {
         #expect(ToolDiscovery.bounded([descriptor("workspace.readFile")], priority: []).allSatisfy { $0.name != "exec.shell" })
     }
 
+    @Test func webDiscoveryIncludesNonBrowserPaths() {
+        let available = ["web.fetch", "network.http", "browser.navigate"].map(descriptor)
+        let found = Set(ToolDiscovery.matches(query: "网页接口", descriptors: available).map(\.name))
+        #expect(found.contains("web.fetch"))
+        #expect(found.contains("network.http"))
+        #expect(ToolDiscovery.index(available).contains("prefer direct HTTP"))
+        #expect(!ToolDiscovery.index([descriptor("browser.navigate")]).contains("network.http"))
+    }
+
     @Test func directoryDistinguishesOwnershipFromWorkflowGuidance() throws {
         let owned = ToolCatalog.Descriptor(name: "custom.report", toolDescription: "Report", parametersJSON: "{}",
             riskLabels: [], isSideEffecting: false)

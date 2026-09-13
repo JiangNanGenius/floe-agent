@@ -69,7 +69,7 @@ def extract_payload(payload, name, destination, max_entries=5000, max_bytes=256 
 
 
 if __name__ == "__main__":
-    request = json.loads(input)
+    request = input if isinstance(input, dict) else json.loads(input)
     count, skipped = extract_payload(base64.b64decode(request['payloadBase64'], validate=True), request['name'], request['destination'], request['maxEntries'], request['maxExpandedBytes'])
     print('files=' + str(count))
     print('skipped=' + str(skipped))

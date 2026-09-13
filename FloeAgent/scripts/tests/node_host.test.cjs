@@ -6,8 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
 const hostPath = path.resolve(__dirname, '../../FloeApp/Resources/NodeTools/host.cjs');
-function host() {
-  const child = spawn(process.execPath, [hostPath], { stdio: ['pipe', 'pipe', 'inherit'] });
+function host(liveInput = false) {
+  const child = liveInput
+    ? spawn('python3', ['-c', 'import os, sys; os.set_blocking(3, False); os.execv(sys.argv[1], sys.argv[1:])', process.execPath, hostPath], { stdio: ['pipe', 'pipe', 'inherit', 'pipe'] })
+    : spawn(process.execPath, [hostPath], { stdio: ['pipe', 'pipe', 'inherit'] });
   const waiting = new Map();
   let ready;
   const started = new Promise(resolve => { ready = resolve; });
@@ -89,4 +91,37 @@ test('worker routes relative async, stream, Buffer and file URL filesystem opera
     assert.equal(fs.readlinkSync(path.join(root, 'link.txt')), 'b.txt');
     assert.equal(fs.readFileSync(path.join(root, 'b.txt'), 'utf8'), 'scoped');
   } finally { h.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('live stdin accepts a line without waiting for EOF', { timeout: 10000 }, async () => {
+  const h = host(true); await h.started;
+  try {
+    const running = h.send(request('live', "process.stdin.once('data', b => { console.log(b.toString().trim()); process.exit(0); });", { stdinFD: 3 }));
+    setTimeout(() => h.child.stdio[3].write('interactive-line\n'), 100);
+    const result = await running;
+    assert.equal(result.code, 0); assert.equal(stdout(result), 'interactive-line\n');
+  } finally { h.child.stdio[3].end(); h.close(); }
+});
+test('cancellation releases a live stdin reader before the next job', { timeout: 10000 }, async () => {
+  const h = host(true); await h.started;
+  const cleanup = setTimeout(() => h.child.stdio[3].end(), 5000);
+  try {
+    const running = h.send(request('waiting-input', "process.stdin.resume();", { stdinFD: 3, timeoutMs: 8000 }));
+    setTimeout(() => h.cancel('waiting-input'), 200);
+    const started = Date.now();
+    assert.equal((await running).status, 'cancelled');
+    assert.ok(Date.now() - started < 2000, 'cancellation must not wait for stdin EOF');
+    assert.equal(stdout(await h.send(request('after-input', 'console.log(42)'))), '42\n');
+  } finally { clearTimeout(cleanup); h.child.stdio[3].end(); h.close(); }
+});
+test('sync stdin read and node - remain cancellable while no bytes arrive', { timeout: 10000 }, async () => {
+  for (const args of [['-e', "require('fs').readFileSync(0, 'utf8')"], ['-']]) {
+    const h = host(true); await h.started;
+    try {
+      const running = h.send(request('sync-input', '', { args, stdinFD: 3 }));
+      setTimeout(() => h.cancel('sync-input'), 100);
+      assert.equal((await running).status, 'cancelled');
+      assert.equal(stdout(await h.send(request('after-sync', 'console.log(42)'))), '42\n');
+    } finally { h.child.stdio[3].end(); h.close(); }
+  }
 });

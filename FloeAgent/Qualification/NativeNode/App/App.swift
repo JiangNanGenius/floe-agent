@@ -15,7 +15,7 @@ func runSmoke() {
   var truncated: ObjCBool = false
   let started = Date()
   var cwdChanged = false
-  let status = FloeNodeRun(nil, ["-e",source], root.path, ["FLOE_TEST":"scoped", "FLOE_ENVIRONMENT_ID":"qualification"], Data("input-data".utf8), index == 3 ? 0.1 : 5, 100, {
+  let status = FloeNodeRun(nil, ["-e",source], root.path, ["FLOE_TEST":"scoped", "FLOE_ENVIRONMENT_ID":"qualification"], Data("input-data".utf8), -1, index == 3 ? 0.1 : 5, 100, {
    if FileManager.default.currentDirectoryPath != initialCWD { cwdChanged = true }
    return index == 6 && Date().timeIntervalSince(started) > 0.1
   }, &out, &err, &code, &truncated)

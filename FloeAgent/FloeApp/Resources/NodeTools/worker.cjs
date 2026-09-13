@@ -1,6 +1,7 @@
 'use strict';
 const { workerData } = require('node:worker_threads');
 require('./worker-preload.cjs');
+if (workerData.sourceFromStdin) workerData.source = require('node:fs').readFileSync(0, 'utf8');
 const path = require('node:path');
 const Module = require('node:module');
 if (workerData.entry) {

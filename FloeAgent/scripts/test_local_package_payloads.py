@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import os
 import runpy
@@ -43,6 +44,15 @@ class PayloadTests(unittest.TestCase):
             self.assertEqual((target / 'share/data.txt').read_bytes(), b'hello')
             with self.assertRaises(ValueError):
                 deb.extract_payload(payload, 'data.tar.gz', target)
+
+    def test_deb_entrypoint_accepts_native_decoded_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory).resolve() / 'output'
+            request = {'payloadBase64': base64.b64encode(tar_payload([('data.txt', b'payload')])).decode(),
+                       'name': 'data.tar.gz', 'destination': str(target), 'maxEntries': 10, 'maxExpandedBytes': 4096}
+            runpy.run_path(str(ROOT / 'Sources/FloeExecution/Resources/deb_extract.py'),
+                           init_globals={'input': request}, run_name='__main__')
+            self.assertEqual((target / 'data.txt').read_bytes(), b'payload')
 
     def test_deb_rejection_leaves_no_partial_output(self):
         for name, data in [('later', b'\x7fELF'), ('../escape', b'bad')]:

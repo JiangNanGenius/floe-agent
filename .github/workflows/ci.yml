@@ -159,6 +159,8 @@ jobs:
       - name: Verify persistent Node host and pinned tools
         run: |
           node --test scripts/tests/node_host.test.cjs scripts/tests/notes_bridge.test.cjs
+          python3 scripts/test_http_workflow.py
+          python3 scripts/test_local_package_payloads.py
           bash scripts/pin_node_tools.sh --check
 
       - name: Resolve and pin-check dependencies
@@ -203,6 +205,7 @@ jobs:
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
+            -derivedDataPath FloeAgent-AppRegressionBuild \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
             -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
@@ -218,6 +221,30 @@ jobs:
             test
           python3 scripts/verify_app_regression_xcresult.py \
             --result-bundle FloeAgent-AppRegressionTests.xcresult
+
+      - name: Preserve simulator app for iPad and iPhone UI qualification
+        if: always()
+        run: |
+          python3 - <<'PYAPP'
+          import pathlib, plistlib, subprocess
+          products = pathlib.Path('FloeAgent-AppRegressionBuild/Build/Products/Debug-iphonesimulator')
+          for app in products.glob('*.app'):
+              info = app / 'Info.plist'
+              if not info.is_file():
+                  continue
+              with info.open('rb') as handle:
+                  bundle = plistlib.load(handle)
+              if bundle.get('CFBundleIdentifier') == 'org.floeagent.ios':
+                  subprocess.run(['ditto', '-c', '-k', '--keepParent', str(app), 'FloeAgent-Simulator.zip'], check=True)
+                  break
+          PYAPP
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-app-${{ github.sha }}
+          path: FloeAgent/FloeAgent-Simulator.zip
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: SPM test (cross-platform targets)
         run: |

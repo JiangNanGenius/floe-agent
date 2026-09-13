@@ -7,6 +7,41 @@ import FloeTools
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test(.timeLimit(.minutes(1))) func nativeNodeLiveInputAndCancellation() async throws {
+        var descriptors: [Int32] = [-1, -1]
+        #expect(pipe(&descriptors) == 0)
+        let reader = descriptors[0], writer = descriptors[1]
+        defer { close(reader); close(writer) }
+        let root = FileManager.default.temporaryDirectory
+        let runtime = IOSSystemNodeRuntime()
+        let feeder = Task.detached {
+            try? await Task.sleep(for: .milliseconds(200))
+            let bytes = Array("live-native\n".utf8)
+            _ = bytes.withUnsafeBytes { write(writer, $0.baseAddress, $0.count) }
+        }
+        let first = await runtime.run(.init(entryScript: nil,
+            arguments: ["-e", "process.stdin.once('data', b => { console.log(b.toString().trim()); process.exit(0); })"],
+            workingDirectory: root, stdinFileDescriptor: reader, timeout: 5), cancellation: nil)
+        await feeder.value
+        guard case .exited(let code, let out, let error, _, _) = first else {
+            Issue.record("Live native input failed: \(first)"); return
+        }
+        #expect(code == 0 && out == "live-native\n", "\(error)")
+        let token = CancellationToken()
+        let cancel = Task { try? await Task.sleep(for: .milliseconds(200)); token.cancel() }
+        let waiting = await runtime.run(.init(entryScript: nil,
+            arguments: ["-e", "require('fs').readFileSync(0, 'utf8')"], workingDirectory: root,
+            stdinFileDescriptor: reader, timeout: 5), cancellation: token)
+        cancel.cancel()
+        #expect(waiting == .cancelled)
+        let next = await runtime.run(.init(entryScript: nil, arguments: ["-e", "console.log('after-input')"],
+            workingDirectory: root, timeout: 5), cancellation: nil)
+        guard case .exited(let nextCode, let nextOut, _, _, _) = next else {
+            Issue.record("Native worker did not release input: \(next)"); return
+        }
+        #expect(nextCode == 0 && nextOut == "after-input\n")
+    }
+
     @Test(.timeLimit(.minutes(2))) func batchWorkflowUsesShellPythonAndNodeRepeatedly() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

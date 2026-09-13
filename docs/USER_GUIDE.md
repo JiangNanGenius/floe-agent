@@ -131,7 +131,12 @@ The task timeline shows assistant output, reasoning previews, tool requests, too
 
 Switching tasks clears task-specific inspector references so one task cannot accidentally display another task's browser or files.
 
-## 8. Use the visible browser
+## 8. Web tasks and the browser
+
+**Build 156 feedback candidate (not yet distributed):** ordinary browser calls and local previews preserve your sidebar choices. Floe opens the browser panel automatically only when the Agent explicitly requests your help and provides a reason; it pauses browser automation until you return control.
+
+Many web tasks need no browser: `web.fetch` reads page content, while `network.http` handles raw HTML, API requests, JSON and forms, including PATCH/OPTIONS and pagination/retry response metadata. The Agent can inspect actual links, forms and API documentation, then issue requests and check the result. For multi-request sessions, parsing or batch operations, it can use shell, Python or Node in the current workspace. HTTP-tool calls do not share website cookies; stateful scripts should keep their session/cookie files in their own workspace. Browser cookies are not automatically exported to scripts. JavaScript-dependent pages, browser login and human challenges use the browser path. Access permissions apply to both paths.
+
 
 The browser is a real, user-visible `WKWebView`. The Agent can navigate, observe a bounded semantic DOM, wait for page changes, take screenshots, click stable element references, type, scroll, and manage tabs within the task policy.
 

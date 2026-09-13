@@ -29,6 +29,7 @@ FloeNodeBridgeStatus FloeNodeRun(
     NSString *workingDirectory,
     NSDictionary<NSString *, NSString *> *environment,
     NSData * _Nullable stdinData,
+    int stdinFileDescriptor,
     NSTimeInterval timeout,
     NSUInteger maxOutputBytes,
     BOOL (^ _Nullable shouldCancel)(void),

@@ -31,6 +31,7 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
                     request.workingDirectory.path,
                     request.environment,
                     request.stdin.map { Data($0.utf8) },
+                    request.stdinFileDescriptor ?? -1,
                     request.timeout,
                     UInt(request.maxOutputBytes),
                     { cancellation?.isCancelled == true },

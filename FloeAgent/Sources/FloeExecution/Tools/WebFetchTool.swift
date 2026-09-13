@@ -65,16 +65,15 @@ public struct WebFetchTool: AgentTool {
         let lower = extracted.lowercased()
         let isBinary = response.contentType.lowercased().contains("pdf")
             || response.contentType.lowercased().contains("octet-stream")
-        let fallback: String? = isBinary
-            || extracted.trimmingCharacters(in: .whitespacesAndNewlines).count < 200
-            || lower.contains("enable javascript") || lower.contains("sign in to continue")
-            ? "structured_content_unavailable_or_insufficient"
-            : nil
+        let fallback: String? = isBinary ? "binary_use_network_download"
+            : lower.contains("enable javascript") || lower.contains("sign in to continue")
+                ? "page_may_require_browser_interaction"
+                : nil
         FloeLogger(category: .tools).info(
             "webFetchFinished trace=\(traceID) host=\(url.host ?? "none") status=\(response.statusCode) contentType=\(String(response.contentType.prefix(80))) extractedCharacters=\(extracted.count) truncated=\(response.truncated) fallback=\(fallback ?? "none") durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
         let payload: [String: Any] = [
-            "url": url.absoluteString, "statusCode": response.statusCode,
+            "url": response.finalURL ?? url.absoluteString, "statusCode": response.statusCode,
             "contentType": response.contentType, "truncated": response.truncated,
             "browserFallback": fallback ?? "",
             "text": isBinary ? "" : String(extracted.prefix(maxCharacters))
@@ -82,7 +81,7 @@ public struct WebFetchTool: AgentTool {
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         let summary = String(decoding: data, as: UTF8.self)
         let digest = FloeDigest.sha256Hex(data)
-        return ToolExecutionOutput(summary: summary, fullOutputSHA256: digest, exitStatus: 0)
+        return ToolExecutionOutput(summary: summary, fullOutputSHA256: digest, exitStatus: (200...399).contains(response.statusCode) ? 0 : 22)
     }
 
     static func extract(_ source: String, contentType: String) -> String {

@@ -5,6 +5,8 @@
 #include <atomic>
 #include <string>
 #include <vector>
+#include <memory>
+#include <poll.h>
 #if __has_include(<NodeMobile/NodeMobile.h>)
 #import <NodeMobile/NodeMobile.h>
 #define FLOE_HAS_NODE 1
@@ -13,11 +15,57 @@
 #endif
 
 namespace {
+// A private nonblocking pipe prevents a Worker filesystem read from pinning a
+// libuv thread forever. The pump owns its descriptors until it has really stopped.
+struct InputPipe {
+    int source = -1, reader = -1, writer = -1;
+    std::atomic_bool stopped{false};
+    ~InputPipe() {
+        if (source >= 0) close(source);
+        if (reader >= 0) close(reader);
+        if (writer >= 0) close(writer);
+    }
+    static std::shared_ptr<InputPipe> create(int borrowed) {
+        auto input = std::make_shared<InputPipe>();
+        input->source = dup(borrowed);
+        int descriptors[2];
+        if (input->source < 0 || pipe(descriptors) != 0) return nullptr;
+        input->reader = descriptors[0]; input->writer = descriptors[1];
+        fcntl(input->reader, F_SETFL, fcntl(input->reader, F_GETFL) | O_NONBLOCK);
+        fcntl(input->writer, F_SETFL, fcntl(input->writer, F_GETFL) | O_NONBLOCK);
+        fcntl(input->writer, F_SETNOSIGPIPE, 1);
+        [NSThread detachNewThreadWithBlock:^{
+            @autoreleasepool {
+                char bytes[4096];
+                while (!input->stopped) {
+                    pollfd source{input->source, POLLIN, 0};
+                    if (poll(&source, 1, 20) <= 0) continue;
+                    if (source.revents & (POLLERR | POLLNVAL)) break;
+                    ssize_t count = read(input->source, bytes, sizeof(bytes));
+                    if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+                    if (count <= 0) break;
+                    ssize_t offset = 0;
+                    while (offset < count && !input->stopped) {
+                        pollfd target{input->writer, POLLOUT, 0};
+                        if (poll(&target, 1, 20) <= 0) continue;
+                        ssize_t written = write(input->writer, bytes + offset, count - offset);
+                        if (written < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+                        if (written <= 0) { input->stopped = true; break; }
+                        offset += written;
+                    }
+                }
+                close(input->writer); input->writer = -1; // EOF after buffered data.
+            }
+        }];
+        return input;
+    }
+};
 struct Host {
     NSLock *serial = [NSLock new];
     NSCondition *condition = [NSCondition new];
     int commands = -1;
     int results = -1;
+    std::shared_ptr<InputPipe> activeInput;
     std::atomic_bool started{false};
     std::atomic_bool alive{false};
     std::atomic_bool ready{false};
@@ -63,6 +111,7 @@ void receive() {
                         h.response = reply;
                         h.activeID = nil;
                         h.environmentID = nil;
+                        if (h.activeInput) { h.activeInput->stopped = true; h.activeInput.reset(); }
                     }
                 }
                 [h.condition broadcast]; [h.condition unlock];
@@ -73,7 +122,7 @@ void receive() {
     [h.condition lock]; h.alive = false; [h.condition broadcast]; [h.condition unlock];
 }
 
-bool start() {
+bool start(NSTimeInterval remaining) {
     auto &h = host();
     if (h.started) return h.alive && h.ready;
     h.started = true; // node_start may only ever run once in this process.
@@ -97,10 +146,13 @@ bool start() {
             node_start((int)args.count, argv.data());
             for (char *arg : argv) free(arg);
             close(commandReadFD); close(resultWriteFD);
-            [h.condition lock]; h.alive = false; [h.condition broadcast]; [h.condition unlock];
+            [h.condition lock]; h.alive = false;
+            if (h.activeInput) { h.activeInput->stopped = true; h.activeInput.reset(); }
+            h.activeID = nil; h.environmentID = nil;
+            [h.condition broadcast]; [h.condition unlock];
         }
     }];
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:15];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MIN(15, remaining)];
     [h.condition lock];
     while (h.alive && !h.ready && [deadline timeIntervalSinceNow] > 0) [h.condition waitUntilDate:deadline];
     bool ready = h.ready && h.alive;
@@ -139,35 +191,42 @@ NSString *FloeNodeBundledToolPath(NSString *command) {
     return [NSFileManager.defaultManager fileExistsAtPath:path] ? path : nil;
 }
 FloeNodeBridgeStatus FloeNodeRun(NSString *entryScript, NSArray<NSString *> *arguments, NSString *workingDirectory,
-    NSDictionary<NSString *, NSString *> *environment, NSData *stdinData, NSTimeInterval timeout, NSUInteger maxOutputBytes,
+    NSDictionary<NSString *, NSString *> *environment, NSData *stdinData, int stdinFileDescriptor, NSTimeInterval timeout, NSUInteger maxOutputBytes,
     BOOL (^shouldCancel)(void), NSString **outStdout, NSString **outStderr, int32_t *outExitCode, BOOL *outTruncated) {
     if (outTruncated) *outTruncated = NO;
     if (!FloeNodeRuntimeAvailable()) return FloeNodeBridgeStatusUnavailable;
     auto &h = host();
+    const double deadline = NSProcessInfo.processInfo.systemUptime + MIN(600, MAX(0.001, timeout));
     while (![h.serial tryLock]) {
+        if (NSProcessInfo.processInfo.systemUptime >= deadline) return FloeNodeBridgeStatusTimedOut;
         if (shouldCancel && shouldCancel()) return FloeNodeBridgeStatusCancelled;
         [NSThread sleepForTimeInterval:0.02];
     }
     @try {
         if (shouldCancel && shouldCancel()) return FloeNodeBridgeStatusCancelled;
-        if (!start()) return FloeNodeBridgeStatusUnavailable;
+        if (!start(MAX(0.001, deadline - NSProcessInfo.processInfo.systemUptime))) return FloeNodeBridgeStatusUnavailable;
+        if (NSProcessInfo.processInfo.systemUptime >= deadline) return FloeNodeBridgeStatusTimedOut;
         [h.condition lock];
         if (h.activeID) { [h.condition unlock]; return FloeNodeBridgeStatusUnavailable; }
+        auto input = stdinFileDescriptor >= 0 ? InputPipe::create(stdinFileDescriptor) : nullptr;
+        if (stdinFileDescriptor >= 0 && !input) { [h.condition unlock]; return FloeNodeBridgeStatusUnavailable; }
+        h.activeInput = input;
+        const int inputFD = input ? input->reader : -1;
         NSString *id = NSUUID.UUID.UUIDString;
         h.activeID = id; h.environmentID = environment[@"FLOE_ENVIRONMENT_ID"]; h.response = nil;
         [h.condition unlock];
-        NSTimeInterval boundedTimeout = MIN(600, MAX(0.001, timeout));
+        NSTimeInterval boundedTimeout = MAX(0.001, deadline - NSProcessInfo.processInfo.systemUptime);
         NSMutableDictionary *job = [@{@"id": id, @"args": arguments, @"cwd": workingDirectory, @"env": environment,
             @"stdin": [stdinData ?: NSData.data base64EncodedStringWithOptions:0], @"timeoutMs": @((NSInteger)(boundedTimeout * 1000)),
             @"maxOutputBytes": @(MIN(1024 * 1024, MAX(1, maxOutputBytes)))} mutableCopy];
         if (entryScript.length) job[@"entry"] = entryScript;
+        if (inputFD >= 0) job[@"stdinFD"] = @(inputFD);
         if (!send(job)) {
             // A partial request may still be in flight: retain active ownership.
             return FloeNodeBridgeStatusUnavailable;
         }
         bool cancelled = false, deadlineSent = false;
         double cancellationDeadline = 0;
-        double deadline = NSProcessInfo.processInfo.systemUptime + boundedTimeout;
         while (true) {
             [h.condition lock];
             NSDictionary *response = h.response;

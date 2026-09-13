@@ -13,12 +13,16 @@ public struct HTTPResponse: Sendable, Equatable {
     public var contentType: String
     public var body: String
     public var truncated: Bool
+    public var finalURL: String?
+    public var headers: [String: String]
 
-    public init(statusCode: Int, contentType: String, body: String, truncated: Bool) {
+    public init(statusCode: Int, contentType: String, body: String, truncated: Bool, finalURL: String? = nil, headers: [String: String] = [:]) {
         self.statusCode = statusCode
         self.contentType = contentType
         self.body = body
         self.truncated = truncated
+        self.finalURL = finalURL
+        self.headers = headers
     }
 }
 
@@ -55,6 +59,13 @@ public struct HTTPRequestService: Sendable {
         let delegate: URLSessionTaskDelegate = allowsPrivateNetwork
             ? PrivateRedirectDelegate()
             : PublicRedirectDelegate()
+        // This shared service is stateless: one task must not inherit another
+        // task's website login. Explicit headers remain supported. Stateful
+        // scripted workflows keep their cookie jar in their own workspace.
+        let configuration = configuration.copy() as! URLSessionConfiguration
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
         self.session = URLSession(
             configuration: configuration,
             delegate: delegate,
@@ -71,7 +82,7 @@ public struct HTTPRequestService: Sendable {
         timeout: TimeInterval,
         maxResponseBytes: Int
     ) async throws -> HTTPResponse {
-        guard ["GET", "POST", "PUT", "DELETE", "HEAD"].contains(method.uppercased()) else {
+        guard ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].contains(method.uppercased()) else {
             throw HTTPRequestError.invalidMethod(method)
         }
         if allowsPrivateNetwork {
@@ -117,8 +128,23 @@ public struct HTTPRequestService: Sendable {
             statusCode: statusCode,
             contentType: contentType,
             body: body,
-            truncated: accepted.count < data.count
+            truncated: accepted.count < data.count,
+            finalURL: response.url?.absoluteString,
+            headers: Self.resultHeaders(http)
         )
+    }
+
+    /// Only navigation/cache/rate-limit metadata is returned automatically.
+    /// Cookies and authentication challenges are not copied into model context.
+    static func resultHeaders(_ response: HTTPURLResponse?) -> [String: String] {
+        var result: [String: String] = [:]
+        for name in ["Content-Type", "Location", "Link", "ETag", "Last-Modified",
+                     "Retry-After", "Allow", "Content-Disposition", "Content-Length"] {
+            if let value = response?.value(forHTTPHeaderField: name) {
+                result[name.lowercased()] = String(value.prefix(4096))
+            }
+        }
+        return result
     }
 
     /// Bounded result of one GET download saved to disk.

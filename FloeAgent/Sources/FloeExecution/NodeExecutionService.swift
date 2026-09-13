@@ -12,6 +12,8 @@ public struct NodeRunRequest: Sendable {
     public var workingDirectory: URL
     public var environment: [String: String]
     public var stdin: String?
+    /// Borrowed input; the native host duplicates and retains it until worker exit.
+    public var stdinFileDescriptor: Int32?
     public var timeout: TimeInterval
     public var maxOutputBytes: Int
 
@@ -21,6 +23,7 @@ public struct NodeRunRequest: Sendable {
         workingDirectory: URL,
         environment: [String: String] = [:],
         stdin: String? = nil,
+        stdinFileDescriptor: Int32? = nil,
         timeout: TimeInterval = 120,
         maxOutputBytes: Int = 256 * 1024
     ) {
@@ -29,6 +32,7 @@ public struct NodeRunRequest: Sendable {
         self.workingDirectory = workingDirectory
         self.environment = environment
         self.stdin = stdin
+        self.stdinFileDescriptor = stdinFileDescriptor
         self.timeout = timeout
         self.maxOutputBytes = maxOutputBytes
     }

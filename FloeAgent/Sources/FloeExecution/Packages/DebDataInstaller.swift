@@ -86,10 +86,15 @@ public struct DebDataInstaller: Sendable {
         case .ok(_, let stdout, let stderr, _, _, _):
             let parsed = Self.parse(stdout)
             if let error = parsed.error { throw ExtractionError.unsafePath(error) }
+            var isDirectory: ObjCBool = false
+            guard let count = parsed.fileCount, count >= 0,
+                  FileManager.default.fileExists(atPath: destinationDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw FloeError.validationFailed("Debian extraction produced no verified result directory")
+            }
             return Result(
                 packageName: parsed.packageName,
                 packageVersion: parsed.packageVersion,
-                fileCount: parsed.fileCount,
+                fileCount: count,
                 skippedEntries: parsed.skippedEntries
             )
         case .jsException(let message, _):
@@ -105,7 +110,7 @@ public struct DebDataInstaller: Sendable {
     private struct Parsed {
         var packageName: String?
         var packageVersion: String?
-        var fileCount: Int = 0
+        var fileCount: Int?
         var skippedEntries: Int = 0
         var error: String?
     }
@@ -118,7 +123,7 @@ public struct DebDataInstaller: Sendable {
             switch parts[0] {
             case "package": parsed.packageName = parts[1]
             case "version": parsed.packageVersion = parts[1]
-            case "files": parsed.fileCount = Int(parts[1]) ?? 0
+            case "files": parsed.fileCount = Int(parts[1])
             case "skipped": parsed.skippedEntries = Int(parts[1]) ?? 0
             case "error": parsed.error = parts[1]
             default: break
