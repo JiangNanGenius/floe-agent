@@ -1,0 +1,8 @@
+{
+  "qualified_run": 34752884723,
+  "source": "65969b8f04e67269a92b899a55620ff469d96322",
+  "sdk27_job": 103712275154,
+  "accepted_sdk_job": 103720382757,
+  "accepted_sdk": "Xcode 26.6 (17F113)",
+  "qualification": "successful build and test steps reused; prior failure was distribution"
+}

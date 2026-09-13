@@ -1,0 +1,18 @@
+{
+  "policy": "build156-app-store-bundle-v1",
+  "removed_non_ios_addons": [],
+  "libssh2": {
+    "path": "Frameworks/libssh2.framework",
+    "arm64_sha256": "f9df33d34879f7e48e483e3787b2c1ff41e05a084ee2b9d2b58deb63380e80e3",
+    "architectures_before": [
+      "arm64"
+    ],
+    "architectures_after": [
+      "arm64"
+    ],
+    "minimum_os_before": "14.0",
+    "minimum_os_after": "14.0",
+    "recorded_sdk_unchanged": "16.2"
+  },
+  "validated_bundle_executables": 148
+}

@@ -248,6 +248,7 @@ jobs:
         run: |
           APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
+          python3 scripts/prepare_app_store_bundle.py --app "$APP_PATH" --report release-assets/bundle-normalization.json
           scripts/package_unsigned_ipa.sh "$APP_PATH" release-assets "$ASSET_NAME"
 
       - name: Verify artifact metadata and scan built application
@@ -426,6 +427,11 @@ jobs:
             --github-output "$GITHUB_OUTPUT" \
             --summary-output "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt"
 
+      - name: Normalize reviewed App Store bundle defects before signing
+        run: |
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          python3 scripts/prepare_app_store_bundle.py --app "$APP_PATH" --report "$RUNNER_TEMP/bundle-normalization.json"
+
       - name: Install App Store Connect API key
         env:
           ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
@@ -515,6 +521,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           mkdir -p "$RUNNER_TEMP/TestFlightExport"
+          cp "$RUNNER_TEMP/bundle-normalization.json" "$RUNNER_TEMP/TestFlightExport/"
           cp "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt" \
             "$RUNNER_TEMP/TestFlightExport/"
           ditto -c -k --sequesterRsrc --keepParent \

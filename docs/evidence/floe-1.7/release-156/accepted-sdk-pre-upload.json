@@ -1,0 +1,54 @@
+{
+  "run": 34752884723,
+  "source": "65969b8f04e67269a92b899a55620ff469d96322",
+  "build": 156,
+  "job": 103720382757,
+  "toolchain": "Xcode 26.6 (17F113)",
+  "completed_steps": [
+    {
+      "name": "Set up job",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check out the exact verified release commit",
+      "conclusion": "success"
+    },
+    {
+      "name": "Require the App Store accepted Xcode toolchain",
+      "conclusion": "success"
+    },
+    {
+      "name": "Download the tested and attested unsigned application",
+      "conclusion": "success"
+    },
+    {
+      "name": "Validate the exact verified application",
+      "conclusion": "success"
+    },
+    {
+      "name": "Restore bundled font cache",
+      "conclusion": "success"
+    },
+    {
+      "name": "Fetch and verify bundled fonts",
+      "conclusion": "success"
+    },
+    {
+      "name": "Rebuild the exact tag with the accepted App Store SDK",
+      "conclusion": "success"
+    },
+    {
+      "name": "Verify focused app regressions with the accepted App Store SDK",
+      "conclusion": "success"
+    },
+    {
+      "name": "Install App Store Connect API key",
+      "conclusion": "success"
+    },
+    {
+      "name": "Install distribution identity and existing App Store profiles",
+      "conclusion": "success"
+    }
+  ],
+  "upload_status": "in progress; not yet Apple processing or TestFlight availability"
+}
