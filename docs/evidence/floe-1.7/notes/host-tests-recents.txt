@@ -1,0 +1,56 @@
+warning: '--skip-update' option is deprecated and will be removed in a future release
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 245]
+[Planning deferred tasks]
+[1 / 4] GRDB
+[2 / 6] FloeNotes
+[3 / 7] FloeNotes
+[10 / 16] GRDB
+[11 / 18] FloeNotes
+[12 / 19] FloeNotes
+[14 / 20] FloeNotes
+[16 / 20] NotesTests-product
+[18 / 22] NotesTests-product
+[24 / 26] NotesTests-product
+[24 / 26]
+[26 / 26] NotesTests-product
+Build complete! (13.24秒)
+Test Suite 'All tests' started at 2026-09-13 10:48:53.010.
+Test Suite 'All tests' passed at 2026-09-13 10:48:53.014.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.005) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite NotesStoreTests started.
+◇ Test receiptsSurviveRestartWithoutDuplicateEdits() started.
+◇ Test attachmentsRejectPathsAndRoundTripWithoutNewFields() started.
+◇ Test recentOpeningSurvivesRestartWithoutChangingContentOrUndo() started.
+◇ Test revokingScopeSurvivesRestartAndPreservesOtherConversationAndDocument() started.
+◇ Test linkedMapsKeepIndependentHistoryAndArchiveAttachments() started.
+◇ Test mindMapImageBudgetRejectsExcessResources() started.
+◇ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() started.
+◇ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() started.
+◇ Test durableHistoryAndCAS() started.
+◇ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() started.
+◇ Test mindMapRejectsCyclesWithoutChangingPersistedTree() started.
+◇ Test linkingIsAtomicAndRequiresSeparateAgentScope() started.
+◇ Test rejectedBatchIsAtomicAndStaleEditsFail() started.
+◇ Test assistantScopesAndTrashAreIndependentFromChat() started.
+✔ Test mindMapImageBudgetRejectsExcessResources() passed after 0.042 seconds.
+✔ Test attachmentsRejectPathsAndRoundTripWithoutNewFields() passed after 0.043 seconds.
+✔ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() passed after 0.043 seconds.
+✔ Test receiptsSurviveRestartWithoutDuplicateEdits() passed after 0.043 seconds.
+✔ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() passed after 0.043 seconds.
+✔ Test revokingScopeSurvivesRestartAndPreservesOtherConversationAndDocument() passed after 0.043 seconds.
+✔ Test recentOpeningSurvivesRestartWithoutChangingContentOrUndo() passed after 0.043 seconds.
+✔ Test rejectedBatchIsAtomicAndStaleEditsFail() passed after 0.050 seconds.
+✔ Test durableHistoryAndCAS() passed after 0.050 seconds.
+✔ Test mindMapRejectsCyclesWithoutChangingPersistedTree() passed after 0.054 seconds.
+✔ Test assistantScopesAndTrashAreIndependentFromChat() passed after 0.066 seconds.
+✔ Test linkingIsAtomicAndRequiresSeparateAgentScope() passed after 0.072 seconds.
+✔ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() passed after 0.078 seconds.
+✔ Test linkedMapsKeepIndependentHistoryAndArchiveAttachments() passed after 0.081 seconds.
+✔ Suite NotesStoreTests passed after 0.082 seconds.
+✔ Test run with 14 tests in 1 suite passed after 0.082 seconds.

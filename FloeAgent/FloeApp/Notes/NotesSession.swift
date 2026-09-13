@@ -10,6 +10,7 @@ import PencilKit
 final class NotesSession {
     private(set) var store: NotesStore?
     private(set) var documents: [NoteDocument] = []
+    private(set) var recentDocumentIDs: [UUID] = []
     private(set) var notebooks: [Notebook] = []
     private(set) var document: NoteDocument?
     private(set) var pendingWrites = 0
@@ -51,6 +52,7 @@ final class NotesSession {
         guard let store else { return }
         documents = try await store.documents(includeTrash: true)
         notebooks = try await store.notebooks()
+        recentDocumentIDs = try await store.recentDocuments().map(\.id)
         let recovery = try inkRecoveryRoot()
         let folders = (try? FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
         recoverableInkDocumentIDs = Set(folders.compactMap { folder in
@@ -69,7 +71,10 @@ final class NotesSession {
     func select(_ value: NoteDocument?) async {
         await tail?.value
         document = value.flatMap { selected in documents.first { $0.id == selected.id } }
-        do { try await reload() } catch { errorMessage = error.localizedDescription }
+        do {
+            if let id = document?.id, let store { try await store.markOpened(id) }
+            try await reload()
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func openSource(_ source: NoteSourceReference) async {

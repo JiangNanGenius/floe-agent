@@ -41,6 +41,9 @@ public actor NotesStore {
                 CREATE TABLE edit_receipts(request_id TEXT PRIMARY KEY NOT NULL, document_id TEXT NOT NULL, body BLOB NOT NULL);
                 """)
         }
+        migrator.registerMigration("notes.v3.recents") { db in
+            try db.execute(sql: "CREATE TABLE document_visits(document_id TEXT PRIMARY KEY NOT NULL REFERENCES documents(id) ON DELETE CASCADE, opened DOUBLE NOT NULL)")
+        }
         try migrator.migrate(database)
     }
 
@@ -74,6 +77,26 @@ public actor NotesStore {
         try database.read { db in
             try Data.fetchAll(db, sql: "SELECT body FROM documents \(includeTrash ? "" : "WHERE deleted IS NULL") ORDER BY updated DESC")
                 .map { try decoder.decode(NoteDocument.self, from: $0) }
+        }
+    }
+
+    public func markOpened(_ id: UUID, at date: Date = Date()) throws {
+        guard date.timeIntervalSince1970.isFinite else { throw NoteError.invalidOperation("打开时间无效。") }
+        try database.write { db in
+            guard try read(id, db: db).deletedAt == nil else { throw NoteError.invalidOperation("请先恢复资料。") }
+            try db.execute(sql: "INSERT INTO document_visits VALUES(?,?) ON CONFLICT(document_id) DO UPDATE SET opened=excluded.opened",
+                           arguments: [id.uuidString, date.timeIntervalSince1970])
+        }
+        publishChange()
+    }
+
+    public func recentDocuments(limit: Int = 50) throws -> [NoteDocument] {
+        guard (1...200).contains(limit) else { throw NoteError.invalidOperation("最近列表数量无效。") }
+        return try database.read { db in
+            try Data.fetchAll(db, sql: """
+                SELECT d.body FROM documents d LEFT JOIN document_visits v ON v.document_id=d.id
+                WHERE d.deleted IS NULL ORDER BY COALESCE(v.opened,d.updated) DESC,d.id LIMIT ?
+                """, arguments: [limit]).map { try decoder.decode(NoteDocument.self, from: $0) }
         }
     }
 

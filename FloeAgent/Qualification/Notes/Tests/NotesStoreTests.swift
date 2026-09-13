@@ -98,6 +98,22 @@ struct NotesStoreTests {
         try restored.validate()
     }
 
+    @Test func recentOpeningSurvivesRestartWithoutChangingContentOrUndo() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let first = try await store.create(NoteDocument(title: "A"))
+        let second = try await store.create(NoteDocument(title: "B"))
+        try await store.markOpened(second.id, at: Date(timeIntervalSince1970: 10))
+        try await store.markOpened(first.id, at: Date(timeIntervalSince1970: 20))
+        let reopened = try NotesStore(root: root)
+        #expect(try await reopened.recentDocuments().map(\.id) == [first.id, second.id])
+        #expect(try await reopened.document(first.id) == first)
+        #expect(try await reopened.historyState(first.id).canUndo == false)
+        _ = try await reopened.setTrashed(first.id, expectedRevision: first.revision, trashed: true)
+        #expect(try await reopened.recentDocuments().map(\.id) == [second.id])
+        await #expect(throws: (any Error).self) { try await reopened.markOpened(first.id) }
+    }
+
     @Test func durableHistoryAndCAS() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

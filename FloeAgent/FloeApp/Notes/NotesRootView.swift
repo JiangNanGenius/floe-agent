@@ -188,16 +188,21 @@ struct NotesRootView: View {
     }
 
     private var filtered: [NoteDocument] {
-        session.documents.filter { value in
+        let recentOrder = Dictionary(uniqueKeysWithValues: session.recentDocumentIDs.enumerated().map { ($0.element, $0.offset) })
+        return session.documents.filter { value in
             let matchesSection: Bool
             switch section {
             case .trash: matchesSection = value.deletedAt != nil
             case .maps: matchesSection = value.deletedAt == nil && value.kind == .mindMap
             case .favorites: matchesSection = value.deletedAt == nil && value.isFavorite
-            case .recent, .all: matchesSection = value.deletedAt == nil
+            case .recent: matchesSection = value.deletedAt == nil && recentOrder[value.id] != nil
+            case .all: matchesSection = value.deletedAt == nil
             }
             return matchesSection && (selectedBook == nil || value.notebookID == selectedBook)
                 && (query.isEmpty || value.searchableText.localizedStandardContains(query))
+        }.sorted { first, second in
+            if section == .recent { return (recentOrder[first.id] ?? Int.max) < (recentOrder[second.id] ?? Int.max) }
+            return first.updatedAt > second.updatedAt
         }
     }
 }
