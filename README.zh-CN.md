@@ -24,17 +24,19 @@
 
 Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送都会在同一任务中创建新的 Run，并保留历史消息、工具证据、用户决策、计划、目标、记忆、权限和恢复检查点。任务可以使用 App 内部的私有工作区，也可以归属于用户明确选择的项目工作区。
 
-## Floe 1.7 开发升级
+## Floe 1.7 内部测试版
 
-Floe 1.7 正在 `codex/floe-1-7-integration-20260912` 分支整合，重点是分层环境、软件包管理、常驻 Node 宿主和媒体工作台。本轮仍在开发与验收，尚未交付 1.7 TestFlight 构建，也不自动正式发布。
+Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**1.7.0（156）已在 Floe QA 内部 TestFlight 可安装，Apple 状态为 VALID / IN_BETA_TESTING。** 正式发布另行安排，分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+
+当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 
 参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[升级与恢复](docs/FLOE_1_7_MIGRATION.md)、[构建与验收](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)。历次版本记录保留在[文档索引](docs/README.md)。
 
-下一 1.7 候选还接入了固定版本的 MIT ZLImageEditor，并重做为 Floe 原生图像工作台，提供裁剪、涂鸦、文字、马赛克、滤镜和调色。画布视频节点复用现有视频编辑器。参见[图像编辑集成与验收边界](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md)。
+本轮还接入了固定版本的 MIT ZLImageEditor，并重做为 Floe 原生图像工作台，提供裁剪、涂鸦、文字、马赛克、滤镜和调色。画布视频节点复用现有视频编辑器。参见[图像编辑集成与验收边界](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md)。
 
-### 手记、Office 与本地语音（开发候选）
+### 手记、Office 与本地语音
 
 手记是优先于创意模式的独立工作区，使用独立资料存储与撤销历史，复用 Floe 的模型、工具和权限服务。已接入 PDF/图片批注、[图文思维导图与文档小窗](docs/FLOE_1_7_MIND_MAPS.md)、Office 文件编辑、选区提问与可编辑归档；进一步集成与完整应用验收仍在进行。全项目以 iPadOS 27 为首要体验，iPhone 同步验证，26 保持兼容。
 

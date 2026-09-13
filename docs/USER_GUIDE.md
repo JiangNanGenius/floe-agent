@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide covers existing Floe workflows and explicitly marked 1.7 development changes. Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
+This guide covers existing Floe workflows and the 1.7 internal beta (build 156). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
 
 This guide includes the current development-branch workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
 
@@ -306,7 +306,7 @@ frames, and provides access to earlier conversation records.
 
 ## 1.7 development candidate: Notes and local speech
 
-These instructions describe the integration branch. Check the [implementation record](FLOE_1_7_CONTINUATION_STATUS.md) for full-app, device and TestFlight status.
+These instructions describe the 1.7 internal beta. Check the [implementation record](FLOE_1_7_CONTINUATION_STATUS.md) for full-app, device and TestFlight status.
 
 The sidebar orders New Task, Task Center, Notes (手记), Creative mode and Plugins / Skills above projects and tasks. Settings remains at the bottom left. Notes and Canvas keep separate content management; there is no additional top-level Library destination.
 

@@ -1,6 +1,6 @@
-# Floe 1.7 — 发布描述草稿 / Release description draft
+# Floe 1.7 — 内部测试版说明 / Internal beta notes
 
-状态：1.7.0（156），候选标签 v1.7.0-beta.13；双 SDK 源码检查已通过；正在修复 Apple 分发包校验并重新签名上传。下列描述对应当前实现范围，待固定提交的完整验证完成后用于新测试版本。既有版本说明保留其历史原文。
+状态：1.7.0（156）已交付 Floe QA 内部 TestFlight，VALID / IN_BETA_TESTING 已确认。应用源码为 `65969b8` / `v1.7.0-beta.13`，打包策略为 `5231222`；上传使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口走兼容入口。正式发布另行安排；完整包/模型交付和真机验收仍有未完成内容。
 
 ### 简体中文
 
@@ -18,7 +18,7 @@ Floe brings its AI assistant, independent Notes workspace and creative workflows
 
 Notes includes notebooks, recents, favorites, Trash, Pencil-first writing, region questions and editable archives. Dynamic maps support illustrated topics, attachments, independent editing and linked PDF windows. Image and video workbenches share local files; on-demand multilingual Whisper powers speech and timed captions with Apple fallback. Project/session package controls and automatic light/dark appearance extend the application workspace.
 
-This description is a beta preparation draft. Word ink, extended conversions, PPT presentation, complete media/model delivery and physical-device qualification are not yet claimed as accepted features.
+Build 156 is available to the existing internal Floe QA TestFlight group. Word ink, extended conversions, PPT presentation, complete media/model delivery and physical-device qualification are not yet claimed as accepted features.
 
 ## TestFlight “What to Test” — 随测试构建填写
 
@@ -30,7 +30,7 @@ This description is a beta preparation draft. Word ink, extended conversions, PP
 
 ## 发布门槛与填写项
 
-- 固定 source SHA、版本与 build number、归档/上传运行、Apple 处理及可安装状态：待完成。
+- 固定源码、版本、打包策略、上传和内测状态已记录于[分发证据](evidence/floe-1.7/release-156/TESTFLIGHT_AVAILABLE.json)。
 - 当前云端 53 项平台测试与双端合成 Whisper 推理是定向证据，不等于整版验收。
 - 15 个候选软件包、33 个候选模型、15 类媒体能力以[资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)为准，不能因目录存在就标为可用。
 - 完整当前记录：[继续实施状态](FLOE_1_7_CONTINUATION_STATUS.md)。恢复步骤：[迁移与恢复](FLOE_1_7_MIGRATION.md)。

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Normalize the build 156 distribution bundle before signing.
 
-The source archives remain pinned and untouched. Only reviewed non-iOS pnpm
-addons and the libssh2 1.11.0 packaging defects are addressed here. Unknown
-executables, changed addon bytes, or other malformed bundle metadata fail.
+The source archives remain pinned and untouched. Reviewed non-iOS pnpm addons,
+libssh2 1.11.0 architecture/metadata and dash deployment metadata are normalized.
+Every embedded deployment command is checked; unreviewed inconsistencies fail.
 """
 import argparse
 import hashlib

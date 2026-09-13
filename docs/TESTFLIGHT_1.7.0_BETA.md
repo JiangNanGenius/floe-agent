@@ -1,14 +1,23 @@
 # Floe 1.7.0 — TestFlight preparation and candidate history
 
-## Current preparation — 2026-09-13
+## Internal delivery — 2026-09-14 (Australia/Sydney)
 
-**Not uploaded.** Current candidate: **1.7.0 (156)**, tag `v1.7.0-beta.13`. Fixed source `65969b8f04e67269a92b899a55620ff469d96322`; [release run 34752884723](https://github.com/JiangNanGenius/floe-agent/actions/runs/34752884723) has passed the complete SDK 27 release job: 1244 Swift test executions, 135 App regressions, simulator/device builds, unsigned IPA validation, inventory and application scan. The accepted-SDK build and all 135 App regressions also passed. Apple validation rejected pnpm desktop binaries and libssh2 metadata/arm64e packaging before upload. [Distribution recovery 34760151387](https://github.com/JiangNanGenius/floe-agent/actions/runs/34760151387) rebuilds the same source with fixed policy `c20da5e`; it explicitly reuses the verified source tests and rechecks packaging, signing and Apple acceptance. See [recovery evidence](evidence/floe-1.7/release-156/distribution-recovery.md). Build 154 attempt 1 failed on cloud DNS; attempt 2 completed downloads but exposed an overly strict host/app lock comparison. WhisperKit is an immutable Xcode-only dependency. Build 155 validates its `project.yml` revision separately, retains it in distribution licenses and still rejects host dependency drift. Eight tests and end-to-end checks against the actual cloud lock pass.
+**Available: 1.7.0 (156), internal Floe QA TestFlight.** Apple `VALID`, unexpired, exactly one existing private internal group, and `IN_BETA_TESTING` were confirmed at 2026-09-13 15:15:02 UTC. English and Simplified Chinese beta notes were written and read back. [Availability evidence](evidence/floe-1.7/release-156/TESTFLIGHT_AVAILABLE.json).
+
+- App source: `65969b8f04e67269a92b899a55620ff469d96322`, immutable tag `v1.7.0-beta.13`.
+- Distribution policy: `52312222565c7cec7b8036dc2bb4ed6da077b6a9`; actual Xcode 26.6 (17F113), SDK 26.5.
+- [Upload 34762764702](https://github.com/JiangNanGenius/floe-agent/actions/runs/34762764702), [notes/group 34764956759](https://github.com/JiangNanGenius/floe-agent/actions/runs/34764956759), [availability 34765022410](https://github.com/JiangNanGenius/floe-agent/actions/runs/34765022410).
+- Build ID: `a75a56dc-6e83-4616-9739-966b72dbccd3`; signed IPA SHA-256: `5cd7ed2a7d98347bed15d9c2b363faad9092d088253ef841fc1ba2e3338180ff`.
+
+SDK 27 source qualification passed 1244 Swift executions and 135 App regressions. The same source also passed the accepted-SDK build and 135 App regressions. Distribution recovery retained those exact-source tests and binaries, verified their provenance and changed only reviewed bundle packaging before signing. All 148 executable files remained unchanged before resigning; 16 packaging/guard tests passed. The beta-group reader additionally passed four targeted tests and actual API readback. [Recovery history](evidence/floe-1.7/release-156/distribution-recovery.md) retains the initial pnpm/libssh2 validation failure and subsequent dash processing failure.
+
+This is an internal beta, not completion of every item in the 1.7 plan. Physical iPad/iPhone checks belong to the user after installation. Full package/model delivery and long-media/device acceptance remain open. No production App Store or public GitHub release was published.
 
 Build 155 was cancelled during dependency preparation after a local reproduction found its test expected data depended on the mutable working lock. Build 156 reads the committed test expectation. All eight tests, pin checking and license generation pass for the combined lock, actual cloud host lock and its legacy serialization (24 test executions, byte-identical inventories). No upload occurred for 155.
 
 Build 156 now supersedes the earlier build 152 source qualification: both SDK paths passed their App gates. The latest Notes component screenshots and SDK 27/26 iPad/iPhone evidence are from [`4550b6d`](https://github.com/JiangNanGenius/floe-agent/actions/runs/34742130370); component qualification is distinct from full-App and physical-device acceptance. Final TestFlight text and checks are tracked in [the release description](RELEASE_NOTES_1.7.0.md).
 
-After signed upload, Apple processing, beta notes, the existing internal Floe QA group and `IN_BETA_TESTING` must be verified for build 156 before reporting availability. Physical-device checks belong to the user after installation. After successful delivery, merge this integration branch into `main` and remove only branches whose tips are already included; preserve branches with independent work and occupied worktrees. No public App Store release is included.
+Apple processing, beta notes, the existing internal Floe QA group and `IN_BETA_TESTING` have now been verified for build 156. Physical-device checks belong to the user after installation. After successful delivery, merge this integration branch into `main` and remove only branches whose tips are already included; preserve branches with independent work and occupied worktrees. No public App Store release is included.
 
 ## Build 154 — beta.11
 
@@ -51,7 +60,7 @@ These do not replace the full application tests or physical-device checks.
 - All 15 model capability classes need actual runners/weights and per-device output, latency and memory qualification; 33 candidate reviews are not runnable-model evidence.
 - Official package-pool production versions, complete dependency promotion/rollback/concurrent installation and recovery UI remain incomplete.
 - Shared Agent/workbench task queue, chat-attachment handoff, full environment dependency migration/rebuild and complete long-media/background/device acceptance remain incomplete.
-- Source qualification has passed; signed distribution recovery, Apple processing and group visibility remain pending.
+- Source qualification, signed distribution, Apple processing and internal availability have passed; physical-device acceptance remains with the user.
 
 See [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md), [compatibility matrix](FLOE_1_7_QUALIFICATION_MATRIX.md), [migration and recovery](FLOE_1_7_MIGRATION.md), and [screenshots](evidence/floe-1.7/SCREENSHOTS.md).
 

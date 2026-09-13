@@ -24,24 +24,26 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Floe 1.7 development upgrade
+## Floe 1.7 internal beta
 
-Floe 1.7 is being integrated on `codex/floe-1-7-integration-20260912`. It adds layered environments, package management, a persistent Node host and a media workbench. This is an unfinished development milestone; no 1.7 TestFlight availability or production release is implied.
+Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified speech, image/video workbenches and project/session environments. **Version 1.7.0 (156) is available in the internal Floe QA TestFlight group, verified as VALID / IN_BETA_TESTING.** Production release remains separate. See the [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md).
+
+The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
 
 Environment ownership and persistence, signed repository fixtures, bounded media exports and native shell/Node smoke cases have focused verification. Environment migration, complete package installation flows, model inference, the workbench and device acceptance remain open. The 15 package entries and 33 model entries are candidates, not an available download catalog.
 
 See [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [upgrade and recovery](docs/FLOE_1_7_MIGRATION.md), and [build and acceptance](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Existing version notes remain in the [documentation index](docs/README.md).
 
-The next 1.7 candidate also integrates a pinned MIT ZLImageEditor with a Floe-native image workbench: crop, drawing, text, mosaic, filters and color adjustments. Canvas video nodes reuse the existing video editor. See the [image editor integration and acceptance boundaries](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md).
+This upgrade also integrates a pinned MIT ZLImageEditor with a Floe-native image workbench: crop, drawing, text, mosaic, filters and color adjustments. Canvas video nodes reuse the existing video editor. See the [image editor integration and acceptance boundaries](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md).
 
 
-### Notes, Office and local speech (development candidate)
+### Notes, Office and local speech
 
 Notes (手记) is a separate workspace above Creative mode, with its own durable content and undo history while sharing Floe models, tools and permissions. PDF/image annotation, [illustrated mind maps with document windows](docs/FLOE_1_7_MIND_MAPS.md), Office editing, selection questions and editable archives are being integrated. The whole app prioritizes iPadOS 27, also validates iPhone, and keeps version 26 compatible.
 
 Mind maps reflow as topics, images and branches change, preserve zoom during editing, and fit independent PDF windows. Notes supports Trash recovery and confirmed permanent deletion with deferred collection that protects shared files and undo history.
 
-Voice input, video automatic captions and Agent file transcription now share on-demand multilingual Whisper Small with Apple recognition fallback. Timed exports support SRT, VTT and JSON. Home, conversations and Canvas can explicitly select Notes material and revoke access. Installing speech resources does not establish bilingual recognition quality. See the [implementation and evidence record](docs/FLOE_1_7_CONTINUATION_STATUS.md) for remaining work; a complete 1.7 TestFlight build has not yet been delivered.
+Voice input, video automatic captions and Agent file transcription now share on-demand multilingual Whisper Small with Apple recognition fallback. Timed exports support SRT, VTT and JSON. Home, conversations and Canvas can explicitly select Notes material and revoke access. Installing speech resources does not establish bilingual recognition quality. See the [implementation and evidence record](docs/FLOE_1_7_CONTINUATION_STATUS.md) for remaining work; full package/model delivery and physical-device acceptance remain incomplete.
 
 ### Media workbench preview
 

@@ -1,0 +1,93 @@
+{
+  "validated_bundles": 148,
+  "dash_frameworks": [
+    {
+      "path": "Frameworks/dashD.framework",
+      "minimum_os_before": "14.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "27.0",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "5f338f4d6f98f4c32f9b0535b48305550681229f84ba60656b12e12087c3606d"
+    },
+    {
+      "path": "Frameworks/dashB.framework",
+      "minimum_os_before": "14.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "27.0",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "3e3cc12a39baac4306537a4a401691829f430591a4c376ec2de699579f6e4a6d"
+    },
+    {
+      "path": "Frameworks/dashE.framework",
+      "minimum_os_before": "14.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "27.0",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "d9839b3c8d904d6386c951cba1e685ed9ae32ff851208a9869a76eb35ce5630a"
+    },
+    {
+      "path": "Frameworks/dashC.framework",
+      "minimum_os_before": "14.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "27.0",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "06b7ce1879c8c38834f2937214fcfc203e5ec3a7905d833fa15b5381ffb4d7ce"
+    },
+    {
+      "path": "Frameworks/dash.framework",
+      "minimum_os_before": "14.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "27.0",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "cc93246d71bffc2fc82a054b8332459206b5d2a1cdf69a4cb00ee53add3bfa66"
+    },
+    {
+      "path": "Frameworks/dashA.framework",
+      "minimum_os_before": "14.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "27.0",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "f504f01da0c1c1c2ffd5204c027c1228c18e6f038565fd33499998b7061bfa4a"
+    }
+  ],
+  "policy": "build156-app-store-bundle-v2",
+  "input": "SDK 27 unsigned artifact from source qualification run 34752884723",
+  "source": "65969b8f04e67269a92b899a55620ff469d96322",
+  "scope": "staged metadata normalization; not signed or uploaded as SDK 27"
+}

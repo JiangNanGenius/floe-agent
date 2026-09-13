@@ -1,0 +1,40 @@
+{
+  "artifact_run": 34762764702,
+  "ipa_sha256": "5cd7ed2a7d98347bed15d9c2b363faad9092d088253ef841fc1ba2e3338180ff",
+  "ipa_bytes": 784957415,
+  "version": "1.7.0",
+  "build": "156",
+  "sdk": "iphoneos26.5",
+  "dash_metadata": [
+    {
+      "framework": "dash",
+      "minimumOS": "26.0",
+      "sdk": "iphoneos26.5"
+    },
+    {
+      "framework": "dashA",
+      "minimumOS": "26.0",
+      "sdk": "iphoneos26.5"
+    },
+    {
+      "framework": "dashB",
+      "minimumOS": "26.0",
+      "sdk": "iphoneos26.5"
+    },
+    {
+      "framework": "dashC",
+      "minimumOS": "26.0",
+      "sdk": "iphoneos26.5"
+    },
+    {
+      "framework": "dashD",
+      "minimumOS": "26.0",
+      "sdk": "iphoneos26.5"
+    },
+    {
+      "framework": "dashE",
+      "minimumOS": "26.0",
+      "sdk": "iphoneos26.5"
+    }
+  ]
+}

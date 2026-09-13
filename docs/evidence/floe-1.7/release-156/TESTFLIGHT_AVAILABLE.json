@@ -1,0 +1,29 @@
+{
+  "version": "1.7.0",
+  "build": "156",
+  "buildID": "a75a56dc-6e83-4616-9739-966b72dbccd3",
+  "source": "65969b8f04e67269a92b899a55620ff469d96322",
+  "tag": "v1.7.0-beta.13",
+  "distribution_policy": "52312222565c7cec7b8036dc2bb4ed6da077b6a9",
+  "upload_run": 34762764702,
+  "prepare_run": 34764956759,
+  "verification_run": 34765022410,
+  "verified_utc": "2026-09-13T15:15:02Z",
+  "processingState": "VALID",
+  "internalBuildState": "IN_BETA_TESTING",
+  "expired": false,
+  "group": "Floe QA",
+  "internal_group_count": 1,
+  "unexpected_group_count": 0,
+  "public_link_enabled": false,
+  "beta_notes": [
+    "en-US",
+    "zh-Hans"
+  ],
+  "xcode": "26.6 (17F113)",
+  "sdk": "26.5",
+  "signed_ipa_sha256": "5cd7ed2a7d98347bed15d9c2b363faad9092d088253ef841fc1ba2e3338180ff",
+  "physical_device_acceptance": "user performs after TestFlight installation",
+  "full_package_model_delivery": "incomplete",
+  "production_release": false
+}

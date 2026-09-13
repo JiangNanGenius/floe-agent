@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe 1.7 integration branch. The minimum deployment target is iOS/iPadOS 26.0; database migrations now reach schema v40. The branch is not yet TestFlight-qualified. See the [current build and acceptance guide](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) before running builds.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe 1.7. The minimum deployment target is iOS/iPadOS 26.0; database migrations now reach schema v40. Version 1.7.0 (156) is available to the existing internal Floe QA TestFlight group. Physical-device acceptance and full package/model delivery remain separate. See the [current build and acceptance guide](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) before running builds.
 
 ## Build prerequisites
 
@@ -84,7 +84,7 @@ scripts/license_inventory.sh
 scripts/sbom.sh
 ```
 
-The release workflow qualifies the tagged source with SDK 27, then rebuilds the same source using App Store-accepted Xcode 26.6 (17F113, SDK 26.5) before signing and upload. Version 27-only compiler-gated interfaces use compatibility paths in that upload. Reviewed bundle normalization removes pinned non-iOS pnpm resources and preserves libssh2 generic arm64 code while correcting its minimum-OS metadata. Distribution recovery records application-source and packaging-policy commits separately and verifies any reused test evidence. Public GitHub releases are skipped for beta tags; production release remains a separate action. See [the root README](../README.md#unsigned-ipa) for the user-facing distinction between these packages.
+The release workflow qualifies the tagged source with SDK 27, then rebuilds the same source using App Store-accepted Xcode 26.6 (17F113, SDK 26.5) before signing and upload. Version 27-only compiler-gated interfaces use compatibility paths in that upload. Reviewed bundle normalization removes pinned non-iOS pnpm resources and preserves libssh2 generic arm64 code while correcting its minimum-OS metadata. It also compares all embedded bundle deployment commands, aligns dash framework metadata with the actual binary and removes stale template build provenance. Distribution recovery records application-source and packaging-policy commits separately and verifies any reused test evidence. Public GitHub releases are skipped for beta tags; production release remains a separate action. See [the root README](../README.md#unsigned-ipa) for the user-facing distinction between these packages.
 
 ## Documentation discipline
 

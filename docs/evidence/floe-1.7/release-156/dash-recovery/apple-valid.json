@@ -1,0 +1,10 @@
+{
+  "observed_utc": "2026-09-13T15:09:23Z",
+  "discovery_run": 34764730916,
+  "buildID": "a75a56dc-6e83-4616-9739-966b72dbccd3",
+  "version": "1.7.0",
+  "build": "156",
+  "uploadState": "COMPLETE",
+  "processingState": "VALID",
+  "groupAvailability": "pending separate verification"
+}

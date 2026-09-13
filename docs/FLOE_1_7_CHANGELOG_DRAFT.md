@@ -1,6 +1,6 @@
 # Floe 1.7 变更草稿 / Unreleased changes
 
-这是整合分支的变更草稿，不是已发布版本说明。正式发布另行安排；build 156 固定源码的双 SDK 自动检查已通过，TestFlight 分发恢复仍在进行，真机验收由用户安装后完成。精确测试范围见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+本稿记录整轮 1.7 的实现和未完成范围。1.7.0（156）已交付 Floe QA 内部 TestFlight，固定源码的双 SDK 自动检查、Apple 处理与可安装状态已验证。正式发布另行安排，真机验收由用户安装后完成。精确测试范围见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 
 ## 运行环境与执行
 

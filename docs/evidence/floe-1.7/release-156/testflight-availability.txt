@@ -1,0 +1,7 @@
+xcode-cloud	Verify TestFlight processing and group visibility	2026-09-13T15:15:02.6099602Z testflight-build id=a75a56dc-6e83-4616-9739-966b72dbccd3 version=156 processing=VALID audience=APP_STORE_ELIGIBLE uploaded=2026-09-13T07:54:28-07:00
+xcode-cloud	Verify TestFlight processing and group visibility	2026-09-13T15:15:02.6186791Z beta-group-count=1
+xcode-cloud	Verify TestFlight processing and group visibility	2026-09-13T15:15:02.6187548Z floe-qa-internal-group-count=1
+xcode-cloud	Verify TestFlight processing and group visibility	2026-09-13T15:15:02.6188411Z unexpected-beta-group-count=0
+xcode-cloud	Verify TestFlight processing and group visibility	2026-09-13T15:15:02.6213953Z beta-group id=c09d3f5c-f5b3-485f-9ddb-98c61fa80ad1 name=Floe QA internal=true public_link=null feedback=true
+xcode-cloud	Verify TestFlight processing and group visibility	2026-09-13T15:15:02.6241391Z prerelease-version id=20aaa7de-9abb-46fb-b8c0-b5897f417515 version=1.7.0 platform=IOS
+xcode-cloud	Verify TestFlight processing and group visibility	2026-09-13T15:15:02.6301224Z internal-beta-state=IN_BETA_TESTING
