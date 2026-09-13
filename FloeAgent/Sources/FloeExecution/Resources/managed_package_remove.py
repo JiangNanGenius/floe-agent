@@ -2,6 +2,7 @@
 import csv
 import importlib.metadata
 import json
+import io
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,25 @@ def normalized(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def ownership_entries(distribution):
+    # Validate the literal RECORD, not importlib.metadata.files: newer Python
+    # versions filter nonexistent entries and can hide a malformed escape.
+    record = distribution.read_text("RECORD")
+    if not record or len(record) > 8 * 1024 * 1024:
+        raise ValueError("Distribution has no bounded ownership RECORD")
+    entries = []
+    for row in csv.reader(io.StringIO(record), strict=True):
+        if len(row) != 3 or not row[0]:
+            raise ValueError("Malformed ownership RECORD")
+        relative = Path(row[0])
+        if relative.is_absolute() or ".." in relative.parts or "\\" in row[0]:
+            raise ValueError("RECORD escapes managed root")
+        entries.append(str(relative))
+    if not entries:
+        raise ValueError("Distribution has no ownership RECORD")
+    return entries
+
+
 def remove_distribution(root, name):
     root = Path(root).resolve(strict=True)
     distributions = list(importlib.metadata.distributions(path=[str(root)]))
@@ -21,10 +41,8 @@ def remove_distribution(root, name):
     if len(matches) != 1:
         raise ValueError("Distribution is missing or ambiguous in the managed root")
     selected = matches[0]
-    selected_files = list(selected.files or [])
-    if not selected_files:
-        raise ValueError("Distribution has no ownership RECORD")
-    shared = {str(f) for d in distributions if d is not selected for f in (d.files or [])}
+    selected_files = ownership_entries(selected)
+    shared = {f for d in distributions if d is not selected for f in ownership_entries(d)}
     paths = []
     for entry in selected_files:
         relative = Path(str(entry))

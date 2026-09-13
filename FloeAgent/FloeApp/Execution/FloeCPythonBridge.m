@@ -1,4 +1,5 @@
 #import "FloeCPythonBridge.h"
+#import "FloeTLSConfiguration.h"
 
 #if __has_include(<Python/Python.h>)
 #import <Python/Python.h>
@@ -151,8 +152,8 @@ static BOOL FloeEnsurePython(NSError **error) {
 
     // iOS has no /etc/ssl/cert.pem. Use the pinned Mozilla roots shipped
     // with the app, resolved anew on launch after the app bundle moves.
-    NSString *caBundle = [standardLibrary stringByAppendingPathComponent:@"site-packages/certifi/cacert.pem"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:caBundle]) {
+    NSString *caBundle = FloeTLSCertificateBundle();
+    if (caBundle) {
         setenv("SSL_CERT_FILE", caBundle.fileSystemRepresentation, 1);
         setenv("REQUESTS_CA_BUNDLE", caBundle.fileSystemRepresentation, 1);
         setenv("PIP_CERT", caBundle.fileSystemRepresentation, 1);

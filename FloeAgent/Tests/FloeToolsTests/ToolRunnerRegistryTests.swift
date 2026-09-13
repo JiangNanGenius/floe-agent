@@ -64,6 +64,30 @@ private struct UnrunTool: AgentTool {
 
 @Suite("FloeTools.ToolRunnerRegistry")
 struct ToolRunnerRegistryTests {
+    @Test func availabilityAppliesToDiscoveryLookupAndCapturedRunners() async throws {
+        final class State: @unchecked Sendable {
+            let lock = NSLock()
+            private var enabled = false
+            func read() -> Bool { lock.withLock { enabled } }
+            func set(_ value: Bool) { lock.withLock { enabled = value } }
+        }
+        let state = State(), registry = ToolRunnerRegistry()
+        var tool = AnyAgentTool(EchoRunnerTool())
+        tool.isAvailable = { state.read() }
+        registry.register(tool)
+        #expect(registry.allDescriptors.isEmpty)
+        #expect(registry.runner(named: EchoRunnerTool.name) == nil)
+        state.set(true)
+        let captured = try #require(registry.runner(named: EchoRunnerTool.name))
+        #expect(registry.allDescriptors.count == 1)
+        state.set(false)
+        #expect(registry.descriptor(named: EchoRunnerTool.name) == nil)
+        await #expect(throws: FloeError.self) {
+            try await captured.execute(argumentsJSON: Data(#"{"text":"blocked"}"#.utf8),
+                context: ToolContext(runID: UUID(), cancellation: CancellationToken()))
+        }
+    }
+
 
     private func makeCall(_ toolName: String, argumentsJSON: String = "{}") throws -> ToolCall {
         try ToolCall(

@@ -1,4 +1,5 @@
 #import "FloeNodeBridge.h"
+#import "FloeTLSConfiguration.h"
 #import <unistd.h>
 #import <fcntl.h>
 #import <pthread.h>
@@ -136,6 +137,9 @@ bool start(NSTimeInterval remaining) {
     fcntl(h.commands, F_SETNOSIGPIPE, 1);
     NSArray<NSString *> *args = @[@"node", script, [NSString stringWithFormat:@"%d", commands[0]], [NSString stringWithFormat:@"%d", results[1]]];
     const int commandReadFD = commands[0], resultWriteFD = results[1];
+    // Node loads extra roots once at runtime initialization, not per Worker.
+    NSString *caBundle = FloeTLSCertificateBundle();
+    if (caBundle) setenv("NODE_EXTRA_CA_CERTS", caBundle.fileSystemRepresentation, 1);
     h.alive = true;
     [NSThread detachNewThreadWithBlock:^{ @autoreleasepool { receive(); } }];
     [NSThread detachNewThreadWithBlock:^{

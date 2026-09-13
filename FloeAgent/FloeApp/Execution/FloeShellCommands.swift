@@ -230,7 +230,7 @@ public func floeShellCommandMain(
         semaphore.signal()
     }
     while semaphore.wait(timeout: .now() + 0.025) == .timedOut {
-        if parentCancellation?.isCancelled == true { commandCancellation.cancel() }
+        if parentCancellation?.isCancelled == true || FloeShellCurrentCommandCancelled() { commandCancellation.cancel() }
     }
     return box.code
 }

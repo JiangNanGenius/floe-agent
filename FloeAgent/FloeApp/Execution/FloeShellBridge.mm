@@ -115,7 +115,9 @@ static void FloeEnsureEngineInitialized(void) {
 }
 
 void FloeShellSetEnvironment(NSDictionary<NSString *, NSString *> *environment) {
-    [environment enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
+    NSMutableDictionary *resolved = [FloeTLSEnvironment() mutableCopy];
+    [resolved addEntriesFromDictionary:environment];
+    [resolved enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
         if (key.length == 0 || [key containsString:@"="]) { return; }
         ios_setenv(key.UTF8String, value.UTF8String, 1);
     }];
@@ -535,6 +537,8 @@ BOOL FloeShellSessionExitCode(NSString *sessionID, int32_t *code) {
 
 #pragma mark - Replacement commands
 
+
+BOOL FloeShellCurrentCommandCancelled(void) { return floe_shell_should_cancel() != 0; }
 
 void FloeShellRegisterCommand(NSString *name) {
 #if FLOE_HAS_IOS_SYSTEM

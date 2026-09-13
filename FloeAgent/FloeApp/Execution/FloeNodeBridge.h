@@ -8,6 +8,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#import "FloeTLSConfiguration.h"
 
 NS_ASSUME_NONNULL_BEGIN
 #ifdef __cplusplus

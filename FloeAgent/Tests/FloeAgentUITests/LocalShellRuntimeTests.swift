@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import Foundation
+import Darwin
 import Testing
 import FloeExecution
 import FloeTools
@@ -7,6 +8,27 @@ import FloeTools
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test(.timeLimit(.minutes(2))) func httpsThroughCurlPythonAndNode() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = IOSSystemShellBackend()
+        let commands = [
+            "curl --fail --silent --show-error --location --max-time 20 https://example.com",
+            "python3 -c 'import ssl,urllib.request; assert ssl.create_default_context().verify_mode == ssl.CERT_REQUIRED; r=urllib.request.urlopen(\"https://example.com\",timeout=20); print(r.read(16384).decode())'",
+            "node -e 'require(\"https\").get(\"https://example.com\",r=>{if(r.statusCode!==200)process.exitCode=1;r.on(\"data\",b=>process.stdout.write(b));}).on(\"error\",e=>{console.error(e.code,e.message);process.exitCode=1})'"
+        ]
+        for command in commands {
+            let result = await backend.run(.init(command: command, cwd: ".", rootURL: root,
+                timeout: 25, sessionID: UUID().uuidString), cancellation: nil)
+            guard case .exited(let code, let output, let errors, _, _, _) = result else {
+                Issue.record("HTTPS runtime failed: \(result)"); continue
+            }
+            #expect(code == 0, "\(errors)")
+            #expect(output.contains("Example Domain"), "HTTPS body was not received: \(errors)")
+        }
+    }
+
     @Test(.timeLimit(.minutes(1))) func nativeNodeLiveInputAndCancellation() async throws {
         var descriptors: [Int32] = [-1, -1]
         #expect(pipe(&descriptors) == 0)
@@ -71,7 +93,7 @@ struct LocalShellRuntimeTests {
         printf 'print("python-stdin-ok")' | python3 -
         python3 -c 'import sys; sys.exit(7)'
         if [ "$?" -ne 7 ]; then exit 8; fi
-        floe_missing_qualification_command
+        printf 'input' | floe_missing_qualification_command
         result=$?
         if [ "$result" -eq 127 ]; then printf 'missing-command-ok\\n'; else exit 9; fi
         """, cwd: ".", rootURL: root, timeout: 20, sessionID: UUID().uuidString), cancellation: nil)

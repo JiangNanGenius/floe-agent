@@ -41,6 +41,7 @@ public func registerExecutionTools(
     bluetoothSerialService: (any BluetoothSerialServicing)? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
     webSearchService: WebSearchService = WebSearchService(),
+    webSearchAvailability: @escaping @Sendable (String) -> Bool = { _ in false },
     includeOnDeviceJavaScript: Bool = false,
     includeStandaloneWasmTool: Bool = false
 ) -> any ScriptExecutionService {
@@ -196,8 +197,12 @@ public func registerExecutionTools(
     registry.register(SVGDocumentTool(), compatibilityOnly: true)
     registry.register(CryptoCipherTool())
     registry.register(PDFFillFormTool(service: service))
-    registry.register(WebSearchTool(service: webSearchService))
-    registry.register(BochaAISearchTool(service: webSearchService))
+    var webSearch = AnyAgentTool(WebSearchTool(service: webSearchService))
+    webSearch.isAvailable = { webSearchAvailability(WebSearchTool.name) }
+    registry.register(webSearch)
+    var searchAI = AnyAgentTool(BochaAISearchTool(service: webSearchService))
+    searchAI.isAvailable = { webSearchAvailability(BochaAISearchTool.name) }
+    registry.register(searchAI)
     registry.register(WebFetchTool(service: httpRequestService))
     registry.register(NetworkScanLANTool(service: LANDiscoveryService()))
     registry.register(OCRTool())

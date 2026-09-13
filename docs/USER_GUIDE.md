@@ -144,6 +144,10 @@ Choose **Take Over** when a page requires login, QR scanning, CAPTCHA, 2FA, pass
 
 An element reference is bound to a document ID. After navigation or a major DOM change, a stale reference fails and the Agent must observe again; it must not guess and continue clicking.
 
+**Search configuration:** the feedback candidate offers only enabled, complete search services to the Agent. A key alone may not be enough: Google also needs its engine ID; SearXNG needs its endpoint; Tencent needs both credential fields. Configuration changes take effect in subsequent tool discovery without saving unrelated settings again.
+
+**HTTPS:** curl, Python and Node in the candidate resolve bundled certificate roots when the App starts, including after an update moves its installation directory. Normal HTTPS keeps server certificate validation enabled. A TLS error is reported as an error; it is not presented as a successful page fetch.
+
 ## 9. Understand permissions
 
 Effective authority is the intersection of the global ceiling, workspace defaults, task overrides, available device/host capabilities, and any time-bounded grant. The provider receives only allowed tool schemas, and the executor checks authority again.

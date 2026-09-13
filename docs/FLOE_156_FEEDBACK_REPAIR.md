@@ -52,3 +52,16 @@ Direct HTTP workflow check (`python3 FloeAgent/scripts/test_http_workflow.py`) c
 Package payload entrypoint checks now total nine passing tests, including decoded dictionary input for Debian extraction. Extraction must produce an actual destination directory and a parsed file count; missing execution output no longer counts as an empty successful install.
 
 Cache design reference: [DeepSeek context caching](https://api-docs.deepseek.com/guides/kv_cache/) specifies shared request-prefix reuse. Byte-stable prefix tests do not establish a particular server-side hit rate.
+
+
+## HTTPS and search availability follow-up
+
+- `FloeTLSEnvironment` resolves certificate paths from the current signed App bundle on each launch; Python/urllib/pip, curl and Node/npm use the same pinned certifi roots. Node extra roots are configured before its once-only initialization. The pip-vendored CA bundle is a recovery fallback. No certificate verification has been disabled.
+- Local actual HTTPS requests to example.com passed through the Swift HTTP service, curl (verification result 0), Python's default verified SSL context and Node (authorized TLS socket). These host results do not substitute for the embedded iOS runtime; a three-runtime App test has been added.
+- Search runners now have live availability checks at descriptor listing, lookup and execution. Required keys and endpoint fields are checked using the service's request contract. Disabled or incomplete providers are omitted from the runtime provider note as well. Bocha AI search requires an available Bocha configuration. A captured runner is rechecked when executed after settings change.
+- Search settings loaded from iCloud are mirrored to local runtime defaults immediately, fixing one configuration path that previously needed another Save tap.
+- Cloud 0c0f588 App run 34785833946 compiled but failed 13 assertions across shell integration and an obsolete MarkupSafe version probe. The shell failures began with Node command registration depending on apt initialization, then a missing pipeline consumer left an unpublished ios_system PID and blocked later commands. Node registration is now independent; literal missing consumers are rejected before opening a pipeline PID; command callbacks observe the shell deadline's cancellation flag. The MarkupSafe test uses distribution metadata. These changes require the next native/App rerun.
+
+Local iOS 27 simulator NativeShell qualification passed with 11 command cases and interactive input after the pipeline repair. Machine-readable results are retained in [shell results](validation/floe-156-feedback/shell-results.json) and [interactive result](validation/floe-156-feedback/shell-interactive-results.json). This standalone target does not qualify the full App or its embedded Python/Node chain.
+
+Cloud 4096d52 run 34787295524 passed platform qualification and all seven Node host tests, then exposed Python-version-dependent filtering in `importlib.metadata.files`. Managed removal now validates the literal RECORD before inspecting disk entries; nine payload/removal tests pass on local Python 3.9 and 3.14. The cloud App stage did not run in that checkpoint.

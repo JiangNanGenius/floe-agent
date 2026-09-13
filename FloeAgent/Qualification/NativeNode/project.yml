@@ -10,6 +10,7 @@ targets:
     type: application
     platform: iOS
     sources:
+      - path: ../../FloeApp/Execution/FloeTLSConfiguration.m
       - App
       - path: ../../FloeApp/Execution/IOSSystemNodeRuntime.swift
       - path: ../../FloeApp/Execution/FloeNodeBridge.mm

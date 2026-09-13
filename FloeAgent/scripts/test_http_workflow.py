@@ -8,6 +8,7 @@ import pathlib
 import subprocess
 import tempfile
 import threading
+import sys
 
 
 class Endpoint(http.server.BaseHTTPRequestHandler):
@@ -75,6 +76,14 @@ import Foundation
         precondition(missing.statusCode == 404 && missing.body.contains("missing"))
         let large = try await request("/large", cap: 128)
         precondition(large.truncated && large.body.utf8.count == 128)
+        if CommandLine.arguments.count > 2 {
+            let secure = HTTPRequestService()
+            let response = try await secure.send(method: "GET", url: URL(string: "https://example.com")!,
+                headers: [:], body: nil, timeout: 20, maxResponseBytes: 16384)
+            precondition(response.statusCode == 200 && response.body.contains("Example Domain"))
+            precondition(response.finalURL?.hasPrefix("https://") == true)
+            print("PASS: real public HTTPS with system certificate verification")
+        }
         print("PASS: HTML endpoint discovery, PATCH JSON, OPTIONS, response headers, cookie isolation, HTTP failure body, bounded output; no browser")
     }
 }
@@ -84,7 +93,7 @@ try:
         root = pathlib.Path(root)
         (root / 'Check.swift').write_text(harness)
         subprocess.run(['xcrun', 'swiftc', '-swift-version', '6', '-parse-as-library', str(source), str(root / 'Check.swift'), '-o', str(root / 'check')], check=True, timeout=90)
-        subprocess.run([str(root / 'check'), f'http://127.0.0.1:{server.server_port}'], check=True, timeout=30)
+        subprocess.run([str(root / 'check'), f'http://127.0.0.1:{server.server_port}'] + (['--https'] if '--https' in sys.argv else []), check=True, timeout=45)
 finally:
     server.shutdown()
     server.server_close()

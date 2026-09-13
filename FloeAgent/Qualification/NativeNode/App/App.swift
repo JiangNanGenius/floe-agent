@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 import FloeExecution
 import FloeTools
 @main struct SmokeApp: App {
@@ -41,6 +42,30 @@ func runAdapterSmoke() async {
  let trigger = Task { try? await Task.sleep(for: .milliseconds(100)); cancellation.cancel() }
  if case .cancelled = await runtime.run(endless, cancellation: cancellation) { checks["cancelThroughAdapter"] = true } else { checks["cancelThroughAdapter"] = false }
  trigger.cancel()
+ var descriptors: [Int32] = [-1, -1]
+ if pipe(&descriptors) == 0 {
+  let reader = descriptors[0], writer = descriptors[1]
+  let feeder = Task.detached {
+   try? await Task.sleep(for: .milliseconds(200))
+   let bytes = Array("native-live\n".utf8)
+   _ = bytes.withUnsafeBytes { write(writer, $0.baseAddress, $0.count) }
+  }
+  let live = NodeRunRequest(entryScript: nil, arguments: ["-e", "process.stdin.once('data', b=>{console.log(b.toString().trim());process.exit(0)})"], workingDirectory: root, stdinFileDescriptor: reader, timeout: 5)
+  if case .exited(let code, let text, _, _, _) = await runtime.run(live, cancellation: nil) {
+   checks["liveInputWithoutEOF"] = code == 0 && text == "native-live\n"
+  } else { checks["liveInputWithoutEOF"] = false }
+  await feeder.value
+  var blocked = live; blocked.arguments = ["-e", "require('fs').readFileSync(0,'utf8')"]
+  let token = CancellationToken()
+  let cancelInput = Task { try? await Task.sleep(for: .milliseconds(100)); token.cancel() }
+  if case .cancelled = await runtime.run(blocked, cancellation: token) { checks["cancelLiveInput"] = true }
+  else { checks["cancelLiveInput"] = false }
+  cancelInput.cancel(); close(reader); close(writer)
+ } else { checks["inputPipeCreated"] = false }
+ let https = NodeRunRequest(entryScript: nil, arguments: ["-e", "require('https').get('https://example.com', r=>{console.log(r.statusCode,r.socket.authorized);r.resume()}).on('error',e=>{console.error(e.code);process.exitCode=1})"], workingDirectory: root, timeout: 20)
+ if case .exited(let code, let text, _, _, _) = await runtime.run(https, cancellation: nil) {
+  checks["verifiedHTTPS"] = code == 0 && text == "200 true\n"
+ } else { checks["verifiedHTTPS"] = false }
  checks["passed"] = checks.values.allSatisfy { $0 }
  if let data = try? JSONEncoder().encode(checks) { try? data.write(to: root.appendingPathComponent("node-adapter-results.json"), options: .atomic) }
 }

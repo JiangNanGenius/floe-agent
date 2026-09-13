@@ -112,14 +112,14 @@ struct LocalPythonRuntimeTests {
         import json, sys
         import regex
         import yaml
-        import markupsafe
+        import markupsafe, importlib.metadata
         assert sys.platform == 'ios'
         assert regex.compile('a+').findall('caaab') == ['aaa']
         assert regex.__version__ == '2026.9.10'
         assert yaml.safe_load('a: 1') == {'a': 1}
         assert yaml.__version__ == '6.0.3'
         assert str(markupsafe.escape('<b>x</b>')) == '&lt;b&gt;x&lt;/b&gt;'
-        assert markupsafe.__version__ == '3.0.3'
+        assert importlib.metadata.version('markupsafe') == '3.0.3'
         import zstandard, brotli, greenlet, frozenlist, multidict
         data = b'floe wheelhouse smoke' * 64
         assert zstandard.ZstdDecompressor().decompress(zstandard.ZstdCompressor().compress(data)) == data
@@ -130,7 +130,7 @@ struct LocalPythonRuntimeTests {
         assert list(fl) == [1, 2]
         md = multidict.CIMultiDict([('Key', 'a'), ('key', 'b')])
         assert md.getall('KEY') == ['a', 'b']
-        print(json.dumps({'wheelhouseSmoke': 'passed', 'regex': regex.__version__, 'yaml': yaml.__version__, 'markupsafe': markupsafe.__version__}, sort_keys=True))
+        print(json.dumps({'wheelhouseSmoke': 'passed', 'regex': regex.__version__, 'yaml': yaml.__version__, 'markupsafe': importlib.metadata.version('markupsafe')}, sort_keys=True))
         """, timeout: 30, maxOutputBytes: 4096), cancellation: nil)
         guard case .ok(_, let stdout, let stderr, false, false, _) = outcome else {
             Issue.record("Wheelhouse imports in Floe failed: \(outcome)")

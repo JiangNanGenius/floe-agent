@@ -75,6 +75,6 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
             "PNPM_HOME": containerRoot.appendingPathComponent("usr").path,
             "npm_config_store_dir": containerRoot.appendingPathComponent("opt/pnpm-store").path,
             "PWD": workspaceRoot.path
-        ]
+        ].merging(FloeTLSEnvironment()) { _, trust in trust }
     }
 }

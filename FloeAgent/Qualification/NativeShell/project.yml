@@ -10,6 +10,7 @@ targets:
     type: application
     platform: iOS
     sources:
+      - path: ../../FloeApp/Execution/FloeTLSConfiguration.m
       - App
       - path: ../../FloeApp/Execution/FloeShellBridge.mm
       - path: ../../FloeApp/Resources/Shell/commandDictionary.plist

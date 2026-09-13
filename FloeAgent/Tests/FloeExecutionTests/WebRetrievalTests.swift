@@ -4,6 +4,22 @@ import Testing
 
 @Suite("Web retrieval adapters")
 struct WebRetrievalTests {
+    @Test("Search readiness excludes disabled, empty-key and incomplete providers")
+    func configuredSearchProviders() {
+        var bocha = WebSearchProviderConfiguration(kind: .bochaWeb, displayName: "Bocha", credentialAccount: "test")
+        #expect(!WebSearchService.isConfigured(bocha, credential: .init(values: [:])))
+        #expect(!WebSearchService.isConfigured(bocha, credential: .init(values: ["apiKey": "  "])))
+        #expect(WebSearchService.isConfigured(bocha, credential: .init(values: ["apiKey": "fixture"])))
+        bocha.enabled = false
+        #expect(!WebSearchService.isConfigured(bocha, credential: .init(values: ["apiKey": "fixture"])))
+        let google = WebSearchProviderConfiguration(kind: .googleProgrammable, displayName: "Google", credentialAccount: "test")
+        #expect(!WebSearchService.isConfigured(google, credential: .init(values: ["apiKey": "fixture"])))
+        var searx = WebSearchProviderConfiguration(kind: .searxng, displayName: "SearXNG", credentialAccount: "test")
+        #expect(!WebSearchService.isConfigured(searx, credential: .init(values: [:])))
+        searx.endpoint = URL(string: "https://search.example.com/search")
+        #expect(WebSearchService.isConfigured(searx, credential: .init(values: [:])))
+    }
+
     @Test("Bocha request uses official endpoint and normalized freshness")
     func bochaRequest() throws {
         let configuration = WebSearchProviderConfiguration(

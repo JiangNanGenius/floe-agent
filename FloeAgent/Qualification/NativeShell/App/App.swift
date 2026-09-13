@@ -11,7 +11,8 @@ func runSmoke() {
  var expanded = commands
  expanded += ["dash -c 'printf \"one\\ntwo\\n\" | tr a-z A-Z | sed s/ONE/FIRST/'", "dash -c 'floe_nonexistent_command_qualification'", "dash -c 'while :; do :; done'"]
  expanded += ["dash -c 'echo after-cancel'", "dash -c 'while :; do :; done'"]
- for index in [2, 3, 1, 0, 4, 5, 6, 7, 8] {
+ expanded += ["dash -c 'printf data | floe_missing_pipeline_command'", "dash -c 'printf after_missing_pipe'"]
+ for index in [2, 3, 1, 0, 4, 5, 6, 7, 8, 9, 10] {
   let command = expanded[index]
   var out: NSString?, err: NSString?, code: Int32 = -1
   let env: [String: String] = index == 2 ? ["FLOE_SHELL_TEST_SCOPE": "scoped"] : [:]

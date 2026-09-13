@@ -606,6 +606,7 @@ final class AppEnvironment: ObservableObject {
             },
             bluetoothSerialService: bluetoothSerialService,
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
+            webSearchAvailability: WebSearchSettingsCenter.toolIsAvailable,
             includeOnDeviceJavaScript: true
         )
         // Local shell surface: exec.shell, interactive shell.* and apt.

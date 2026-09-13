@@ -18,6 +18,7 @@
 //    state and resources remain retained until they actually finish.
 
 #import <Foundation/Foundation.h>
+#import "FloeTLSConfiguration.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -90,6 +91,7 @@ BOOL FloeShellEngineAvailable(void);
 /// under `name`, replacing the ios_system entry when one exists. Safe to call
 /// for names the command dictionary does not contain.
 void FloeShellRegisterCommand(NSString *name);
+BOOL FloeShellCurrentCommandCancelled(void);
 
 /// Thread-local stdio accessors for command handlers that run on a Swift
 /// executor while the command invocation lives on an ios_system pthread.

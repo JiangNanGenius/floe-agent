@@ -14,11 +14,21 @@ public actor WebSearchService {
         self.configurations = configurations
     }
 
+    /// Local readiness only: no network probe, no credential value in diagnostics.
+    public nonisolated static func isConfigured(_ configuration: WebSearchProviderConfiguration, credential: WebSearchCredential) -> Bool {
+        guard configuration.enabled else { return false }
+        let cleaned = WebSearchCredential(values: credential.values.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        guard let request = try? makeRequest(configuration, credential: cleaned, query: .init(text: "configuration-check")),
+              let url = request.url, ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return false }
+        return true
+    }
+
     public func search(_ query: WebSearchQuery) async throws -> WebSearchResponse {
         let traceID = UUID().uuidString
         let startedAt = Date()
         let available = await configurations()
-            .filter { $0.0.enabled }
+            .filter { Self.isConfigured($0.0, credential: $0.1) }
             .sorted { $0.0.priority < $1.0.priority }
         guard !available.isEmpty else {
             FloeLogger(category: .tools).warning("webSearchUnavailable trace=\(traceID) reason=noProviderConfigured")

@@ -141,6 +141,8 @@ final class FloePlatformServices: @unchecked Sendable {
             return result.exitCode ?? 0
         }
 
+        registerNodeCommands(in: commandRegistry)
+        registerMediaCommands(in: commandRegistry)
         guard let aptEngine, let contextProvider else { return }
         let cli = PackagesCLI(engine: aptEngine, contextProvider: contextProvider)
         for name in ["apt", "apt-get", "apt-cache", "apt-mark", "dpkg", "dpkg-deb"] {
@@ -154,8 +156,6 @@ final class FloePlatformServices: @unchecked Sendable {
             }
         }
 
-        registerNodeCommands(in: commandRegistry)
-        registerMediaCommands(in: commandRegistry)
     }
 
     // MARK: - Node

@@ -620,6 +620,18 @@ evalpipe(union node *n, int flags)
 		lplist[i] = lp;
 		i++;
 	}
+    /* A missing literal consumer never starts an ios_system thread. Reject it
+     * before ios_fork, otherwise its unpublished PID stays -1 and ios_waitpid
+     * spins forever, blocking every later Floe shell command. */
+    union node *consumer = lplist[pipelen - 1]->n;
+    if (consumer->type == NCMD && consumer->ncmd.args && goodname(consumer->ncmd.args->narg.text)) {
+        struct cmdentry entry;
+        find_command(consumer->ncmd.args->narg.text, &entry, DO_ERR, pathval());
+        if (entry.cmdtype == CMDUNKNOWN) {
+            free(lplist);
+            return 127;
+        }
+    }
 	flags &= ~EV_EXIT; // do not exit after each command
 	// Try: call all commands, but wait for last one in the pipe. 
 	// Question is: how? make evaltree return pid, wait for all pid? 

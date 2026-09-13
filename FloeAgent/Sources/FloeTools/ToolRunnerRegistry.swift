@@ -11,6 +11,7 @@ import FloeCore
 /// closure that decodes validated JSON arguments and runs the concrete
 /// `AgentTool` implementation.
 public struct AnyAgentTool: Sendable {
+    public var isAvailable: @Sendable () -> Bool = { true }
     public var descriptor: ToolCatalog.Descriptor
     public var run: @Sendable (Data, ToolContext) async throws -> ToolExecutionOutput
     /// Decode + validate without executing. Used by background job submission
@@ -87,6 +88,7 @@ public struct AnyAgentTool: Sendable {
 
     /// Executes the tool with JSON-encoded arguments.
     public func execute(argumentsJSON: Data, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard isAvailable() else { throw FloeError.validationFailed("Tool is disabled or not configured: \(descriptor.name)") }
         let lease = try await ToolEnvironmentRouting.shared.acquire(context)
         do {
             let output = try await run(argumentsJSON, lease.context)
@@ -128,24 +130,20 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
     /// Looks up a runner by catalog name. Absent names surface as the
     /// structured "No runner registered" failure in `CatalogToolExecutor`.
     public func runner(named name: String) -> AnyAgentTool? {
-        lock.lock()
-        defer { lock.unlock() }
-        return runners[ToolAliasTable.canonical(name)]
+        let tool = lock.withLock { runners[ToolAliasTable.canonical(name)] }
+        return tool?.isAvailable() == true ? tool : nil
     }
 
     /// Returns the executable descriptor for a runtime-provided tool.
     public func descriptor(named name: String) -> ToolCatalog.Descriptor? {
-        lock.lock()
-        defer { lock.unlock() }
-        return runners[ToolAliasTable.canonical(name)]?.descriptor
+        runner(named: name)?.descriptor
     }
 
     /// All currently executable runtime descriptors, sorted for deterministic
     /// provider requests and diagnostics.
     public var allDescriptors: [ToolCatalog.Descriptor] {
-        lock.lock()
-        defer { lock.unlock() }
-        return runners.values.map(\.descriptor).filter { !compatibilityNames.contains($0.name) }.sorted { $0.name < $1.name }
+        let visible = lock.withLock { runners.values.filter { !compatibilityNames.contains($0.descriptor.name) } }
+        return visible.filter { $0.isAvailable() }.map(\.descriptor).sorted { $0.name < $1.name }
     }
 
     /// Removes runtime entries owned by one dynamic source. Native callers do

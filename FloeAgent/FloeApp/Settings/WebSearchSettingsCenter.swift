@@ -39,6 +39,9 @@ final class WebSearchSettingsCenter: ObservableObject {
         let data = cloud.data(forKey: Self.defaultsKey) ?? defaults.data(forKey: Self.defaultsKey)
         if let data, let decoded = try? JSONDecoder().decode([WebSearchProviderConfiguration].self, from: data) {
             providers = Self.normalizedProviders(decoded)
+            // Runtime resolution reads local defaults. Mirror cloud hydration
+            // immediately, rather than waiting for an unrelated Save tap.
+            if let normalized = try? JSONEncoder().encode(providers) { defaults.set(normalized, forKey: Self.defaultsKey) }
             migrateBochaCredentialIfNeeded()
             FloeLogger(category: .sync).info(
                 "webSearchSettingsLoaded source=\(cloud.data(forKey: Self.defaultsKey) == nil ? "local" : "cloud") count=\(providers.count) enabled=\(providers.filter(\.enabled).count)"
@@ -92,11 +95,27 @@ final class WebSearchSettingsCenter: ObservableObject {
     }
 
     nonisolated static func resolvedConfigurations() async -> [(WebSearchProviderConfiguration, WebSearchCredential)] {
+        readyConfigurations()
+    }
+
+    nonisolated static func toolIsAvailable(_ name: String) -> Bool {
+        let ready = readyConfigurations()
+        if name == WebSearchTool.name { return !ready.isEmpty }
+        if name == BochaAISearchTool.name { return ready.contains { $0.0.kind == .bochaWeb || $0.0.kind == .bochaAI } }
+        return false
+    }
+
+    nonisolated private static func readyConfigurations() -> [(WebSearchProviderConfiguration, WebSearchCredential)] {
         let defaults = UserDefaults.standard
-        guard let data = defaults.data(forKey: defaultsKey),
-              let providers = try? JSONDecoder().decode([WebSearchProviderConfiguration].self, from: data) else { return [] }
+        // Resolve hydration here as well: opening Settings is not a prerequisite
+        // for using cloud-synced configuration after launch or upgrade.
+        let snapshots = [NSUbiquitousKeyValueStore.default.data(forKey: defaultsKey), defaults.data(forKey: defaultsKey)]
+        guard let providers = snapshots.compactMap({ data -> [WebSearchProviderConfiguration]? in
+            guard let data else { return nil }
+            return try? JSONDecoder().decode([WebSearchProviderConfiguration].self, from: data)
+        }).first else { return [] }
         let store = KeychainStore(service: keychainService, synchronizable: true)
-        return normalizedProviders(providers).filter(\.enabled).compactMap { configuration in
+        let candidates: [(WebSearchProviderConfiguration, WebSearchCredential)] = normalizedProviders(providers).filter(\.enabled).compactMap { configuration in
             if let secret = try? store.read(account: configuration.credentialAccount),
                let credential = try? JSONDecoder().decode(WebSearchCredential.self, from: secret) {
                 return (configuration, credential)
@@ -110,6 +129,9 @@ final class WebSearchSettingsCenter: ObservableObject {
                 ? nil
                 : (configuration, WebSearchCredential(values: [:]))
         }
+        return candidates.map { configuration, credential in
+            (configuration, WebSearchCredential(values: credential.values.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }))
+        }.filter { WebSearchService.isConfigured($0.0, credential: $0.1) }
     }
 
     private func persist() {
@@ -174,15 +196,10 @@ final class WebSearchSettingsCenter: ObservableObject {
     }
 
     nonisolated static func runtimeProviderNote() -> String? {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let decoded = try? JSONDecoder().decode(
-                [WebSearchProviderConfiguration].self,
-                from: data
-              ) else { return nil }
-        let enabled = normalizedProviders(decoded).filter(\.enabled)
-        guard !enabled.isEmpty else { return "Web search providers enabled: none." }
-        return "Web search providers enabled: "
-            + enabled.map { "\($0.displayName) [\($0.kind.rawValue)]" }.joined(separator: ", ")
+        let ready = readyConfigurations().map(\.0)
+        guard !ready.isEmpty else { return nil }
+        return "Available web search providers: "
+            + ready.map { "\($0.displayName) [\($0.kind.rawValue)]" }.joined(separator: ", ")
             + ". The optional web.search provider argument must use one of these names or kinds."
     }
 }

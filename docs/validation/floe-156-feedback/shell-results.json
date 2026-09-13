@@ -1,0 +1,90 @@
+[
+  {
+    "stdout" : "scoped",
+    "status" : 0,
+    "index" : 2,
+    "stderr" : "",
+    "exit" : 0,
+    "workerStopped" : true
+  },
+  {
+    "exit" : 0,
+    "status" : 0,
+    "index" : 3,
+    "stdout" : "unset",
+    "workerStopped" : true,
+    "stderr" : ""
+  },
+  {
+    "exit" : 7,
+    "stderr" : "",
+    "workerStopped" : true,
+    "index" : 1,
+    "status" : 0,
+    "stdout" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "exit" : 0,
+    "status" : 0,
+    "stdout" : "HELLO\nWORLD\n",
+    "stderr" : "",
+    "index" : 0,
+    "workerStopped" : true
+  },
+  {
+    "stderr" : "",
+    "stdout" : "FIRST\nTWO\n",
+    "index" : 4,
+    "exit" : 0,
+    "workerStopped" : true,
+    "status" : 0
+  },
+  {
+    "workerStopped" : true,
+    "stdout" : "",
+    "status" : 0,
+    "index" : 5,
+    "stderr" : "dash: 1: floe_nonexistent_command_qualification: not found\n",
+    "exit" : 127
+  },
+  {
+    "index" : 6,
+    "stdout" : "",
+    "stderr" : "",
+    "workerStopped" : true,
+    "status" : 3,
+    "exit" : 130
+  },
+  {
+    "exit" : 0,
+    "stderr" : "",
+    "workerStopped" : true,
+    "index" : 7,
+    "status" : 0,
+    "stdout" : "after-cancel\n"
+  },
+  {
+    "stdout" : "",
+    "workerStopped" : true,
+    "exit" : 130,
+    "stderr" : "",
+    "status" : 2,
+    "index" : 8
+  },
+  {
+    "exit" : 127,
+    "status" : 0,
+    "index" : 9,
+    "workerStopped" : true,
+    "stdout" : "",
+    "stderr" : "dash: 0: floe_missing_pipeline_command: not found\n"
+  },
+  {
+    "stdout" : "after_missing_pipe",
+    "stderr" : "",
+    "workerStopped" : true,
+    "index" : 10,
+    "status" : 0,
+    "exit" : 0
+  }
+]

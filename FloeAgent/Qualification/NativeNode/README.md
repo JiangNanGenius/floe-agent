@@ -19,3 +19,5 @@ and relative filesystem access without changing the App process cwd.
 `node-adapter-results.json` must contain four successful adapter checks plus
 `passed=true`: stdin, invalid output limit, timeout, and running cancellation.
 A test result is valid only for its recorded bridge/host revision and platform.
+
+The adapter record also checks live native stdin without EOF, cancellation of a synchronous input reader, and a real HTTPS request with an authorized TLS socket. `passed` must include all adapter checks.

@@ -28,7 +28,7 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified speech, image/video workbenches and project/session environments. **Version 1.7.0 (156) is available in the internal Floe QA TestFlight group, verified as VALID / IN_BETA_TESTING.** Production release remains separate. See the [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md).
 
-The [Build 156 feedback repair candidate](docs/FLOE_156_FEEDBACK_REPAIR.md) adds background-only browser operations with explicit human handoff, direct HTTP/API workflow guidance, and shell/Python/Node reliability repairs. These changes are under qualification and are not a newer TestFlight build yet.
+The [Build 156 feedback repair candidate](docs/FLOE_156_FEEDBACK_REPAIR.md) adds background-only browser operations with explicit human handoff, direct HTTP/API workflows, shared HTTPS certificate configuration, configured-only search discovery, and shell/Python/Node reliability repairs. These changes are under qualification and are not a newer TestFlight build yet.
 
 The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
 
