@@ -1,0 +1,92 @@
+[
+  {
+    "status" : 0,
+    "workerStopped" : true,
+    "index" : 0,
+    "exit" : 0,
+    "stderr" : "",
+    "truncated" : false,
+    "processCwdPreserved" : true,
+    "stdout" : "scoped\n"
+  },
+  {
+    "stdout" : "input-data",
+    "processCwdPreserved" : true,
+    "status" : 0,
+    "exit" : 0,
+    "stderr" : "",
+    "truncated" : false,
+    "workerStopped" : true,
+    "index" : 1
+  },
+  {
+    "stderr" : "",
+    "truncated" : true,
+    "workerStopped" : true,
+    "processCwdPreserved" : true,
+    "index" : 2,
+    "exit" : 0,
+    "stdout" : "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "status" : 0
+  },
+  {
+    "index" : 3,
+    "truncated" : false,
+    "stdout" : "",
+    "status" : 2,
+    "workerStopped" : true,
+    "processCwdPreserved" : true,
+    "exit" : 1,
+    "stderr" : ""
+  },
+  {
+    "truncated" : false,
+    "exit" : 0,
+    "stderr" : "",
+    "status" : 0,
+    "processCwdPreserved" : true,
+    "stdout" : "alive\n",
+    "workerStopped" : true,
+    "index" : 4
+  },
+  {
+    "truncated" : false,
+    "status" : 0,
+    "exit" : 0,
+    "workerStopped" : true,
+    "stdout" : "input-data",
+    "stderr" : "",
+    "index" : 5,
+    "processCwdPreserved" : true
+  },
+  {
+    "stderr" : "",
+    "workerStopped" : true,
+    "truncated" : false,
+    "processCwdPreserved" : true,
+    "index" : 6,
+    "exit" : 1,
+    "status" : 3,
+    "stdout" : ""
+  },
+  {
+    "truncated" : false,
+    "workerStopped" : true,
+    "stdout" : "after-cancel\n",
+    "stderr" : "",
+    "exit" : 0,
+    "processCwdPreserved" : true,
+    "status" : 0,
+    "index" : 7
+  },
+  {
+    "status" : 0,
+    "stderr" : "",
+    "truncated" : false,
+    "workerStopped" : true,
+    "exit" : 0,
+    "index" : 8,
+    "stdout" : "scoped-file\n",
+    "processCwdPreserved" : true
+  }
+]

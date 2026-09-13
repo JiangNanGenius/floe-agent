@@ -217,6 +217,7 @@
 		6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */; };
 		60E0C3F854C4FA5869FA041D /* SyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38EF13B22EE01FC77116294D /* SyncSettingsView.swift */; };
 		614FA71218ADDCA73DF938F3 /* pandas__libs_hashtable.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C7B72A5E39B57AC2C0495F8 /* pandas__libs_hashtable.xcframework */; };
+		6199EC80E8347A58A50C39B8 /* FloeTLSConfiguration.m in Sources */ = {isa = PBXBuildFile; fileRef = A53D1BCB11C304CA5EA031AF /* FloeTLSConfiguration.m */; };
 		62739F41A3576A254985C282 /* pandas__libs_window_aggregations.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4005923C1682BD260619B12B /* pandas__libs_window_aggregations.xcframework */; };
 		62D36041B800B1494EAD83D2 /* SourceControlCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */; };
 		6351CFE8FFBB071B71F5A3D2 /* FloeVNC in Frameworks */ = {isa = PBXBuildFile; productRef = 8D67ACB7499F21D8B8B49FE4 /* FloeVNC */; };
@@ -984,6 +985,7 @@
 		855EFD5014DCA004E8103D32 /* _sha3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sha3.xcframework; path = Vendor/PythonExtensions/_sha3.xcframework; sourceTree = "<group>"; };
 		857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorViewModel.swift; sourceTree = "<group>"; };
 		86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeViewModel.swift; sourceTree = "<group>"; };
+		86CDA5BDD4FE1BEF6D191937 /* FloeTLSConfiguration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeTLSConfiguration.h; sourceTree = "<group>"; };
 		87012024D0AFCF4EB416D0E3 /* pandas__libs_sparse.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_sparse.xcframework; path = Vendor/PythonExtensions/pandas__libs_sparse.xcframework; sourceTree = "<group>"; };
 		871FFA753BBCEEACD71CE8DA /* FloePDFExceptionGuard.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloePDFExceptionGuard.h; sourceTree = "<group>"; };
 		87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionSnapshot.swift; sourceTree = "<group>"; };
@@ -1036,6 +1038,7 @@
 		A4999F0E9E0D0A321084F08D /* _imagingmorph.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imagingmorph.xcframework; path = Vendor/PythonExtensions/_imagingmorph.xcframework; sourceTree = "<group>"; };
 		A4A0E75544F5FA28387CB77B /* ProviderListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListView.swift; sourceTree = "<group>"; };
 		A4C045D240779DF5FC64D438 /* CreativeAssetIngestionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeAssetIngestionTests.swift; sourceTree = "<group>"; };
+		A53D1BCB11C304CA5EA031AF /* FloeTLSConfiguration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FloeTLSConfiguration.m; sourceTree = "<group>"; };
 		A6361867E119C80F4DB74A23 /* DocumentPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPickerView.swift; sourceTree = "<group>"; };
 		A6520AE8AEB23423CED3B500 /* regex__regex.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = regex__regex.xcframework; path = Vendor/PythonExtensions/regex__regex.xcframework; sourceTree = "<group>"; };
 		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
@@ -1377,6 +1380,8 @@
 				BD21A10D592EBFDF538C2C85 /* FloeShellBridge.h */,
 				1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */,
 				828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */,
+				86CDA5BDD4FE1BEF6D191937 /* FloeTLSConfiguration.h */,
+				A53D1BCB11C304CA5EA031AF /* FloeTLSConfiguration.m */,
 				302D81B12BD70148923C79D1 /* IOSSystemNodeRuntime.swift */,
 				27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */,
 				242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */,
@@ -2542,6 +2547,7 @@
 				66A06EF450BB006193BCBA2F /* FloeShellBridge.mm in Sources */,
 				2A28A5D2E585FE372E6AA7E8 /* FloeShellCommands.swift in Sources */,
 				FBA76463B171719B586A0436 /* FloeShortcuts.swift in Sources */,
+				6199EC80E8347A58A50C39B8 /* FloeTLSConfiguration.m in Sources */,
 				A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */,
 				93FBA12D3BE2E1BCF61C8A5A /* FloeVideoTranscriptionProvider.swift in Sources */,
 				53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */,
