@@ -59,11 +59,12 @@ enum NetworkDiagnosticTiming {
         let arbiter = DeadlineArbiter<T>()
         return try await withCheckedThrowingContinuation { continuation in
             arbiter.arm(continuation)
-            Task.detached {
+            // getaddrinfo and other blocking lookups must not occupy a Swift
+            // cooperative worker. The timeout also runs independently of it.
+            DispatchQueue(label: "org.floe.network.lookup.\(UUID().uuidString)", qos: .utility).async {
                 arbiter.resolve(Result { try operation() })
             }
-            Task {
-                try? await Task.sleep(for: .seconds(seconds))
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
                 arbiter.resolve(.failure(FloeError.validationFailed(timeoutMessage)))
             }
         }

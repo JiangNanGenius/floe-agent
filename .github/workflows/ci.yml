@@ -248,11 +248,11 @@ jobs:
           # Deadline tests intentionally outlive the caller briefly. Isolate
           # both JavaScript suites so loaded shared runners cannot make their
           # wall-clock assertions interfere with unrelated concurrent tests.
-          swift test \
+          python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/full" -- swift test \
             --skip 'FloeExecutionTests.JavaScriptEngineTests' \
             --skip 'FloeExecutionTests.JavaScriptExecutionToolTests'
-          swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
-          swift test --filter 'FloeExecutionTests.JavaScriptExecutionToolTests'
+          python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/javascript-engine" -- swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
+          python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/javascript-tool" -- swift test --filter 'FloeExecutionTests.JavaScriptExecutionToolTests'
 
       - name: Secret scan
         run: |
@@ -277,6 +277,7 @@ jobs:
             FloeAgent/LICENSES-THIRD-PARTY.md
             FloeAgent/.gitleaks-report.json
             FloeAgent/FloeAgent-AppRegressionTests.xcresult
+            ${{ runner.temp }}/SwiftTestDiagnostics
           if-no-files-found: ignore
 
   appstore-sdk-compatibility:

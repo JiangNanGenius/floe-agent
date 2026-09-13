@@ -26,8 +26,28 @@ struct NetworkDiagnosticToolsTests {
                 return "unreachable"
             }
         }
-        // The deadline must win promptly; the leaked sleeper is harmless.
+        // The deadline must win promptly; the owned worker exits after its sleep.
         #expect(Date().timeIntervalSince(started) < 3)
+    }
+
+    @Test("Concurrent blocking lookups keep their deadlines responsive")
+    func concurrentDeadlines() async {
+        let started = ContinuousClock.now
+        await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    do {
+                        _ = try await NetworkDiagnosticTiming.withDeadline(seconds: 0.1, timeoutMessage: "timeout") {
+                            Thread.sleep(forTimeInterval: 2)
+                            return 42
+                        }
+                        return false
+                    } catch { return true }
+                }
+            }
+            for await timedOut in group { #expect(timedOut) }
+        }
+        #expect(started.duration(to: .now) < .seconds(1.5))
     }
 
     @Test("withDeadline propagates the operation's own error")

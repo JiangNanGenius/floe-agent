@@ -97,3 +97,9 @@ suites, which still run separately. Fresh cloud verification remains required.
 Includes independent Notes, dynamic illustrated maps and PDF windows, Office and Whisper integration, and confirmed permanent deletion with shared-resource protection. SDK 27/26 iPad/iPhone native qualification passed at `4550b6d` in run `34742130370`; subsequent lifecycle code passed 15 host tests and native component compilation. The release workflow must verify the final tagged source before signed upload. Physical-device acceptance follows TestFlight installation and is performed by the user.
 
 The package/model qualification matrix remains explicit; unbuilt resources are not offered as installed capabilities. Upload, Apple processing and tester availability are pending until verified.
+
+## Build 150 / beta.7 preparation
+
+Build 149 failed its automated Swift gate and was not uploaded. Cloud sampling confirmed cooperative workers blocked while draining WASM output; its network timeout also failed under contention. Build 150 separates blocking WASM/DNS work from Swift task scheduling, tests task cancellation, parallel commands and lookup deadlines, and updates the explicit Canvas tool-set assertion for the four scoped Notes tools.
+
+All release gates remain required. The next fixed candidate is `v1.7.0-beta.7`; upload and Apple processing are still pending. Device testing follows internal TestFlight availability and belongs to the user.

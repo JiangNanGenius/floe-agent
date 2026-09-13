@@ -10,15 +10,27 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
     public init() {}
 
     public func run(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
-        await Task.detached(priority: .userInitiated) {
-            Self.execute(moduleURL: moduleURL, arguments: arguments, stdin: stdin, environment: environment, rootURL: rootURL, timeout: timeout, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
-        }.value
+        let taskCancellation = CancellationToken()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // The interpreter and pipe drains perform blocking I/O. Keep
+                // them off Swift's cooperative pool, and retain all buffers
+                // until this worker actually leaves the interpreter.
+                DispatchQueue(label: "org.floe.wasi.worker.\(UUID().uuidString)", qos: .userInitiated).async {
+                    continuation.resume(returning: Self.execute(moduleURL: moduleURL, arguments: arguments,
+                        stdin: stdin, environment: environment, rootURL: rootURL, timeout: timeout,
+                        maxOutputBytes: maxOutputBytes, cancellation: cancellation, taskCancellation: taskCancellation))
+                }
+            }
+        } onCancel: {
+            taskCancellation.cancel()
+        }
     }
 
-    private static func execute(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken?) -> ShellRunOutcome {
+    private static func execute(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken?, taskCancellation: CancellationToken) -> ShellRunOutcome {
         let started = DispatchTime.now().uptimeNanoseconds
         let seconds = timeout.isFinite ? max(0.01, min(timeout, 120)) : 10
-        let budget = Budget(deadline: started + UInt64(seconds * 1_000_000_000), cancellation: cancellation)
+        let budget = Budget(deadline: started + UInt64(seconds * 1_000_000_000), cancellations: [cancellation, taskCancellation].compactMap { $0 })
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("floe-wasi-" + UUID().uuidString)
         let captureBudget = CaptureBudget(maxBytes: max(1, min(maxOutputBytes, 256 * 1024)))
         let output = Capture(budget: captureBudget)
@@ -77,11 +89,11 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
     private enum BudgetFailure: Error { case deadline, cancelled, fuel }
     private final class Budget: @unchecked Sendable {
         let deadline: UInt64
-        let cancellation: CancellationToken?
+        let cancellations: [CancellationToken]
         private var checks = 0 // Used only on the invocation's interpreter thread.
-        init(deadline: UInt64, cancellation: CancellationToken?) { self.deadline = deadline; self.cancellation = cancellation }
+        init(deadline: UInt64, cancellations: [CancellationToken]) { self.deadline = deadline; self.cancellations = cancellations }
         func check() throws {
-            if cancellation?.isCancelled == true { throw BudgetFailure.cancelled }
+            if cancellations.contains(where: \.isCancelled) { throw BudgetFailure.cancelled }
             if DispatchTime.now().uptimeNanoseconds >= deadline { throw BudgetFailure.deadline }
             checks += 1
             if checks > 50_000 { throw BudgetFailure.fuel }

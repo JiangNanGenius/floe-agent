@@ -1,0 +1,28 @@
+◇ Test run started.
+◇ Suite "FloeTools.MCPRemoteToolSource" started.
+◇ Test "Canvas policy exposes bounded native and scoped Notes tools unless MCP is explicitly granted" started.
+✔ Test "Canvas policy exposes bounded native and scoped Notes tools unless MCP is explicitly granted" passed after 0.001 seconds.
+◇ Test "Canvas policy includes only enabled tools from an explicitly granted MCP server" started.
+✔ Test "Canvas policy includes only enabled tools from an explicitly granted MCP server" passed after 0.003 seconds.
+◇ Test "Credential-bearing MCP requests never follow redirects" started.
+✔ Test "Credential-bearing MCP requests never follow redirects" passed after 0.020 seconds.
+◇ Test "HTTP endpoints require an explicit trusted-LAN override" started.
+✔ Test "HTTP endpoints require an explicit trusted-LAN override" passed after 0.003 seconds.
+◇ Test "Current Streamable HTTP sends per-request metadata and routing headers" started.
+✔ Test "Current Streamable HTTP sends per-request metadata and routing headers" passed after 0.028 seconds.
+◇ Test "Legacy servers fall back to initialize and preserve the session header" started.
+✔ Test "Legacy servers fall back to initialize and preserve the session header" passed after 0.005 seconds.
+◇ Test "Tool calls mirror validated x-mcp-header parameters and encode non-ASCII" started.
+✔ Test "Tool calls mirror validated x-mcp-header parameters and encode non-ASCII" passed after 0.003 seconds.
+◇ Test "Malformed x-mcp-header tools are excluded without hiding valid siblings" started.
+✔ Test "Malformed x-mcp-header tools are excluded without hiding valid siblings" passed after 0.001 seconds.
+◇ Test "Mirrored header values are bounded before a network request" started.
+✔ Test "Mirrored header values are bounded before a network request" passed after 0.001 seconds.
+◇ Test "Discovery rejects repeated pagination cursors" started.
+✔ Test "Discovery rejects repeated pagination cursors" passed after 0.001 seconds.
+◇ Test "Dynamic MCP runners enforce the advertised argument schema" started.
+✔ Test "Dynamic MCP runners enforce the advertised argument schema" passed after 0.001 seconds.
+◇ Test "Dynamic names are provider-safe and server removal is bounded" started.
+✔ Test "Dynamic names are provider-safe and server removal is bounded" passed after 0.001 seconds.
+✔ Suite "FloeTools.MCPRemoteToolSource" passed after 0.074 seconds.
+✔ Test run with 12 tests in 1 suite passed after 0.075 seconds.

@@ -25,3 +25,5 @@ These are synthetic component fixtures, not a full application or device run.
 ## 手记输出图的说明文档用途
 
 中英文使用指南引用 `notes/ipad27-export-text-and-ink.png`，展示重新读取的 PDF 文字与笔迹产物。它是组件导出结果，不是完整应用页面。导图横屏裁切、空白页面等失败截图继续保留在 `notes/render-regressions-*`，不用于新版产品介绍。新版本完整页面截图需记录最终提交与双端设备后补入。
+
+`notes/verified-455/ipad-landscape-pdf-map.png` 来自 `34742130370` / `4550b6d` 的 iPad SDK 27 原生 UI 测试。已检查可见的 PDF 页首与独立导图小窗，并加入双语使用指南。SDK 27/26 的 iPad/iPhone 四种组合各 10 项测试通过；这里只展示组件场景，不声称是完整 App 或真机画面。

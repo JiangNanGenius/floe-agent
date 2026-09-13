@@ -71,7 +71,7 @@ struct MCPRemoteToolSourceTests {
         return URLSession(configuration: configuration)
     }
 
-    @Test("Canvas policy exposes only bounded web tools unless MCP is explicitly granted")
+    @Test("Canvas policy exposes bounded native and scoped Notes tools unless MCP is explicitly granted")
     func canvasPolicyDefaultsClosed() {
         let server = MCPServerConfiguration(
             displayName: "Assets",
@@ -97,6 +97,7 @@ struct MCPRemoteToolSourceTests {
             "canvas.getState", "canvas.applyOperations", "canvas.delete",
             "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
             "canvas.generate", "canvas.generationStatus",
+            "notes.read", "notes.search", "notes.edit", "notes.attachFile",
         ])
         #expect(!names.contains("canvas.inspect"))
         #expect(!names.contains("canvas.applyPatch"))

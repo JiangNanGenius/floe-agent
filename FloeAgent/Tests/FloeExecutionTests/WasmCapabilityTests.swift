@@ -32,6 +32,34 @@ struct WasmCapabilityTests {
         guard case .timedOut = outcome else { Issue.record("Loop did not time out: \(outcome)"); return }
     }
 
+    @Test func swiftTaskCancellationReachesInterpreterWithoutExternalToken() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = try module("(module (func (export \"_start\") (loop $forever (br $forever))))", root: root)
+        let work = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await WasmKitCommandRuntime().run(moduleURL: url, arguments: [], stdin: nil,
+                environment: [:], rootURL: root, timeout: 2, maxOutputBytes: 1024)
+        }
+        #expect(await work.value == .cancelled)
+    }
+
+    @Test func concurrentCommandsDrainPipesWithoutBlockingSwiftTasks() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = try module("(module (func (export \"_start\")))", root: root)
+        await withTaskGroup(of: ShellRunOutcome.self) { group in
+            for _ in 0..<12 {
+                group.addTask { await WasmKitCommandRuntime().run(moduleURL: url, arguments: [], stdin: nil,
+                    environment: [:], rootURL: root, timeout: 2, maxOutputBytes: 1024) }
+            }
+            for await result in group {
+                guard case .exited(let code, _, _, _, _, _) = result else { Issue.record("Unexpected outcome: \(result)"); continue }
+                #expect(code == 0)
+            }
+        }
+    }
+
     @Test func outputIsBounded() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

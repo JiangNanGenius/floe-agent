@@ -1,0 +1,635 @@
+◇ Test run started.
+◇ Suite "QA.ApprovalBoundaries" started.
+◇ Suite "QA.CatastrophicGateEdges" started.
+◇ Suite "QA.CanonicalJSONEdges" started.
+◇ Suite "FloeSecurity.ApprovalPolicies" started.
+◇ Suite "FloeSecurity.AuditChain" started.
+◇ Suite "Secret ingress scanner" started.
+◇ Suite "FloeSecurity.CanonicalJSON" started.
+◇ Test "FullControlPolicy.Grant: expiresAt == now is INACTIVE (now < expiresAt is false)" started.
+◇ Test "FullControlPolicy.Grant: nil expiresAt is always active (until connection closes)" started.
+◇ Test "ApprovalGrant.isExpired: expiresAt == now counts as expired" started.
+◇ Test "FullControlPolicy.Grant: 1ms before expiry is active, 1ms after is not" started.
+◇ Test "ApprovalGrant.isExpired: nil expiresAt never expires" started.
+◇ Suite "FloeSecurity.CatastrophicGate" started.
+◇ Test "Zero-width format characters are removed before tokenization" started.
+◇ Test "Uppercase RM -RF / is stopped (case-insensitive)" started.
+◇ Test "Environment variable expansion forms are stopped" started.
+◇ Test "Tab-separated flags and target are stopped" started.
+◇ Test "Unicode-escaped slashes and homoglyphs are NOT silently stopped" started.
+◇ Test "Newline-continuation splicing is normalized before matching" started.
+◇ Test "Command chain ending in rm -rf / is stopped" started.
+◇ Test "Bundled corpus includes the locked destructive command families" started.
+◇ Test "Decimal('1.50') and Decimal('1.5') canonicalize identically" started.
+◇ Test "CJK keys sort by code point and serialize unescaped" started.
+◇ Suite "FloeSecurity.ApprovalGrantStore" started.
+◇ Test "100-level nested encoding succeeds and is deterministic" started.
+◇ Test "Decimal('0.000') and Decimal('0') canonicalize identically" started.
+◇ Test "Tampering with any field breaks verification at that sequence" started.
+◇ Test "Negative zero Decimal canonicalizes to 0" started.
+◇ Test "HKDF derivation is deterministic and key-sensitive" started.
+◇ Test "Non-integer Decimal keeps fractional digits (BUG-QA-2 regression)" started.
+◇ Test "Wrong device key fails verification" started.
+◇ Test "1000-entry chain constructs and verifies" started.
+◇ Test "PDF rasterization and credential use cannot bypass consent review as routine diagnostics" started.
+◇ Test "Explicit Docker bootstrap authorization is not requested twice" started.
+◇ Test "Sequence gap is detected" started.
+◇ Test "Configured approval model reviews sensitive automatic actions" started.
+◇ Test "FullControlPolicy allows only the granted host" started.
+◇ Test "Automatic mode allows low risk and asks for sensitive actions" started.
+◇ Suite "QA.AuditChainTamper" started.
+◇ Test "Quoted path with spaces normalizes; benign target stays clear" started.
+◇ Test "Bounded Git work is automatic and one publication request is not reviewed repeatedly" started.
+◇ Test "ApprovalGrant expiry boundary" started.
+◇ Test "Non-BMP emoji round-trip is byte-stable and unescaped" started.
+◇ Test "Appending and replacing text share the existing workspace edit approval boundary" started.
+◇ Test "HumanApprovalPolicy always escalates" started.
+◇ Test "Bounded font inspection and install bypass review, removal does not" started.
+◇ Suite "FloeSecurity.ApprovalDecisionParser" started.
+◇ Test "LAN discovery never invokes the approval model" started.
+◇ Test "Append assigns sequence, prevHash, entryHash" started.
+◇ Test "Private key blocks never remain in persisted text" started.
+◇ Test "Nested empty object, empty array, and empty dictionary serialize" started.
+◇ Test "Captures quoted passwords containing spaces" started.
+◇ Test "Replaces labelled password and token values" started.
+◇ Test "Captures explicit English and Chinese is/为 password wording" started.
+◇ Test "Explicit tool testing authorizes disposable SSH commands without repeated review" started.
+◇ Test "Leaves password-related prose without a supplied value intact" started.
+◇ Test "Installed skill Python audit is exact and reusable across approval modes" started.
+◇ Test "Full access permits task actions after the catastrophic gate" started.
+◇ Test "Verified Floe guardian maintenance never asks again" started.
+◇ Test "Live policy wrapper uses the newly selected task mode" started.
+◇ Test "Automatic canvas generation does not enter an approval loop" started.
+◇ Test "Bounded local inspection and presentation bypass the approval model" started.
+◇ Test "Automatic mode falls back for harmless reads when model is unavailable" started.
+◇ Test "SSH inspection and bootstrap planning bypass redundant review" started.
+◇ Test "ModelApprovalPolicy passes through backend allow/deny" started.
+◇ Test "A user-looking line in untrusted transcript text cannot authorize host changes" started.
+◇ Test "ModelApprovalPolicy fail-closed on backend error" started.
+◇ Test "Broad tool-test goals authorize routine diagnostics but not sensitive actions" started.
+◇ Test "Read-only Apple capability tools never invoke the approval model" started.
+◇ Test "Data serializes as lowercase hex" started.
+◇ Test "Encoding is deterministic across 100 fuzz structures" started.
+◇ Test "Prior user environment authority survives a short continue message" started.
+◇ Test "FullControlPolicy expires by wall clock" started.
+◇ Test "Dates serialize as UTC ISO-8601 millis" started.
+◇ Test "Session inventory follows the existing read-only inspection boundary" started.
+◇ Test "Strings normalize to NFC" started.
+◇ Test "Keys serialize sorted by code point, no whitespace" started.
+◇ Test "Sandbox Python runs automatically but package installs require review" started.
+◇ Test "Same logical entry encodes identically regardless of key order in source" started.
+◇ Test "Bundled corpus loads with ≥20 patterns" started.
+◇ Test "Normalization defeats quote/whitespace obfuscation" started.
+◇ Test "Negative corpus: benign commands pass" started.
+◇ Test "Positive corpus: every destructive command is stopped" started.
+✔ Test "FullControlPolicy.Grant: nil expiresAt is always active (until connection closes)" passed after 0.091 seconds.
+✔ Test "FullControlPolicy.Grant: expiresAt == now is INACTIVE (now < expiresAt is false)" passed after 0.092 seconds.
+✔ Test "FullControlPolicy.Grant: 1ms before expiry is active, 1ms after is not" passed after 0.093 seconds.
+✔ Test "ApprovalGrant.isExpired: nil expiresAt never expires" passed after 0.093 seconds.
+✔ Test "ApprovalGrant.isExpired: expiresAt == now counts as expired" passed after 0.093 seconds.
+✔ Test "Unicode-escaped slashes and homoglyphs are NOT silently stopped" passed after 0.094 seconds.
+✔ Test "Uppercase RM -RF / is stopped (case-insensitive)" passed after 0.094 seconds.
+✔ Test "Tab-separated flags and target are stopped" passed after 0.095 seconds.
+◇ Test "Expired grants purge" started.
+◇ Test "Single-use grants burn after consumption" started.
+✔ Test "Newline-continuation splicing is normalized before matching" passed after 0.095 seconds.
+✔ Test "Environment variable expansion forms are stopped" passed after 0.095 seconds.
+✔ Test "Zero-width format characters are removed before tokenization" passed after 0.095 seconds.
+✔ Test "Command chain ending in rm -rf / is stopped" passed after 0.095 seconds.
+✔ Test "Bundled corpus includes the locked destructive command families" passed after 0.095 seconds.
+✔ Test "Decimal('1.50') and Decimal('1.5') canonicalize identically" passed after 0.095 seconds.
+✔ Test "Decimal('0.000') and Decimal('0') canonicalize identically" passed after 0.095 seconds.
+✔ Test "Non-integer Decimal keeps fractional digits (BUG-QA-2 regression)" passed after 0.095 seconds.
+✔ Test "100-level nested encoding succeeds and is deterministic" passed after 0.095 seconds.
+✔ Test "CJK keys sort by code point and serialize unescaped" passed after 0.095 seconds.
+✔ Test "Negative zero Decimal canonicalizes to 0" passed after 0.095 seconds.
+✔ Test "PDF rasterization and credential use cannot bypass consent review as routine diagnostics" passed after 0.095 seconds.
+✔ Test "FullControlPolicy allows only the granted host" passed after 0.095 seconds.
+✔ Test "Configured approval model reviews sensitive automatic actions" passed after 0.095 seconds.
+◇ Test "Deleting the last entry truncates but does NOT corrupt the prefix" started.
+◇ Test "Rebuilding an actor over a tampered chain throws .tampered" started.
+◇ Test "Empty chain verifies clean" started.
+◇ Test "Tampering prevHash of a middle entry is detected at that sequence" started.
+◇ Test "Tampering a middle entry's timestamp is detected at that sequence" started.
+◇ Test "Deleting a middle entry breaks the chain" started.
+✔ Test "ApprovalGrant expiry boundary" passed after 0.095 seconds.
+✔ Test "Explicit Docker bootstrap authorization is not requested twice" passed after 0.095 seconds.
+✔ Test "Automatic mode allows low risk and asks for sensitive actions" passed after 0.095 seconds.
+✔ Test "Bounded Git work is automatic and one publication request is not reviewed repeatedly" passed after 0.095 seconds.
+✔ Test "Non-BMP emoji round-trip is byte-stable and unescaped" passed after 0.095 seconds.
+✔ Test "Appending and replacing text share the existing workspace edit approval boundary" passed after 0.095 seconds.
+✔ Test "HumanApprovalPolicy always escalates" passed after 0.095 seconds.
+◇ Test "Contradictory decisions are rejected" started.
+✔ Test "LAN discovery never invokes the approval model" passed after 0.095 seconds.
+◇ Test "Accepts weak model formatting" started.
+✔ Test "Bounded font inspection and install bypass review, removal does not" passed after 0.095 seconds.
+✔ Test "HKDF derivation is deterministic and key-sensitive" passed after 0.096 seconds.
+✔ Test "Quoted path with spaces normalizes; benign target stays clear" passed after 0.096 seconds.
+✔ Test "Private key blocks never remain in persisted text" passed after 0.095 seconds.
+✔ Test "Nested empty object, empty array, and empty dictionary serialize" passed after 0.096 seconds.
+✔ Test "Captures quoted passwords containing spaces" passed after 0.095 seconds.
+✔ Test "Explicit tool testing authorizes disposable SSH commands without repeated review" passed after 0.095 seconds.
+◇ Test "Forged entryHash on a tampered entry is detected at that entry" started.
+✔ Test "Captures explicit English and Chinese is/为 password wording" passed after 0.096 seconds.
+◇ Test case passing 1 argument command → "rm -rf ./build" to "Negative corpus: benign commands pass" started.
+✔ Test "Replaces labelled password and token values" passed after 0.096 seconds.
+◇ Test case passing 1 argument command → "rm -rf /tmp/scratch" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "rm -rf node_modules" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "rm file.txt" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "dd if=image.img of=backup.img" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "dd of=image.img if=/dev/zero bs=1m count=10" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "mkfs --help" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "diskutil list" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "diskutil info /dev/disk0" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "chmod -R 755 ./dist" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "echo hello > /tmp/out.txt" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "chmod 000 ./secret.txt" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "chown -R user:staff ./project" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "mv ~/Downloads/file /tmp" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "find . -name '*.log' -delete" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "find /tmp -delete" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "rm -rf /", expectedPattern → "rm-rf-root" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "sudo rm -rf / --no-preserve-root", expectedPattern → "rm-rf-root" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "rm -rf /*", expectedPattern → "rm-rf-root-star" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "rm -rf ~", expectedPattern → "rm-rf-home" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "git clean -fd" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "rm -rf $HOME", expectedPattern → "rm-rf-home" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "git clean -fd ./subdir" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "rm -rf /etc", expectedPattern → "rm-rf-system-dirs" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "git status" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "sqlite3 app.db 'drop index idx_old'" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "kill -9 1234" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "killall Finder" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "rm -fr /usr/", expectedPattern → "rm-rf-system-dirs" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "kill -9 -1" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "dd if=/dev/zero of=/dev/disk0 bs=1m", expectedPattern → "dd-block-device" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "launchctl unload ~/Library/LaunchAgents/agent.plist" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "launchctl unload /System/Library/LaunchDaemons/sshd.plist" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "dd of=/dev/sda if=image.iso", expectedPattern → "dd-block-device" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "curl https://example.com/file.tar.gz -o file.tar.gz" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "mkfs.ext4 /dev/sdb1", expectedPattern → "mkfs-block-device" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "mke2fs /dev/nvme0n1", expectedPattern → "mkfs-block-device" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "curl -s https://api.example.com | jq ." to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "wget https://example.com/setup.sh" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "curl https://example.com/install.sh | sh" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "defaults delete com.example.app" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "defaults write -g KeyRepeat -int 2" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "diskutil eraseDisk APFS X /dev/disk2", expectedPattern → "diskutil-erase" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "csrutil status" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "csrutil disable" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "shutdown -h +60" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "shutdown -h now" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "diskutil apfs deleteContainer /dev/disk1s1", expectedPattern → "diskutil-erase" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "reboot" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → ":(){ :|:& };:" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "echo x > /dev/sda", expectedPattern → "redirect-block-device" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "ls /" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "cat /etc/hosts" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "shred -vfz /dev/sda", expectedPattern → "shred-root" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "srm -rf ~", expectedPattern → "shred-root" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "chmod -R 000 /", expectedPattern → "chmod-root-000" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "chown -R nobody /", expectedPattern → "chown-root-recursive" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "sudo ls /var/root" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "mv ~ /dev/null", expectedPattern → "mv-to-null" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "mv / /dev/null", expectedPattern → "mv-to-null" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "npm run build" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "find / -name '*.tmp' -delete", expectedPattern → "find-delete-root" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "xcodebuild -scheme App clean" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "git clean -fdx", expectedPattern → "git-clean-home" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "DROP DATABASE production", expectedPattern → "sql-drop-database" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "tar -czf backup.tar.gz ~" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "drop table users", expectedPattern → "sql-drop-table-no-where" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "rsync -av ~/Documents /Volumes/Backup" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "TRUNCATE TABLE events", expectedPattern → "sql-truncate" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "docker system prune" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "fdisk /dev/disk0", expectedPattern → "partition-tool" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "parted /dev/sda mklabel gpt", expectedPattern → "partition-tool" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 1 argument command → "brew uninstall wget" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 1 argument command → "pip install requests" to "Negative corpus: benign commands pass" started.
+◇ Test case passing 2 arguments command → "zfs destroy -r tank/data", expectedPattern → "zfs-destroy" to "Positive corpus: every destructive command is stopped" started.
+◇ Test case passing 2 arguments command → "btrfs subvolume delete /", expectedPattern → "btrfs-subvolume-delete-root" to "Positive corpus: every destructive command is stopped" started.
+✔ Test "Verified Floe guardian maintenance never asks again" passed after 0.118 seconds.
+✔ Test "Full access permits task actions after the catastrophic gate" passed after 0.118 seconds.
+✔ Test "Leaves password-related prose without a supplied value intact" passed after 0.118 seconds.
+✔ Test "Automatic canvas generation does not enter an approval loop" passed after 0.118 seconds.
+✔ Test "Live policy wrapper uses the newly selected task mode" passed after 0.118 seconds.
+✔ Test "Bounded local inspection and presentation bypass the approval model" passed after 0.118 seconds.
+✔ Test "SSH inspection and bootstrap planning bypass redundant review" passed after 0.118 seconds.
+✔ Test "ModelApprovalPolicy passes through backend allow/deny" passed after 0.116 seconds.
+✔ Test "Automatic mode falls back for harmless reads when model is unavailable" passed after 0.118 seconds.
+✔ Test "ModelApprovalPolicy fail-closed on backend error" passed after 0.116 seconds.
+✔ Test "Installed skill Python audit is exact and reusable across approval modes" passed after 0.118 seconds.
+✔ Test "Read-only Apple capability tools never invoke the approval model" passed after 0.116 seconds.
+✔ Test "Data serializes as lowercase hex" passed after 0.115 seconds.
+✔ Test "Broad tool-test goals authorize routine diagnostics but not sensitive actions" passed after 0.116 seconds.
+✔ Test "Wrong device key fails verification" passed after 0.118 seconds.
+✔ Test "Prior user environment authority survives a short continue message" passed after 0.115 seconds.
+✔ Test "Dates serialize as UTC ISO-8601 millis" passed after 0.115 seconds.
+✔ Test "A user-looking line in untrusted transcript text cannot authorize host changes" passed after 0.116 seconds.
+✔ Test "FullControlPolicy expires by wall clock" passed after 0.115 seconds.
+✔ Test "Keys serialize sorted by code point, no whitespace" passed after 0.115 seconds.
+✔ Test "Session inventory follows the existing read-only inspection boundary" passed after 0.115 seconds.
+✔ Test "Same logical entry encodes identically regardless of key order in source" passed after 0.054 seconds.
+✔ Test "Strings normalize to NFC" passed after 0.116 seconds.
+✔ Test "Append assigns sequence, prevHash, entryHash" passed after 0.118 seconds.
+✔ Test "Sequence gap is detected" passed after 0.122 seconds.
+◇ Test case passing 1 argument caseItem → ("{\"decision\":\"allow\",\"reason\":\"read only\"}", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("```json\n{\"result\":\"批准\"}\n```", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("Decision: DENY", FloeSecurity.ApprovalDecisionParser.Outcome.deny) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("结论： ASK", FloeSecurity.ApprovalDecisionParser.Outcome.ask) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("{\"approved\":true}", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+✔ Test "Bundled corpus loads with ≥20 patterns" passed after 0.039 seconds.
+✔ Test "Tampering with any field breaks verification at that sequence" passed after 0.127 seconds.
+◇ Test case passing 1 argument caseItem → ("允许", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("批准，因为这是只读操作。", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("ALLOW because there is no reason to deny this read.", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("审核结果：无需阻止，风险边界明确。", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("不能批准：需要用户确认。", FloeSecurity.ApprovalDecisionParser.Outcome.deny) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("I approve this bounded operation.", FloeSecurity.ApprovalDecisionParser.Outcome.allow) to "Accepts weak model formatting" started.
+◇ Test case passing 1 argument caseItem → ("Requires human confirmation.", FloeSecurity.ApprovalDecisionParser.Outcome.ask) to "Accepts weak model formatting" started.
+✔ Test "Sandbox Python runs automatically but package installs require review" passed after 0.124 seconds.
+✔ Test "Normalization defeats quote/whitespace obfuscation" passed after 0.039 seconds.
+✔ Test "Positive corpus: every destructive command is stopped" with 29 test cases passed after 0.039 seconds.
+✔ Test "Encoding is deterministic across 100 fuzz structures" passed after 0.124 seconds.
+✔ Suite "QA.ApprovalBoundaries" passed after 0.128 seconds.
+✔ Test "Expired grants purge" passed after 0.032 seconds.
+✔ Suite "QA.CatastrophicGateEdges" passed after 0.128 seconds.
+✔ Suite "QA.CanonicalJSONEdges" passed after 0.128 seconds.
+✔ Test "Empty chain verifies clean" passed after 0.032 seconds.
+✔ Test "Single-use grants burn after consumption" passed after 0.032 seconds.
+✔ Test "Contradictory decisions are rejected" passed after 0.031 seconds.
+✔ Suite "Secret ingress scanner" passed after 0.128 seconds.
+✔ Test "Tampering prevHash of a middle entry is detected at that sequence" passed after 0.032 seconds.
+✔ Test "Deleting a middle entry breaks the chain" passed after 0.032 seconds.
+✔ Test "Tampering a middle entry's timestamp is detected at that sequence" passed after 0.032 seconds.
+✔ Test "Rebuilding an actor over a tampered chain throws .tampered" passed after 0.032 seconds.
+✔ Test "Forged entryHash on a tampered entry is detected at that entry" passed after 0.031 seconds.
+✔ Test "Negative corpus: benign commands pass" with 47 test cases passed after 0.039 seconds.
+✔ Suite "FloeSecurity.CanonicalJSON" passed after 0.128 seconds.
+✔ Suite "FloeSecurity.ApprovalGrantStore" passed after 0.128 seconds.
+✔ Suite "FloeSecurity.ApprovalPolicies" passed after 0.128 seconds.
+✔ Suite "FloeSecurity.CatastrophicGate" passed after 0.128 seconds.
+✔ Test "Deleting the last entry truncates but does NOT corrupt the prefix" passed after 0.032 seconds.
+✔ Suite "QA.AuditChainTamper" passed after 0.128 seconds.
+✔ Test "Accepts weak model formatting" with 12 test cases passed after 0.032 seconds.
+✔ Suite "FloeSecurity.ApprovalDecisionParser" passed after 0.128 seconds.
+✔ Test "1000-entry chain constructs and verifies" passed after 0.552 seconds.
+✔ Suite "FloeSecurity.AuditChain" passed after 0.553 seconds.
+✔ Test run with 83 tests in 11 suites passed after 0.554 seconds.
+◇ Test run started.
+◇ Suite "Bundled remote agent payload" started.
+◇ Suite "Remote connection inventory" started.
+◇ Suite "FloeExecution.BundledJavaScriptPackages" started.
+◇ Suite "FloeExecution.MailTransport" started.
+◇ Suite "Bounded signed WASM commands" started.
+◇ Suite "FloeExecution.WasmExecutionTool" started.
+◇ Suite "FloeExecution.NetworkDiagnostics" started.
+◇ Suite "FloeExecution.MailDeliveryJournal" started.
+◇ Suite "FloeExecution workspace vision inputs" started.
+◇ Suite "Background jobs" started.
+◇ Suite "FloeExecution.CryptoHash" started.
+◇ Suite "FloeExecution rich presentation artifacts" started.
+◇ Suite "FloeExecution.MailProtocol" started.
+◇ Suite "FloeExecution.LocalPython" started.
+◇ Suite "FloeExecution.SSHShell" started.
+✔ Suite "FloeExecution.BundledJavaScriptPackages" passed after 0.001 seconds.
+◇ Suite "Web retrieval adapters" started.
+◇ Suite "FloeExecution.SSHExec & HTTPRequest" started.
+◇ Suite "Local shell boundaries" started.
+◇ Suite "LAN discovery configuration" started.
+◇ Suite "FloeExecution SVG document" started.
+◇ Suite "FloeExecution.CryptoCipher" started.
+◇ Suite "FloeExecution.URLDownload" started.
+◇ Suite "Capability install persistence" started.
+◇ Suite "FloeExecution local numerical compatibility" started.
+◇ Suite "Cloud workspace discovery contract" started.
+◇ Test "Durable task ids are stable for reconnect" started.
+◇ Test "Status is registered, read only and rejects foreign session IDs" started.
+◇ Test "Inventory preserves unread bytes and isolates real TCP sessions by run" started.
+◇ Test actualSocketRefusesTLSBeforeCredentials() started.
+◇ Test "Rejects data without a WebAssembly header" started.
+◇ Test "First helper use upgrades a stale host and later uses are cached" started.
+◇ Test stdinRoundTrip() started.
+◇ Test "Concurrent first uses share one guardian version check" started.
+◇ Test "Agent and updater sources are available at runtime" started.
+◇ Test signatureInstallTamperAndRemove() started.
+◇ Suite "FloeExecution saved host tools" started.
+◇ Test exitsSuccessfully() started.
+◇ Test "Guardian is not installed on a device that is only a management target" started.
+◇ Test pureInfiniteLoopTimesOut() started.
+◇ Test swiftTaskCancellationReachesInterpreterWithoutExternalToken() started.
+◇ Suite "FloeExecution.PDFFillForm" started.
+◇ Test "Descriptor is local pure computation" started.
+◇ Test preopensRejectParentAndSymlinkEscapes() started.
+◇ Test concurrentAdmissionHasExactlyOneFirstAttempt() started.
+◇ Test "withDeadline throws the timeout error when the operation overruns" started.
+◇ Test "Executes a self-contained module when system JavaScriptCore supports WebAssembly" started.
+◇ Test "withDeadline returns the operation result before the deadline" started.
+◇ Test "ICMP checksum matches the reference vector and handles odd lengths" started.
+◇ Test "network.traceroute runs the injected device tracer without SSH or network" started.
+◇ Test corruptReceiptIsNotOverwritten() started.
+◇ Test outputIsBounded() started.
+◇ Test "network diagnostic tools declare no remote-host dependency" started.
+◇ Test "echo reply parsing validates type and checksum" started.
+◇ Test completedAndNotSubmittedRemainReceipts() started.
+◇ Test "echo request carries identifier/sequence big-endian and checksums to zero" started.
+◇ Test memoryLimitAndCancellation() started.
+◇ Test "device traceroute report lists hop addresses and RTTs" started.
+◇ Test "network.ping runs the injected device pinger without SSH or network" started.
+◇ Test "time-exceeded parsing extracts the embedded echo sequence" started.
+◇ Test "OCR rejects ambiguous inputs" started.
+◇ Test "Store persists jobs, enforces the state machine, and dedupes by tool call" started.
+◇ Test "device ping report summarizes RTT stats and loss" started.
+◇ Test "Cancelling a running job lands in the cancelled terminal state" started.
+◇ Test "OCR accepts a workspace path without requiring model-generated base64" started.
+◇ Test concurrentCommandsDrainPipesWithoutBlockingSwiftTasks() started.
+◇ Test crashRecoveryNeverAuthorizesReplay() started.
+◇ Test "Submit validates target allowlist and JSON object arguments" started.
+◇ Test "Service submits, executes off the run path, and reports terminal state" started.
+◇ Test "file hashing resolves through the workspace guard" started.
+◇ Test "text digests match swift-crypto for every algorithm" started.
+◇ Test "descriptor is read-only" started.
+◇ Test "interactive HTML receives a no-network CSP and rejects active containers" started.
+◇ Test "Launch reconciliation marks orphaned jobs interrupted" started.
+◇ Test "registration wires catalog and runner" started.
+◇ Test "advertised tool schema is valid JSON" started.
+◇ Test authenticationFailureDoesNotLeakServerEcho() started.
+◇ Test "Submit rejects malformed target arguments at the call site" started.
+◇ Test mimePreservesUnicodeAndBinaryAttachment() started.
+◇ Test imapLiteralFramingAndLimits() started.
+◇ Test "invalid input JSON is rejected before runtime" started.
+◇ Test "native table is persisted as a digest-addressed rectangular document" started.
+◇ Test "declarative pip commands use the reviewed package path" started.
+◇ Test rejectsDraftHeaderInjection() started.
+◇ Test "declarative pip command is installed only through the managed phase" started.
+◇ Test mimeRejectsBrokenBoundaryAndDuplicateStructuralHeader() started.
+◇ Test smtpSendAcceptedAndUnknownAreDifferent() started.
+◇ Test imapStartTLSBeforeAuthentication() started.
+◇ Test "requires exactly one input and a known algorithm" started.
+◇ Test "capability probe reports the injected runtime" started.
+◇ Test "runtime library manifest comes from an actual bounded import probe" started.
+◇ Test "chart rejects non-finite or unbounded data" started.
+◇ Test "descriptor is on-device, bounded, and always approval-sensitive" started.
+◇ Test failedTLSNeverSendsPassword() started.
+◇ Test popStableCursorAndDeletionConflict() started.
+◇ Test popDotUnstuffingAndNoDelete() started.
+◇ Test "service result is mapped to a tool result" started.
+◇ Test smtpRefusesMissingTLS() started.
+◇ Test "Cancellation during open closes the newly created guardian session" started.
+◇ Test "managed package specs reject direct URLs and script-level pip" started.
+◇ Test smtpStartTLSRechecksCapabilities() started.
+◇ Test endpointValidation() started.
+◇ Test commandInjectionRejected() started.
+◇ Test mimeQuotedPrintableAndInertHTML() started.
+◇ Test imapReadStateRequiresReadback() started.
+◇ Test "validation rejects bad ids and oversized payloads" started.
+◇ Test "descriptors declare the interactive shell contract" started.
+◇ Test directoryRejectsSymlinkEscapeAndMissingPath() started.
+◇ Test invalidRequestNeverReachesBackend() started.
+◇ Test "guardian 404 maps to a redeploy hint" started.
+◇ Test "network.http rejects loopback and private literal targets" started.
+◇ Test "guardian open→exchange→close reuses the session and redacts output" started.
+◇ Test capsUTF8WithoutCorruption() started.
+◇ Test "ssh.execute maps timeout to exit 124" started.
+◇ Test "LAN diagnostic policy allows local HTTP, not public HTTP, metadata or credentials" started.
+◇ Test "ssh.execute rejects an invalid hostID" started.
+◇ Test "exchange on an unknown session reports not-found, close is idempotent" started.
+◇ Test "target classifier distinguishes common network appliance vendors" started.
+◇ Test "ssh.taskStatus is a read-only guardian continuation tool" started.
+◇ Test "ssh.execute descriptor is side-effecting and remote" started.
+◇ Test "Declared Bonjour services normalize optional trailing dots" started.
+◇ Test "network.http descriptor is network-flagged" started.
+◇ Test rejectsInvalidInputAtEveryEntryPoint() started.
+◇ Test "Undeclared Bonjour services fail before browsing" started.
+◇ Test "Device diagnostics are registered without an SSH service and run device-local" started.
+◇ Test "network.http blocks request-routing headers" started.
+◇ Test "network.http maps an invalid URL to an error result" started.
+◇ Test "ssh.execute uses the default paired host when hostID is omitted" started.
+◇ Test "unix classifier selects Linux containers and OpenWrt policy" started.
+◇ Test "ssh.execute maps a successful command result" started.
+◇ Test "Bocha request uses official endpoint and normalized freshness" started.
+◇ Test "cloudWorkspace schemas stay closed and carry only consumed fields" started.
+◇ Test "unsafe active SVG content is rejected" started.
+◇ Test "Self-hosted SearXNG can be configured without a credential" started.
+◇ Test "inspect and edit SVG reopens validated output" started.
+◇ Test "structured network diagnostics reject command injection and stay read-only" started.
+◇ Test "generateKey refuses silent rotation and deleteKey removes" started.
+◇ Test "validation enforces actions, names and input exclusivity" started.
+◇ Test "execution without a task workspace fails honestly" started.
+◇ Test "LAN diagnostic targets validate without DNS" started.
+◇ Test "network.http rejects a non-http scheme" started.
+◇ Test "Ed25519 sign/verify accepts the right key and rejects others" started.
+◇ Test "Search and fetch remain read-only tools" started.
+◇ Test "Bocha and Tencent response envelopes normalize to citations" started.
+◇ Test "AES-256-GCM encrypt/decrypt round-trips text and rejects wrong keys" started.
+◇ Test "descriptor requires credentials access" started.
+◇ Test "metadata endpoints and credential URLs are rejected" started.
+◇ Test "registration wires catalog and runner" started.
+◇ Test truncatedArchiveIsRejected() started.
+◇ Test "descriptor is side-effecting network + file write" started.
+◇ Test missingBundledPythonNeverDownloads() started.
+◇ Test "JSON input is numeric-only and exposed without file or network access" started.
+◇ Test receiptsSurviveRecreation() started.
+◇ Test "unknown functions fail honestly instead of pretending full compatibility" started.
+◇ Test "destination must be a safe workspace-relative path" started.
+◇ Test "Stata-compatible common commands run without pretending to bundle Stata" started.
+◇ Test "Tencent WSA request is signed with current SearchPro contract" started.
+◇ Test "MATLAB-compatible matrices and statistics run locally" started.
+◇ Test "R-compatible assignment vectors and sample deviation run locally" started.
+◇ Test "allocation and compute limits reject oversized jobs before allocating" started.
+◇ Test "Bocha AI tool overrides provider setting while raw search stays separate" started.
+◇ Test "common constructors transforms and element-wise arithmetic are compatible" started.
+◇ Test "fractional dimensions and oversized source fail validation or execution" started.
+◇ Test "Bocha summary can be disabled without changing endpoint or credential" started.
+◇ Test errorResponseNeverReplacesDestination() started.
+◇ Test "catalog exposes a read-only ID discovery schema" started.
+◇ Test "R-compatible descriptive statistics quantiles and correlation run locally" started.
+◇ Test "Stata clear resets variables including injected input, without leaving the evaluator" started.
+◇ Test "bundled guardian implements the matching workspace endpoint" started.
+◇ Test "Concurrent blocking lookups keep their deadlines responsive" started.
+◇ Test "withDeadline propagates the operation's own error" started.
+✔ Test "Durable task ids are stable for reconnect" passed after 0.753 seconds.
+◇ Test "Model host editor accepts raw VNC credentialInput and hands it only to secure storage" started.
+◇ Test "Legacy password field remains placeholder-only compatible" started.
+◇ Test "Model host editor stores VNC credentialInput through the secure writer" started.
+✔ Test "Rejects data without a WebAssembly header" passed after 0.753 seconds.
+✔ Test "Guardian is not installed on a device that is only a management target" passed after 0.753 seconds.
+◇ Test "list reports AcroForm fields through the bundled pdf-lib" started.
+◇ Test "fill applies per-type values and never writes invalid options" started.
+✔ Test "Descriptor is local pure computation" passed after 0.753 seconds.
+◇ Test "descriptor and validation" started.
+✔ Test "ICMP checksum matches the reference vector and handles odd lengths" passed after 0.782 seconds.
+✔ Test "Agent and updater sources are available at runtime" passed after 0.782 seconds.
+✔ Test "echo request carries identifier/sequence big-endian and checksums to zero" passed after 0.782 seconds.
+✔ Test "network diagnostic tools declare no remote-host dependency" passed after 0.782 seconds.
+✔ Test "time-exceeded parsing extracts the embedded echo sequence" passed after 0.782 seconds.
+✔ Test "device traceroute report lists hop addresses and RTTs" passed after 0.782 seconds.
+✔ Test "network.ping runs the injected device pinger without SSH or network" passed after 0.782 seconds.
+✔ Test "echo reply parsing validates type and checksum" passed after 0.782 seconds.
+✔ Test "OCR rejects ambiguous inputs" passed after 0.782 seconds.
+✔ Test "network.traceroute runs the injected device tracer without SSH or network" passed after 0.782 seconds.
+✔ Test corruptReceiptIsNotOverwritten() passed after 0.782 seconds.
+✔ Test crashRecoveryNeverAuthorizesReplay() passed after 0.783 seconds.
+✔ Test "device ping report summarizes RTT stats and loss" passed after 0.783 seconds.
+✔ Test completedAndNotSubmittedRemainReceipts() passed after 0.784 seconds.
+✔ Test "OCR accepts a workspace path without requiring model-generated base64" passed after 0.784 seconds.
+✔ Test "text digests match swift-crypto for every algorithm" passed after 0.783 seconds.
+✔ Test signatureInstallTamperAndRemove() passed after 0.791 seconds.
+✔ Test "file hashing resolves through the workspace guard" passed after 0.791 seconds.
+✔ Test "interactive HTML receives a no-network CSP and rejects active containers" passed after 0.791 seconds.
+✔ Test "descriptor is read-only" passed after 0.791 seconds.
+✔ Test "advertised tool schema is valid JSON" passed after 0.791 seconds.
+✔ Test authenticationFailureDoesNotLeakServerEcho() passed after 0.791 seconds.
+✔ Test "registration wires catalog and runner" passed after 0.791 seconds.
+✔ Test mimePreservesUnicodeAndBinaryAttachment() passed after 0.791 seconds.
+✔ Test imapLiteralFramingAndLimits() passed after 0.791 seconds.
+✔ Test "invalid input JSON is rejected before runtime" passed after 0.791 seconds.
+✔ Test "native table is persisted as a digest-addressed rectangular document" passed after 0.791 seconds.
+✔ Test "declarative pip commands use the reviewed package path" passed after 0.791 seconds.
+✔ Test "declarative pip command is installed only through the managed phase" passed after 0.791 seconds.
+✔ Test mimeRejectsBrokenBoundaryAndDuplicateStructuralHeader() passed after 0.792 seconds.
+✔ Test rejectsDraftHeaderInjection() passed after 0.792 seconds.
+✔ Test "requires exactly one input and a known algorithm" passed after 0.792 seconds.
+✔ Test "runtime library manifest comes from an actual bounded import probe" passed after 0.792 seconds.
+✔ Test imapStartTLSBeforeAuthentication() passed after 0.792 seconds.
+✔ Test "chart rejects non-finite or unbounded data" passed after 0.792 seconds.
+✔ Test "descriptor is on-device, bounded, and always approval-sensitive" passed after 0.792 seconds.
+✔ Test failedTLSNeverSendsPassword() passed after 0.792 seconds.
+✔ Test smtpSendAcceptedAndUnknownAreDifferent() passed after 0.792 seconds.
+✔ Test popStableCursorAndDeletionConflict() passed after 0.793 seconds.
+✔ Test "capability probe reports the injected runtime" passed after 0.792 seconds.
+✔ Test smtpRefusesMissingTLS() passed after 0.793 seconds.
+✔ Test "Cancellation during open closes the newly created guardian session" passed after 0.793 seconds.
+✔ Test popDotUnstuffingAndNoDelete() passed after 0.793 seconds.
+✔ Test "managed package specs reject direct URLs and script-level pip" passed after 0.793 seconds.
+✔ Test commandInjectionRejected() passed after 0.793 seconds.
+✔ Test endpointValidation() passed after 0.793 seconds.
+✔ Test mimeQuotedPrintableAndInertHTML() passed after 0.793 seconds.
+✔ Test smtpStartTLSRechecksCapabilities() passed after 0.793 seconds.
+✔ Test imapReadStateRequiresReadback() passed after 0.793 seconds.
+✔ Test "descriptors declare the interactive shell contract" passed after 0.793 seconds.
+✔ Test "validation rejects bad ids and oversized payloads" passed after 0.793 seconds.
+✔ Test invalidRequestNeverReachesBackend() passed after 0.793 seconds.
+✔ Test "service result is mapped to a tool result" passed after 0.793 seconds.
+✔ Test directoryRejectsSymlinkEscapeAndMissingPath() passed after 0.794 seconds.
+✔ Test "guardian 404 maps to a redeploy hint" passed after 0.794 seconds.
+✔ Test "network.http rejects loopback and private literal targets" passed after 0.794 seconds.
+✔ Test "ssh.execute maps timeout to exit 124" passed after 0.794 seconds.
+✔ Test "LAN diagnostic policy allows local HTTP, not public HTTP, metadata or credentials" passed after 0.794 seconds.
+✔ Test capsUTF8WithoutCorruption() passed after 0.794 seconds.
+✔ Test "exchange on an unknown session reports not-found, close is idempotent" passed after 0.794 seconds.
+✔ Test "ssh.taskStatus is a read-only guardian continuation tool" passed after 0.794 seconds.
+✔ Test "ssh.execute descriptor is side-effecting and remote" passed after 0.794 seconds.
+✔ Test "Declared Bonjour services normalize optional trailing dots" passed after 0.794 seconds.
+✔ Test rejectsInvalidInputAtEveryEntryPoint() passed after 0.794 seconds.
+✔ Test "Undeclared Bonjour services fail before browsing" passed after 0.794 seconds.
+✔ Test "network.http blocks request-routing headers" passed after 0.794 seconds.
+✔ Test "network.http descriptor is network-flagged" passed after 0.794 seconds.
+✔ Test "network.http maps an invalid URL to an error result" passed after 0.794 seconds.
+✔ Test "ssh.execute maps a successful command result" passed after 0.794 seconds.
+✔ Test "unix classifier selects Linux containers and OpenWrt policy" passed after 0.794 seconds.
+✔ Test "ssh.execute uses the default paired host when hostID is omitted" passed after 0.794 seconds.
+✔ Test "Bocha request uses official endpoint and normalized freshness" passed after 0.794 seconds.
+✔ Test "target classifier distinguishes common network appliance vendors" passed after 0.794 seconds.
+✔ Test "ssh.execute rejects an invalid hostID" passed after 0.794 seconds.
+✔ Test "Self-hosted SearXNG can be configured without a credential" passed after 0.794 seconds.
+✔ Test "cloudWorkspace schemas stay closed and carry only consumed fields" passed after 0.794 seconds.
+✔ Test "structured network diagnostics reject command injection and stay read-only" passed after 0.794 seconds.
+✔ Test "validation enforces actions, names and input exclusivity" passed after 0.794 seconds.
+✔ Test "LAN diagnostic targets validate without DNS" passed after 0.794 seconds.
+✔ Test "execution without a task workspace fails honestly" passed after 0.794 seconds.
+✔ Test "generateKey refuses silent rotation and deleteKey removes" passed after 0.794 seconds.
+✔ Test "unsafe active SVG content is rejected" passed after 0.794 seconds.
+✔ Test "Search and fetch remain read-only tools" passed after 0.794 seconds.
+✔ Test "network.http rejects a non-http scheme" passed after 0.794 seconds.
+✔ Test "Ed25519 sign/verify accepts the right key and rejects others" passed after 0.794 seconds.
+✔ Test "metadata endpoints and credential URLs are rejected" passed after 0.794 seconds.
+✔ Test "descriptor requires credentials access" passed after 0.794 seconds.
+✔ Test "descriptor is side-effecting network + file write" passed after 0.794 seconds.
+✔ Test "Bocha and Tencent response envelopes normalize to citations" passed after 0.794 seconds.
+✔ Test "registration wires catalog and runner" passed after 0.794 seconds.
+✔ Test truncatedArchiveIsRejected() passed after 0.794 seconds.
+✔ Test missingBundledPythonNeverDownloads() passed after 0.794 seconds.
+✔ Test "inspect and edit SVG reopens validated output" passed after 0.794 seconds.
+✔ Test "JSON input is numeric-only and exposed without file or network access" passed after 0.794 seconds.
+✔ Test "unknown functions fail honestly instead of pretending full compatibility" passed after 0.794 seconds.
+✔ Test "Stata-compatible common commands run without pretending to bundle Stata" passed after 0.794 seconds.
+✔ Test "destination must be a safe workspace-relative path" passed after 0.794 seconds.
+✔ Test "MATLAB-compatible matrices and statistics run locally" passed after 0.794 seconds.
+✔ Test "R-compatible assignment vectors and sample deviation run locally" passed after 0.794 seconds.
+✔ Test "allocation and compute limits reject oversized jobs before allocating" passed after 0.794 seconds.
+✔ Test "Bocha AI tool overrides provider setting while raw search stays separate" passed after 0.794 seconds.
+✔ Test "common constructors transforms and element-wise arithmetic are compatible" passed after 0.794 seconds.
+✔ Test "Bocha summary can be disabled without changing endpoint or credential" passed after 0.794 seconds.
+✔ Test "catalog exposes a read-only ID discovery schema" passed after 0.794 seconds.
+✔ Test receiptsSurviveRecreation() passed after 0.794 seconds.
+✔ Test "R-compatible descriptive statistics quantiles and correlation run locally" passed after 0.794 seconds.
+✔ Test "AES-256-GCM encrypt/decrypt round-trips text and rejects wrong keys" passed after 0.794 seconds.
+✔ Test "bundled guardian implements the matching workspace endpoint" passed after 0.794 seconds.
+✔ Test errorResponseNeverReplacesDestination() passed after 0.794 seconds.
+✔ Test "fractional dimensions and oversized source fail validation or execution" passed after 0.794 seconds.
+✔ Test "Status is registered, read only and rejects foreign session IDs" passed after 0.797 seconds.
+✔ Test "Stata clear resets variables including injected input, without leaving the evaluator" passed after 0.796 seconds.
+✔ Test "Tencent WSA request is signed with current SearchPro contract" passed after 0.797 seconds.
+✔ Test "withDeadline returns the operation result before the deadline" passed after 0.798 seconds.
+✔ Test "withDeadline throws the timeout error when the operation overruns" passed after 0.800 seconds.
+✔ Test "Legacy password field remains placeholder-only compatible" passed after 0.047 seconds.
+✔ Test "descriptor and validation" passed after 0.047 seconds.
+✔ Test "Submit validates target allowlist and JSON object arguments" passed after 0.800 seconds.
+✔ Test "Executes a self-contained module when system JavaScriptCore supports WebAssembly" passed after 0.801 seconds.
+✔ Test "withDeadline propagates the operation's own error" passed after 0.799 seconds.
+✔ Suite "FloeExecution workspace vision inputs" passed after 0.801 seconds.
+✔ Suite "FloeExecution.CryptoHash" passed after 0.801 seconds.
+✔ Suite "FloeExecution rich presentation artifacts" passed after 0.801 seconds.
+✔ Suite "FloeExecution.MailProtocol" passed after 0.801 seconds.
+✔ Suite "FloeExecution.LocalPython" passed after 0.801 seconds.
+✔ Suite "Local shell boundaries" passed after 0.801 seconds.
+✔ Suite "LAN discovery configuration" passed after 0.802 seconds.
+✔ Suite "Web retrieval adapters" passed after 0.803 seconds.
+✔ Suite "FloeExecution.CryptoCipher" passed after 0.803 seconds.
+✔ Suite "FloeExecution.URLDownload" passed after 0.803 seconds.
+✔ Suite "FloeExecution SVG document" passed after 0.803 seconds.
+✔ Suite "Capability install persistence" passed after 0.803 seconds.
+✔ Suite "FloeExecution local numerical compatibility" passed after 0.803 seconds.
+✔ Suite "Cloud workspace discovery contract" passed after 0.803 seconds.
+✔ Test "guardian open→exchange→close reuses the session and redacts output" passed after 0.802 seconds.
+✔ Suite "FloeExecution.WasmExecutionTool" passed after 0.803 seconds.
+✔ Test "First helper use upgrades a stale host and later uses are cached" passed after 0.803 seconds.
+✔ Suite "FloeExecution.SSHShell" passed after 0.803 seconds.
+✔ Test "Launch reconciliation marks orphaned jobs interrupted" passed after 0.811 seconds.
+✔ Test "Submit rejects malformed target arguments at the call site" passed after 0.821 seconds.
+✔ Test "Concurrent first uses share one guardian version check" passed after 0.831 seconds.
+✔ Suite "Bundled remote agent payload" passed after 0.832 seconds.
+✔ Test concurrentAdmissionHasExactlyOneFirstAttempt() passed after 0.831 seconds.
+✔ Suite "FloeExecution.MailDeliveryJournal" passed after 0.832 seconds.
+✔ Test pureInfiniteLoopTimesOut() passed after 0.848 seconds.
+✔ Test exitsSuccessfully() passed after 0.849 seconds.
+✔ Test swiftTaskCancellationReachesInterpreterWithoutExternalToken() passed after 0.860 seconds.
+✔ Test outputIsBounded() passed after 0.860 seconds.
+✔ Test "Store persists jobs, enforces the state machine, and dedupes by tool call" passed after 0.860 seconds.
+✔ Test stdinRoundTrip() passed after 0.861 seconds.
+✔ Test "Inventory preserves unread bytes and isolates real TCP sessions by run" passed after 0.867 seconds.
+✔ Suite "Remote connection inventory" passed after 0.868 seconds.
+✔ Test "Concurrent blocking lookups keep their deadlines responsive" passed after 0.899 seconds.
+✔ Suite "FloeExecution.NetworkDiagnostics" passed after 0.901 seconds.
+✔ Test "Cancelling a running job lands in the cancelled terminal state" passed after 0.912 seconds.
+✔ Test concurrentCommandsDrainPipesWithoutBlockingSwiftTasks() passed after 0.939 seconds.
+✔ Test "Device diagnostics are registered without an SSH service and run device-local" passed after 0.959 seconds.
+✔ Suite "FloeExecution.SSHExec & HTTPRequest" passed after 0.961 seconds.
+✔ Test memoryLimitAndCancellation() passed after 0.964 seconds.
+✔ Test preopensRejectParentAndSymlinkEscapes() passed after 0.971 seconds.
+✔ Suite "Bounded signed WASM commands" passed after 0.972 seconds.
+✔ Test actualSocketRefusesTLSBeforeCredentials() passed after 1.025 seconds.
+◇ Test cancellationInterruptsSilentSocket() started.
+✔ Test "Model host editor accepts raw VNC credentialInput and hands it only to secure storage" passed after 0.313 seconds.
+✔ Test "Model host editor stores VNC credentialInput through the secure writer" passed after 0.313 seconds.
+✔ Suite "FloeExecution saved host tools" passed after 1.067 seconds.
+✔ Test cancellationInterruptsSilentSocket() passed after 0.128 seconds.
+✔ Suite "FloeExecution.MailTransport" passed after 1.154 seconds.
+✔ Test "list reports AcroForm fields through the bundled pdf-lib" passed after 0.535 seconds.
+✔ Test "fill applies per-type values and never writes invalid options" passed after 1.543 seconds.
+✔ Suite "FloeExecution.PDFFillForm" passed after 2.298 seconds.
+✔ Test "Service submits, executes off the run path, and reports terminal state" passed after 3.481 seconds.
+✔ Suite "Background jobs" passed after 3.482 seconds.
+✔ Test run with 150 tests in 27 suites passed after 3.483 seconds.
+{"exitCode": 0, "reason": "exited", "elapsedSeconds": 175.524, "testsStarted": true}

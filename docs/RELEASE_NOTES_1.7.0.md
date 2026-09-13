@@ -1,6 +1,6 @@
 # Floe 1.7 — 发布描述草稿 / Release description draft
 
-状态：1.7.0（149），候选标签 v1.7.0-beta.6；待云端检查、签名与上传。下列描述对应当前实现范围，待固定提交的完整验证完成后用于新测试版本。既有版本说明保留其历史原文。
+状态：1.7.0（150），候选标签 v1.7.0-beta.7；待云端检查、签名与上传。下列描述对应当前实现范围，待固定提交的完整验证完成后用于新测试版本。既有版本说明保留其历史原文。
 
 ### 简体中文
 
@@ -20,7 +20,7 @@ Notes includes notebooks, recents, favorites, Trash, Pencil-first writing, regio
 
 This description is a beta preparation draft. Word ink, extended conversions, PPT presentation, complete media/model delivery and physical-device qualification are not yet claimed as accepted features.
 
-## TestFlight “What to Test” — 待验收后随构建填写
+## TestFlight “What to Test” — 随测试构建填写
 
 1. iPad 优先：导入课件、书写、套索提问、保存回答、关闭重开；手指书写关闭时不能误写。
 2. 导图：长标题与附图、展开折叠、拖动分支、Agent 编辑、PDF 小窗缩放与旋转、独立撤销、来源跳转。
