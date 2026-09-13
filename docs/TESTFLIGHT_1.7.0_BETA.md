@@ -17,7 +17,7 @@ Build 155 was cancelled during dependency preparation after a local reproduction
 
 Build 156 now supersedes the earlier build 152 source qualification: both SDK paths passed their App gates. The latest Notes component screenshots and SDK 27/26 iPad/iPhone evidence are from [`4550b6d`](https://github.com/JiangNanGenius/floe-agent/actions/runs/34742130370); component qualification is distinct from full-App and physical-device acceptance. Final TestFlight text and checks are tracked in [the release description](RELEASE_NOTES_1.7.0.md).
 
-Apple processing, beta notes, the existing internal Floe QA group and `IN_BETA_TESTING` have now been verified for build 156. Physical-device checks belong to the user after installation. After successful delivery, merge this integration branch into `main` and remove only branches whose tips are already included; preserve branches with independent work and occupied worktrees. No public App Store release is included.
+Apple processing, beta notes, the existing internal Floe QA group and `IN_BETA_TESTING` have now been verified for build 156. Physical-device checks belong to the user after installation. After verified delivery, the integration was fast-forwarded into `main` and pushed. Four fully merged local/remote branches were removed; the two branches with independent work and the occupied shell qualification worktree were preserved. See [cleanup evidence](evidence/floe-1.7/release-156/branch-cleanup.json). No public App Store release is included.
 
 ## Build 154 — beta.11
 

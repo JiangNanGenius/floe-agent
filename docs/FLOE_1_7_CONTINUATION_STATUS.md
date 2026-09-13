@@ -147,3 +147,5 @@
 1.7.0（156）已可安装：Apple VALID、未过期、现有私有内部 Floe QA 组可见，`IN_BETA_TESTING` 已由运行 `34765022410` 读取确认。上传运行 `34762764702`，双语说明和分组核对 `34764956759`；来源与摘要见 [TESTFLIGHT_AVAILABLE.json](evidence/floe-1.7/release-156/TESTFLIGHT_AVAILABLE.json)。真实上传工具链为 Xcode 26.6 / SDK 26.5。测试组读取改用已支持的 build include，4 项定向测试和真实读取通过。此前失败及恢复记录保持原始时点结论。
 
 真机检查交由用户在 iPad 优先、兼顾 iPhone 的条件下执行。完整 15 包 / 33 模型及 15 类能力交付仍不等于完成，按资格矩阵继续；本次仅确认内部测试分发，不是正式 App Store 发布。
+
+分发确认后，整合内容已快进合并并推送 `main`（合并点 `d6449fb`），原本地 main 上未推送的提交已保留。已清理四个完全合并的本地/远端分支；`codex/local-shell-qualification-20260912` 的三个独立提交和占用工作树、`codex/office-workflow-upgrade` 的二十个独立提交继续保留。候选标签未移动，用户未跟踪文件未清理。见[分支整理记录](evidence/floe-1.7/release-156/branch-cleanup.json)。

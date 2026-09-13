@@ -1,0 +1,50 @@
+{
+  "date": "2026-09-14",
+  "merged_main": "d6449fb7f4a6f5bf265da20e5736c2f7c8d3fe75",
+  "remote_main_verified": "d6449fb7f4a6f5bf265da20e5736c2f7c8d3fe75",
+  "deleted_fully_merged_branches": [
+    {
+      "branch": "codex/floe-1-7-integration-20260912",
+      "tip": "d6449fb7f4a6f5bf265da20e5736c2f7c8d3fe75"
+    },
+    {
+      "branch": "codex/local-shell-functional-20260912",
+      "tip": "428d28582e37b49af59c33bd4b6ec33fba5e517c"
+    },
+    {
+      "branch": "codex/stability-v1-4-88",
+      "tip": "92c95efa3dc5cb76191b435d00ed427e100be31e"
+    },
+    {
+      "branch": "codex/tool-closure-connectors",
+      "tip": "b885fbb24dbbbf3cbad768431112707e6b9ed463"
+    }
+  ],
+  "remaining_local_branches": [
+    {
+      "branch": "codex/local-shell-qualification-20260912",
+      "tip": "5d796811fc18c7441641669b3a7ef1393f2b00b1",
+      "independent_commits_from_merged_main": 3
+    },
+    {
+      "branch": "codex/office-workflow-upgrade",
+      "tip": "81b21ad4117f512cab6789418011e7302add3af6",
+      "independent_commits_from_merged_main": 20
+    },
+    {
+      "branch": "main",
+      "tip": "d6449fb7f4a6f5bf265da20e5736c2f7c8d3fe75",
+      "independent_commits_from_merged_main": 0
+    }
+  ],
+  "worktrees_preserved": [
+    "worktree /Volumes/TECLAST/IOS AI AGENT",
+    "HEAD d6449fb7f4a6f5bf265da20e5736c2f7c8d3fe75",
+    "branch refs/heads/main",
+    "",
+    "worktree /Volumes/TECLAST/FloeShellVerify-20260912",
+    "HEAD 5d796811fc18c7441641669b3a7ef1393f2b00b1",
+    "branch refs/heads/codex/local-shell-qualification-20260912"
+  ],
+  "release_tag_preserved": "65969b8f04e67269a92b899a55620ff469d96322"
+}
