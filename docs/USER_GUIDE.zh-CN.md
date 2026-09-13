@@ -340,3 +340,7 @@ PDF 独立于 Office：从文件列表打开后直接阅读，在宽屏右侧预
 ![重新读取导出 PDF 的文字与笔迹](evidence/floe-1.7/notes/ipad27-export-text-and-ink.png)
 
 上图为 iPad SDK 27 组件测试重新读取的导出文件，用于说明文字与笔迹输出；不是完整应用界面截图。完整双端验收状态见[实施记录](FLOE_1_7_CONTINUATION_STATUS.md)。
+
+![iPad 中 PDF 与独立导图小窗](evidence/floe-1.7/notes/verified-455/ipad-landscape-pdf-map.png)
+
+此图来自固定提交 `4550b6d` 的 iPad 组件测试，展示 PDF 正文和导图小窗；不代表完整应用或真机验收。

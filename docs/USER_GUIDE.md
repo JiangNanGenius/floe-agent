@@ -334,3 +334,7 @@ Export `.floenote` before permanent deletion if you need an editable backup cont
 ![Text and ink reread from an exported PDF](evidence/floe-1.7/notes/ipad27-export-text-and-ink.png)
 
 This is an exported-file image from an iPad SDK 27 component test, not a full-app screenshot. See the [evidence record](FLOE_1_7_CONTINUATION_STATUS.md) for device and release qualification.
+
+![PDF and independent map window on iPad](evidence/floe-1.7/notes/verified-455/ipad-landscape-pdf-map.png)
+
+This iPad component fixture comes from `4550b6d`. It illustrates the PDF and map window, not full-app or physical-device acceptance.

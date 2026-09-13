@@ -13,6 +13,7 @@ on:
           - monitor
           - inspect-issues
           - verify-testflight
+          - prepare-testflight
           - crash-feedback
           - start
           - enable-tag-and-start
@@ -393,6 +394,13 @@ jobs:
           done < <(jq -r '.data[].id' "$RUNNER_TEMP/build-actions.json")
           echo "xcode-cloud-issue-count=$issue_count"
           test "$issue_count" -gt 0
+
+      - name: Set beta notes and confirm existing internal group access
+        if: inputs.operation == 'prepare-testflight'
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 FloeAgent/scripts/prepare_testflight.py
 
       - name: Verify TestFlight processing and group visibility
         if: inputs.operation == 'verify-testflight'
