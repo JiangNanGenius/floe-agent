@@ -1,4 +1,4 @@
-# Distribution-only recovery of immutable build 156. Successful source tests are reused explicitly.
+# Distribution-only recovery; retained exact-source binaries and tests are explicitly reused.
 name: Resume verified TestFlight upload
 'on':
   workflow_call: {}
@@ -24,6 +24,9 @@ jobs:
       QUALIFIED_RUN_ID: '34752884723'
       APP_SOURCE_SHA: 65969b8f04e67269a92b899a55620ff469d96322
       POLICY_SHA: ${{ github.sha }}
+      SIGNED_RUN_ID: '34760151387'
+      SIGNED_POLICY_SHA: c20da5e3965157946237f342aa6da654ae5327e8
+      SIGNED_IPA_SHA256: eb4f7abaadfa92f8d392b678550bac54e57baded90d8113a940ae64cee70bb9c
     defaults:
       run:
         working-directory: FloeAgent
@@ -49,7 +52,7 @@ jobs:
         allowed = {'.github/workflows/release-unsigned-ipa.yml', '.github/workflows/testflight-recovery.yml',
          'FloeAgent/scripts/prepare_app_store_bundle.py', 'FloeAgent/scripts/verify_testflight_recovery.py',
          'FloeAgent/scripts/tests/test_app_store_bundle.py', 'FloeAgent/scripts/tests/test_testflight_recovery.py',
-         'README.md', 'README.zh-CN.md'}
+         'README.md', 'README.zh-CN.md', 'FloeAgent/README.md'}
         paths = subprocess.check_output(['git', 'diff', '--name-only', os.environ['APP_SOURCE_SHA'], os.environ['POLICY_SHA'], '--'], text=True).splitlines()
         unexpected = [p for p in paths if p not in allowed and not p.startswith('docs/')]
         if unexpected: raise SystemExit('Application/build input changes require a new qualification: ' + repr(unexpected))
@@ -62,6 +65,7 @@ jobs:
         POLICY="$GITHUB_WORKSPACE/.release-policy/FloeAgent/scripts"
         python3 "$POLICY/tests/test_app_store_bundle.py"
         python3 "$POLICY/tests/test_testflight_recovery.py"
+        gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SIGNED_RUN_ID" > "$RUNNER_TEMP/retained-run.json"
         gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFIED_RUN_ID" > "$RUNNER_TEMP/qualified-run.json"
         gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFIED_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/qualified-jobs.json"
         python3 "$POLICY/verify_testflight_recovery.py" --run "$RUNNER_TEMP/qualified-run.json" --jobs "$RUNNER_TEMP/qualified-jobs.json" --repository "$GITHUB_REPOSITORY" --source "$APP_SOURCE_SHA" --report "$RUNNER_TEMP/RECOVERY-PROVENANCE.json"
@@ -74,7 +78,9 @@ jobs:
         from verify_testflight_recovery import test_summary
         root=Path(os.environ['RUNNER_TEMP'])
         s=test_summary((root/'qualified-sdk26.log').read_text(errors='replace'))
-        p=json.loads((root/'RECOVERY-PROVENANCE.json').read_text()); p['app_regressions']=s; p['distribution_policy']=os.environ['POLICY_SHA']
+        retained=json.loads((root/'retained-run.json').read_text())
+        if (retained['conclusion'] != 'success' or retained['head_sha'] != os.environ['SIGNED_POLICY_SHA'] or retained['head_repository']['full_name'] != os.environ['GITHUB_REPOSITORY'] or retained['path'].split('@')[0] != '.github/workflows/release-unsigned-ipa.yml'): raise SystemExit('Untrusted retained distribution artifact')
+        p=json.loads((root/'RECOVERY-PROVENANCE.json').read_text()); p['retained_distribution_run']=int(os.environ['SIGNED_RUN_ID']); p['retained_ipa_sha256']=os.environ['SIGNED_IPA_SHA256']; p['app_regressions']=s; p['distribution_policy']=os.environ['POLICY_SHA']
         (root/'RECOVERY-PROVENANCE.json').write_text(json.dumps(p,indent=2)+'\n')
         (root/'FloeStable-AppRegressionTests-SUMMARY.txt').write_text('qualification=reused successful exact-source Xcode 26.6 regression\nsource='+os.environ['APP_SOURCE_SHA']+'\nqualified_run='+os.environ['QUALIFIED_RUN_ID']+'\n'+'\n'.join(f'{k}={v}' for k,v in s.items())+'\nraw_xcresult=not retained by prior failed upload job; actual execution summary is verified from its log\n')
         with open(os.environ['GITHUB_OUTPUT'],'a') as out:
@@ -95,65 +101,34 @@ jobs:
           26.*) ;;
           *) exit 1 ;;
         esac
-    - name: Download the tested and attested unsigned application
+    - name: Download retained accepted-SDK application
       uses: actions/download-artifact@v5
       with:
-        name: unsigned-ipa-${{ steps.release.outputs.version }}-build${{ steps.release.outputs.build }}
-        path: ${{ runner.temp }}/UnsignedRelease
-        run-id: ${{ env.QUALIFIED_RUN_ID }}
+        name: testflight-recovery-156-${{ env.SIGNED_RUN_ID }}
+        path: ${{ runner.temp }}/RetainedRelease
+        run-id: ${{ env.SIGNED_RUN_ID }}
         github-token: ${{ github.token }}
     - name: Validate the exact verified application
       run: |
-        IPA_PATH="$(find "$RUNNER_TEMP/UnsignedRelease" -type f -name '*.ipa' -print -quit)"
+        IPA_PATH="$(find "$RUNNER_TEMP/RetainedRelease" -type f -name '*.ipa' -print -quit)"
         test -n "$IPA_PATH"
         mkdir -p "$RUNNER_TEMP/FloeVerifiedPayload"
-        unzip -q "$IPA_PATH" -d "$RUNNER_TEMP/FloeVerifiedPayload"
+        printf '%s  %s\n' "$SIGNED_IPA_SHA256" "$IPA_PATH" | shasum -a 256 -c -
+        ditto -x -k "$IPA_PATH" "$RUNNER_TEMP/FloeVerifiedPayload"
         APP_PATH="$(find "$RUNNER_TEMP/FloeVerifiedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
         test -n "$APP_PATH"
         test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
         test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "${{ steps.release.outputs.version }}"
         test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "${{ steps.release.outputs.build }}"
 
-        grep -Fx "commit=$APP_SOURCE_SHA" "$RUNNER_TEMP/UnsignedRelease/TEST-SUMMARY.txt"
-    - name: Restore bundled font cache
-      uses: actions/cache@v4
-      with:
-        path: |
-          FloeAgent/Vendor/Fonts/downloads
-          FloeAgent/FloeApp/Resources/Fonts/Bundled
-        key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
-    - name: Fetch and verify bundled fonts
+        grep -Fx "commit=$APP_SOURCE_SHA" "$RUNNER_TEMP/RetainedRelease/TESTFLIGHT-SUMMARY.txt"
+
+        grep -Fx "distribution_policy=$SIGNED_POLICY_SHA" "$RUNNER_TEMP/RetainedRelease/TESTFLIGHT-SUMMARY.txt"
+        test "$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP_PATH/Info.plist")" = iphoneos26.5
+    - name: Stage retained accepted-SDK application without rebuilding
       run: |
-        python3 scripts/fonts/fetch_fonts.py --check || {
-          python3 scripts/fonts/fetch_fonts.py
-          python3 scripts/fonts/fetch_fonts.py --check
-        }
-    - name: Rebuild the exact tag with the accepted App Store SDK
-      run: |
-        brew install xcodegen automake cmake
-        xcodebuild -downloadComponent MetalToolchain
-        scripts/bootstrap_python_runtime.sh
-        scripts/gen_project.sh
-        scripts/pin_check.sh
-        xcodebuild \
-          -skipPackagePluginValidation \
-          -skipMacroValidation \
-          -project FloeAgent.xcodeproj \
-          -scheme FloeAgent \
-          -configuration Release \
-          -sdk iphoneos \
-          -destination 'generic/platform=iOS' \
-          -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
-          CODE_SIGNING_ALLOWED=NO \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGN_IDENTITY='' \
-          DEVELOPMENT_TEAM='' \
-          build
-        STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+        STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeVerifiedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
         test -n "$STABLE_APP_PATH"
-        test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP_PATH/Info.plist")" = org.floeagent.ios
-        test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STABLE_APP_PATH/Info.plist")" = "${{ steps.release.outputs.version }}"
-        test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ steps.release.outputs.build }}"
         mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"
         ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
     - name: Normalize reviewed App Store bundle defects before signing

@@ -84,7 +84,7 @@ scripts/license_inventory.sh
 scripts/sbom.sh
 ```
 
-The release workflow builds an unsigned device IPA and signs the exact verified Xcode 27 application from the same tagged source. It rejects an Xcode build that Apple no longer accepts before starting expensive work. GitHub assets are published only after TestFlight transport accepts the upload. See [the root README](../README.md#unsigned-ipa) for the user-facing distinction between these packages.
+The release workflow qualifies the tagged source with SDK 27, then rebuilds the same source using App Store-accepted Xcode 26.6 (17F113, SDK 26.5) before signing and upload. Version 27-only compiler-gated interfaces use compatibility paths in that upload. Reviewed bundle normalization removes pinned non-iOS pnpm resources and preserves libssh2 generic arm64 code while correcting its minimum-OS metadata. Distribution recovery records application-source and packaging-policy commits separately and verifies any reused test evidence. Public GitHub releases are skipped for beta tags; production release remains a separate action. See [the root README](../README.md#unsigned-ipa) for the user-facing distinction between these packages.
 
 ## Documentation discipline
 

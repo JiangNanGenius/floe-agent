@@ -1,0 +1,17 @@
+{
+  "artifact_run": 34760151387,
+  "ipa_sha256": "eb4f7abaadfa92f8d392b678550bac54e57baded90d8113a940ae64cee70bb9c",
+  "ipa_bytes": 784957744,
+  "bundle": {
+    "CFBundleIdentifier": "org.floeagent.ios",
+    "CFBundleShortVersionString": "1.7.0",
+    "CFBundleVersion": "156",
+    "MinimumOSVersion": "26.0",
+    "DTSDKName": "iphoneos26.5",
+    "DTXcode": "2660",
+    "DTXcodeBuild": "17F113"
+  },
+  "libssh2_architecture": "arm64",
+  "libssh2_minimum_os": "14.0",
+  "removed_non_ios_files_absent": true
+}

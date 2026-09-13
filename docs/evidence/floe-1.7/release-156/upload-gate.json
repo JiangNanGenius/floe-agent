@@ -1,0 +1,34 @@
+{
+  "run": 34760151387,
+  "policy": "c20da5e3965157946237f342aa6da654ae5327e8",
+  "source": "65969b8f04e67269a92b899a55620ff469d96322",
+  "conclusion": "success",
+  "job": 103731448844,
+  "steps": [
+    {
+      "name": "Reuse successful exact-source accepted-SDK regression evidence",
+      "conclusion": "success",
+      "completed_at": "2026-09-13T13:33:20Z"
+    },
+    {
+      "name": "Rebuild the exact tag with the accepted App Store SDK",
+      "conclusion": "success",
+      "completed_at": "2026-09-13T14:00:03Z"
+    },
+    {
+      "name": "Normalize reviewed App Store bundle defects before signing",
+      "conclusion": "success",
+      "completed_at": "2026-09-13T14:00:07Z"
+    },
+    {
+      "name": "Sign, verify, package, and upload to TestFlight",
+      "conclusion": "success",
+      "completed_at": "2026-09-13T14:10:56Z"
+    },
+    {
+      "name": "Upload TestFlight evidence",
+      "conclusion": "success",
+      "completed_at": "2026-09-13T14:11:17Z"
+    }
+  ]
+}

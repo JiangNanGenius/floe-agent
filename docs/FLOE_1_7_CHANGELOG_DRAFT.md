@@ -1,6 +1,6 @@
 # Floe 1.7 变更草稿 / Unreleased changes
 
-这是整合分支的变更草稿，不是已发布版本说明。正式发布另行安排；TestFlight 构建、SDK 全量检查与真机验收尚未完成。精确测试范围见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+这是整合分支的变更草稿，不是已发布版本说明。正式发布另行安排；build 156 固定源码的双 SDK 自动检查已通过，TestFlight 分发恢复仍在进行，真机验收由用户安装后完成。精确测试范围见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 
 ## 运行环境与执行
 
@@ -26,9 +26,9 @@
 
 项目介绍、双语指南、架构、构建、迁移恢复、兼容性矩阵、贡献/支持/安全说明同步更新。floe-video 1.0.1 已通过云端签名和本地校验，只声明已接通路径。
 
-## 分发前必须完成
+## 分发与完整验收
 
-保持同一固定提交，完成开发/发布 SDK 构建、真机测试、Office 保存重开及中文文档、聊天/工具、工作区、Canvas 和 PiP 回归。构建或上传成功不能代替 App Store Connect 处理和 TestFlight 可安装确认。
+TestFlight 分发需要固定源码的开发/发布 SDK 构建、自动化回归、Apple 处理和内部测试组可安装确认。用户在安装后检查 iPad/iPhone 真机、Office 保存重开及中文文档、聊天/工具、工作区、Canvas 和 PiP 的完整交互。真机检查不再作为上传前置条件，其结果仍独立保留。
 
 ### Interface and container management
 

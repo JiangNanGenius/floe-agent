@@ -11,7 +11,7 @@ from prepare_app_store_bundle import normalize, arm64_slice
 
 
 def thin(subtype=0):
-    return struct.pack("<8I", 0xFEEDFACF, 0x100000C, subtype, 6, 0, 0, 0, 0)
+    return struct.pack("<8I", 0xFEEDFACF, 0x100000C, subtype, 6, 1, 24, 0, 0) + struct.pack("<6I", 0x32, 24, 2, 26 << 16, (26 << 16) | (5 << 8), 0)
 
 
 class AppStoreBundleTests(unittest.TestCase):
@@ -74,12 +74,32 @@ class AppStoreBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid bundle executable"):
             self.run_policy()
 
+    def test_numeric_minimum_cannot_understate_binary(self):
+        p = self.app / "Info.plist"
+        p.write_bytes(plistlib.dumps({"CFBundleExecutable": "Fixture", "MinimumOSVersion": "14.0"}))
+        with self.assertRaisesRegex(ValueError, "understates"):
+            self.run_policy()
+
+    def test_dash_metadata_uses_actual_binary_and_keeps_code(self):
+        root = self.app / "Frameworks/dash.framework"
+        root.mkdir(parents=True)
+        (root / "dash").write_bytes(thin())
+        (root / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "dash", "MinimumOSVersion": "14.0",
+            "CFBundleIdentifier": "dev.floe.dash", "CFBundleShortVersionString": "1.0", "DTSDKName": "iphoneos14.0", "DTXcode": "1010"}))
+        for _ in range(2):
+            self.run_policy()
+            info = plistlib.loads((root / "Info.plist").read_bytes())
+            self.assertEqual(info["MinimumOSVersion"], "26.0")
+            self.assertEqual(info["DTSDKName"], "iphoneos26.5")
+            self.assertNotIn("DTXcode", info)
+            self.assertEqual((root / "dash").read_bytes(), thin())
+
     def test_fat_slice_preserves_generic_arm64_exactly(self):
         a, e = thin(), thin(2)
         header = struct.pack(">II", 0xCAFEBABE, 2)
         header += struct.pack(">5I", 0x100000C, 0, 64, len(a), 0)
-        header += struct.pack(">5I", 0x100000C, 2, 96, len(e), 0)
-        fat = header.ljust(64, b"\0") + a + e
+        header += struct.pack(">5I", 0x100000C, 2, 128, len(e), 0)
+        fat = (header.ljust(64, b"\0") + a).ljust(128, b"\0") + e
         self.assertEqual(arm64_slice(fat), a)
         self.assertEqual(arm64_slice(a), a)
 

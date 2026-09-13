@@ -1,0 +1,39 @@
+{
+  "uploadID": "f627aab3-9749-4d03-b4ff-2e1912fcba17",
+  "version": "1.7.0",
+  "build": "156",
+  "created": "2026-09-13T05:49:20-07:00",
+  "uploaded": "2026-09-13T07:10:56-07:00",
+  "state": {
+    "errors": [
+      {
+        "code": "90208",
+        "description": "Invalid Bundle. The bundle Floe Agent.app/Frameworks/dashE.framework does not support the minimum OS Version specified in the Info.plist."
+      },
+      {
+        "code": "90208",
+        "description": "Invalid Bundle. The bundle Floe Agent.app/Frameworks/dash.framework does not support the minimum OS Version specified in the Info.plist."
+      },
+      {
+        "code": "90208",
+        "description": "Invalid Bundle. The bundle Floe Agent.app/Frameworks/dashB.framework does not support the minimum OS Version specified in the Info.plist."
+      },
+      {
+        "code": "90208",
+        "description": "Invalid Bundle. The bundle Floe Agent.app/Frameworks/dashA.framework does not support the minimum OS Version specified in the Info.plist."
+      },
+      {
+        "code": "90208",
+        "description": "Invalid Bundle. The bundle Floe Agent.app/Frameworks/dashD.framework does not support the minimum OS Version specified in the Info.plist."
+      },
+      {
+        "code": "90208",
+        "description": "Invalid Bundle. The bundle Floe Agent.app/Frameworks/dashC.framework does not support the minimum OS Version specified in the Info.plist."
+      }
+    ],
+    "warnings": [],
+    "infos": [],
+    "state": "FAILED"
+  },
+  "buildID": null
+}

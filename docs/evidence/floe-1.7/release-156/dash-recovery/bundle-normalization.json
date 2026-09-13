@@ -1,0 +1,1586 @@
+{
+  "policy": "build156-app-store-bundle-v2",
+  "removed_non_ios_addons": [],
+  "libssh2": {
+    "path": "Frameworks/libssh2.framework",
+    "arm64_sha256": "3a7cd43d293288860eb230867b832bb40e3f5c34d71a7b59a56f3ed1f1ff27b4",
+    "architectures_before": [
+      "arm64"
+    ],
+    "architectures_after": [
+      "arm64"
+    ],
+    "minimum_os_before": "14.0",
+    "minimum_os_after": "14.0",
+    "recorded_sdk_unchanged": "16.2"
+  },
+  "dash_frameworks": [
+    {
+      "path": "Frameworks/dashD.framework",
+      "minimum_os_before": "26.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "26.5",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "36e246b9902fcd1a92e4befb9aa03cfd018c0d80102b41e020cbf7640725a334"
+    },
+    {
+      "path": "Frameworks/dashB.framework",
+      "minimum_os_before": "26.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "26.5",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "66e1a05c1a95286e0107c78244b016daa077da89fdbabda4620ed2c1f21ce008"
+    },
+    {
+      "path": "Frameworks/dashE.framework",
+      "minimum_os_before": "26.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "26.5",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "9096b7f4dbe14eeffabe97bddeab7e839467f60934948212964fe60b04c9cb64"
+    },
+    {
+      "path": "Frameworks/dashC.framework",
+      "minimum_os_before": "26.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "26.5",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "f693b6a04e8066c1852ab9bbea35f7c741e05ce5de3a9fc308226615965342e5"
+    },
+    {
+      "path": "Frameworks/dash.framework",
+      "minimum_os_before": "26.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "26.5",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "57d089e8d711a7b5c428e85bdc7474e469a8bad6f7b9ff89729073e27dfc104f"
+    },
+    {
+      "path": "Frameworks/dashA.framework",
+      "minimum_os_before": "26.0",
+      "minimum_os_after": "26.0",
+      "actual_sdk": "26.5",
+      "removed_stale_build_metadata": [
+        "BuildMachineOSBuild",
+        "DTPlatformBuild",
+        "DTSDKBuild",
+        "DTXcode",
+        "DTXcodeBuild"
+      ],
+      "executable_sha256_unchanged": "1a686f8d91e4d1f72800662298eef60c54c4f9d8e1998391ee3e6a20867b707d"
+    }
+  ],
+  "deployment_checks": [
+    {
+      "path": "Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "PlugIns/Floe Screen Share.appex/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_index.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_imagingmorph.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "18.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_generator.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_socket.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_window_aggregations.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/shell.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/dashD.framework/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_md5.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_brotli.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_csv.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_opcode.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/select.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_codecs_kr.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/curl_ios.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_lzma.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_codecs_iso2022.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/dashB.framework/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_offsets.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_writers.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/lapack_lite.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_sqlite3.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_pcg64.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/bit_generator.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/unicodedata.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_uuid.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_bz2.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_fields.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_reshape.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_codecs_jp.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_byteswap.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/NodeMobile.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.2"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/openssl.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "14.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_timezones.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_elementtree.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_contextvars.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_sha1.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_statistics.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/binascii.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/dashE.framework/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/fcntl.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_nattype.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_codecs_tw.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_lib.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_hashing.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_random.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_join.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/CPDFium.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/math.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_pandas_datetime.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/regex__regex.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_queue.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_umath_linalg.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_bounded_integers.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/dashC.framework/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/array.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_asyncio.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/frozenlist__frozenlist.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_dbm.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_algos.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_timestamps.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_tzconversion.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_missing.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_sfc64.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_arrays.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_imagingft.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "18.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_indexing.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_internals.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_conversion.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/libssh2.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.2"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/termios.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_properties.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_multiarray_umath.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_codecs_cn.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_sha2.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/zstandard_backend_c.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_base.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/greenlet__greenlet.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_pandas_parser.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/FloeOfficeNative.framework/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "27.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/resource.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/multidict__multidict.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_parsers.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_decimal.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/llama.framework/Info.plist",
+      "minimum_os": "16.4",
+      "binary_versions": [
+        [
+          "16.4",
+          "16.4"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pyexpat.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_window_indexers.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_heapq.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_ops_dispatch.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_ccalendar.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/dash.framework/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/ios_system.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_struct_ufunc_tests.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_imagingmath.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "18.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_testing.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/mmap.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_pocketfft_umath.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_struct.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_mt19937.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/RoyalVNCKit.framework/Info.plist",
+      "minimum_os": "15.0",
+      "binary_versions": [
+        [
+          "15.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_timedeltas.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/Python.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_codecs_hk.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_common.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_multiarray_tests.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_imagingtk.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "18.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_pickle.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_sparse.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_umath_tests.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_datetime.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_sha3.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_interval.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/tar.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_philox.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslib.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_json.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_strptime.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_groupby.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/mtrand.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_imaging.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "18.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_operand_flag_tests.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/awk.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_hashtable.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/files.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_parsing.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/zlib.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_sas.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_multibytecodec.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_ctypes.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_blake2.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_ssl.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/cmath.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/text.framework/Info.plist",
+      "minimum_os": "14.0",
+      "binary_versions": [
+        [
+          "14.0",
+          "16.0"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_hashlib.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_period.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_lsprof.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/dashA.framework/Info.plist",
+      "minimum_os": "26.0",
+      "binary_versions": [
+        [
+          "26.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_np_datetime.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_ops.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_vectorized.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_tslibs_dtypes.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_bisect.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs_json.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/pandas__libs__cyutility.framework/Info.plist",
+      "minimum_os": "17.0",
+      "binary_versions": [
+        [
+          "17.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_zoneinfo.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "17.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_simd.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    },
+    {
+      "path": "Frameworks/_rational_tests.framework/Info.plist",
+      "minimum_os": "13.0",
+      "binary_versions": [
+        [
+          "13.0",
+          "26.5"
+        ]
+      ]
+    }
+  ],
+  "validated_bundle_executables": 148
+}

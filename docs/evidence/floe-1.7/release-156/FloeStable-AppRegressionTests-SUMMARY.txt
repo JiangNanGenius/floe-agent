@@ -1,0 +1,9 @@
+qualification=reused successful exact-source Xcode 26.6 regression
+source=65969b8f04e67269a92b899a55620ff469d96322
+qualified_run=34752884723
+total=135
+passed=135
+failed=0
+skipped=0
+result=Passed
+raw_xcresult=not retained by prior failed upload job; actual execution summary is verified from its log

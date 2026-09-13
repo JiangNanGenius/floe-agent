@@ -1,0 +1,26 @@
+{
+  "policy": "build156-app-store-bundle-v1",
+  "removed_non_ios_addons": [
+    "NodeTools/pnpm/dist/reflink.darwin-arm64-MYEHQQCP.node",
+    "NodeTools/pnpm/dist/reflink.darwin-x64-CDTBYYIZ.node",
+    "NodeTools/pnpm/dist/reflink.win32-arm64-msvc-IYGSKCGJ.node",
+    "NodeTools/pnpm/dist/reflink.win32-x64-msvc-5E6AAURT.node",
+    "NodeTools/pnpm/dist/vendor/fastlist-0.3.0-x86.exe",
+    "NodeTools/pnpm/dist/vendor/fastlist-0.3.0-x64.exe"
+  ],
+  "libssh2": {
+    "path": "Frameworks/libssh2.framework",
+    "arm64_sha256": "505ef333eacdfc70727dcde1bd423d1de08b4d9e98964289dbf0968029a29e72",
+    "architectures_before": [
+      "arm64",
+      "arm64e"
+    ],
+    "architectures_after": [
+      "arm64"
+    ],
+    "minimum_os_before": "ios_version_min",
+    "minimum_os_after": "14.0",
+    "recorded_sdk_unchanged": "16.2"
+  },
+  "validated_bundle_executables": 148
+}

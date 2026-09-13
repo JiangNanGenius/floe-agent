@@ -1,0 +1,8 @@
+{
+  "input_ipa_sha256": "eb4f7abaadfa92f8d392b678550bac54e57baded90d8113a940ae64cee70bb9c",
+  "unchanged_executables": 148,
+  "bundle_policy_tests": 11,
+  "qualification_guard_tests": 5,
+  "metadata_only": true,
+  "source": "65969b8f04e67269a92b899a55620ff469d96322"
+}

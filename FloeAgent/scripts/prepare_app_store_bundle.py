@@ -61,6 +61,32 @@ def arm64_slice(data):
     return result
 
 
+def build_settings(binary):
+    output = subprocess.check_output(["xcrun", "vtool", "-show-build", str(binary)], text=True)
+    settings = []
+    for block in re.split(r"Load command \d+", output)[1:]:
+        if re.search(r"cmd LC_BUILD_VERSION\b", block):
+            platform = re.findall(r"^\s*platform\s+(\S+)", block, re.M)
+            minimum = re.findall(r"^\s*minos\s+(\S+)", block, re.M)
+            if platform != ["IOS"]: raise ValueError(f"Non-iOS executable: {binary}")
+        elif "cmd LC_VERSION_MIN_IPHONEOS" in block:
+            minimum = re.findall(r"^\s*version\s+(\S+)", block, re.M)
+        else:
+            raise ValueError(f"Unrecognized deployment command: {binary}")
+        sdk = re.findall(r"^\s*sdk\s+(\S+)", block, re.M)
+        if len(minimum) != 1 or len(sdk) != 1:
+            raise ValueError(f"Missing deployment metadata: {binary}")
+        settings.append((minimum[0], sdk[0]))
+    if not settings: raise ValueError(f"No deployment command: {binary}")
+    return settings
+
+
+def version_tuple(value):
+    if not re.fullmatch(r"\d+(?:\.\d+){0,2}", value): raise ValueError("Invalid deployment version")
+    values = tuple(map(int, value.split(".")))
+    return values + (0,) * (3 - len(values))
+
+
 def normalize(app, report_path, *, addon_hashes=ADDONS):
     app = Path(app).resolve()
     if app.suffix != ".app" or not app.is_dir():
@@ -77,6 +103,7 @@ def normalize(app, report_path, *, addon_hashes=ADDONS):
     executables = set()
     ssh_plist = None
     ssh_info = None
+    bundle_infos = []
     for p in app.rglob("Info.plist"):
         if p.parent.suffix not in (".app", ".appex", ".framework"):
             continue
@@ -88,6 +115,7 @@ def normalize(app, report_path, *, addon_hashes=ADDONS):
         if not executable.is_file() or executable.is_symlink():
             raise ValueError(f"Missing bundle executable: {p.relative_to(app)}")
         executables.add(executable)
+        bundle_infos.append((p, info, executable))
         minimum = info.get("MinimumOSVersion")
         if p.parent == app / SSH:
             if info.get("CFBundleShortVersionString") != "1.11.0" or info.get("CFBundleIdentifier") != "org.libssh2":
@@ -107,6 +135,27 @@ def normalize(app, report_path, *, addon_hashes=ADDONS):
         # not be removed by a broad file-extension rule.
         if magic in MACHO:
             raise ValueError(f"Standalone native binary: {p.relative_to(app)}")
+
+    # Compare every embedded bundle against its actual deployment load commands.
+    dash_updates = []
+    deployment_checks = []
+    for p, info, binary in bundle_infos:
+        settings = build_settings(binary)
+        minimum = "14.0" if p == ssh_plist and info["MinimumOSVersion"] == "ios_version_min" else info["MinimumOSVersion"]
+        name = p.parent.stem
+        if p.parent.parent == app / "Frameworks" and name in ("dash", "dashA", "dashB", "dashC", "dashD", "dashE"):
+            if (info.get("CFBundleIdentifier") != "dev.floe." + name or info.get("CFBundleShortVersionString") != "1.0"
+                    or len(set(settings)) != 1 or settings[0][0] != "26.0" or minimum not in ("14.0", "26.0")):
+                raise ValueError("Changed dash framework requires packaging review")
+            minimum, sdk = settings[0]
+            updated = dict(info, MinimumOSVersion=minimum, DTSDKName="iphoneos" + sdk, DTPlatformVersion=sdk)
+            stale = [key for key in ("BuildMachineOSBuild", "DTPlatformBuild", "DTSDKBuild", "DTXcode", "DTXcodeBuild") if key in updated]
+            for key in stale: updated.pop(key)  # Old vendor-template build provenance is not this binary's provenance.
+            dash_updates.append((p, updated, {"path": str(p.parent.relative_to(app)), "minimum_os_before": info["MinimumOSVersion"],
+                                 "minimum_os_after": minimum, "actual_sdk": sdk, "removed_stale_build_metadata": stale, "executable_sha256_unchanged": sha(binary.read_bytes())}))
+        if any(version_tuple(minimum) < version_tuple(actual) for actual, _ in settings):
+            raise ValueError(f"MinimumOSVersion understates executable deployment: {p.relative_to(app)}")
+        deployment_checks.append({"path": str(p.relative_to(app)), "minimum_os": minimum, "binary_versions": settings})
 
     ssh_change = None
     if ssh_plist is not None:
@@ -139,10 +188,13 @@ def normalize(app, report_path, *, addon_hashes=ADDONS):
             raise ValueError("Unexpected normalized architecture")
         ssh_info["MinimumOSVersion"] = "14.0"
         ssh_plist.write_bytes(plistlib.dumps(ssh_info))
+    for p, info, _ in dash_updates:
+        p.write_bytes(plistlib.dumps(info))
     for p in removals:
         p.unlink()
-    report = {"policy": "build156-app-store-bundle-v1", "removed_non_ios_addons": [str(p.relative_to(app)) for p in removals],
-              "libssh2": ssh_change, "validated_bundle_executables": len(executables)}
+    report = {"policy": "build156-app-store-bundle-v2", "removed_non_ios_addons": [str(p.relative_to(app)) for p in removals],
+              "libssh2": ssh_change, "dash_frameworks": [entry for _, _, entry in dash_updates],
+              "deployment_checks": deployment_checks, "validated_bundle_executables": len(executables)}
     Path(report_path).write_text(json.dumps(report, indent=2) + "\n")
     return report
 
