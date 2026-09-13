@@ -59,3 +59,7 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 真机分工更新：由用户执行 iPad/iPhone 真机检查。本轮保留自动化测试、云端归档与 TestFlight 上传责任，交付时附上双端检查清单；不以自动化通过代替用户的真机检查结果。
 
 TestFlight 就绪检查同时要求：`VALID`、未过期、现有私有内部 Floe QA 组可见，以及 `buildBetaDetail.internalBuildState == IN_BETA_TESTING`。`READY_FOR_BETA_TESTING` 继续等待分发状态更新，出口合规或异常状态明确保留。字段含义见 [Apple InternalBetaState](https://developer.apple.com/documentation/appstoreconnectapi/internalbetastate)。实际工作流状态判断通过 7 组就绪、等待、过期和合规阻塞样本检查。
+
+### Build 156 分发恢复
+
+Apple 校验前运行 `prepare_app_store_bundle.py`：按摘要移除 pnpm 非 iOS 资源，保留 libssh2 原有 arm64 切片并修正其最低版本占位符，不伪造 SDK 元数据。恢复工作流将固定应用源码与单独的打包策略提交绑定，验证原始云端作业的成功构建/测试后再复用证据。重新签名、上传与处理状态均须重新检查，参见[实际包验证记录](evidence/floe-1.7/release-156/distribution-recovery.md)。
