@@ -11,6 +11,7 @@ struct NotesRootView: View {
     @State private var newTitle = ""
     @State private var creation: Creation?
     @State private var importing = false
+    @State private var deleting: NoteDocument?
     @State private var renaming: RenameTarget?
     @State private var selectedBook: UUID?
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -111,6 +112,12 @@ struct NotesRootView: View {
                     } catch { session.errorMessage = error.localizedDescription }
                 }
             }
+            .confirmationDialog("永久删除此内容？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { value in
+                Button("永久删除", role: .destructive) { session.permanentlyDelete(value); deleting = nil }
+                Button("取消", role: .cancel) { deleting = nil }
+            } message: { value in
+                Text("“\(value.title)”及其撤销记录将无法恢复。独立关联导图和其他内容使用的附件会保留。")
+            }
             .alert("手记", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
                 Button("好") { session.errorMessage = nil }
             } message: { Text(session.errorMessage ?? "") }
@@ -159,6 +166,7 @@ struct NotesRootView: View {
                     .contextMenu {
                         if document.deletedAt != nil {
                             Button("恢复", systemImage: "arrow.uturn.backward") { session.trash(document, restore: true) }
+                            Button("永久删除", systemImage: "trash", role: .destructive) { deleting = document }
                         } else {
                             Button("重命名", systemImage: "pencil") { renaming = .init(id: document.id, title: document.title, notebook: false) }
                             Button(document.isFavorite ? "取消收藏" : "收藏", systemImage: "star") {
@@ -174,7 +182,11 @@ struct NotesRootView: View {
                         }
                     }
                     if document.deletedAt != nil {
-                        Button("恢复“\(document.title)”") { session.trash(document, restore: true) }
+                        HStack {
+                            Button("恢复“\(document.title)”") { session.trash(document, restore: true) }
+                            Spacer()
+                            Button("永久删除", role: .destructive) { deleting = document }
+                        }
                     }
                 }
             }.listStyle(.plain)

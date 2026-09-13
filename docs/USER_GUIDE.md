@@ -322,3 +322,15 @@ The sidebar orders New Task, Task Center, Notes (手记), Creative mode and Plug
 
 
 Settings → General contains system/light/dark appearance and Whisper management. The multilingual Small model is an on-demand download of about 491 MB. When Whisper is unavailable, recognition falls back to Apple and its system permissions. Video captions and Agent `audio.transcribe` now use the file transcription service, with separate SRT, VTT or JSON output and bounded audio chunks. Mixed Mandarin/English quality, long recordings and device behavior remain under validation.
+
+### Dynamic maps and Trash
+
+Mind maps lay out their hierarchy from actual topic and image sizes. Adding, removing, moving, expanding or collapsing topics updates the layout and connectors; Agent layout-direction edits apply to the same editor. Editing retains zoom and selection; resizing the PDF window fits the map. The current renderer uses an adaptive tree layout.
+
+In Trash, restore an item or confirm **Permanently delete**. Permanent deletion removes that item's history and future assistant access, while independent linked maps and existing conversation copies remain separate. Shared files and other documents' undo history retain their resources. Active previews and exports defer collection until the app restarts and Notes opens again; failed collection remains retryable.
+
+Export `.floenote` before permanent deletion if you need an editable backup containing images and linked maps. PDF shares rendered pages and annotations; Markdown exports a map outline.
+
+![Text and ink reread from an exported PDF](evidence/floe-1.7/notes/ipad27-export-text-and-ink.png)
+
+This is an exported-file image from an iPad SDK 27 component test, not a full-app screenshot. See the [evidence record](FLOE_1_7_CONTINUATION_STATUS.md) for device and release qualification.

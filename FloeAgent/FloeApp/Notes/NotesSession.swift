@@ -33,6 +33,10 @@ final class NotesSession {
             else { store = try await NotesRepository.shared.store() }
             try await reload()
             if let store {
+                // Deferred collection failures remain retryable on next open;
+                // readable documents have already loaded independently.
+                do { _ = try await store.collectDeletedResources() }
+                catch { errorMessage = "未能回收已删除附件，可重新打开手记重试：" + error.localizedDescription }
                 observation = Task { [weak self] in
                     for await _ in await store.changes() {
                         guard !Task.isCancelled else { break }
@@ -230,6 +234,16 @@ final class NotesSession {
             _ = try await store.setTrashed(value.id, expectedRevision: value.revision, trashed: !restore)
             if !restore && document?.id == value.id { document = nil }
             try await reload()
+        }
+    }
+
+    func permanentlyDelete(_ value: NoteDocument) {
+        enqueue { [self] in
+            guard let store else { return }
+            try await store.permanentlyDelete(value.id, expectedRevision: value.revision)
+            if document?.id == value.id { document = nil }
+            try await reload()
+            _ = try await store.collectDeletedResources()
         }
     }
 

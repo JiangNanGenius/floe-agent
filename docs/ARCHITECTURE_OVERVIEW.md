@@ -139,3 +139,9 @@ Office inspect exposes a digest. Saves validate expected versions, write a stage
 `document.convert` and the separate `document.pdf.convert` accept workspace input/output paths and a target format. A bundled, pinned JavaScript engine converts Markdown, DOCX and HTML; native rich-text and PDF services supply RTF and PDF input/output. It never asks a model to regenerate the body. Source bytes remain intact, outputs are staged and atomically published under new names, and the model receives only compact status, digests and limitations. Local images are authorized and embedded before rendering; a nonpersistent WebKit view blocks network/file loading and strips active content. Size, decoded-image, page-count, timeout and cancellation bounds apply throughout. Searchable PDF extraction is text-oriented; conversion does not promise exact Office layout fidelity. Export font glyph mappings preserve distinct source Unicode characters during PDF extraction.
 
 The official plugin catalog is verified against bundled trust keys and resolved source revisions. Before signing, the builder validates localized release notes and application versions against the app's decoding contract. Published ZIP versions are immutable. User removal of an exposed official plugin persists across launches. Expanded permissions remain visible during updates. See [qualification and outstanding work](WORKFLOW_UPGRADE.md).
+
+## 1.7 手记与动态导图补充
+
+FloeNotes 持有独立文档、页面、笔迹、主题、来源、历史和授权；Canvas 仍持有节点及工作流。两者只共享模型、文件/权限和任务服务。MindElixir 的本地桥接传输结构数据与有界图片，CSS 按内容尺寸排版，尺寸观察器合并连线刷新，文档修订与布局方向均由原生存储确认。PDF 小窗有独立编辑会话与撤销。
+
+手记永久删除使用数据库事务及独立资源回收日志。原文、历史、编辑回执和活动资源读取租约共同决定资源是否仍被引用；文件删除失败不得丢失回收记录。详见[恢复说明](FLOE_1_7_MIGRATION.md)与[当前验收记录](FLOE_1_7_CONTINUATION_STATUS.md)。

@@ -289,3 +289,46 @@ struct NotesStoreTests {
         #expect(try await NotesStore(root: root).document(value.id).nodes == value.nodes)
     }
 }
+
+@Test func permanentDeletionPreservesSharedHistoryAndActiveReaders() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let file = root.appendingPathComponent("chart.dat")
+    try Data("shared diagram".utf8).write(to: file)
+    let storage = root.appendingPathComponent("store")
+    func exerciseReaders() async throws -> URL {
+    let store = try NotesStore(root: storage)
+    let resource = try await store.importResource(from: file, mediaType: "application/octet-stream")
+    var draft = NoteDocument(kind: .mindMap, title: "One")
+    draft.nodes[0].imageResourceID = resource
+    let first = try await store.create(draft)
+    draft.id = UUID(); draft.title = "Two"
+    let second = try await store.create(draft)
+    await #expect(throws: (any Error).self) { try await store.permanentlyDelete(first.id, expectedRevision: first.revision) }
+    let firstTrash = try await store.setTrashed(first.id, expectedRevision: first.revision, trashed: true)
+    try await store.permanentlyDelete(first.id, expectedRevision: firstTrash.revision)
+    #expect(try await store.document(second.id).title == "Two")
+    let activeURL = try await store.resourceURL(resource)
+    var node = second.nodes[0]; node.imageResourceID = nil
+    let edited = try await store.apply(.init(documentID: second.id, expectedRevision: second.revision, title: "Remove image", edits: [.upsertNode(node)]))
+    #expect(try await store.collectDeletedResources() == 0)
+    // A new store has no active URL leases, but must retain undo references.
+    let reopened = try NotesStore(root: storage)
+    #expect(try await reopened.collectDeletedResources() == 0)
+    let trash = try await store.setTrashed(edited.id, expectedRevision: edited.revision, trashed: true)
+    await #expect(throws: (any Error).self) { try await store.permanentlyDelete(trash.id, expectedRevision: edited.revision) }
+    try await store.permanentlyDelete(trash.id, expectedRevision: trash.revision)
+    #expect(try await store.collectDeletedResources() == 0)
+    #expect(try Data(contentsOf: activeURL) == Data("shared diagram".utf8))
+    #expect(try await reopened.collectDeletedResources() == 0, "Other store handles must honor active reader leases")
+    return activeURL
+    }
+    let activeURL = try await exerciseReaders()
+    // A later store lifetime after all active consumers have closed.
+    let finalStore = try NotesStore(root: storage)
+    #expect(try await finalStore.collectDeletedResources() == 1)
+    #expect(try await finalStore.collectDeletedResources() == 0)
+    #expect(!FileManager.default.fileExists(atPath: activeURL.path))
+    #expect(try await finalStore.documents(includeTrash: true).isEmpty)
+}

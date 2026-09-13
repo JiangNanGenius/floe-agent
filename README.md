@@ -39,6 +39,8 @@ The next 1.7 candidate also integrates a pinned MIT ZLImageEditor with a Floe-na
 
 Notes (手记) is a separate workspace above Creative mode, with its own durable content and undo history while sharing Floe models, tools and permissions. PDF/image annotation, [illustrated mind maps with document windows](docs/FLOE_1_7_MIND_MAPS.md), Office editing, selection questions and editable archives are being integrated. The whole app prioritizes iPadOS 27, also validates iPhone, and keeps version 26 compatible.
 
+Mind maps reflow as topics, images and branches change, preserve zoom during editing, and fit independent PDF windows. Notes supports Trash recovery and confirmed permanent deletion with deferred collection that protects shared files and undo history.
+
 Voice input, video automatic captions and Agent file transcription now share on-demand multilingual Whisper Small with Apple recognition fallback. Timed exports support SRT, VTT and JSON. Home, conversations and Canvas can explicitly select Notes material and revoke access. Installing speech resources does not establish bilingual recognition quality. See the [implementation and evidence record](docs/FLOE_1_7_CONTINUATION_STATUS.md) for remaining work; a complete 1.7 TestFlight build has not yet been delivered.
 
 ### Media workbench preview

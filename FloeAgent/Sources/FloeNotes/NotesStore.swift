@@ -10,6 +10,9 @@ public actor NotesStore {
     private let resources: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    // URLs handed to native readers stay pinned for this store lifetime. Reopening
+    // the store permits deferred collection after those readers have gone away.
+    private let resourceLease = NoteResourceLease()
     private var observers: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     public init(root: URL) throws {
@@ -43,6 +46,9 @@ public actor NotesStore {
         }
         migrator.registerMigration("notes.v3.recents") { db in
             try db.execute(sql: "CREATE TABLE document_visits(document_id TEXT PRIMARY KEY NOT NULL REFERENCES documents(id) ON DELETE CASCADE, opened DOUBLE NOT NULL)")
+        }
+        migrator.registerMigration("notes.v4.collection") { db in
+            try db.execute(sql: "CREATE TABLE resource_collection(resource_id TEXT PRIMARY KEY NOT NULL)")
         }
         try migrator.migrate(database)
     }
@@ -117,6 +123,7 @@ public actor NotesStore {
                 }
                 documents.append(map)
             }
+            resourceLease.pin(Set(documents.flatMap(\.resourceIDs)), root: resources)
             return documents
         }
     }
@@ -267,6 +274,59 @@ public actor NotesStore {
         }
     }
 
+    /// User-confirmed removal from Trash only. Linked maps remain independent.
+    /// Collection is journaled separately so a filesystem error never rolls back
+    /// a document deletion after some files have already been removed.
+    public func permanentlyDelete(_ id: UUID, expectedRevision: Int) throws {
+        try database.write { db in
+            let value = try read(id, db: db)
+            guard value.revision == expectedRevision else { throw NoteError.conflict }
+            guard value.deletedAt != nil else { throw NoteError.invalidOperation("请先将内容移到回收站。") }
+            var candidates = value.resourceIDs
+            for body in try Data.fetchAll(db, sql: "SELECT before FROM history WHERE document_id=? UNION ALL SELECT after FROM history WHERE document_id=? UNION ALL SELECT body FROM edit_receipts WHERE document_id=?", arguments: [id.uuidString, id.uuidString, id.uuidString]) {
+                candidates.formUnion(try decoder.decode(NoteDocument.self, from: body).resourceIDs)
+            }
+            for resource in candidates {
+                try db.execute(sql: "INSERT OR IGNORE INTO resource_collection VALUES(?)", arguments: [resource.uuidString])
+            }
+            for table in ["assistant_scopes", "assistant_threads", "edit_receipts", "note_search"] {
+                try db.execute(sql: "DELETE FROM \(table) WHERE document_id=?", arguments: [id.uuidString])
+            }
+            try db.execute(sql: "DELETE FROM documents WHERE id=?", arguments: [id.uuidString])
+        }
+        publishChange()
+    }
+
+    /// Explicit, retryable collection. Current documents (including Trash), undo,
+    /// redo, receipts, and all URLs issued by this store retain their bytes.
+    @discardableResult public func collectDeletedResources() throws -> Int {
+        var removed = 0
+        try database.write { db in
+            try resourceLease.withRetained(root: resources) { leased in
+            var retained = leased
+            for body in try Data.fetchAll(db, sql: "SELECT body FROM documents UNION ALL SELECT before FROM history UNION ALL SELECT after FROM history UNION ALL SELECT body FROM edit_receipts") {
+                retained.formUnion(try decoder.decode(NoteDocument.self, from: body).resourceIDs)
+            }
+            let ids = try String.fetchAll(db, sql: "SELECT resource_id FROM resource_collection")
+            for raw in ids {
+                guard let id = UUID(uuidString: raw), !retained.contains(id) else { continue }
+                if let hash = try String.fetchOne(db, sql: "SELECT hash FROM resources WHERE id=?", arguments: [raw]) {
+                    guard hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { throw NoteError.resourceUnavailable }
+                    let url = resources.appendingPathComponent(hash)
+                    // Remove only the exact CAS entry, never follow an injected symlink.
+                    if FileManager.default.fileExists(atPath: url.path) || (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                        try FileManager.default.removeItem(at: url)
+                    }
+                    try db.execute(sql: "DELETE FROM resources WHERE id=?", arguments: [raw])
+                    removed += 1
+                }
+                try db.execute(sql: "DELETE FROM resource_collection WHERE resource_id=?", arguments: [raw])
+            }
+            }
+        }
+        return removed
+    }
+
     /// Returns source documents, not synthesized answers. Literal substring matching also supports CJK.
     public func search(_ query: String, limit: Int = 50) throws -> [NoteDocument] {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -311,14 +371,16 @@ public actor NotesStore {
             guard check.finalize().map({ String(format: "%02x", $0) }).joined() == hash else { throw NoteError.resourceUnavailable }
         } else { try FileManager.default.moveItem(at: staging, to: destination) }
         return try database.write { db in
-            if let existing = try String.fetchOne(db, sql: "SELECT id FROM resources WHERE hash=?", arguments: [hash]), let id = UUID(uuidString: existing) { return id }
+            if let existing = try String.fetchOne(db, sql: "SELECT id FROM resources WHERE hash=?", arguments: [hash]), let id = UUID(uuidString: existing) { resourceLease.pin([id], root: resources); return id }
             let id = UUID()
             try db.execute(sql: "INSERT INTO resources VALUES(?,?,?,?,?)", arguments: [id.uuidString, hash, count, source.lastPathComponent, mediaType])
+            resourceLease.pin([id], root: resources)
             return id
         }
     }
 
     public func resourceURL(_ id: UUID) throws -> URL {
+        resourceLease.pin([id], root: resources)
         let hash = try database.read { try String.fetchOne($0, sql: "SELECT hash FROM resources WHERE id=?", arguments: [id.uuidString]) }
         guard let hash, hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { throw NoteError.resourceUnavailable }
         let url = resources.appendingPathComponent(hash)
@@ -424,5 +486,32 @@ public actor NotesStore {
         try db.execute(sql: "DELETE FROM note_search WHERE document_id=?", arguments: [value.id.uuidString])
         if value.deletedAt == nil { try db.execute(sql: "INSERT INTO note_search VALUES(?,?,?)", arguments: [value.id.uuidString, value.title, value.searchableText]) }
         // Retain resources referenced by undo history. Cross-space GC is deliberately not run here.
+    }
+}
+
+/// Store lifetimes share leases across simultaneous handles to the same library.
+private final class NoteResourceLease: @unchecked Sendable {
+    private final class Registry: @unchecked Sendable {
+        let lock = NSLock()
+        var roots: [String: [UUID: Set<UUID>]] = [:]
+    }
+    private static let registry = Registry()
+    private let id = UUID()
+    func pin(_ ids: Set<UUID>, root: URL) {
+        let key = root.resolvingSymlinksInPath().path
+        Self.registry.lock.lock(); defer { Self.registry.lock.unlock() }
+        Self.registry.roots[key, default: [:]][id, default: []].formUnion(ids)
+    }
+    func withRetained<T>(root: URL, _ body: (Set<UUID>) throws -> T) rethrows -> T {
+        let key = root.resolvingSymlinksInPath().path
+        Self.registry.lock.lock(); defer { Self.registry.lock.unlock() }
+        return try body(Set((Self.registry.roots[key] ?? [:]).values.flatMap { $0 }))
+    }
+    deinit {
+        Self.registry.lock.lock(); defer { Self.registry.lock.unlock() }
+        for key in Array(Self.registry.roots.keys) {
+            Self.registry.roots[key]?[id] = nil
+            if Self.registry.roots[key]?.isEmpty == true { Self.registry.roots[key] = nil }
+        }
     }
 }

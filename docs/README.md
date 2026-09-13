@@ -70,3 +70,12 @@
 - [Screenshot archive](evidence/floe-1.7/SCREENSHOTS.md)
 
 - [Floe 1.7 图像编辑器：来源、使用与验证边界](FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md)
+
+## Floe 1.7 当前发布准备
+
+- [中英文功能介绍、版本说明及 TestFlight 测试描述](RELEASE_NOTES_1.7.0.md)
+- [手记、动态导图、语音与当前证据](FLOE_1_7_CONTINUATION_STATUS.md)
+- [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
+- [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
+
+当前尚未交付新的 TestFlight；旧版本说明和候选记录保留历史状态。

@@ -1,4 +1,12 @@
-# Floe 1.7.0 — TestFlight candidate history
+# Floe 1.7.0 — TestFlight preparation and candidate history
+
+## Current preparation — 2026-09-13
+
+**Not uploaded.** The next build must include the independent Notes workspace, dynamic illustrated maps and document windows, Office integration, Whisper speech/captions, environment/package controls, media workbenches and appearance improvements. Candidate source will be fixed after remaining implementation and qualification; earlier tags below are historical and must not be reused as proof of delivery.
+
+Latest full-App verification was started for `4550b6d` ([CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34742128610), [Notes SDK 27/26 on iPad and iPhone](https://github.com/JiangNanGenius/floe-agent/actions/runs/34742130370)); these runs do not yet qualify later lifecycle changes. Final TestFlight text and checks are tracked in [the 1.7 release description](RELEASE_NOTES_1.7.0.md). No public App Store release is included.
+
+## Earlier candidates
 
 This is an internal beta candidate, not completion of the full 1.7 upgrade plan.
 

@@ -47,3 +47,9 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 ## 原生外观、容器和步骤框验证
 
 [NativeManagement](../FloeAgent/Qualification/NativeManagement/README.md) 编译生产主题选择器、容器管理界面、思考框、工具框和连续步骤组。它使用合成环境和明确的 App 路由替身；不能替代完整 App 导航、审批执行、附件或真机验收。UI 测试实际点击主题选择、展开思考、折叠完成调用并追加运行中的调用。模块级 `EnvironmentManagementTests` 验证真实管理服务对不同项目、继承依赖和生命周期的处理。
+
+## 当前描述文件与新链路验收
+
+当前版本描述入口为 [RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md)，对应中英文 README、USER_GUIDE、变更草稿、架构、迁移恢复及 TestFlight 准备记录。历史版本文件保留，不改写为新版本说明。上传后必须补入实际固定提交、构建号、Apple 处理结果与可安装状态。
+
+手记验收增加：回收站永久删除必须确认且检查修订；活动附件、其他文档和撤销历史不误删；多存储句柄共享读取保护，失败回收可重试。动态导图需在真实 WebKit 验证长文字、附图和分支无重叠，方向更新生效；iPhone 横屏保留阅读位置，以真实截图正文识别确认。

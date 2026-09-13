@@ -21,3 +21,7 @@
 [Native interface evidence](interface/README.md) retains day/night/automatic
 appearance and expanded/folded tool-batch screenshots from passing UI tests.
 These are synthetic component fixtures, not a full application or device run.
+
+## 手记输出图的说明文档用途
+
+中英文使用指南引用 `notes/ipad27-export-text-and-ink.png`，展示重新读取的 PDF 文字与笔迹产物。它是组件导出结果，不是完整应用页面。导图横屏裁切、空白页面等失败截图继续保留在 `notes/render-regressions-*`，不用于新版产品介绍。新版本完整页面截图需记录最终提交与双端设备后补入。

@@ -1,0 +1,64 @@
+Building for debugging...
+[Computing dependencies]
+[Provisioning 7 / 14]
+[Constructing description]
+[Pre-planning 1 / 245]
+[Planning deferred tasks]
+[Constructing 438 / 579]
+[1 / 2] ZIPFoundation
+[1 / 20] Crypto
+[5 / 11] FloeNotes
+[7 / 13] FloeNotes
+[11 / 16] FloeNotes
+[11 / 23] NotesTests-product
+[11 / 22] FloeNotes
+[11 / 23] FloeNotes
+[12 / 23] FloeNotes
+[13 / 23] FloeNotes
+[14 / 23] FloeNotes
+[14 / 21] NotesTests-product
+[16 / 21] NotesTests-product
+[19 / 22] NotesTests-product
+[19 / 23] NotesTests-product
+[22 / 25] NotesTests-product
+[23 / 25] NotesTests-product
+Build complete! (28.52秒)
+Test Suite 'All tests' started at 2026-09-13 16:18:26.338.
+Test Suite 'All tests' passed at 2026-09-13 16:18:26.347.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.010) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite NotesStoreTests started.
+◇ Test permanentDeletionPreservesSharedHistoryAndActiveReaders() started.
+◇ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() started.
+◇ Test attachmentsRejectPathsAndRoundTripWithoutNewFields() started.
+◇ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() started.
+◇ Test linkedMapsKeepIndependentHistoryAndArchiveAttachments() started.
+◇ Test recentOpeningSurvivesRestartWithoutChangingContentOrUndo() started.
+◇ Test durableHistoryAndCAS() started.
+◇ Test mindMapImageBudgetRejectsExcessResources() started.
+◇ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() started.
+◇ Test receiptsSurviveRestartWithoutDuplicateEdits() started.
+◇ Test assistantScopesAndTrashAreIndependentFromChat() started.
+◇ Test linkingIsAtomicAndRequiresSeparateAgentScope() started.
+◇ Test rejectedBatchIsAtomicAndStaleEditsFail() started.
+◇ Test revokingScopeSurvivesRestartAndPreservesOtherConversationAndDocument() started.
+◇ Test mindMapRejectsCyclesWithoutChangingPersistedTree() started.
+✔ Test mindMapImageBudgetRejectsExcessResources() passed after 0.327 seconds.
+✔ Test attachmentsRejectPathsAndRoundTripWithoutNewFields() passed after 0.327 seconds.
+✔ Test literalChineseSearchDoesNotTreatWildcardsAsAuthority() passed after 0.327 seconds.
+✔ Test receiptsSurviveRestartWithoutDuplicateEdits() passed after 0.327 seconds.
+✔ Test deletingMapBranchKeepsSurvivingSummaryAndUndoRestoresFullMap() passed after 0.327 seconds.
+✔ Test recentOpeningSurvivesRestartWithoutChangingContentOrUndo() passed after 0.327 seconds.
+✔ Test durableHistoryAndCAS() passed after 0.430 seconds.
+✔ Test assistantScopesAndTrashAreIndependentFromChat() passed after 0.448 seconds.
+✔ Test mindMapRejectsCyclesWithoutChangingPersistedTree() passed after 0.454 seconds.
+✔ Test linkingIsAtomicAndRequiresSeparateAgentScope() passed after 0.507 seconds.
+✔ Test rejectedBatchIsAtomicAndStaleEditsFail() passed after 0.507 seconds.
+✔ Test permanentDeletionPreservesSharedHistoryAndActiveReaders() passed after 0.508 seconds.
+✔ Test revokingScopeSurvivesRestartAndPreservesOtherConversationAndDocument() passed after 0.530 seconds.
+✔ Test editableArchiveRestoresResourcesAsIndependentDocumentAndRejectsTampering() passed after 0.543 seconds.
+✔ Test linkedMapsKeepIndependentHistoryAndArchiveAttachments() passed after 0.544 seconds.
+✔ Suite NotesStoreTests passed after 0.544 seconds.
+✔ Test run with 15 tests in 1 suite passed after 0.547 seconds.

@@ -35,3 +35,11 @@
 - General settings now includes visual Automatic/Light/Dark choices with immediate app-wide updates and inherited Canvas appearance.
 - Added project/conversation container management with exact-environment package actions, inherited dependency inspection, lifecycle controls, measured capacity and recoverable task feedback. Production apt source/package provisioning remains pending.
 - Refined reasoning and tool frames, concise batch summaries, persistent manual folding and reduced-motion-aware insertion animations. Running tools, failed calls and approvals remain visible in folded batches.
+
+## 手记、动态导图、Office 与语音
+
+新增高于创意模式的独立“手记”入口，支持笔记本、最近打开、收藏、搜索、回收站与确认后永久删除。手写默认仅 Apple Pencil，手指书写单独开启；支持 PDF/图片背景、选区和套索提问、保存 AI 回答与来源。关联导图可单独编辑或以 PDF 小窗打开，主题支持图片和文件附件，内容变化动态排版。导图编辑与 Canvas 撤销分离。
+
+手记复用 Office 编辑入口，提供可编辑归档及 PDF/大纲导出。语音入口统一使用按需 Whisper Small、失败回退 Apple；视频自动字幕与 Agent 文件转录复用同一服务。完整交互和真机验收尚未完成。
+
+修复图片加载后的导图连线更新、Agent 布局方向未应用、iPhone 旋转阅读位置偏移，以及 Word/Workbook 工具发现缺项。脚本型 Skill 的依赖不再误识别 Python 属性或退役工具名。
