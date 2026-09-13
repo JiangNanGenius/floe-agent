@@ -80,3 +80,12 @@
 ![iPad 27 重新读取导出 PDF 中的中文、英文和真实笔迹](evidence/floe-1.7/notes/ipad27-export-text-and-ink.png)
 
 这张图来自上述固定提交的导出文件，不是完整手记界面截图。来源测试：`NativeNotesTests/testPDFExportRetainsPagesInkAndText()`；设备与结果见同目录 `ipad27-component-summary.json`。
+
+## 2026-09-13 动态导图与回归修复
+
+- `a714962`：内容尺寸驱动的导图连线刷新、批量事件合并、独立文档首次适配，连续编辑保留缩放；修复 Agent 修改布局方向未传入引擎的问题。桥接测试及原生组件 build-for-testing 通过，新增真实 WebKit 长标题/附图/分支无重叠断言。云端运行 `34741996361` 尚待结果。
+- `b46e089`：修复 Word/Workbook 执行器存在但发现目录缺失的问题；脚本型 Skill 显式声明工具依赖，不再提取 Python 属性和已退役工具名；工具名解析排除通配名称。
+- 上一轮 `34731780689`：两套 SDK 的 iPad 测试通过，iPhone 页首 OCR 失败；检查完整横屏截图确认是阅读位置偏移造成页首裁切，不能将其当截图工具错误或改低断言放过。
+- 上一轮 CI `34730532393`：SDK 26 构建及 Linux 成功；SDK 27 的 135 项 App 回归中出现 6 个工具目录/Skill 依赖问题，尚未由新提交复测关闭。53 项平台测试已有独立通过证据。
+- 此记录不表示整个 1.7 已验收，也未上传 TestFlight；包/模型交付、完整功能回归和双端真机证据仍须逐项完成。
+- 后续补丁：PencilKit 视口变化时保留页面坐标位置，合并重复首次缩放入口；本地原生组件 build-for-testing 通过，页首 OCR 仍等待云端实际复测。使用真实 BundledDomainSkills 与生成的官方定义编译执行了依赖检查，通过。

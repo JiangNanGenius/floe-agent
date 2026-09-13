@@ -29,6 +29,7 @@ struct NotePencilView: UIViewRepresentable {
         canvas.tool = tool
         canvas.delegate = context.coordinator
         canvas.minimumZoomScale = 0.1; canvas.maximumZoomScale = 5
+        canvas.contentInsetAdjustmentBehavior = .never
         canvas.contentSize = CGSize(width: page.width, height: page.height)
         canvas.accessibilityLabel = "手记书写页面"
         canvas.accessibilityIdentifier = "notes.pencil.page"
@@ -105,10 +106,6 @@ struct NotePencilView: UIViewRepresentable {
                 NotePageRenderer.draw(page, background: background.flatMap { UIImage(data: $0) }, images: elementImages.compactMapValues { UIImage(data: $0) })
             }
         }
-        if !coordinator.didFit, canvas.bounds.width > 0 {
-            coordinator.didFit = true
-            canvas.zoomScale = min(1, canvas.bounds.width / page.width)
-        }
     }
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         var parent: NotePencilView
@@ -119,7 +116,6 @@ struct NotePencilView: UIViewRepresentable {
         var elements: [NoteElement] = []
         var paper: NotePage.Paper?
         var isApplying = false
-        var didFit = false
         var handledDeleteRequest: UUID?
         var handledCaptureRequest: UUID?
         var isUsingTool = false
@@ -155,6 +151,9 @@ struct NotePencilView: UIViewRepresentable {
                 if let data = image.pngData() { parent.onSelectionCapture(bounds, data) }
             }
         }
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            (scrollView as? NotesPKCanvasView)?.rememberPagePosition()
+        }
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             (scrollView as? NotesPKCanvasView)?.alignPageBackdrop()
         }
@@ -186,14 +185,33 @@ struct NotePencilView: UIViewRepresentable {
 private final class NotesPKCanvasView: PKCanvasView {
     var pageSize = CGSize.zero
     weak var pageBackdrop: UIImageView?
-    private var fitted = false
+    private var viewportSize = CGSize.zero
+    private var pagePosition = CGPoint.zero
+    private var updatingViewport = false
+    func rememberPagePosition() {
+        // UIKit adjusts offsets while rotating. Retain the last position from
+        // the old viewport until layout has restored that page-space anchor.
+        guard !updatingViewport, bounds.size == viewportSize, zoomScale > 0 else { return }
+        pagePosition = CGPoint(x: max(0, contentOffset.x) / zoomScale,
+                               y: max(0, contentOffset.y) / zoomScale)
+    }
     override func layoutSubviews() {
+        guard !updatingViewport else { super.layoutSubviews(); return }
+        let resized = bounds.size != viewportSize && bounds.width > 0 && pageSize.width > 0
+        let firstLayout = viewportSize == .zero
+        updatingViewport = resized
         super.layoutSubviews()
-        if !fitted, bounds.width > 0, pageSize.width > 0 {
-            fitted = true
-            zoomScale = min(1, bounds.width / pageSize.width)
+        if resized {
+            if firstLayout { zoomScale = min(1, bounds.width / pageSize.width) }
+            viewportSize = bounds.size
+            let maximumX = max(0, pageSize.width * zoomScale - bounds.width)
+            let maximumY = max(0, pageSize.height * zoomScale - bounds.height)
+            contentOffset = CGPoint(x: min(maximumX, pagePosition.x * zoomScale),
+                                    y: min(maximumY, pagePosition.y * zoomScale))
         }
         alignPageBackdrop()
+        updatingViewport = false
+        rememberPagePosition()
     }
     func alignPageBackdrop() {
         pageBackdrop?.frame = CGRect(x: 0, y: 0, width: pageSize.width * zoomScale, height: pageSize.height * zoomScale)
