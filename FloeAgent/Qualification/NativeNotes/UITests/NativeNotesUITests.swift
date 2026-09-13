@@ -11,7 +11,7 @@ import Vision
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let topic = app.webViews.staticTexts["Trade gains"]
         XCTAssertTrue(topic.waitForExistence(timeout: 30), "The real WebKit topic must be visible before screenshot capture")
-        let portrait = XCTAttachment(screenshot: app.screenshot())
+        let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         portrait.name = "Notes PDF and independent map — portrait component scene"
         portrait.lifetime = .keepAlways; add(portrait)
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -19,7 +19,7 @@ import Vision
         while app.frame.width <= app.frame.height && Date() < rotationDeadline { Thread.sleep(forTimeInterval: 0.1) }
         XCTAssertGreaterThan(app.frame.width, app.frame.height, "The app viewport must actually rotate before labeling a landscape screenshot")
         XCTAssertTrue(topic.waitForExistence(timeout: 10))
-        let landscape = XCTAttachment(screenshot: app.screenshot())
+        let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         landscape.name = "Notes PDF and independent map — landscape component scene"
         landscape.lifetime = .keepAlways; add(landscape)
         let close = app.buttons["关闭小窗"]
@@ -27,7 +27,7 @@ import Vision
         close.tap()
         XCTAssertTrue(close.waitForNonExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any)["notes.pencil.page"].exists)
-        let visiblePage = app.screenshot()
+        let visiblePage = XCUIScreen.main.screenshot()
         let page = XCTAttachment(screenshot: visiblePage)
         page.name = "Notes PDF reader after closing linked map — component scene"
         page.lifetime = .keepAlways; add(page)

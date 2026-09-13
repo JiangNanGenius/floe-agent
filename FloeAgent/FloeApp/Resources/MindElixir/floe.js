@@ -3,6 +3,14 @@
   'use strict';
   let map, documentID, revision, applying = false, pending = false;
   const ids = new Map();
+  let fitScheduled = false;
+  const fitViewport = () => {
+    if (fitScheduled) return;
+    fitScheduled = true;
+    const fit = () => { fitScheduled = false; map?.scaleFit?.(); };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fit);
+    else fit();
+  };
   const uuid = id => {
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id))) return id;
     if (!ids.has(id)) ids.set(id, crypto.randomUUID());
@@ -65,6 +73,10 @@
         }},newTopicName:'新主题',markdown:escapeText,
         theme:payload.dark ? Engine.DARK_THEME : Engine.THEME});
       instance.init(data); map = instance;
+      fitViewport();
+      if (typeof ResizeObserver === 'function') {
+        new ResizeObserver(fitViewport).observe(document.querySelector('#map'));
+      }
       map.bus.addListener('operation', operation => { if (operation.name !== 'beginEdit') commit(); });
       map.bus.addListener('expandNode', commit);
       const reportSelection = () => send({type:'selection',documentID,revision,nodeID:map.currentNodes[0] ? uuid(map.currentNodes[0].nodeObj.id) : null});
