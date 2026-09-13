@@ -1,0 +1,51 @@
+{
+  "run": 34748849626,
+  "tag": "v1.7.0-beta.9",
+  "version": "1.7.0",
+  "build": 152,
+  "source": "8e43aed4f38db2ee676535382dc247d32d305277",
+  "groups": [
+    {
+      "group": "full",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 104.159,
+      "testsStarted": true,
+      "passedTestExecutions": 1152
+    },
+    {
+      "group": "javascript-engine",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 13.233,
+      "testsStarted": true,
+      "passedTestExecutions": 12
+    },
+    {
+      "group": "javascript-tool",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 12.193,
+      "testsStarted": true,
+      "passedTestExecutions": 12
+    },
+    {
+      "group": "notes",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 20.338,
+      "testsStarted": true,
+      "passedTestExecutions": 15
+    },
+    {
+      "group": "platform",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 55.577,
+      "testsStarted": true,
+      "passedTestExecutions": 53
+    }
+  ],
+  "totalPassedTestExecutions": 1244,
+  "qualification": "host Swift; app and distribution stages recorded separately"
+}

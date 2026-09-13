@@ -1,0 +1,5 @@
+✔ Test run with 1 test in 1 suite passed after 0.005 seconds.
+✔ Test run with 3 tests in 2 suites passed after 0.072 seconds.
+✔ Test run with 18 tests in 5 suites passed after 0.087 seconds.
+✔ Test run with 16 tests in 3 suites passed after 3.630 seconds.
+✔ Test run with 15 tests in 2 suites passed after 0.212 seconds.
