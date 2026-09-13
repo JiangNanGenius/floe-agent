@@ -57,3 +57,5 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 手记验收增加：回收站永久删除必须确认且检查修订；活动附件、其他文档和撤销历史不误删；多存储句柄共享读取保护，失败回收可重试。动态导图需在真实 WebKit 验证长文字、附图和分支无重叠，方向更新生效；iPhone 横屏保留阅读位置，以真实截图正文识别确认。
 
 真机分工更新：由用户执行 iPad/iPhone 真机检查。本轮保留自动化测试、云端归档与 TestFlight 上传责任，交付时附上双端检查清单；不以自动化通过代替用户的真机检查结果。
+
+TestFlight 就绪检查同时要求：`VALID`、未过期、现有私有内部 Floe QA 组可见，以及 `buildBetaDetail.internalBuildState == IN_BETA_TESTING`。`READY_FOR_BETA_TESTING` 继续等待分发状态更新，出口合规或异常状态明确保留。字段含义见 [Apple InternalBetaState](https://developer.apple.com/documentation/appstoreconnectapi/internalbetastate)。实际工作流状态判断通过 7 组就绪、等待、过期和合规阻塞样本检查。

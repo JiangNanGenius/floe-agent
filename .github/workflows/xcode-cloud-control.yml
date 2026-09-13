@@ -422,11 +422,12 @@ jobs:
             curl --fail-with-body --silent --show-error --get \
               -H "Authorization: Bearer $ASC_TOKEN" \
               -H "Accept: application/json" \
-              --data-urlencode 'fields[builds]=version,uploadedDate,processingState,buildAudienceType,betaGroups,preReleaseVersion,app' \
+              --data-urlencode 'fields[builds]=version,uploadedDate,processingState,expired,buildAudienceType,betaGroups,preReleaseVersion,app,buildBetaDetail' \
               --data-urlencode 'fields[betaGroups]=name,isInternalGroup,publicLinkEnabled,publicLinkLimitEnabled,feedbackEnabled' \
+              --data-urlencode 'fields[buildBetaDetails]=internalBuildState,externalBuildState' \
               --data-urlencode 'fields[preReleaseVersions]=version,platform' \
               --data-urlencode 'fields[apps]=name,bundleId' \
-              --data-urlencode 'include=betaGroups,preReleaseVersion,app' \
+              --data-urlencode 'include=betaGroups,preReleaseVersion,app,buildBetaDetail' \
               "https://api.appstoreconnect.apple.com/v1/builds/$BUILD_ID" \
               > "$RUNNER_TEMP/testflight-build.json"
 
@@ -446,7 +447,14 @@ jobs:
               test "$group_count" -eq 1
               test "$floe_qa_count" -eq 1
               test "$unexpected_group_count" -eq 0
-              exit 0
+              test "$(jq -r '.data.attributes.expired' "$RUNNER_TEMP/testflight-build.json")" = false
+              internal_state="$(jq -r '[.included[]? | select(.type == "buildBetaDetails") | .attributes.internalBuildState] | if length == 1 then .[0] else "UNAVAILABLE" end' "$RUNNER_TEMP/testflight-build.json")"
+              echo "internal-beta-state=$internal_state"
+              case "$internal_state" in
+                IN_BETA_TESTING) exit 0 ;;
+                READY_FOR_BETA_TESTING|PROCESSING) ;; # Allow distribution state to settle.
+                *) echo "Build is not available for internal testing: $internal_state" >&2; exit 1 ;;
+              esac
             fi
             test "$processing" != FAILED
             sleep 30
