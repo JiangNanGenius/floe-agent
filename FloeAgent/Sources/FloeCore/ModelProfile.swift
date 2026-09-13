@@ -170,6 +170,13 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
             }
             if capabilities.contains(.videoGeneration) { result.insert(.videoGeneration) }
         }
+        // Vision is user-editable independently of legacy persisted surfaces.
+        // Reconcile on read as well as save so upgrades/sync need no re-save.
+        if capabilities.contains(.text), capabilities.contains(.vision), !isMedia {
+            result.insert(.auxiliaryVision)
+        } else if !capabilities.contains(.vision) {
+            result.remove(.auxiliaryVision)
+        }
         // Treat media endpoints as a separate product role even when a stale
         // synced row explicitly contains chat/vision/approval surfaces. A
         // reference-image input is not visual understanding, and an

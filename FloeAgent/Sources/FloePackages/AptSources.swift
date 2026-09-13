@@ -104,7 +104,7 @@ public enum AptSources {
             .compactMap { parse(line: String($0)) }
     }
 
-    public static func read(inContainerAt root: URL) -> [AptSource] {
+    public static func read(inContainerAt root: URL, includingDisabled: Bool = false) -> [AptSource] {
         var sources: [AptSource] = []
         let listFile = root.appendingPathComponent("etc/apt/sources.list")
         if let text = try? String(contentsOf: listFile, encoding: .utf8) {
@@ -118,14 +118,14 @@ public enum AptSources {
                 sources.append(contentsOf: parse(contents: text))
             }
         }
-        return sources.filter { $0.enabled }
+        return includingDisabled ? sources : sources.filter { $0.enabled }
     }
 
     public static func write(_ sources: [AptSource], toContainer root: URL, fileName: String = "sources.list") throws {
         let directory = root.appendingPathComponent("etc/apt", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let lines = sources.map { source -> String in
-            var line = "\(source.type) "
+            var line = (source.enabled ? "" : "# ") + "\(source.type) "
             var options: [String] = []
             if !source.architectures.isEmpty { options.append("arch=\(source.architectures.joined(separator: ","))") }
             if let signedBy = source.signedBy { options.append("signed-by=\(signedBy)") }

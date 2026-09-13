@@ -143,6 +143,15 @@ static BOOL FloeEnsurePython(NSError **error) {
     config.user_site_directory = 0;
     config.use_environment = 0;
 
+    // iOS has no /etc/ssl/cert.pem. Use the pinned Mozilla roots shipped
+    // with the app, resolved anew on launch after the app bundle moves.
+    NSString *caBundle = [standardLibrary stringByAppendingPathComponent:@"site-packages/certifi/cacert.pem"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:caBundle]) {
+        setenv("SSL_CERT_FILE", caBundle.fileSystemRepresentation, 1);
+        setenv("REQUESTS_CA_BUNDLE", caBundle.fileSystemRepresentation, 1);
+        setenv("PIP_CERT", caBundle.fileSystemRepresentation, 1);
+    }
+
     NSString *stage = @"Py_PreInitialize";
     PyStatus status = Py_PreInitialize(&preconfig);
     if (!PyStatus_Exception(status)) {

@@ -336,7 +336,8 @@ enum ThreadTimelineBuilder {
             if !liveStreamedText.isEmpty {
                 items.append(.liveAssistantTail)
             }
-            if liveStreamedText.isEmpty && liveReasoningText.isEmpty {
+            if liveStreamedText.isEmpty && liveReasoningText.isEmpty,
+               run.map({ ["preparing", "streamingModel", "reconnecting"].contains($0.state) }) ?? true {
                 items.append(.liveThinking)
             }
         }

@@ -87,9 +87,11 @@ struct NotesDocumentEditor: View {
 
     private var editorContent: some View {
         VStack(spacing: 0) {
-            header
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
-            Divider()
+            if document.kind != .office {
+                header
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+                Divider()
+            }
             if document.kind == .office {
                 NotesOfficeView(session: session, document: document)
             } else if document.kind == .mindMap {
@@ -418,9 +420,10 @@ struct NotesDocumentEditor: View {
             HStack(spacing: 8) {
                 ForEach(InkTool.allCases, id: \.self) { value in
                     Button { tool = value } label: {
-                        Label(value.rawValue, systemImage: value.icon).padding(.horizontal, 10).frame(minHeight: 44)
+                        Label(value.rawValue, systemImage: value.icon).labelStyle(.iconOnly)
+                            .font(.title3).frame(width: 44, height: 44)
                             .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
-                    }.accessibilityAddTraits(tool == value ? .isSelected : [])
+                    }.accessibilityLabel(value.rawValue).accessibilityAddTraits(tool == value ? .isSelected : [])
                 }
                 if #available(iOS 27.0, *), selectedStrokeCount > 0 {
                     Button("问 Floe", systemImage: "bubble.left.and.text.bubble.right") {

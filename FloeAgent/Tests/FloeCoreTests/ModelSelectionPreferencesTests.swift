@@ -4,6 +4,17 @@ import Testing
 
 @Suite("FloeCore.ModelSelectionPreferences")
 struct ModelSelectionPreferencesTests {
+    @Test func visionCapabilityRepairsLegacyChatOnlySurfaceWithoutSaving() {
+        var model = ModelProfile(providerID: UUID(), remoteModelID: "custom-vision", displayName: "Custom",
+            limits: ModelLimits(contextTokens: 32000, maxOutputTokens: 4096),
+            capabilities: [.text, .vision], useSurfaces: [.chatAgent])
+        #expect(model.supportsAuxiliaryVisionSurface)
+        model.capabilities.remove(.vision)
+        #expect(!model.supportsAuxiliaryVisionSurface)
+        model.capabilities.insert([.vision, .imageGeneration])
+        #expect(!model.supportsAuxiliaryVisionSurface)
+    }
+
     @Test("Canvas model routes inherit global defaults when unset")
     func canvasRoutesDefaultToInheritance() {
         let preferences = ModelSelectionPreferences()

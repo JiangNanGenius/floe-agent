@@ -491,15 +491,7 @@ struct ThreadDetailView: View {
             )
 
         case .liveThinking:
-            HStack(spacing: 10) {
-                ProgressView()
-                Text(LocalizedStringKey(viewModel.hasProviderActivity
-                    ? "thread.model_thinking"
-                    : "thread.contacting_provider"))
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 4)
+            ModelResponseWaitingView()
 
         case .approval(let approval):
             ApprovalCardView(approval: approval) { decision in

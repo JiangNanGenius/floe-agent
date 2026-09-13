@@ -148,6 +148,11 @@ struct StepGroupView: View {
         .padding(.vertical, 6)
         // Do not expand on every event update: an explicit collapse remains
         // effective throughout a long batch. Urgent rows remain visible above.
+        .onChange(of: isLatest) { wasLatest, latest in
+            if wasLatest && !latest {
+                withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded = false }
+            }
+        }
         .onChange(of: pendingApprovals.map(\.id)) { _, ids in
             if !ids.isEmpty {
                 withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded = true }

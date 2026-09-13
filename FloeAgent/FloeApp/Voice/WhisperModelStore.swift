@@ -23,6 +23,33 @@ actor WhisperModelStore {
             }
         }
     }
+    struct InstallationState: Sendable {
+        var running = false
+        var completed: Int64 = 0
+        var total: Int64 = 0
+        var error: String?
+    }
+    private var installation = InstallationState()
+    private var installationTask: Task<Void, Never>?
+    func installationState() -> InstallationState { installation }
+    func beginInstallation() {
+        guard installationTask == nil else { return }
+        installation = InstallationState(running: true)
+        installationTask = Task {
+            do {
+                try await install { done, total in
+                    Task { await self.updateProgress(done, total: total) }
+                }
+            } catch is CancellationError {
+            } catch { installation.error = error.localizedDescription }
+            installation.running = false
+            installationTask = nil
+        }
+    }
+    func cancelInstallation() { installationTask?.cancel() }
+    private func updateProgress(_ done: Int64, total: Int64) {
+        installation.completed = done; installation.total = total
+    }
     private var leases = Set<UUID>()
     private var installing = false
     private func root() throws -> URL {
@@ -66,20 +93,24 @@ actor WhisperModelStore {
         installing = true; defer { installing = false }
         let manifest = try manifest(), base = try root(), destination = try location(manifest)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        let staging = base.appendingPathComponent(".download-\(UUID().uuidString)", isDirectory: true)
+        let staging = base.appendingPathComponent(".download-\(manifest.id)-\(manifest.sourceRevision)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: staging) }
         let total = manifest.files.reduce(Int64(0)) { $0 + $1.byteCount }
         if let free = try base.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage,
            free < total * 2 { throw CocoaError(.fileWriteOutOfSpace) }
         var completed: Int64 = 0
         for asset in manifest.files {
             try Task.checkCancellation()
+            let target = staging.appendingPathComponent(asset.path)
+            if (try? verify(target, asset: asset)) != nil {
+                completed += asset.byteCount; progress(completed, total)
+                continue
+            }
+            try? FileManager.default.removeItem(at: target)
             let (temporary, response) = try await URLSession.shared.download(from: asset.url)
             defer { try? FileManager.default.removeItem(at: temporary) }
             guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw Failure.corrupt }
             try verify(temporary, asset: asset)
-            let target = staging.appendingPathComponent(asset.path)
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: temporary, to: target)
             completed += asset.byteCount; progress(completed, total)

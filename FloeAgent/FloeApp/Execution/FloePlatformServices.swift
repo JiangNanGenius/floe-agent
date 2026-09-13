@@ -171,8 +171,9 @@ final class FloePlatformServices: @unchecked Sendable {
                 var userArguments = Array(arguments.dropFirst())
                 let entry: String?
                 if name == "node" {
-                    entry = userArguments.first
-                    if entry != nil { userArguments.removeFirst() }
+                    // The persistent host parses Node's CLI options. Passing
+                    // -v/-e as entryScript incorrectly resolves them as files.
+                    entry = nil
                 } else {
                     guard let toolPath = FloeNodeBundledToolPath(name) else {
                         FloeShellWrite(stderr, "\(name): the bundled \(name) entry point is missing from this build\n")

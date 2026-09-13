@@ -176,7 +176,7 @@ public struct CatalogToolExecutor: ToolExecutor {
             )
             return ToolResult(
                 callID: call.id,
-                status: output.requiresUserAction ? .needsUser : .ok,
+                status: output.requiresUserAction ? .needsUser : ((output.exitStatus ?? 0) == 0 ? .ok : .failed),
                 outputSummary: ToolWorkflowGuidance.outputSummary(
                     output.summary,
                     exposing: output.artifacts

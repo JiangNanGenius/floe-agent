@@ -56,18 +56,45 @@ public actor EnvironmentManagementService {
         }
         return PackageReport(installed: installed, inherited: inherited,
             available: await engine.allPackages(container: container),
-            sources: AptSources.read(inContainerAt: container.layerURL),
+            sources: AptSources.read(inContainerAt: container.layerURL, includingDisabled: true),
             held: Set(try await engine.held(container: container)))
     }
 
     public enum PackageAction: Sendable {
         case refresh, install(String), remove(String), hold(String), unhold(String)
+        case saveSource(AptSource, String), deleteSource(String)
     }
 
     public func managePackage(id: String, action: PackageAction) async throws -> String {
         let (engine, container, _) = try await packageContext(id: id, writable: true)
         try Task.checkCancellation()
         switch action {
+        case .saveSource(var source, let armoredKey):
+            guard let url = URL(string: source.uri), url.scheme == "https", url.host != nil,
+                  url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+                  !source.uri.contains(where: { $0.isWhitespace }),
+                  ([source.suite] + source.components).allSatisfy({ !$0.isEmpty && $0.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil }) else {
+                throw FloeError.validationFailed("请输入 HTTPS 软件源地址，以及有效的发行版和组件")
+            }
+            guard armoredKey.utf8.count <= 1_048_576 else { throw FloeError.validationFailed("公钥文件超过 1 MB") }
+            let keys = try OpenPGP.parseKeyring(Data(armoredKey.utf8))
+            guard let key = keys.first, !key.revoked, key.signingKey != nil else {
+                throw FloeError.validationFailed("请提供有效的 OpenPGP 签名公钥")
+            }
+            let keyPath = "etc/apt/keyrings/" + key.primary.fingerprint + ".asc"
+            let target = container.layerURL.appendingPathComponent(keyPath)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(armoredKey.utf8).write(to: target, options: .atomic)
+            source.signedBy = keyPath; source.trusted = false
+            var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
+            sources.removeAll { $0.id == source.id }; sources.append(source)
+            try AptSources.write(sources, toContainer: container.layerURL)
+            return "已保存软件源；签名指纹：" + key.primary.fingerprint
+        case .deleteSource(let sourceID):
+            var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
+            sources.removeAll { $0.id == sourceID }
+            try AptSources.write(sources, toContainer: container.layerURL)
+            return "已移除软件源"
         case .refresh:
             let sources = AptSources.read(inContainerAt: container.layerURL).filter { $0.enabled }
             guard !sources.isEmpty else { throw FloeError.validationFailed("此环境尚未配置已签名的软件源") }

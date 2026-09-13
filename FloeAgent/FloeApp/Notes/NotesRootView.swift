@@ -3,10 +3,12 @@
 import SwiftUI
 import FloeNotes
 import UniformTypeIdentifiers
+import PencilKit
 
 struct NotesRootView: View {
     @State private var session = NotesSession()
     @State private var query = ""
+    @AppStorage("notes.library.grid") private var grid = true
     @State private var section: SectionFilter = .recent
     @State private var newTitle = ""
     @State private var creation: Creation?
@@ -32,19 +34,28 @@ struct NotesRootView: View {
 
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in
-                HStack(spacing: 0) {
-                    if session.document == nil || geometry.size.width >= 950 {
-                        library
-                            .frame(width: session.document == nil ? nil : 280)
-                        if session.document != nil { Divider() }
-                    }
+            library
+            .fullScreenCover(isPresented: Binding(
+                get: { session.document != nil },
+                set: { if !$0 { Task { await session.select(nil) } } }
+            )) {
+                NavigationStack {
                     if let document = session.document, document.deletedAt == nil {
                         NotesDocumentEditor(session: session, document: document)
                             .id(document.id)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                if document.kind != .office {
+                                    ToolbarItem(placement: .topBarLeading) {
+                                        Button("返回手记", systemImage: "chevron.left") {
+                                            Task { await session.select(nil) }
+                                        }.accessibilityIdentifier("notes.back")
+                                    }
+                                }
+                            }
                     }
                 }
+                .interactiveDismissDisabled()
             }
             .navigationTitle("手记")
             .navigationBarTitleDisplayMode(.inline)
@@ -137,6 +148,8 @@ struct NotesRootView: View {
                     ForEach(SectionFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.menu)
                 Spacer()
+                Button(grid ? "列表视图" : "封面视图", systemImage: grid ? "list.bullet" : "square.grid.2x2") { grid.toggle() }
+                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                 Picker("笔记本", selection: $selectedBook) {
                     Text("所有笔记本").tag(Optional<UUID>.none)
                     ForEach(session.notebooks) { Text($0.title).tag(Optional($0.id)) }
@@ -146,12 +159,26 @@ struct NotesRootView: View {
                         .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                 }
             }.padding(.horizontal)
-            List {
+            ScrollView {
+              LazyVGrid(columns: grid ? [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 20)] : [GridItem(.flexible())], spacing: 24) {
+                if selectedBook == nil && section != .trash && query.isEmpty {
+                    ForEach(session.notebooks) { book in
+                        Button { selectedBook = book.id } label: {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Image(systemName: "folder.fill").font(.system(size: 42)).foregroundStyle(.tint)
+                                    .frame(maxWidth: .infinity, minHeight: grid ? 130 : 44, alignment: .leading)
+                                Text(book.title).font(.headline).foregroundStyle(.primary)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
+                    }
+                }
                 ForEach(filtered) { document in
                     Button { Task { await session.select(document) } } label: {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: document.kind == .mindMap ? "point.3.connected.trianglepath.dotted" : "book.pages")
-                                .font(.title2).foregroundStyle(.tint).frame(width: 34, height: 44)
+                        let layout = grid ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+                        layout {
+                            NotesCoverPreview(document: document, store: session.store)
+                                .frame(width: grid ? nil : 64, height: grid ? 190 : 80)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(document.title).font(.headline).foregroundStyle(.primary)
                                 Text(document.kind == .mindMap ? "\(document.nodes.count) 个主题" : document.kind == .office ? (document.officeFileName ?? "Office 文档") : "\(document.pages.count) 页")
@@ -189,7 +216,8 @@ struct NotesRootView: View {
                         }
                     }
                 }
-            }.listStyle(.plain)
+              }.padding(20)
+            }
                 .overlay {
                     if session.store == nil { ProgressView("正在打开手记…") }
                     else if filtered.isEmpty {
@@ -237,4 +265,42 @@ private struct NotesRenameSheet: View {
         }.presentationDetents([.medium])
     }
 }
+@MainActor private struct NotesCoverPreview: View {
+    let document: NoteDocument
+    let store: NotesStore?
+    @State private var image: UIImage?
+    var body: some View {
+        ZStack {
+            Color(uiColor: .secondarySystemBackground)
+            if let image { Image(uiImage: image).resizable().scaledToFit() }
+            else {
+                VStack(spacing: 12) {
+                    Image(systemName: document.kind == .mindMap ? "point.3.connected.trianglepath.dotted" : document.kind == .office ? "doc.richtext" : "book.closed")
+                        .font(.largeTitle).foregroundStyle(.tint)
+                    Text(document.kind == .mindMap ? document.nodes.first?.title ?? document.title : document.officeFileName ?? document.title)
+                        .font(.caption).lineLimit(3).multilineTextAlignment(.center)
+                }.padding()
+            }
+        }
+        .task(id: document.revision) {
+            guard let store, let page = document.pages.first else { return }
+            do {
+                let background = (try await NoteFileImporter.background(page: page, store: store)).flatMap { UIImage(data: $0) }
+                let ink: PKDrawing?
+                if let id = page.drawingResourceID { ink = try PKDrawing(data: Data(contentsOf: await store.resourceURL(id))) }
+                else { ink = nil }
+                try Task.checkCancellation()
+                let scale = min(240 / page.width, 320 / page.height)
+                let size = CGSize(width: page.width * scale, height: page.height * scale)
+                image = UIGraphicsImageRenderer(size: size).image { context in
+                    context.cgContext.scaleBy(x: scale, y: scale)
+                    NotePageRenderer.draw(page, background: background, images: [:])
+                    ink?.image(from: CGRect(x: 0, y: 0, width: page.width, height: page.height), scale: 240 / page.width)
+                        .draw(in: CGRect(x: 0, y: 0, width: page.width, height: page.height))
+                }
+            } catch { image = nil }
+        }
+    }
+}
+
 #endif

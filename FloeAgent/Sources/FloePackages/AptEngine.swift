@@ -104,7 +104,7 @@ public actor AptEngine {
         var index: [String: [AptPackage]] = [:]
         for source in sources {
             do {
-                let releaseText = try await fetchRelease(source: source)
+                let releaseText = try await fetchRelease(source: source, container: container)
                 let release = Deb822.parse(stanza: releaseText)
                 guard let parsedRelease = AptRelease.parse(release) else { throw AptError.untrusted(source.uri) }
                 if !parsedRelease.isValid() {
@@ -138,7 +138,16 @@ public actor AptEngine {
         return UpdateReport(sources: sources.count, packages: packageCount, failures: failures)
     }
 
-    private func fetchRelease(source: AptSource) async throws -> String {
+    private func fetchRelease(source: AptSource, container: Container) async throws -> String {
+        var trustedKeys = self.trustedKeys
+        if let signedBy = source.signedBy {
+            guard signedBy.hasPrefix("etc/apt/keyrings/"), !signedBy.split(separator: "/").contains("..") else { throw AptError.untrusted(source.uri) }
+            let root = container.layerURL.resolvingSymlinksInPath()
+            let keyURL = root.appendingPathComponent(signedBy).resolvingSymlinksInPath()
+            guard keyURL.path.hasPrefix(root.path + "/etc/apt/keyrings/"),
+                  (try keyURL.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0 <= 1_048_576 else { throw AptError.untrusted(source.uri) }
+            trustedKeys = try OpenPGP.parseKeyring(Data(contentsOf: keyURL))
+        }
         guard let inReleaseURL = source.releaseURL() else {
             throw AptError.untrusted(source.uri)
         }

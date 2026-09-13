@@ -166,7 +166,14 @@ public actor BackgroundJobService {
                 let output = try await runner.execute(argumentsJSON: job.payloadJSON, context: context)
                 summary = output.summary
                 digest = output.fullOutputSHA256
-                finalState = .completed
+                if token.isCancelled {
+                    finalState = .cancelled
+                } else if let exit = output.exitStatus, exit != 0 {
+                    finalState = .failed
+                    errorText = "Tool exited with status \(exit): \(output.summary)"
+                } else {
+                    finalState = .completed
+                }
             } catch {
                 finalState = token.isCancelled ? .cancelled : .failed
                 errorText = String(describing: error)

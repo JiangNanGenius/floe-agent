@@ -941,9 +941,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                 guidanceImage: guidanceImage,
                 guidanceHints: guidanceHints
               ) else { return }
-        FloeLogger(category: .app).debug(
-            "pictureInPictureFrameUpdated generation=\(generation) active=\(isPiPActive)"
-        )
+        // Frame cadence is not diagnostic state. Logging every frame evicted
+        // the task failures from user feedback; lifecycle transitions log above.
     }
 
     /// Keep the inline source genuinely live while a task is running. A lone

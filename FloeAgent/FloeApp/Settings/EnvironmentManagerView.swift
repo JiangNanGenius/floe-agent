@@ -121,6 +121,11 @@ struct EnvironmentManagerView: View {
 private struct EnvironmentDetailView: View {
     let report: FloePlatformServices.EnvironmentReport
     let displayName: String
+    @State private var addingSource = false
+    @State private var sourceURL = ""
+    @State private var sourceSuite = "stable"
+    @State private var sourceComponent = "main"
+    @State private var sourceKey = ""
     @State private var current: FloePlatformServices.EnvironmentReport?
     @State private var packages: FloePlatformServices.PackageReport?
     @State private var error: String?
@@ -187,6 +192,7 @@ private struct EnvironmentDetailView: View {
                 }
             }
             Section("environment.packages.available") {
+                Button("添加软件源", systemImage: "plus") { addingSource = true }.disabled(!writable)
                 Button("environment.packages.refresh", systemImage: "arrow.clockwise") { start(.refresh, "正在下载并验证软件源…") }.disabled(!writable)
                 if let packages {
                     if packages.available.isEmpty { Text("尚无经过验证的软件包索引。刷新成功后，可在此选择安装。").font(.subheadline).foregroundStyle(.secondary) }
@@ -225,6 +231,33 @@ private struct EnvironmentDetailView: View {
         .task { await reload() }
         .refreshable { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }
+        .sheet(isPresented: $addingSource) {
+            NavigationStack {
+                Form {
+                    Section("软件源") {
+                        TextField("HTTPS 地址", text: $sourceURL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        TextField("发行版", text: $sourceSuite).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        TextField("组件", text: $sourceComponent).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    Section("OpenPGP 签名公钥") {
+                        TextEditor(text: $sourceKey).font(.caption.monospaced()).frame(minHeight: 160)
+                        Text("从软件源发布者获取公钥。下载的软件包索引必须通过此公钥验证。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                .navigationTitle("添加软件源")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("取消") { addingSource = false } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") {
+                            start(.saveSource(AptSource(uri: sourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                                suite: sourceSuite, components: sourceComponent.split(separator: " ").map(String.init)), sourceKey), "正在保存软件源…")
+                            addingSource = false
+                        }.disabled(sourceURL.isEmpty || sourceSuite.isEmpty || sourceKey.isEmpty)
+                    }
+                }
+            }
+        }
         .confirmationDialog("卸载 \(pendingRemoval ?? "")？", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }), titleVisibility: .visible) {
             Button("卸载本层软件包", role: .destructive) { if let name = pendingRemoval { start(.remove(name), "正在卸载 \(name)…") }; pendingRemoval = nil }
             Button("取消", role: .cancel) { pendingRemoval = nil }

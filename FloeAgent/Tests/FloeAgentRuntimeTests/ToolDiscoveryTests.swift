@@ -7,6 +7,20 @@ import FloeModels
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test func executorPreservesNonzeroExitAsFailure() async throws {
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(descriptor: descriptor("exec.shell")) { _, _ in
+            .init(digesting: "exit=124 status=timedOut\npartial output", exitStatus: 124)
+        })
+        let result = try await CatalogToolExecutor(runners: registry).execute(
+            ToolCall(id: "timeout", toolName: "exec.shell", argumentsJSON: Data("{}".utf8), scope: .local),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(result.status == .failed)
+        #expect(result.exitStatus == 124)
+        #expect(result.outputSummary.contains("partial output"))
+    }
+
     @Test func executorPreservesCompleteImageCatalog() async throws {
         let registry = ToolRunnerRegistry()
         let json = try JSONSerialization.data(withJSONObject: [

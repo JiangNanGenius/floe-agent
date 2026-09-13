@@ -557,7 +557,7 @@ struct OfficeDocumentSurface: View {
 struct OfficeDocumentEditorView: View {
     let relativePath: String
     @ObservedObject var session: OfficeFileSession
-    var onSaved: (() -> Void)?
+    var onSaved: (() async -> Bool)?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var confirmingDiscard = false
@@ -604,7 +604,7 @@ struct OfficeDocumentEditorView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回") {
                         if session.phase == .failed { dismiss() }
-                        else { Task { if await session.saveAndReturn() { onSaved?(); dismiss() } } }
+                        else { Task { if await session.saveAndReturn(), await onSaved?() ?? true { dismiss() } } }
                     }
                     .disabled(!session.canAct && session.phase != .failed)
                     .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
@@ -612,7 +612,7 @@ struct OfficeDocumentEditorView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Menu {
                         Button("保存并返回") {
-                            Task { if await session.saveAndReturn() { onSaved?(); dismiss() } }
+                            Task { if await session.saveAndReturn(), await onSaved?() ?? true { dismiss() } }
                         }
                         if !session.exportFormats.isEmpty {
                             Menu("导出格式", systemImage: "square.and.arrow.up") {

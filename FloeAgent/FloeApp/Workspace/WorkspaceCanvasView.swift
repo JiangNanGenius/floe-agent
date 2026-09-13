@@ -8861,8 +8861,7 @@ private struct SharedCanvasAgentConversation: View {
         case .liveAssistantTail:
             AssistantMessageView(text: viewModel.liveStreamedText, isStreaming: true)
         case .liveThinking:
-            HStack { ProgressView(); Text("正在处理…") }
-                .font(.caption).foregroundStyle(.secondary)
+            ModelResponseWaitingView()
         case .approval(let approval):
             ApprovalCardView(approval: approval) { decision in
                 Task { await viewModel.resolve(approval, decision: decision) }

@@ -44,13 +44,12 @@ struct NotesOfficeView: View {
             if !OfficeFileSession.available {
                 ContentUnavailableView("Office 编辑器不可用", systemImage: "doc", description: Text("此构建不包含原生 Office 引擎。原文件已保留。"))
             } else {
-                OfficeDocumentSurface(session: office)
-                HStack {
-                    Text("Word · Excel · PowerPoint").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("编辑文档", systemImage: "square.and.pencil") { editing = true }
-                        .buttonStyle(.borderedProminent).disabled(!office.canAct || pendingCommit || committing)
-                }.padding()
+                OfficeDocumentEditorView(relativePath: document.officeFileName ?? document.title, session: office, onSaved: {
+                    pendingCommit = true
+                    await commit()
+                    return !pendingCommit
+                })
+
             }
         }
         .task { await prepare() }
@@ -87,18 +86,6 @@ struct NotesOfficeView: View {
                 .navigationTitle("Office 恢复")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showingRecoveries = false } } }
             }
-        }
-        .sheet(isPresented: $editing, onDismiss: {
-            Task {
-                if pendingCommit { await commit() }
-                else if let draftURL { await office.open(draftURL) }
-            }
-        }) {
-            NavigationStack {
-                OfficeDocumentEditorView(relativePath: document.officeFileName ?? document.title, session: office, onSaved: {
-                    pendingCommit = true
-                })
-            }.interactiveDismissDisabled()
         }
         .onDisappear {
             if !editing { Task { await office.release() } }
@@ -154,6 +141,7 @@ struct NotesOfficeView: View {
             try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: folder.appendingPathComponent("recovery.json"), options: .atomic)
             draftURL = target; baseRevision = document.revision; baseResourceID = resource; recoveryURL = target
             await office.open(target)
+            await office.enterEditing()
             if let error = office.error { message = error }
         } catch { message = error.localizedDescription }
     }

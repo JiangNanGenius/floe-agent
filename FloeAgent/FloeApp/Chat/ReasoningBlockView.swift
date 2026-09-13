@@ -11,6 +11,26 @@
 import SwiftUI
 import UIKit
 
+/// Shown only until the first response content, never beside live reasoning.
+struct ModelResponseWaitingView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var breathing = false
+    var body: some View {
+        HStack(spacing: 9) {
+            Circle().fill(FloeTheme.primary)
+                .frame(width: 6, height: 6)
+                .opacity(reduceMotion || !breathing ? 0.85 : 0.35)
+                .accessibilityHidden(true)
+            Text("等待模型响应")
+                .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 8)
+        .accessibilityIdentifier("thread.waitingForResponse")
+        .onAppear { breathing = !reduceMotion }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: breathing)
+    }
+}
+
 /// A foldable reasoning ("思考过程") block.
 struct ReasoningBlockView: View {
     let text: String
@@ -40,7 +60,9 @@ struct ReasoningBlockView: View {
                         if !isExpanded {
                             Text(preview.isEmpty ? (isStreaming ? "正在思考…" : "查看思考记录") : preview)
                                 .font(.footnote).foregroundStyle(.secondary)
-                                .lineLimit(2).multilineTextAlignment(.leading)
+                                .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .transaction { $0.animation = nil }
                         }
                     }
                     Spacer(minLength: 4)

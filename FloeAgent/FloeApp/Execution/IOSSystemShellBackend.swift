@@ -16,7 +16,14 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         if cancellation?.isCancelled == true { return .cancelled }
         FloeShellCommandRegistry.shared.bind(sessionID: request.sessionID, rootURL: request.rootURL, runID: request.runID, cancellation: cancellation, environment: request.toolEnvironment)
         defer { FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID) }
-        return await Task.detached(priority: .userInitiated) {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: Self.runBlocking(request, directory: directory, cancellation: cancellation))
+            }
+        }
+    }
+
+    private static func runBlocking(_ request: ShellRunRequest, directory: URL, cancellation: CancellationToken?) -> ShellRunOutcome {
             let started = DispatchTime.now().uptimeNanoseconds
             var stdout: NSString?, stderr: NSString?
             var code: Int32 = 125
@@ -32,7 +39,6 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             case .cancelled: return .cancelled
             default: return .failed(message: "Local shell could not start")
             }
-        }.value
     }
 
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {

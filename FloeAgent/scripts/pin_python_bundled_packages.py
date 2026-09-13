@@ -19,7 +19,7 @@ from pathlib import Path
 LOCK_PATH = Path(__file__).resolve().parent / "python_bundled_packages.lock.json"
 
 DEFAULT_PACKAGES = [
-    "attrs", "beautifulsoup4", "chardet", "click", "defusedxml", "et-xmlfile",
+    "attrs", "beautifulsoup4", "certifi", "chardet", "click", "defusedxml", "et-xmlfile",
     "feedparser", "filelock", "fonttools", "fpdf2", "html5lib", "humanize",
     "icalendar", "jmespath", "jsonlines", "Markdown", "openpyxl", "packaging",
     "platformdirs", "pypdf", "pyparsing", "pytz", "python-slugify", "six", "feedparser-sgmllib",
