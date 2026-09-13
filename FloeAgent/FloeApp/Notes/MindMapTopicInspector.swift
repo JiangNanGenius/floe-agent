@@ -9,6 +9,10 @@ struct MindMapTopicInspector: View {
     let session: NotesSession
     let document: NoteDocument
     @State var node: MindMapNode
+    var onOpenSource: ((NoteSourceReference) async -> Bool)? = nil
+    @State private var pendingSource: NoteSourceReference?
+    @State private var savedRevision: Int?
+    @State private var savedNode: MindMapNode?
     @State private var importing = false
     @State private var replacing: UUID?
     @State private var busy = false
@@ -30,7 +34,7 @@ struct MindMapTopicInspector: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     if let source = node.source {
                         Button("打开来源", systemImage: "arrow.up.forward.app") {
-                            Task { await session.openSource(source); dismiss() }
+                            requestSource(source)
                         }
                     }
                 }
@@ -66,7 +70,14 @@ struct MindMapTopicInspector: View {
             .alert("主题内容", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("好") { error = nil }
             } message: { Text(error ?? "") }
-        }.presentationDetents([.large]).interactiveDismissDisabled(busy)
+        }.presentationDetents([.large])
+            .confirmationDialog("离开前保存主题修改？", isPresented: Binding(get: { pendingSource != nil }, set: { if !$0 { pendingSource = nil } }), titleVisibility: .visible) {
+                if let source = pendingSource {
+                    Button("保存并打开来源") { navigate(source, saveChanges: true) }
+                    Button("放弃修改并打开来源", role: .destructive) { navigate(source, saveChanges: false) }
+                }
+                Button("取消", role: .cancel) { pendingSource = nil }
+            }.interactiveDismissDisabled(busy)
     }
 
     private func attachmentRow(_ attachment: MindMapAttachment) -> some View {
@@ -85,7 +96,7 @@ struct MindMapTopicInspector: View {
                 }
                 Button("替换") { replacing = attachment.id; importing = true }
                 if let source = attachment.source {
-                    Button("来源") { Task { await session.openSource(source); dismiss() } }
+                    Button("来源") { requestSource(source) }
                 }
                 Spacer()
                 Button("移除", role: .destructive) {
@@ -100,12 +111,36 @@ struct MindMapTopicInspector: View {
         switch kind { case .image: "photo"; case .document: "doc.richtext"; case .audio: "waveform"; case .video: "film"; case .file: "paperclip" }
     }
 
+    private func requestSource(_ source: NoteSourceReference) {
+        if (savedNode ?? document.nodes.first(where: { $0.id == node.id })) != node { pendingSource = source }
+        else { navigate(source, saveChanges: false) }
+    }
+
+    private func navigate(_ source: NoteSourceReference, saveChanges: Bool) {
+        pendingSource = nil
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                if saveChanges {
+                    let saved = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: savedRevision ?? document.revision)
+                    savedRevision = saved.revision; savedNode = node
+                }
+                let opened: Bool
+                if let onOpenSource { opened = await onOpenSource(source) }
+                else { opened = await session.openSource(source) }
+                if opened { dismiss() }
+                else { error = session.errorMessage ?? "无法打开来源，请检查资料是否仍然可用。" }
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
     private func save() {
         busy = true
         Task {
             defer { busy = false }
             do {
-                _ = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: document.revision)
+                _ = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: savedRevision ?? document.revision)
                 dismiss()
             } catch { self.error = error.localizedDescription }
         }

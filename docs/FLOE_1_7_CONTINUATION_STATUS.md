@@ -24,6 +24,9 @@
 
 ## 当前证据
 
+- 完整应用在 `57d1915fbb733e4289b0e63bb9fc2eb4a025964d` 的 SDK 26.6 兼容构建通过（`34728041064` / `103645661295`）。该运行整体仍失败于先前媒体并发测试，不能计为整轮 CI 通过；SDK 27 和修复后的媒体测试在新运行中验收。
+- 小窗控件和来源导航补充通过本地 arm64 原生定向编译；新增来源失效时保留当前阅读器、独立小窗会话不变的回归测试，运行结果待云端验证。
+
 - Whisper 推理运行 `34728314865` 在 `d51cad7ff516657a1f109e83a6eefbdd805df127` 上通过 iPad/iPhone SDK 27 模拟器。约 9 秒中英合成样本被识别为“今天我們學習Opportunity Cost,也就是機會成本,Tomorrow we will review international trade.”。iPad 模拟器模型加载约 3.94 秒、推理约 5.68 秒；iPhone 模拟器加载约 8.42 秒、推理约 8.11 秒，不能当作真机速度。完整下载校验约 491 MB，直接调用 WhisperKit，无 Apple 回退；记录 `evidence/floe-1.7/whisper/*d51cad7-inference.json`。尚未测真人语音、设备峰值内存或麦克风完整交互。
 
 - 最近打开记录增加重启、只读打开不改内容/撤销、回收站排除测试，当前 14 项 Notes 主机测试通过；记录 `evidence/floe-1.7/notes/host-tests-recents.txt`。

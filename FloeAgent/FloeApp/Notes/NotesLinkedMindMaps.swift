@@ -143,6 +143,7 @@ struct NotesMindMapWindow: View {
             let x = expanded || compact ? 0 : max(0, min(available.width - width, (available.width - width) * relativeX + moving.width))
             let y = expanded ? 0 : max(0, min(available.height - height, (available.height - height) * relativeY + moving.height))
             panel
+                .padding(.bottom, expanded ? 0 : 44)
                 .frame(width: width, height: height)
                 .background(.background, in: RoundedRectangle(cornerRadius: expanded ? 0 : 18))
                 .clipShape(RoundedRectangle(cornerRadius: expanded ? 0 : 18))
@@ -183,7 +184,14 @@ struct NotesMindMapWindow: View {
             catch { session.errorMessage = error.localizedDescription }
         }
         .sheet(item: $inspector) { node in
-            if let document = session.document { MindMapTopicInspector(session: session, document: document, node: node) }
+            if let document = session.document {
+                MindMapTopicInspector(session: session, document: document, node: node, onOpenSource: { source in
+                    let opened = await parentSession.openSource(source)
+                    if opened { close() }
+                    else { session.errorMessage = parentSession.errorMessage }
+                    return opened
+                })
+            }
         }
         .alert("导图", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
             Button("好") { session.errorMessage = nil }
@@ -199,7 +207,7 @@ struct NotesMindMapWindow: View {
                 }
                 Button(expanded ? "还原小窗" : "展开", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { expanded.toggle() }
                 Button("关闭小窗", systemImage: "xmark") { close() }
-            }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.large).padding(.horizontal, 12).padding(.top, expanded ? 8 : 22).padding(.bottom, 6)
+            }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(.horizontal, 12).padding(.top, expanded ? 8 : 22).padding(.bottom, 6)
             Divider()
             if let document = session.document, document.deletedAt == nil {
                 HStack(spacing: 16) {
@@ -209,7 +217,7 @@ struct NotesMindMapWindow: View {
                     Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { onAssistant(document) }
                     Spacer()
                     Text(session.pendingWrites > 0 ? "保存中" : "已保存").font(.caption).foregroundStyle(.secondary)
-                }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.large).padding(8)
+                }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(8)
                     .disabled(session.pendingWrites > 0)
                 NoteMindMapView(document: document, onEdit: { edits, revision in
                     try await session.commit(edits, documentID: document.id, expectedRevision: revision)
@@ -220,4 +228,14 @@ struct NotesMindMapWindow: View {
         }.accessibilityIdentifier("notes.mindmap.window")
     }
 }
+
+private struct NotesWindowControlStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+            .background(configuration.isPressed ? Color.secondary.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 #endif

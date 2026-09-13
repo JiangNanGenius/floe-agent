@@ -9,6 +9,29 @@ import FloeNotes
 @testable import FloeNotesNativeQualification
 
 @MainActor final class NativeNotesTests: XCTestCase {
+    func testSourceNavigationKeepsMapSessionAndRejectsMissingPage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let parent = try await store.create(NoteDocument(kind: .notebook, title: "课件"))
+        let map = try await store.create(NoteDocument(kind: .mindMap, title: "导图"))
+        let reader = NotesSession(), window = NotesSession()
+        await reader.open(using: store); await window.open(using: store)
+        await reader.select(map); await window.select(map)
+        let source = NoteSourceReference(documentID: parent.id, revision: parent.revision, pageID: parent.pages[0].id)
+        let opened = await reader.openSource(source)
+        XCTAssertTrue(opened)
+        XCTAssertEqual(reader.document?.id, parent.id)
+        XCTAssertEqual(reader.requestedPageID, parent.pages[0].id)
+        XCTAssertEqual(window.document?.id, map.id)
+        let invalid = NoteSourceReference(documentID: map.id, revision: map.revision, pageID: UUID())
+        let rejected = await reader.openSource(invalid)
+        XCTAssertFalse(rejected)
+        XCTAssertEqual(reader.document?.id, parent.id, "An invalid source must leave the current reader in place")
+        let unchanged = try await store.document(map.id)
+        XCTAssertEqual(unchanged.revision, map.revision)
+    }
+
     func testLinkedMapWindowRendersOverPDFAndRetainsSeparateUndo() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

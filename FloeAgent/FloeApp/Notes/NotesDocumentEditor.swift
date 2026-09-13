@@ -8,6 +8,7 @@ import FloeNotes
 struct NotesDocumentEditor: View {
     let session: NotesSession
     let document: NoteDocument
+    @State private var headerHeight: CGFloat = 64
     @State private var pageID: UUID?
     @State private var drawing: Data?
     @State private var background: Data?
@@ -87,6 +88,7 @@ struct NotesDocumentEditor: View {
     private var editorContent: some View {
         VStack(spacing: 0) {
             header
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
             Divider()
             if document.kind == .office {
                 NotesOfficeView(session: session, document: document)
@@ -124,7 +126,7 @@ struct NotesDocumentEditor: View {
             if let mapWindow, document.kind != .mindMap,
                document.linkedMindMaps?.contains(where: { $0.id == mapWindow.id }) == true {
                 NotesMindMapWindow(parentSession: session, parentID: document.id, link: mapWindow, close: { self.mapWindow = nil }, onAssistant: { linkedMapAssistant = $0 })
-                    .padding(.top, 64).padding(8)
+                    .padding(.top, headerHeight).padding(8)
             }
         }
         .sheet(item: $linkedMapAssistant) { map in

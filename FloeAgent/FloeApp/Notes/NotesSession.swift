@@ -77,8 +77,9 @@ final class NotesSession {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func openSource(_ source: NoteSourceReference) async {
-        guard source.space == .notes, let store else { errorMessage = "此引用不属于手记。"; return }
+    @discardableResult
+    func openSource(_ source: NoteSourceReference) async -> Bool {
+        guard source.space == .notes, let store else { errorMessage = "此引用不属于手记。"; return false }
         do {
             let value = try await store.document(source.documentID)
             guard value.deletedAt == nil else { throw NoteError.invalidOperation("引用资料在回收站中，请先恢复。") }
@@ -87,7 +88,8 @@ final class NotesSession {
             }
             await select(value)
             requestedPageID = source.pageID
-        } catch { errorMessage = error.localizedDescription }
+            return document?.id == value.id
+        } catch { errorMessage = error.localizedDescription; return false }
     }
 
     func create(kind: NoteDocument.Kind, title: String, notebookID: UUID?) {
