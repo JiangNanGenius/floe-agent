@@ -148,7 +148,8 @@ public struct LocalShellTool: AgentTool {
                 specs: packages,
                 timeout: 30,
                 maxOutputBytes: 64 * 1024,
-                cancellation: context.cancellation
+                cancellation: context.cancellation,
+                environment: context.environment
             )
             switch outcome {
             case .ok(let output):

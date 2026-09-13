@@ -69,12 +69,12 @@ public actor CapabilityInstaller {
     public func show(_ id: String) -> CapabilityCatalog.Entry? { catalog.entry(id: id) }
     public func allEntries() -> [CapabilityCatalog.Entry] { catalog.entries }
 
-    public func installedIDs() async -> [String] {
+    public func installedIDs(environment: ToolEnvironment? = nil) async -> [String] {
         loadLedgerIfNeeded()
         var ids = Set(ledger.values.filter { $0.kind != .pythonPackage && $0.kind != .wasmCommand }.map(\.id))
         let distributions: Set<String>
         if let pythonInstaller {
-            distributions = Set((await pythonInstaller.installedDistributions()).map(Self.normalizedDistribution))
+            distributions = Set((await pythonInstaller.installedDistributions(environment: environment)).map(Self.normalizedDistribution))
         } else {
             distributions = []
         }
@@ -91,7 +91,8 @@ public actor CapabilityInstaller {
         id: String,
         purpose: String?,
         capabilities: [String],
-        cancellation: CancellationToken?
+        cancellation: CancellationToken?,
+        environment: ToolEnvironment? = nil
     ) async throws -> Receipt {
         loadLedgerIfNeeded()
         guard let entry = catalog.entry(id: id) else {
@@ -112,7 +113,7 @@ public actor CapabilityInstaller {
                 throw FloeError.invalidConfiguration("catalog entry \(entry.id) has no exact package spec")
             }
             let distribution = Self.normalizedDistribution(entry.distributionName ?? "")
-            let installed = Set((await pythonInstaller.installedDistributions()).map(Self.normalizedDistribution))
+            let installed = Set((await pythonInstaller.installedDistributions(environment: environment)).map(Self.normalizedDistribution))
             if entry.tier == .bundled, installed.contains(distribution) {
                 receipt = Receipt(id: entry.id, kind: entry.kind, tier: entry.tier,
                                   detail: "already installed (bundled)", installedAt: Date())
@@ -121,7 +122,7 @@ public actor CapabilityInstaller {
             guard entry.tier != .bundled else {
                 throw FloeError.invalidConfiguration("Bundled package is missing; repair the app runtime instead of downloading it silently")
             }
-            switch await pythonInstaller.install(specs: [spec], cancellation: cancellation) {
+            switch await pythonInstaller.install(specs: [spec], cancellation: cancellation, environment: environment) {
             case .ok(let output):
                 receipt = Receipt(id: entry.id, kind: entry.kind, tier: entry.tier,
                                   detail: output.isEmpty ? "installed \(spec)" : "installed \(spec)", installedAt: Date())
@@ -179,7 +180,7 @@ public actor CapabilityInstaller {
         return receipt
     }
 
-    public func remove(id: String) async throws -> Receipt {
+    public func remove(id: String, environment: ToolEnvironment? = nil) async throws -> Receipt {
         loadLedgerIfNeeded()
         guard let entry = catalog.entry(id: id) else {
             throw FloeError.notFound("capability \(id) is not in the catalog")
@@ -195,7 +196,7 @@ public actor CapabilityInstaller {
             guard let distribution = entry.distributionName else {
                 throw FloeError.invalidConfiguration("catalog entry \(entry.id) has no distribution name")
             }
-            switch await pythonInstaller.uninstall(distribution: distribution) {
+            switch await pythonInstaller.uninstall(distribution: distribution, environment: environment) {
             case .ok:
                 break
             case .failed(let message):

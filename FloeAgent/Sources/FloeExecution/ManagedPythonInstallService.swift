@@ -23,6 +23,14 @@ public struct ManagedPythonInstallService: Sendable {
         self.packagesChanged = packagesChanged
     }
 
+    public static func executionContext(_ environment: ToolEnvironment?) -> PythonExecutionContext? {
+        guard let environment else { return nil }
+        var variables = environment.variables
+        variables["FLOE_PYTHON_PACKAGE_TARGET"] = environment.writableLayerURL.appendingPathComponent("usr/lib/floe-python/site-packages").path
+        variables["FLOE_PYTHON_WRITABLE_LAYER"] = environment.writableLayerURL.path
+        return .init(environment: variables)
+    }
+
     /// Builds the installer program that runs inside the managed CPython
     /// process. The private installer phase flag permits pip only for this
     /// exact program; agent scripts remain blocked by the audit hook.
@@ -30,9 +38,12 @@ public struct ManagedPythonInstallService: Sendable {
         """
         import json, sys, os, shutil, tempfile
         from pip._internal.cli.main import main as _floe_pip
-        _target = next((p for p in sys.path if p.endswith('PythonPackages')), None)
+        _target = os.environ.get('FLOE_PYTHON_PACKAGE_TARGET') or next((p for p in sys.path if p.endswith('PythonPackages')), None)
         if not _target:
             raise RuntimeError('Managed package directory is unavailable')
+        _layer = os.environ.get('FLOE_PYTHON_WRITABLE_LAYER')
+        if _layer and os.path.commonpath([os.path.realpath(_target), os.path.realpath(_layer)]) != os.path.realpath(_layer):
+            raise RuntimeError('Managed package directory escapes its environment')
         _specs = json.loads(\(String(reflecting: packageJSON)))
         _parent = os.path.dirname(_target)
         os.makedirs(_parent, exist_ok=True)
@@ -88,7 +99,8 @@ public struct ManagedPythonInstallService: Sendable {
         specs: [String],
         timeout: TimeInterval = 30,
         maxOutputBytes: Int = 64 * 1024,
-        cancellation: CancellationToken?
+        cancellation: CancellationToken?,
+        environment: ToolEnvironment? = nil
     ) async -> Outcome {
         var seen = Set<String>()
         let uniqueSpecs = specs.filter { seen.insert($0.lowercased()).inserted }
@@ -106,7 +118,8 @@ public struct ManagedPythonInstallService: Sendable {
             inputJSON: nil,
             timeout: timeout,
             maxOutputBytes: maxOutputBytes,
-            allowsManagedPackageInstaller: true
+            allowsManagedPackageInstaller: true,
+            pythonContext: Self.executionContext(environment)
         )
         let outcome = await python.run(request, cancellation: cancellation)
         switch outcome {
@@ -125,7 +138,7 @@ public struct ManagedPythonInstallService: Sendable {
     /// Removes an installed distribution by deleting exactly the files its
     /// RECORD lists, then the dist-info directory. Bundled (read-only)
     /// distributions cannot be removed and report a clear failure.
-    public func uninstall(distribution: String) async -> Outcome {
+    public func uninstall(distribution: String, environment: ToolEnvironment? = nil) async -> Outcome {
         guard let url = Bundle.module.url(forResource: "managed_package_remove", withExtension: "py"),
               let script = try? String(contentsOf: url, encoding: .utf8),
               let data = try? JSONEncoder().encode(["distribution": distribution]) else {
@@ -136,7 +149,8 @@ public struct ManagedPythonInstallService: Sendable {
             inputJSON: String(decoding: data, as: UTF8.self),
             timeout: 30,
             maxOutputBytes: 64 * 1024,
-            allowsManagedPackageInstaller: true
+            allowsManagedPackageInstaller: true,
+            pythonContext: Self.executionContext(environment)
         )
         let outcome = await python.run(request, cancellation: nil)
         switch outcome {
@@ -154,7 +168,7 @@ public struct ManagedPythonInstallService: Sendable {
 
     /// Distributions visible to the interpreter: bundled site-packages and
     /// the managed mutable root. Bundled entries cannot be uninstalled.
-    public func installedDistributions() async -> [String] {
+    public func installedDistributions(environment: ToolEnvironment? = nil) async -> [String] {
         let script = """
         import sys, importlib.metadata, re
         _roots = [p for p in sys.path if p.endswith('site-packages') or p.endswith('PythonPackages')]
@@ -162,7 +176,7 @@ public struct ManagedPythonInstallService: Sendable {
                   for d in importlib.metadata.distributions(path=_roots) if d.metadata['Name']}
         print('\\n'.join(sorted(_names)))
         """
-        let request = ScriptExecutionRequest(script: script, timeout: 10, maxOutputBytes: 64 * 1024)
+        let request = ScriptExecutionRequest(script: script, timeout: 10, maxOutputBytes: 64 * 1024, pythonContext: Self.executionContext(environment))
         guard case .ok(_, let stdout, _, _, _, _) = await python.run(request, cancellation: nil) else { return [] }
         return stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }

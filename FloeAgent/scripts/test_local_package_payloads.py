@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import runpy
 import io
 from pathlib import Path
 import tarfile
@@ -84,6 +86,18 @@ class PayloadTests(unittest.TestCase):
             self.assertTrue((root / 'shared.py').exists())
             self.assertFalse((root / 'only.py').exists())
             self.assertFalse((root / 'my_package-1.0.dist-info/METADATA').exists())
+
+    def test_remove_entrypoint_uses_selected_environment_and_decoded_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layer = Path(directory).resolve()
+            root = layer / 'usr/lib/floe-python/site-packages'
+            root.mkdir(parents=True)
+            (root / 'owned.py').write_text('owned')
+            self.make_distribution(root, 'selected', ['owned.py'])
+            with patch.dict(os.environ, {'FLOE_PYTHON_PACKAGE_TARGET': str(root), 'FLOE_PYTHON_WRITABLE_LAYER': str(layer)}):
+                runpy.run_path(str(ROOT / 'Sources/FloeExecution/Resources/managed_package_remove.py'),
+                               init_globals={'input': {'distribution': 'selected'}}, run_name='__main__')
+            self.assertFalse((root / 'owned.py').exists())
 
     def test_remove_rolls_back_failed_move(self):
         with tempfile.TemporaryDirectory() as directory:

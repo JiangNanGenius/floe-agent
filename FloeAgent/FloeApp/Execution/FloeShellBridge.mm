@@ -83,11 +83,11 @@ BOOL FloeShellHasActiveWorker(NSString *sessionID) {
     @synchronized (FloeActiveWorkers()) { return [FloeActiveWorkers() countForObject:sessionID] > 0; }
 }
 
-static NSLock *FloeShellRunLock(void) {
-    static NSLock *lock;
+static dispatch_semaphore_t FloeShellRunGate(void) {
+    static dispatch_semaphore_t gate;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ lock = [[NSLock alloc] init]; });
-    return lock;
+    dispatch_once(&once, ^{ gate = dispatch_semaphore_create(1); });
+    return gate;
 }
 
 #pragma mark - Engine bootstrap
@@ -190,14 +190,24 @@ struct FloeRunContext {
     std::unique_ptr<FloePipeCapture> errorCapture;
     int32_t exitCode = 125;
     __strong NSString *trackedSessionID;
+    __strong NSString *temporaryDirectory;
+    __strong NSString *originalDirectory;
+    bool ownsRunGate = false;
+    bool engineSessionOpened = false;
     std::atomic_bool finished{false};
     ~FloeRunContext() {
         if (command) free((void *)command);
-        if (sessionKey) free(sessionKey);
         if (input) fclose(input);
         if (output) fclose(output);
         if (error) fclose(error);
+        if (outputCapture) outputCapture->finish();
+        if (errorCapture) errorCapture->finish();
+        if (engineSessionOpened) ios_closeSession(sessionKey);
+        if (sessionKey) free(sessionKey);
+        if (originalDirectory) [[NSFileManager defaultManager] changeCurrentDirectoryPath:originalDirectory];
+        if (temporaryDirectory) [[NSFileManager defaultManager] removeItemAtPath:temporaryDirectory error:nil];
         if (trackedSessionID) FloeWorkerFinished(trackedSessionID);
+        if (ownsRunGate) dispatch_semaphore_signal(FloeShellRunGate());
     }
 };
 
@@ -207,6 +217,7 @@ void *FloeRunThreadMain(void *rawContext) {
     auto context = *holder;
     @autoreleasepool {
         ios_switchSession(context->sessionKey);
+        context->engineSessionOpened = true;
         ios_setContext(context->sessionKey);
         // ios_fork holds the engine PID mutex until the creating thread
         // publishes its ID. Complete that pair before dash can fork a pipeline.
@@ -260,17 +271,27 @@ FloeShellBridgeStatus FloeShellRunCommand(
         return FloeShellBridgeStatusEngineUnavailable;
     }
     FloeEnsureEngineInitialized();
-    [FloeShellRunLock() lock];
-    @try {
+    const NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+    while (dispatch_semaphore_wait(FloeShellRunGate(), dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC)) != 0) {
+        if (shouldCancel && shouldCancel()) return FloeShellBridgeStatusCancelled;
+        if (NSProcessInfo.processInfo.systemUptime - started >= timeout) return FloeShellBridgeStatusTimedOut;
+    }
+    // Ownership follows the actual worker, including after a caller's deadline.
+    // Another one-shot must not reset cwd/root while that worker is still alive.
+    auto context = std::make_shared<FloeRunContext>();
+    context->ownsRunGate = true;
+    if (shouldCancel && shouldCancel()) return FloeShellBridgeStatusCancelled;
+    {
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSString *tempRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
                               [NSString stringWithFormat:@"floe-shell-%@", NSUUID.UUID.UUIDString]];
+        context->temporaryDirectory = tempRoot;
         [fileManager createDirectoryAtPath:tempRoot withIntermediateDirectories:YES attributes:nil error:nil];
         NSString *stdinPath = [tempRoot stringByAppendingPathComponent:@"stdin"];
         [fileManager createFileAtPath:stdinPath contents:(stdinData ?: [NSData data]) attributes:nil];
 
         if (rootPath.length > 0) { ios_setMiniRoot(rootPath); }
-        NSString *originalDirectory = [fileManager currentDirectoryPath];
+        context->originalDirectory = [fileManager currentDirectoryPath];
         if (rootPath.length > 0) { [fileManager changeCurrentDirectoryPath:rootPath]; }
 
         NSString *fullCommand = command;
@@ -279,7 +300,6 @@ FloeShellBridgeStatus FloeShellRunCommand(
             // keeps session state only for interactive use.
         }
 
-        auto context = std::make_shared<FloeRunContext>();
         context->command = strdup(fullCommand.UTF8String);
         context->sessionKey = strdup(sessionID.UTF8String);
         context->workingDirectory = workingDirectory;
@@ -289,8 +309,6 @@ FloeShellBridgeStatus FloeShellRunCommand(
         if (pipe(outPipe) != 0 || pipe(errPipe) != 0) {
             for (int fd : outPipe) if (fd >= 0) close(fd);
             for (int fd : errPipe) if (fd >= 0) close(fd);
-            [fileManager changeCurrentDirectoryPath:originalDirectory];
-            [fileManager removeItemAtPath:tempRoot error:nil];
             return FloeShellBridgeStatusEngineUnavailable;
         }
         auto budget = std::make_shared<FloeCaptureBudget>(maxOutputBytes);
@@ -301,20 +319,15 @@ FloeShellBridgeStatus FloeShellRunCommand(
         if (!context->output) close(outPipe[1]);
         if (!context->error) close(errPipe[1]);
         if (!context->input || !context->output || !context->error) {
-            [fileManager changeCurrentDirectoryPath:originalDirectory];
-            [fileManager removeItemAtPath:tempRoot error:nil];
             return FloeShellBridgeStatusEngineUnavailable;
         }
 
-        NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
         pthread_t thread;
         context->trackedSessionID = sessionID;
         FloeWorkerStarted(sessionID);
         auto holder = new std::shared_ptr<FloeRunContext>(context);
         if (pthread_create(&thread, NULL, FloeRunThreadMain, holder) != 0) {
             delete holder;
-            [fileManager changeCurrentDirectoryPath:originalDirectory];
-            [fileManager removeItemAtPath:tempRoot error:nil];
             return FloeShellBridgeStatusEngineUnavailable;
         }
 
@@ -338,26 +351,20 @@ FloeShellBridgeStatus FloeShellRunCommand(
         }
         if (context->finished.load(std::memory_order_acquire)) {
             pthread_join(thread, NULL);
-            ios_closeSession(context->sessionKey);
         } else {
             pthread_detach(thread);
         }
 
-        if (rootPath.length > 0) { [fileManager changeCurrentDirectoryPath:originalDirectory]; }
 
         if (outStdout) { *outStdout = context->outputCapture->snapshot(); }
         if (outStderr) { *outStderr = context->errorCapture->snapshot(); }
         if (outExitCode) { *outExitCode = context->finished.load(std::memory_order_acquire) ? context->exitCode : 124; }
-        // On timeout the worker still owns `context` (it frees itself when it
-        // exits); the deadline path intentionally abandons the thread rather
-        // than racing a free against it.
-        [fileManager removeItemAtPath:tempRoot error:nil];
+        // The worker retains streams, its registered session, temporary input
+        // and execution lease until it has actually stopped and drained output.
 
         if (cancelled) { return FloeShellBridgeStatusCancelled; }
         if (timedOut) { return FloeShellBridgeStatusTimedOut; }
         return FloeShellBridgeStatusOK;
-    } @finally {
-        [FloeShellRunLock() unlock];
     }
 }
 

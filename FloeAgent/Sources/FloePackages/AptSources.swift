@@ -130,9 +130,14 @@ public enum AptSources {
             throw FloeError.validationFailed("Invalid environment source path")
         }
         let base = root.resolvingSymlinksInPath().standardizedFileURL
-        let target = base.appendingPathComponent(path).resolvingSymlinksInPath().standardizedFileURL
-        guard target.path.hasPrefix(base.path + "/") else {
-            throw FloeError.validationFailed("Software source path leaves the selected environment")
+        // Resolve each existing ancestor before appending missing descendants.
+        // Foundation may leave the whole path unresolved when its leaf is absent.
+        var target = base
+        for component in path.split(separator: "/") {
+            target = target.appendingPathComponent(String(component)).resolvingSymlinksInPath().standardizedFileURL
+            guard target.path.hasPrefix(base.path + "/") else {
+                throw FloeError.validationFailed("Software source path leaves the selected environment")
+            }
         }
         return target
     }

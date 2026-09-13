@@ -78,9 +78,9 @@ public struct ManagedPackageTool: AgentTool {
         switch action {
         case "search":
             let found = await installer.search(args.query ?? "")
-            return await render(entries: found, action: action)
+            return await render(entries: found, action: action, environment: context.environment)
         case "list":
-            let installed = Set(await installer.installedIDs())
+            let installed = Set(await installer.installedIDs(environment: context.environment))
             let entries = await installer.allEntries()
             var lines = ["status=ok action=list total=\(entries.count) installed=\(installed.count)"]
             for entry in entries {
@@ -92,14 +92,14 @@ public struct ManagedPackageTool: AgentTool {
             for id in args.ids ?? [] {
                 if let entry = installer.catalog.entry(id: id) { found.append(entry) }
             }
-            return await render(entries: found, action: action)
+            return await render(entries: found, action: action, environment: context.environment)
         case "install":
             return try await install(args: args, context: context)
         case "remove":
             var lines = ["status=ok action=remove"]
             for id in args.ids ?? [] {
                 do {
-                    let receipt = try await installer.remove(id: id)
+                    let receipt = try await installer.remove(id: id, environment: context.environment)
                     lines.append("removed id=\(receipt.id) detail=\(receipt.detail)")
                 } catch {
                     lines.append("failed id=\(id) error=\(error.localizedDescription)")
@@ -132,7 +132,8 @@ public struct ManagedPackageTool: AgentTool {
                     id: id,
                     purpose: args.purpose,
                     capabilities: args.capabilities ?? [],
-                    cancellation: context.cancellation
+                    cancellation: context.cancellation,
+                    environment: context.environment
                 )
                 lines.append("installed id=\(receipt.id) kind=\(receipt.kind.rawValue) tier=\(receipt.tier.rawValue) detail=\(receipt.detail)")
             } catch {
@@ -143,8 +144,8 @@ public struct ManagedPackageTool: AgentTool {
         return Self.output(lines.joined(separator: "\n"), exitStatus: 0)
     }
 
-    private func render(entries: [CapabilityCatalog.Entry], action: String) async -> ToolExecutionOutput {
-        let installed = Set(await installer.installedIDs())
+    private func render(entries: [CapabilityCatalog.Entry], action: String, environment: ToolEnvironment?) async -> ToolExecutionOutput {
+        let installed = Set(await installer.installedIDs(environment: environment))
         var lines = ["status=ok action=\(action) count=\(entries.count)"]
         for entry in entries {
             lines.append(Self.line(entry, installed: installed.contains(entry.id)))

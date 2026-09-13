@@ -57,10 +57,13 @@ def remove_distribution(root, name):
 
 
 if __name__ == "__main__":
-    request = json.loads(input)
-    root = next((p for p in sys.path if p.endswith("PythonPackages")), None)
+    request = input if isinstance(input, dict) else json.loads(input)
+    root = os.environ.get("FLOE_PYTHON_PACKAGE_TARGET") or next((p for p in sys.path if p.endswith("PythonPackages")), None)
     if root is None:
         raise RuntimeError("Managed package directory is unavailable")
+    layer = os.environ.get("FLOE_PYTHON_WRITABLE_LAYER")
+    if layer and not Path(root).resolve().is_relative_to(Path(layer).resolve()):
+        raise ValueError("Managed package directory escapes its environment")
     count = remove_distribution(root, request["distribution"])
     print("uninstalled=" + request["distribution"])
     print("filesRemoved=" + str(count))

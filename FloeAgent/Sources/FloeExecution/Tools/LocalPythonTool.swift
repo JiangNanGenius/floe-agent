@@ -160,7 +160,8 @@ public struct LocalPythonTool: AgentTool {
                 specs: packages,
                 timeout: Self.maxTimeout,
                 maxOutputBytes: min(args.maxOutputBytes ?? Self.defaultMaxOutputBytes, Self.maxOutputBytesCap),
-                cancellation: context.cancellation
+                cancellation: context.cancellation,
+                environment: context.environment
             )
             switch installOutcome {
             case .ok(let output):

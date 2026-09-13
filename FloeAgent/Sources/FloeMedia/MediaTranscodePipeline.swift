@@ -225,13 +225,24 @@ private final class MediaSampleTransfer: @unchecked Sendable {
     }
 }
 
-/// AVFoundation owns synchronization of cancelReading/cancelWriting with pending I/O.
+/// Cancellation can arrive from the token watcher, task cancellation and error unwind.
+/// Deliver it once: concurrent repeated cancellation can race AVFoundation observer teardown.
 /// The wrapper stays alive until all sample workers and writer completion have returned.
 private final class MediaTransferControl: @unchecked Sendable {
     let reader: AVAssetReader
     let writer: AVAssetWriter
     init(reader: AVAssetReader, writer: AVAssetWriter) { self.reader = reader; self.writer = writer }
-    func cancel() { reader.cancelReading(); writer.cancelWriting() }
+    private let cancellationLock = NSLock()
+    private var cancellationSent = false
+    func cancel() {
+        let first = cancellationLock.withLock {
+            guard !cancellationSent else { return false }
+            cancellationSent = true
+            return true
+        }
+        guard first else { return }
+        reader.cancelReading(); writer.cancelWriting()
+    }
     func finish() async throws {
         await writer.finishWriting()
         guard writer.status == .completed, reader.status != .failed else {

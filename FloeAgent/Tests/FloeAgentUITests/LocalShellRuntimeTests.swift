@@ -47,6 +47,20 @@ struct LocalShellRuntimeTests {
         #expect(output.contains("missing-command-ok"))
     }
 
+    @Test(.timeLimit(.minutes(1))) func timeoutRetainsWorkerUntilItStopsAndNextRunCanProceed() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = IOSSystemShellBackend()
+        let id = UUID().uuidString
+        let first = await backend.run(.init(command: "sleep 2", cwd: ".", rootURL: root, timeout: 0.1, sessionID: id), cancellation: nil)
+        guard case .timedOut = first else { Issue.record("Expected sleep timeout: \(first)"); return }
+        let next = await backend.run(.init(command: "printf 'after-worker'", cwd: ".", rootURL: root, timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .exited(let code, let output, _, _, _, _) = next else { Issue.record("Worker lease did not recover: \(next)"); return }
+        #expect(code == 0 && output == "after-worker")
+        #expect(!FloeShellHasActiveWorker(id))
+    }
+
     @Test func posixLoopAndPipe() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

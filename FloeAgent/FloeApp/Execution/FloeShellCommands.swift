@@ -602,7 +602,7 @@ enum FloeShellCommands {
                 FloeShellWrite(stderr, "dpkg: the capability catalog is unavailable\n")
                 return 1
             }
-            let installed = await installer.installedIDs()
+            let installed = await installer.installedIDs(environment: FloeShellCommandRegistry.shared.context?.environment)
             FloeShellWrite(stdout, "Desired=Unknown/Install/Remove/Purge/Hold\n")
             for id in installed { FloeShellWrite(stdout, "ii  \(id)\n") }
             return 0
