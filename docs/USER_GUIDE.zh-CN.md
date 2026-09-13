@@ -344,3 +344,7 @@ PDF 独立于 Office：从文件列表打开后直接阅读，在宽屏右侧预
 ![iPad 中 PDF 与独立导图小窗](evidence/floe-1.7/notes/verified-455/ipad-landscape-pdf-map.png)
 
 此图来自固定提交 `4550b6d` 的 iPad 组件测试，展示 PDF 正文和导图小窗；不代表完整应用或真机验收。
+
+<img src="evidence/floe-1.7/notes/verified-455/iphone-portrait-pdf-map.png" alt="iPhone 竖屏导图小窗" width="320">
+
+同一项通过的组件测试也覆盖 iPhone 竖屏小窗。此图为组件场景；关闭小窗后继续阅读 PDF。

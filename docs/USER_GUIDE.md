@@ -338,3 +338,7 @@ This is an exported-file image from an iPad SDK 27 component test, not a full-ap
 ![PDF and independent map window on iPad](evidence/floe-1.7/notes/verified-455/ipad-landscape-pdf-map.png)
 
 This iPad component fixture comes from `4550b6d`. It illustrates the PDF and map window, not full-app or physical-device acceptance.
+
+<img src="evidence/floe-1.7/notes/verified-455/iphone-portrait-pdf-map.png" alt="iPhone portrait map window" width="320">
+
+The same passing component test also exercises portrait iPhone layout. This is a component fixture; close the window to return to the PDF.
