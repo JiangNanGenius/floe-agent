@@ -81,6 +81,18 @@ targets:
         SWIFT_VERSION: '6.0'
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
+  NativeNotesUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: FloeNotesNativeQualification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.notes.uitests
+        SWIFT_VERSION: '6.0'
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
   WhisperInferenceTests:
     type: bundle.unit-test
     platform: iOS
@@ -106,8 +118,9 @@ schemes:
       targets:
         FloeNotesNativeQualification: all
         NativeNotesTests: [test]
+        NativeNotesUITests: [test]
     test:
-      targets: [NativeNotesTests]
+      targets: [NativeNotesTests, NativeNotesUITests]
 
   FloeWhisperInferenceQualification:
     build:

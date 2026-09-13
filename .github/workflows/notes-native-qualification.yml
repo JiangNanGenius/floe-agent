@@ -49,6 +49,7 @@ jobs:
             xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
               -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
               -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
+              -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
               -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log"
             result=${PIPESTATUS[0]}
             if [ "$result" -ne 0 ]; then exit "$result"; fi

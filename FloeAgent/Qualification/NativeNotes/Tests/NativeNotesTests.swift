@@ -83,11 +83,7 @@ import FloeNotes
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertTrue(rendered, "The independently stored map must render inside the PDF reader window")
-        // WebKit/PencilKit use composited layers that drawHierarchy can omit. Capture the display.
-        try await Task.sleep(for: .milliseconds(300))
-        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        screenshot.name = "Notes PDF with independent mind map window — screen capture"
-        screenshot.lifetime = .keepAlways; add(screenshot)
+        // Screen capture lives in NativeNotesUITests, which has XCTest UI authorization.
         if let web = find(host.view) {
             let content = XCTAttachment(image: try await web.takeSnapshot(configuration: nil))
             content.name = "Notes linked map — WebKit content evidence"

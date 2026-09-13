@@ -212,6 +212,11 @@ enum MediaTranscodePipeline {
 
 @available(macOS 26, iOS 26, tvOS 26, visionOS 26, *)
 private actor MediaAsyncSampleTransfer {
+    // Provider.next() may synchronously enter CoreMedia even though its API is async.
+    // A GCD-backed executor lets blocking I/O grow worker threads without consuming
+    // Swift's bounded cooperative pool (which must remain available for cancellation).
+    nonisolated private let executor = MediaSampleExecutor()
+    nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
     let source: AVAssetReaderOutput.Provider<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>>
     let destination: AVAssetWriterInput.SampleBufferReceiver
     init(source: sending AVAssetReaderOutput.Provider<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>>,
@@ -224,6 +229,14 @@ private actor MediaAsyncSampleTransfer {
             try await destination.append(sample)
         }
         destination.finish()
+    }
+}
+
+private final class MediaSampleExecutor: SerialExecutor, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "org.floe.media.sample-transfer", qos: .userInitiated)
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        queue.async { job.runSynchronously(on: self.asUnownedSerialExecutor()) }
     }
 }
 
