@@ -107,3 +107,9 @@ All release gates remain required. The next fixed candidate is `v1.7.0-beta.7`; 
 ## Build 151 / beta.8 preparation
 
 Build 150 completed the full concurrent Swift run without the earlier WASM stall. Only `FloeCoreTests` failed, because 21 appearance/environment catalog keys lacked the required namespace. The next candidate renames those keys and their UI references, preserves English and Chinese translations, and explicitly localizes the dynamic hold/unhold label. The original completeness rules remain intact. No TestFlight upload occurred for 150.
+
+## Build 152 / beta.9 preparation
+
+151 passed 1,244 Swift test executions, the SDK 27 simulator Release build, and all 135 App regressions (zero failures/skips). It then stopped on a scanner false positive: the public OpenAI tokenizer commit identifier in the Whisper manifest. The exact historical fingerprint is documented; the unused metadata label is renamed `textAssetsRevision`, preserving all download URLs, hashes, model identity and runtime-decoded fields.
+
+The source-history scan now runs before expensive tests/builds, and App regression bundles are retained even if a later release step fails. All verification requirements remain. No 151 upload took place; 152 is the next candidate.

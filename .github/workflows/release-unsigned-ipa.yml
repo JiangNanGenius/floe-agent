@@ -74,6 +74,9 @@ jobs:
           scripts/gen_project.sh
           scripts/release_preflight.sh "$RELEASE_TAG"
 
+      - name: Scan source history for credentials
+        run: scripts/secret_scan.sh
+
       - name: Reuse successful trusted CI for this exact source commit
         id: verified_ci
         run: |
@@ -196,9 +199,18 @@ jobs:
             --github-output "$GITHUB_OUTPUT" \
             --summary-output "$RUNNER_TEMP/FloeAgent-AppRegressionTests-SUMMARY.txt"
 
-      - name: Scan source and generate compliance artifacts
+      - name: Preserve app regression evidence even if a later release step fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-regression-SDK27-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/FloeAgent-AppRegressionTests.xcresult
+            ${{ runner.temp }}/FloeAgent-AppRegressionTests-SUMMARY.txt
+          if-no-files-found: ignore
+
+      - name: Generate dependency and license artifacts
         run: |
-          scripts/secret_scan.sh
           scripts/sbom.sh
           scripts/license_inventory.sh
 

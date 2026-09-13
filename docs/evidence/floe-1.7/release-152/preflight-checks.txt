@@ -1,0 +1,4 @@
+Gitleaks 8.30.1: complete existing history passed with the exact historical fingerprint exception.
+Current Whisper resource directory scan: passed, zero findings.
+Whisper runtime fields, file URLs, hashes and lengths: unchanged from build 151.
+License inventory script: completed; undetected licenses retain manual-review warnings.

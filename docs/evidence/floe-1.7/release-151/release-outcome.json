@@ -1,0 +1,15 @@
+{
+  "run": 34746784780,
+  "build": 151,
+  "source": "8d370cf",
+  "outcome": "failed before upload",
+  "simulatorReleaseBuild": "passed",
+  "appTests": {
+    "passed": 135,
+    "failed": 0,
+    "skipped": 0,
+    "evidence": "workflow log; result bundle not retained before scan failure"
+  },
+  "failure": "public Whisper tokenizer commit identifier reported by generic-api-key",
+  "upstream": "https://huggingface.co/openai/whisper-small/commit/973afd24965f72e36ca33b3055d56a652f456b4d"
+}

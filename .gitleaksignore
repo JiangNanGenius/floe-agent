@@ -3,3 +3,7 @@
 # credentials in these files remain reportable.
 784eff8a0382f0792089acd6054e89ba31bb68cd:FloeAgent/Tests/FloeCoreTests/FloeLoggerBufferTests.swift:generic-api-key:34
 784eff8a0382f0792089acd6054e89ba31bb68cd:FloeAgent/Tests/FloePersistenceTests/SettingsFlowTests.swift:generic-api-key:86
+
+# Public OpenAI Whisper tokenizer commit, verified at the public upstream commit URL.
+# Exact historical finding only; future contents and credentials remain scanned.
+faf1ca30595d50b73d08e32b2a6f874e5485d656:FloeAgent/FloeApp/Resources/Whisper/manifest.json:generic-api-key:6

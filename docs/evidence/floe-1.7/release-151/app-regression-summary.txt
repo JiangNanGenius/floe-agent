@@ -1,0 +1,11 @@
+2026-09-13T08:55:33.2875050Z canvas-pip-timeline-app-regression-summary total=135 passed=135 failed=0 skipped=0 expectedFailures=0 result=Passed
+2026-09-13T08:55:33.2936060Z canvas-pip-timeline-suite-summary suite=CanvasTouchInteractionTests executed=5 minimum=3
+2026-09-13T08:55:33.3044760Z canvas-pip-timeline-suite-summary suite=CanvasSavedImageBatchAtomicityTests executed=9 minimum=9
+2026-09-13T08:55:33.3092250Z canvas-pip-timeline-suite-summary suite=CanvasAgentToolContractTests executed=8 minimum=8
+2026-09-13T08:55:33.3093440Z canvas-pip-timeline-suite-summary suite=CrashAndFeedbackRegressionTests executed=39 minimum=38
+2026-09-13T08:55:33.3096050Z canvas-pip-timeline-suite-summary suite=ThreadTimelineTests executed=30 minimum=18
+2026-09-13T08:55:33.3097170Z canvas-pip-timeline-suite-summary suite=BrowserProtocolTests executed=6 minimum=6
+2026-09-13T08:55:33.3098090Z canvas-pip-timeline-suite-summary suite=MailConnectorTests executed=5 minimum=5
+2026-09-13T08:55:33.3099530Z canvas-pip-timeline-suite-summary suite=SkillLifecycleTests executed=25 minimum=15
+2026-09-13T08:55:33.3100440Z canvas-pip-timeline-suite-summary suite=LocalPythonRuntimeTests executed=3 minimum=2
+2026-09-13T08:55:33.3101870Z canvas-pip-timeline-suite-summary suite=LocalShellRuntimeTests executed=5 minimum=3
