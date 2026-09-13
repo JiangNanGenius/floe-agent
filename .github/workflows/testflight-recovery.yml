@@ -66,7 +66,7 @@ jobs:
         gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFIED_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/qualified-jobs.json"
         python3 "$POLICY/verify_testflight_recovery.py" --run "$RUNNER_TEMP/qualified-run.json" --jobs "$RUNNER_TEMP/qualified-jobs.json" --repository "$GITHUB_REPOSITORY" --source "$APP_SOURCE_SHA" --report "$RUNNER_TEMP/RECOVERY-PROVENANCE.json"
         JOB_ID="$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/RECOVERY-PROVENANCE.json"))["accepted_sdk_job"])')"
-        gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID/logs" > "$RUNNER_TEMP/qualified-sdk26.log"
+        gh api --allow-escape-sequences "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID/logs" > "$RUNNER_TEMP/qualified-sdk26.log"
         python3 - <<'PYTHON'
         import json, os, sys
         from pathlib import Path
