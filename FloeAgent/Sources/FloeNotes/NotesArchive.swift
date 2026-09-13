@@ -29,16 +29,9 @@ public enum NotesArchive {
         }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".notes-\(UUID().uuidString).partial")
         defer { try? FileManager.default.removeItem(at: temporary) }
-        var linked: [NoteDocument] = []
-        for link in document.linkedMindMaps ?? [] {
-            let map = try await store.document(link.documentID)
-            guard map.kind == .mindMap, map.deletedAt == nil else {
-                throw NoteError.invalidOperation("关联导图已移入回收站；请恢复或解除关联后再导出。")
-            }
-            linked.append(map)
-        }
-        let allResources = ([document] + linked).reduce(into: Set<UUID>()) { $0.formUnion($1.resourceIDs) }
-        let linkedSnapshot = linked
+        let snapshot = try await store.archiveSnapshot(document.id, expectedRevision: document.revision)
+        let allResources = snapshot.reduce(into: Set<UUID>()) { $0.formUnion($1.resourceIDs) }
+        let linkedSnapshot = Array(snapshot.dropFirst())
         var inputs: [(UUID, URL)] = []
         for id in allResources.sorted(by: { $0.uuidString < $1.uuidString }) {
             inputs.append((id, try await store.resourceURL(id)))
@@ -153,7 +146,7 @@ public enum NotesArchive {
         let documentIDs = Dictionary(uniqueKeysWithValues: originals.map { ($0.id, UUID()) })
         func remapSource(_ source: NoteSourceReference?) -> NoteSourceReference? {
             guard var source else { return nil }
-            if source.space == .notes, let id = documentIDs[source.documentID] { source.documentID = id }
+            if source.space == .notes, let id = documentIDs[source.documentID] { source.documentID = id; source.revision = 1 }
             return source
         }
         return try originals.map { original in

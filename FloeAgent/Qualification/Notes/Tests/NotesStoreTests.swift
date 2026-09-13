@@ -42,6 +42,7 @@ struct NotesStoreTests {
         #expect(newParent.linkedMindMaps?.first?.documentID == newMap.id)
         #expect(newParent.linkedMindMaps?.first?.pageID == pageID)
         #expect(newMap.nodes[0].attachments?.first?.source?.documentID == newParent.id)
+        #expect(newMap.nodes[0].attachments?.first?.source?.revision == newParent.revision)
         let attachment = try #require(newMap.nodes[0].attachments?.first)
         let copied = try await destination.resourceURL(attachment.resourceID)
         #expect(try Data(contentsOf: copied) == Data("attachment bytes".utf8))

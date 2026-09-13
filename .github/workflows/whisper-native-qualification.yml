@@ -1,0 +1,65 @@
+name: Qualify real Whisper inference on iPad and iPhone
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/floe-1-7-integration-20260912']
+    paths: ['.github/workflows/whisper-native-qualification.yml']
+permissions:
+  contents: read
+concurrency:
+  group: whisper-native-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  whisper:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - name: Generate a labeled Mandarin-English synthetic fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p FloeAgent/Qualification/NativeNotes/GeneratedWhisperFixtures
+          say -v Tingting -r 145 --file-format=WAVE --data-format=LEI16@16000 \
+            -o FloeAgent/Qualification/NativeNotes/GeneratedWhisperFixtures/mixed-zh-en.wav \
+            '今天我们学习 opportunity cost，也就是机会成本。Tomorrow we will review international trade.'
+          shasum -a 256 FloeAgent/Qualification/NativeNotes/GeneratedWhisperFixtures/mixed-zh-en.wav > whisper-fixture.sha256
+      - name: Generate native qualification project
+        run: |
+          brew install xcodegen
+          xcodegen generate --spec FloeAgent/Qualification/NativeNotes/project.yml
+      - name: Install pinned model and run actual inference, iPad first
+        shell: bash
+        run: |
+          set -o pipefail
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/whisper-devices.json"
+          for family in iPad iPhone; do
+            destination=$(python3 - "$family" "$RUNNER_TEMP/whisper-devices.json" <<'PY'
+          import json, sys
+          values = json.load(open(sys.argv[2]))['devices']
+          candidates = [d for group in values.values() for d in group if d['name'].startswith(sys.argv[1])]
+          preferred = sorted(candidates, key=lambda d: ('Air 13' not in d['name'], 'Pro' not in d['name'], d['name']))
+          if not preferred: raise SystemExit('No simulator for ' + sys.argv[1])
+          print(preferred[0]['udid'])
+          PY
+          )
+            xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
+              -scheme FloeWhisperInferenceQualification -destination "platform=iOS Simulator,id=$destination" \
+              -derivedDataPath "$RUNNER_TEMP/whisper-build" -parallel-testing-enabled NO \
+              -test-timeouts-enabled YES -default-test-execution-time-allowance 1200 \
+              -resultBundlePath "whisper-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "whisper-$family.log"
+            result=${PIPESTATUS[0]}
+            if [ "$result" -ne 0 ]; then exit "$result"; fi
+          done
+      - name: Preserve inference evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-inference-${{ github.sha }}
+          path: |
+            whisper-*.xcresult
+            whisper-*.log
+            whisper-fixture.sha256
+            ${{ runner.temp }}/whisper-devices.json

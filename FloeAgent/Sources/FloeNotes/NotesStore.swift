@@ -81,6 +81,23 @@ public actor NotesStore {
         try database.read { try read(id, db: $0) }
     }
 
+    /// Capture linked revisions in a single database read before streaming immutable resources.
+    public func archiveSnapshot(_ id: UUID, expectedRevision: Int) throws -> [NoteDocument] {
+        try database.read { db in
+            let root = try read(id, db: db)
+            guard root.revision == expectedRevision, root.deletedAt == nil else { throw NoteError.conflict }
+            var documents = [root]
+            for link in root.linkedMindMaps ?? [] {
+                let map = try read(link.documentID, db: db)
+                guard map.kind == .mindMap, map.deletedAt == nil else {
+                    throw NoteError.invalidOperation("关联导图已移入回收站；请恢复或解除关联后再导出。")
+                }
+                documents.append(map)
+            }
+            return documents
+        }
+    }
+
     @discardableResult public func create(_ document: NoteDocument) throws -> NoteDocument {
         try createBundle([document])[0]
     }

@@ -324,13 +324,25 @@ struct NotesDocumentEditor: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(document.title).font(.headline).lineLimit(1)
-                Text(session.pendingWrites > 0 ? "正在保存…" : session.unsavedDocumentIDs.contains(document.id) ? "尚有未保存修改" : "已保存到本机")
-                    .font(.caption).foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) { headerTitle; headerActions }
+            VStack(alignment: .leading, spacing: 4) {
+                headerTitle
+                ScrollView(.horizontal, showsIndicators: false) { headerActions }
             }
-            Spacer(minLength: 0)
+        }.padding(.horizontal).padding(.vertical, 6)
+    }
+
+    private var headerTitle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(document.title).font(.headline).lineLimit(1)
+            Text(session.pendingWrites > 0 ? "正在保存…" : session.unsavedDocumentIDs.contains(document.id) ? "尚有未保存修改" : "已保存到本机")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }.frame(minWidth: 100, maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var headerActions: some View {
+        HStack(spacing: 8) {
             if session.recoverableInkDocumentIDs.contains(document.id), !session.unsavedDocumentIDs.contains(document.id), session.pendingWrites == 0 {
                 Button("恢复笔迹", systemImage: "arrow.uturn.backward.circle") { session.recoverInk(documentID: document.id) }
                     .help("恢复未完成保存的笔迹；恢复后可撤销。")
@@ -396,7 +408,7 @@ struct NotesDocumentEditor: View {
                 Button(showOutline ? "导图" : "大纲", systemImage: showOutline ? "point.3.connected.trianglepath.dotted" : "list.bullet.indent") { showOutline.toggle() }
                     .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
             }
-        }.padding(.horizontal).padding(.vertical, 6)
+        }.fixedSize(horizontal: true, vertical: false)
     }
 
     private var writingTools: some View {

@@ -81,6 +81,25 @@ targets:
         SWIFT_VERSION: '6.0'
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
+  WhisperInferenceTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - WhisperTests
+      - path: GeneratedWhisperFixtures
+        buildPhase: resources
+        optional: true
+    dependencies:
+      - target: FloeNotesNativeQualification
+      - package: WhisperKit
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.whisper.tests
+        SWIFT_VERSION: '6.0'
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
 schemes:
   FloeNotesNativeQualification:
     build:
@@ -89,3 +108,11 @@ schemes:
         NativeNotesTests: [test]
     test:
       targets: [NativeNotesTests]
+
+  FloeWhisperInferenceQualification:
+    build:
+      targets:
+        FloeNotesNativeQualification: all
+        WhisperInferenceTests: [test]
+    test:
+      targets: [WhisperInferenceTests]
