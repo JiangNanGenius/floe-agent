@@ -101,6 +101,10 @@ struct NotesRootView: View {
                 Task {
                     do {
                         let url = try result.get()
+                        if url.pathExtension.lowercased() == "floenote" {
+                            session.importArchive(url, notebookID: selectedBook)
+                            return
+                        }
                         guard let store = session.store else { return }
                         let document = try await NoteFileImporter.importFile(url, notebookID: selectedBook, store: store)
                         session.importDocument(document)

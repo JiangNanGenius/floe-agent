@@ -7,8 +7,9 @@ import ZIPFoundation
 /// assistant grants, conversations, deleted data and undo history are deliberately not imported.
 public enum NotesArchive {
     private struct Manifest: Codable, Sendable {
-        var version = 1
+        var version = 2
         var document: NoteDocument
+        var linkedDocuments: [NoteDocument]?
         var resources: [Resource]
     }
     private struct Resource: Codable, Sendable {
@@ -28,8 +29,18 @@ public enum NotesArchive {
         }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".notes-\(UUID().uuidString).partial")
         defer { try? FileManager.default.removeItem(at: temporary) }
+        var linked: [NoteDocument] = []
+        for link in document.linkedMindMaps ?? [] {
+            let map = try await store.document(link.documentID)
+            guard map.kind == .mindMap, map.deletedAt == nil else {
+                throw NoteError.invalidOperation("关联导图已移入回收站；请恢复或解除关联后再导出。")
+            }
+            linked.append(map)
+        }
+        let allResources = ([document] + linked).reduce(into: Set<UUID>()) { $0.formUnion($1.resourceIDs) }
+        let linkedSnapshot = linked
         var inputs: [(UUID, URL)] = []
-        for id in document.resourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+        for id in allResources.sorted(by: { $0.uuidString < $1.uuidString }) {
             inputs.append((id, try await store.resourceURL(id)))
         }
         let worker = Task.detached(priority: .userInitiated) {
@@ -51,7 +62,7 @@ public enum NotesArchive {
                 }
                 resources.append(resource)
             }
-            let manifest = try JSONEncoder().encode(Manifest(document: document, resources: resources))
+            let manifest = try JSONEncoder().encode(Manifest(document: document, linkedDocuments: linkedSnapshot, resources: resources))
             guard manifest.count <= maximumManifest else { throw NoteError.invalidOperation("手记结构过大，请拆分导出。") }
             try archive.addEntry(with: "manifest.json", type: .file, uncompressedSize: Int64(manifest.count), compressionMethod: .deflate) { position, size in
                 manifest.subdata(in: Int(position)..<(Int(position) + size))
@@ -63,6 +74,12 @@ public enum NotesArchive {
     }
 
     public static func importDocument(from source: URL, notebookID: UUID?, store: NotesStore) async throws -> NoteDocument {
+        let documents = try await importDocuments(from: source, notebookID: notebookID, store: store)
+        guard documents.count == 1 else { throw NoteError.invalidOperation("此归档包含关联导图，请从手记资料列表导入。") }
+        return documents[0]
+    }
+
+    public static func importDocuments(from source: URL, notebookID: UUID?, store: NotesStore) async throws -> [NoteDocument] {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("notes-import-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -85,14 +102,21 @@ public enum NotesArchive {
                 data.append(chunk)
             }
             let manifest = try JSONDecoder().decode(Manifest.self, from: data)
-            guard manifest.version == 1, manifest.resources.count <= 20_000,
-                  Set(manifest.resources.map(\.id)) == manifest.document.resourceIDs,
+            let documents = [manifest.document] + (manifest.linkedDocuments ?? [])
+            let linkedIDs = Set((manifest.document.linkedMindMaps ?? []).map(\.documentID))
+            guard (1...2).contains(manifest.version),
+                  manifest.version != 1 || ((manifest.linkedDocuments ?? []).isEmpty && linkedIDs.isEmpty),
+                  documents.count <= 101, Set(documents.map(\.id)).count == documents.count,
+                  Set((manifest.linkedDocuments ?? []).map(\.id)) == linkedIDs,
+                  (manifest.linkedDocuments ?? []).allSatisfy({ $0.kind == .mindMap && $0.deletedAt == nil }),
+                  manifest.resources.count <= 20_000,
+                  Set(manifest.resources.map(\.id)) == documents.reduce(into: Set<UUID>(), { $0.formUnion($1.resourceIDs) }),
                   Set(manifest.resources.map(\.id)).count == manifest.resources.count,
                   Set(manifest.resources.map(\.path)).count == manifest.resources.count,
                   paths == Set(["manifest.json"] + manifest.resources.map(\.path)) else {
                 throw NoteError.invalidDocument("手记版本或资源清单无效。")
             }
-            try manifest.document.validate()
+            for document in documents { try document.validate() }
             var total: Int64 = 0
             for resource in manifest.resources {
                 try Task.checkCancellation()
@@ -125,26 +149,43 @@ public enum NotesArchive {
         for resource in manifest.resources {
             ids[resource.id] = try await store.importResource(from: directory.appendingPathComponent(resource.hash), mediaType: "application/octet-stream")
         }
-        var document = manifest.document
-        let originalID = document.id
-        document.id = UUID(); document.notebookID = notebookID; document.deletedAt = nil
-        document.officeResourceID = document.officeResourceID.flatMap { ids[$0] }
-        for p in document.pages.indices {
-            document.pages[p].backgroundResourceID = document.pages[p].backgroundResourceID.flatMap { ids[$0] }
-            document.pages[p].drawingResourceID = document.pages[p].drawingResourceID.flatMap { ids[$0] }
-            for e in document.pages[p].elements.indices {
-                document.pages[p].elements[e].resourceID = document.pages[p].elements[e].resourceID.flatMap { ids[$0] }
-                if document.pages[p].elements[e].source?.space == .notes, document.pages[p].elements[e].source?.documentID == originalID {
-                    document.pages[p].elements[e].source?.documentID = document.id
+        let originals = [manifest.document] + (manifest.linkedDocuments ?? [])
+        let documentIDs = Dictionary(uniqueKeysWithValues: originals.map { ($0.id, UUID()) })
+        func remapSource(_ source: NoteSourceReference?) -> NoteSourceReference? {
+            guard var source else { return nil }
+            if source.space == .notes, let id = documentIDs[source.documentID] { source.documentID = id }
+            return source
+        }
+        return try originals.map { original in
+            var document = original
+            document.id = documentIDs[original.id]!; document.notebookID = notebookID; document.deletedAt = nil
+            document.officeResourceID = document.officeResourceID.flatMap { ids[$0] }
+            if var links = document.linkedMindMaps {
+                for index in links.indices { links[index].documentID = documentIDs[links[index].documentID]! }
+                document.linkedMindMaps = links
+            }
+            for p in document.pages.indices {
+                document.pages[p].backgroundResourceID = document.pages[p].backgroundResourceID.flatMap { ids[$0] }
+                document.pages[p].drawingResourceID = document.pages[p].drawingResourceID.flatMap { ids[$0] }
+                for e in document.pages[p].elements.indices {
+                    document.pages[p].elements[e].resourceID = document.pages[p].elements[e].resourceID.flatMap { ids[$0] }
+                    document.pages[p].elements[e].source = remapSource(document.pages[p].elements[e].source)
                 }
             }
+            for n in document.nodes.indices {
+                document.nodes[n].imageResourceID = document.nodes[n].imageResourceID.flatMap { ids[$0] }
+                document.nodes[n].source = remapSource(document.nodes[n].source)
+                if var attachments = document.nodes[n].attachments {
+                    for index in attachments.indices {
+                        attachments[index].resourceID = ids[attachments[index].resourceID]!
+                        attachments[index].source = remapSource(attachments[index].source)
+                    }
+                    document.nodes[n].attachments = attachments
+                }
+            }
+            try document.validate()
+            return document
         }
-        for n in document.nodes.indices {
-            document.nodes[n].imageResourceID = document.nodes[n].imageResourceID.flatMap { ids[$0] }
-            if document.nodes[n].source?.space == .notes, document.nodes[n].source?.documentID == originalID { document.nodes[n].source?.documentID = document.id }
-        }
-        try document.validate()
-        return document
     }
 
     private static func digest(_ url: URL) throws -> (String, Int64) {

@@ -23,6 +23,10 @@ struct NotesDocumentEditor: View {
     @State private var showText = false
     @State private var textDraft = ""
     @State private var editedElement: NoteElement?
+    @State private var linkedMapAssistant: NoteDocument?
+    @State private var showLinkedMaps = false
+    @State private var mapWindow: NoteMindMapLink?
+    @State private var topicToInspect: MindMapNode?
     @State private var showOutline = false
     @State private var showAssistant = false
     @State private var selectedStrokeCount = 0
@@ -116,6 +120,22 @@ struct NotesDocumentEditor: View {
             }
         }
         .background(Color(uiColor: .secondarySystemBackground))
+        .overlay {
+            if let mapWindow, document.kind != .mindMap,
+               document.linkedMindMaps?.contains(where: { $0.id == mapWindow.id }) == true {
+                NotesMindMapWindow(parentSession: session, parentID: document.id, link: mapWindow, close: { self.mapWindow = nil }, onAssistant: { linkedMapAssistant = $0 })
+                    .padding(.top, 64).padding(8)
+            }
+        }
+        .sheet(item: $linkedMapAssistant) { map in
+            if let store = session.store {
+                NotesAssistantPanel(document: map, store: store, close: { linkedMapAssistant = nil })
+            }
+        }
+        .sheet(isPresented: $showLinkedMaps) {
+            NotesLinkedMindMaps(session: session, document: session.documents.first(where: { $0.id == document.id }) ?? document,
+                                pageID: page?.id, open: { mapWindow = $0 })
+        }
         .onChange(of: session.requestedPageID, initial: true) { _, value in
             if let value, document.pages.contains(where: { $0.id == value }) {
                 pageID = value; session.requestedPageID = nil
@@ -165,6 +185,9 @@ struct NotesDocumentEditor: View {
                     }
                 } catch { session.errorMessage = error.localizedDescription }
             }
+        }
+        .sheet(item: $topicToInspect) { node in
+            MindMapTopicInspector(session: session, document: document, node: node)
         }
         .sheet(item: $inspectingElement) { element in
             if let page {
@@ -339,10 +362,18 @@ struct NotesDocumentEditor: View {
                         .disabled(session.pendingWrites > 0 || session.unsavedDocumentIDs.contains(document.id))
                 }
             }
+            if document.kind != .mindMap {
+                Button("文档导图", systemImage: "point.3.connected.trianglepath.dotted") { showLinkedMaps = true }
+                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("notes.linkedMaps")
+            }
             if document.kind == .notebook {
                 Button("页面", systemImage: "rectangle.stack") { showPages = true }
                     .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
             } else if document.kind == .mindMap {
+                Button("主题内容与附件", systemImage: "paperclip") { topicToInspect = selectedMapNode }
+                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .disabled(selectedMapNode == nil || session.pendingWrites > 0)
                 Menu {
                     if let node = selectedMapNode {
                         Button("插入或替换图片：\(node.title)") {

@@ -31,6 +31,7 @@
       if (value.metadata?.isAIGenerated !== undefined) node.isAIGenerated = value.metadata.isAIGenerated;
       if (value.metadata?.source) node.source = value.metadata.source;
       if (value.metadata?.imageResourceID) node.imageResourceID = value.metadata.imageResourceID;
+      if (value.metadata?.attachments) node.attachments = value.metadata.attachments;
       nodes.push(node);
       (value.children || []).forEach((child, order) => stack.push({value: child, parent: id, order}));
     }
@@ -46,7 +47,7 @@
     const nodes = payload.document.nodes;
     const lookup = new Map(nodes.map(n => [n.id, {
       id:n.id, topic:n.title, note:n.note, expanded:!n.isCollapsed, children:[], image:(payload.images || {})[n.imageResourceID],
-      style:n.style || (n.color ? {background:n.color} : {}), tags:n.tags, icons:n.icons, direction:n.direction, branchColor:n.branchColor, hyperLink:n.hyperLink, metadata:{source:n.source, imageResourceID:n.imageResourceID, isAIGenerated:n.isAIGenerated}
+      style:n.style || (n.color ? {background:n.color} : {}), tags:n.tags, icons:n.icons, direction:n.direction, branchColor:n.branchColor, hyperLink:n.hyperLink, metadata:{attachments:n.attachments, source:n.source, imageResourceID:n.imageResourceID, isAIGenerated:n.isAIGenerated}
     }]));
     let root;
     for (const node of [...nodes].sort((a,b) => a.order-b.order)) {

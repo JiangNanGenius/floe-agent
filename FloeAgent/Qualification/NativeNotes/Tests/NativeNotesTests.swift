@@ -9,6 +9,72 @@ import FloeNotes
 @testable import FloeNotesNativeQualification
 
 @MainActor final class NativeNotesTests: XCTestCase {
+    func testLinkedMapWindowRendersOverPDFAndRetainsSeparateUndo() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let pdfURL = root.appendingPathComponent("Economics.pdf")
+        let pdf = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 768, height: 1024)).pdfData { context in
+            context.beginPage()
+            ("国际经济学 · International Economics" as NSString).draw(at: CGPoint(x: 48, y: 64), withAttributes: [.font: UIFont.systemFont(ofSize: 28, weight: .bold)])
+            ("Lecture 03 — Comparative advantage\n\n机会成本与贸易收益\n\n两国可以通过专业化分工提高总产出。\nCompare the opportunity cost before choosing a strategy." as NSString)
+                .draw(in: CGRect(x: 48, y: 130, width: 660, height: 500), withAttributes: [.font: UIFont.systemFont(ofSize: 22)])
+        }
+        try pdf.write(to: pdfURL)
+        let imported = try await NoteFileImporter.importFile(pdfURL, notebookID: nil, store: store)
+        let parent = try await store.create(imported)
+        var map = try await store.createLinkedMindMap(parentID: parent.id, expectedRevision: parent.revision, title: "比较优势", pageID: parent.pages[0].id)
+        let children = [MindMapNode(parentID: map.nodes[0].id, title: "机会成本", order: 0), MindMapNode(parentID: map.nodes[0].id, title: "Trade gains", order: 1)]
+        map = try await store.apply(.init(documentID: map.id, expectedRevision: map.revision, title: "Add topics", edits: children.map(NoteEdit.upsertNode)))
+        let session = NotesSession()
+        await session.open(using: store)
+        await session.select(parent)
+        let current = try XCTUnwrap(session.document)
+        let link = try XCTUnwrap(current.linkedMindMaps?.first)
+        let background = try await NoteFileImporter.background(page: parent.pages[0], store: store)
+        let host = UIHostingController(rootView: VStack(spacing: 0) {
+            HStack { Text("国际经济学 · 课件与导图").font(.headline); Spacer(); Text("第 1 页").foregroundStyle(.secondary) }.padding()
+            ZStack {
+                NotePencilView(page: parent.pages[0], drawing: nil, background: background, fingerDrawing: false,
+                               tool: PKInkingTool(.pen, color: .black, width: 3), onDrawing: { _ in })
+                NotesMindMapWindow(parentSession: session, parentID: parent.id, link: link, close: {}, onAssistant: { _ in }).padding(12)
+            }
+        })
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKey() }
+        host.view.layoutIfNeeded()
+        func find(_ view: UIView) -> WKWebView? {
+            if let web = view as? WKWebView { return web }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        var rendered = false
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if let web = find(host.view), let text = try? await web.callAsyncJavaScript("return document.querySelector('#map')?.textContent", arguments: [:], in: nil, contentWorld: .page) as? String,
+               text.contains("Trade gains") && text.contains("机会成本") {
+                rendered = true; break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(rendered, "The independently stored map must render inside the PDF reader window")
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }
+        let screenshot = XCTAttachment(image: image)
+        screenshot.name = "Notes PDF with independent mind map window — component fixture"
+        screenshot.lifetime = .keepAlways; add(screenshot)
+        let mapBefore = try await store.document(map.id)
+        await session.select(try await store.document(parent.id))
+        session.undo()
+        // Wait for the parent session's serialized undo to complete.
+        await session.select(try await store.document(parent.id))
+        let parentAfter = try await store.document(parent.id)
+        XCTAssertTrue(parentAfter.linkedMindMaps?.isEmpty != false)
+        let mapAfter = try await store.document(map.id)
+        XCTAssertEqual(mapAfter, mapBefore, "Undoing the parent association must not undo map edits")
+    }
+
     func testCaptionExportsPreserveTimingAndEscapeSourceMarkup() throws {
         let segments = [TimedSpeechSegment(start: 1.125, end: 3.5, text: "普通话 <English> & 123", words: [])]
         let srt = String(decoding: try SpeechCaptionExport.data(segments: segments, format: "srt"), as: UTF8.self)
@@ -90,7 +156,7 @@ import FloeNotes
                 let imageDeadline = Date().addingTimeInterval(10)
                 var imageLoaded = false
                 while Date() < imageDeadline {
-                    imageLoaded = (try? await web.callAsyncJavaScript("return Array.from(document.querySelectorAll('me-tpc img')).some(img => img.src.startsWith('data:image/png;') && img.naturalWidth === 80)", arguments: [:], in: nil, contentWorld: .page)) as? Bool == true
+                    imageLoaded = (try? await web.callAsyncJavaScript("return Array.from(document.querySelectorAll('me-tpc img')).some(img => img.src.startsWith('data:image/png;') && img.naturalWidth === expectedWidth && img.naturalHeight === expectedHeight)", arguments: ["expectedWidth": picture.cgImage!.width, "expectedHeight": picture.cgImage!.height], in: nil, contentWorld: .page)) as? Bool == true
                     if imageLoaded { break }
                     try await Task.sleep(for: .milliseconds(100))
                 }

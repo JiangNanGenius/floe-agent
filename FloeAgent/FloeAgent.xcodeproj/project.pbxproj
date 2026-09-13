@@ -257,6 +257,7 @@
 		702783ECBD4DCFFA7CF6DE20 /* pandas__libs_interval.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */; };
 		70480066DC808EE0970F5AFB /* MediaPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */; };
 		704C53FCB539119929E7F94B /* _operand_flag_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C4778F6E6793ACD2D5FB6C14 /* _operand_flag_tests.xcframework */; };
+		70520C3ACCCC3D82B68A7023 /* NotesLinkedMindMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */; };
 		70B0244D522DFFA14861A337 /* FloeScreenShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E388FA201B460E867D612C38 /* FloeScreenShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		70F286B37F24BC80A411B04F /* _lsprof.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47008301B5CA511920D10074 /* _lsprof.xcframework */; };
 		7101B340769CDF8AEBEB0171 /* fcntl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE446478DBD5263458338578 /* fcntl.xcframework */; };
@@ -531,6 +532,7 @@
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
 		F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 566A108E33736D5DD705D005 /* pdf-lib.min.js */; };
 		F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */; };
+		F104E60D7F5F901DAF62D0D4 /* MindMapTopicInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0156F84BD5669B8A565170 /* MindMapTopicInspector.swift */; };
 		F1F4FEA5795C0509165D8A62 /* pandas__libs_ops_dispatch.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F21AD42E26BA47E7C2A1129D /* LocalTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09130318B26A8CC203740EA0 /* LocalTerminalView.swift */; };
 		F2A94C7D54C7BB530508D94D /* _socket.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -828,6 +830,7 @@
 		28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _mt19937.xcframework; path = Vendor/PythonExtensions/_mt19937.xcframework; sourceTree = "<group>"; };
 		293AE960803DF52F2523348D /* dashD.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashD.xcframework; path = Frameworks/dashD.xcframework; sourceTree = "<group>"; };
 		29A21A1899BAF10ED177AF24 /* FloeNodeBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloeNodeBridge.mm; sourceTree = "<group>"; };
+		2A0156F84BD5669B8A565170 /* MindMapTopicInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MindMapTopicInspector.swift; sourceTree = "<group>"; };
 		2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_groupby.xcframework; path = Vendor/PythonExtensions/pandas__libs_groupby.xcframework; sourceTree = "<group>"; };
 		2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportantFileShortcutTests.swift; sourceTree = "<group>"; };
@@ -916,6 +919,7 @@
 		5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_np_datetime.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_np_datetime.xcframework; sourceTree = "<group>"; };
 		5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sqlite3.xcframework; path = Vendor/PythonExtensions/_sqlite3.xcframework; sourceTree = "<group>"; };
 		5F3B002E69704278C46E0A12 /* resource.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = resource.xcframework; path = Vendor/PythonExtensions/resource.xcframework; sourceTree = "<group>"; };
+		5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesLinkedMindMaps.swift; sourceTree = "<group>"; };
 		605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSessionOwner.swift; sourceTree = "<group>"; };
 		620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _blake2.xcframework; path = Vendor/PythonExtensions/_blake2.xcframework; sourceTree = "<group>"; };
 		630C1894EB108ABA12D07047 /* NotePencilView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePencilView.swift; sourceTree = "<group>"; };
@@ -1933,6 +1937,7 @@
 		A375B99644CCF9CEA924D972 /* Notes */ = {
 			isa = PBXGroup;
 			children = (
+				2A0156F84BD5669B8A565170 /* MindMapTopicInspector.swift */,
 				84A9CCB047EB72AD2922ED38 /* NoteElementInspector.swift */,
 				12C1ABF02CBBFDC44F9B0577 /* NoteFileImporter.swift */,
 				AF9D25DEB0932DA8E5EDDB52 /* NoteMindMapView.swift */,
@@ -1945,6 +1950,7 @@
 				FC237C9A630761F0880A780A /* NotesExport.swift */,
 				7ADE79F616E839CB00E1B21F /* NotesKnowledgeAttachment.swift */,
 				247E8EC43E8E35A02BD9D4C6 /* NotesKnowledgePicker.swift */,
+				5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */,
 				931809561A553D3D4D78ABA6 /* NotesOfficeView.swift */,
 				51E3758CCEC79AE4FCA6D6B4 /* NotesRepository.swift */,
 				1838729ECF5E85526DF5F217 /* NotesRootView.swift */,
@@ -2568,6 +2574,7 @@
 				70480066DC808EE0970F5AFB /* MediaPlayerView.swift in Sources */,
 				075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */,
 				1BDE99A924FBC27B74F7940A /* MemoryView.swift in Sources */,
+				F104E60D7F5F901DAF62D0D4 /* MindMapTopicInspector.swift in Sources */,
 				BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */,
 				89B023C074580181D49D192A /* ModelPickerView.swift in Sources */,
 				30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */,
@@ -2585,6 +2592,7 @@
 				866BA77E0D2C71789223F734 /* NotesExport.swift in Sources */,
 				AA60E63E6C44DAACB2A2A12D /* NotesKnowledgeAttachment.swift in Sources */,
 				B9209D676C9FD45524B01776 /* NotesKnowledgePicker.swift in Sources */,
+				70520C3ACCCC3D82B68A7023 /* NotesLinkedMindMaps.swift in Sources */,
 				8A1DC131203E20C7D4FCA1CB /* NotesOfficeView.swift in Sources */,
 				2EDE28250D1308B8F85CA363 /* NotesRepository.swift in Sources */,
 				9F0EDF153307BB68F8B68775 /* NotesRootView.swift in Sources */,

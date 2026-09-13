@@ -4,15 +4,18 @@ import Foundation
 import FloeCore
 import FloeTools
 import FloeNotes
+import FloeWorkspace
 
 enum NotesToolRegistration {
     static func register() {
         ToolCatalog.register(NotesReadTool.self)
         ToolCatalog.register(NotesSearchTool.self)
         ToolCatalog.register(NotesEditTool.self)
+        ToolCatalog.register(NotesAttachFileTool.self)
         ToolRunnerRegistry.shared.register(NotesReadTool())
         ToolRunnerRegistry.shared.register(NotesSearchTool())
         ToolRunnerRegistry.shared.register(NotesEditTool())
+        ToolRunnerRegistry.shared.register(NotesAttachFileTool())
     }
 }
 
@@ -62,7 +65,7 @@ struct NotesSearchTool: AgentTool {
                 }
             }
             for node in document.nodes where hits.count < limit {
-                if let text = snippet(node.title + "\n" + node.note) {
+                if let text = snippet(( [node.title, node.note] + (node.attachments ?? []).flatMap { [$0.fileName, $0.caption] } ).joined(separator: "\n")) {
                     hits.append(.init(documentID: document.id, title: document.title, revision: document.revision, nodeID: node.id, sourceKind: node.isAIGenerated == true ? "ai-map-topic" : "map-topic", snippet: text))
                 }
             }
@@ -146,6 +149,8 @@ struct NotesEditTool: AgentTool {
         var connections: [MindMapConnection]?
         var summaries: [MindMapSummary]?
         var direction: Int?
+        var mapDocumentID: UUID?
+        var linkID: UUID?
     }
     struct Arguments: Decodable, Sendable {
         var documentID: UUID
@@ -154,9 +159,9 @@ struct NotesEditTool: AgentTool {
         var operations: [Operation]
     }
     static let name = "notes.edit"
-    static let toolDescription = "Apply one undoable batch to an explicitly selected Notes document. Read notes.read first and pass expectedRevision. Actions: rename(text), addPage(index), addText(pageID,text), updateText(pageID,elementID,text), deleteText(pageID,elementID), addNode(parentID,text,index), updateNode(nodeID,text), moveNode(nodeID,parentID,index), deleteBranch(nodeID), replaceMap(nodes,connections,summaries,direction). replaceMap accepts the complete structures returned by notes.read, preserving node IDs, notes, tags, icons, styles, hyperlinks, collapse state, relation arrows and summaries; use it for complete map editing. Existing resource IDs may be retained but this tool cannot import new binary resources. Destructive changes require the existing approval flow. Cannot edit PDF background, ink pixels or Office binary content. No arbitrary paths or code."
+    static let toolDescription = "Apply one undoable batch to an explicitly selected Notes document. Read notes.read first and pass expectedRevision. Actions: rename(text), addPage(index), addText(pageID,text), updateText(pageID,elementID,text), deleteText(pageID,elementID), addNode(parentID,text,index), updateNode(nodeID,text), moveNode(nodeID,parentID,index), deleteBranch(nodeID), linkMap(mapDocumentID,pageID optional), unlinkMap(linkID), replaceMap(nodes,connections,summaries,direction). replaceMap accepts the complete structures returned by notes.read, preserving node IDs, notes, tags, icons, styles, hyperlinks, collapse state, relation arrows and summaries; use it for complete map editing. Preserve attachments in nodes when using replaceMap. Import workspace files using notes.attachFile. linkMap requires the target map to be separately selected for this conversation; associations do not grant access. Destructive changes require the existing approval flow. Cannot edit PDF background, ink pixels or Office binary content. No arbitrary paths or code."
     static let parametersJSON = #"""
-    {"type":"object","properties":{"documentID":{"type":"string"},"expectedRevision":{"type":"integer","minimum":1},"title":{"type":"string"},"operations":{"type":"array","minItems":1,"maxItems":1000,"items":{"type":"object","properties":{"action":{"type":"string","enum":["rename","addPage","addText","updateText","deleteText","addNode","updateNode","moveNode","deleteBranch","replaceMap"]},"pageID":{"type":"string"},"nodeID":{"type":"string"},"parentID":{"type":"string"},"elementID":{"type":"string"},"text":{"type":"string"},"index":{"type":"integer","minimum":0},"nodes":{"type":"array","maxItems":10000,"description":"Full node structures from notes.read, with stable UUIDs, optional parentID, title, note, order, isCollapsed and optional style/tags/icons/direction/branchColor/hyperLink/source/imageResourceID.","items":{"type":"object"}},"connections":{"type":"array","maxItems":10000,"description":"Full arrow structures from notes.read: id/from/to/title, optional delta1/delta2/bidirectional/style.","items":{"type":"object"}},"summaries":{"type":"array","maxItems":10000,"description":"Full summary structures: id,label,parent,start,end and optional style.","items":{"type":"object"}},"direction":{"type":"integer","minimum":0,"maximum":2}},"required":["action"],"additionalProperties":false}}},"required":["documentID","expectedRevision","title","operations"],"additionalProperties":false}
+    {"type":"object","properties":{"documentID":{"type":"string"},"expectedRevision":{"type":"integer","minimum":1},"title":{"type":"string"},"operations":{"type":"array","minItems":1,"maxItems":1000,"items":{"type":"object","properties":{"action":{"type":"string","enum":["rename","addPage","addText","updateText","deleteText","addNode","updateNode","moveNode","deleteBranch","replaceMap","linkMap","unlinkMap"]},"mapDocumentID":{"type":"string"},"linkID":{"type":"string"},"pageID":{"type":"string"},"nodeID":{"type":"string"},"parentID":{"type":"string"},"elementID":{"type":"string"},"text":{"type":"string"},"index":{"type":"integer","minimum":0},"nodes":{"type":"array","maxItems":10000,"description":"Full node structures from notes.read, with stable UUIDs, optional parentID, title, note, order, isCollapsed and optional style/tags/icons/direction/branchColor/hyperLink/source/imageResourceID.","items":{"type":"object"}},"connections":{"type":"array","maxItems":10000,"description":"Full arrow structures from notes.read: id/from/to/title, optional delta1/delta2/bidirectional/style.","items":{"type":"object"}},"summaries":{"type":"array","maxItems":10000,"description":"Full summary structures: id,label,parent,start,end and optional style.","items":{"type":"object"}},"direction":{"type":"integer","minimum":0,"maximum":2}},"required":["action"],"additionalProperties":false}}},"required":["documentID","expectedRevision","title","operations"],"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles, .deletesFiles]
     static let isSideEffecting = true
@@ -220,6 +225,12 @@ struct NotesEditTool: AgentTool {
             return page
         }
         switch operation.action {
+        case "linkMap":
+            guard let id = operation.mapDocumentID else { throw NoteError.invalidOperation("缺少导图 documentID。") }
+            return .linkMindMap(.init(id: operation.linkID ?? UUID(), documentID: id, pageID: operation.pageID))
+        case "unlinkMap":
+            guard let id = operation.linkID else { throw NoteError.invalidOperation("缺少关联 linkID。") }
+            return .unlinkMindMap(id)
         case "rename": return .rename(try text())
         case "addPage": return .insertPage(NotePage(), at: operation.index ?? document.pages.count)
         case "addText":
@@ -249,6 +260,56 @@ struct NotesEditTool: AgentTool {
         case "deleteBranch": return .deleteBranch(try node().id)
         default: throw NoteError.invalidOperation("不支持此编辑操作。")
         }
+    }
+}
+
+struct NotesAttachFileTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let documentID: UUID; let nodeID: UUID; let expectedRevision: Int
+        let path: String; let caption: String?; let replaceAttachmentID: UUID?; let useAsCover: Bool?
+    }
+    static let name = "notes.attachFile"
+    static let toolDescription = "Copy an authorized workspace file into a selected editable mind-map topic as a durable attachment. Supports images, PDF/Office, audio, video and other files up to 512 MB; previews depend on the file format. Read notes.read first, pass expectedRevision. Optional replaceAttachmentID replaces a specific attachment, useAsCover sets an image as topic cover. Saves one undoable edit; never modifies the workspace input. Does not authorize other documents or execute file content."
+    static let parametersJSON = #"{"type":"object","properties":{"documentID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer","minimum":1},"path":{"type":"string"},"caption":{"type":"string","maxLength":65536},"replaceAttachmentID":{"type":"string"},"useAsCover":{"type":"boolean"}},"required":["documentID","nodeID","expectedRevision","path"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
+    static let isSideEffecting = true
+    func validate(_ args: Arguments) throws {
+        guard args.expectedRevision > 0, !args.path.isEmpty, (args.caption ?? "").utf8.count <= 65_536 else { throw NoteError.invalidOperation("附件参数无效。") }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let store = try await NotesRepository.shared.store()
+        try await store.authorize(conversationID: context.conversationID, documentID: args.documentID, editing: true)
+        let receiptID = context.toolCallID.map { "\(context.runID.uuidString):\($0)" }
+        if let receiptID, let receipt = try await store.editReceipt(requestID: receiptID, documentID: args.documentID) {
+            return try NotesReadTool.output(["documentID": receipt.id.uuidString, "revision": String(receipt.revision), "status": "saved"])
+        }
+        let document = try await store.document(args.documentID)
+        guard document.kind == .mindMap, document.revision == args.expectedRevision else { throw NoteError.conflict }
+        guard var node = document.nodes.first(where: { $0.id == args.nodeID }) else { throw NoteError.notFound }
+        if let replace = args.replaceAttachmentID, node.attachments?.contains(where: { $0.id == replace }) != true { throw NoteError.notFound }
+        guard args.replaceAttachmentID != nil || (node.attachments ?? []).count < 32 else { throw NoteError.invalidOperation("主题附件已满。") }
+        try context.authorizeWorkspacePath(args.path)
+        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation("任务没有工作区。") }
+        let guardrail = WorkspacePathGuard(rootURL: root)
+        let input = try guardrail.resolve(args.path)
+        try context.authorizeWorkspacePath(String(input.path.dropFirst(guardrail.rootURL.path.count + 1)))
+        var attachment = try await NoteFileImporter.attachment(input, replacing: args.replaceAttachmentID, store: store)
+        attachment.caption = args.caption ?? ""
+        guard args.useAsCover != true || attachment.kind == .image else { throw NoteError.invalidOperation("只有图片可以用作主题封面。") }
+        if let index = node.attachments?.firstIndex(where: { $0.id == attachment.id }) {
+            let previous = node.attachments?[index]
+            node.attachments?[index] = attachment
+            if node.imageResourceID == previous?.resourceID { node.imageResourceID = attachment.kind == .image ? attachment.resourceID : nil }
+        } else {
+            if node.attachments == nil { node.attachments = [] }
+            node.attachments?.append(attachment)
+        }
+        if args.useAsCover == true { node.imageResourceID = attachment.resourceID }
+        node.isAIGenerated = true
+        try context.cancellation.throwIfCancelled()
+        let result = try await store.apply(.init(documentID: document.id, expectedRevision: args.expectedRevision, title: "Agent 添加附件", edits: [.upsertNode(node)], requestID: receiptID), authorizedConversationID: context.conversationID)
+        return try NotesReadTool.output(["documentID": result.id.uuidString, "revision": String(result.revision), "attachmentID": attachment.id.uuidString, "status": "saved"])
     }
 }
 #endif

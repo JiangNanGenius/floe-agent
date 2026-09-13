@@ -88,6 +88,42 @@ public struct NotePage: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// A topic owns resource references, never temporary paths. Previews are created on demand.
+public struct MindMapAttachment: Codable, Hashable, Identifiable, Sendable {
+    public enum Kind: String, Codable, CaseIterable, Sendable { case image, document, audio, video, file }
+    public var id: UUID
+    public var resourceID: UUID
+    public var fileName: String
+    public var mediaType: String
+    public var kind: Kind
+    public var caption: String
+    public var source: NoteSourceReference?
+    public init(id: UUID = UUID(), resourceID: UUID, fileName: String, mediaType: String,
+                kind: Kind = .file, caption: String = "", source: NoteSourceReference? = nil) {
+        self.id = id; self.resourceID = resourceID; self.fileName = fileName
+        self.mediaType = mediaType; self.kind = kind; self.caption = caption; self.source = source
+    }
+    public func validate() throws {
+        guard !fileName.isEmpty, fileName != ".", fileName != "..",
+              fileName == (fileName as NSString).lastPathComponent,
+              !fileName.contains("\\"), !fileName.contains(":"),
+              !fileName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              fileName.utf8.count <= 255, mediaType.utf8.count <= 256, caption.utf8.count <= 65_536 else {
+            throw NoteError.invalidDocument("主题附件的文件名或说明无效。")
+        }
+    }
+}
+
+/// A document links to an independent map; removing this relationship never removes its target.
+public struct NoteMindMapLink: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var documentID: UUID
+    public var pageID: UUID?
+    public init(id: UUID = UUID(), documentID: UUID, pageID: UUID? = nil) {
+        self.id = id; self.documentID = documentID; self.pageID = pageID
+    }
+}
+
 public struct MindMapNode: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var parentID: UUID?
@@ -97,6 +133,7 @@ public struct MindMapNode: Codable, Hashable, Identifiable, Sendable {
     public var isCollapsed: Bool
     public var color: String?
     public var imageResourceID: UUID?
+    public var attachments: [MindMapAttachment]?
     public var style: [String: String]?
     public var tags: [String]?
     public var icons: [String]?
@@ -160,6 +197,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     public var pages: [NotePage]
     public var nodes: [MindMapNode]
     public var connections: [MindMapConnection]
+    public var linkedMindMaps: [NoteMindMapLink]?
     public var mindMapDirection: Int?
     public var summaries: [MindMapSummary]?
     public var tags: [String]
@@ -180,11 +218,11 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         Set(pages.flatMap { page in
             [page.backgroundResourceID, page.drawingResourceID].compactMap { $0 }
             + page.elements.compactMap(\.resourceID)
-        } + nodes.compactMap(\.imageResourceID) + [officeResourceID].compactMap { $0 })
+        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID].compactMap { $0 })
     }
     public var searchableText: String {
         ([title] + tags + pages.compactMap(\.extractedText) + pages.flatMap { $0.elements.map(\.text) }
-         + nodes.flatMap { [$0.title, $0.note] }).joined(separator: "\n")
+         + nodes.flatMap { [$0.title, $0.note] + ($0.attachments ?? []).flatMap { [$0.fileName, $0.caption] } }).joined(separator: "\n")
     }
     public func validate() throws {
         guard schemaVersion == 1, revision >= 0, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -196,6 +234,13 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
               Set((summaries ?? []).map(\.id)).count == (summaries ?? []).count,
               pages.count <= 5_000, connections.count <= 10_000, (summaries ?? []).count <= 10_000 else {
             throw NoteError.invalidDocument("文档包含重复标识。")
+        }
+        let links = linkedMindMaps ?? []
+        guard links.count <= 100, Set(links.map(\.id)).count == links.count,
+              Set(links.map(\.documentID)).count == links.count,
+              kind != .mindMap || links.isEmpty,
+              links.allSatisfy({ link in link.documentID != id && (link.pageID == nil || pages.contains(where: { $0.id == link.pageID })) }) else {
+            throw NoteError.invalidDocument("关联导图重复、数量过多或页面锚点无效。")
         }
         for page in pages {
             guard page.width.isFinite, page.height.isFinite, page.width > 0, page.height > 0,
@@ -241,7 +286,15 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
             let lookup = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
             guard mindMapDirection == nil || (0...2).contains(mindMapDirection!) else { throw NoteError.invalidDocument("导图方向无效。") }
             let permittedStyles: Set<String> = ["fontSize", "fontFamily", "color", "background", "fontWeight", "width", "border", "textDecoration"]
+            guard nodes.reduce(0, { $0 + ($1.attachments ?? []).count }) <= 2_000 else {
+                throw NoteError.invalidDocument("一张导图最多保留 2000 个附件。")
+            }
             for node in nodes {
+                let attachments = node.attachments ?? []
+                guard attachments.count <= 32, Set(attachments.map(\.id)).count == attachments.count else {
+                    throw NoteError.invalidDocument("每个主题最多保留 32 个附件，且标识不能重复。")
+                }
+                for attachment in attachments { try attachment.validate() }
                 guard node.order >= 0, node.title.utf8.count <= 65_536, node.note.utf8.count <= 65_536,
                       (node.style ?? [:]).allSatisfy({ permittedStyles.contains($0.key) && $0.value.utf8.count <= 256 }),
                       node.direction == nil || node.direction == 0 || node.direction == 1,

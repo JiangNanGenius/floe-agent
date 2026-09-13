@@ -3,6 +3,8 @@ import Foundation
 
 /// Value-only commands shared by UI and tool adapters. No executable scripts or filesystem paths.
 public enum NoteEdit: Codable, Hashable, Sendable {
+    case linkMindMap(NoteMindMapLink)
+    case unlinkMindMap(UUID)
     case rename(String)
     case moveToNotebook(UUID?)
     case favorite(Bool)
@@ -24,6 +26,14 @@ public enum NoteEdit: Codable, Hashable, Sendable {
 
     public func apply(to document: inout NoteDocument) throws {
         switch self {
+        case .linkMindMap(let link):
+            var links = document.linkedMindMaps ?? []
+            if let index = links.firstIndex(where: { $0.id == link.id }) { links[index] = link }
+            else { links.append(link) }
+            document.linkedMindMaps = links
+        case .unlinkMindMap(let id):
+            guard document.linkedMindMaps?.contains(where: { $0.id == id }) == true else { throw NoteError.notFound }
+            document.linkedMindMaps?.removeAll { $0.id == id }
         case .mindMapLayout(let direction, let summaries):
             guard document.kind == .mindMap else { throw NoteError.invalidOperation("目标不是思维导图。") }
             document.mindMapDirection = direction; document.summaries = summaries
@@ -45,7 +55,13 @@ public enum NoteEdit: Codable, Hashable, Sendable {
             guard document.pages.indices.contains(index) else { throw NoteError.invalidOperation("页面位置无效。") }
             let page = document.pages.remove(at: try pageIndex(id, in: document))
             document.pages.insert(page, at: index)
-        case .deletePage(let id): document.pages.remove(at: try pageIndex(id, in: document))
+        case .deletePage(let id):
+            document.pages.remove(at: try pageIndex(id, in: document))
+            // Preserve the relationship at document level when its page is removed.
+            if var links = document.linkedMindMaps {
+                for index in links.indices where links[index].pageID == id { links[index].pageID = nil }
+                document.linkedMindMaps = links
+            }
         case .drawing(let id, let resource): document.pages[try pageIndex(id, in: document)].drawingResourceID = resource
         case .upsertElement(let id, let element):
             let index = try pageIndex(id, in: document)

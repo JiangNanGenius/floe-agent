@@ -30,6 +30,28 @@ enum NoteFileImporter {
         }
         return result
     }
+    static func attachment(_ url: URL, replacing id: UUID? = nil, store: NotesStore) async throws -> MindMapAttachment {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let values = try url.resourceValues(forKeys: [.contentTypeKey, .isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true, let size = values.fileSize, size <= 536_870_912 else {
+            throw NoteError.invalidOperation("请选择不超过 512 MB 的单个文件。")
+        }
+        let type = values.contentType ?? .data
+        let kind: MindMapAttachment.Kind
+        if type.conforms(to: .image) { kind = .image }
+        else if type.conforms(to: .audio) { kind = .audio }
+        else if type.conforms(to: .movie) { kind = .video }
+        else if type.conforms(to: .pdf) || type.conforms(to: .text) || ["docx", "pptx", "xlsx", "odt", "odp"].contains(url.pathExtension.lowercased()) { kind = .document }
+        else { kind = .file }
+        var attachment = MindMapAttachment(id: id ?? UUID(), resourceID: UUID(), fileName: url.lastPathComponent,
+                                          mediaType: type.preferredMIMEType ?? "application/octet-stream", kind: kind)
+        try attachment.validate()
+        attachment.resourceID = try await store.importResource(from: url, mediaType: attachment.mediaType)
+        if kind == .image { _ = try await images(resourceIDs: [attachment.resourceID], store: store) }
+        return attachment
+    }
+
     static func importFile(_ url: URL, notebookID: UUID?, store: NotesStore) async throws -> NoteDocument {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }

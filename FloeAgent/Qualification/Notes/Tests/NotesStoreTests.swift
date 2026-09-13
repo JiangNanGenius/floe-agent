@@ -10,6 +10,93 @@ struct NotesStoreTests {
         return url
     }
 
+    @Test func linkedMapsKeepIndependentHistoryAndArchiveAttachments() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root.appendingPathComponent("source"))
+        var original = NoteDocument(title: "PDF lesson")
+        original.pages.append(NotePage())
+        let parent = try await store.create(original)
+        let pageID = parent.pages[0].id
+        var map = try await store.createLinkedMindMap(parentID: parent.id, expectedRevision: parent.revision, title: "Revision map", pageID: pageID)
+        let file = root.appendingPathComponent("chart.png")
+        try Data("attachment bytes".utf8).write(to: file)
+        let resource = try await store.importResource(from: file, mediaType: "image/png")
+        var node = map.nodes[0]
+        node.attachments = [MindMapAttachment(resourceID: resource, fileName: "chart.png", mediaType: "image/png", kind: .image, caption: "Economic chart", source: .init(documentID: parent.id, revision: 2, pageID: pageID))]
+        node.imageResourceID = resource
+        map = try await store.apply(.init(documentID: map.id, expectedRevision: map.revision, title: "Attach chart", edits: [.upsertNode(node)]))
+        let withoutPage = try await store.apply(.init(documentID: parent.id, expectedRevision: 2, title: "Delete page", edits: [.deletePage(pageID)]))
+        #expect(withoutPage.linkedMindMaps?.first?.pageID == nil)
+        #expect(try await store.document(map.id) == map)
+        let restored = try await store.undo(parent.id, expectedRevision: withoutPage.revision)
+        #expect(restored.linkedMindMaps?.first?.pageID == pageID)
+        #expect(try await store.document(map.id) == map)
+        let archive = root.appendingPathComponent("lesson.floenote")
+        try await NotesArchive.export(document: restored, store: store, to: archive)
+        let destination = try NotesStore(root: root.appendingPathComponent("destination"))
+        let imported = try await NotesArchive.importDocuments(from: archive, notebookID: nil, store: destination)
+        #expect(imported.count == 2)
+        let created = try await destination.createBundle(imported)
+        let newParent = created[0], newMap = created[1]
+        #expect(newParent.id != parent.id && newMap.id != map.id)
+        #expect(newParent.linkedMindMaps?.first?.documentID == newMap.id)
+        #expect(newParent.linkedMindMaps?.first?.pageID == pageID)
+        #expect(newMap.nodes[0].attachments?.first?.source?.documentID == newParent.id)
+        let attachment = try #require(newMap.nodes[0].attachments?.first)
+        let copied = try await destination.resourceURL(attachment.resourceID)
+        #expect(try Data(contentsOf: copied) == Data("attachment bytes".utf8))
+        #expect(newMap.resourceIDs == [attachment.resourceID])
+        let reopened = try NotesStore(root: root.appendingPathComponent("destination"))
+        #expect(try await reopened.document(newParent.id).linkedMindMaps == newParent.linkedMindMaps)
+        let unlinked = try await reopened.apply(.init(documentID: newParent.id, expectedRevision: 1, title: "Unlink", edits: [.unlinkMindMap(try #require(newParent.linkedMindMaps?.first?.id))]))
+        #expect(unlinked.linkedMindMaps?.isEmpty == true)
+        #expect(try await reopened.document(newMap.id) == newMap)
+    }
+
+    @Test func linkingIsAtomicAndRequiresSeparateAgentScope() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let parent = try await store.create(NoteDocument(title: "Lesson"))
+        await #expect(throws: (any Error).self) {
+            try await store.createLinkedMindMap(parentID: parent.id, expectedRevision: 9, title: "Must not exist", pageID: nil)
+        }
+        await #expect(throws: (any Error).self) {
+            try await store.createLinkedMindMap(parentID: parent.id, expectedRevision: 1, title: "Bad page", pageID: UUID())
+        }
+        #expect(try await store.documents().count == 1)
+        let map = try await store.create(NoteDocument(kind: .mindMap, title: "Independent"))
+        let conversation = UUID()
+        try await store.grantAccess(conversationID: conversation, documentID: parent.id, canEdit: true)
+        let batch = NoteEditBatch(documentID: parent.id, expectedRevision: 1, title: "Link", edits: [.linkMindMap(.init(documentID: map.id))])
+        await #expect(throws: (any Error).self) { try await store.apply(batch, authorizedConversationID: conversation) }
+        #expect(try await store.document(parent.id).linkedMindMaps == nil)
+        try await store.grantAccess(conversationID: conversation, documentID: map.id, canEdit: false)
+        _ = try await store.apply(batch, authorizedConversationID: conversation)
+        let trashed = try await store.setTrashed(map.id, expectedRevision: 1, trashed: true)
+        let archive = root.appendingPathComponent("unavailable.floenote")
+        let linked = try await store.document(parent.id)
+        await #expect(throws: (any Error).self) { try await NotesArchive.export(document: linked, store: store, to: archive) }
+        #expect(!FileManager.default.fileExists(atPath: archive.path))
+        _ = try await store.setTrashed(map.id, expectedRevision: trashed.revision, trashed: false)
+        var invalid = NoteDocument(title: "Bad import")
+        invalid.linkedMindMaps = [.init(documentID: UUID())]
+        let innocent = NoteDocument(kind: .mindMap, title: "Must rollback")
+        await #expect(throws: (any Error).self) { try await store.createBundle([invalid, innocent]) }
+        await #expect(throws: (any Error).self) { try await store.document(innocent.id) }
+    }
+
+    @Test func attachmentsRejectPathsAndRoundTripWithoutNewFields() throws {
+        for name in ["../secret", "/absolute", "..", "a\\b", "a:b", "control\n"] {
+            let attachment = MindMapAttachment(resourceID: UUID(), fileName: name, mediaType: "text/plain")
+            #expect(throws: (any Error).self) { try attachment.validate() }
+        }
+        let old = NoteDocument(kind: .mindMap, title: "Legacy")
+        let encoded = try JSONEncoder().encode(old)
+        let restored = try JSONDecoder().decode(NoteDocument.self, from: encoded)
+        #expect(restored.linkedMindMaps == nil && restored.nodes[0].attachments == nil)
+        try restored.validate()
+    }
+
     @Test func durableHistoryAndCAS() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

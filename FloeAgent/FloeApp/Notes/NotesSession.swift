@@ -25,10 +25,11 @@ final class NotesSession {
     @ObservationIgnored private var tail: Task<Void, Never>?
     @ObservationIgnored private var observation: Task<Void, Never>?
 
-    func open() async {
+    func open(using existingStore: NotesStore? = nil) async {
         guard store == nil else { return }
         do {
-            store = try await NotesRepository.shared.store()
+            if let existingStore { store = existingStore }
+            else { store = try await NotesRepository.shared.store() }
             try await reload()
             if let store {
                 observation = Task { [weak self] in
@@ -221,6 +222,17 @@ final class NotesSession {
             guard let store else { return }
             _ = try await store.setTrashed(value.id, expectedRevision: value.revision, trashed: !restore)
             if !restore && document?.id == value.id { document = nil }
+            try await reload()
+        }
+    }
+
+    func importArchive(_ url: URL, notebookID: UUID?) {
+        enqueue { [self] in
+            guard let store else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            let values = try await NotesArchive.importDocuments(from: url, notebookID: notebookID, store: store)
+            document = try await store.createBundle(values).first
             try await reload()
         }
     }

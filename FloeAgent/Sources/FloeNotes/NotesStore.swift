@@ -82,17 +82,56 @@ public actor NotesStore {
     }
 
     @discardableResult public func create(_ document: NoteDocument) throws -> NoteDocument {
-        defer { publishChange() }
-        var value = document
-        value.revision = 1; value.createdAt = Date(); value.updatedAt = value.createdAt; value.deletedAt = nil
-        try value.validate()
-        try database.write { db in
-            try validateResources(value, db: db)
-            try db.execute(sql: "INSERT INTO documents(id,revision,updated,body) VALUES(?,?,?,?)",
-                           arguments: [value.id.uuidString, value.revision, value.updatedAt.timeIntervalSince1970, try encoder.encode(value)])
-            try updateReferencesAndSearch(value, db: db)
+        try createBundle([document])[0]
+    }
+
+    /// Atomically imports a root and its independent linked maps. No partial library entries.
+    @discardableResult public func createBundle(_ documents: [NoteDocument]) throws -> [NoteDocument] {
+        guard !documents.isEmpty, documents.count <= 101,
+              Set(documents.map(\.id)).count == documents.count else { throw NoteError.invalidDocument("导入文档数量或标识无效。") }
+        let values = documents.map { document in
+            var value = document
+            value.revision = 1; value.createdAt = Date(); value.updatedAt = value.createdAt; value.deletedAt = nil
+            return value
         }
-        return value
+        for value in values { try value.validate() }
+        try database.write { db in
+            for value in values {
+                try db.execute(sql: "INSERT INTO documents(id,revision,updated,body) VALUES(?,?,?,?)",
+                               arguments: [value.id.uuidString, value.revision, value.updatedAt.timeIntervalSince1970, try encoder.encode(value)])
+            }
+            for value in values {
+                try validateResources(value, db: db)
+                try updateReferencesAndSearch(value, db: db)
+            }
+        }
+        publishChange()
+        return values
+    }
+
+    /// Create the independent map and its undoable parent relationship in one transaction.
+    public func createLinkedMindMap(parentID: UUID, expectedRevision: Int, title: String, pageID: UUID?) throws -> NoteDocument {
+        let map = try database.write { db in
+            let before = try read(parentID, db: db)
+            guard before.revision == expectedRevision, before.deletedAt == nil else { throw NoteError.conflict }
+            var map = NoteDocument(kind: .mindMap, notebookID: before.notebookID, title: title)
+            map.revision = 1
+            var after = before
+            try NoteEdit.linkMindMap(.init(documentID: map.id, pageID: pageID)).apply(to: &after)
+            after.revision += 1; after.updatedAt = Date()
+            try map.validate(); try after.validate()
+            try db.execute(sql: "INSERT INTO documents(id,revision,updated,body) VALUES(?,?,?,?)",
+                           arguments: [map.id.uuidString, map.revision, map.updatedAt.timeIntervalSince1970, try encoder.encode(map)])
+            try validateResources(map, db: db); try validateResources(after, db: db)
+            try updateReferencesAndSearch(map, db: db)
+            let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [before.id.uuidString]) ?? 0
+            try db.execute(sql: "DELETE FROM history WHERE document_id=? AND position>?", arguments: [before.id.uuidString, cursor])
+            try db.execute(sql: "INSERT INTO history VALUES(?,?,?,?,?)", arguments: [before.id.uuidString, cursor + 1, "关联新导图", try encoder.encode(before), try encoder.encode(after)])
+            try persist(after, cursor: cursor + 1, db: db)
+            return map
+        }
+        publishChange()
+        return map
     }
 
     @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil) throws -> NoteDocument {
@@ -117,6 +156,15 @@ public actor NotesStore {
             guard before.revision == batch.expectedRevision else { throw NoteError.conflict }
             var after = before
             for edit in batch.edits { try edit.apply(to: &after) }
+            for link in after.linkedMindMaps ?? [] where !(before.linkedMindMaps ?? []).contains(link) {
+                let target = try read(link.documentID, db: db)
+                guard target.kind == .mindMap, target.deletedAt == nil else { throw NoteError.invalidOperation("关联目标不是可用的思维导图。") }
+                if let conversation = authorizedConversationID {
+                    guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM assistant_scopes WHERE conversation_id=? AND document_id=?)", arguments: [conversation.uuidString, target.id.uuidString]) == true else {
+                        throw NoteError.invalidOperation("请先把要关联的导图加入此对话的资料范围。")
+                    }
+                }
+            }
             after.revision += 1; after.updatedAt = Date()
             try after.validate(); try validateResources(after, db: db)
             let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [before.id.uuidString]) ?? 0
@@ -317,6 +365,9 @@ public actor NotesStore {
         if let book = value.notebookID,
            try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM notebooks WHERE id=?)", arguments: [book.uuidString]) != true {
             throw NoteError.invalidOperation("目标笔记本不存在。")
+        }
+        for link in value.linkedMindMaps ?? [] {
+            guard try read(link.documentID, db: db).kind == .mindMap else { throw NoteError.invalidDocument("关联目标不是思维导图。") }
         }
         for id in value.resourceIDs {
             guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?)", arguments: [id.uuidString]) == true else { throw NoteError.resourceUnavailable }

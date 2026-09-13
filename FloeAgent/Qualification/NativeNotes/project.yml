@@ -28,6 +28,10 @@ targets:
       - ../../FloeApp/Notes/NotesRepository.swift
       - ../../FloeApp/Notes/NotesSession.swift
       - ../../FloeApp/Notes/NoteMindMapView.swift
+      - ../../FloeApp/Notes/MindMapTopicInspector.swift
+      - ../../FloeApp/Notes/NotesLinkedMindMaps.swift
+      - ../../FloeApp/Notes/NotesAgentTools.swift
+      - ../../FloeApp/Files/QuickLookView.swift
       - ../../FloeApp/Files/PDFKitAccess.swift
       - ../../FloeApp/Files/FloePDFExceptionGuard.mm
       - ../../FloeApp/Files/FloePDFExceptionGuard.h
