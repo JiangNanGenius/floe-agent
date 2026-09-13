@@ -23,9 +23,16 @@ public enum BundledDomainSkills {
             id == "floe-remote" ? [] : toolNames
         }
 
-        /// Exact tool references are checked against the executable catalog.
+        /// Script recipes declare their runtime explicitly: Python attributes and
+        /// historical migration names in prose are not tool dependencies.
+        /// Remaining exact references are checked against the executable catalog.
         public var toolNames: [String] {
-            let pattern = #"(?<![A-Za-z0-9_.-])[a-z][A-Za-z0-9]*(?:\.[a-zA-Z][A-Za-z0-9]*)+(?![A-Za-z0-9_.-])"#
+            switch id {
+            case "floe-image-edit", "floe-svg": return ["exec.localPython"]
+            case "floe-text-edit": return ["exec.localPython", "workspace.applyPatch", "workspace.writeFile"]
+            default: break
+            }
+            let pattern = #"(?<![A-Za-z0-9_.-])[a-z][A-Za-z0-9]*(?:\.[a-zA-Z][A-Za-z0-9]*)+(?![A-Za-z0-9_.*-])"#
             let regex = try! NSRegularExpression(pattern: pattern)
             let ns = markdown as NSString
             let allowedRoots = ["document", "presentation", "font", "network", "web", "exec", "shell", "apt", "ssh", "canvas", "image", "apple", "mail", "browser", "workspace", "crypto", "credential", "vnc", "remote", "remoteHosting", "cloudWorkspace", "bluetooth"]

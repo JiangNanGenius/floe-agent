@@ -442,6 +442,8 @@ public func registerDocumentTools(
     ToolCatalog.register(DocumentReadSheetTool.self)
     ToolCatalog.register(OfficeInspectTool.self)
     ToolCatalog.register(OfficeUpdateTextTool.self)
+    ToolCatalog.register(DocumentCreateWordTool.self)
+    ToolCatalog.register(DocumentCreateWorkbookTool.self)
     ToolCatalog.register(DocumentCreateTool.self)
     ToolCatalog.register(PresentationCreateDeckTool.self)
     registry.register(DocumentReadSheetTool(rootProvider: rootProvider))

@@ -95,3 +95,15 @@ struct OfficialSkillHubTests {
         #expect(Set(BundledDomainSkills.all.filter(\.exposed).map(\.id)) == OfficialSkillHub.skillIDs)
     }
 }
+
+@Test func bundledRecipeDependenciesExcludeCodeAndRetiredNames() throws {
+    for id in ["floe-image-edit", "floe-svg"] {
+        let guide = try #require(BundledDomainSkills.all.first { $0.id == id })
+        #expect(guide.toolNames == ["exec.localPython"])
+    }
+    let text = try #require(BundledDomainSkills.all.first { $0.id == "floe-text-edit" })
+    #expect(Set(text.toolNames) == ["exec.localPython", "workspace.applyPatch", "workspace.writeFile"])
+    let shell = try #require(BundledDomainSkills.all.first { $0.id == "floe-shell" })
+    #expect(!shell.toolNames.contains("ssh.shell"))
+    #expect(shell.toolNames.contains("exec.shell"))
+}
