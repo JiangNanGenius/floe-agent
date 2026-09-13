@@ -1,0 +1,6 @@
+Full script matrix on temporary repositories with an immutable committed lock:
+33-pin combined working lock: 8 tests, pin_check.sh, license_inventory.sh PASS
+32-pin actual cloud working lock: 8 tests, pin_check.sh, license_inventory.sh PASS
+v1 serialization of cloud working lock: 8 tests, pin_check.sh, license_inventory.sh PASS
+24 test executions passed. All inventories contain 197 entries and are byte-identical.
+Expected test pins now come from git HEAD, matching production verification.

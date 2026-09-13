@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+import subprocess
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -9,7 +10,12 @@ from resolved_pins import resolved_pins, application_pins, verify_resolution
 
 class ResolvedPinsTests(unittest.TestCase):
     def setUp(self):
-        self.current = json.loads((Path(__file__).resolve().parents[2] / "Package.resolved").read_text())
+        # swift package resolve intentionally removes the Xcode-only Whisper
+        # pin from the working host lock. Expected distribution fixtures must
+        # come from the immutable source, just like the production checker.
+        self.current = json.loads(subprocess.check_output(
+            ["git", "show", "HEAD:FloeAgent/Package.resolved"],
+            cwd=Path(__file__).resolve().parents[2], text=True))
 
     def test_legacy_schema_preserves_every_committed_dependency(self):
         legacy = {"version": 1, "object": {"pins": [

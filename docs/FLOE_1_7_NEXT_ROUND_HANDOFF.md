@@ -5,7 +5,7 @@
 用户已恢复功能开发，新增手记、Office 和平台范围见
 [Floe 1.7 平台与 Office 范围补充](FLOE_1_7_PLATFORM_AND_OFFICE_SCOPE.md)。
 当前优先 iPadOS / iOS 27，26 保持兼容；功能完成后集中验证并推送 TestFlight。
-下文暂停记录属于上一轮交接时点，不再表示停止本轮开发。当前候选为 1.7.0（155）/ `v1.7.0-beta.12`，云端发布运行中；真机检查在 TestFlight 可安装后由用户执行。最新状态以[继续实施记录](FLOE_1_7_CONTINUATION_STATUS.md)为准。
+下文暂停记录属于上一轮交接时点，不再表示停止本轮开发。当前候选为 1.7.0（156）/ `v1.7.0-beta.13`，云端发布运行中；真机检查在 TestFlight 可安装后由用户执行。最新状态以[继续实施记录](FLOE_1_7_CONTINUATION_STATUS.md)为准。
 
 ## 上一轮暂停决定
 
