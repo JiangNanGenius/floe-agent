@@ -168,6 +168,9 @@ public actor BackgroundJobService {
                 digest = output.fullOutputSHA256
                 if token.isCancelled {
                     finalState = .cancelled
+                } else if output.requiresUserAction {
+                    finalState = .failed
+                    errorText = "User action is required before this job can complete: \(output.summary)"
                 } else if let exit = output.exitStatus, exit != 0 {
                     finalState = .failed
                     errorText = "Tool exited with status \(exit): \(output.summary)"

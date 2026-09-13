@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Reasoning is separated from the answer behind a DisclosureGroup,
-// collapsed by default: a one-line preview when folded, full selectable
+// collapsed by default: a stable two-line preview when folded, full selectable
 // text plus a copy action when expanded. Animation honors Reduce Motion
 // via FloeTheme.motionAnimation.
 
@@ -60,6 +60,8 @@ struct ReasoningBlockView: View {
                         if !isExpanded {
                             Text(preview.isEmpty ? (isStreaming ? "正在思考…" : "查看思考记录") : preview)
                                 .font(.footnote).foregroundStyle(.secondary)
+                                // New lines replace the preview during streaming;
+                                // reserve both rows so short fragments never shrink it.
                                 .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .transaction { $0.animation = nil }

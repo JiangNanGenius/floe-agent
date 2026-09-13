@@ -286,6 +286,7 @@ private struct NotesRenameSheet: View {
             guard let store, let page = document.pages.first else { return }
             do {
                 let background = (try await NoteFileImporter.background(page: page, store: store)).flatMap { UIImage(data: $0) }
+                let images = try await NoteFileImporter.elementImages(page: page, store: store)
                 let ink: PKDrawing?
                 if let id = page.drawingResourceID { ink = try PKDrawing(data: Data(contentsOf: await store.resourceURL(id))) }
                 else { ink = nil }
@@ -294,7 +295,7 @@ private struct NotesRenameSheet: View {
                 let size = CGSize(width: page.width * scale, height: page.height * scale)
                 image = UIGraphicsImageRenderer(size: size).image { context in
                     context.cgContext.scaleBy(x: scale, y: scale)
-                    NotePageRenderer.draw(page, background: background, images: [:])
+                    NotePageRenderer.draw(page, background: background, images: images.compactMapValues { UIImage(data: $0) })
                     ink?.image(from: CGRect(x: 0, y: 0, width: page.width, height: page.height), scale: 240 / page.width)
                         .draw(in: CGRect(x: 0, y: 0, width: page.width, height: page.height))
                 }

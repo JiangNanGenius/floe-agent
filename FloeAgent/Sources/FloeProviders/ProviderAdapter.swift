@@ -192,6 +192,23 @@ public struct ProviderStreamRequest: Sendable {
         return messages.map { ProviderMessage(role: $0.role, text: $0.content) }
     }
 
+    /// Keep changing clocks and ledger snapshots out of the leading system
+    /// prefix. Transport adapters attach this context after tool results,
+    /// without inserting a new user turn in a reasoning/tool round.
+    var cacheContext: (messages: [ProviderMessage], live: String?) {
+        var live: [String] = []
+        let messages = effectiveMessages.compactMap { message -> ProviderMessage? in
+            guard message.role == "system", message.content.allSatisfy({ if case .text = $0 { true } else { false } }) else { return message }
+            let text = message.content.compactMap { if case .text(let value) = $0 { value } else { nil } }.joined(separator: "\n\n")
+            guard let range = text.range(of: Self.liveStateMarker) else { return message }
+            live.append(String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
+            let stable = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return stable.isEmpty ? nil : ProviderMessage(role: "system", text: stable)
+        }
+        let context = live.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return (messages, context.isEmpty ? nil : "[Floe runtime context; current app state, separate from the preceding user text or tool output]\n" + context)
+    }
+
     /// Transient device context at the actual dispatch boundary. Also covers
     /// auxiliary requests and frozen checkpoint retries without editing history.
     public func refreshingRuntimeClock(
@@ -200,15 +217,19 @@ public struct ProviderStreamRequest: Sendable {
         var copy = self
         let clock = "Runtime clock at dispatch: \(ISO8601DateFormatter().string(from: now)); timeZone=\(timeZone.identifier); utcOffsetSeconds=\(timeZone.secondsFromGMT(for: now)); locale=\(locale.identifier). Use this clock instead of older timestamps when answering about now."
         if let index = copy.messages.firstIndex(where: { $0.role == "system" }) {
+            if !copy.messages[index].content.contains(Self.liveStateMarker) { copy.messages[index].content += "\n\n" + Self.liveStateMarker }
             copy.messages[index].content += "\n\n" + clock
         } else {
-            copy.messages.insert((role: "system", content: clock), at: 0)
+            copy.messages.insert((role: "system", content: Self.liveStateMarker + "\n\n" + clock), at: 0)
         }
         if !copy.contentMessages.isEmpty {
             if let index = copy.contentMessages.firstIndex(where: { $0.role == "system" }) {
+                if !copy.contentMessages[index].content.contains(where: { if case .text(let text) = $0 { text.contains(Self.liveStateMarker) } else { false } }) {
+                    copy.contentMessages[index].content.append(.text(Self.liveStateMarker))
+                }
                 copy.contentMessages[index].content.append(.text(clock))
             } else {
-                copy.contentMessages.insert(ProviderMessage(role: "system", text: clock), at: 0)
+                copy.contentMessages.insert(ProviderMessage(role: "system", text: Self.liveStateMarker + "\n\n" + clock), at: 0)
             }
         }
         return copy
@@ -500,8 +521,9 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             provider: request.provider,
             model: request.model
         )
+        let context = request.cacheContext
         var input: [ResponsesRequest.InputItem] = []
-        for message in request.effectiveMessages {
+        for message in context.messages {
             let reasoning = replaysReasoning && message.role == "assistant"
                 ? nonEmptyReasoning(message.reasoningContent)
                 : nil
@@ -572,6 +594,17 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         }
         for result in request.toolResults {
             input.append(.functionCallOutput(callID: result.callID, output: result.output))
+        }
+        if let live = context.live {
+            switch input.last {
+            case .functionCallOutput(let id, let output):
+                input[input.count - 1] = .functionCallOutput(callID: id, output: output + "\n\n" + live)
+            case .message(let role, let text) where role == "user":
+                input[input.count - 1] = .message(role: role, content: text + "\n\n" + live)
+            case .multimodalMessage(let role, let parts) where role == "user":
+                input[input.count - 1] = .multimodalMessage(role: role, content: parts + [.text(live)])
+            default: input.append(.message(role: "user", content: live))
+            }
         }
         let tools = request.toolSchemas.map {
             ResponsesRequest.ToolDefinition(
@@ -709,7 +742,8 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
 
     func buildBody(from request: ProviderStreamRequest) -> ChatRequest {
         let replaysReasoning = ReasoningCompatibility.requiresAssistantReasoningReplay(provider: request.provider, model: request.model)
-        var messages: [ChatRequest.Message] = request.effectiveMessages.map { message in
+        let context = request.cacheContext
+        var messages: [ChatRequest.Message] = context.messages.map { message in
             // Older app versions (and other providers) did not save this field.
             // Do not invent missing reasoning or submit an invalid assistant turn.
             // Preserve its text as explicitly non-authoritative historical context.
@@ -795,6 +829,15 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                 content: result.output,
                 toolCallID: result.callID
             ))
+        }
+        if let live = context.live {
+            if let last = messages.indices.last, ["user", "tool"].contains(messages[last].role) {
+                switch messages[last].content {
+                case .text(let text): messages[last].content = .text(text + "\n\n" + live)
+                case .parts(let parts): messages[last].content = .parts(parts + [.text(live)])
+                case nil: messages[last].content = .text(live)
+                }
+            } else { messages.append(.init(role: "user", content: live)) }
         }
         let tools = request.toolSchemas.map {
             // DeepSeek and some gateways reject dots in tool names
@@ -916,33 +959,16 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
     }
 
     func buildBody(from request: ProviderStreamRequest) -> AnthropicRequest {
-        let systemText = request.effectiveMessages
-            .filter { $0.role == "system" }
-            .flatMap(\.content)
-            .compactMap { part -> String? in
-                if case .text(let text) = part { return text }
-                return nil
-            }
+        let context = request.cacheContext
+        let systemText = context.messages.filter { $0.role == "system" }.flatMap(\.content)
+            .compactMap { part -> String? in if case .text(let text) = part { return text }; return nil }
             .joined(separator: "\n\n")
-        // Split at the live-state marker: the run-stable prefix gets an
-        // explicit ephemeral cache breakpoint, the per-turn tail stays live.
-        let system: [AnthropicRequest.SystemBlock]?
-        if let markerRange = systemText.range(of: ProviderStreamRequest.liveStateMarker) {
-            let prefix = systemText[..<markerRange.lowerBound]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let suffix = String(systemText[markerRange.lowerBound...])
-            var blocks: [AnthropicRequest.SystemBlock] = []
-            if !prefix.isEmpty { blocks.append(.init(text: prefix, cacheable: true)) }
-            blocks.append(.init(text: suffix))
-            system = blocks
-        } else {
-            system = systemText.isEmpty ? nil : [.init(text: systemText)]
-        }
+        let system: [AnthropicRequest.SystemBlock]? = systemText.isEmpty ? nil : [.init(text: systemText, cacheable: true)]
         let replaysReasoning = ReasoningCompatibility.requiresAssistantReasoningReplay(
             provider: request.provider,
             model: request.model
         )
-        var messages: [AnthropicRequest.Message] = request.effectiveMessages
+        var messages: [AnthropicRequest.Message] = context.messages
             .filter { $0.role != "system" }
             .map { message in
             var blocks: [AnthropicContent] = message.content.map { part in
@@ -999,6 +1025,11 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                     .toolResult(toolUseID: result.callID, content: result.output, isError: false)
                 }
             ))
+        }
+        if let live = context.live {
+            if let last = messages.indices.last, messages[last].role == "user" {
+                messages[last].content.append(.text(live))
+            } else { messages.append(.init(role: "user", content: [.text(live)])) }
         }
         let tools = request.toolSchemas.map {
             AnthropicRequest.ToolDefinition(

@@ -51,6 +51,7 @@ public struct AptSource: Sendable, Equatable, Identifiable {
 }
 
 public enum AptSources {
+    private static let managedHeader = "# Floe managed source snapshot; sources.list.d is preserved for recovery."
     public static func parse(line: String, fileIndex: Int = 0) -> AptSource? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
@@ -109,6 +110,9 @@ public enum AptSources {
         let listFile = root.appendingPathComponent("etc/apt/sources.list")
         if let text = try? String(contentsOf: listFile, encoding: .utf8) {
             sources.append(contentsOf: parse(contents: text))
+            if text.hasPrefix(managedHeader) {
+                return includingDisabled ? sources : sources.filter { $0.enabled }
+            }
         }
         let directory = root.appendingPathComponent("etc/apt/sources.list.d", isDirectory: true)
         let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
@@ -121,8 +125,21 @@ public enum AptSources {
         return includingDisabled ? sources : sources.filter { $0.enabled }
     }
 
-    public static func write(_ sources: [AptSource], toContainer root: URL, fileName: String = "sources.list") throws {
-        let directory = root.appendingPathComponent("etc/apt", isDirectory: true)
+    static func confinedURL(_ path: String, root: URL) throws -> URL {
+        guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else {
+            throw FloeError.validationFailed("Invalid environment source path")
+        }
+        let base = root.resolvingSymlinksInPath().standardizedFileURL
+        let target = base.appendingPathComponent(path).resolvingSymlinksInPath().standardizedFileURL
+        guard target.path.hasPrefix(base.path + "/") else {
+            throw FloeError.validationFailed("Software source path leaves the selected environment")
+        }
+        return target
+    }
+
+    public static func write(_ sources: [AptSource], toContainer root: URL, fileName: String = "sources.list", replacingAll: Bool = false) throws {
+        let target = try confinedURL("etc/apt/" + fileName, root: root)
+        let directory = target.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let lines = sources.map { source -> String in
             var line = (source.enabled ? "" : "# ") + "\(source.type) "
@@ -135,7 +152,17 @@ public enum AptSources {
             if !source.components.isEmpty { line += " " + source.components.joined(separator: " ") }
             return line
         }
-        try Data((lines.joined(separator: "\n") + "\n").utf8)
-            .write(to: directory.appendingPathComponent(fileName), options: .atomic)
+        let previous = try? String(contentsOf: target, encoding: .utf8)
+        let managed = replacingAll || previous?.hasPrefix(managedHeader) == true
+        if replacingAll, let previous, !previous.hasPrefix(managedHeader) {
+            let backup = try confinedURL("etc/apt/sources.list.pre-floe", root: root)
+            if !FileManager.default.fileExists(atPath: backup.path) {
+                try Data(previous.utf8).write(to: backup, options: .atomic)
+            }
+        }
+        // One atomic snapshot commits edits/removals across legacy .d files;
+        // those originals remain intact and cannot resurrect a deleted source.
+        let header = managed ? managedHeader + "\n" : ""
+        try Data((header + lines.joined(separator: "\n") + "\n").utf8).write(to: target, options: .atomic)
     }
 }

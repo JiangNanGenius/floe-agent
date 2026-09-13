@@ -66,6 +66,17 @@ public struct TaskChecklistUpdate: Codable, Sendable {
     public init(expectedRevision: Int? = nil, title: String, steps: [TaskChecklist.Step], startNew: Bool = false) {
         self.expectedRevision = expectedRevision; self.title = title; self.steps = steps; self.startNew = startNew
     }
+    private enum CodingKeys: String, CodingKey { case expectedRevision, title, steps, startNew }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        expectedRevision = try values.decodeIfPresent(Int.self, forKey: .expectedRevision)
+        title = try values.decode(String.self, forKey: .title)
+        steps = try values.decode([TaskChecklist.Step].self, forKey: .steps)
+        // The advertised tool schema makes this optional. A Swift initializer
+        // default alone does not supply a default during synthesized decoding.
+        startNew = try values.decodeIfPresent(Bool.self, forKey: .startNew) ?? false
+    }
     /// One failure, one precise reason: a model reading the error must be
     /// able to fix the call in a single retry without re-reading state.
     public func validate() throws {

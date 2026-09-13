@@ -6,6 +6,8 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import SwiftUI
+import UIKit
 import Testing
 @testable import FloeApp
 import FloeModels
@@ -18,6 +20,21 @@ import FloeTools
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @MainActor @Test("Folded reasoning keeps its height across short and wrapped streaming fragments")
+    func foldedReasoningHeightIsStable() {
+        for width in [CGFloat(280), CGFloat(620)] {
+            let host = UIHostingController(rootView: ReasoningBlockView(text: "短", isStreaming: true))
+            let proposed = CGSize(width: width, height: 1_000)
+            let initial = host.sizeThatFits(in: proposed).height
+            for text in [String(repeating: "这是快速传来的思考内容。", count: 40), "上一段很长\n下一段", "x", ""] {
+                host.rootView = ReasoningBlockView(text: text, isStreaming: true)
+                host.view.setNeedsLayout()
+                host.view.layoutIfNeeded()
+                #expect(abs(host.sizeThatFits(in: proposed).height - initial) < 1)
+            }
+        }
+    }
+
     @Test("An image model directory retains complete parameter JSON")
     func imageModelDirectoryOutputBudget() throws {
         let data = try JSONSerialization.data(withJSONObject: [

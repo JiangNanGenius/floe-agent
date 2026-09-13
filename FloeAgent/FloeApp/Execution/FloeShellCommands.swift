@@ -18,6 +18,8 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
         var runID: UUID
         var cancellation: CancellationToken
         var environment: ToolEnvironment? = nil
+        var shellVariables: [String: String] = [:]
+        var interactiveSession = false
     }
 
     typealias Handler = @Sendable (_ arguments: [String], _ stdout: UnsafeMutablePointer<FILE>?, _ stderr: UnsafeMutablePointer<FILE>?) async -> Int32
@@ -38,6 +40,14 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
             if fd >= 0 && stream == nil { Darwin.close(fd) }
         }
         deinit { if let stream { fclose(stream) } }
+        var isTerminal: Bool { stream.map { isatty(fileno($0)) != 0 } ?? false }
+        func readAsync(cancellation: CancellationToken?) async -> String? {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async { [self] in
+                    continuation.resume(returning: read(cancellation: cancellation))
+                }
+            }
+        }
         func read(cancellation: CancellationToken?) -> String? {
             guard let stream else { return "" }
             var data = Data()
@@ -75,8 +85,8 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
 
     var context: ShellCommandContext? { Self.invocation }
 
-    func bind(sessionID: String, rootURL: URL, runID: UUID?, cancellation: CancellationToken?, environment: ToolEnvironment? = nil) {
-        lock.withLock { contexts[sessionID] = ShellCommandContext(rootURL: rootURL, workingDirectory: rootURL, runID: runID ?? UUID(), cancellation: cancellation ?? CancellationToken(), environment: environment) }
+    func bind(sessionID: String, rootURL: URL, runID: UUID?, cancellation: CancellationToken?, environment: ToolEnvironment? = nil, interactiveSession: Bool = false) {
+        lock.withLock { contexts[sessionID] = ShellCommandContext(rootURL: rootURL, workingDirectory: rootURL, runID: runID ?? UUID(), cancellation: cancellation ?? CancellationToken(), environment: environment, interactiveSession: interactiveSession) }
     }
     func cancelCurrent(sessionID: String) {
         lock.withLock { activeInvocations[sessionID]?.values.forEach { $0.cancel() } }
@@ -176,6 +186,7 @@ public func floeShellCommandMain(
     let input = FloeShellCommandRegistry.CommandInput(FloeShellCurrentStdin())
     let sessionID = FloeShellCurrentSessionID() ?? ""
     var invocation = FloeShellCommandRegistry.shared.context(sessionID: sessionID)
+    invocation?.shellVariables = FloeShellCurrentEnvironment()
     let parentCancellation = invocation?.cancellation
     let commandCancellation = CancellationToken()
     if parentCancellation?.isCancelled == true { commandCancellation.cancel() }
@@ -265,7 +276,7 @@ enum FloeShellCommands {
         for entry in store.catalog.packages {
             registry.register(entry.command) { arguments, stdout, stderr in
                 guard let context = registry.context else { return 2 }
-                guard let input = FloeShellCommandRegistry.input?.read(cancellation: context.cancellation) else {
+                guard let input = await FloeShellCommandRegistry.input?.readAsync(cancellation: context.cancellation) else {
                     if context.cancellation.isCancelled { return 130 }
                     FloeShellWrite(stderr, "WASM stdin exceeds 256 KiB or could not be read\n"); return 2
                 }

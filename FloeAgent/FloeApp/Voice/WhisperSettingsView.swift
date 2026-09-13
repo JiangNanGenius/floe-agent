@@ -17,7 +17,7 @@ struct WhisperSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 if running {
                     ProgressView(value: Double(completed), total: Double(max(1, total)))
-                    Text("已校验 \(ByteCountFormatter.string(fromByteCount: completed, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
+                    Text("已下载 \(ByteCountFormatter.string(fromByteCount: completed, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
                         .font(.caption)
                     Button("取消下载", role: .cancel) { Task { await WhisperModelStore.shared.cancelInstallation() } }
                 } else {

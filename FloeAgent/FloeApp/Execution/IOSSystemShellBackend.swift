@@ -44,8 +44,16 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         let directory = try ShellInputValidation.directory(cwd: request.cwd, root: request.rootURL)
-        FloeShellCommandRegistry.shared.bind(sessionID: request.sessionID, rootURL: request.rootURL, runID: request.runID, cancellation: cancellation, environment: request.toolEnvironment)
-        return try await Task.detached(priority: .userInitiated) { [self] in
+        FloeShellCommandRegistry.shared.bind(sessionID: request.sessionID, rootURL: request.rootURL, runID: request.runID, cancellation: cancellation, environment: request.toolEnvironment, interactiveSession: true)
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                do { continuation.resume(returning: try openSessionBlocking(request, directory: directory, cancellation: cancellation)) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func openSessionBlocking(_ request: ShellOpenRequest, directory: URL, cancellation: CancellationToken?) throws -> ShellOpenResult {
             var inputFD: Int32 = -1, outputFD: Int32 = -1
             var initial: NSString?
             let escaped = request.command.replacingOccurrences(of: "'", with: "'\\''")
@@ -64,7 +72,6 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             io.start()
             let text = initial as String? ?? ""
             return ShellOpenResult(sessionID: request.sessionID, initialOutput: text, alive: true, terminalOutput: Data(text.utf8))
-        }.value
     }
 
     func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {

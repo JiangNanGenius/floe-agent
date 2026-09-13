@@ -122,6 +122,7 @@ private struct EnvironmentDetailView: View {
     let report: FloePlatformServices.EnvironmentReport
     let displayName: String
     @State private var addingSource = false
+    @State private var editingSource: AptSource?
     @State private var sourceURL = ""
     @State private var sourceSuite = "stable"
     @State private var sourceComponent = "main"
@@ -192,7 +193,7 @@ private struct EnvironmentDetailView: View {
                 }
             }
             Section("environment.packages.available") {
-                Button("添加软件源", systemImage: "plus") { addingSource = true }.disabled(!writable)
+                Button("添加软件源", systemImage: "plus") { editSource(nil) }.disabled(!writable)
                 Button("environment.packages.refresh", systemImage: "arrow.clockwise") { start(.refresh, "正在下载并验证软件源…") }.disabled(!writable)
                 if let packages {
                     if packages.available.isEmpty { Text("尚无经过验证的软件包索引。刷新成功后，可在此选择安装。").font(.subheadline).foregroundStyle(.secondary) }
@@ -205,7 +206,18 @@ private struct EnvironmentDetailView: View {
                     }
                     DisclosureGroup("软件源（\(packages.sources.count)）") {
                         if packages.sources.isEmpty { Text("尚未配置已签名的软件源") }
-                        ForEach(packages.sources) { source in VStack(alignment: .leading) { Text(source.uri); Text("\(source.suite) · \(source.enabled ? "启用" : "停用")").foregroundStyle(.secondary) } }
+                        ForEach(packages.sources) { source in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(source.uri).textSelection(.enabled)
+                                Text("\(source.suite) · \(source.enabled ? "启用" : "停用")").foregroundStyle(.secondary)
+                                HStack {
+                                    Button("编辑") { editSource(source) }
+                                    Button(source.enabled ? "停用" : "启用") { start(.setSourceEnabled(source.id, !source.enabled), "正在更新软件源…") }
+                                    Spacer()
+                                    Button("移除", role: .destructive) { start(.deleteSource(source.id), "正在移除软件源…") }
+                                }.buttonStyle(.borderless).disabled(!writable)
+                            }.padding(.vertical, 4)
+                        }
                     }.font(.caption)
                 }
             }
@@ -243,17 +255,19 @@ private struct EnvironmentDetailView: View {
                         TextEditor(text: $sourceKey).font(.caption.monospaced()).frame(minHeight: 160)
                         Text("从软件源发布者获取公钥。下载的软件包索引必须通过此公钥验证。")
                             .font(.footnote).foregroundStyle(.secondary)
+                        if editingSource != nil { Text("留空保留已保存的签名公钥。").font(.footnote).foregroundStyle(.secondary) }
                     }
                 }
-                .navigationTitle("添加软件源")
+                .navigationTitle(editingSource == nil ? "添加软件源" : "编辑软件源")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("取消") { addingSource = false } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("保存") {
                             start(.saveSource(AptSource(uri: sourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                                suite: sourceSuite, components: sourceComponent.split(separator: " ").map(String.init)), sourceKey), "正在保存软件源…")
+                                suite: sourceSuite, components: sourceComponent.split(separator: " ").map(String.init),
+                                enabled: editingSource?.enabled ?? true), sourceKey, replacingID: editingSource?.id), "正在保存软件源…")
                             addingSource = false
-                        }.disabled(sourceURL.isEmpty || sourceSuite.isEmpty || sourceKey.isEmpty)
+                        }.disabled(sourceURL.isEmpty || sourceSuite.isEmpty || (sourceKey.isEmpty && editingSource?.signedBy == nil))
                     }
                 }
             }
@@ -269,6 +283,14 @@ private struct EnvironmentDetailView: View {
         } message: { Text("将停止此环境的任务并删除其依赖和容器数据。有子会话的项目须先清理子会话；停止失败时保留数据。") }
     }
     private func matches(_ name: String) -> Bool { query.isEmpty || name.localizedCaseInsensitiveContains(query) }
+    private func editSource(_ source: AptSource?) {
+        editingSource = source
+        sourceURL = source?.uri ?? ""
+        sourceSuite = source?.suite ?? "stable"
+        sourceComponent = source?.components.joined(separator: " ") ?? "main"
+        sourceKey = ""
+        addingSource = true
+    }
     private func start(_ action: FloePlatformServices.PackageAction, _ title: String) { jobs.start(id: report.id, title: title, action: action) }
     @MainActor private func reload() async {
         do {

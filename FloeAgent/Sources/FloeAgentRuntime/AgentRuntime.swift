@@ -176,7 +176,7 @@ public struct CatalogToolExecutor: ToolExecutor {
             )
             return ToolResult(
                 callID: call.id,
-                status: output.requiresUserAction ? .needsUser : ((output.exitStatus ?? 0) == 0 ? .ok : .failed),
+                status: context.cancellation.isCancelled ? .cancelled : (output.requiresUserAction ? .needsUser : ((output.exitStatus ?? 0) == 0 ? .ok : .failed)),
                 outputSummary: ToolWorkflowGuidance.outputSummary(
                     output.summary,
                     exposing: output.artifacts
@@ -1240,6 +1240,11 @@ public actor FloeAgentRuntime {
         let now = Date()
         let zone = TimeZone.current
         let temporalContext = "Current runtime time: \(ISO8601DateFormatter().string(from: now)); timeZone=\(zone.identifier); utcOffsetSeconds=\(zone.secondsFromGMT(for: now)); locale=\(Locale.current.identifier). This timestamp supersedes older time context."
+        if configuration.maxToolSteps >= 100_000, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            let continuity = "This run has no fixed tool-call budget. Older budget-exhausted messages describe historical runs and do not require stopping now. Continue authorized unfinished work while useful progress is possible; respect cancellation, permissions, per-call limits, and no-progress errors. Briefly explain meaningful findings and next steps in user-visible commentary during longer work."
+            legacyMessages[index].content += "\n\n" + continuity
+            contentMessages[index].content.append(.text(continuity))
+        }
         if supportsTools, !prerequisiteNotes.isEmpty {
             let note = "Installed tools remain callable; satisfy these execution prerequisites first:\n"
                 + prerequisiteNotes.joined(separator: "\n")

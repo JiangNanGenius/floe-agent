@@ -41,20 +41,27 @@ struct NotesDocumentEditor: View {
     @State private var exportProgress = ""
     @EnvironmentObject private var environment: AppEnvironment
     @AppStorage("notes.fingerDrawing.enabled") private var fingerDrawing = false
+    @AppStorage("notes.pen.color") private var penColor = "#18181B"
+    @AppStorage("notes.marker.color") private var markerColor = "#FACC15"
+    @AppStorage("notes.pen.width") private var penWidth = 3.0
+    @AppStorage("notes.marker.width") private var markerWidth = 20.0
+    @State private var showingInkOptions = false
     private enum InkTool: String, CaseIterable {
         case pen = "笔", marker = "荧光笔", eraser = "橡皮", lasso = "套索", region = "AI 选区"
         var icon: String {
             switch self { case .pen: "pencil.tip"; case .marker: "highlighter"; case .eraser: "eraser"; case .lasso: "lasso"; case .region: "viewfinder" }
         }
-        var pencilTool: PKTool {
-            switch self {
-            case .pen: PKInkingTool(.pen, color: .black, width: 3)
-            case .marker: PKInkingTool(.marker, color: .systemYellow.withAlphaComponent(0.45), width: 20)
-            case .eraser: PKEraserTool(.vector)
-            case .lasso, .region: PKLassoTool()
-            }
+    }
+    private var pencilTool: PKTool {
+        switch tool {
+        case .pen: PKInkingTool(.pen, color: NotePageRenderer.color(penColor), width: min(12, max(0.5, penWidth)))
+        case .marker: PKInkingTool(.marker, color: NotePageRenderer.color(markerColor).withAlphaComponent(0.45), width: min(40, max(4, markerWidth)))
+        case .eraser: PKEraserTool(.vector)
+        case .lasso, .region: PKLassoTool()
         }
     }
+    private var inkColor: Binding<String> { tool == .marker ? $markerColor : $penColor }
+    private var inkWidth: Binding<Double> { tool == .marker ? $markerWidth : $penWidth }
     private var page: NotePage? { document.pages.first { $0.id == pageID } ?? document.pages.first }
     private var mapImageIDs: Set<UUID> { Set(document.nodes.compactMap(\.imageResourceID)) }
     private var selectedMapNode: MindMapNode? {
@@ -105,7 +112,7 @@ struct NotesDocumentEditor: View {
                 Divider()
                 if loadedPageID == page.id {
                     NotePencilView(page: page, drawing: drawing, background: background,
-                                   fingerDrawing: fingerDrawing, tool: tool.pencilTool,
+                                   fingerDrawing: fingerDrawing, tool: pencilTool,
                                    onDrawing: { data in
                         drawing = data
                         session.saveDrawing(data, pageID: page.id, documentID: document.id)
@@ -419,12 +426,27 @@ struct NotesDocumentEditor: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(InkTool.allCases, id: \.self) { value in
-                    Button { tool = value } label: {
+                    Button {
+                        if tool == value, value == .pen || value == .marker { showingInkOptions = true }
+                        tool = value
+                    } label: {
                         Label(value.rawValue, systemImage: value.icon).labelStyle(.iconOnly)
                             .font(.title3).frame(width: 44, height: 44)
                             .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
+                            .foregroundStyle(tool == value ? Color.accentColor : .secondary)
                     }.accessibilityLabel(value.rawValue).accessibilityAddTraits(tool == value ? .isSelected : [])
                 }
+                if tool == .pen || tool == .marker {
+                    Button { showingInkOptions = true } label: {
+                        Circle().fill(Color(uiColor: NotePageRenderer.color(inkColor.wrappedValue)))
+                            .frame(width: 22, height: 22)
+                            .overlay(Circle().strokeBorder(.primary.opacity(0.15)))
+                            .frame(width: 44, height: 44)
+                    }.accessibilityLabel("画笔颜色与粗细")
+                        .accessibilityIdentifier("notes.ink.options")
+                        .popover(isPresented: $showingInkOptions) { inkOptions.presentationCompactAdaptation(.popover) }
+                }
+                Divider().frame(height: 24)
                 if #available(iOS 27.0, *), selectedStrokeCount > 0 {
                     Button("问 Floe", systemImage: "bubble.left.and.text.bubble.right") {
                         captureSelectionRequest = UUID()
@@ -434,7 +456,7 @@ struct NotesDocumentEditor: View {
                     }.frame(minHeight: 44)
                         .accessibilityIdentifier("notes.selection.delete")
                 }
-                Button("文字", systemImage: "textformat") { editedElement = nil; textDraft = ""; showText = true }.frame(minHeight: 44)
+                Button("文字", systemImage: "textformat") { editedElement = nil; textDraft = ""; showText = true }.labelStyle(.iconOnly).frame(width: 44, height: 44)
                 Menu {
                     Button("图片", systemImage: "photo") { importingImage = true }
                     ForEach([NoteElement.Kind.rectangle, .ellipse, .line, .arrow], id: \.self) { kind in
@@ -444,7 +466,7 @@ struct NotesDocumentEditor: View {
                             session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入形状", documentID: document.id)
                         }
                     }
-                } label: { Label("插入", systemImage: "plus.square").frame(minHeight: 44) }
+                } label: { Label("插入", systemImage: "plus.square").labelStyle(.iconOnly).frame(width: 44, height: 44) }
                 Menu {
                     Toggle("手指书写", isOn: $fingerDrawing)
                     if let page {
@@ -467,9 +489,33 @@ struct NotesDocumentEditor: View {
                     Button("新增页面", systemImage: "doc.badge.plus") {
                         session.apply([.insertPage(NotePage(), at: document.pages.count)], title: "新增页面", documentID: document.id)
                     }
-                } label: { Label("更多", systemImage: "ellipsis.circle").frame(minHeight: 44) }
-            }.padding(.horizontal)
-        }
+                } label: { Label("更多", systemImage: "ellipsis").labelStyle(.iconOnly).frame(width: 44, height: 44) }
+            }.buttonStyle(.plain).foregroundStyle(.primary).padding(.horizontal, 12).padding(.vertical, 4)
+        }.background(.bar)
+    }
+
+    private var inkOptions: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(tool == .marker ? "荧光笔" : "画笔").font(.headline)
+            HStack(spacing: 4) {
+                ForEach(["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"], id: \.self) { hex in
+                    Button { inkColor.wrappedValue = hex } label: {
+                        Circle().fill(Color(uiColor: NotePageRenderer.color(hex)))
+                            .frame(width: 26, height: 26)
+                            .overlay { if inkColor.wrappedValue == hex { Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(hex == "#FACC15" ? .black : .white) } }
+                            .frame(width: 40, height: 44)
+                    }.accessibilityLabel("颜色 \(hex)")
+                }
+            }
+            ColorPicker("自定颜色", selection: Binding(get: { Color(uiColor: NotePageRenderer.color(inkColor.wrappedValue)) }, set: { color in
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                if UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) {
+                    inkColor.wrappedValue = String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
+                }
+            }), supportsOpacity: false)
+            HStack { Text("粗细"); Spacer(); Text(inkWidth.wrappedValue, format: .number.precision(.fractionLength(1))).monospacedDigit() }
+            Slider(value: inkWidth, in: tool == .marker ? 4...40 : 0.5...12, step: 0.5).accessibilityLabel("画笔粗细")
+        }.padding(20).frame(width: 300)
     }
 }
 

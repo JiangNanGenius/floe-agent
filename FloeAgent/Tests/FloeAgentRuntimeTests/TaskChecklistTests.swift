@@ -8,6 +8,16 @@ import FloeCore
 
 @Suite("Durable task checklists")
 struct TaskChecklistTests {
+    @Test func optionalStartNewDecodesFromToolArguments() throws {
+        let json = #"{"title":"Inspect","steps":[{"id":"a","title":"Read","status":"inProgress","evidence":[]}]}"#
+        let update = try JSONDecoder().decode(TaskChecklistUpdate.self, from: Data(json.utf8))
+        try update.validate()
+        #expect(!update.startNew)
+        #expect(update.expectedRevision == nil)
+        let explicit = json.dropLast() + #", "startNew":true}"#
+        #expect(try JSONDecoder().decode(TaskChecklistUpdate.self, from: Data(explicit.utf8)).startNew)
+    }
+
     private func fixture() async throws -> (DatabaseManager, UUID, UUID) {
         let db = try DatabaseManager.inMemory()
         try await db.migrate()

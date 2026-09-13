@@ -62,19 +62,29 @@ public actor EnvironmentManagementService {
 
     public enum PackageAction: Sendable {
         case refresh, install(String), remove(String), hold(String), unhold(String)
-        case saveSource(AptSource, String), deleteSource(String)
+        case saveSource(AptSource, String, replacingID: String? = nil), deleteSource(String)
+        case setSourceEnabled(String, Bool)
     }
 
     public func managePackage(id: String, action: PackageAction) async throws -> String {
         let (engine, container, _) = try await packageContext(id: id, writable: true)
         try Task.checkCancellation()
         switch action {
-        case .saveSource(var source, let armoredKey):
+        case .saveSource(var source, var armoredKey, let replacingID):
             guard let url = URL(string: source.uri), url.scheme == "https", url.host != nil,
                   url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-                  !source.uri.contains(where: { $0.isWhitespace }),
+                  !source.uri.contains(where: { $0.isWhitespace }), !source.components.isEmpty,
                   ([source.suite] + source.components).allSatisfy({ !$0.isEmpty && $0.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil }) else {
                 throw FloeError.validationFailed("请输入 HTTPS 软件源地址，以及有效的发行版和组件")
+            }
+            if armoredKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let replacingID,
+               let old = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true).first(where: { $0.id == replacingID }),
+               let path = old.signedBy, path.hasPrefix("etc/apt/keyrings/") {
+                let url = try AptSources.confinedURL(path, root: container.layerURL)
+                guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 1_048_576 else {
+                    throw FloeError.validationFailed("公钥文件超过 1 MB")
+                }
+                armoredKey = try String(contentsOf: url, encoding: .utf8)
             }
             guard armoredKey.utf8.count <= 1_048_576 else { throw FloeError.validationFailed("公钥文件超过 1 MB") }
             let keys = try OpenPGP.parseKeyring(Data(armoredKey.utf8))
@@ -82,19 +92,25 @@ public actor EnvironmentManagementService {
                 throw FloeError.validationFailed("请提供有效的 OpenPGP 签名公钥")
             }
             let keyPath = "etc/apt/keyrings/" + key.primary.fingerprint + ".asc"
-            let target = container.layerURL.appendingPathComponent(keyPath)
+            let target = try AptSources.confinedURL(keyPath, root: container.layerURL)
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(armoredKey.utf8).write(to: target, options: .atomic)
             source.signedBy = keyPath; source.trusted = false
             var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
-            sources.removeAll { $0.id == source.id }; sources.append(source)
-            try AptSources.write(sources, toContainer: container.layerURL)
+            sources.removeAll { $0.id == source.id || $0.id == replacingID }; sources.append(source)
+            try AptSources.write(sources, toContainer: container.layerURL, replacingAll: true)
             return "已保存软件源；签名指纹：" + key.primary.fingerprint
         case .deleteSource(let sourceID):
             var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
             sources.removeAll { $0.id == sourceID }
-            try AptSources.write(sources, toContainer: container.layerURL)
+            try AptSources.write(sources, toContainer: container.layerURL, replacingAll: true)
             return "已移除软件源"
+        case .setSourceEnabled(let sourceID, let enabled):
+            var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
+            guard let index = sources.firstIndex(where: { $0.id == sourceID }) else { throw FloeError.notFound("软件源已移除") }
+            sources[index].enabled = enabled
+            try AptSources.write(sources, toContainer: container.layerURL, replacingAll: true)
+            return enabled ? "已启用软件源；请刷新索引" : "已停用软件源"
         case .refresh:
             let sources = AptSources.read(inContainerAt: container.layerURL).filter { $0.enabled }
             guard !sources.isEmpty else { throw FloeError.validationFailed("此环境尚未配置已签名的软件源") }

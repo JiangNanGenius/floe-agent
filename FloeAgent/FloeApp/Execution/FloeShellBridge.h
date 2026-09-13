@@ -80,6 +80,8 @@ BOOL FloeShellSetMiniRoot(NSString *rootPath);
 
 /// Applies environment overrides for future commands (PATH, HOME, TMPDIR…).
 void FloeShellSetEnvironment(NSDictionary<NSString *, NSString *> *environment);
+/// Snapshot of the calling shell command's exported environment.
+NSDictionary<NSString *, NSString *> *FloeShellCurrentEnvironment(void);
 
 /// YES when the ios_system command bus is linked and initialized.
 BOOL FloeShellEngineAvailable(void);

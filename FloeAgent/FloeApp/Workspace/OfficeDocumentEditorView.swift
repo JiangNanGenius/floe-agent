@@ -248,7 +248,7 @@ final class OfficeFileSession: ObservableObject {
         await save(returnToPreview: true)
     }
 
-    private func saveInPlace() async -> Bool {
+    func saveInPlace() async -> Bool {
         await save(returnToPreview: false)
     }
 
@@ -604,7 +604,7 @@ struct OfficeDocumentEditorView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回") {
                         if session.phase == .failed { dismiss() }
-                        else { Task { if await session.saveAndReturn(), await onSaved?() ?? true { dismiss() } } }
+                        else { Task { await saveAndDismiss() } }
                     }
                     .disabled(!session.canAct && session.phase != .failed)
                     .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
@@ -612,7 +612,7 @@ struct OfficeDocumentEditorView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Menu {
                         Button("保存并返回") {
-                            Task { if await session.saveAndReturn(), await onSaved?() ?? true { dismiss() } }
+                            Task { await saveAndDismiss() }
                         }
                         if !session.exportFormats.isEmpty {
                             Menu("导出格式", systemImage: "square.and.arrow.up") {
@@ -629,8 +629,10 @@ struct OfficeDocumentEditorView: View {
                         Button("另存副本…", systemImage: "doc.on.doc") {
                             Task { export = await session.prepareSaveCopy() }
                         }
-                        Button("保留修改并返回") {
-                            Task { if await session.keepChangesAndReturn() { dismiss() } }
+                        if onSaved == nil {
+                            Button("保留修改并返回") {
+                                Task { if await session.keepChangesAndReturn() { dismiss() } }
+                            }
                         }
                         Button("放弃修改", role: .destructive) { confirmingDiscard = true }
                     } label: { Image(systemName: "ellipsis.circle") }
@@ -687,9 +689,11 @@ struct OfficeDocumentEditorView: View {
                         session.error = nil
                         Task { export = await session.prepareSaveCopy() }
                     }
-                    Button("保留修改并返回") {
-                        session.error = nil
-                        Task { if await session.keepChangesAndReturn() { dismiss() } }
+                    if onSaved == nil {
+                        Button("保留修改并返回") {
+                            session.error = nil
+                            Task { if await session.keepChangesAndReturn() { dismiss() } }
+                        }
                     }
                 } message: { Text(session.error ?? "") }
             .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
@@ -698,6 +702,15 @@ struct OfficeDocumentEditorView: View {
                 }
                 Button("继续编辑", role: .cancel) {}
             }
+    }
+
+    private func saveAndDismiss() async {
+        // An owning Notes transaction may still reject its resource commit.
+        // Keep the native editor mounted until that owner confirms success,
+        // so a conflict/error leaves a usable editor and export path.
+        let saved = onSaved == nil ? await session.saveAndReturn() : await session.saveInPlace()
+        guard saved else { return }
+        if await onSaved?() ?? true { dismiss() }
     }
 }
 

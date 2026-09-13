@@ -36,6 +36,10 @@ test('one host repeats workers, preserves cwd/env/stdin and bounds output', { ti
     assert.equal(first.code, 0); assert.equal(stdout(first), 'scoped file-data\ninput-data');
     const next = await h.send(request('next', "console.log(process.env.FLOE_TEST ?? 'unset')"));
     assert.equal(stdout(next), 'unset\n');
+    const version = await h.send(request('version', '', { args: ['-v'] }));
+    assert.equal(stdout(version).trim(), process.version);
+    const fromStdin = await h.send(request('stdin-script', '', { args: ['-'], stdin: Buffer.from("console.log('from stdin')").toString('base64') }));
+    assert.equal(fromStdin.code, 0); assert.equal(stdout(fromStdin), 'from stdin\n');
     const bounded = await h.send(request('bounded', "process.stdout.write('x'.repeat(1000000))", { maxOutputBytes: 100 }));
     assert.equal(stdout(bounded).length, 100); assert.equal(bounded.truncated, true);
     const exit = await h.send(request('exit', 'process.exit(7)'));

@@ -854,7 +854,7 @@ struct RequestContractTests {
     }
 
 
-    @Test("Anthropic system splits at the live-state marker with a cache breakpoint")
+    @Test("Anthropic keeps live state after history and caches the stable system")
     func anthropicSystemCacheBreakpoint() throws {
         let provider = ProviderProfile(kind: .custom, wireProtocol: .anthropicMessages,
             baseURL: URL(string: "https://localhost:8443")!)
@@ -870,11 +870,42 @@ struct RequestContractTests {
         )
         let body = AnthropicMessagesAdapter().buildBody(from: request)
         let blocks = try #require(body.system)
-        #expect(blocks.count == 2)
+        #expect(blocks.count == 1)
         #expect(blocks[0].text == "Stable contract.")
         #expect(blocks[0].cacheControl != nil)
-        #expect(blocks[1].cacheControl == nil)
-        #expect(blocks[1].text.contains("Current runtime time"))
+        #expect(body.messages.last?.content.contains(.text("[Floe runtime context; current app state, separate from the preceding user text or tool output]\nCurrent runtime time: now")) == true)
+    }
+
+    @Test("Changing runtime state leaves history prefixes and reasoning tool pairs intact")
+    func volatileStateDoesNotInvalidateHistoryPrefix() throws {
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.deepseek.com")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "deepseek-flash", displayName: "Flash",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1024), capabilities: [.text, .tools])
+        let call = try ToolCall(id: "read", toolName: "workspace.readFile", argumentsJSON: Data(#"{"path":"a.txt"}"#.utf8), scope: .local)
+        func request(_ state: String) -> ProviderStreamRequest {
+            .init(provider: provider, model: model,
+                contentMessages: [
+                    .init(role: "system", content: [.text("Stable instructions"), .text(ProviderStreamRequest.liveStateMarker), .text(state)]),
+                    .init(role: "user", content: [.text("Read this"), .imageData(mimeType: "image/png", base64: "image")])
+                ], toolResults: [(callID: "read", output: "Actual receipt")], pendingToolCalls: [call], pendingAssistantReasoning: "Exact reasoning")
+        }
+        let first = request("clock 1"), second = request("clock 2")
+        let chatA = OpenAIChatCompletionsAdapter().buildBody(from: first)
+        let chatB = OpenAIChatCompletionsAdapter().buildBody(from: second)
+        #expect(chatA.messages.dropLast() == chatB.messages.dropLast())
+        #expect(chatA.messages.map(\.role) == ["system", "user", "assistant", "tool"])
+        #expect(chatA.messages[2].reasoningContent == "Exact reasoning")
+        #expect(chatA.messages.last?.toolCallID == "read")
+        #expect(chatA.messages.last?.content != chatB.messages.last?.content)
+        let responsesA = OpenAIResponsesAdapter().buildBody(from: first)
+        let responsesB = OpenAIResponsesAdapter().buildBody(from: second)
+        #expect(responsesA.input.dropLast() == responsesB.input.dropLast())
+        let anthropicA = AnthropicMessagesAdapter().buildBody(from: first)
+        let anthropicB = AnthropicMessagesAdapter().buildBody(from: second)
+        #expect(anthropicA.system == anthropicB.system)
+        #expect(anthropicA.messages.dropLast() == anthropicB.messages.dropLast())
+        #expect(anthropicA.messages.last?.content.first == .toolResult(toolUseID: "read", content: "Actual receipt", isError: false))
     }
 
     private func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {

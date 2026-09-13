@@ -33,6 +33,9 @@ function start(job) {
       if (typeof job.args[1] !== 'string') throw Error('JavaScript source is required');
       data.source = job.args[1]; data.print = ['-p', '--print'].includes(job.args[0]); data.args = job.args.slice(2);
     } else if (['-v', '--version'].includes(job.args[0])) data.source = 'console.log(process.version)';
+    else if (job.args[0] === '-' || !job.args.length) {
+      data.source = Buffer.from(job.stdin ?? '', 'base64').toString('utf8'); data.stdin = ''; data.args = job.args.slice(1);
+    }
     else if (job.args[0] && !job.args[0].startsWith('-')) { data.entry = path.resolve(job.cwd, job.args[0]); data.args = job.args.slice(1); }
     else throw Error('Supported Node invocation: script, -e, -p or --version');
     worker = new Worker(path.join(__dirname, 'worker.cjs'), { stdout: true, stderr: true,

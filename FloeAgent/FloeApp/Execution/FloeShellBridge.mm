@@ -121,6 +121,16 @@ void FloeShellSetEnvironment(NSDictionary<NSString *, NSString *> *environment) 
     }];
 }
 
+NSDictionary<NSString *, NSString *> *FloeShellCurrentEnvironment(void) {
+    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
+    for (NSString *entry in environmentAsArray()) {
+        NSRange separator = [entry rangeOfString:@"="];
+        if (separator.location == NSNotFound || separator.location == 0) continue;
+        values[[entry substringToIndex:separator.location]] = [entry substringFromIndex:separator.location + 1];
+    }
+    return [values copy];
+}
+
 BOOL FloeShellSetMiniRoot(NSString *rootPath) {
     if (rootPath.length == 0) { return NO; }
     return ios_setMiniRoot(rootPath);

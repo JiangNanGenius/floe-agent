@@ -5,6 +5,29 @@ import FloePackages
 
 @Suite("Environment management API")
 struct EnvironmentManagementTests {
+    @Test func sourceSnapshotPreservesRecoveryFilesWithoutResurrectingRemovedSources() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = AptSource(uri: "https://example.invalid", suite: "stable")
+        try AptSources.write([source], toContainer: root, fileName: "sources.list.d/vendor.list")
+        #expect(AptSources.read(inContainerAt: root) == [source])
+        var disabled = source; disabled.enabled = false
+        try AptSources.write([disabled], toContainer: root, replacingAll: true)
+        #expect(AptSources.read(inContainerAt: root).isEmpty)
+        #expect(AptSources.read(inContainerAt: root, includingDisabled: true) == [disabled])
+        try AptSources.write([], toContainer: root, replacingAll: true)
+        #expect(AptSources.read(inContainerAt: root, includingDisabled: true).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("etc/apt/sources.list.d/vendor.list").path))
+    }
+
+    @Test func sourceWritesRejectAnEnvironmentEscape() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("etc"), withDestinationURL: root.deletingLastPathComponent())
+        #expect(throws: (any Error).self) { try AptSources.write([], toContainer: root, replacingAll: true) }
+    }
+
     @Test func selectedEnvironmentHoldAndLifecycleNeverAffectOtherProject() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

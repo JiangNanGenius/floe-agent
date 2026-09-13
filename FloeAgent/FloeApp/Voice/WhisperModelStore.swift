@@ -30,25 +30,37 @@ actor WhisperModelStore {
         var error: String?
     }
     private var installation = InstallationState()
+    private var installationID = UUID()
     private var installationTask: Task<Void, Never>?
     func installationState() -> InstallationState { installation }
     func beginInstallation() {
         guard installationTask == nil else { return }
+        UserDefaults.standard.set(true, forKey: "whisper.installation.requested")
         installation = InstallationState(running: true)
+        let id = UUID()
+        installationID = id
         installationTask = Task {
             do {
                 try await install { done, total in
-                    Task { await self.updateProgress(done, total: total) }
+                    Task { await self.updateProgress(done, total: total, id: id) }
                 }
+                UserDefaults.standard.set(false, forKey: "whisper.installation.requested")
             } catch is CancellationError {
             } catch { installation.error = error.localizedDescription }
             installation.running = false
             installationTask = nil
         }
     }
-    func cancelInstallation() { installationTask?.cancel() }
-    private func updateProgress(_ done: Int64, total: Int64) {
-        installation.completed = done; installation.total = total
+    func restoreInstallation() {
+        if UserDefaults.standard.bool(forKey: "whisper.installation.requested") { beginInstallation() }
+    }
+    func cancelInstallation() {
+        UserDefaults.standard.set(false, forKey: "whisper.installation.requested")
+        installationTask?.cancel()
+    }
+    private func updateProgress(_ done: Int64, total: Int64, id: UUID) {
+        guard installationID == id, installation.running else { return }
+        installation.completed = max(installation.completed, done); installation.total = total
     }
     private var leases = Set<UUID>()
     private var installing = false
@@ -107,9 +119,11 @@ actor WhisperModelStore {
                 continue
             }
             try? FileManager.default.removeItem(at: target)
-            let (temporary, response) = try await URLSession.shared.download(from: asset.url)
+            let completedBeforeAsset = completed
+            let temporary = try await WhisperDownloadCoordinator.shared.download(asset.url) { bytes in
+                progress(completedBeforeAsset + min(bytes, asset.byteCount), total)
+            }
             defer { try? FileManager.default.removeItem(at: temporary) }
-            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw Failure.corrupt }
             try verify(temporary, asset: asset)
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: temporary, to: target)
@@ -128,6 +142,121 @@ actor WhisperModelStore {
         var hash = SHA256()
         while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty { try Task.checkCancellation(); hash.update(data: data) }
         guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == asset.sha256 else { throw Failure.corrupt }
+    }
+}
+/// Background transfer ownership is independent of SwiftUI and the installer
+/// continuation. Finished files and resume data survive process recreation.
+final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    static let shared = WhisperDownloadCoordinator()
+    static let identifier = "org.floeagent.whisper-downloads"
+    private struct Pending {
+        let id: UUID
+        let continuation: CheckedContinuation<URL, Error>
+        let progress: @Sendable (Int64) -> Void
+        var cancelled = false
+    }
+    private let lock = NSLock()
+    private var pending: [String: Pending] = [:]
+    private var backgroundCompletion: (() -> Void)?
+    private var session: URLSession!
+    private override init() {
+        super.init()
+        let configuration = URLSessionConfiguration.background(withIdentifier: Self.identifier)
+        configuration.isDiscretionary = false
+        configuration.sessionSendsLaunchEvents = true
+        configuration.httpMaximumConnectionsPerHost = 2
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+        session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+    }
+    private func file(_ key: String, suffix: String) throws -> URL {
+        let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true).appendingPathComponent("FloeAgent/SpeechTransfers", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root.appendingPathComponent(key + suffix)
+    }
+    func registerBackgroundCompletion(_ completion: @escaping () -> Void) {
+        lock.withLock { backgroundCompletion = completion }
+    }
+    func download(_ url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+        let key = SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+        let destination = try file(key, suffix: ".download")
+        if FileManager.default.fileExists(atPath: destination.path) { return destination }
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                lock.withLock { pending[key] = Pending(id: id, continuation: continuation, progress: progress) }
+                if Task.isCancelled {
+                    lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(throwing: CancellationError())
+                    return
+                }
+                session.getAllTasks { [self] tasks in
+                    lock.withLock {
+                        guard let waiter = pending[key], waiter.id == id, !waiter.cancelled else { return }
+                        // A completion may have arrived between the disk check
+                        // and listener registration on process restoration.
+                        if FileManager.default.fileExists(atPath: destination.path) {
+                            pending.removeValue(forKey: key)?.continuation.resume(returning: destination)
+                            return
+                        }
+                        if let task = tasks.first(where: { $0.taskDescription == key }) { task.resume(); return }
+                        let resumeURL = try? file(key, suffix: ".resume")
+                        let task: URLSessionDownloadTask
+                        if let resumeURL, let data = try? Data(contentsOf: resumeURL) {
+                            task = session.downloadTask(withResumeData: data)
+                            try? FileManager.default.removeItem(at: resumeURL)
+                        } else { task = session.downloadTask(with: url) }
+                        task.taskDescription = key
+                        task.resume()
+                    }
+                }
+            }
+        } onCancel: {
+            // Keep the installer occupied until the old transfer has stopped.
+            // Otherwise a quick retry can attach to a task being cancelled by
+            // this asynchronous callback and lose its continuation.
+            self.lock.withLock { if self.pending[key]?.id == id { self.pending[key]?.cancelled = true } }
+            self.session.getAllTasks { tasks in
+                guard self.lock.withLock({ self.pending[key]?.id == id }) else { return }
+                let matches = tasks.compactMap { $0 as? URLSessionDownloadTask }.filter { $0.taskDescription == key }
+                if matches.isEmpty {
+                    self.lock.withLock { self.pending.removeValue(forKey: key) }?.continuation.resume(throwing: CancellationError())
+                }
+                for task in matches {
+                    task.cancel { data in
+                        if let data, let target = try? self.file(key, suffix: ".resume") { try? data.write(to: target, options: .atomic) }
+                    }
+                }
+            }
+        }
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard let key = downloadTask.taskDescription else { return }
+        lock.withLock { pending[key]?.progress }?(totalBytesWritten)
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        guard let key = downloadTask.taskDescription else { return }
+        do {
+            guard let response = downloadTask.response as? HTTPURLResponse, response.statusCode == 200 else { throw WhisperModelStore.Failure.corrupt }
+            let target = try file(key, suffix: ".download")
+            if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+            try FileManager.default.moveItem(at: location, to: target)
+            if let resume = try? file(key, suffix: ".resume") { try? FileManager.default.removeItem(at: resume) }
+            lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(returning: target)
+        } catch { lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(throwing: error) }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let key = task.taskDescription, let error else { return }
+        if let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
+           let target = try? file(key, suffix: ".resume") { try? data.write(to: target, options: .atomic) }
+        if let waiter = lock.withLock({ pending.removeValue(forKey: key) }) {
+            waiter.continuation.resume(throwing: waiter.cancelled ? CancellationError() : error)
+        }
+    }
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        let completion = lock.withLock { let value = backgroundCompletion; backgroundCompletion = nil; return value }
+        DispatchQueue.main.async { completion?() }
     }
 }
 #endif

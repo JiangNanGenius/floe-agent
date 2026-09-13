@@ -13,7 +13,6 @@ struct NotesOfficeView: View {
     @State private var draftURL: URL?
     @State private var baseRevision: Int?
     @State private var baseResourceID: UUID?
-    @State private var editing = false
     @State private var pendingCommit = false
     @State private var committing = false
     @State private var message: String?
@@ -36,7 +35,7 @@ struct NotesOfficeView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(message).font(.callout)
                     HStack {
-                        if pendingCommit { Button("重试保存到手记") { Task { await commit() } }.disabled(committing) }
+                        if pendingCommit { Button("重试保存到手记") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
                         if let recoveryURL { ShareLink("导出恢复副本", item: recoveryURL) }
                     }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
@@ -54,7 +53,7 @@ struct NotesOfficeView: View {
         }
         .task { await prepare() }
         .onChange(of: document.officeResourceID) { _, value in
-            guard value != baseResourceID, !editing, !committing, !pendingCommit else { return }
+            guard value != baseResourceID, office.readOnly, !committing, !pendingCommit else { return }
             Task {
                 await office.release()
                 draftURL = nil; baseRevision = nil; baseResourceID = nil
@@ -88,7 +87,7 @@ struct NotesOfficeView: View {
             }
         }
         .onDisappear {
-            if !editing { Task { await office.release() } }
+            Task { await office.release() }
         }
     }
 
@@ -165,7 +164,6 @@ struct NotesOfficeView: View {
             do {
                 try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: url.deletingLastPathComponent().appendingPathComponent("recovery.json"), options: .atomic)
             } catch { message = "文档已保存，但恢复记录未能更新：\(error.localizedDescription)" }
-            await office.open(url)
         } catch {
             message = "未能保存到手记：\(error.localizedDescription) Office 编辑副本已保留，可重试或导出。"
             recoveryURL = url

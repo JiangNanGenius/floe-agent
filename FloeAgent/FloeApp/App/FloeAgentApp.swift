@@ -20,6 +20,7 @@ import FloeLocalModelCatalog
 final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         RuntimeDiagnostics.shared.start()
+        Task { await WhisperModelStore.shared.restoreInstallation() }
         return true
     }
 
@@ -32,7 +33,9 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        if identifier == MediaArtifactDownloadCoordinator.sessionIdentifier {
+        if identifier == WhisperDownloadCoordinator.identifier {
+            WhisperDownloadCoordinator.shared.registerBackgroundCompletion(completionHandler)
+        } else if identifier == MediaArtifactDownloadCoordinator.sessionIdentifier {
             MediaArtifactBackgroundEvents.shared.register(completionHandler)
         } else if identifier == JobDownloadCoordinator.sessionIdentifier {
             JobDownloadBackgroundEvents.shared.register(completionHandler)

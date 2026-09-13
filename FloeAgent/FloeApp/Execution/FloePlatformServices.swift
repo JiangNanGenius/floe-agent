@@ -168,7 +168,7 @@ final class FloePlatformServices: @unchecked Sendable {
                     FloeShellWrite(stderr, "\(name): no workspace is attached\n")
                     return 2
                 }
-                var userArguments = Array(arguments.dropFirst())
+                let userArguments = Array(arguments.dropFirst())
                 let entry: String?
                 if name == "node" {
                     // The persistent host parses Node's CLI options. Passing
@@ -185,11 +185,23 @@ final class FloePlatformServices: @unchecked Sendable {
                     containerRoot: context.environment?.writableLayerURL ?? context.rootURL,
                     workspaceRoot: context.rootURL
                 )
+                var stdin: String?
+                if let input = FloeShellCommandRegistry.input, !context.interactiveSession, !input.isTerminal,
+                   !["-v", "--version", "--help", "-h"].contains(userArguments.first ?? "") {
+                    guard let value = await input.readAsync(cancellation: context.cancellation) else {
+                        if context.cancellation.isCancelled { return 130 }
+                        FloeShellWrite(stderr, "\(name): stdin exceeds 256 KiB or could not be read\n")
+                        return 2
+                    }
+                    stdin = value
+                }
                 let request = NodeRunRequest(
                     entryScript: entry,
                     arguments: userArguments,
                     workingDirectory: context.workingDirectory,
-                    environment: environment.merging(context.environment?.variables ?? [:]) { _, resolved in resolved },
+                    environment: environment.merging(context.environment?.variables ?? [:]) { _, resolved in resolved }
+                        .merging(context.shellVariables) { _, shell in shell },
+                    stdin: stdin,
                     timeout: 300,
                     maxOutputBytes: 256 * 1024
                 )
