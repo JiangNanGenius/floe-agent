@@ -2,6 +2,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import SwiftUI
 import Testing
 @testable import FloeApp
 
@@ -62,6 +63,26 @@ struct HomeChatSeparationTests {
         #expect(router.selection == .more)
         #expect(router.sidebarSelection == .more(.providers))
         #expect(router.morePath == [.providers])
+    }
+
+    @Test("Browser tool presentation and dismissal preserve the user's sidebar choice")
+    @MainActor
+    func browserPreservesSidebarVisibility() {
+        let router = AppRouter()
+        let conversation = UUID()
+        router.openConversation(conversation)
+        for visibility in [NavigationSplitViewVisibility.detailOnly, .doubleColumn] {
+            router.columnVisibility = visibility
+            router.showInspector(.browser)
+            #expect(router.inspectorRoute?.content == .browser)
+            #expect(router.inspectorRoute?.conversationID == conversation)
+            #expect(router.columnVisibility == visibility)
+            router.showInspector(.workspaceFiles)
+            #expect(router.columnVisibility == visibility)
+            router.hideInspector()
+            #expect(router.inspectorRoute == nil)
+            #expect(router.columnVisibility == visibility)
+        }
     }
 
     @Test("Deleted conversation selection reconciles to a fresh draft")

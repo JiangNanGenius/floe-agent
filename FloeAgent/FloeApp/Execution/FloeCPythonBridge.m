@@ -16,6 +16,12 @@ static NSString * const FloePythonErrorDomain = @"org.floeagent.python";
 // importable during ordinary runs.
 static _Thread_local int FloeAllowsPackageInstaller = 0;
 static int FloeAuditHookInstalled = 0;
+static _Thread_local void *FloePythonCancellationContext;
+static PyObject *FloePythonIsCancelled(PyObject *self, PyObject *args) {
+    BOOL (^cancel)(void) = (__bridge BOOL (^)(void))FloePythonCancellationContext;
+    return PyBool_FromLong(cancel && cancel());
+}
+static PyMethodDef FloePythonCancellationMethod = {"_floe_is_cancelled", FloePythonIsCancelled, METH_NOARGS, NULL};
 
 static int FloePythonAuditHook(const char *event, PyObject *args, void *userData) {
     (void)userData;
@@ -227,7 +233,8 @@ static BOOL FloeEnsurePython(NSError **error) {
                                 contextJSON:(NSString *)contextJSON
                                      timeout:(NSTimeInterval)timeout
                               maxOutputBytes:(NSInteger)maxOutputBytes
-                       allowPackageInstaller:(BOOL)allowPackageInstaller {
+                       allowPackageInstaller:(BOOL)allowPackageInstaller
+                                 shouldCancel:(BOOL (^)(void))shouldCancel {
 #if !FLOE_HAS_CPYTHON
     return @{ @"status": @"exception", @"error": @"Python.xcframework is not linked", @"stdout": @"" };
 #else
@@ -241,8 +248,12 @@ static BOOL FloeEnsurePython(NSError **error) {
     CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     PyGILState_STATE gil = PyGILState_Ensure();
     FloeAllowsPackageInstaller = allowPackageInstaller ? 1 : 0;
+    FloePythonCancellationContext = (__bridge void *)shouldCancel;
     PyObject *globals = PyDict_New();
     PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+    PyObject *isCancelled = PyCFunction_New(&FloePythonCancellationMethod, NULL);
+    PyDict_SetItemString(globals, "_floe_is_cancelled", isCancelled);
+    Py_DECREF(isCancelled);
     PyObject *source = PyUnicode_FromString(script.UTF8String);
     PyObject *input = PyUnicode_FromString((inputJSON ?: @"null").UTF8String);
     PyObject *context = PyUnicode_FromString((contextJSON ?: @"{}").UTF8String);
@@ -271,9 +282,17 @@ static BOOL FloeEnsurePython(NSError **error) {
         "_floe_budget=_FloeBudget(_floe_cap); _floe_out=_FloeSink(_floe_budget); _floe_err=_FloeSink(_floe_budget)\n"
         "_floe_old_out,_floe_old_err=_sys.stdout,_sys.stderr\n"
         "_floe_deadline=_time.monotonic()+_floe_timeout\n"
+        "_floe_interrupted=False\n"
         "def _floe_trace(frame,event,arg):\n"
-        " if _time.monotonic()>_floe_deadline: raise TimeoutError('Local Python time limit exceeded')\n"
+        " global _floe_interrupted\n"
+        " if _floe_interrupted: return _floe_trace\n"
+        " if _floe_is_cancelled():\n"
+        "  _floe_interrupted=True; raise InterruptedError('Local Python cancelled')\n"
+        " if _time.monotonic()>_floe_deadline:\n"
+        "  _floe_interrupted=True; raise TimeoutError('Local Python time limit exceeded')\n"
         " return _floe_trace\n"
+        "def _floe_profile(frame,event,arg):\n"
+        " if event=='c_return': _floe_trace(frame,event,arg)\n"
         "_floe_status='ok'; _floe_error=''; _floe_printed=None\n"
         "def _floe_printJSON(value):\n"
         " global _floe_printed\n"
@@ -282,7 +301,7 @@ static BOOL FloeEnsurePython(NSError **error) {
         "_floe_cwd=_os.getcwd(); _floe_env=dict(_os.environ); _floe_path=list(_sys.path); _floe_stdin=_sys.stdin; _floe_argv=_sys.argv\n"
         "_floe_search=[p for p in _floe_context.get('environment',{}).get('PYTHONPATH','').split(_os.pathsep) if p]\n"
         "try:\n"
-        " _sys.stdout,_sys.stderr=_floe_out,_floe_err; _sys.settrace(_floe_trace)\n"
+        " _sys.stdout,_sys.stderr=_floe_out,_floe_err; _sys.settrace(_floe_trace); _sys.setprofile(_floe_profile)\n"
         " if _floe_context.get('workingDirectory'): _os.chdir(_floe_context['workingDirectory'])\n"
         " _os.environ.update(_floe_context.get('environment',{}))\n"
         " _sys.path[:]=_floe_search+_floe_path\n"
@@ -295,7 +314,7 @@ static BOOL FloeEnsurePython(NSError **error) {
         "except TimeoutError as exc: _floe_status='timedOut'; _floe_error=str(exc)\n"
         "except BaseException as exc: _floe_status='exception'; _floe_error=''.join(_tb.format_exception_only(type(exc),exc)).strip()\n"
         "finally:\n"
-        " _sys.settrace(None); _sys.stdout,_sys.stderr=_floe_old_out,_floe_old_err\n"
+        " _sys.settrace(None); _sys.setprofile(None); _sys.stdout,_sys.stderr=_floe_old_out,_floe_old_err\n"
         " _sys.stdin=_floe_stdin; _sys.argv=_floe_argv; _sys.path[:]=_floe_path\n"
         " _os.environ.clear(); _os.environ.update(_floe_env); _os.chdir(_floe_cwd)\n"
         " _floe_roots=[_os.path.realpath(p)+_os.sep for p in _floe_search+[_floe_context.get('workingDirectory') or ''] if p]\n"
@@ -307,6 +326,7 @@ static BOOL FloeEnsurePython(NSError **error) {
 
     PyObject *execution = PyRun_String(runner, Py_file_input, globals, globals);
     FloeAllowsPackageInstaller = 0;
+    FloePythonCancellationContext = NULL;
     FloeRemoveInstallerModules();
     NSDictionary *result = nil;
     if (execution) {

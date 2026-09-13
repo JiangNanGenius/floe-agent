@@ -224,7 +224,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "workspace.writeFile", "workspace.applyPatch", "workspace.createDirectory",
             "workspace.moveFile",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
-            "browser.tabs", "remote.connection.status", "vnc.status",
+            "browser.tabs", "browser.panel", "remote.connection.status", "vnc.status",
             "network.scanLAN",
             "ssh.taskStatus", "ssh.bootstrapFloeRemoteAgent",
             "apple.calendar.list", "apple.reminders.list", "apple.maps.search",

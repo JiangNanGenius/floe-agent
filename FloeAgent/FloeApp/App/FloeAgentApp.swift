@@ -295,11 +295,11 @@ struct RootView: View {
         .onReceive(environment.conversationCenter.$conversations) { conversations in
             router.reconcileConversations(Set(conversations.map(\.id)))
         }
-        .onChange(of: environment.browserCenter.presentationRequestID) { _, _ in
-            // Browser and preview tools run outside the view hierarchy. Their
-            // presentation request is projected through the shared router so
-            // the visible WKWebView appears in the current task inspector.
-            router.showInspector(.browser)
+        .onChange(of: environment.browserCenter.presentationRequest) { _, request in
+            guard let request, request.conversationID == router.selectedConversationID else { return }
+            if request.show { router.showInspector(.browser) }
+            else if router.inspectorRoute?.content == .browser,
+                    router.inspectorRoute?.conversationID == request.conversationID { router.hideInspector() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .floeOpenConversation)) { notification in
             if let id = notification.userInfo?["conversationID"] as? UUID {

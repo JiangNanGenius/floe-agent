@@ -140,6 +140,9 @@ enum ToolDiscovery {
         if names.isSuperset(of: ["skill.search", "skill.read"]) {
             lines.append("Guides provide optional workflow help via \(n("skill.search"))/\(n("skill.read")). Known tool calls do not require a guide; reuse a guide already read at the current revision.")
         }
+        if names.contains("browser.panel") {
+            lines.append("Browser tools and local previews do not open the user interface. Only when a concrete interaction needs the user's help, use \(n("browser.panel")) action=requestUser with a clear reason. Routine navigation and progress reporting should remain in the background.")
+        }
         if names.contains("exec.shell") {
             lines.append("\(n("exec.shell")) is the general local execution entry point, with its schema kept available when authorized. Use POSIX shell commands and scripts for file/text processing, loops, pipelines and combining Python or Node operations in the current workspace. Choose shell when it expresses the task naturally; there is no requirement to split a command workflow into many specialized tools. Inspect available commands with command -v before relying on an unfamiliar utility. \(n("shell.open"))/\(n("shell.exchange")) provide persistent sessions when available. Shell calls retain the same permissions and result checks as other tools.")
         }

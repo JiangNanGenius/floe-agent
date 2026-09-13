@@ -10,6 +10,59 @@ import FloeCore
 
 @Suite("FloeApp.FloeBrowserProtocol")
 struct BrowserProtocolTests {
+    @Test("Browser panels open only through an explicit human-interaction request")
+    @MainActor
+    func explicitPanelHandoff() async throws {
+        let center = BrowserSessionCenter()
+        let owner = UUID()
+        center.bind(to: owner)
+        let registry = ToolRunnerRegistry()
+        registerBrowserTools(center: center, registry: registry)
+        let panel = try #require(registry.runner(named: "browser.panel"))
+        let tab = try #require(registry.runner(named: "browser.tab"))
+        let context = ToolContext(runID: UUID(), cancellation: CancellationToken(), conversationID: owner)
+        _ = try await tab.execute(argumentsJSON: Data(#"{"action":"create"}"#.utf8), context: context)
+        #expect(center.presentationRequest == nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await panel.execute(argumentsJSON: Data(#"{"action":"requestUser"}"#.utf8), context: context)
+        }
+        #expect(center.presentationRequest == nil)
+        let result = try await panel.execute(argumentsJSON: Data(#"{"action":"requestUser","reason":"请完成网页登录，然后交还控制权。"}"#.utf8), context: context)
+        #expect(result.requiresUserAction)
+        #expect(center.presentationRequest?.show == true)
+        #expect(center.presentationRequest?.conversationID == owner)
+        #expect(center.isUserControlling)
+        await #expect(throws: (any Error).self) {
+            _ = try await panel.execute(argumentsJSON: Data(#"{"action":"hide"}"#.utf8), context: context)
+        }
+        center.returnToAgent()
+        _ = try await panel.execute(argumentsJSON: Data(#"{"action":"hide"}"#.utf8), context: context)
+        #expect(center.presentationRequest?.show == false)
+        let request = center.presentationRequest
+        let wrongTask = ToolContext(runID: UUID(), cancellation: CancellationToken(), conversationID: UUID())
+        await #expect(throws: (any Error).self) {
+            _ = try await panel.execute(argumentsJSON: Data(#"{"action":"requestUser","reason":"Wrong task"}"#.utf8), context: wrongTask)
+        }
+        #expect(center.presentationRequest == request)
+    }
+
+    @Test("Static preview navigation remains in the background")
+    @MainActor
+    func previewDoesNotOpenPanel() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<html><body>Preview</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let browser = BrowserSessionCenter()
+        browser.bind(to: UUID())
+        let preview = LocalPreviewCoordinator(browser: browser)
+        defer { _ = preview.stop() }
+        _ = try await preview.start(root: root, relativeRoot: nil, entry: nil)
+        #expect(browser.presentationRequest == nil)
+        _ = try await preview.reload()
+        #expect(browser.presentationRequest == nil)
+    }
+
     @Test("Tab management is callable through the same registry advertised to models")
     @MainActor
     func registeredTabLifecycle() async throws {

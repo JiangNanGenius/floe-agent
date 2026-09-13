@@ -42,7 +42,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     @Published private(set) var activeTabID: UUID?
     @Published private(set) var isUserControlling = false
     @Published var addressText = ""
-    @Published private(set) var presentationRequestID = UUID()
+    struct PanelRequest: Equatable {
+        let id = UUID()
+        let conversationID: UUID
+        let show: Bool
+    }
+    @Published private(set) var presentationRequest: PanelRequest?
     @Published private(set) var surfaceState: SurfaceState = .unbound
 
     private struct TaskSession {
@@ -230,7 +235,23 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         isUserControlling = false
         surfaceState = .ready
     }
-    func requestPresentation() { presentationRequestID = UUID() }
+    func requestUserInteraction(reason: String, tabID: UUID?) throws {
+        guard let conversationID else { throw FloeError.validationFailed("No task browser is active") }
+        if let tabID {
+            guard tabs.contains(where: { $0.id == tabID }) else { throw FloeError.notFound("Unknown browser tab") }
+            guard !isUserControlling || activeTabID == tabID else { throw FloeError.validationFailed("The user controls the current tab") }
+            activate(tabID)
+        }
+        isUserControlling = true
+        surfaceState = .needsUser(reason)
+        presentationRequest = PanelRequest(conversationID: conversationID, show: true)
+    }
+
+    func requestPanelDismissal() throws {
+        guard let conversationID else { throw FloeError.validationFailed("No task browser is active") }
+        guard !isUserControlling else { throw FloeError.validationFailed("Wait for the user to return browser control before closing their panel") }
+        presentationRequest = PanelRequest(conversationID: conversationID, show: false)
+    }
 
     func execute(_ command: BrowserCommand) async -> BrowserResult {
         guard command.version == 1 else {

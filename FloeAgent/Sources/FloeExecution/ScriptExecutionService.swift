@@ -8,11 +8,13 @@ import FloeTools
 
 /// Invocation-local CPython state, restored when the interpreter finishes.
 public struct PythonExecutionContext: Sendable, Codable {
+    public var environmentID: String?
     public var workingDirectory: String?
     public var environment: [String: String]
     public var standardInput: String?
     public var arguments: [String]?
-    public init(workingDirectory: String? = nil, environment: [String: String] = [:], standardInput: String? = nil, arguments: [String]? = nil) {
+    public init(environmentID: String? = nil, workingDirectory: String? = nil, environment: [String: String] = [:], standardInput: String? = nil, arguments: [String]? = nil) {
+        self.environmentID = environmentID
         self.workingDirectory = workingDirectory; self.environment = environment
         self.standardInput = standardInput; self.arguments = arguments
     }

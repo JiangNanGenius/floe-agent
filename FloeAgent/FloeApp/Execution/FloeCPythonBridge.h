@@ -13,7 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
                                  contextJSON:(nullable NSString *)contextJSON
                                       timeout:(NSTimeInterval)timeout
                                maxOutputBytes:(NSInteger)maxOutputBytes
-                        allowPackageInstaller:(BOOL)allowPackageInstaller;
+                        allowPackageInstaller:(BOOL)allowPackageInstaller
+                                 shouldCancel:(BOOL (^ _Nullable)(void))shouldCancel;
 
 @end
 

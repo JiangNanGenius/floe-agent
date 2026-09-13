@@ -28,6 +28,7 @@ private struct CPythonBridgeResponse: Sendable {
 private enum CPythonRaceResult: Sendable {
     case response(CPythonBridgeResponse)
     case timedOut(Int)
+    case cancelled
 }
 
 /// First-writer-wins handoff between the interpreter worker and the wall-clock
@@ -54,6 +55,18 @@ private actor CPythonRaceGate {
 /// Objective-C bridge's property-list response to Floe's execution contract.
 actor CPythonLocalRuntime {
     static let shared = CPythonLocalRuntime()
+    private static let activeLock = NSLock()
+    nonisolated(unsafe) private static var activeByEnvironment: [String: Int] = [:]
+    nonisolated static func hasActiveWork(environmentID: String) -> Bool {
+        activeLock.withLock { activeByEnvironment[environmentID, default: 0] > 0 }
+    }
+    nonisolated private static func track(_ id: String?, delta: Int) {
+        guard let id else { return }
+        activeLock.withLock {
+            let count = activeByEnvironment[id, default: 0] + delta
+            if count > 0 { activeByEnvironment[id] = count } else { activeByEnvironment.removeValue(forKey: id) }
+        }
+    }
     private static let interpreterQueue = DispatchQueue(label: "org.floeagent.cpython", qos: .userInitiated)
 
     func version() -> String? {
@@ -71,7 +84,9 @@ actor CPythonLocalRuntime {
         let timeout = max(0.05, min(request.timeout, 600))
         let contextJSON = request.pythonContext.flatMap { try? JSONEncoder().encode($0) }.map { String(decoding: $0, as: UTF8.self) }
         let deadline = Date().addingTimeInterval(timeout)
+        Self.track(request.pythonContext?.environmentID, delta: 1)
         Self.interpreterQueue.async {
+            defer { Self.track(request.pythonContext?.environmentID, delta: -1) }
             guard Date() < deadline else {
                 Task { await gate.resolve(.timedOut(Int(timeout * 1_000))) }; return
             }
@@ -83,19 +98,25 @@ actor CPythonLocalRuntime {
                 request.script,
                 inputJSON: request.inputJSON,
                 contextJSON: contextJSON,
-                timeout: timeout,
+                timeout: max(0.05, deadline.timeIntervalSinceNow),
                 maxOutputBytes: request.maxOutputBytes,
-                allowPackageInstaller: request.allowsManagedPackageInstaller
+                allowPackageInstaller: request.allowsManagedPackageInstaller,
+                shouldCancel: { cancellation?.isCancelled == true }
             )
             let response = CPythonBridgeResponse(raw)
             Task { await gate.resolve(.response(response)) }
         }
-        Task.detached {
-            try? await Task.sleep(for: .seconds(timeout))
-            await gate.resolve(.timedOut(Int(timeout * 1_000)))
+        let watcher = Task.detached {
+            while !Task.isCancelled && Date() < deadline {
+                if cancellation?.isCancelled == true { await gate.resolve(.cancelled); return }
+                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+            }
+            if !Task.isCancelled { await gate.resolve(.timedOut(Int(timeout * 1_000))) }
         }
+        defer { watcher.cancel() }
         let raced = await gate.wait()
         if cancellation?.isCancelled == true { return .cancelled }
+        if case .cancelled = raced { return .cancelled }
         guard case .response(let response) = raced else {
             if case .timedOut(let afterMs) = raced {
                 return .timedOut(afterMs: afterMs, partialStdout: "")

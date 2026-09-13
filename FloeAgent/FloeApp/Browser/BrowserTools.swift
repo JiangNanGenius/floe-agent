@@ -56,6 +56,46 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
     }
 }
 
+private struct BrowserPanelTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let action: String
+        let reason: String?
+        let tabID: UUID?
+    }
+    static let name = "browser.panel"
+    static let toolDescription = "Browser navigation and previews run without opening the user's panel. Only when human interaction is necessary (login, verification, file selection or an explicit user interaction request), call requestUser with a concise reason explaining what the user must do. It opens this task's browser panel, hands control to the user and pauses automation. Do not use it for ordinary navigation or progress display. hide closes only the browser panel after the user has returned control; it never changes the main navigation sidebar."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["requestUser","hide"]},"reason":{"type":"string","maxLength":500},"tabID":{"type":"string","format":"uuid"}},"required":["action"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+    func validate(_ args: Arguments) throws {
+        guard ["requestUser", "hide"].contains(args.action) else { throw FloeError.validationFailed("Unknown browser panel action") }
+        if args.action == "requestUser" {
+            guard let reason = args.reason?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty, reason.count <= 500 else {
+                throw FloeError.validationFailed("Explain the required human interaction in 1–500 characters")
+            }
+        } else if args.tabID != nil || args.reason != nil {
+            throw FloeError.validationFailed("hide does not accept a tab or interaction reason")
+        }
+    }
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        try validate(args)
+        guard let center = environment.center else { throw FloeError.invalidConfiguration("Browser is unavailable") }
+        if let owner = context.conversationID, center.conversationID != owner {
+            throw FloeError.validationFailed("This browser belongs to another task")
+        }
+        if args.action == "requestUser" {
+            let reason = args.reason!.trimmingCharacters(in: .whitespacesAndNewlines)
+            try center.requestUserInteraction(reason: reason, tabID: args.tabID)
+            return ToolExecutionOutput(summary: "Waiting for user: " + reason, fullOutputSHA256: FloeDigest.sha256Hex(Data(reason.utf8)), requiresUserAction: true)
+        }
+        try center.requestPanelDismissal()
+        return ToolExecutionOutput(digesting: "Browser panel closed; sidebar preference retained")
+    }
+}
+
 private struct BrowserTabsTool: AgentTool {
     struct Arguments: Decodable, Sendable {}
     static let name = "browser.tabs"
@@ -180,7 +220,7 @@ private struct BrowserWaitTool: AgentTool {
 private struct BrowserNavigateTool: AgentTool {
     struct Arguments: Decodable, Sendable { let url: String; let tabID: UUID? }
     static let name = "browser.navigate"
-    static let toolDescription = "Open an http or https URL in Floe's visible browser"
+    static let toolDescription = "Navigate this task's browser to an http or https URL without opening the user's panel. Use browser.panel requestUser only for a required human interaction"
     static let parametersJSON = #"{"type":"object","properties":{"url":{"type":"string"},"tabID":{"type":"string"}},"required":["url"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.networkAccess]
     static let isSideEffecting = false
@@ -372,6 +412,8 @@ private struct BrowserScrollTool: AgentTool {
 
 @MainActor
 func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegistry = .shared) {
+    ToolCatalog.register(BrowserPanelTool.self)
+    registry.register(BrowserPanelTool(environment: BrowserToolEnvironment(center: center)))
     ToolCatalog.register(BrowserTabsTool.self)
     ToolCatalog.register(BrowserTabTool.self)
     registry.register(BrowserTabsTool(environment: BrowserToolEnvironment(center: center)))

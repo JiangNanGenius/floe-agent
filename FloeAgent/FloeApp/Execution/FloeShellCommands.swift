@@ -372,7 +372,7 @@ enum FloeShellCommands {
             """
             let variables = (context.environment?.variables ?? [:]).merging(context.shellVariables) { _, value in value }
             let request = ScriptExecutionRequest(script: wrapper, timeout: 30, maxOutputBytes: 256 * 1024,
-                pythonContext: .init(workingDirectory: context.workingDirectory.path, environment: variables,
+                pythonContext: .init(environmentID: context.environment?.id, workingDirectory: context.workingDirectory.path, environment: variables,
                     standardInput: (arguments.count == 1 || arguments[1] == "-") ? "" : standardInput, arguments: argv))
             let outcome = await python.run(request, cancellation: registry.context?.cancellation)
             switch outcome {

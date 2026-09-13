@@ -7,6 +7,9 @@ This branch implements the September 14 feedback plan. It is not a release or a 
 - Remove the app-level 100-tool-call cap; preserve runtime no-progress, per-call timeout and output protections.
 - Preserve nonzero tool exit codes as failed tool and background-job results.
 - Reconcile text/vision capabilities with persisted auxiliary-use flags without requiring a re-save.
+- Add `browser.panel` requestUser/hide: ordinary navigation and previews stay in the background; an explicit reason hands control to the user and pauses automation. Hide cannot interrupt active user control or close another task’s panel.
+- Keep browser/tool inspector presentation and dismissal independent of the main sidebar visibility, preserving the user choice.
+- Track queued/running CPython work by environment until native completion; cancel trace/profile checkpoints after native calls and skip expired queued scripts.
 - Fold prior timeline groups on the next group; reserve two lines for reasoning previews.
 - Show “等待模型响应” before response content, without a redundant thinking row beside reasoning.
 - Notes library grid and document full-screen route; eliminate simultaneous Office preview/editor hosts and await Notes commit before dismissing.

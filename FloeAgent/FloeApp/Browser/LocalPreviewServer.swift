@@ -259,7 +259,6 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         server = started.0
         session = started.1
         activeURL = started.1.url
-        browser.requestPresentation()
         let result = await browser.execute(BrowserCommand(
             sessionID: browser.sessionID,
             action: .navigate(url: started.1.url.absoluteString)
@@ -275,7 +274,6 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
 
     func reload() async throws -> ToolExecutionOutput {
         guard let browser, session != nil else { throw FloeError.notFound("No preview is active") }
-        browser.requestPresentation()
         _ = await browser.execute(BrowserCommand(sessionID: browser.sessionID, action: .reload))
         return ToolExecutionOutput(summary: "Preview reloaded", fullOutputSHA256: "")
     }
@@ -292,7 +290,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
 private struct PreviewStartTool: AgentTool {
     struct Arguments: Decodable, Sendable { let root: String?; let entry: String? }
     static let name = "preview.start"
-    static let toolDescription = "Serve static files from the current task workspace and open them in Floe's visible browser. root is a workspace-relative directory (a file path is accepted; its parent is served with that file as the entry); entry is relative to root and defaults to index.html/index.htm/public/index.html/dist/index.html/build/index.html or the only HTML file in the directory."
+    static let toolDescription = "Serve static files from the current task workspace in its browser session without opening the user's panel. Use browser.panel requestUser only if human interaction is necessary. root is a workspace-relative directory (a file path is accepted; its parent is served with that file as the entry); entry is relative to root and defaults to index.html/index.htm/public/index.html/dist/index.html/build/index.html or the only HTML file in the directory."
     static let parametersJSON = #"{"type":"object","properties":{"root":{"type":"string","description":"Workspace-relative directory to serve; a file path serves its parent with that file as entry"},"entry":{"type":"string","description":"Entry file relative to root; defaults to common index names or the only HTML file"}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = false

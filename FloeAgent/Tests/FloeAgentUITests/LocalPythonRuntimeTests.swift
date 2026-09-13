@@ -2,10 +2,42 @@
 import Foundation
 import Testing
 import FloeExecution
+import FloeTools
 @testable import FloeApp
 
 @Suite("FloeApp.BundledPython", .serialized)
 struct LocalPythonRuntimeTests {
+    @Test("Cancelled Python keeps its environment lease and expired queued scripts never run")
+    func cancellationAndQueuedDeadline() async throws {
+        let service = try #require(CPythonServiceFactory.make())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let token = CancellationToken()
+        let id = UUID().uuidString
+        let task = Task {
+            await service.run(.init(script: "from pathlib import Path; import time; Path('started').write_text('yes'); time.sleep(2); Path('late').write_text('bad')", timeout: 10,
+                pythonContext: .init(environmentID: id, workingDirectory: root.path)), cancellation: token)
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path) && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path))
+        token.cancel()
+        #expect(await task.value == .cancelled)
+        #expect(CPythonLocalRuntime.hasActiveWork(environmentID: id))
+        let queued = await service.run(.init(script: "from pathlib import Path; Path('queued-late').write_text('bad')", timeout: 0.05,
+            pythonContext: .init(environmentID: id, workingDirectory: root.path)), cancellation: nil)
+        guard case .timedOut = queued else { Issue.record("Queued work ignored its deadline: \(queued)"); return }
+        while CPythonLocalRuntime.hasActiveWork(environmentID: id) && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(!CPythonLocalRuntime.hasActiveWork(environmentID: id))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("late").path))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("queued-late").path))
+    }
+
     @Test("Python execution restores cwd, imports, environment and stdin between projects")
     func projectExecutionScope() async throws {
         let service = try #require(CPythonServiceFactory.make())

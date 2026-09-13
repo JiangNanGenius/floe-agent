@@ -28,7 +28,7 @@ public struct ManagedPythonInstallService: Sendable {
         var variables = environment.variables
         variables["FLOE_PYTHON_PACKAGE_TARGET"] = environment.writableLayerURL.appendingPathComponent("usr/lib/floe-python/site-packages").path
         variables["FLOE_PYTHON_WRITABLE_LAYER"] = environment.writableLayerURL.path
-        return .init(environment: variables)
+        return .init(environmentID: environment.id, environment: variables)
     }
 
     /// Builds the installer program that runs inside the managed CPython

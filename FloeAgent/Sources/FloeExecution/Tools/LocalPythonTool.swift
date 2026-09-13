@@ -184,7 +184,7 @@ public struct LocalPythonTool: AgentTool {
             inputJSON: args.inputJSON,
             timeout: min(args.timeout ?? Self.defaultTimeout, timeoutCeiling),
             maxOutputBytes: min(args.maxOutputBytes ?? Self.defaultMaxOutputBytes, Self.maxOutputBytesCap),
-            pythonContext: .init(workingDirectory: context.workspaceRootURL?.path, environment: context.environment?.variables ?? [:])
+            pythonContext: .init(environmentID: context.environment?.id, workingDirectory: context.workspaceRootURL?.path, environment: context.environment?.variables ?? [:])
         )
         let outcome = await service.run(request, cancellation: context.cancellation)
         switch outcome {

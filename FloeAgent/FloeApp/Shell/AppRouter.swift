@@ -172,7 +172,7 @@ final class AppRouter: ObservableObject {
         set { setWorkbenchPath(newValue) }
     }
 
-    // MARK: - Inspector (iPad third column / iPhone sheet)
+    // MARK: - Inspector (iPad trailing pane / iPhone sheet)
 
     /// What the inspector column/sheet should display.
     enum InspectorContent: String, Identifiable, Hashable, Sendable {
@@ -192,8 +192,8 @@ final class AppRouter: ObservableObject {
         var id: String { "\(content.rawValue).\(conversationID.uuidString)" }
     }
 
-    /// Requested inspector content. Non-nil means "show the inspector":
-    /// iPad reveals the third column on demand, iPhone presents a sheet.
+    /// The inspector is a trailing pane inside the stable iPad detail column,
+    /// or a sheet on iPhone. Its route is independent of sidebar visibility.
     @Published var inspectorRoute: InspectorRoute?
     @Published var presentedSettings = false
 
@@ -201,19 +201,15 @@ final class AppRouter: ObservableObject {
     /// this; FileInspectorView reads the content).
     var inspectorVisible: Bool { inspectorRoute != nil }
 
-    /// Opens the inspector with the given content (iPad: third column;
-    /// iPhone: sheet — presentation chosen by the shell).
+    /// Browser/tool presentation must retain the user's sidebar choice.
     func showInspector(_ content: InspectorContent) {
         guard let conversationID = selectedConversationID else { return }
         inspectorRoute = InspectorRoute(content: content, conversationID: conversationID)
-        columnVisibility = .all
     }
 
-    /// Dismisses the inspector; the iPad third column collapses instead
-    /// of leaving an empty placeholder behind.
+    /// Close only the inspector; do not reopen a collapsed sidebar.
     func hideInspector() {
         inspectorRoute = nil
-        columnVisibility = .doubleColumn
     }
 
     // MARK: - Background policy
