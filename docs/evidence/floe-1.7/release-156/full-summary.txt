@@ -1,0 +1,24 @@
+{
+  "exitCode": 0,
+  "reason": "exited",
+  "elapsedSeconds": 106.489,
+  "testsStarted": true
+}
+✔ Test run with 58 tests in 4 suites passed after 0.278 seconds.
+✔ Test run with 17 tests in 3 suites passed after 3.018 seconds.
+✔ Test run with 40 tests in 5 suites passed after 0.036 seconds.
+✔ Test run with 13 tests in 5 suites passed after 0.348 seconds.
+✔ Test run with 40 tests in 4 suites passed after 0.124 seconds.
+✔ Test run with 83 tests in 11 suites passed after 0.251 seconds.
+✔ Test run with 8 tests in 2 suites passed after 0.016 seconds.
+✔ Test run with 97 tests in 9 suites passed after 0.196 seconds.
+✔ Test run with 131 tests in 29 suites passed after 6.191 seconds.
+✔ Test run with 9 tests in 2 suites passed after 0.007 seconds.
+✔ Test run with 29 tests in 1 suite passed after 0.180 seconds.
+✔ Test run with 40 tests in 3 suites passed after 0.331 seconds.
+✔ Test run with 17 tests in 3 suites passed after 0.195 seconds.
+✔ Test run with 4 tests in 2 suites passed after 0.061 seconds.
+✔ Test run with 151 tests in 27 suites passed after 2.888 seconds.
+✔ Test run with 42 tests in 8 suites passed after 0.190 seconds.
+✔ Test run with 116 tests in 17 suites passed after 1.918 seconds.
+✔ Test run with 257 tests in 26 suites passed after 2.111 seconds.

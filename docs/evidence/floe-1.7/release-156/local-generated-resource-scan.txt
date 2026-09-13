@@ -1,0 +1,5 @@
+Scope: local FloeAgent/FloeApp/Resources generated resources.
+Tool: gitleaks dir --redact. Exit code: 0.
+9:03PM INF scanned ~21693104 bytes (21.69 MB) in 12.3s
+9:03PM INF no leaks found
+This is an early resource check; the tagged cloud application scan remains required.

@@ -1,0 +1,7 @@
+{
+  "exitCode": 0,
+  "reason": "exited",
+  "elapsedSeconds": 12.307,
+  "testsStarted": true
+}
+✔ Test run with 12 tests in 1 suite passed after 0.538 seconds.
