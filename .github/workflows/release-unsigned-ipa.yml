@@ -10,6 +10,11 @@ on:
         description: Existing SemVer tag to validate and build
         required: true
         type: string
+      recover_build_156:
+        description: Retry only distribution of qualified immutable build 156
+        required: false
+        default: false
+        type: boolean
       publish:
         description: Publish the draft prerelease after validation
         required: true
@@ -24,7 +29,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  recover-testflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/testflight-recovery.yml
+    secrets: inherit
+
   build-verify-release:
+    if: ${{ !inputs.recover_build_156 }}
     # Verify the complete iOS 27 source path here. The upload job below
     # separately rebuilds this exact tag with the App Store accepted SDK.
     runs-on: xcode-27

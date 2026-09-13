@@ -1,7 +1,7 @@
 # Distribution-only recovery of immutable build 156. Successful source tests are reused explicitly.
 name: Resume verified TestFlight upload
 'on':
-  workflow_dispatch: {}
+  workflow_call: {}
 permissions:
   contents: read
   actions: read
