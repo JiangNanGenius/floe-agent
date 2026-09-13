@@ -3,13 +3,21 @@
   'use strict';
   let map, documentID, revision, applying = false, pending = false;
   const ids = new Map();
-  let fitScheduled = false;
-  const fitViewport = () => {
+  let fitScheduled = false, needsFit = false;
+  const scheduleLayout = (fit = false) => {
+    needsFit ||= fit;
     if (fitScheduled) return;
     fitScheduled = true;
-    const fit = () => { fitScheduled = false; map?.scaleFit?.(); };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fit);
-    else fit();
+    const update = () => {
+      fitScheduled = false;
+      // CSS measures the tree from real topic/image sizes. Redraw edges only:
+      // rebuilding nodes here would discard the active text editor and selection.
+      map?.linkDiv?.();
+      if (needsFit) map?.scaleFit?.();
+      needsFit = false;
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(update);
+    else update();
   };
   const uuid = id => {
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id))) return id;
@@ -48,7 +56,8 @@
     send({type:'edit', documentID, revision, nodes, connections, direction:data.direction ?? 2, summaries});
   }
   window.floeRender = payload => {
-    const selection = (map?.currentNodes || []).map(element => uuid(element.nodeObj.id));
+    const changedDocument = documentID !== payload.document.id;
+    const selection = (changedDocument ? [] : map?.currentNodes || []).map(element => uuid(element.nodeObj.id));
     applying = true; pending = false; ids.clear();
     try {
     documentID = payload.document.id; revision = payload.document.revision;
@@ -73,12 +82,16 @@
         }},newTopicName:'新主题',markdown:escapeText,
         theme:payload.dark ? Engine.DARK_THEME : Engine.THEME});
       instance.init(data); map = instance;
-      fitViewport();
+      scheduleLayout(true);
       if (typeof ResizeObserver === 'function') {
-        new ResizeObserver(fitViewport).observe(document.querySelector('#map'));
+        new ResizeObserver(() => scheduleLayout(true)).observe(document.querySelector('#map'));
+        // Topic dimensions change after image decode, wrapping, folding, or edits.
+        // Observe the tree, not its transformed viewport (zoom must not recurse).
+        new ResizeObserver(() => scheduleLayout()).observe(map.nodes);
       }
-      map.bus.addListener('operation', operation => { if (operation.name !== 'beginEdit') commit(); });
-      map.bus.addListener('expandNode', commit);
+      map.bus.addListener('operation', operation => { if (operation.name !== 'beginEdit') { scheduleLayout(); commit(); } });
+      map.bus.addListener('expandNode', () => { scheduleLayout(); commit(); });
+      document.querySelector('#map').addEventListener('load', () => scheduleLayout(), true);
       const reportSelection = () => send({type:'selection',documentID,revision,nodeID:map.currentNodes[0] ? uuid(map.currentNodes[0].nodeObj.id) : null});
       map.bus.addListener('selectNodes', reportSelection);
       map.bus.addListener('unselectNodes', reportSelection);
@@ -89,10 +102,13 @@
         }
       },true);
     } else {
+      // refresh(data) in the pinned engine does not apply data.direction.
+      map.direction = data.direction;
       map.refresh(data); map.editable = true;
       map.changeTheme(payload.dark ? MindElixir.default.DARK_THEME : MindElixir.default.THEME);
       const elements = selection.filter(id => lookup.has(id)).flatMap(id => { try { return [map.findEle(id)]; } catch { return []; } });
       if (elements.length) map.selectNodes(elements);
+      scheduleLayout(changedDocument);
     }
     } finally { applying = false; }
   };

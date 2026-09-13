@@ -189,6 +189,36 @@ import FloeNotes
                 let illustratedSnapshot = XCTAttachment(image: try await web.takeSnapshot(configuration: nil))
                 illustratedSnapshot.name = "Notes mind map component — embedded image"
                 illustratedSnapshot.lifetime = .keepAlways; add(illustratedSnapshot)
+                // Exercise actual WebKit layout, not the mocked bridge: long labels and
+                // images must reserve space, and an Agent direction update must reflow.
+                var expanded = illustrated
+                expanded.revision += 1
+                expanded.mindMapDirection = 3
+                let rootID = expanded.nodes[0].id
+                expanded.nodes += (0..<6).map { index in
+                    MindMapNode(parentID: rootID,
+                                title: "分支 \(index) — Opportunity cost and international economics",
+                                order: index)
+                }
+                let expandedMap = expanded
+                host.rootView = NoteMindMapView(document: expandedMap, onEdit: { _, _ in expandedMap }, onHistory: { _ in }, onError: { XCTFail($0) },
+                                               images: [imageID: try XCTUnwrap(picture.pngData())])
+                let layoutDeadline = Date().addingTimeInterval(10)
+                var arranged = false
+                while Date() < layoutDeadline {
+                    arranged = (try? await web.callAsyncJavaScript("""
+                        const tree = document.querySelector('me-root')?.parentElement;
+                        const topics = Array.from(document.querySelectorAll('me-tpc'));
+                        if (!tree?.classList.contains('down') || topics.length !== 7) return false;
+                        const boxes = topics.map(node => node.getBoundingClientRect());
+                        return boxes.every((a, i) => a.width > 0 && a.height > 0 &&
+                          boxes.every((b, j) => i === j || a.right <= b.left + 1 ||
+                            b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));
+                        """, arguments: [:], in: nil, contentWorld: .page)) as? Bool == true
+                    if arranged { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                XCTAssertTrue(arranged, "Updated image and long-label topics must reflow without overlap")
                 return
             }
             try await Task.sleep(for: .milliseconds(100))
