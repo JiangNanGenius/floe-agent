@@ -24,6 +24,9 @@
 
 ## 当前证据
 
+- `34730524475` 在固定提交 `e57a905` 上云端通过全部 53 项平台测试，含 16 项媒体相关测试、四路并发和实际写入中的取消，约 152 秒含构建。此前 provider/cooperative pool 阻塞在该轮未再发生，记录 `platform-cloud-e57-*`；整包构建和真机验收仍独立进行。
+- `f5ec5bc` 的 SDK 26 双端每端 9 项组件与 1 项 UI 测试通过，但人工检查 iPad 截图发现 PDF 空白、横屏截图不正确；因此不计为显示验收通过。图片保存在 `notes/render-regressions-f5/`。书写层透明叠加已经修正，资格工程补充与主应用一致的横屏声明，并增加真实窗口宽高与截图 PDF 文字 OCR 断言，避免再次仅凭 DOM 存在认定显示正确。
+
 - `34730102365` 在 `f5ec5bc` 仍未通过：云端 SDK 27 beta 6 的 provider 内部重新进入 cooperative executor，外层自定义 actor executor 不能消除阻塞。保留 `media-stall-f5ec/` 采样。现将实际 `copyNextSampleBuffer` 与样本写入整体放入每路独立 GCD worker，单样本缓冲、取消后等待退出；修正后本地 53 项平台测试通过（约 65 秒），记录 `platform-worker-tests.txt`。新的云端执行待确认。
 - PencilKit 书写层改为透明叠加，由页面底图绘制纸张/PDF，避免不透明书写层遮盖课件；本地原生定向编译通过，屏幕级显示待确认。
 

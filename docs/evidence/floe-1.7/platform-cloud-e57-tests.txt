@@ -1,0 +1,575 @@
+Fetching https://github.com/tayloraswift/swift-png
+Fetching https://github.com/royalapplications/CryptoSwift.git
+[1/7557] Fetching swift-png
+[1513/18946] Fetching swift-png, cryptoswift
+Fetched https://github.com/royalapplications/CryptoSwift.git (2.90s)
+Fetched https://github.com/tayloraswift/swift-png (2.90s)
+Fetching https://github.com/ibrahimcetin/SwiftGitX.git
+Fetching https://github.com/apple/swift-nio.git
+[1/1758] Fetching swiftgitx
+[1759/87603] Fetching swiftgitx, swift-nio
+Fetched https://github.com/apple/swift-nio.git (4.49s)
+Fetched https://github.com/ibrahimcetin/SwiftGitX.git (4.49s)
+Fetching https://github.com/orlandos-nl/Citadel.git
+Fetching https://github.com/huggingface/swift-huggingface.git
+[1/2599] Fetching swift-huggingface
+[2600/5091] Fetching swift-huggingface, citadel
+Fetched https://github.com/orlandos-nl/Citadel.git (0.74s)
+Fetched https://github.com/huggingface/swift-huggingface.git (0.74s)
+Fetching https://github.com/tsolomko/SWCompression.git
+Fetching https://github.com/apple/swift-numerics
+[1/18078] Fetching swcompression
+[13560/24711] Fetching swcompression, swift-numerics
+Fetched https://github.com/tsolomko/SWCompression.git (1.30s)
+Fetched https://github.com/apple/swift-numerics (1.30s)
+Fetching https://github.com/migueldeicaza/SwiftTerm.git
+Fetching https://github.com/attaswift/BigInt.git
+[1/4939] Fetching bigint
+[4940/20987] Fetching bigint, swiftterm
+Fetched https://github.com/migueldeicaza/SwiftTerm.git (2.12s)
+Fetched https://github.com/attaswift/BigInt.git (2.12s)
+Fetching https://github.com/huggingface/swift-jinja.git
+Fetching https://github.com/groue/GRDB.swift.git
+[1/1341] Fetching swift-jinja
+[1342/115210] Fetching swift-jinja, grdb.swift
+Fetched https://github.com/groue/GRDB.swift.git (7.48s)
+Fetched https://github.com/huggingface/swift-jinja.git (7.48s)
+Fetching https://github.com/tsolomko/BitByteData
+Fetching https://github.com/mattt/EventSource.git
+[1/3281] Fetching bitbytedata
+[133/3584] Fetching bitbytedata, eventsource
+Fetched https://github.com/mattt/EventSource.git (0.60s)
+Fetched https://github.com/tsolomko/BitByteData (0.60s)
+Fetching https://github.com/ibireme/yyjson.git
+Fetching https://github.com/ibrahimcetin/libgit2.git
+[1/107186] Fetching libgit2
+[8576/112085] Fetching libgit2, yyjson
+Fetched https://github.com/ibireme/yyjson.git (2.84s)
+Fetched https://github.com/ibrahimcetin/libgit2.git (2.84s)
+Fetching https://github.com/apple/swift-atomics.git
+Fetching https://github.com/rarestype/h
+[1/1320] Fetching h
+[120/3195] Fetching h, swift-atomics
+Fetched https://github.com/rarestype/h (0.61s)
+Fetched https://github.com/apple/swift-atomics.git (0.61s)
+Fetching https://github.com/kishikawakatsumi/SMBClient.git
+Fetching https://github.com/apple/swift-collections.git
+[1/2691] Fetching smbclient
+[755/29858] Fetching smbclient, swift-collections
+Fetched https://github.com/apple/swift-collections.git (1.32s)
+Fetched https://github.com/kishikawakatsumi/SMBClient.git (1.32s)
+Fetching https://github.com/apple/swift-log.git
+Fetching https://github.com/apple/swift-asn1.git
+[1/8066] Fetching swift-log
+[8067/10049] Fetching swift-log, swift-asn1
+Fetched https://github.com/apple/swift-log.git (0.95s)
+Fetched https://github.com/apple/swift-asn1.git (0.95s)
+Fetching https://github.com/apple/swift-argument-parser
+Fetching https://github.com/huggingface/swift-transformers.git
+[1/6990] Fetching swift-transformers
+[840/25801] Fetching swift-transformers, swift-argument-parser
+Fetched https://github.com/huggingface/swift-transformers.git (0.90s)
+Fetched https://github.com/apple/swift-argument-parser (0.90s)
+Fetching https://github.com/tayloraswift/swift-jpeg
+Fetching https://github.com/ml-explore/mlx-swift
+[1/4136] Fetching swift-jpeg
+[746/20673] Fetching swift-jpeg, mlx-swift
+Fetched https://github.com/ml-explore/mlx-swift (1.86s)
+Fetched https://github.com/tayloraswift/swift-jpeg (1.86s)
+Fetching https://github.com/swiftlang/swift-syntax.git
+Fetching https://github.com/Wellz26/swift-nio-ssh.git
+[1/2870] Fetching swift-nio-ssh
+[2871/82686] Fetching swift-nio-ssh, swift-syntax
+Fetched https://github.com/Wellz26/swift-nio-ssh.git (3.71s)
+Fetched https://github.com/swiftlang/swift-syntax.git (3.71s)
+Fetching https://github.com/weichsel/ZIPFoundation.git
+Fetching https://github.com/apple/swift-system.git
+[1/6344] Fetching zipfoundation
+[192/13238] Fetching zipfoundation, swift-system
+Fetched https://github.com/apple/swift-system.git (1.06s)
+Fetched https://github.com/weichsel/ZIPFoundation.git (1.06s)
+Fetching https://github.com/ml-explore/mlx-swift-lm.git
+Fetching https://github.com/apple/swift-crypto.git
+[1/18490] Fetching swift-crypto
+[18491/39376] Fetching swift-crypto, mlx-swift-lm
+Fetched https://github.com/apple/swift-crypto.git (3.33s)
+Fetched https://github.com/ml-explore/mlx-swift-lm.git (3.33s)
+Creating working copy for https://github.com/ibrahimcetin/SwiftGitX.git
+Creating working copy for https://github.com/tayloraswift/swift-png
+Creating working copy for https://github.com/royalapplications/CryptoSwift.git
+Working copy of https://github.com/royalapplications/CryptoSwift.git resolved at a59b4d91ebb22011656c830f874fe7152e183a57
+Creating working copy for https://github.com/huggingface/swift-huggingface.git
+Working copy of https://github.com/huggingface/swift-huggingface.git resolved at 0.9.0
+Creating working copy for https://github.com/orlandos-nl/Citadel.git
+Working copy of https://github.com/ibrahimcetin/SwiftGitX.git resolved at 0.4.0
+Creating working copy for https://github.com/apple/swift-numerics
+Working copy of https://github.com/orlandos-nl/Citadel.git resolved at ae8562f895de06ccb86fdb1cbb65fd99c8976e12
+Working copy of https://github.com/tayloraswift/swift-png resolved at 4.5.1
+Creating working copy for https://github.com/tsolomko/SWCompression.git
+Creating working copy for https://github.com/apple/swift-nio.git
+Working copy of https://github.com/apple/swift-numerics resolved at 1.1.1
+Creating working copy for https://github.com/attaswift/BigInt.git
+Working copy of https://github.com/attaswift/BigInt.git resolved at 5.7.0
+Creating working copy for https://github.com/migueldeicaza/SwiftTerm.git
+Working copy of https://github.com/apple/swift-nio.git resolved at 2.88.0
+Creating working copy for https://github.com/groue/GRDB.swift.git
+Working copy of https://github.com/migueldeicaza/SwiftTerm.git resolved at 1.10.0
+Creating working copy for https://github.com/mattt/EventSource.git
+Working copy of https://github.com/mattt/EventSource.git resolved at 1.5.1
+Creating working copy for https://github.com/huggingface/swift-jinja.git
+Working copy of https://github.com/huggingface/swift-jinja.git resolved at 2.4.2
+Creating working copy for https://github.com/tsolomko/BitByteData
+Working copy of https://github.com/tsolomko/BitByteData resolved at 2.1.0
+Creating working copy for https://github.com/ibrahimcetin/libgit2.git
+Working copy of https://github.com/tsolomko/SWCompression.git resolved at 4.9.1
+Creating working copy for https://github.com/ibireme/yyjson.git
+Working copy of https://github.com/ibireme/yyjson.git resolved at 0.12.0
+Creating working copy for https://github.com/rarestype/h
+Working copy of https://github.com/rarestype/h resolved at 1.0.1
+Creating working copy for https://github.com/apple/swift-atomics.git
+Working copy of https://github.com/apple/swift-atomics.git resolved at 1.3.1
+Creating working copy for https://github.com/apple/swift-collections.git
+Working copy of https://github.com/apple/swift-collections.git resolved at 1.6.0
+Creating working copy for https://github.com/apple/swift-log.git
+Working copy of https://github.com/apple/swift-log.git resolved at 1.15.0
+Creating working copy for https://github.com/kishikawakatsumi/SMBClient.git
+Working copy of https://github.com/kishikawakatsumi/SMBClient.git resolved at 0.2.1
+Creating working copy for https://github.com/apple/swift-argument-parser
+Working copy of https://github.com/apple/swift-argument-parser resolved at 1.8.2
+Creating working copy for https://github.com/apple/swift-asn1.git
+Working copy of https://github.com/apple/swift-asn1.git resolved at 1.7.1
+Creating working copy for https://github.com/huggingface/swift-transformers.git
+Working copy of https://github.com/huggingface/swift-transformers.git resolved at 1.3.0
+Creating working copy for https://github.com/ml-explore/mlx-swift
+Working copy of https://github.com/groue/GRDB.swift.git resolved at 7.8.0
+Creating working copy for https://github.com/tayloraswift/swift-jpeg
+Working copy of https://github.com/tayloraswift/swift-jpeg resolved at 2.1.0
+Creating working copy for https://github.com/Wellz26/swift-nio-ssh.git
+Working copy of https://github.com/Wellz26/swift-nio-ssh.git resolved at 0.3.6
+Creating working copy for https://github.com/swiftlang/swift-syntax.git
+Working copy of https://github.com/ibrahimcetin/libgit2.git resolved at 1.9.2
+Creating working copy for https://github.com/apple/swift-system.git
+Working copy of https://github.com/swiftlang/swift-syntax.git resolved at 603.0.2
+Creating working copy for https://github.com/weichsel/ZIPFoundation.git
+Working copy of https://github.com/apple/swift-system.git resolved at 1.8.0
+Creating working copy for https://github.com/ml-explore/mlx-swift-lm.git
+Working copy of https://github.com/weichsel/ZIPFoundation.git resolved at 0.9.20
+Creating working copy for https://github.com/apple/swift-crypto.git
+Working copy of https://github.com/ml-explore/mlx-swift-lm.git resolved at bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57
+Working copy of https://github.com/apple/swift-crypto.git resolved at 3.15.1
+Working copy of https://github.com/ml-explore/mlx-swift resolved at 0.31.4
+warning: 'zipfoundation': /Users/runner/work/floe-agent/floe-agent/FloeAgent/.build/checkouts/ZIPFoundation/Package@swift-5.9.swift:23:61: warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+21 |     name: "ZIPFoundation",
+22 |     platforms: [
+23 |         .macOS(.v10_13), .iOS(.v12), .tvOS(.v12), .watchOS(.v4), .visionOS(.v1)
+   |                                                             `- warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+24 |     ],
+25 |     products: [
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+warning: 'bigint': /Users/runner/work/floe-agent/floe-agent/FloeAgent/.build/checkouts/BigInt/Package.swift:18:19: warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+16 |         .iOS(.v12),
+17 |         .tvOS(.v12),
+18 |         .watchOS(.v4),
+   |                   `- warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+19 |         .macCatalyst(.v13),
+20 |         .visionOS(.v1),
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+Downloading binary artifact https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip
+[0/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (1 KB / 11.1 MB)
+[30/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (3.4 MB / 11.1 MB)
+[32/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (3.7 MB / 11.1 MB)
+[35/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (3.9 MB / 11.1 MB)
+[37/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (4.2 MB / 11.1 MB)
+[40/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (4.5 MB / 11.1 MB)
+[42/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (4.7 MB / 11.1 MB)
+[45/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (5 MB / 11.1 MB)
+[47/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (5.3 MB / 11.1 MB)
+[50/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (5.5 MB / 11.1 MB)
+[52/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (5.8 MB / 11.1 MB)
+[55/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (6.1 MB / 11.1 MB)
+[57/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (6.4 MB / 11.1 MB)
+[59/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (6.6 MB / 11.1 MB)
+[62/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (6.9 MB / 11.1 MB)
+[65/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (7.2 MB / 11.1 MB)
+[67/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (7.5 MB / 11.1 MB)
+[69/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (7.7 MB / 11.1 MB)
+[72/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (8.1 MB / 11.1 MB)
+[75/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (8.4 MB / 11.1 MB)
+[77/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (8.6 MB / 11.1 MB)
+[80/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (8.9 MB / 11.1 MB)
+[82/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (9.2 MB / 11.1 MB)
+[85/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (9.5 MB / 11.1 MB)
+[87/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (9.7 MB / 11.1 MB)
+[90/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (10 MB / 11.1 MB)
+[93/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (10.4 MB / 11.1 MB)
+[96/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (10.6 MB / 11.1 MB)
+[98/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (10.9 MB / 11.1 MB)
+[100/100] Downloading https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (11.1 MB / 11.1 MB)
+Downloaded https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip (1.07s)
+Downloading package prebuilt https://download.swift.org/prebuilts/swift-syntax/603.0.2/swiftlang-6.4.0.33.1-macosx27.0-MacroSupport.zip
+Downloaded https://download.swift.org/prebuilts/swift-syntax/603.0.2/swiftlang-6.4.0.33.1-macosx27.0-MacroSupport.zip (0.12s)
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 775]
+[Planning 620 / 775]
+[Planning deferred tasks]
+[Writing build description]
+[54 / 435] PersistenceTests-product
+[173 / 435] Crypto
+[210 / 435] GRDB_GRDB
+[227 / 435] GRDB_GRDB
+[236 / 435] BitByteData_BitByteData
+[237 / 435]
+[241 / 439] ZIPFoundation
+[247 / 525]
+[252 / 525]
+[256 / 525]
+[259 / 525]
+[263 / 525]
+[270 / 525]
+[275 / 525]
+[277 / 526] GRDB
+[284 / 570]
+[288 / 570]
+[294 / 570]
+[298 / 570]
+[300 / 570]
+[302 / 570]
+[306 / 570]
+[310 / 570]
+[312 / 570]
+[319 / 570]
+[323 / 570]
+[328 / 570]
+[332 / 570]
+[335 / 570]
+[337 / 570]
+[339 / 570]
+[344 / 570]
+[347 / 570]
+[349 / 570]
+[353 / 570] ZIPFoundation
+[355 / 570] BitByteData
+[364 / 570] BitByteData
+[372 / 570] BitByteData
+[380 / 570] GRDB
+[387 / 570] GRDB-product
+[388 / 570] GRDB-product
+[389 / 570] GRDB-product
+[391 / 570] Crypto
+[392 / 570] Crypto
+[393 / 570] Crypto-product
+[394 / 570] FloeCore
+[395 / 570] FloeCore
+[397 / 570] BitByteData-product
+[398 / 570] SWCompression
+[403 / 572] SWCompression
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[406 / 578] SWCompression
+[406 / 616] SWCompression
+[408 / 616] SWCompression
+[416 / 616]
+[420 / 616]
+[423 / 616]
+[426 / 616]
+[429 / 616]
+[430 / 616]
+[434 / 616]
+[436 / 616]
+[438 / 616]
+[439 / 616]
+[441 / 616]
+[443 / 616] SWCompression
+[444 / 616]
+[446 / 616]
+[448 / 616] SWCompression
+[449 / 616] SWCompression
+[451 / 616] SWCompression-product
+[459 / 616] SWCompression
+[461 / 616] GRDB
+[462 / 616] FloeModels
+[464 / 617] BitByteData
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[466 / 621] FloeModels
+[466 / 621] FloeCore
+[468 / 621] FloeModels
+[474 / 621] FloeModels
+[475 / 622]
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[477 / 623] Crypto-product
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[480 / 631] FloeSecurity
+[481 / 631] FloeTools
+[482 / 631] FloeTools
+[494 / 631] FloeTools-product
+[495 / 631] FloeTools-product
+[497 / 631] FloeSecurity
+[497 / 631] FloePersistence
+[498 / 632]
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[500 / 633]
+[501 / 638] BitByteData
+[503 / 638] FloeSkills
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[504 / 642] FloePersistence
+[505 / 642] FloeSkills
+[505 / 642] FloePersistence
+[518 / 642] FloeSkills-product
+[519 / 642] FloeSkills-product
+[520 / 642] SkillHubTests-product
+[522 / 642] SkillHubTests-product
+[528 / 642]
+[532 / 644]
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[535 / 652] FloeEnvironments
+[548 / 652] FloeMedia-product
+[549 / 652] FloeMedia-product
+[550 / 652] MediaTests-product
+[551 / 652] MediaTests-product
+[553 / 652] EnvironmentTests-product
+[559 / 653] FloeModels
+[563 / 653] FloeSkills
+[566 / 654] SkillHubTests-product
+warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Users/runner/work/floe-agent/floe-agent/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:100:13: [1;33mwarning: [1;39mvariable 'record' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+ [0;36m98 |[0;0m             return records[existing.id] ?? existing
+ [0;36m99 |[0;0m         }
+[0;36m100 |[0;0m         var record = ContainerRecord(
+    [0;36m|[0;0m             `- [1;33mwarning: [1;39mvariable 'record' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+[0;36m101 |[0;0m             kind: .project,
+[0;36m102 |[0;0m             ownerID: workspaceID,
+
+/Users/runner/work/floe-agent/floe-agent/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:146:13: [1;33mwarning: [1;39mvariable 'record' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+[0;36m144 |[0;0m             return records[existing.id] ?? existing
+[0;36m145 |[0;0m         }
+[0;36m146 |[0;0m         var record = ContainerRecord(
+    [0;36m|[0;0m             `- [1;33mwarning: [1;39mvariable 'record' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+[0;36m147 |[0;0m             kind: .session,
+[0;36m148 |[0;0m             ownerID: conversationID,
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+[567 / 658] FloeEnvironments
+[573 / 663]
+[574 / 663] FloePackages
+[576 / 663] FloePackages
+[583 / 663] SkillHubTests-product
+[585 / 663] SkillHubTests-product
+[593 / 663] FloeMedia
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Users/runner/work/floe-agent/floe-agent/FloeAgent/Sources/FloePackages/OpenPGP.swift:132:13: [1;33mwarning: [1;39minitialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/no-usage\NoUsage]8;;\]
+[0;36m130 |[0;0m             break
+[0;36m131 |[0;0m         }
+[0;36m132 |[0;0m         let fingerprintData = body.prefix(reader.offset)
+    [0;36m|[0;0m             `- [1;33mwarning: [1;39minitialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/no-usage\NoUsage]8;;\]
+[0;36m133 |[0;0m         let fingerprint: String
+[0;36m134 |[0;0m         if version >= 5 {
+
+/Users/runner/work/floe-agent/floe-agent/FloeAgent/Sources/FloePackages/OpenPGP.swift:566:28: [1;33mwarning: [1;39mno calls to throwing functions occur within 'try' expression[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker\UnnecessaryEffectMarker]8;;\]
+[0;36m564 |[0;0m 
+[0;36m565 |[0;0m     private static func ecdsaDER(from material: Data) -> Data? {
+[0;36m566 |[0;0m         guard var reader = try? Reader(material) else { return nil }
+    [0;36m|[0;0m                            `- [1;33mwarning: [1;39mno calls to throwing functions occur within 'try' expression[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker\UnnecessaryEffectMarker]8;;\]
+[0;36m567 |[0;0m         guard let r = try? mpi(&reader), let s = try? mpi(&reader) else { return nil }
+[0;36m568 |[0;0m         func integer(_ data: Data) -> Data {
+
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+[599 / 664] PersistenceTests-product
+[605 / 665] MediaTests-product
+[612 / 673] PersistenceTests-product
+[613 / 673] MediaTests-product
+[623 / 673] PersistenceTests-product
+[625 / 673] PersistenceTests-product
+[625 / 673] MediaTests-product
+[628 / 673]
+[630 / 674] FloePackages
+[633 / 674]
+[636 / 678] EnvironmentTests-product
+[636 / 678] PersistenceTests-product
+[637 / 678] EnvironmentTests-product
+[641 / 678] EnvironmentTests-product
+[647 / 678] FloePackages-product
+[656 / 679] MediaTests-product
+[658 / 679] PackageTests-product
+[661 / 683] PackageTests-product
+[662 / 683] PackageTests-product
+[669 / 683] PackageTests-product
+[673 / 683] EnvironmentTests-product
+[677 / 683] PackageTests-product
+[679 / 683] PackageTests-product
+Build complete! (57.42 sec)
+Test Suite 'All tests' started at 2026-09-13 01:28:59.671.
+Test Suite 'All tests' passed at 2026-09-13 01:28:59.675.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.004) seconds
+Test Suite 'All tests' started at 2026-09-13 01:28:59.814.
+Test Suite 'All tests' passed at 2026-09-13 01:28:59.815.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'All tests' started at 2026-09-13 01:28:59.949.
+Test Suite 'All tests' passed at 2026-09-13 01:28:59.951.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'All tests' started at 2026-09-13 01:29:00.091.
+Test Suite 'All tests' passed at 2026-09-13 01:29:00.092.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'All tests' started at 2026-09-13 01:29:00.204.
+Test Suite 'All tests' passed at 2026-09-13 01:29:00.205.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 2078
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Signed model catalog and bundled Skills" started.
+◇ Test schemaTwoCatalogVerifiesEveryPublishedPackage() started.
+✔ Test schemaTwoCatalogVerifiesEveryPublishedPackage() passed after 0.003 seconds.
+✔ Suite "Signed model catalog and bundled Skills" passed after 0.004 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.004 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2078
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Job environment persistence" started.
+◇ Suite "Draft Notes launch identity" started.
+◇ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() started.
+◇ Test failedPreflightKeepsDraftIdentityReusableWithoutBlankTask() started.
+◇ Test reservedIdentityCreatesOnceAndCannotReplaceExistingTask() started.
+✔ Test migrationPersistsEnvironmentAndKeepsIdempotentOwner() passed after 0.066 seconds.
+✔ Suite "Job environment persistence" passed after 0.067 seconds.
+✔ Test failedPreflightKeepsDraftIdentityReusableWithoutBlankTask() passed after 0.074 seconds.
+✔ Test reservedIdentityCreatesOnceAndCannotReplaceExistingTask() passed after 0.078 seconds.
+✔ Suite "Draft Notes launch identity" passed after 0.078 seconds.
+✔ Test run with 3 tests in 2 suites passed after 0.078 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2078
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Publisher to client package installation" started.
+◇ Suite "Package integrity" started.
+◇ Suite "Package transaction recovery" started.
+◇ Suite "Package dependency constraints" started.
+◇ Suite "Environment management API" started.
+◇ Test signedInstallUpgradeDependencyAndOwnedRemoval() started.
+◇ Test collisionsScriptsAndLocalEditsFailBeforeMutation() started.
+◇ Test damagedDownloadNeverReachesInstalledState() started.
+◇ Test emptyTrustStoreNeverAcceptsRepository() started.
+◇ Test acceptsGnuPGSignatureAndRejectsTampering() started.
+◇ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() started.
+◇ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() started.
+◇ Test interruptedWriteRestoresOldAndRemovesNewFiles() started.
+◇ Test packagePathsRejectLinksAndTraversal() started.
+◇ Test tarChecksTruncationAndChecksum() started.
+◇ Test recoveryRejectsSymlinkedJournalDirectory() started.
+◇ Test recoveryValidatesAllBackupsBeforeChangingFiles() started.
+◇ Test committedFilesSurviveRecovery() started.
+◇ Test alternativesAndConflictingVersionConstraints() started.
+◇ Test choosesCompatibleVersionAndInstallsDependenciesFirst() started.
+◇ Test explicitRequestUpgradesAndConflictsFail() started.
+◇ Test selectedEnvironmentHoldAndLifecycleNeverAffectOtherProject() started.
+◇ Test inheritedPackagesAreSeparateAndReadOnlyInSelectedSession() started.
+✔ Test damagedDownloadNeverReachesInstalledState() passed after 0.057 seconds.
+✔ Test emptyTrustStoreNeverAcceptsRepository() passed after 0.058 seconds.
+✔ Test acceptsGnuPGSignatureAndRejectsTampering() passed after 0.058 seconds.
+✔ Test releaseExpiryParsesDebianDatesAndRejectsMalformedExpiry() passed after 0.118 seconds.
+✔ Test holdsAreEnvironmentLocalAndSurviveEngineRestart() passed after 0.131 seconds.
+✔ Test interruptedWriteRestoresOldAndRemovesNewFiles() passed after 0.131 seconds.
+✔ Test packagePathsRejectLinksAndTraversal() passed after 0.131 seconds.
+✔ Test tarChecksTruncationAndChecksum() passed after 0.131 seconds.
+✔ Test recoveryRejectsSymlinkedJournalDirectory() passed after 0.131 seconds.
+✔ Test recoveryValidatesAllBackupsBeforeChangingFiles() passed after 0.131 seconds.
+✔ Test committedFilesSurviveRecovery() passed after 0.131 seconds.
+✔ Test alternativesAndConflictingVersionConstraints() passed after 0.099 seconds.
+✔ Test choosesCompatibleVersionAndInstallsDependenciesFirst() passed after 0.099 seconds.
+✔ Test explicitRequestUpgradesAndConflictsFail() passed after 0.099 seconds.
+✔ Test collisionsScriptsAndLocalEditsFailBeforeMutation() passed after 0.131 seconds.
+✔ Test signedInstallUpgradeDependencyAndOwnedRemoval() passed after 0.131 seconds.
+✔ Suite "Package integrity" passed after 0.131 seconds.
+✔ Suite "Package transaction recovery" passed after 0.131 seconds.
+✔ Suite "Package dependency constraints" passed after 0.131 seconds.
+✔ Suite "Publisher to client package installation" passed after 0.131 seconds.
+✔ Test selectedEnvironmentHoldAndLifecycleNeverAffectOtherProject() passed after 0.103 seconds.
+✔ Test inheritedPackagesAreSeparateAndReadOnlyInSelectedSession() passed after 0.108 seconds.
+✔ Suite "Environment management API" passed after 0.146 seconds.
+✔ Test run with 18 tests in 5 suites passed after 0.147 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2078
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Real media exports" started.
+◇ Suite "Bounded audio editing" started.
+◇ Suite "Model artifact readiness and ownership" started.
+◇ Test editsApplyTrimSpeedAndExportSettingsToActualFile() started.
+◇ Test audioConversionAppliesRateAndChannels() started.
+◇ Test cancellingActiveTranscodeJoinsReadersAndPreservesExistingOutput() started.
+◇ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() started.
+◇ Test rejectedAndCancelledExportsPreserveFiles() started.
+◇ Test concurrentTranscodesDrainWithoutBlockingOtherTasks() started.
+◇ Test unsupportedEditCannotReplaceExistingOutput() started.
+◇ Test fullFileInspectionAndRunningCancellationAreBounded() started.
+◇ Test speedChangesAudioAndVideoOnTheSameTimeline() started.
+◇ Test trimFadesAndBothMixGainsReachRealSamples() started.
+◇ Test requestedDimensionsAndFrameRateReachEncodedFile() started.
+◇ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() started.
+◇ Test invalidEditsPreserveFilesAndStayInsideWorkspace() started.
+◇ Test rejectsPendingAndTraversalBeforeDownload() started.
+◇ Test corruptRegistryIsNotOverwrittenByInstall() started.
+◇ Test validatesSizeAndRestoresInstalledStateAfterRestart() started.
+2026-09-13 01:29:00.844 swiftpm-testing-helper[38431:307325] Audio files cannot be non-interleaved. Ignoring setting AVLinearPCMIsNonInterleaved YES.
+IOServiceMatchingfailed for: AppleM2ScalerParavirtDriver
+2026-09-13 01:29:01.304 swiftpm-testing-helper[38431:307325] Audio files cannot be non-interleaved. Ignoring setting AVLinearPCMIsNonInterleaved YES.
+✔ Test unsupportedEditCannotReplaceExistingOutput() passed after 0.587 seconds.
+✔ Test trimFadesAndBothMixGainsReachRealSamples() passed after 0.587 seconds.
+✔ Test rejectsPendingAndTraversalBeforeDownload() passed after 0.587 seconds.
+✔ Test validatesSizeAndRestoresInstalledStateAfterRestart() passed after 0.587 seconds.
+✔ Test corruptRegistryIsNotOverwrittenByInstall() passed after 0.587 seconds.
+✔ Test invalidEditsPreserveFilesAndStayInsideWorkspace() passed after 0.587 seconds.
+✔ Suite "Model artifact readiness and ownership" passed after 0.616 seconds.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.636 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 0.754 seconds.
+✔ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() passed after 1.004 seconds.
+✔ Test speedChangesAudioAndVideoOnTheSameTimeline() passed after 1.402 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 1.894 seconds.
+✔ Test editsApplyTrimSpeedAndExportSettingsToActualFile() passed after 1.913 seconds.
+✔ Test concurrentTranscodesDrainWithoutBlockingOtherTasks() passed after 1.934 seconds.
+✔ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() passed after 1.952 seconds.
+✔ Test cancellingActiveTranscodeJoinsReadersAndPreservesExistingOutput() passed after 2.095 seconds.
+✔ Suite "Real media exports" passed after 2.096 seconds.
+✔ Test fullFileInspectionAndRunningCancellationAreBounded() passed after 3.721 seconds.
+✔ Suite "Bounded audio editing" passed after 3.721 seconds.
+✔ Test run with 16 tests in 3 suites passed after 3.721 seconds.
+◇ Test run started.
+↳ Testing Library Version: 2078
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Environment promotion" started.
+◇ Test missingFileAndPathEscapeNeverMutateEitherLayer() started.
+◇ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() started.
+◇ Suite "Environment durability" started.
+◇ Test casRetainsSharedBlobsAndCopiesAreIndependent() started.
+◇ Test failedStopPreservesEnvironment() started.
+◇ Test failedCASReferenceWriteDoesNotEnableCollection() started.
+◇ Test projectsAndCancellationRemainScoped() started.
+◇ Test corruptCASIndexNeverAuthorizesCollection() started.
+◇ Test registrySurvivesRestartAndMarksNewBase() started.
+◇ Test sessionOwnershipIncludesWorkspace() started.
+◇ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() started.
+◇ Test projectDeletionPreservesDependentSessionAndFiles() started.
+◇ Test explicitEnvironmentCannotCrossWorkspace() started.
+◇ Test corruptRegistryIsPreserved() started.
+◇ Test failedCreationAndTransitionRollBackRegistryMemory() started.
+◇ Test inheritedRebuildBlocksExistingAndNewSessions() started.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.268 seconds.
+✔ Test missingFileAndPathEscapeNeverMutateEitherLayer() passed after 0.269 seconds.
+✔ Test failedCASReferenceWriteDoesNotEnableCollection() passed after 0.268 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.268 seconds.
+✔ Test corruptCASIndexNeverAuthorizesCollection() passed after 0.268 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.268 seconds.
+✔ Test promotedFilesAndPackageDatabaseSurviveSourceRemoval() passed after 0.269 seconds.
+✔ Test sessionOwnershipIncludesWorkspace() passed after 0.268 seconds.
+✔ Test projectDeletionPreservesDependentSessionAndFiles() passed after 0.268 seconds.
+✔ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() passed after 0.268 seconds.
+✔ Test corruptRegistryIsPreserved() passed after 0.268 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.268 seconds.
+✔ Suite "Environment promotion" passed after 0.306 seconds.
+✔ Test failedCreationAndTransitionRollBackRegistryMemory() passed after 0.305 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.309 seconds.
+✔ Test inheritedRebuildBlocksExistingAndNewSessions() passed after 0.314 seconds.
+✔ Suite "Environment durability" passed after 0.315 seconds.
+✔ Test run with 15 tests in 2 suites passed after 0.315 seconds.
