@@ -1,0 +1,115 @@
+{
+  "run": 34752884723,
+  "source": "65969b8f04e67269a92b899a55620ff469d96322",
+  "build": 156,
+  "tag": "v1.7.0-beta.13",
+  "job": 103712275154,
+  "job_conclusion": "success",
+  "steps": [
+    {
+      "name": "Set up job",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check out tagged source",
+      "conclusion": "success"
+    },
+    {
+      "name": "Require Xcode 27.0 release toolchain",
+      "conclusion": "success"
+    },
+    {
+      "name": "Install release tooling",
+      "conclusion": "success"
+    },
+    {
+      "name": "Generate project and validate tag",
+      "conclusion": "success"
+    },
+    {
+      "name": "Scan source history for credentials",
+      "conclusion": "success"
+    },
+    {
+      "name": "Reuse successful trusted CI for this exact source commit",
+      "conclusion": "success"
+    },
+    {
+      "name": "Resolve and verify pinned dependencies",
+      "conclusion": "success"
+    },
+    {
+      "name": "Restore bundled font cache",
+      "conclusion": "success"
+    },
+    {
+      "name": "Fetch and verify bundled fonts",
+      "conclusion": "success"
+    },
+    {
+      "name": "Run Swift tests when exact-source CI cannot be reused",
+      "conclusion": "success"
+    },
+    {
+      "name": "Qualify environment, package, media and Node release modules",
+      "conclusion": "success"
+    },
+    {
+      "name": "Preserve Swift regression output and stall diagnostics",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build iOS simulator release gate",
+      "conclusion": "success"
+    },
+    {
+      "name": "Verify Canvas, PiP, and timeline app regression contracts",
+      "conclusion": "success"
+    },
+    {
+      "name": "Preserve app regression evidence even if a later release step fails",
+      "conclusion": "success"
+    },
+    {
+      "name": "Generate dependency and license artifacts",
+      "conclusion": "success"
+    },
+    {
+      "name": "Package the matching Floe remote agent",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build unsigned device application",
+      "conclusion": "success"
+    },
+    {
+      "name": "Package and verify unsigned IPA",
+      "conclusion": "success"
+    },
+    {
+      "name": "Verify artifact metadata and scan built application",
+      "conclusion": "success"
+    },
+    {
+      "name": "Attest unsigned IPA provenance",
+      "conclusion": "success"
+    },
+    {
+      "name": "Upload verified build artifacts",
+      "conclusion": "success"
+    },
+    {
+      "name": "Post Restore bundled font cache",
+      "conclusion": "success"
+    },
+    {
+      "name": "Post Check out tagged source",
+      "conclusion": "success"
+    },
+    {
+      "name": "Complete job",
+      "conclusion": "success"
+    }
+  ],
+  "scope": "SDK 27 qualification and unsigned application; signed upload and Apple availability are separate"
+}

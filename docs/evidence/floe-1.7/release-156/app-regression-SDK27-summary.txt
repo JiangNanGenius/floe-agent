@@ -1,0 +1,17 @@
+suite=canvas-pip-timeline-app-regression
+total=135
+passed=135
+failed=0
+skipped=0
+expected_failures=0
+result=Passed
+suite_CanvasTouchInteractionTests=5
+suite_CanvasSavedImageBatchAtomicityTests=9
+suite_CanvasAgentToolContractTests=8
+suite_CrashAndFeedbackRegressionTests=39
+suite_ThreadTimelineTests=30
+suite_BrowserProtocolTests=6
+suite_MailConnectorTests=5
+suite_SkillLifecycleTests=25
+suite_LocalPythonRuntimeTests=3
+suite_LocalShellRuntimeTests=5
