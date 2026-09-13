@@ -91,3 +91,9 @@ The wrapper preserves test exit codes and terminates its own process group on a
 deadline. Three subprocess checks cover output/exit propagation, timeout and
 child cleanup. No tests are skipped beyond the pre-existing isolated JavaScript
 suites, which still run separately. Fresh cloud verification remains required.
+
+## Build 149 / beta.6 preparation
+
+Includes independent Notes, dynamic illustrated maps and PDF windows, Office and Whisper integration, and confirmed permanent deletion with shared-resource protection. SDK 27/26 iPad/iPhone native qualification passed at `4550b6d` in run `34742130370`; subsequent lifecycle code passed 15 host tests and native component compilation. The release workflow must verify the final tagged source before signed upload. Physical-device acceptance follows TestFlight installation and is performed by the user.
+
+The package/model qualification matrix remains explicit; unbuilt resources are not offered as installed capabilities. Upload, Apple processing and tester availability are pending until verified.

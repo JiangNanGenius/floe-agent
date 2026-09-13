@@ -1,8 +1,8 @@
 # Floe 1.7 — 发布描述草稿 / Release description draft
 
-状态：开发与验收中，尚未上传 TestFlight。下列描述对应当前实现范围，待固定提交的完整验证完成后用于新测试版本。既有版本说明保留其历史原文。
+状态：1.7.0（149），候选标签 v1.7.0-beta.6；待云端检查、签名与上传。下列描述对应当前实现范围，待固定提交的完整验证完成后用于新测试版本。既有版本说明保留其历史原文。
 
-## 中文介绍
+### 简体中文
 
 Floe 将 AI 助手、手记和创意工作流放在同一个以 iPad 为优先的原生应用里。手记独立管理课件、手写批注、Office 文件和图文思维导图，并与 Floe 助手共享模型和经过授权的资料。
 
@@ -12,7 +12,7 @@ Floe 将 AI 助手、手记和创意工作流放在同一个以 iPad 为优先�
 - 媒体与语音：图像工作台、单素材视频剪裁与字幕，Whisper 多语言模型按需下载，不能使用时回退 Apple；文件转录提供 SRT/VTT/JSON。
 - 环境与界面：项目/会话容器和软件包管理、通用设置中的自动/浅色/深色外观、改进的思考与工具调用框、连续工具折叠。
 
-## English description
+### English
 
 Floe brings its AI assistant, independent Notes workspace and creative workflows together in an iPad-first native app. Notes organizes annotated course materials, handwriting, Office files and illustrated mind maps, while sharing Floe models and explicitly authorized material with the assistant.
 
