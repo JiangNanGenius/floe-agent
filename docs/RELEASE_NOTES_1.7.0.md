@@ -36,3 +36,7 @@ This description is a beta preparation draft. Word ink, extended conversions, PP
 - 完整当前记录：[继续实施状态](FLOE_1_7_CONTINUATION_STATUS.md)。恢复步骤：[迁移与恢复](FLOE_1_7_MIGRATION.md)。
 
 截图沿用原始测试产物并注明提交、设备与场景。组件测试画面只能用于说明对应组件，不能作为完整新版本界面的交付证据。
+
+## 真机检查交接
+
+用户已指定由自己执行 iPad/iPhone 真机检查。自动化构建、测试和上传由本轮继续完成；真机结果由用户在 TestFlight 安装后确认，不把设备开发服务可用或模拟器通过写成真机验收。

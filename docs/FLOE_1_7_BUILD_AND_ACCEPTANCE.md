@@ -53,3 +53,5 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 当前版本描述入口为 [RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md)，对应中英文 README、USER_GUIDE、变更草稿、架构、迁移恢复及 TestFlight 准备记录。历史版本文件保留，不改写为新版本说明。上传后必须补入实际固定提交、构建号、Apple 处理结果与可安装状态。
 
 手记验收增加：回收站永久删除必须确认且检查修订；活动附件、其他文档和撤销历史不误删；多存储句柄共享读取保护，失败回收可重试。动态导图需在真实 WebKit 验证长文字、附图和分支无重叠，方向更新生效；iPhone 横屏保留阅读位置，以真实截图正文识别确认。
+
+真机分工更新：由用户执行 iPad/iPhone 真机检查。本轮保留自动化测试、云端归档与 TestFlight 上传责任，交付时附上双端检查清单；不以自动化通过代替用户的真机检查结果。
