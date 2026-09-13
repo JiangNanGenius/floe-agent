@@ -1,0 +1,16 @@
+{
+  "run_id": 34748849626,
+  "source_sha": "8e43aed4f38db2ee676535382dc247d32d305277",
+  "version": "1.7.0",
+  "build": 152,
+  "conclusion": "failure",
+  "failed_step": "Generate dependency and license artifacts",
+  "error": "KeyError: pins",
+  "app_regressions": {
+    "passed": 135,
+    "failed": 0,
+    "skipped": 0
+  },
+  "uploaded": false,
+  "physical_device_checks": "user after TestFlight delivery"
+}

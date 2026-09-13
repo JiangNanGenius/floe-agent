@@ -6,6 +6,10 @@
 
 Latest full-App verification was started for `4550b6d` ([CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34742128610), [Notes SDK 27/26 on iPad and iPhone](https://github.com/JiangNanGenius/floe-agent/actions/runs/34742130370)); these runs do not yet qualify later lifecycle changes. Final TestFlight text and checks are tracked in [the 1.7 release description](RELEASE_NOTES_1.7.0.md). No public App Store release is included.
 
+## Build 153 — beta.10
+
+Candidate 153 fixes release tooling after build 152 passed 1244 Swift test executions, the SDK 27 simulator Release build and 135 App regressions. Run [34748849626](https://github.com/JiangNanGenius/floe-agent/actions/runs/34748849626) then failed in lock-file parsing during license inventory generation; no upload occurred. The new parser supports SwiftPM v1/v2/v3 and checks normalized pins against the committed lock. Five parser regressions pass. Existing candidate tags remain immutable.
+
 ## Earlier candidates
 
 This is an internal beta candidate, not completion of the full 1.7 upgrade plan.

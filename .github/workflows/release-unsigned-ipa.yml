@@ -95,7 +95,9 @@ jobs:
       - name: Resolve and verify pinned dependencies
         run: |
           swift package resolve
+          python3 scripts/tests/test_resolved_pins.py
           scripts/pin_check.sh
+          scripts/license_inventory.sh
 
       # Fonts are a release-blocking build input: the app must never ship
       # without the verified bundled CJK set.
@@ -207,12 +209,14 @@ jobs:
           path: |
             ${{ runner.temp }}/FloeAgent-AppRegressionTests.xcresult
             ${{ runner.temp }}/FloeAgent-AppRegressionTests-SUMMARY.txt
+            FloeAgent/Package.resolved
           if-no-files-found: ignore
 
       - name: Generate dependency and license artifacts
         run: |
-          scripts/sbom.sh
+          scripts/pin_check.sh
           scripts/license_inventory.sh
+          scripts/sbom.sh
 
       - name: Package the matching Floe remote agent
         run: |

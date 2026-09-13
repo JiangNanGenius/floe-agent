@@ -14,12 +14,18 @@ fi
 # Every pin must be immutable: either an exact semantic version or a commit
 # revision. Branch pins are intentionally rejected.
 python3 - <<'PY'
-import json, sys
+import json, subprocess, sys
+sys.path.insert(0, "scripts")
+from resolved_pins import resolved_pins
 
 with open("Package.resolved") as f:
     resolved = json.load(f)
 
-pins = resolved.get("pins", [])
+pins = resolved_pins(resolved)
+committed = json.loads(subprocess.check_output(
+    ["git", "show", "HEAD:FloeAgent/Package.resolved"], text=True))
+if pins != resolved_pins(committed):
+    sys.exit("error: resolved dependencies differ from the committed lock file")
 errors = []
 for pin in pins:
     state = pin.get("state", {})

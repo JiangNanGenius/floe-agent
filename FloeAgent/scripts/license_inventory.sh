@@ -10,12 +10,14 @@ OUTPUT="LICENSES-THIRD-PARTY.md"
 
 python3 - <<'PY'
 import json, subprocess, sys
+sys.path.insert(0, "scripts")
+from resolved_pins import resolved_pins
 
 ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "MPL-2.0", "ISC", "0BSD", "Zlib", "OFL-1.1"}
 GPL_FAMILY = {"GPL-2.0", "GPL-3.0", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0"}
 
 with open("Package.resolved") as f:
-    pins = json.load(f)["pins"]
+    pins = resolved_pins(json.load(f))
 
 rows = []
 violations = []
