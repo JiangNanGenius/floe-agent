@@ -19,10 +19,12 @@
 - 原生 Office 新增 PDF/Office/RTF/TXT 转换、演示放映及矢量画笔接口；应用依照宿主实际接口显示操作。
 - WhisperKit 固定提交，Whisper Small 多语言的 27 个模型/分词器资源逐文件固定来源与摘要，约 491 MB 按需下载。
 - 语音输入接入 Whisper 优先、失败回退 Apple；录音不持久化，缓冲有界，结束时等待识别收尾。
-- 新增单独的 Whisper 实际推理资格工程：固定模型下载/校验、真实 Core ML 加载、无 Apple 回退的中英合成样本识别及时间戳检查；本地测试工程编译通过，云端推理结果待产生。合成语音不替代真人中英混说或真机成本验收。
+- 新增单独的 Whisper 实际推理资格工程：固定模型下载/校验、真实 Core ML 加载、无 Apple 回退的中英合成样本识别及时间戳检查；本地测试工程编译通过；云端实际推理结果见下方证据。合成语音不替代真人中英混说或真机成本验收。
 - 视频自动字幕与 `audio.transcribe` 已接入同一文件转录服务，25 秒音频缓冲、按原素材时间戳定位，输出 SRT/VTT/JSON；本地定向编译通过，实际识别质量及双端运行测试仍待完成。
 
 ## 当前证据
+
+- Whisper 推理运行 `34728314865` 在 `d51cad7ff516657a1f109e83a6eefbdd805df127` 上通过 iPad/iPhone SDK 27 模拟器。约 9 秒中英合成样本被识别为“今天我們學習Opportunity Cost,也就是機會成本,Tomorrow we will review international trade.”。iPad 模拟器模型加载约 3.94 秒、推理约 5.68 秒；iPhone 模拟器加载约 8.42 秒、推理约 8.11 秒，不能当作真机速度。完整下载校验约 491 MB，直接调用 WhisperKit，无 Apple 回退；记录 `evidence/floe-1.7/whisper/*d51cad7-inference.json`。尚未测真人语音、设备峰值内存或麦克风完整交互。
 
 - 最近打开记录增加重启、只读打开不改内容/撤销、回收站排除测试，当前 14 项 Notes 主机测试通过；记录 `evidence/floe-1.7/notes/host-tests-recents.txt`。
 

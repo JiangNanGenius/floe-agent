@@ -1,0 +1,13 @@
+{
+  "audioSeconds" : 9.0009374999999991,
+  "backend" : "WhisperKit direct, no Apple fallback",
+  "fixture" : "Apple system synthesized Mandarin-English, not human speech",
+  "fixtureSHA256" : "739b4437865eaf339e9a09c22964376bd1b64d5f74fbcb85f1532415e9d8e038",
+  "inferenceSeconds" : 8.1130269765853882,
+  "loadSeconds" : 8.4233770370483398,
+  "memoryEvidence" : "Peak memory not measured by this test; real-device profiling remains required",
+  "platform" : "Version 27.0 (Build 24A5423a)",
+  "segmentCount" : 1,
+  "totalSeconds" : 114.61174404621124,
+  "transcript" : "今天我們學習Opportunity Cost,也就是機會成本,Tomorrow we will review international trade."
+}
