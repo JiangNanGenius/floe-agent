@@ -24,6 +24,9 @@
 
 ## 当前证据
 
+- `34727968231` 在 `0f4b9248e178d694d2c62aec74e995c8aac938df` 上完成 SDK 27 iPad/iPhone 各 8 项、零失败零跳过，包含文档导图小窗与独立撤销。26 兼容分支仍运行中。视图合成截图未捕获 PDF/WebKit 内容层，不用作功能介绍图片，后续改采屏幕级截图；双端摘要保存为 `*0f4b924-summary.json`。
+- `34728041064` 的平台测试停顿取得了媒体栈证据：多个并发转码在 `copyNextSampleBuffer` 阻塞。26+ 改用 Apple 原生异步 provider/receiver，分别调度音视频并在失败/取消时等候读取任务结束。10 项真实媒体测试本地通过，含四路并发与写入开始后的取消，日志 `evidence/floe-1.7/media-async-provider-tests.txt`；旧停顿样本在 `evidence/floe-1.7/media-stall-57d/`。完整云端重测仍需完成。
+
 - 图片运行 `34727282394` 的 SDK 26 iPad 失败于测试将点尺寸当作 Retina 像素尺寸；实际截图确认图片已显示。断言改为读取源 PNG 像素尺寸，在新提交上重新验证，不把该失败计为通过。完整 App 运行 `34727296803` 进一步发现 Office 资料附件调用缺少 `displayName`，已补入原文件名，等待完整应用重编译。
 
 - 图文附件与关联归档增加 3 项测试，当前 13 项 Notes 主机测试通过：包含附件字节恢复、内部来源重映射、独立撤销、错误导入回滚和单独的 Agent 关联授权。记录 `evidence/floe-1.7/notes/host-tests-linked-maps.txt`。

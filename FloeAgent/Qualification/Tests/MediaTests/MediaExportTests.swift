@@ -97,6 +97,30 @@ struct MediaExportTests {
         #expect(try String(contentsOf: output, encoding: .utf8) == "preserved")
     }
 
+    @Test(.timeLimit(.minutes(1))) func concurrentTranscodesDrainWithoutBlockingOtherTasks() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await movie(at: root.appendingPathComponent("input.mov"))
+        try await withThrowingTaskGroup(of: Int.self) { group in
+            for index in 0..<4 {
+                group.addTask {
+                    let engine = MediaExportEngine(rootProvider: { root })
+                    let name = "concurrent-\(index).mp4"
+                    _ = try await engine.transcode(.init(input: "input.mov", output: name, container: "mp4", videoCodec: "h264", width: 128, height: 96, frameRate: 15, passthrough: false))
+                    let asset = AVURLAsset(url: root.appendingPathComponent(name))
+                    let track = try #require(await asset.loadTracks(withMediaType: .video).first)
+                    #expect(try await asset.load(.isPlayable))
+                    #expect(try await track.load(.naturalSize) == CGSize(width: 128, height: 96))
+                    return index
+                }
+            }
+            var completed: Set<Int> = []
+            for try await index in group { completed.insert(index) }
+            #expect(completed == [0, 1, 2, 3])
+        }
+    }
+
     @Test func requestedDimensionsAndFrameRateReachEncodedFile() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -137,6 +161,36 @@ struct MediaExportTests {
 }
 
 extension MediaExportTests {
+    @Test(.timeLimit(.minutes(1))) func cancellingActiveTranscodeJoinsReadersAndPreservesExistingOutput() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appendingPathComponent("input.mov"), output = root.appendingPathComponent("output.mp4")
+        try await movie(at: input)
+        let original = try Data(contentsOf: input)
+        try Data("keep existing output".utf8).write(to: output)
+        let cancellation = CancellationToken()
+        let operation = Task {
+            let engine = MediaExportEngine(rootProvider: { root })
+            return try await engine.transcode(.init(input: "input.mov", output: "output.mp4", container: "mp4", videoCodec: "h264",
+                width: 2048, height: 1536, frameRate: 240, passthrough: false), cancellation: cancellation)
+        }
+        var started = false
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey])
+            started = files.contains { $0.lastPathComponent.hasPrefix(".floe-export-") && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 }
+            if started { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        cancellation.cancel()
+        #expect(started, "Cancellation must be requested after the writer has created media data")
+        await #expect(throws: (any Error).self) { try await operation.value }
+        #expect(try Data(contentsOf: input) == original)
+        #expect(try String(contentsOf: output, encoding: .utf8) == "keep existing output")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.hasPrefix(".floe-export-") })
+    }
+
     @Test func audioConversionAppliesRateAndChannels() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -97,7 +97,6 @@ enum MediaTranscodePipeline {
             let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoInput.expectsMediaDataInRealTime = false
             guard reader.canAdd(videoOutput), writer.canAdd(videoInput) else { throw FloeError.validationFailed("Cannot connect video reader and writer") }
-            reader.add(videoOutput); writer.add(videoInput)
             var streams: [(AVAssetReaderOutput, AVAssetWriterInput)] = [(videoOutput, videoInput)]
             if let audio = try await asset.loadTracks(withMediaType: .audio).first {
                 let descriptions = try await audio.load(.formatDescriptions)
@@ -113,10 +112,72 @@ enum MediaTranscodePipeline {
                 let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
                 audioInput.expectsMediaDataInRealTime = false
                 guard reader.canAdd(audioOutput), writer.canAdd(audioInput) else { throw FloeError.validationFailed("Cannot connect audio reader and writer") }
-                reader.add(audioOutput); writer.add(audioInput); streams.append((audioOutput, audioInput))
+                streams.append((audioOutput, audioInput))
             } else if spec.audioCodec != nil || spec.audioBitrate != nil {
                 throw FloeError.validationFailed("Audio parameters require an audio track")
             }
+            try await transfer(reader: reader, writer: writer, streams: streams, cancellation: cancellation)
+
+        }
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        let result = AVURLAsset(url: temporary)
+        let actualDuration = try await result.load(.duration).seconds
+        guard try await result.load(.isPlayable), actualDuration > 0, abs(actualDuration - duration.seconds) < max(0.25, duration.seconds * 0.001),
+              let actualTrack = try await result.loadTracks(withMediaType: .video).first else {
+            throw FloeError.validationFailed("Export failed playback or duration verification")
+        }
+        let size = try await actualTrack.load(.naturalSize)
+        let rate = try await actualTrack.load(.nominalFrameRate)
+        if let width = spec.width, let height = spec.height, Int(size.width) != width || Int(size.height) != height {
+            throw FloeError.validationFailed("Exported dimensions do not match the request")
+        }
+        if let fps = spec.frameRate, abs(Double(rate) - fps) > 0.1 {
+            throw FloeError.validationFailed("Exported frame rate does not match the request")
+        }
+        let bytes = try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber
+        guard let bytes, bytes.int64Value > 0 else { throw FloeError.validationFailed("Export is empty") }
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        if FileManager.default.fileExists(atPath: output.path) {
+            _ = try FileManager.default.replaceItemAt(output, withItemAt: temporary)
+        } else { try FileManager.default.moveItem(at: temporary, to: output) }
+        return "status=ok output=\(spec.output) container=\(spec.container) bytes=\(bytes) width=\(Int(size.width)) height=\(Int(size.height)) frameRate=\(rate) duration=\(actualDuration)"
+    }
+
+    private static func transfer(reader: AVAssetReader, writer: AVAssetWriter,
+                                 streams: [(AVAssetReaderOutput, AVAssetWriterInput)], cancellation: CancellationToken?) async throws {
+        if #available(macOS 26, iOS 26, tvOS 26, visionOS 26, *) {
+            // Native providers suspend while reading, instead of blocking the cooperative executor.
+            // Each stream has its own task so video backpressure cannot prevent audio from draining.
+            let transfers = streams.map { source, destination in
+                MediaAsyncSampleTransfer(source: reader.outputProvider(for: source), destination: writer.inputReceiver(for: destination))
+            }
+            let control = MediaTransferControl(reader: reader, writer: writer)
+            guard writer.startWriting(), reader.startReading() else {
+                control.cancel()
+                throw writer.error ?? reader.error ?? FloeError.internalError("Could not start media processing")
+            }
+            writer.startSession(atSourceTime: .zero)
+            let watcher = Task {
+                while !Task.isCancelled {
+                    if cancellation?.isCancelled == true { control.cancel(); return }
+                    do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                }
+            }
+            defer { watcher.cancel() }
+            try await withTaskCancellationHandler {
+                do {
+                    try await withThrowingTaskGroup(of: Void.self) { group in
+                        for transfer in transfers { group.addTask { try await transfer.run(cancellation: cancellation) } }
+                        do { for try await _ in group { } }
+                        catch { control.cancel(); group.cancelAll(); throw error }
+                    }
+                    try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+                    try await control.finish()
+                } catch { control.cancel(); throw error }
+            } onCancel: { control.cancel() }
+        } else {
+            // Compatibility for the package's macOS 15 host target; the iOS app starts at 26.
+            for (source, destination) in streams { reader.add(source); writer.add(destination) }
             guard writer.startWriting(), reader.startReading() else { throw writer.error ?? reader.error ?? FloeError.internalError("Could not start media processing") }
             writer.startSession(atSourceTime: .zero)
             do {
@@ -145,28 +206,40 @@ enum MediaTranscodePipeline {
                 guard writer.status == .completed else { throw writer.error ?? FloeError.internalError("Media writer did not finish") }
             } catch { reader.cancelReading(); writer.cancelWriting(); throw error }
         }
-        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
-        let result = AVURLAsset(url: temporary)
-        let actualDuration = try await result.load(.duration).seconds
-        guard try await result.load(.isPlayable), actualDuration > 0, abs(actualDuration - duration.seconds) < max(0.25, duration.seconds * 0.001),
-              let actualTrack = try await result.loadTracks(withMediaType: .video).first else {
-            throw FloeError.validationFailed("Export failed playback or duration verification")
+    }
+
+}
+
+@available(macOS 26, iOS 26, tvOS 26, visionOS 26, *)
+private actor MediaAsyncSampleTransfer {
+    let source: AVAssetReaderOutput.Provider<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>>
+    let destination: AVAssetWriterInput.SampleBufferReceiver
+    init(source: sending AVAssetReaderOutput.Provider<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>>,
+         destination: sending AVAssetWriterInput.SampleBufferReceiver) {
+        self.source = source; self.destination = destination
+    }
+    func run(cancellation: CancellationToken?) async throws {
+        while let sample = try await source.next() {
+            try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+            try await destination.append(sample)
         }
-        let size = try await actualTrack.load(.naturalSize)
-        let rate = try await actualTrack.load(.nominalFrameRate)
-        if let width = spec.width, let height = spec.height, Int(size.width) != width || Int(size.height) != height {
-            throw FloeError.validationFailed("Exported dimensions do not match the request")
-        }
-        if let fps = spec.frameRate, abs(Double(rate) - fps) > 0.1 {
-            throw FloeError.validationFailed("Exported frame rate does not match the request")
-        }
-        let bytes = try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber
-        guard let bytes, bytes.int64Value > 0 else { throw FloeError.validationFailed("Export is empty") }
-        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
-        if FileManager.default.fileExists(atPath: output.path) {
-            _ = try FileManager.default.replaceItemAt(output, withItemAt: temporary)
-        } else { try FileManager.default.moveItem(at: temporary, to: output) }
-        return "status=ok output=\(spec.output) container=\(spec.container) bytes=\(bytes) width=\(Int(size.width)) height=\(Int(size.height)) frameRate=\(rate) duration=\(actualDuration)"
+        destination.finish()
     }
 }
+
+/// AVFoundation owns synchronization of cancelReading/cancelWriting with pending I/O.
+/// The wrapper stays alive until all provider tasks and writer completion have returned.
+private final class MediaTransferControl: @unchecked Sendable {
+    let reader: AVAssetReader
+    let writer: AVAssetWriter
+    init(reader: AVAssetReader, writer: AVAssetWriter) { self.reader = reader; self.writer = writer }
+    func cancel() { reader.cancelReading(); writer.cancelWriting() }
+    func finish() async throws {
+        await writer.finishWriting()
+        guard writer.status == .completed, reader.status != .failed else {
+            throw writer.error ?? reader.error ?? FloeError.internalError("Media transfer did not finish")
+        }
+    }
+}
+
 #endif

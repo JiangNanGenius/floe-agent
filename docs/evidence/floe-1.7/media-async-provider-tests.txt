@@ -1,0 +1,48 @@
+warning: '--skip-update' option is deprecated and will be removed in a future release
+Building for debugging...
+[Computing dependencies]
+[Provisioning 22 / 39]
+[Constructing description]
+[Pre-planning 1 / 775]
+[Planning deferred tasks]
+[Starting]
+[1 / 2] ZIPFoundation
+[1 / 16] FloeMedia
+[7 / 63] FloeCore
+[7 / 34] EnvironmentTests-product
+[17 / 25] SkillHubTests-product
+[17 / 22] MediaTests-product
+[19 / 24] MediaTests-product
+[23 / 29] MediaTests-product
+[25 / 29] MediaTests-product
+[26 / 29] MediaTests-product
+[27 / 29] MediaTests-product
+Build complete! (11.03秒)
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Real media exports" started.
+◇ Test speedChangesAudioAndVideoOnTheSameTimeline() started.
+◇ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() started.
+◇ Test rejectedAndCancelledExportsPreserveFiles() started.
+◇ Test unsupportedEditCannotReplaceExistingOutput() started.
+◇ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() started.
+◇ Test editsApplyTrimSpeedAndExportSettingsToActualFile() started.
+◇ Test requestedDimensionsAndFrameRateReachEncodedFile() started.
+◇ Test concurrentTranscodesDrainWithoutBlockingOtherTasks() started.
+◇ Test cancellingActiveTranscodeJoinsReadersAndPreservesExistingOutput() started.
+◇ Test audioConversionAppliesRateAndChannels() started.
+2026-09-13 10:42:34.095 swiftpm-testing-helper[39092:27645657] Audio files cannot be non-interleaved. Ignoring setting AVLinearPCMIsNonInterleaved YES.
+✔ Test unsupportedEditCannotReplaceExistingOutput() passed after 0.543 seconds.
+✔ Test audioConversionAppliesRateAndChannels() passed after 0.548 seconds.
+✔ Test rejectedAndCancelledExportsPreserveFiles() passed after 0.932 seconds.
+✔ Test frameFormatsAreRealAndCancelledBatchesLeaveNoFiles() passed after 1.426 seconds.
+✔ Test concurrentTranscodesDrainWithoutBlockingOtherTasks() passed after 1.805 seconds.
+✔ Test requestedDimensionsAndFrameRateReachEncodedFile() passed after 1.808 seconds.
+✔ Test proxyPreservesAspectAndThumbnailCannotOverwriteSource() passed after 1.823 seconds.
+✔ Test cancellingActiveTranscodeJoinsReadersAndPreservesExistingOutput() passed after 1.827 seconds.
+✔ Test editsApplyTrimSpeedAndExportSettingsToActualFile() passed after 1.857 seconds.
+✔ Test speedChangesAudioAndVideoOnTheSameTimeline() passed after 1.876 seconds.
+✔ Suite "Real media exports" passed after 1.876 seconds.
+✔ Test run with 10 tests in 1 suite passed after 1.877 seconds.
+{"exitCode": 0, "reason": "exited", "elapsedSeconds": 23.701, "testsStarted": true}
