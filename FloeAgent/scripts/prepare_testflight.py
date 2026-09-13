@@ -38,6 +38,20 @@ def rows(path, call=api):
     return result
 
 
+def build_groups(build_id, call=api):
+    # App Store Connect supports this included relationship on the build read.
+    # The direct /builds/{id}/betaGroups resource can reject GET with HTTP 403.
+    value = call('GET', f'/v1/builds/{build_id}?include=betaGroups')
+    relationship = value['data']['relationships']['betaGroups']
+    identifiers = {item['id'] for item in relationship['data']}
+    total = relationship.get('meta', {}).get('paging', {}).get('total', len(identifiers))
+    groups = [item for item in value.get('included', [])
+              if item['type'] == 'betaGroups' and item['id'] in identifiers]
+    if total != len(identifiers) or {item['id'] for item in groups} != identifiers:
+        raise RuntimeError('Incomplete build beta-group relationship; do not infer missing access')
+    return groups
+
+
 def prepare(build_id, bundle, version, number, notes, call=api):
     if not re.fullmatch(r'[A-Za-z0-9_-]+', build_id):
         raise ValueError('Invalid build ID')
@@ -74,11 +88,11 @@ def prepare(build_id, bundle, version, number, notes, call=api):
                 'attributes': {'locale': locale, 'whatsNew': text},
                 'relationships': {'build': {'data': {'type': 'builds', 'id': build_id}}}}})
     group_id = groups[0]['id']
-    visible = rows(f'/v1/builds/{build_id}/betaGroups?limit=200', call)
+    visible = build_groups(build_id, call)
     if group_id not in {g['id'] for g in visible}:
         call('POST', f'/v1/betaGroups/{group_id}/relationships/builds',
              {'data': [{'type': 'builds', 'id': build_id}]})
-    visible = rows(f'/v1/builds/{build_id}/betaGroups?limit=200', call)
+    visible = build_groups(build_id, call)
     actual = rows('/v1/betaBuildLocalizations?' + urllib.parse.urlencode({'filter[build]': build_id, 'limit': 200}), call)
     if group_id not in {g['id'] for g in visible}:
         raise RuntimeError('Floe QA build visibility not confirmed')
