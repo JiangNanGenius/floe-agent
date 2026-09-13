@@ -1,0 +1,87 @@
+{
+  "run": 34746784780,
+  "source": "8d370cfbba1004de53254731fad79c2c11f3dc2e",
+  "tag": "v1.7.0-beta.8",
+  "version": "1.7.0",
+  "build": 151,
+  "stage": "Swift qualification; app build and upload remain pending",
+  "suites": [
+    {
+      "group": "full",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 95.436,
+      "testsStarted": true,
+      "passingTestCounts": [
+        58,
+        17,
+        40,
+        13,
+        40,
+        83,
+        8,
+        97,
+        131,
+        9,
+        29,
+        40,
+        17,
+        4,
+        151,
+        42,
+        116,
+        257
+      ],
+      "totalTestExecutions": 1152
+    },
+    {
+      "group": "javascript-engine",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 12.115,
+      "testsStarted": true,
+      "passingTestCounts": [
+        12
+      ],
+      "totalTestExecutions": 12
+    },
+    {
+      "group": "javascript-tool",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 11.316,
+      "testsStarted": true,
+      "passingTestCounts": [
+        12
+      ],
+      "totalTestExecutions": 12
+    },
+    {
+      "group": "notes",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 19.635,
+      "testsStarted": true,
+      "passingTestCounts": [
+        15
+      ],
+      "totalTestExecutions": 15
+    },
+    {
+      "group": "platform",
+      "exitCode": 0,
+      "reason": "exited",
+      "elapsedSeconds": 49.983,
+      "testsStarted": true,
+      "passingTestCounts": [
+        1,
+        3,
+        18,
+        16,
+        15
+      ],
+      "totalTestExecutions": 53
+    }
+  ],
+  "totalSwiftTestExecutions": 1244
+}

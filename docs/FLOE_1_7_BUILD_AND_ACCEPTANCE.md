@@ -25,6 +25,8 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 
 推送固定提交后检查 CI 的 Linux、开发 SDK 和发布 SDK 作业。每项记录提交 SHA、Xcode/SDK、测试结果、失败日志和产物。重跑使用同一提交；代码变化后结果属于新提交。构建产物上传、签名归档、App Store Connect 处理、TestFlight 可安装分别记录。
 
+当前发布流水线分别验证 SDK 27 源码和 Xcode 26.6（17F113）的上传构建，签名包由后者重建同一标签。`#if compiler(>=6.4)` 控制的 27 专属实现不会出现在这份上传包中，例如手记的新笔迹选择接口会走兼容选区入口。SDK 27 组件图不能用来证明 TestFlight 包含全部 27 专属能力；上传后记录中必须注明实际工具链。
+
 ## 完整验收门槛
 
 | 范围 | 必须保留的证据 |
@@ -36,7 +38,7 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 | 模型 | 33 项评估；15 类各有真实输入、产物、真机耗时与内存 |
 | 工作台 | 文件/附件入口、编辑保存重开、共享任务、取消/重试、导出播放/返回 |
 | 回归 | 聊天与工具循环、Office 保存重开、中文文档、工作区、Canvas、PiP |
-| 分发 | 同一固定提交的开发/发布 SDK 构建、真机验收与可供 TestFlight 分发构建 |
+| 分发 | 同一固定提交的开发/发布 SDK 构建、签名上传、Apple 处理与内部测试组可见；用户安装后完成双端真机验收 |
 
 不以“资源下载成功”“工具返回文本成功”替代真实处理证据。密钥、令牌、私人媒体及未脱敏日志不得加入证据包。
 

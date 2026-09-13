@@ -1,0 +1,29 @@
+◇ Test run started.
+◇ Suite "FloeExecution.JavaScriptExecutionTool" started.
+◇ Test "Descriptor: non-side-effecting, no risk labels, correct name" started.
+◇ Test "A JS exception returns an ok result carrying the error status" started.
+◇ Test "console.error lands in the stderr section, separate from stdout" started.
+◇ Test "Raw WASM runtime is registered only through the internal opt-in" started.
+◇ Test "A runaway script maps to a timedOut result within the deadline" started.
+◇ Test "Production registration omits the on-device JavaScript runner" started.
+◇ Test "console.log(1+1) executes end to end; the model-readable result contains 2" started.
+◇ Test "registerExecutionTools wires catalog + runner on the shared registry" started.
+◇ Test "Script over 64 KiB fails validation" started.
+◇ Test "Invalid arguments JSON fails decoding through the executor" started.
+◇ Test "Empty script fails validation" started.
+◇ Test "Cancellation before execution propagates as a cancelled ToolResult" started.
+✔ Test "Descriptor: non-side-effecting, no risk labels, correct name" passed after 0.106 seconds.
+✔ Test "Script over 64 KiB fails validation" passed after 0.106 seconds.
+✔ Test "Empty script fails validation" passed after 0.106 seconds.
+✔ Test "Production registration omits the on-device JavaScript runner" passed after 0.107 seconds.
+✔ Test "Raw WASM runtime is registered only through the internal opt-in" passed after 0.107 seconds.
+✔ Test "Cancellation before execution propagates as a cancelled ToolResult" passed after 0.112 seconds.
+✔ Test "Invalid arguments JSON fails decoding through the executor" passed after 0.120 seconds.
+✔ Test "console.error lands in the stderr section, separate from stdout" passed after 0.378 seconds.
+✔ Test "console.log(1+1) executes end to end; the model-readable result contains 2" passed after 0.378 seconds.
+✔ Test "registerExecutionTools wires catalog + runner on the shared registry" passed after 0.378 seconds.
+✔ Test "A runaway script maps to a timedOut result within the deadline" passed after 0.614 seconds.
+✔ Test "A JS exception returns an ok result carrying the error status" passed after 0.640 seconds.
+✔ Suite "FloeExecution.JavaScriptExecutionTool" passed after 0.641 seconds.
+✔ Test run with 12 tests in 1 suite passed after 0.642 seconds.
+{"exitCode": 0, "reason": "exited", "elapsedSeconds": 45.686, "testsStarted": true}

@@ -1,0 +1,33 @@
+◇ Test run started.
+◇ Suite "FloeExecution.BundledJavaScriptPackages" started.
+◇ Suite "FloeExecution.JavaScriptEngine" started.
+◇ Test "All production packages load together, UUID has secure entropy, and PDF remains usable" started.
+◇ Test "Cancellation before start returns cancelled" started.
+◇ Test "Output beyond maxOutputBytes truncates and flags truncated" started.
+◇ Test "console output before the throw is preserved" started.
+◇ Test "Cancellation during a long script wins the race" started.
+◇ Test "inputJSON is readable as the JS input value" started.
+◇ Test "A long-running script returns timedOut near the deadline, not a hang" started.
+◇ Test "Two runs do not share JS state" started.
+◇ Test "A script without printJSON yields a nil resultJSON" started.
+◇ Test "printJSON collects a structured result" started.
+◇ Test "console.log output is captured in stdout" started.
+◇ Test "A thrown JS error maps to jsException without a Swift throw" started.
+◇ Test "console.log/info go to stdout; console.warn/error go to stderr" started.
+✔ Test "Cancellation before start returns cancelled" passed after 0.004 seconds.
+✔ Test "Cancellation during a long script wins the race" passed after 0.117 seconds.
+✔ Test "printJSON collects a structured result" passed after 0.117 seconds.
+✔ Test "console.log output is captured in stdout" passed after 0.122 seconds.
+✔ Test "inputJSON is readable as the JS input value" passed after 0.122 seconds.
+✔ Test "A script without printJSON yields a nil resultJSON" passed after 0.122 seconds.
+✔ Test "console.log/info go to stdout; console.warn/error go to stderr" passed after 0.126 seconds.
+✔ Test "Output beyond maxOutputBytes truncates and flags truncated" passed after 0.127 seconds.
+✔ Test "Two runs do not share JS state" passed after 0.127 seconds.
+✔ Test "All production packages load together, UUID has secure entropy, and PDF remains usable" passed after 0.258 seconds.
+✔ Suite "FloeExecution.BundledJavaScriptPackages" passed after 0.259 seconds.
+✔ Test "A thrown JS error maps to jsException without a Swift throw" passed after 0.322 seconds.
+✔ Test "console output before the throw is preserved" passed after 0.322 seconds.
+✔ Test "A long-running script returns timedOut near the deadline, not a hang" passed after 0.507 seconds.
+✔ Suite "FloeExecution.JavaScriptEngine" passed after 0.507 seconds.
+✔ Test run with 13 tests in 2 suites passed after 0.508 seconds.
+{"exitCode": 0, "reason": "exited", "elapsedSeconds": 34.356, "testsStarted": true}

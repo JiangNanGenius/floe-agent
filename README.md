@@ -1,9 +1,9 @@
 <div align="center">
   <img src="docs/images/floe-agent-icon.png" width="112" alt="Floe Agent app icon">
-  <h1>Floe Agent for iPhone &amp; iPad</h1>
+  <h1>Floe Agent for iPad &amp; iPhone</h1>
   <p><strong>Floe — Native iOS AI Agent</strong></p>
   <p>Your models. Your files. Your machines.</p>
-  <p>A private, bring-your-own-key AI agent workspace built natively for iPhone and iPad.</p>
+  <p>A private, bring-your-own-key AI agent workspace built natively for iPad first, with iPhone support.</p>
   <p>
     <a href="README.zh-CN.md">简体中文</a> ·
     <a href="https://www.floe-agent.com/">Website</a> ·
