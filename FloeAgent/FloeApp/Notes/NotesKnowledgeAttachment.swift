@@ -15,7 +15,7 @@ enum NotesKnowledgeAttachment {
         defer { try? FileManager.default.removeItem(at: folder) }
         let file = folder.appendingPathComponent(name)
         try FileManager.default.copyItem(at: try await store.resourceURL(resource), to: file)
-        return try await files.registerPickedDocument(url: file, compressImage: false)
+        return try await files.registerPickedDocument(url: file, displayName: name, compressImage: false)
     }
     static func reference(_ document: NoteDocument) -> String {
         "已选择手记资料：\(document.title)。documentID=\(document.id.uuidString)。可使用 notes.read 读取最新内容；笔迹及图片需另行提供选区图像，不能当作已识别的文字。"
