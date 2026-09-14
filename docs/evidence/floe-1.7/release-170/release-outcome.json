@@ -1,0 +1,12 @@
+{
+  "sourceCommit": "70e24ebe64272d1037014814b7fdc2bcd1caed9e",
+  "tag": "v1.7.0-beta.27",
+  "build": 170,
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34859750503",
+  "swiftTestExecutionsPassed": 1270,
+  "sdk26DeviceRelease": "failed",
+  "failure": "NotesPalettePresentation.swift:110:37: compiler unable to type-check tool button background expression in reasonable time",
+  "sdk27": "cancelled during simulator App compilation after SDK 26 failure",
+  "testFlightUpload": "not attempted",
+  "nextFix": "84c85f5fe9e6621c7ce2e9889affe4b83a6bb1b6: split tool button view and type scalar parameters; add component device Release builds on both SDKs"
+}
