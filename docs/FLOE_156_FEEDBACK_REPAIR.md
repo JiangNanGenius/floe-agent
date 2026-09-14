@@ -119,3 +119,9 @@ Actual iPad component navigation reached selected-project details and Python man
 本地已安全清理 `/tmp/floe-156-node-native-check`，逻辑大小 2,190,500,031 字节；删除前检查无打开文件，Node 运行/适配/包测试 JSON 已归档。未移除模拟器、安装的 App、其他构建缓存或源码。
 
 最新源码继续补入逐页 Vision OCR（中文＋英语）与资源/笔迹版本绑定的缓存，过期结果不能覆盖新内容；这条真实识别链仍待原生样本验收。手记存储测试现为 17 项通过。增加“重新索引正文”恢复入口，扫描件、Office 失败或未完成索引数量在搜索时可见。
+
+原生手记追加验证：iPad mini iOS 27 模拟器使用实际导入器、Vision、NotesSession 和持久索引，中文＋英文图片识别、检索、Word 自动索引及 Markdown 分页全部通过，耗时 9.95 秒。原始样本、JSON 和截图保存在 `validation/floe-156-feedback/samples/notes-search`、`notes-native-search-ipad.json` 与 `screenshots/ipad-notes-search-qualified.png`。这是独立原生宿主运行结果；本地 XCTest 未连接成功，不能将此结果写为 XCTest 或完整 App UI 通过。云端另增 iPad/iPhone 原生测试。
+
+手记支持从 Floe 项目及聊天工作区选择文件，导入器复制原始数据后才释放来源访问权限；选择器关闭后再进入编辑器，避免与全屏编辑的呈现冲突。Agent 的限范围资料搜索也包含版本有效的 OCR 与 Office 正文缓存，保留来源类型。
+
+shell 原生宿主新增动态注册回调的管道用例（索引 22），返回 `callback-resolved`、退出码 0 且执行线程停止。Debug 关闭可执行代码独立 dylib 后，该回调位于 ios_system 查找的主可执行文件。此结果不代替完整 App 的 Python/Node 注册回归。

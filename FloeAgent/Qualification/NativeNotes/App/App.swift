@@ -2,12 +2,80 @@
 import SwiftUI
 import PencilKit
 import FloeNotes
+import FloeDocuments
 
 @main struct NotesQualificationApp: App {
     var body: some Scene { WindowGroup {
-        if ProcessInfo.processInfo.arguments.contains("--linked-map-fixture") { LinkedMapQualificationPage() }
+        if ProcessInfo.processInfo.arguments.contains("--search-fixture") { SearchQualificationPage() }
+        else if ProcessInfo.processInfo.arguments.contains("--linked-map-fixture") { LinkedMapQualificationPage() }
         else { QualificationPage() }
     } }
+}
+
+private struct SearchQualificationPage: View {
+    @State private var status = "正在验证正文检索…"
+    @State private var recognized = ""
+    @State private var sample: UIImage?
+    @State private var session = NotesSession()
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("手记内容检索验证").font(.title.bold())
+                Text(status).font(.headline)
+                if let sample { Image(uiImage: sample).resizable().scaledToFit().frame(maxHeight: 420) }
+                Text(recognized).textSelection(.enabled)
+            }.padding(24)
+        }.task { await run() }
+    }
+    @MainActor private func run() async {
+        let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("search-qualification-\(UUID().uuidString)")
+        var results: [String: Any] = ["scope": "Actual Notes importer, Vision and persistent search in simulator host"]
+        let started = Date()
+        do {
+            let store = try NotesStore(root: root)
+            let scan = UIGraphicsImageRenderer(size: CGSize(width: 768, height: 1024)).image { context in
+                UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 768, height: 1024))
+                ("边际成本\nOpportunity cost\nEnglish and Chinese" as NSString).draw(in: CGRect(x: 40, y: 80, width: 680, height: 500), withAttributes: [.font: UIFont.systemFont(ofSize: 42), .foregroundColor: UIColor.black])
+            }
+            sample = scan
+            let imageURL = root.appendingPathComponent("original-scan.png")
+            guard let bytes = scan.pngData() else { throw NoteError.resourceUnavailable }
+            try bytes.write(to: imageURL)
+            let imported = try await NoteFileImporter.importFile(imageURL, notebookID: nil, store: store)
+            let document = try await store.create(imported)
+            let text = try await NoteFileImporter.visualSearchText(page: document.pages[0], store: store)
+            recognized = text
+            results["ocrEnglish"] = text.localizedCaseInsensitiveContains("opportunity")
+            results["ocrChinese"] = text.replacingOccurrences(of: " ", with: "").contains("边际成本")
+            results["ocrText"] = text
+            let page = document.pages[0]
+            try await store.cachePageOCR(documentID: document.id, pageID: page.id, sourceKey: page.visualIndexKey, text: text, error: nil)
+            results["ocrSearch"] = try await store.search("Opportunity").map(\.id) == [document.id]
+            let officeURL = root.appendingPathComponent("generated.docx")
+            try OfficeDocumentBuilder.createWord(at: officeURL, title: "Unrelated", paragraphs: ["动态生成的正文 searchable phrase"])
+            let officeDraft = try await NoteFileImporter.importFile(officeURL, notebookID: nil, store: store)
+            let office = try await store.create(officeDraft)
+            await session.open(using: store)
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                if try await store.search("动态生成").contains(where: { $0.id == office.id }) { break }
+                try await Task.sleep(for: .milliseconds(200))
+            }
+            results["officeAutomaticIndex"] = try await store.search("动态生成").map(\.id) == [office.id]
+            let source = String(repeating: "中文段落 and English text\n", count: 150)
+            let textURL = root.appendingPathComponent("generated.md")
+            try source.write(to: textURL, atomically: true, encoding: .utf8)
+            let note = try await NoteFileImporter.importFile(textURL, notebookID: nil, store: store)
+            results["textPagination"] = note.pages.count > 1 && note.pages.flatMap(\.elements).map(\.text).joined() == source
+            results["passed"] = ["ocrEnglish", "ocrChinese", "ocrSearch", "officeAutomaticIndex", "textPagination"].allSatisfy { results[$0] as? Bool == true }
+            status = results["passed"] as? Bool == true ? "全部检查通过" : "存在未通过的检查"
+        } catch { results["error"] = error.localizedDescription; results["passed"] = false; status = error.localizedDescription }
+        results["elapsedSeconds"] = Date().timeIntervalSince(started)
+        results["sampleDirectory"] = root.path
+        let output = root.deletingLastPathComponent().appendingPathComponent("search-qualification-results.json")
+        if let data = try? JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: output, options: .atomic) }
+    }
 }
 private struct QualificationPage: View {
     @State private var drawing: Data?

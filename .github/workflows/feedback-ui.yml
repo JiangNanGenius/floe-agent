@@ -8,6 +8,59 @@ concurrency:
   group: floe-feedback-ui-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  notes-content-search:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: FloeAgent/Qualification/NativeNotes
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build native Notes qualification host
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project FloeNotesNativeQualification.xcodeproj -scheme FloeNotesNativeQualification \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build-for-testing 2>&1 | tee build.log
+      - name: Qualify real OCR and workspace content imports on iPad and iPhone
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          status=0
+          for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
+            case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
+            xcodebuild -project FloeNotesNativeQualification.xcodeproj -scheme FloeNotesNativeQualification \
+              -destination "platform=iOS Simulator,name=$device" -derivedDataPath build \
+              -resultBundlePath "$name.xcresult" -parallel-testing-enabled NO \
+              -test-timeouts-enabled YES -maximum-test-execution-time-allowance 120 \
+              -only-testing:NativeNotesTests/NativeNotesTests/testScannedBilingualPageUsesRealVisionAndBecomesSearchable \
+              -only-testing:NativeNotesTests/NativeNotesTests/testWorkspaceOfficeAndTextImportsIndexContents \
+              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$name.log" || status=1
+          done
+          exit "$status"
+      - name: Retain original OCR samples and results
+        if: always()
+        run: |
+          for device in ipad iphone; do
+            if test -d "$device.xcresult"; then
+              mkdir -p "screenshots/$device"
+              xcrun xcresulttool export attachments --path "$device.xcresult" --output-path "screenshots/$device" || true
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feedback-notes-search-${{ github.sha }}
+          path: |
+            FloeAgent/Qualification/NativeNotes/*.log
+            FloeAgent/Qualification/NativeNotes/*.xcresult
+            FloeAgent/Qualification/NativeNotes/screenshots
+          retention-days: 14
   ipad-and-iphone:
     runs-on: xcode-27
     timeout-minutes: 45

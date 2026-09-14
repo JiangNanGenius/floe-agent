@@ -1,0 +1,13 @@
+{
+  "elapsedSeconds": 9.95041799545288,
+  "ocrChinese": true,
+  "ocrEnglish": true,
+  "ocrSearch": true,
+  "ocrText": "边际成本\nOpportunity cost\nEnglish and Chinese",
+  "officeAutomaticIndex": true,
+  "passed": true,
+  "scope": "Actual Notes importer, Vision and persistent search in simulator host",
+  "textPagination": true,
+  "device": "iPad mini (A17 Pro), iOS 27 simulator",
+  "testHost": "NativeNotes search fixture; not full App UI"
+}

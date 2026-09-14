@@ -6,6 +6,16 @@ This guide covers existing Floe workflows and the 1.7 internal beta (build 156).
 
 This guide includes the current development-branch workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
 
+## Current repair candidate: content search and workspace imports
+
+These instructions describe the development branch, not a newly delivered TestFlight build. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
+
+Notes searches names and document content across the library, shows excerpts and opens matching pages. Version-bound Office/OCR caches can be rebuilt from the document menu; incomplete indexing is visible. Use **Notes → + → Import from Floe workspace** to copy files from conversation or project workspaces into independent Notes storage. UTF-8 text and Markdown become editable paginated notes.
+
+Creative mode searches canvas names and node text, with folders, moves, renaming and folder dissolution that preserves canvases. Its assistant has consistent sizing, drag bounds and a reorganized text/model/voice composer. Conversation lists and batch management search titles and message content, including Chinese substrings.
+
+Main entries remain New task, Task center, Notes, Creative mode and Plugins, followed by project/conversation lists. Settings stays at the lower left. Appearance and speech are inside General; language packages are under Execution environments → selected project/session → Python·PyPI or Node.js·npm.
+
 ## 1.7 开发功能与使用边界 / Development features
 
 The development branch adds a media-workbench action to local MP4/MOV/M4V workspace previews. It carries the source automatically and offers trim, speed/volume, export settings, saved edit parameters and output playback. Full App/device interaction checks, shared queues and chat attachment handoff remain open. Menu availability depends on the installed build; see [status](FLOE_1_7_IMPLEMENTATION_STATUS.md).

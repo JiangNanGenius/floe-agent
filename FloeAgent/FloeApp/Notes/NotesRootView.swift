@@ -12,8 +12,10 @@ struct NotesRootView: View {
     @State private var section: SectionFilter = .recent
     @State private var newTitle = ""
     @State private var creation: Creation?
+    @State private var pendingCreation: (kind: Creation, title: String)?
     @State private var importing = false
     @State private var importingWorkspace = false
+    @State private var pendingWorkspaceImport: NoteDocument?
     @EnvironmentObject private var environment: AppEnvironment
     @State private var deleting: NoteDocument?
     @State private var renaming: RenameTarget?
@@ -93,7 +95,16 @@ struct NotesRootView: View {
                     renaming = nil
                 }
             }
-            .sheet(item: $creation) { kind in
+            .sheet(item: $creation, onDismiss: {
+                guard let pending = pendingCreation else { return }
+                pendingCreation = nil
+                if pending.kind == .notebook { session.createNotebook(pending.title) }
+                else if pending.kind == .word || pending.kind == .sheet || pending.kind == .slides {
+                    session.createOffice(extension: pending.kind == .word ? "docx" : pending.kind == .sheet ? "xlsx" : "pptx", title: pending.title, notebookID: selectedBook)
+                } else {
+                    session.create(kind: pending.kind == .map ? .mindMap : .notebook, title: pending.title, notebookID: selectedBook)
+                }
+            }) { kind in
                 NavigationStack {
                     Form { TextField("名称", text: $newTitle).accessibilityIdentifier("notes.create.title") }
                         .navigationTitle(kind.rawValue)
@@ -101,23 +112,25 @@ struct NotesRootView: View {
                             ToolbarItem(placement: .cancellationAction) { Button("取消") { creation = nil; newTitle = "" } }
                             ToolbarItem(placement: .confirmationAction) {
                                 Button("创建") {
-                                    if kind == .notebook { session.createNotebook(newTitle) }
-                                    else if kind == .word || kind == .sheet || kind == .slides {
-                                        session.createOffice(extension: kind == .word ? "docx" : kind == .sheet ? "xlsx" : "pptx", title: newTitle, notebookID: selectedBook)
-                                    }
-                                    else { session.create(kind: kind == .map ? .mindMap : .notebook, title: newTitle, notebookID: selectedBook) }
+                                    pendingCreation = (kind, newTitle)
                                     creation = nil; newTitle = ""
                                 }.disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                         }
                 }.presentationDetents([.medium])
             }
-            .sheet(isPresented: $importingWorkspace) {
+            .sheet(isPresented: $importingWorkspace, onDismiss: {
+                if let value = pendingWorkspaceImport {
+                    pendingWorkspaceImport = nil
+                    session.importDocument(value)
+                }
+            }) {
                 OfficeWorkspaceAttachmentPicker(environment: environment) { url in
                     guard let store = session.store else { throw NoteError.resourceUnavailable }
                     let value = try await NoteFileImporter.importFile(url, notebookID: selectedBook, store: store)
                     // Copy/import finishes before the picker releases a remote temporary file.
-                    session.importDocument(value)
+                    // Present the editor only after the workspace picker has dismissed.
+                    pendingWorkspaceImport = value
                 }
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, .plainText, UTType(exportedAs: "org.floeagent.note", conformingTo: .data)] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) }) { result in

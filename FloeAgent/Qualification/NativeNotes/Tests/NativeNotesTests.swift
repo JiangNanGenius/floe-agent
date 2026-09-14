@@ -6,9 +6,53 @@ import PencilKit
 import SwiftUI
 import WebKit
 import FloeNotes
+import FloeDocuments
 @testable import FloeNotesNativeQualification
 
 @MainActor final class NativeNotesTests: XCTestCase {
+    func testScannedBilingualPageUsesRealVisionAndBecomesSearchable() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 768, height: 1024)).image { context in
+            UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 768, height: 1024))
+            ("边际成本\nOpportunity cost\nEnglish and Chinese" as NSString).draw(in: CGRect(x: 40, y: 80, width: 680, height: 500), withAttributes: [.font: UIFont.systemFont(ofSize: 42), .foregroundColor: UIColor.black])
+        }
+        let file = root.appendingPathComponent("scan.png"); try XCTUnwrap(image.pngData()).write(to: file)
+        let imported = try await NoteFileImporter.importFile(file, notebookID: nil, store: store)
+        let document = try await store.create(imported)
+        let page = try XCTUnwrap(document.pages.first)
+        let text = try await NoteFileImporter.visualSearchText(page: page, store: store)
+        XCTAssertTrue(text.localizedCaseInsensitiveContains("opportunity"), text)
+        XCTAssertTrue(text.replacingOccurrences(of: " ", with: "").contains("边际成本"), text)
+        try await store.cachePageOCR(documentID: document.id, pageID: page.id, sourceKey: page.visualIndexKey, text: text, error: nil)
+        let hits = try await store.search("Opportunity")
+        XCTAssertEqual(hits.map(\.id), [document.id])
+        let attachment = XCTAttachment(image: image); attachment.name = "bilingual-scanned-page-original"; attachment.lifetime = .keepAlways; add(attachment)
+        let output = XCTAttachment(string: text); output.name = "bilingual-Vision-OCR-output"; output.lifetime = .keepAlways; add(output)
+    }
+
+    func testWorkspaceOfficeAndTextImportsIndexContents() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let file = root.appendingPathComponent("generated.docx")
+        try OfficeDocumentBuilder.createWord(at: file, title: "Unrelated title", paragraphs: ["边际成本与 opportunity cost"])
+        let imported = try await NoteFileImporter.importFile(file, notebookID: nil, store: store)
+        let office = try await store.create(imported)
+        let extracted = try await NoteFileImporter.officeSearchText(url: file)
+        try await store.cacheOfficeText(documentID: office.id, resourceID: try XCTUnwrap(office.officeResourceID), text: extracted, error: nil)
+        let hits = try await store.search("边际成本")
+        XCTAssertEqual(hits.map(\.id), [office.id])
+        let markdown = root.appendingPathComponent("generated.md")
+        let source = String(repeating: "中文段落 and English text\n", count: 150)
+        try source.write(to: markdown, atomically: true, encoding: .utf8)
+        let note = try await NoteFileImporter.importFile(markdown, notebookID: nil, store: store)
+        XCTAssertGreaterThan(note.pages.count, 1)
+        XCTAssertEqual(note.pages.flatMap(\.elements).map(\.text).joined(), source)
+        XCTAssertTrue(note.pages.flatMap(\.elements).allSatisfy { !$0.isAIGenerated })
+    }
+
     func testSourceNavigationKeepsMapSessionAndRejectsMissingPage() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

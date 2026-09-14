@@ -39,6 +39,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.floe.shell-smoke
+        ENABLE_DEBUG_DYLIB: NO
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: ../../FloeApp/Execution/FloeShellBridge.h
         CLANG_CXX_LANGUAGE_STANDARD: c++17
