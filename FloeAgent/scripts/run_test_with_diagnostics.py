@@ -88,6 +88,8 @@ def main():
     parser.add_argument("--timeout", type=float, default=900)
     parser.add_argument("--stall-timeout", type=float, default=180)
     parser.add_argument("--simulator-id", type=lambda value: str(uuid.UUID(value)).upper())
+    parser.add_argument("--defer-stall-until-tests", action="store_true",
+                        help="Allow a combined xcodebuild compile phase before applying the quiet-test deadline")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -99,7 +101,7 @@ def main():
     seen_tests = sampled = False
     # A prebuilt xctestrun has no compile stage. Its launch can stall before
     # XCTest emits the first test, which still needs bounded diagnostics.
-    execution_ready = args.simulator_id is not None
+    execution_ready = args.simulator_id is not None and not args.defer_stall_until_tests
     previous = b""
     reason = "exited"
     with path.open("wb") as log, path.open("rb") as reader:

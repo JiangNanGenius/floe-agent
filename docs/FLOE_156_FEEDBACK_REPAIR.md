@@ -8,6 +8,14 @@ The exact candidate is `ce7b514ed792f3cd17936a5ba55934f27eadfd9e` / `v1.7.0-beta
 
 Full App regression, SDK 27 and accepted-SDK iPad/iPhone import UI, signing, Apple processing and private-group availability remain open. Build 156 is still the latest verified TestFlight delivery. Earlier checkpoint statements below are a chronological history, not the current qualification result.
 
+## Node shutdown correction — replacement build 160
+
+The final build-159 attempt-1 log supersedes its stale live-log prefix: all 155 App tests passed in 92.111 seconds, but XCTest completion never returned. Disabling optional Xcode diagnostics did not fix this exit failure. Both release attempts were cancelled without archiving or uploading. A separate exact-source CI run, 34808379042, retains further diagnostics and Notes UI evidence.
+
+A desktop reproduction using the actual host script also hung on `process.exit(0)` while its command pipe stayed open. The sampled main thread was in `uv__threadpool_cleanup` → `uv_thread_join`; a filesystem worker remained in blocking `read`. The native bridge now configures its own command read descriptor as nonblocking, and the JS host uses bounded reads with a 20 ms retry instead of a permanently pending filesystem read. Descriptor ownership remains with the native bridge. Eight host regressions pass, including actual process exit after a completed job with the command writer still open, repeated workers, cancellation, live stdin and pinned package-manager startup. This is desktop evidence; build 160 must still pass complete App and dual-SDK release gates.
+
+Release App tests now retain bounded stall diagnostics for both SDKs. Their compile phase remains outside the quiet-test deadline; after tests begin, a stalled runner is sampled and returns a failure instead of waiting indefinitely. Five diagnostic-runner tests pass. Neither completed assertions nor forced driver termination satisfy the xcresult verifier.
+
 ## Changes under qualification
 
 - Remove the app-level 100-tool-call cap; preserve runtime no-progress, per-call timeout and output protections.

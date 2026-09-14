@@ -7,7 +7,9 @@ const decoder = new StringDecoder('utf8');
 const { Worker } = require('node:worker_threads');
 const inputFD = Number(process.argv[2] ?? 0);
 const outputFD = Number(process.argv[3] ?? 1);
-const input = fs.createReadStream(null, { fd: inputFD, autoClose: false });
+// The native owner supplies a nonblocking command pipe. Poll bounded reads
+// instead of parking a libuv filesystem worker on the idle pipe forever;
+// libuv joins that worker during process exit, including XCTest host exit.
 const output = fs.createWriteStream(null, { fd: outputFD, autoClose: false });
 let current = null;
 function reply(value) { output.write(JSON.stringify(value) + '\n'); }
@@ -70,9 +72,15 @@ function start(job) {
   });
 }
 let buffered = '';
-input.on('data', chunk => {
+let inputClosed = false;
+function closeInput() {
+  if (inputClosed) return;
+  inputClosed = true;
+  void stop('cancelled').finally(() => output.end());
+}
+function consume(chunk) {
   buffered += decoder.write(chunk);
-  if (Buffer.byteLength(buffered) > 2 * 1024 * 1024) { reply({ status: 'invalid', code: 125, stderr: 'Request size limit exceeded' }); input.destroy(); return; }
+  if (Buffer.byteLength(buffered) > 2 * 1024 * 1024) { reply({ status: 'invalid', code: 125, stderr: 'Request size limit exceeded' }); closeInput(); return; }
   let newline;
   while ((newline = buffered.indexOf('\n')) >= 0) {
     const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
@@ -82,6 +90,23 @@ input.on('data', chunk => {
       else start(request);
     } catch (error) { reply({ status: 'invalid', code: 125, stderr: String(error) }); }
   }
-});
-input.on('end', () => { void stop('cancelled').finally(() => output.end()); });
+}
+const commandBuffer = Buffer.allocUnsafe(16384);
+function readCommands() {
+  if (inputClosed) return;
+  // Bound each turn so a producer cannot starve worker exits/cancellation.
+  for (let count = 0; count < 64 && !inputClosed; count++) {
+    let length;
+    try { length = fs.readSync(inputFD, commandBuffer, 0, commandBuffer.length, null); }
+    catch (error) {
+      if (error.code === 'EAGAIN' || error.code === 'EWOULDBLOCK') break;
+      if (error.code === 'EINTR') continue;
+      reply({ status: 'failed', code: 125, stderr: String(error) }); closeInput(); return;
+    }
+    if (length === 0) { closeInput(); return; }
+    consume(commandBuffer.subarray(0, length));
+  }
+  if (!inputClosed) setTimeout(readCommands, 20);
+}
 reply({ status: 'ready', version: process.version });
+readCommands();

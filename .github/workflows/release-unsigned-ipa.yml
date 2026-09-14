@@ -192,11 +192,17 @@ jobs:
 
       - name: Verify Canvas, PiP, and timeline app regression contracts
         id: app_regression
+        timeout-minutes: 47
         run: |
           if [ -n "${{ steps.verified_ci.outputs.run_id }}" ]; then
             ditto "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult" "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult"
           else
-          xcodebuild \
+          floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
+          floe_test_device="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ids=[d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if ("iOS-"+sys.argv[1]+"-") in runtime for d in devices if d["name"] == "iPad mini (A17 Pro)"]; assert len(ids)==1, ids; print(ids[0])' "$floe_sdk_major")"
+          python3 scripts/run_test_with_diagnostics.py \
+            --output-dir "$RUNNER_TEMP/Floe-AppRegressionDiagnostics" \
+            --timeout 2700 --stall-timeout 420 --simulator-id "$floe_test_device" \
+            --defer-stall-until-tests -- xcodebuild \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -project FloeAgent.xcodeproj \
@@ -233,6 +239,7 @@ jobs:
           path: |
             ${{ runner.temp }}/FloeAgent-AppRegressionTests.xcresult
             ${{ runner.temp }}/FloeAgent-AppRegressionTests-SUMMARY.txt
+            ${{ runner.temp }}/Floe-AppRegressionDiagnostics/
             FloeAgent/Package.resolved
           if-no-files-found: ignore
 
@@ -471,8 +478,14 @@ jobs:
 
       - name: Verify focused app regressions with the accepted App Store SDK
         id: stable_app_regression
+        timeout-minutes: 47
         run: |
-          xcodebuild \
+          floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
+          floe_test_device="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ids=[d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if ("iOS-"+sys.argv[1]+"-") in runtime for d in devices if d["name"] == "iPad mini (A17 Pro)"]; assert len(ids)==1, ids; print(ids[0])' "$floe_sdk_major")"
+          python3 scripts/run_test_with_diagnostics.py \
+            --output-dir "$RUNNER_TEMP/Floe-StableAppRegressionDiagnostics" \
+            --timeout 2700 --stall-timeout 420 --simulator-id "$floe_test_device" \
+            --defer-stall-until-tests -- xcodebuild \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -project FloeAgent.xcodeproj \
@@ -499,6 +512,17 @@ jobs:
             --result-bundle "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
             --github-output "$GITHUB_OUTPUT" \
             --summary-output "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt"
+
+      - name: Preserve accepted-SDK App regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accepted-sdk-app-diagnostics-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: |
+            ${{ runner.temp }}/FloeStable-AppRegressionTests.xcresult
+            ${{ runner.temp }}/FloeStable-AppRegressionTests-SUMMARY.txt
+            ${{ runner.temp }}/Floe-StableAppRegressionDiagnostics/
+          if-no-files-found: ignore
 
       - name: Build accepted-SDK Notes import UI tests
         timeout-minutes: 30

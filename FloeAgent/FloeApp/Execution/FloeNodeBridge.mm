@@ -133,6 +133,13 @@ bool start(NSTimeInterval remaining) {
     int commands[2], results[2];
     if (pipe(commands) != 0) return false;
     if (pipe(results) != 0) { close(commands[0]); close(commands[1]); return false; }
+    // The persistent JS host must never leave a blocking fs.read in libuv's
+    // global pool: process exit joins that pool even when no job is active.
+    const int commandFlags = fcntl(commands[0], F_GETFL);
+    if (commandFlags < 0 || fcntl(commands[0], F_SETFL, commandFlags | O_NONBLOCK) < 0) {
+        close(commands[0]); close(commands[1]); close(results[0]); close(results[1]);
+        return false;
+    }
     h.commands = commands[1]; h.results = results[0];
     fcntl(h.commands, F_SETNOSIGPIPE, 1);
     NSArray<NSString *> *args = @[@"node", script, [NSString stringWithFormat:@"%d", commands[0]], [NSString stringWithFormat:@"%d", results[1]]];

@@ -1,0 +1,16 @@
+✔ runtime exits with the idle command pipe still open after a completed job (181.053125ms)
+✔ one host repeats workers, preserves cwd/env/stdin and bounds output (254.923583ms)
+✔ running cancellation and CPU timeout stop the worker before next job (351.26475ms)
+✔ pinned package manager entry points start on the shared host (677.659125ms)
+✔ worker routes relative async, stream, Buffer and file URL filesystem operations (137.704458ms)
+✔ live stdin accepts a line without waiting for EOF (199.38175ms)
+✔ cancellation releases a live stdin reader before the next job (383.71725ms)
+✔ sync stdin read and node - remain cancellable while no bytes arrive (512.95875ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2826.660958

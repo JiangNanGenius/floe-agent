@@ -6,10 +6,15 @@ const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
 const hostPath = path.resolve(__dirname, '../../FloeApp/Resources/NodeTools/host.cjs');
-function host(liveInput = false) {
-  const child = liveInput
-    ? spawn('python3', ['-c', 'import os, sys; os.set_blocking(3, False); os.execv(sys.argv[1], sys.argv[1:])', process.execPath, hostPath], { stdio: ['pipe', 'pipe', 'inherit', 'pipe'] })
-    : spawn(process.execPath, [hostPath], { stdio: ['pipe', 'pipe', 'inherit'] });
+function host(liveInput = false, exitWithOpenCommandPipe = false) {
+  const args = exitWithOpenCommandPipe
+    ? ['-e', `process.once('SIGUSR2', () => process.exit(0)); require(${JSON.stringify(hostPath)});`]
+    : [hostPath];
+  // Match the native bridge's command descriptor contract; fd 3 is the
+  // independent user stdin channel in the interactive cases.
+  const setup = `import os, sys; os.set_blocking(0, False); ${liveInput ? 'os.set_blocking(3, False); ' : ''}os.execv(sys.argv[1], sys.argv[1:])`;
+  const child = spawn('python3', ['-c', setup, process.execPath, ...args],
+    { stdio: liveInput ? ['pipe', 'pipe', 'inherit', 'pipe'] : ['pipe', 'pipe', 'inherit'] });
   const waiting = new Map();
   let ready;
   const started = new Promise(resolve => { ready = resolve; });
@@ -29,6 +34,26 @@ function request(id, source, extras = {}) {
   return { id, args: ['-e', source], cwd: process.cwd(), env: {}, maxOutputBytes: 1024, timeoutMs: 3000, ...extras };
 }
 function stdout(result) { return Buffer.from(result.stdout, 'base64').toString(); }
+test('runtime exits with the idle command pipe still open after a completed job', { timeout: 7000 }, async () => {
+  const h = host(false, true);
+  let timer;
+  const exited = new Promise((resolve, reject) => {
+    h.child.once('exit', (code, signal) => resolve({ code, signal }));
+    timer = setTimeout(() => reject(Error('Runtime exit waited for command pipe EOF')), 5000);
+  });
+  try {
+    await h.started;
+    assert.equal(stdout(await h.send(request('before-exit', 'console.log(42)'))), '42\n');
+    // Deliberately keep child.stdin open through exit; closing it would hide
+    // the libuv thread-pool join deadlock reproduced in the embedded host.
+    h.child.kill('SIGUSR2');
+    assert.deepEqual(await exited, { code: 0, signal: null });
+  } finally {
+    clearTimeout(timer);
+    if (h.child.exitCode === null) h.child.kill('SIGKILL');
+    h.close();
+  }
+});
 test('one host repeats workers, preserves cwd/env/stdin and bounds output', { timeout: 15000 }, async () => {
   const h = host(); await h.started;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'floe-node-test-'));

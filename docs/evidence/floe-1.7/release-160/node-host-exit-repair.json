@@ -1,0 +1,29 @@
+{
+  "scope": "desktop host regression; embedded iOS 18.20.4 and App shutdown still require cloud qualification",
+  "node": "v25.9.0",
+  "before": {
+    "scriptSource": "ce7b514ed792f3cd17936a5ba55934f27eadfd9e",
+    "openCommandPipeExit": "stalled beyond 4 seconds; owned probe killed after sample",
+    "sampleSHA256": "fece8e4406b195012aaf39263f029f0d3dfbb4e1fd492477f6dee2de0ea12a10",
+    "mainStack": [
+      "node::DefaultProcessExitHandlerInternal",
+      "uv__threadpool_cleanup",
+      "uv_thread_join",
+      "_pthread_join",
+      "__ulock_wait"
+    ],
+    "workerStack": [
+      "uv__fs_work",
+      "read"
+    ]
+  },
+  "after": {
+    "hostTests": 8,
+    "failed": 0,
+    "skipped": 0,
+    "exitCaseMilliseconds": 181.053125,
+    "logSHA256": "8624fc0f1873243861d58d59c62b6adc33f0a2d3a609afeb1a001ca3ddf6a324",
+    "iOS27BridgeSyntax": "passed with NodeMobile framework headers"
+  },
+  "nativeContract": "only the private command read descriptor is made nonblocking; host reads at most 64 x 16 KiB per turn and waits 20 ms when idle; EOF cancels active worker and flushes output"
+}

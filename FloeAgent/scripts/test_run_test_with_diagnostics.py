@@ -45,6 +45,27 @@ class TestDiagnosticRunner(unittest.TestCase):
         simulator.assert_called_once()
         self.assertEqual(simulator.call_args.args[0], identifier)
 
+    @patch.object(runner, "sample_simulator")
+    @patch.object(runner, "sample_children")
+    def test_combined_build_waits_for_tests_before_quiet_deadline(self, children, simulator):
+        result, summary, _ = self.invoke("import time; time.sleep(1.2); print('Test run started')",
+            "--timeout", "5", "--stall-timeout", "0.6", "--defer-stall-until-tests",
+            "--simulator-id", "11111111-2222-3333-4444-555555555555")
+        self.assertEqual(result, 0)
+        self.assertEqual(summary["reason"], "exited")
+        children.assert_not_called()
+        simulator.assert_not_called()
+
+    @patch.object(runner, "sample_simulator")
+    @patch.object(runner, "sample_children")
+    def test_combined_build_still_bounds_shutdown_after_tests(self, children, simulator):
+        result, summary, _ = self.invoke("import time; print('Test run started', flush=True); time.sleep(30)",
+            "--timeout", "5", "--stall-timeout", "0.6", "--defer-stall-until-tests",
+            "--simulator-id", "11111111-2222-3333-4444-555555555555")
+        self.assertEqual(result, 124)
+        self.assertEqual(summary["reason"], "stalled")
+        simulator.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

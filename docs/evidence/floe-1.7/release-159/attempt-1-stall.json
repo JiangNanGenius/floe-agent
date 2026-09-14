@@ -1,0 +1,40 @@
+{
+  "build": 159,
+  "source": "ce7b514ed792f3cd17936a5ba55934f27eadfd9e",
+  "tag": "v1.7.0-beta.16",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34804583803",
+  "attempt": 1,
+  "job": 103853818483,
+  "state": "cancelled; exact-tag attempt 2 started",
+  "lastDownloadedLogTimestamp": "2026-09-14T04:41:34.4431980Z",
+  "partialLogBytes": 27354037,
+  "partialLogSHA256": "0bf08a252edfe3935be69865e3e1d266a9253c8043725cc1f6d79de9eee43d37",
+  "passedGates": [
+    "1266 Swift test executions",
+    "environment/package/media/Node module qualification",
+    "SDK 27 full App simulator Release build"
+  ],
+  "unconfirmed": [
+    "SDK 27 App regression result",
+    "Notes full App iPad/iPhone import UI",
+    "device archive",
+    "signing/upload",
+    "Apple availability"
+  ],
+  "diagnosticCI": {
+    "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34808379042",
+    "source": "ce7b514ed792f3cd17936a5ba55934f27eadfd9e",
+    "lastDownloadedLogTimestamp": "2026-09-14T05:21:54.8642080Z",
+    "status": "ongoing; fresh build output does not establish test success"
+  },
+  "interpretation": "Final log supersedes the partial-log inference: compilation finished and all App assertions passed, then test completion stalled for over 30 minutes. The live log API returned a stale prefix. Test shutdown/runner completion needs diagnosis; not a confirmed compiler failure.",
+  "finalLogSHA256": "e876a9be43a92e1787c76ddc2ebabc8e5eb5891a083b2f1f6f5f5adbc3463620",
+  "appTestLog": {
+    "executions": 155,
+    "suites": 12,
+    "durationSeconds": 92.111,
+    "result": "all assertions passed; xcodebuild never completed and acceptance remains unconfirmed",
+    "completedAt": "2026-09-14T04:49:02.7013980Z"
+  },
+  "retryJob": 103868201365
+}
