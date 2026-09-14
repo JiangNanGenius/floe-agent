@@ -82,6 +82,38 @@ import PencilKit
         XCTAssertTrue(app.buttons["palette.placement.upperRight"].isSelected)
     }
 
+    func testBrushParametersApplyAndPersistAcrossReopen() {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        let app = XCUIApplication()
+        app.launch()
+        defer { app.terminate() }
+        app.buttons["palette.brushes"].tap()
+        app.buttons["notes.ink.brush.pen"].tap()
+        let thin = app.buttons["notes.ink.width.preset.0"]
+        let thick = app.buttons["notes.ink.width.preset.2"]
+        XCTAssertTrue(thin.waitForExistence(timeout: 5))
+        thin.tap()
+        let thinValue = app.staticTexts["notes.ink.width.value"].label
+        thick.tap()
+        let thickValue = app.staticTexts["notes.ink.width.value"].label
+        XCTAssertNotEqual(thinValue, thickValue)
+        let opacity = app.sliders["notes.ink.opacity.slider"]
+        if !opacity.isHittable { app.scrollViews["notes.ink.parameters"].swipeUp() }
+        XCTAssertTrue(opacity.isHittable)
+        opacity.adjust(toNormalizedSliderPosition: 0.35)
+        let savedOpacity = opacity.value as? String
+        let capture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        capture.name = "native-brush-parameters"; capture.lifetime = .keepAlways; add(capture)
+        app.buttons["palette.brushes.done"].tap()
+        app.terminate()
+        app.launch()
+        app.buttons["palette.brushes"].tap()
+        XCTAssertEqual(app.staticTexts["notes.ink.width.value"].label, thickValue)
+        XCTAssertEqual(app.sliders["notes.ink.opacity.slider"].value as? String, savedOpacity)
+        app.buttons["palette.brushes.done"].tap()
+    }
+
     func testAllBrushesReachNativeCanvasAndRememberPen() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -104,7 +136,8 @@ import PencilKit
             app.buttons["palette.brushes.done"].tap()
             let closed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: button)
             wait(for: [closed], timeout: 10)
-            let canvas = app.otherElements["palette.canvas"]
+            let canvas = app.descendants(matching: .any).matching(identifier: "palette.canvas").firstMatch
+            XCTAssertTrue(canvas.waitForExistence(timeout: 5))
             let applied = expectation(for: NSPredicate(format: "value == %@", inkType.rawValue), evaluatedWith: canvas)
             wait(for: [applied], timeout: 5)
         }
@@ -113,6 +146,6 @@ import PencilKit
         app.buttons["palette.brushes.done"].tap()
         app.terminate()
         app.launch()
-        XCTAssertEqual(app.otherElements["palette.canvas"].value as? String, PKInkingTool.InkType.fountainPen.rawValue)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "palette.canvas").firstMatch.value as? String, PKInkingTool.InkType.fountainPen.rawValue)
     }
 }

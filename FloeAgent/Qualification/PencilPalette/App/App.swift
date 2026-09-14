@@ -37,14 +37,12 @@ private struct PaletteFixture: View {
                 Button("画笔") { showingBrushes.toggle() }
                     .accessibilityIdentifier("palette.brushes")
                     .popover(isPresented: $showingBrushes) {
-                        VStack {
-                            Button("完成") { showingBrushes = false }
-                                .frame(minHeight: 44).accessibilityIdentifier("palette.brushes.done")
-                            NotesBrushPicker(selected: tool == .marker ? .marker : inkPreferences.selectedPen) { kind in
+                        NotesInkOptionsPanel(selected: tool == .marker ? .marker : inkPreferences.selectedPen,
+                            preferences: inkPreferences, select: { kind in
                                 if kind == .marker { tool = .marker }
                                 else { inkPreferences.select(kind); tool = .pen }
-                            }
-                        }.padding(16).frame(width: 320).presentationCompactAdaptation(.popover)
+                            }, close: { showingBrushes = false }, doneIdentifier: "palette.brushes.done")
+                            .presentationCompactAdaptation(.popover)
                     }
             }.frame(height: 52)
             DrawingViewport(tool: tool == .marker ? inkPreferences.inkingTool(for: .marker) : inkPreferences.inkingTool(for: inkPreferences.selectedPen))
@@ -59,7 +57,7 @@ private struct PaletteFixture: View {
 private struct DrawingViewport: UIViewRepresentable {
     let tool: PKInkingTool
     func makeUIView(context: Context) -> PKCanvasView {
-        let view = PKCanvasView()
+        let view = NativeToolCanvas()
         view.backgroundColor = .secondarySystemBackground
         view.drawingPolicy = .pencilOnly
         view.maximumSupportedContentVersion = .latest
@@ -69,6 +67,14 @@ private struct DrawingViewport: UIViewRepresentable {
     }
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
         uiView.tool = tool
-        uiView.accessibilityValue = (uiView.tool as? PKInkingTool)?.inkType.rawValue
+    }
+}
+
+// Expose the actual native tool for qualification rather than assuming the
+// element category or synthesized value of PencilKit's OS-specific AX tree.
+private final class NativeToolCanvas: PKCanvasView {
+    override var accessibilityValue: String? {
+        get { (tool as? PKInkingTool)?.inkType.rawValue }
+        set { }
     }
 }

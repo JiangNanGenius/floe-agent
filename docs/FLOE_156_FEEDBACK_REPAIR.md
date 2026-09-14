@@ -224,3 +224,22 @@ The replacement candidate uses build 158 and preserves the failed 157 tag unchan
 
 
 The a6a57e9 full-App iPad import case passed in 60.917 seconds: one case, zero failures/skips, four exported PNG attachments including the actual PDF body-search result. The iPhone case failed at its workspace-selection tap: a global title query selected the offscreen sidebar conversation (`sidebar.conversation.…`, x = -342) instead of the picker row with the same name. The test now scopes selection to the existing `workspace.import.source.` identifier and title. This is a locator failure, not evidence that the phone import succeeded or failed. Build 158 release run 34803874180 was cancelled before archiving/upload to avoid knowingly running that stale locator. Build 159 will qualify the corrected test; neither failed candidate tag is moved.
+
+### Build 167 brush parameter follow-up
+
+The `e5a42be` component run [34849747817](https://github.com/JiangNanGenius/floe-agent/actions/runs/34849747817)
+failed overall. Its arc placement/tap/cancel/persistence UI case passed on all
+four SDK/device paths, but native ink roundtrip and brush-canvas accessibility
+checks failed. These failures are retained in private qualification evidence.
+The revised checks compare the actual native tool's canonical stroke ink across
+save/reopen (including identical rendered pixels), and read the fixture canvas
+through its actual native tool rather than assuming its accessibility category.
+A local runtime attempt could not connect to simulator testmanagerd; it is not
+a passing test. The revised native host builds successfully, and runtime checks
+are being rerun in four independent cloud device jobs.
+
+The latest user-requested chooser replaces large brush cards with a compact tool
+rack and one selected-stroke preview. The production panel is reused directly in
+the qualification host. Per-brush opacity joins existing width/color persistence,
+with backward-compatible decoding, native range clamping, width presets and
+continuous controls. Full App and TestFlight delivery remain pending.

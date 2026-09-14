@@ -40,3 +40,29 @@ stroke samples and stores each type's color and width separately, preserving
 legacy pen/highlighter preferences. The pen slot restores the last non-marker
 brush. Width limits come from each native ink type. Native serialization,
 nonempty rendering and canvas-tool application are qualification requirements.
+
+## Brush chooser and parameters
+
+The main brush panel follows the hierarchy seen in the official
+[Goodnotes Pen tool reference](https://support.goodnotes.com/hc/en-us/articles/7353756785679-Write-and-customize-ink-with-the-Pen-tool):
+current stroke preview, compact pen-style controls, then parameters.
+[Notability's tool guide](https://support.gingerlabs.com/hc/en-us/articles/4867633230234-Getting-Started-with-Notability)
+also places color, line weight and style behind a second tap on the current pen.
+The references guide interaction, without reusing their graphics.
+
+Floe provides eight native brush styles in a compact two-row rack. The selected
+brush has one larger native stroke preview instead of eight large sample cards.
+Thin/medium/thick width shortcuts and a continuous slider use that brush's native
+range; the number is in page points, not a claimed physical millimeter size.
+Opacity (10–100%) is applied to the native tool's ink color. Six common colors and
+a custom color picker remain in the same scrollable panel, with a fixed Done button.
+Color, width and opacity are stored separately per brush. Older snapshots without
+opacity retain their settings and get their previous opacity (highlighter 45%,
+other brushes 100%). Preview rendering responds to the selected parameters.
+Pressure curves, nib sharpness and stabilization are not exposed as nonfunctional
+controls: the current PencilKit integration does not offer those adjustments.
+The tip arc remains a quick tool switcher; these controls belong to the main panel.
+
+Qualification reuses the production parameter panel in the small native host.
+It checks width presets and opacity across relaunch, the actual PKInkingTool
+values in unit tests, eight native brush modes, and native drawing save/reopen.

@@ -79,10 +79,6 @@ struct NotesDocumentEditor: View {
         Binding(get: { inkPreferences.configuration(for: activeBrush).color },
                 set: { inkPreferences.setColor($0, for: activeBrush) })
     }
-    private var inkWidth: Binding<Double> {
-        Binding(get: { inkPreferences.configuration(for: activeBrush).width },
-                set: { inkPreferences.setWidth($0, for: activeBrush) })
-    }
     private var page: NotePage? { document.pages.first { $0.id == pageID } ?? document.pages.first }
     private var mapImageIDs: Set<UUID> { Set(document.nodes.compactMap(\.imageResourceID)) }
     private var selectedMapNode: MindMapNode? {
@@ -531,7 +527,7 @@ struct NotesDocumentEditor: View {
                             .frame(width: 44, height: 44)
                     }.accessibilityLabel("笔型、颜色与粗细")
                         .accessibilityIdentifier("notes.ink.options")
-                        .popover(isPresented: $showingInkOptions) { inkOptions.padding(20).frame(width: 320).presentationCompactAdaptation(.popover) }
+                        .popover(isPresented: $showingInkOptions) { inkOptions.presentationCompactAdaptation(.popover) }
                 }
                 Divider().frame(height: 24)
                 if #available(iOS 27.0, *), selectedStrokeCount > 0 {
@@ -615,40 +611,12 @@ struct NotesDocumentEditor: View {
     }
 
     private var inkOptions: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("画笔").font(.headline)
-                Spacer()
-                Button("完成") { showingInkOptions = false }
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityIdentifier("notes.ink.done")
-            }
-            NotesBrushPicker(selected: activeBrush) { kind in
-                if kind == .marker { selectTool(.marker) }
-                else { inkPreferences.select(kind); selectTool(.pen) }
-            }
-            HStack(spacing: 2) {
-                ForEach(["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"], id: \.self) { hex in
-                    Button { inkColor.wrappedValue = hex } label: {
-                        Circle().fill(Color(uiColor: NotePageRenderer.color(hex)))
-                            .frame(width: 26, height: 26)
-                            .overlay { if inkColor.wrappedValue == hex { Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(hex == "#FACC15" ? .black : .white) } }
-                            .frame(width: 44, height: 44)
-                    }.accessibilityLabel("颜色 \(hex)")
-                }
-            }
-            ColorPicker("自定颜色", selection: Binding(get: { Color(uiColor: NotePageRenderer.color(inkColor.wrappedValue)) }, set: { color in
-                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-                if UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) {
-                    inkColor.wrappedValue = String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
-                }
-            }), supportsOpacity: false)
-            HStack { Text("粗细"); Spacer(); Text(inkWidth.wrappedValue, format: .number.precision(.fractionLength(1))).monospacedDigit() }
-            Slider(value: inkWidth, in: activeBrush.widthRange).accessibilityLabel("画笔粗细")
-        }
-        }.frame(maxHeight: 520)
+        NotesInkOptionsPanel(selected: activeBrush, preferences: inkPreferences, select: { kind in
+            if kind == .marker { selectTool(.marker) }
+            else { inkPreferences.select(kind); selectTool(.pen) }
+        }, close: { showingInkOptions = false })
     }
+
 }
 
 private struct MindMapOutlineView: View {
