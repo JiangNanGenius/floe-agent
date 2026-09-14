@@ -372,7 +372,7 @@ struct NotesDocumentEditor: View {
             }
         }.padding(.horizontal, 8).padding(.vertical, 4)
             .background(.bar)
-            .accessibilityIdentifier("notes.editor.header")
+            .buttonStyle(NotesToolbarButtonStyle())
     }
 
     private var headerTitle: some View {
@@ -487,7 +487,7 @@ struct NotesDocumentEditor: View {
                             .frame(width: 44, height: 44)
                     }.accessibilityLabel("画笔颜色与粗细")
                         .accessibilityIdentifier("notes.ink.options")
-                        .popover(isPresented: $showingInkOptions) { inkOptions.padding(20).frame(width: 300).presentationCompactAdaptation(.popover) }
+                        .popover(isPresented: $showingInkOptions) { inkOptions.padding(20).frame(width: 320).presentationCompactAdaptation(.popover) }
                 }
                 Divider().frame(height: 24)
                 if #available(iOS 27.0, *), selectedStrokeCount > 0 {
@@ -533,7 +533,7 @@ struct NotesDocumentEditor: View {
                         session.apply([.insertPage(NotePage(), at: document.pages.count)], title: "新增页面", documentID: document.id)
                     }
                 } label: { Label("更多", systemImage: "ellipsis").labelStyle(.iconOnly).frame(width: 44, height: 44) }
-            }.buttonStyle(.plain).foregroundStyle(.primary).padding(.horizontal, 8).padding(.vertical, 4)
+            }.buttonStyle(NotesToolbarButtonStyle()).foregroundStyle(.primary).padding(.horizontal, 8).padding(.vertical, 4)
         }.background(.bar)
             .accessibilityIdentifier("notes.writing.tools")
     }
@@ -591,20 +591,20 @@ struct NotesDocumentEditor: View {
                 Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
                     .disabled(!session.canRedo || session.pendingWrites > 0)
             }.frame(minHeight: 44)
-        }.padding(16).frame(width: 308)
-            .accessibilityIdentifier("notes.pencil.palette")
+        }.padding(16).frame(width: 320)
+            .buttonStyle(NotesToolbarButtonStyle())
     }
 
     private var inkOptions: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(tool == .marker ? "荧光笔" : "画笔").font(.headline)
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 ForEach(["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"], id: \.self) { hex in
                     Button { inkColor.wrappedValue = hex } label: {
                         Circle().fill(Color(uiColor: NotePageRenderer.color(hex)))
                             .frame(width: 26, height: 26)
                             .overlay { if inkColor.wrappedValue == hex { Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(hex == "#FACC15" ? .black : .white) } }
-                            .frame(width: 40, height: 44)
+                            .frame(width: 44, height: 44)
                     }.accessibilityLabel("颜色 \(hex)")
                 }
             }
@@ -617,6 +617,21 @@ struct NotesDocumentEditor: View {
             HStack { Text("粗细"); Spacer(); Text(inkWidth.wrappedValue, format: .number.precision(.fractionLength(1))).monospacedDigit() }
             Slider(value: inkWidth, in: tool == .marker ? 4...40 : 0.5...12, step: 0.5).accessibilityLabel("画笔粗细")
         }
+    }
+}
+
+// Put the hit region inside the button label. A frame around a Button can
+// reserve space while leaving only the small glyph interactive. Do not attach
+// a shared accessibility identifier to toolbar stacks: SwiftUI propagates it
+// to the individual controls and masks their own identifiers.
+private struct NotesToolbarButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.55 : 1) : 0.35)
     }
 }
 

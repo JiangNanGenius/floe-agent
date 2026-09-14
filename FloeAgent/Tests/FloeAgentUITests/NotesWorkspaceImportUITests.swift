@@ -44,7 +44,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         capture("notes-workspace-import")
         file.tap()
         let back = app.buttons["notes.back"]
-        XCTAssertTrue(back.waitForExistence(timeout: 20))
+        let editorAppeared = back.waitForExistence(timeout: 20)
         // Full-screen presentation can expose a control before its transition
         // makes it interactive. Require the foreground control, not a covered
         // library navigation item, and retain the tree for a failing transition.
@@ -52,10 +52,13 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         tree.name = "notes-editor-after-import-tree"
         tree.lifetime = .keepAlways
         add(tree)
+        XCTAssertTrue(editorAppeared)
         let editorReady = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: back)
         wait(for: [editorReady], timeout: 10)
         XCTAssertEqual(app.buttons.matching(identifier: "notes.back").count, 1)
         XCTAssertTrue(back.isHittable)
+        XCTAssertGreaterThanOrEqual(back.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
         XCTAssertFalse(app.navigationBars["从工作区导入"].exists)
         XCTAssertFalse(app.textFields["notes.search"].isHittable)
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
@@ -67,9 +70,13 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertLessThan(tools.frame.maxY - back.frame.minY, 120)
         let quickMenu = app.buttons["notes.pencil.quickMenu"]
         XCTAssertTrue(quickMenu.isHittable)
+        XCTAssertGreaterThanOrEqual(quickMenu.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(quickMenu.frame.height, 44)
         quickMenu.tap()
         let marker = app.buttons["notes.pencil.quickMenu.highlighter"]
         XCTAssertTrue(marker.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(marker.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(marker.frame.height, 44)
         marker.tap()
         XCTAssertTrue(marker.isSelected)
         capture("notes-pencil-quick-menu")
