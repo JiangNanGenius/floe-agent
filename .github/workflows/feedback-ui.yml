@@ -6,9 +6,16 @@ on:
         description: 'Only qualify the production Pencil palette presenter on both devices and SDKs'
         type: boolean
         default: false
+      palette_unit_only:
+        description: 'Only run native brush unit tests; do not claim UI qualification'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       palette_only:
+        type: boolean
+        default: false
+      palette_unit_only:
         type: boolean
         default: false
 permissions:
@@ -18,7 +25,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   notes-content-search:
-    if: ${{ !inputs.palette_only }}
+    if: ${{ !inputs.palette_only && !inputs.palette_unit_only }}
     runs-on: xcode-27
     timeout-minutes: 40
     env:
@@ -72,7 +79,7 @@ jobs:
             FloeAgent/Qualification/NativeNotes/screenshots
           retention-days: 14
   ipad-and-iphone:
-    if: ${{ !inputs.palette_only }}
+    if: ${{ !inputs.palette_only && !inputs.palette_unit_only }}
     runs-on: xcode-27
     timeout-minutes: 45
     env:
@@ -150,6 +157,7 @@ jobs:
       DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
       PALETTE_DEVICE: ${{ matrix.device }}
       PALETTE_DEVICE_KEY: ${{ matrix.device_key }}
+      PALETTE_UNIT_ONLY: ${{ inputs.palette_unit_only }}
     defaults:
       run:
         working-directory: FloeAgent/Qualification/PencilPalette
@@ -167,8 +175,10 @@ jobs:
         timeout-minutes: 12
         run: |
           set -o pipefail
+          test_scope=()
+          if [[ "$PALETTE_UNIT_ONLY" == "true" ]]; then test_scope=(-only-testing:PencilPaletteUnitTests); fi
           xcodebuild -project FloePencilPaletteQualification.xcodeproj -scheme FloePencilPaletteQualification \
-            -destination "platform=iOS Simulator,name=$PALETTE_DEVICE" -derivedDataPath build \
+            "${test_scope[@]}" -destination "platform=iOS Simulator,name=$PALETTE_DEVICE" -derivedDataPath build \
             -resultBundlePath "$PALETTE_DEVICE_KEY.xcresult" -parallel-testing-enabled NO \
             -collect-test-diagnostics never -test-timeouts-enabled YES \
             -maximum-test-execution-time-allowance 240 CODE_SIGNING_ALLOWED=NO test-without-building \
@@ -183,7 +193,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pencil-palette-${{ matrix.xcode }}-${{ matrix.device_key }}-${{ github.sha }}
+          name: pencil-palette${{ inputs.palette_unit_only && '-unit' || '' }}-${{ matrix.xcode }}-${{ matrix.device_key }}-${{ github.sha }}
           path: |
             FloeAgent/Qualification/PencilPalette/*.log
             FloeAgent/Qualification/PencilPalette/*.xcresult

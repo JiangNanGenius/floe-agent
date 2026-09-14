@@ -92,7 +92,25 @@ import PencilKit
             // contracts (e.g. monoline can produce canonical pen ink).
             let originalInk = sample.strokes.first?.ink.inkType
             print("Native brush \(kind.rawValue): stroke=\(String(describing: originalInk)), reopened=\(String(describing: reopened.strokes.first?.ink.inkType))")
-            XCTAssertEqual(reopened.strokes.first?.ink.inkType, originalInk)
+            let restoredInk = reopened.strokes.first?.ink.inkType
+            if kind == .monoline {
+                // SDK 26/27 serialize this native writing mode as pen ink.
+                // Accept only that known alias; geometry and pixels must still
+                // survive below. The UI case separately checks the active mode.
+                XCTAssertTrue(restoredInk == originalInk || restoredInk == .pen)
+            } else {
+                XCTAssertEqual(restoredInk, originalInk)
+            }
+            let originalPath = try XCTUnwrap(sample.strokes.first?.path)
+            let restoredPath = try XCTUnwrap(reopened.strokes.first?.path)
+            XCTAssertEqual(restoredPath.count, originalPath.count)
+            for (before, after) in zip(originalPath, restoredPath) {
+                XCTAssertEqual(after.location.x, before.location.x, accuracy: 0.001)
+                XCTAssertEqual(after.location.y, before.location.y, accuracy: 0.001)
+                XCTAssertEqual(after.size.width, before.size.width, accuracy: 0.001)
+                XCTAssertEqual(after.size.height, before.size.height, accuracy: 0.001)
+                XCTAssertEqual(after.opacity, before.opacity, accuracy: 0.001)
+            }
             XCTAssertFalse(reopened.bounds.isEmpty)
             let image = reopened.image(from: CGRect(x: 0, y: 0, width: 110, height: 32), scale: 2)
             let png = try XCTUnwrap(image.pngData())

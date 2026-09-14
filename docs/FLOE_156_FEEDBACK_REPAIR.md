@@ -243,3 +243,15 @@ rack and one selected-stroke preview. The production panel is reused directly in
 the qualification host. Per-brush opacity joins existing width/color persistence,
 with backward-compatible decoding, native range clamping, width presets and
 continuous controls. Full App and TestFlight delivery remain pending.
+
+Run [34853249242](https://github.com/JiangNanGenius/floe-agent/actions/runs/34853249242)
+at `f6874d5` completed all three production component UI cases on all four
+SDK/device paths (12 UI executions passed): eight native tools, width/opacity
+controls and relaunch persistence, and three arc placements at three anchors.
+The four parameter/migration unit cases also passed on every path. The remaining
+failure was the strict ink-identifier equality in the roundtrip test: native
+monoline is written as pen ink on both SDKs, with identical rendered PNG output.
+The revised test permits only this observed alias, additionally checks every
+control point's position, dimensions and opacity, and still requires identical
+rendering. Only those unit checks need rerunning; production UI source is unchanged.
+Original component screenshots remain separate from complete App screenshots.
