@@ -1,0 +1,25 @@
+{
+  "sourceCommit": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34864482336",
+  "scope": "Full App Notes import, fullscreen editor, palette, brush selection, tabs, header focus, body search. SDK 27 simulator, not physical Pencil gestures.",
+  "devices": {
+    "ipad": {
+      "totalTestCount": 1,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "expectedFailures": 0,
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch",
+      "result": "Passed"
+    },
+    "iphone": {
+      "totalTestCount": 1,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "expectedFailures": 0,
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch",
+      "result": "Passed"
+    }
+  }
+}

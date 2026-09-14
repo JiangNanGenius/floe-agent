@@ -79,3 +79,13 @@ in the [unit qualification](evidence/floe-1.7/release-167/brush-unit-qualificati
 | iPad: eight brush styles | iPhone: changed width and opacity |
 | --- | --- |
 | ![Native iPad brush chooser](evidence/floe-1.7/release-167/brush-component-screenshots/ipad-brush-chooser.png) | ![Native iPhone brush width and opacity](evidence/floe-1.7/release-167/brush-component-screenshots/iphone-width-opacity.png) |
+
+## Build 172 full-App captures
+
+The final source passed the SDK 27 Notes import/brush/tabs/search case on both iPad and iPhone. These original full-App captures supersede component-host screenshots for App layout evidence; they do not establish physical Pencil Pro gesture acceptance.
+
+<img src="evidence/floe-1.7/release-172/screenshots/ipad-notes-pencil-quick-menu-open.png" width="640" alt="Full App iPad open tool arc">
+
+<img src="evidence/floe-1.7/release-172/screenshots/iphone-notes-native-brushes.png" width="320" alt="Full App iPhone brush settings">
+
+[Original capture metadata and hashes](evidence/floe-1.7/release-172/screenshots/manifest.json).

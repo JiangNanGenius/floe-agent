@@ -8,6 +8,14 @@ This guide includes the current development-branch workflow upgrade. See [scope,
 
 ## Current repair candidate: content search and workspace imports
 
+Build 172 adds eight native brushes with independent color, width and opacity, plus document tabs and a collapsible header that keeps writing tools visible. Tap the current pen or color dot to adjust its settings.
+
+<img src="evidence/floe-1.7/release-172/screenshots/ipad-notes-native-brushes.png" width="640" alt="Build 172 iPad brush styles, width and opacity">
+
+<img src="evidence/floe-1.7/release-172/screenshots/ipad-notes-document-tabs.png" width="640" alt="Build 172 document tabs above the writing tools">
+
+These unedited SDK 27 full-App simulator captures accompany passing iPad and iPhone Notes UI cases. [Capture provenance](evidence/floe-1.7/release-172/screenshots/manifest.json). Physical Pencil gestures remain for device testing.
+
 These instructions describe the development branch, not a newly delivered TestFlight build. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
 
 <img src="validation/floe-156-feedback/screenshots/full-app-build164-sdk27/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">

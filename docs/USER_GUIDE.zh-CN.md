@@ -1,5 +1,13 @@
 # Floe Agent 使用指南
 
+Build 172 增加八种原生笔型，各自保存颜色、粗细和不透明度；再次点当前笔或颜色圆点即可调整。文档标签支持切换和关闭，关闭标签不会删除文档。顶部抬头可收起，书写工具保留。
+
+<img src="evidence/floe-1.7/release-172/screenshots/ipad-notes-native-brushes.png" width="640" alt="Build 172 iPad 画笔参数：笔型、粗细与不透明度">
+
+<img src="evidence/floe-1.7/release-172/screenshots/ipad-notes-document-tabs.png" width="640" alt="Build 172 文档标签与保留的书写工具栏">
+
+以上为 SDK 27 完整 App 模拟器测试中的原始截图，对应 iPad 和 iPhone 手记操作测试均通过。[截图来源](evidence/floe-1.7/release-172/screenshots/manifest.json)。真实 Pencil 手势仍由用户真机检查。
+
 [English](USER_GUIDE.md) · [官方网站](https://www.floe-agent.com/) · [中文 README](../README.zh-CN.md) · [安全策略](../SECURITY.zh-CN.md)
 
 本指南覆盖现有 Floe 工作流与1.7 内部测试版（156）的内容，界面以已安装构建为准。请结合[1.7 实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)和[升级与恢复](FLOE_1_7_MIGRATION.md)阅读；源码提交或构建成功不代表 TestFlight 已可安装。

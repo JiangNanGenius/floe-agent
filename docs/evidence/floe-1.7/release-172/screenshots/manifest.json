@@ -1,0 +1,39 @@
+{
+  "sourceCommit": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34864482336",
+  "scope": "Full App SDK 27 simulator screenshots from passing NotesWorkspaceImportUITests; original unedited captures of synthetic fixtures. No physical-device claim.",
+  "captures": [
+    {
+      "file": "ipad-notes-document-tabs.png",
+      "original": "84FA5EC5-4A4D-4354-8283-0EE76B0DF206.png",
+      "sha256": "2d8b5724c4df8f3f517f8506d4dd21c50e44a3cee575ab641dd08422b5625db0",
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789404219.29
+    },
+    {
+      "file": "ipad-notes-native-brushes.png",
+      "original": "5413C0BA-D2B9-4C36-9730-29CFF5CDB277.png",
+      "sha256": "cbb3854d9bfcb1c1710dbbb9c21e21bbe896d52fecfb47642bbc5f1a68b77f1d",
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789404182.431
+    },
+    {
+      "file": "ipad-notes-pencil-quick-menu-open.png",
+      "original": "362984C6-EE62-4817-8662-53224C3E24FB.png",
+      "sha256": "5faaf914c5b0764ab29326d2ef7cf3b8976f69f0f44aec1622608110de76e70e",
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789404173.63
+    },
+    {
+      "file": "iphone-notes-native-brushes.png",
+      "original": "43958229-9EC9-4D0B-9A22-5B288B6ECE5F.png",
+      "sha256": "1332f8d72b89cd1f16981adb7aadc773052a8e14e429f2f0ce7eeb638f87d90e",
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch()",
+      "device": "iPhone 17 Pro",
+      "timestamp": 1789404540.302
+    }
+  ]
+}
