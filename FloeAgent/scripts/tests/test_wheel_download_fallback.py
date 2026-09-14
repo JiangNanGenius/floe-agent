@@ -9,16 +9,24 @@ import unittest
 
 
 class WheelDownloadFallbackTests(unittest.TestCase):
-    def exercise(self, *, corrupt=False, url='https://github.com/example/wheels/releases/download/v1/package.whl'):
+    def exercise(self, *, corrupt=False, api_fails=False, url='https://github.com/example/wheels/releases/download/v1/package.whl'):
         script = Path(__file__).parents[1] / 'install_python_binary_packages.sh'
         function = re.search(r'^download_wheel\(\) \{.*?^\}', script.read_text(), re.M | re.S).group()
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             tools = root / 'bin'; tools.mkdir()
             cache = root / 'cache'; cache.mkdir()
-            (tools / 'curl').write_text('#!/bin/bash\nexit 56\n')
+            (tools / 'curl').write_text('''#!/bin/bash
+if [ "$FLOE_TEST_API_FAIL" != 1 ]; then exit 56; fi
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then shift; printf pinned-wheel > "$1"; exit 0; fi
+  shift
+done
+exit 2
+''')
             (tools / 'gh').write_text('''#!/bin/bash
 printf invoked > "$FLOE_TEST_GH_CALLED"
+if [ "$FLOE_TEST_API_FAIL" = 1 ]; then exit 1; fi
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --output ]; then shift; printf '%s' "$FLOE_TEST_PAYLOAD" > "$1"; exit 0; fi
   shift
@@ -27,7 +35,7 @@ exit 2
 ''')
             for file in tools.iterdir(): file.chmod(0o755)
             env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
-                       FLOE_TEST_URL=url, FLOE_TEST_PAYLOAD='corrupt' if corrupt else 'pinned-wheel',
+                       FLOE_TEST_API_FAIL='1' if api_fails else '0', FLOE_TEST_URL=url, FLOE_TEST_PAYLOAD='corrupt' if corrupt else 'pinned-wheel',
                        FLOE_TEST_GH_CALLED=str(root / 'called'), FLOE_TEST_CACHE=str(cache))
             digest = hashlib.sha256(b'pinned-wheel').hexdigest()
             command = 'set -euo pipefail\ncache_root="$FLOE_TEST_CACHE"\nwheel_url() { printf "%s" "$FLOE_TEST_URL"; }\n' + function + '\ndownload_wheel package 1 iphoneos ' + digest
@@ -54,4 +62,11 @@ exit 2
         self.assertNotEqual(status, 0)
         self.assertIsNone(payload)
         self.assertFalse(called)
+        self.assertFalse(partials)
+
+    def test_public_https_remains_available_when_api_is_unavailable(self):
+        status, payload, called, partials = self.exercise(api_fails=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(payload, b'pinned-wheel')
+        self.assertTrue(called)
         self.assertFalse(partials)

@@ -71,6 +71,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       REQUIRED_XCODE_VERSION: Xcode 27.0
       GH_TOKEN: ${{ github.token }}
+      FLOE_SPM_CACHE_ROOT: ${{ runner.temp }}/FloePackageCache
     defaults:
       run:
         working-directory: FloeAgent
@@ -93,6 +94,15 @@ jobs:
           printf '%s\n' "$XCODE_VERSION"
           printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
           test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.0
+
+      - name: Restore verified shell binary archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FLOE_SPM_CACHE_ROOT }}/artifacts
+          key: floe-shell-archives-v1-${{ hashFiles('FloeAgent/ThirdParty/FloeShellEngine/Package.swift') }}
+
+      - name: Prime the pinned shell artifact cache through GitHub API
+        run: python3 scripts/prime_shell_artifact_cache.py --cache-dir "$FLOE_SPM_CACHE_ROOT/artifacts"
 
       - name: Install release tooling
         run: |
@@ -200,7 +210,7 @@ jobs:
       - name: Build SDK 27 simulator test hosts once
         timeout-minutes: 45
         run: |
-          xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
+          xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" -project FloeAgent.xcodeproj -scheme FloeAgent \
             -skipPackagePluginValidation -skipMacroValidation \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
@@ -310,7 +320,7 @@ jobs:
 
       - name: Build unsigned device application
         run: |
-          xcodebuild \
+          xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -project FloeAgent.xcodeproj \
@@ -394,6 +404,7 @@ jobs:
       REQUIRED_XCODE_VERSION: Xcode 26.6
       REQUIRED_XCODE_BUILD: 17F113
       GH_TOKEN: ${{ github.token }}
+      FLOE_SPM_CACHE_ROOT: ${{ runner.temp }}/FloePackageCache
     defaults:
       run:
         working-directory: FloeAgent
@@ -440,6 +451,15 @@ jobs:
             python3 scripts/fonts/fetch_fonts.py --check
           }
 
+      - name: Restore verified shell binary archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FLOE_SPM_CACHE_ROOT }}/artifacts
+          key: floe-shell-archives-v1-${{ hashFiles('FloeAgent/ThirdParty/FloeShellEngine/Package.swift') }}
+
+      - name: Prime the pinned shell artifact cache through GitHub API
+        run: python3 scripts/prime_shell_artifact_cache.py --cache-dir "$FLOE_SPM_CACHE_ROOT/artifacts"
+
       - name: Rebuild the exact tag with the accepted App Store SDK
         run: |
           brew install xcodegen automake cmake
@@ -447,7 +467,7 @@ jobs:
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
           scripts/pin_check.sh
-          xcodebuild \
+          xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -project FloeAgent.xcodeproj \
@@ -472,7 +492,7 @@ jobs:
       - name: Build accepted-SDK simulator test hosts once
         timeout-minutes: 45
         run: |
-          xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
+          xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" -project FloeAgent.xcodeproj -scheme FloeAgent \
             -skipPackagePluginValidation -skipMacroValidation \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
