@@ -10,6 +10,10 @@ This guide includes the current development-branch workflow upgrade. See [scope,
 
 These instructions describe the development branch, not a newly delivered TestFlight build. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
 
+<img src="validation/floe-156-feedback/screenshots/full-app-a6/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">
+
+Development iPad capture: choose a chat or project, then select its file. This PDF passed the full-App import, fullscreen-open and body-search case. The image does not establish a new TestFlight release; see [capture provenance](validation/floe-156-feedback/screenshots/README.md).
+
 Notes searches names and document content across the library, shows excerpts and opens matching pages. Version-bound Office/OCR caches can be rebuilt from the document menu; incomplete indexing is visible. Use **Notes → + → Import from Floe workspace** to copy files from conversation or project workspaces into independent Notes storage. UTF-8 text and Markdown become editable paginated notes.
 
 Creative mode searches canvas names and node text, with folders, moves, renaming and folder dissolution that preserves canvases. Its assistant has consistent sizing, drag bounds and a reorganized text/model/voice composer. Conversation lists and batch management search titles and message content, including Chinese substrings.

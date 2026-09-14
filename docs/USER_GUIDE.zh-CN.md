@@ -44,6 +44,10 @@ Floe Agent 需要 iOS/iPadOS 26 或更高版本。文件审阅、浏览器接管
 
 主入口顺序为“新建任务 → 任务中心 → 手记 → 创意模式 → 插件”，之后是项目和会话列表；设置按钮在左下角。外观和语音识别位于“设置 → 通用”；依赖安装位于“设置 → 执行环境 → 选择项目或会话 → Python·PyPI / Node.js·npm”。
 
+<img src="validation/floe-156-feedback/screenshots/full-app-a6/ipad/notes-workspace-import.png" width="640" alt="手记从聊天工作区选择 PDF 文档">
+
+图为开发版 iPad 的工作区导入页面：先选会话或项目，再选其中的文件。图中 PDF 已通过完整 App 的导入、全屏打开和正文检索测试；截图不代表新版 TestFlight 已交付。来源与使用范围见[截图记录](validation/floe-156-feedback/screenshots/README.md)。
+
 ## 2. 配置模型服务商
 
 1. 从侧边栏底部打开**设置**。

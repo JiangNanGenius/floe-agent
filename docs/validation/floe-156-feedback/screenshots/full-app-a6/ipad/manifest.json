@@ -1,0 +1,46 @@
+{
+  "source": "a6a57e95d7804a6408e870a808068bbb4d1b5a6b",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34802103604",
+  "device": "iPad mini (A17 Pro), iOS 27 simulator",
+  "scope": "Full Floe App Notes import case only; entire CI failed its separate apt assertion fixture and phone locator",
+  "testSummary": {
+    "totalTestCount": 1,
+    "passedTests": 1,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "expectedFailures": 0,
+    "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody",
+    "result": "Passed"
+  },
+  "images": [
+    {
+      "file": "notes-library.png",
+      "original": "8806991C-0C0E-4362-A46E-D659A4484684.png",
+      "sha256": "07aea8932d490b6e5e374135782c311e923759fe9c6e0b74c6ec5755fe3a998b",
+      "guideUse": false
+    },
+    {
+      "file": "notes-workspace-import.png",
+      "original": "3120C6DA-E830-47B7-8D29-01D00FE00EC2.png",
+      "sha256": "70c18228c399539f127cc1e540ba2a0240b5c74055c71c0fa5215119682cbfc0",
+      "guideUse": true
+    },
+    {
+      "file": "notes-imported-pdf-fullscreen.png",
+      "original": "8929BFFE-D8D3-40C9-BCD7-80F5727E28B4.png",
+      "sha256": "f163f493efe694d7409cd70480909f1178d4750e5021814dd3107f476137289d",
+      "guideUse": false
+    },
+    {
+      "file": "notes-document-body-search.png",
+      "original": "7B43EA07-6D52-4F6F-8BC5-A5BD54C4696D.png",
+      "sha256": "607a9d4a00d50bb86bbd4c1f72c48f30432812a1978f73cfd38eb9fd561c012a",
+      "guideUse": false
+    }
+  ],
+  "limitations": [
+    "Search capture retains the software keyboard, obscuring the body snippet; keep as test evidence, not a guide illustration.",
+    "The fullscreen paper is left-aligned in this source; build 157+ centers paper with scroll insets.",
+    "The phone result is a failed locator, with incomplete xcresult and no exported screenshots."
+  ]
+}
