@@ -220,7 +220,7 @@ jobs:
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -scheme FloeAgent \
-            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath FloeAgent-AppRegressionBuild \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
             -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
@@ -244,7 +244,7 @@ jobs:
         run: |
           xctestrun=$(find FloeAgent-AppRegressionBuild/Build/Products -maxdepth 1 -name '*.xctestrun' -print -quit)
           test -n "$xctestrun"
-          test_device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ids=[d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if "iOS-27" in runtime for d in devices if d["name"] == "iPad mini (A17 Pro)"]; assert len(ids)==1, ids; print(ids[0])')
+          test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "iPad mini (A17 Pro)")
           python3 scripts/run_test_with_diagnostics.py \
             --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/app-regressions" \
             --timeout 1020 --stall-timeout 420 --simulator-id "$test_device" -- xcodebuild \
@@ -341,7 +341,8 @@ jobs:
           # .build/out/Products/Debug while --show-bin-path still reports the
           # target-triple directory. Make the binary artifact discoverable to
           # dyld and mirror it beside every products directory SwiftPM created.
-          export DYLD_FRAMEWORK_PATH="$(dirname "$LLAMA_FRAMEWORK")${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
+          DYLD_FRAMEWORK_PATH="$(dirname "$LLAMA_FRAMEWORK")${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
+          export DYLD_FRAMEWORK_PATH
           # Materialize SwiftPM's product directories before staging the
           # binary llama framework required by the test loaders.
           swift build

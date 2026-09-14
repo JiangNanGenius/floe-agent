@@ -207,7 +207,8 @@ jobs:
           LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' ! -path '*/__MACOSX/*' -print -quit)"
           test -n "$LLAMA_FRAMEWORK"
           test -x "$LLAMA_FRAMEWORK/Versions/Current/llama"
-          export DYLD_FRAMEWORK_PATH="$(dirname "$LLAMA_FRAMEWORK")${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
+          DYLD_FRAMEWORK_PATH="$(dirname "$LLAMA_FRAMEWORK")${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
+          export DYLD_FRAMEWORK_PATH
           BIN_PATH="$(swift build --show-bin-path)"
           mkdir -p "$BIN_PATH/PackageFrameworks"
           cp -R "$LLAMA_FRAMEWORK" "$BIN_PATH/PackageFrameworks/"
@@ -258,7 +259,7 @@ jobs:
             ditto "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult" "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult"
           else
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
-          floe_test_device="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ids=[d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if ("iOS-"+sys.argv[1]+"-") in runtime for d in devices if d["name"] == "iPad mini (A17 Pro)"]; assert len(ids)==1, ids; print(ids[0])' "$floe_sdk_major")"
+          floe_test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "iPad mini (A17 Pro)")"
           xctestrun=$(find "$RUNNER_TEMP/FloeAppRegressionDerivedData/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
           test -n "$xctestrun"
           python3 scripts/run_test_with_diagnostics.py \
@@ -266,7 +267,7 @@ jobs:
             --timeout 2700 --stall-timeout 420 --simulator-id "$floe_test_device" \
             --defer-stall-until-tests -- xcodebuild \
             -xctestrun "$xctestrun" \
-            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -destination "platform=iOS Simulator,id=$floe_test_device" \
             -resultBundlePath "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
             -collect-test-diagnostics never \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
@@ -539,7 +540,7 @@ jobs:
         timeout-minutes: 47
         run: |
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
-          floe_test_device="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ids=[d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if ("iOS-"+sys.argv[1]+"-") in runtime for d in devices if d["name"] == "iPad mini (A17 Pro)"]; assert len(ids)==1, ids; print(ids[0])' "$floe_sdk_major")"
+          floe_test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "iPad mini (A17 Pro)")"
           xctestrun=$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
           test -n "$xctestrun"
           python3 scripts/run_test_with_diagnostics.py \
@@ -547,7 +548,7 @@ jobs:
             --timeout 2700 --stall-timeout 420 --simulator-id "$floe_test_device" \
             --defer-stall-until-tests -- xcodebuild \
             -xctestrun "$xctestrun" \
-            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -destination "platform=iOS Simulator,id=$floe_test_device" \
             -resultBundlePath "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
             -collect-test-diagnostics never \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \

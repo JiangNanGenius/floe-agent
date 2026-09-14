@@ -345,3 +345,11 @@ version, bundle identifier, signing and Apple validation remain mandatory.
 The already-running source job cannot be edited in place, so its existing steps
 continue until the artifact is retained. Nothing is rebuilt by the upload path.
 Incomplete qualification remains separate from actual TestFlight availability.
+
+### Direct upload recovery for build 172
+
+The user requested TestFlight first and waived dual-device qualification as an upload gate. The first retained-artifact uploader (`34868515365`) could not run: the original SDK 26 job compiled both device Release and simulator hosts, then failed before executing App tests because its simulator selector found three same-name devices across installed iOS 26 runtimes. Its old workflow discarded the built device package instead of retaining it. No upload occurred.
+
+The direct workflow in policy commit `9c741b0`, [run 34870170373](https://github.com/JiangNanGenius/floe-agent/actions/runs/34870170373), checks out the unchanged immutable app source `fb86fef896d41871fa98c8871237606f56c5ff39` / `v1.7.0-beta.29`. It builds only the accepted-SDK device app, retains an unsigned recovery IPA before signing, checks profiles and bundle metadata, and performs Apple's validation and upload. Simulator builds and tests are explicitly skipped in this direct run. Apple processing and Floe QA visibility still require separate readback. The half-hour target is not a guaranteed completion time.
+
+The original SDK 27 job separately finalized 159 App cases, all passed with zero failures or skips. These results do not imply iPad/iPhone UI or physical-device acceptance. The duplicated simulator selector is repaired for future runs: choose an available device on the newest installed matching-major runtime and pass the same UDID to both diagnostics and xcodebuild. Four selection regressions cover multiple runtimes, duplicates, unavailable devices and a missing target.

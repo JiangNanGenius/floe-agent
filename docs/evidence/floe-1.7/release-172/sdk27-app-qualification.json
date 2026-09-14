@@ -1,0 +1,11 @@
+{
+  "sourceCommit": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34864482336",
+  "job": 104044835094,
+  "total": 159,
+  "passed": 159,
+  "failed": 0,
+  "skipped": 0,
+  "summarySHA256": "5cee8a669439d2fcff515cba78ea6922ad0e9155b616067cb6c71e4d663820d2",
+  "scope": "Full App SDK 27 simulator regression suites, distinct from dual-device UI and physical-device acceptance."
+}
