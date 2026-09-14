@@ -21,6 +21,6 @@ The [bilingual PDF and expected results](sample-files/README.md) are ready: two 
 1. Run the prepared sample on the exact submitted build and retain the result.
 2. A short screen recording: fresh launch → Notes import → full-screen annotation → save/reopen → model configuration with secret fields obscured → one AI response and visible tool action. Record the actual submitted build; avoid edited footage that hides failure states.
 3. A brief PDF/Markdown reviewer walkthrough matching `review-notes.en-US.md`. Supply the real sample files, not just screenshots of them.
-4. Working private AI review-access instructions. Verify access from a clean installation and disclose any optional downloads, network requirements or necessary hardware.
+4. Verified on-device AI walkthrough and BYOK configuration instructions. Verify from a clean installation and disclose downloads, supported hardware and capability limits. No developer-funded cloud key is authorized; resolve any additional reviewer access request explicitly.
 
 Invitation screenshots in TestFlight may be drawn from the app's latest approved store version. These development screenshots are supporting documentation and are not automatically its invitation artwork. See [Apple's test-information guidance](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information).

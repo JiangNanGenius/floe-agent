@@ -19,7 +19,7 @@
   },
   "reviewAccess": {
     "confirmed": false,
-    "instructions": "Provide dedicated working AI review access privately; do not store credentials in this file."
+    "instructions": "Validate the existing on-device model path on the submitted build and document its real capabilities. Cloud integrations are BYOK. No funded API key or cloud credit is authorized; if Apple requires additional access, obtain an accepted review arrangement before proceeding."
   },
   "externalGroup": {
     "id": null,
@@ -41,8 +41,11 @@
   "reviewAccessConstraints": {
     "imageGenerationCredentialAuthorized": false,
     "imageGenerationSpendingAuthorized": false,
-    "proposedCoreDemo": "Notes, documents, chat and tool use with a separately limited general-purpose model",
-    "generalModelCredentialStatus": "not yet supplied",
-    "optionalImageGeneration": "user-configured; disclose honestly; respond to any reviewer access request separately"
+    "proposedCoreDemo": "Notes and documents plus genuine on-device inference where verified",
+    "generalModelCredentialStatus": "not authorized or required from owner by this draft",
+    "optionalImageGeneration": "user-configured; disclose honestly; respond to any reviewer access request separately",
+    "anyCloudCredentialAuthorized": false,
+    "anyCloudSpendingAuthorized": false,
+    "localInferenceQualification": "pending; verify supported hardware, model download, response and any advertised tool/vision capability"
   }
 }
