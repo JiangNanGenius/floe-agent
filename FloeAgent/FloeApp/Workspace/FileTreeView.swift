@@ -244,7 +244,11 @@ struct FileTreeView: View {
 
     private var searchResults: some View {
         Group {
-            if viewModel.searchHits.isEmpty {
+            if viewModel.searchInProgress {
+                ProgressView("正在搜索文件名与文本内容…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = viewModel.errorMessage {
+                ContentUnavailableView("无法完成搜索", systemImage: "magnifyingglass", description: Text(error))
+            } else if viewModel.searchHits.isEmpty {
                 ContentUnavailableView {
                     Label("inspector.search.empty", systemImage: "magnifyingglass")
                 } description: {
@@ -256,7 +260,7 @@ struct FileTreeView: View {
                         onSelectFile(hit.relativePath)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(hit.relativePath):\(hit.lineNumber)")
+                            Text(hit.lineNumber > 0 ? "\(hit.relativePath):\(hit.lineNumber)" : hit.relativePath)
                                 .font(FloeTheme.Typography.metadata)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)

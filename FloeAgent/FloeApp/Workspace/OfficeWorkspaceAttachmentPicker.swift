@@ -5,24 +5,36 @@ import FloeModels
 import FloeWorkspace
 
 struct OfficeWorkspaceAttachmentPicker: View {
+    enum Purpose {
+        case attachment, notesImport
+        var title: String { self == .notesImport ? "从工作区导入" : "选择附件" }
+        var progress: String { self == .notesImport ? "正在导入手记…" : "正在插入附件…" }
+        var failure: String { self == .notesImport ? "未能导入文件" : "未能插入附件" }
+    }
     @StateObject private var center: WorkspaceCenter
+    let purpose: Purpose
     let insert: (URL) async throws -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var busy = false
 
-    init(environment: AppEnvironment, insert: @escaping (URL) async throws -> Void) {
+    init(environment: AppEnvironment, purpose: Purpose = .attachment, insert: @escaping (URL) async throws -> Void) {
         _center = StateObject(wrappedValue: WorkspaceCenter(environment: environment, publishesSharedState: false))
+        self.purpose = purpose
         self.insert = insert
     }
 
     var body: some View {
         NavigationStack {
             List {
+                if purpose == .notesImport {
+                    Text("选择项目或聊天中生成的文件。导入后，手记会独立保存副本。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
                 if let error = center.actionError { Text(error).foregroundStyle(.secondary) }
                 ForEach(center.workspaces.filter { query.isEmpty || $0.name.localizedStandardContains(query) }) { workspace in
                     NavigationLink {
-                        OfficeAttachmentFolder(center: center, workspace: workspace, path: ".", busy: $busy) { url in
+                        OfficeAttachmentFolder(center: center, workspace: workspace, path: ".", purpose: purpose, busy: $busy) { url in
                             try await insert(url)
                             dismiss()
                         }
@@ -30,10 +42,11 @@ struct OfficeWorkspaceAttachmentPicker: View {
                         Label(workspace.name.isEmpty ? "聊天工作区" : workspace.name,
                               systemImage: workspace.kind == .project ? "folder" : "bubble.left")
                     }
+                    .accessibilityIdentifier("workspace.import.source.\(workspace.id)")
                 }
                 if center.workspaces.isEmpty { ContentUnavailableView("没有可用的工作区", systemImage: "folder") }
             }
-            .navigationTitle("选择附件")
+            .navigationTitle(purpose.title)
             .searchable(text: $query, prompt: "搜索工作区")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(busy) } }
             .task { await center.reload() }
@@ -47,6 +60,7 @@ private struct OfficeAttachmentFolder: View {
     @ObservedObject var center: WorkspaceCenter
     let workspace: WorkspaceRecord
     let path: String
+    let purpose: OfficeWorkspaceAttachmentPicker.Purpose
     @Binding var busy: Bool
     let insert: (URL) async throws -> Void
     @State private var entries: [FileNode] = []
@@ -65,7 +79,7 @@ private struct OfficeAttachmentFolder: View {
                 if file.isDirectory {
                     NavigationLink {
                         OfficeAttachmentFolder(center: center, workspace: workspace, path: file.relativePath,
-                                               busy: $busy, insert: insert)
+                                               purpose: purpose, busy: $busy, insert: insert)
                     } label: { Label(file.name, systemImage: "folder") }
                 } else {
                     Button {
@@ -89,9 +103,9 @@ private struct OfficeAttachmentFolder: View {
         .navigationTitle(path == "." ? workspace.name : (path as NSString).lastPathComponent)
         .navigationBarBackButtonHidden(busy)
         .disabled(busy)
-        .overlay { if busy { ProgressView("正在插入附件…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+        .overlay { if busy { ProgressView(purpose.progress).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         .task(id: path) { await load() }
-        .alert("未能插入附件", isPresented: Binding(get: { insertionError != nil }, set: { if !$0 { insertionError = nil } })) {
+        .alert(purpose.failure, isPresented: Binding(get: { insertionError != nil }, set: { if !$0 { insertionError = nil } })) {
             Button("好", role: .cancel) { insertionError = nil }
         } message: { Text(insertionError ?? "") }
     }

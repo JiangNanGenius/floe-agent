@@ -561,6 +561,7 @@
 		FBA76463B171719B586A0436 /* FloeShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A8E32A62F993F42084705E /* FloeShortcuts.swift */; };
 		FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */; };
 		FC130E74BF0A158FEE5DA36C /* _pocketfft_umath.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */; };
+		FC96C3B20BEFAC8E513A2A43 /* NotesWorkspaceImportUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */; };
 		FCC65E363F3009B85F3A5908 /* BrowserURLPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */; };
 		FD213E5717EBDD7BCEFF9422 /* _brotli.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 781887082E8B411731ABBF49 /* _brotli.xcframework */; };
 		FD2AE9AE385E46202D9D55B1 /* pandas__libs_tslibs_offsets.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 74A3D870B4F77241BEEA52E6 /* pandas__libs_tslibs_offsets.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -789,6 +790,7 @@
 		13C9AD3FD971F1CDA6F5EBF4 /* FileSpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSpeechTranscriber.swift; sourceTree = "<group>"; };
 		1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_dtypes.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_dtypes.xcframework; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
+		156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesWorkspaceImportUITests.swift; sourceTree = "<group>"; };
 		15BCD6B2D8B8AB9B011DA0AB /* CreativeMediaModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeMediaModelsTests.swift; sourceTree = "<group>"; };
 		15EA4020964BCD69B527952F /* DraftTaskPermissionsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftTaskPermissionsSheet.swift; sourceTree = "<group>"; };
 		16030A4301BD8E0707D3446F /* multidict__multidict.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = multidict__multidict.xcframework; path = Vendor/PythonExtensions/multidict__multidict.xcframework; sourceTree = "<group>"; };
@@ -1448,6 +1450,7 @@
 				E01FD1096C0BE9486FA630A6 /* LocalPythonRuntimeTests.swift */,
 				020723F1965651F1C7D6CD77 /* LocalShellRuntimeTests.swift */,
 				93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */,
+				156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */,
 				018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */,
 				26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */,
 				183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */,
@@ -2706,6 +2709,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */,
+				FC96C3B20BEFAC8E513A2A43 /* NotesWorkspaceImportUITests.swift in Sources */,
 				912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */,
 				6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */,
 			);

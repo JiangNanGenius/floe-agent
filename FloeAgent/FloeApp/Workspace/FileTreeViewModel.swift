@@ -11,6 +11,7 @@
 import Foundation
 import SwiftUI
 import FloeWorkspace
+import FloeTools
 
 /// One node in the lazily loaded directory tree.
 struct FileTreeNode: Identifiable, Hashable, Sendable {
@@ -40,6 +41,7 @@ final class FileTreeViewModel: ObservableObject {
     @Published private(set) var rootNodes: [FileTreeNode] = []
     /// Search hits while `query` is non-empty (flat list, not a tree).
     @Published private(set) var searchHits: [SearchHit] = []
+    @Published private(set) var searchInProgress = false
     /// Current search text. Empty = tree mode.
     @Published var query = "" {
         didSet { scheduleSearch() }
@@ -50,6 +52,7 @@ final class FileTreeViewModel: ObservableObject {
 
     private let center: WorkspaceCenter
     private var searchTask: Task<Void, Never>?
+    deinit { searchTask?.cancel() }
 
     init(center: WorkspaceCenter) {
         self.center = center
@@ -217,15 +220,36 @@ final class FileTreeViewModel: ObservableObject {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             searchHits = []
+            searchInProgress = false
+            errorMessage = nil
             return
         }
+        searchInProgress = true
+        searchHits = []
         searchTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled, let self, let service = self.center.fileService else { return }
+            guard !Task.isCancelled, let self else { return }
+            defer { if !Task.isCancelled { self.searchInProgress = false } }
+            guard let service = self.center.fileService else { return }
+            let workspaceID = self.center.currentWorkspace?.id
+            let cancellation = CancellationToken()
             do {
-                self.searchHits = try service.search(query: trimmed, in: "")
+                let hits = try await withTaskCancellationHandler {
+                    try await Task.detached(priority: .userInitiated) {
+                        var hits = try service.search(query: trimmed, in: "", cancellation: cancellation)
+                        let matched = Set(hits.map(\.relativePath))
+                        let names = try service.searchFileNames(query: trimmed, cancellation: cancellation)
+                        for name in names where !name.hasSuffix("/") && !matched.contains(name) {
+                            hits.append(SearchHit(relativePath: name, lineNumber: 0, context: (name as NSString).lastPathComponent))
+                        }
+                        return Array(hits.prefix(WorkspaceFileService.maxSearchHits))
+                    }.value
+                } onCancel: { cancellation.cancel() }
+                guard !Task.isCancelled, self.center.currentWorkspace?.id == workspaceID else { return }
+                self.searchHits = hits
                 self.errorMessage = nil
             } catch {
+                guard !Task.isCancelled, self.center.currentWorkspace?.id == workspaceID else { return }
                 self.searchHits = []
                 self.errorMessage = error.localizedDescription
             }

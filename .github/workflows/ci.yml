@@ -223,6 +223,7 @@ jobs:
             -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+            -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
             CODE_SIGNING_ALLOWED=NO \
             build-for-testing
 
@@ -254,6 +255,30 @@ jobs:
             test-without-building
           python3 scripts/verify_app_regression_xcresult.py \
             --result-bundle FloeAgent-AppRegressionTests.xcresult
+
+      - name: Verify Notes workspace import and retain full App screenshots
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          status=0
+          for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
+            case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
+            xcodebuild -skipPackagePluginValidation -skipMacroValidation -scheme FloeAgent \
+              -destination "platform=iOS Simulator,name=$device" \
+              -derivedDataPath FloeAgent-AppRegressionBuild \
+              -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
+              -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
+              -parallel-testing-enabled NO -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 180 \
+              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || status=1
+            if test -d "FloeAgent-Notes-$name.xcresult"; then
+              mkdir -p "FloeAgent-Notes-Screenshots/$name"
+              xcrun xcresulttool export attachments --path "FloeAgent-Notes-$name.xcresult" \
+                --output-path "FloeAgent-Notes-Screenshots/$name" || true
+            fi
+          done
+          exit "$status"
 
       - name: Preserve simulator app for iPad and iPhone UI qualification
         if: always()
@@ -338,6 +363,9 @@ jobs:
             FloeAgent/LICENSES-THIRD-PARTY.md
             FloeAgent/.gitleaks-report.json
             FloeAgent/FloeAgent-AppRegressionTests.xcresult
+            FloeAgent/FloeAgent-Notes-*.xcresult
+            FloeAgent/FloeAgent-Notes-*.log
+            FloeAgent/FloeAgent-Notes-Screenshots
             ${{ runner.temp }}/SwiftTestDiagnostics
           if-no-files-found: ignore
 

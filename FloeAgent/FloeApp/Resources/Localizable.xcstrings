@@ -4695,13 +4695,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Search files"
+            "value": "Search filenames and text contents"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "搜索文件"
+            "value": "搜索文件名与文本内容"
           }
         }
       }

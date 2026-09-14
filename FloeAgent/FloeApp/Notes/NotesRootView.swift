@@ -81,6 +81,7 @@ struct NotesRootView: View {
                             Button("PowerPoint 演示文稿") { creation = .slides }
                         }
                         Button("从 Floe 工作区导入", systemImage: "folder") { importingWorkspace = true }
+                            .accessibilityIdentifier("notes.import.workspace")
                         Button("导入手记、PDF、Office 或图片", systemImage: "square.and.arrow.down") { importing = true }
                     } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
                     .accessibilityLabel("新建或导入")
@@ -125,7 +126,7 @@ struct NotesRootView: View {
                     session.importDocument(value)
                 }
             }) {
-                OfficeWorkspaceAttachmentPicker(environment: environment) { url in
+                OfficeWorkspaceAttachmentPicker(environment: environment, purpose: .notesImport) { url in
                     guard let store = session.store else { throw NoteError.resourceUnavailable }
                     let value = try await NoteFileImporter.importFile(url, notebookID: selectedBook, store: store)
                     // Copy/import finishes before the picker releases a remote temporary file.
