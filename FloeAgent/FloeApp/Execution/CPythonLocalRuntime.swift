@@ -59,6 +59,7 @@ actor CPythonLocalRuntime {
     nonisolated(unsafe) private static var activeByEnvironment: [String: Int] = [:]
     nonisolated static func hasActiveWork(environmentID: String) -> Bool {
         activeLock.withLock { activeByEnvironment[environmentID, default: 0] > 0 }
+            || FloeCPythonBridge.hasActiveServices(environmentID)
     }
     nonisolated private static func track(_ id: String?, delta: Int) {
         guard let id else { return }
@@ -68,6 +69,64 @@ actor CPythonLocalRuntime {
         }
     }
     private static let interpreterQueue = DispatchQueue(label: "org.floeagent.cpython", qos: .userInitiated)
+
+    struct ServiceResult: Sendable {
+        let serviceID: String?
+        let state: String
+        let stdout: String
+        let stderr: String
+        let error: String?
+        let truncated: Bool
+        init(_ response: [String: Any]) {
+            serviceID = response["serviceID"] as? String
+            state = response["status"] as? String ?? "unknown"
+            func text(_ key: String) -> String {
+                let value = response[key] as? String ?? ""
+                guard response["encoding"] as? String == "base64" else { return value }
+                return Data(base64Encoded: value).map { String(decoding: $0, as: UTF8.self) } ?? ""
+            }
+            stdout = text("stdout"); stderr = text("stderr")
+            error = response["error"] as? String
+            truncated = response["truncated"] as? Bool ?? false
+        }
+    }
+
+    func startService(_ request: ScriptExecutionRequest, environmentID: String) async -> ServiceResult {
+        guard !environmentID.isEmpty, request.pythonContext?.environmentID == environmentID,
+              let context = request.pythonContext,
+              let data = try? JSONEncoder().encode(context) else {
+            return ServiceResult(["status": "invalid", "error": "A Python service needs an explicit owning environment"])
+        }
+        let json = String(decoding: data, as: UTF8.self)
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: ServiceResult(FloeCPythonBridge.startService(
+                    request.script, contextJSON: json, environmentID: environmentID,
+                    maxOutputBytes: min(1_048_576, max(1, request.maxOutputBytes)))))
+            }
+        }
+    }
+
+    func serviceStatus(id: String, environmentID: String) -> ServiceResult {
+        ServiceResult(FloeCPythonBridge.serviceStatus(id, environmentID: environmentID))
+    }
+
+    func stopService(id: String, environmentID: String) async -> ServiceResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: ServiceResult(FloeCPythonBridge.stopService(id, environmentID: environmentID)))
+            }
+        }
+    }
+
+    func stopServices(environmentID: String) async throws {
+        let stopped = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: FloeCPythonBridge.stopServices(environmentID))
+            }
+        }
+        guard stopped else { throw FloeError.validationFailed("Python services have not stopped; environment data was retained") }
+    }
 
     func version() -> String? {
         try? FloeCPythonBridge.runtimeVersion()

@@ -229,6 +229,7 @@
 		64C796E307C77E2774D2761F /* BrowserTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B80FCD68F0A3B45FD2E6F5E /* BrowserTools.swift */; };
 		6530F32A014A26638A62D91C /* _imagingmath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B422A60C05CB3F770F6A231E /* _imagingmath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6557760A3B71DB9B473F461E /* _ssl.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		656773A8C04E96F291F2254B /* PythonServiceBootstrap.py in Resources */ = {isa = PBXBuildFile; fileRef = 15E0F87236F1C98AAE263465 /* PythonServiceBootstrap.py */; };
 		661CA51EDEEDD000187330F0 /* CanvasTouchInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */; };
 		6631922EFC570774B5A03AA0 /* pandas__libs_json.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */; };
 		66A06EF450BB006193BCBA2F /* FloeShellBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */; };
@@ -795,6 +796,7 @@
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
 		156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesWorkspaceImportUITests.swift; sourceTree = "<group>"; };
 		15BCD6B2D8B8AB9B011DA0AB /* CreativeMediaModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeMediaModelsTests.swift; sourceTree = "<group>"; };
+		15E0F87236F1C98AAE263465 /* PythonServiceBootstrap.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = PythonServiceBootstrap.py; sourceTree = "<group>"; };
 		15EA4020964BCD69B527952F /* DraftTaskPermissionsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftTaskPermissionsSheet.swift; sourceTree = "<group>"; };
 		16030A4301BD8E0707D3446F /* multidict__multidict.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = multidict__multidict.xcframework; path = Vendor/PythonExtensions/multidict__multidict.xcframework; sourceTree = "<group>"; };
 		16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _zoneinfo.xcframework; path = Vendor/PythonExtensions/_zoneinfo.xcframework; sourceTree = "<group>"; };
@@ -2132,6 +2134,7 @@
 				9CDF7C34B3636489EEB0BC07 /* NodeTools */,
 				A837399A8DE937C9827D4EFA /* PDFiumLicenses */,
 				926B95CD92D851FFE3BB0DFE /* python */,
+				15E0F87236F1C98AAE263465 /* PythonServiceBootstrap.py */,
 				7858BFEF9F60D96BAA0E621E /* Whisper */,
 				E5AC44E2A3E68DA153AED855 /* ZLImageEditor-LICENSE.txt */,
 				B52C94351F1E33240FA5A1D5 /* Fonts */,
@@ -2433,6 +2436,7 @@
 				8CE9D6FF1EB083C488EEF11D /* MindElixir in Resources */,
 				5EEDF12D0F1E55466D74580A /* NodeTools in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
+				656773A8C04E96F291F2254B /* PythonServiceBootstrap.py in Resources */,
 				E9075DDE4B9BCC5B1C61D735 /* Whisper in Resources */,
 				85FE596AA078AE1512E4FD3A /* ZLImageEditor-LICENSE.txt in Resources */,
 				B64AAD73B34ED0DC62DB552E /* commandDictionary.plist in Resources */,

@@ -366,6 +366,7 @@ final class AppEnvironment: ObservableObject {
                 cancelJobs: { id in
                     await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
                     try await IOSSystemNodeRuntime.shared.stopServices(environmentID: id)
+                    try await CPythonLocalRuntime.shared.stopServices(environmentID: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                 },
                 terminateWorkers: { id in

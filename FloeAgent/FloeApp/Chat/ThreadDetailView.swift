@@ -747,7 +747,8 @@ struct ThreadDetailView: View {
                     onManualCompact: { viewModel.requestManualCompaction() },
                     onPermissions: { showingPermissionsSheet = true },
                     approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
-                    contextID: viewModel.conversationID
+                    contextID: viewModel.conversationID,
+                    embedded: embedded
                 )
             }
         }

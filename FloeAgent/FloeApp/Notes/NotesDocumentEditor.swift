@@ -10,6 +10,7 @@ struct NotesDocumentEditor: View {
     let document: NoteDocument
     @AppStorage("notes.editor.headerCollapsed") private var headerCollapsed = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var headerHeight: CGFloat = 64
     @State private var pageID: UUID?
     @State private var drawing: Data?
@@ -96,14 +97,25 @@ struct NotesDocumentEditor: View {
             HStack(spacing: 0) {
                 editorContent
                 if showAssistant, geometry.size.width >= 850, let store = session.store {
-                    Divider()
                     NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
-                        .frame(width: min(430, geometry.size.width * 0.42))
+                        .frame(width: min(440, max(360, geometry.size.width * 0.36)))
+                        .background(FloeTheme.readingSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
+                        }
+                        .padding(12)
+                        .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
                 }
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: showAssistant)
+            .background(FloeTheme.groupedSurface)
             .sheet(isPresented: Binding(get: { showAssistant && geometry.size.width < 850 }, set: { if !$0 { showAssistant = false } })) {
                 if let store = session.store {
                     NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
                 }
             }
         }

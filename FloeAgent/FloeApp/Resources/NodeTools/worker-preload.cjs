@@ -5,6 +5,26 @@ const { workerData, isMainThread } = require('node:worker_threads');
 if (!isMainThread && workerData?.floeJob) {
   const fs = require('node:fs');
   const path = require('node:path');
+  if (workerData.service) {
+    const net = require('node:net');
+    const listen = net.Server.prototype.listen;
+    net.Server.prototype.listen = function(...args) {
+      // Services intended for the in-app preview must not publish a wildcard
+      // listener. An omitted host is made explicitly loopback.
+      if (typeof args[0] === 'object' && args[0] !== null) {
+        const options = { ...args[0] };
+        if (options.path || options.fd !== undefined || options.handle) throw Error('Preview services require a loopback TCP port');
+        options.host ??= '127.0.0.1';
+        if (!['127.0.0.1', '::1', 'localhost'].includes(options.host)) throw Error('Preview services must bind to loopback');
+        args[0] = options;
+      } else {
+        if (typeof args[0] !== 'number') throw Error('Preview services require a TCP port');
+        if (typeof args[1] !== 'string') args.splice(1, 0, '127.0.0.1');
+        if (!['127.0.0.1', '::1', 'localhost'].includes(args[1])) throw Error('Preview services must bind to loopback');
+      }
+      return Reflect.apply(listen, this, args);
+    };
+  }
   const cwd = workerData.cwd;
   // Resolve ordinary JS filesystem paths per worker. Never chdir the App
   // process: Python and shell may be executing in that process concurrently.

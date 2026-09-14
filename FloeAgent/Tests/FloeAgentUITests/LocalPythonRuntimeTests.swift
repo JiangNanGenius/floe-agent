@@ -7,6 +7,62 @@ import FloeTools
 
 @Suite("FloeApp.BundledPython", .serialized)
 struct LocalPythonRuntimeTests {
+    @Test("A managed Python HTTP service survives foreground runs and stops only for its owner")
+    func persistentHTTPService() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let owner = UUID().uuidString
+        defer {
+            if !CPythonLocalRuntime.hasActiveWork(environmentID: owner) { try? FileManager.default.removeItem(at: root) }
+        }
+        let runtime = CPythonLocalRuntime.shared
+        let started = await runtime.startService(.init(script: """
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            from pathlib import Path
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'floe-python-service')
+                def log_message(self, *args): pass
+            server = HTTPServer(('127.0.0.1', 0), Handler)
+            Path('port').write_text(str(server.server_address[1]))
+            try: server.serve_forever(poll_interval=0.05)
+            finally: server.server_close()
+            """, pythonContext: .init(environmentID: owner, workingDirectory: root.path)), environmentID: owner)
+        let id = try #require(started.serviceID, "\(started.state): \(started.error ?? "")")
+        do {
+            let portFile = root.appendingPathComponent("port")
+            let deadline = Date().addingTimeInterval(15)
+            while !FileManager.default.fileExists(atPath: portFile.path), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            let port = try String(contentsOf: portFile, encoding: .utf8)
+            let url = try #require(URL(string: "http://127.0.0.1:\(port)/"))
+            let foreground = try #require(CPythonServiceFactory.make())
+            for _ in 0..<3 {
+                let result = await foreground.run(.init(script: "print('foreground-ready')", timeout: 5), cancellation: nil)
+                guard case .ok(_, let output, _, _, _, _) = result else { throw NSError(domain: "PythonServiceTest", code: 1) }
+                #expect(output.contains("foreground-ready"))
+                let (data, _) = try await URLSession.shared.data(from: url)
+                #expect(String(decoding: data, as: UTF8.self) == "floe-python-service")
+            }
+            #expect(await runtime.stopService(id: id, environmentID: "wrong-owner").state == "notFound")
+            #expect(CPythonLocalRuntime.hasActiveWork(environmentID: owner))
+            try await runtime.stopServices(environmentID: owner)
+            #expect(!CPythonLocalRuntime.hasActiveWork(environmentID: owner))
+            #expect(await runtime.serviceStatus(id: id, environmentID: owner).state == "stopped")
+            var request = URLRequest(url: url); request.timeoutInterval = 2
+            do {
+                _ = try await URLSession.shared.data(for: request)
+                Issue.record("Stopped Python service still accepts HTTP")
+            } catch { /* Connection failure is the required post-stop state. */ }
+        } catch {
+            try await runtime.stopServices(environmentID: owner)
+            throw error
+        }
+    }
+
     @Test("Cancelled Python keeps its environment lease and expired queued scripts never run")
     func cancellationAndQueuedDeadline() async throws {
         let service = try #require(CPythonServiceFactory.make())
@@ -138,6 +194,33 @@ struct LocalPythonRuntimeTests {
         }
         #expect(stdout.contains("\"wheelhouseSmoke\": \"passed\""))
         #expect(stderr.isEmpty)
+    }
+
+    @Test("bundled networking packages verify HTTPS and pytest executes a real test", .timeLimit(.minutes(1)))
+    @MainActor func bundledNetworkingAndPytest() async throws {
+        let service = try #require(CPythonServiceFactory.make())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("python-presets-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outcome = await service.run(.init(script: """
+            import requests, httpx, pytest, pathlib
+            assert requests.Session().verify is True
+            response = requests.get('https://example.com', timeout=15)
+            assert response.status_code == 200 and 'Example Domain' in response.text
+            with httpx.Client(timeout=15) as client:
+                response = client.get('https://example.com')
+                assert response.status_code == 200 and 'Example Domain' in response.text
+            pathlib.Path('test_bundled_preset.py').write_text('def test_real_execution():\\n    assert sum([20, 22]) == 42\\n')
+            assert pytest.main(['-q', '--capture=sys', '-p', 'no:cacheprovider', '-p', 'no:faulthandler', 'test_bundled_preset.py']) == 0
+            print('bundled-network-and-pytest-passed')
+            """, timeout: 50, maxOutputBytes: 4096, pythonContext: .init(
+                workingDirectory: root.path, environment: ["PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"])), cancellation: nil)
+        guard case .ok(_, let stdout, _, false, _, _) = outcome else {
+            Issue.record("Bundled networking/test presets failed: \(outcome)")
+            return
+        }
+        #expect(stdout.contains("1 passed"))
+        #expect(stdout.contains("bundled-network-and-pytest-passed"))
     }
 
     @Test("the packaged CPython runtime imports the zipped stdlib and executes")

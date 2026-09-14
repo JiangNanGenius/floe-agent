@@ -62,6 +62,17 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertFalse(app.textFields["notes.search"].isHittable)
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
         capture("notes-imported-pdf-fullscreen")
+
+        let assistant = app.buttons["notes.assistant"]
+        XCTAssertTrue(assistant.isHittable)
+        assistant.tap()
+        let closeAssistant = app.buttons["notes.assistant.close"]
+        XCTAssertTrue(closeAssistant.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已选择手记文档")).count, 0)
+        capture("notes-document-assistant")
+        closeAssistant.tap()
+        XCTAssertTrue(assistant.waitForExistence(timeout: 5))
+
         // Navigation and document actions share one row; no empty navigation
         // strip above the editor. This also catches phone header wrapping.
         let tools = app.scrollViews["notes.writing.tools"].firstMatch

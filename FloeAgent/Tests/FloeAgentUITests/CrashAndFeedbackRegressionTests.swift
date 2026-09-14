@@ -16,6 +16,51 @@ import FloeProviders
 import FloeLocalModels
 @testable import FloeApp
 
+@Test("Notes bootstrap migration removes only the selected conversation setup and retains dialogue")
+@MainActor func notesBootstrapMigrationPreservesDialogue() async throws {
+    let database = try DatabaseManager.inMemory()
+    try database.migrate()
+    let store = SQLiteConversationStore(database: database)
+    let documentID = UUID()
+    let selected = UUID(), other = UUID()
+    let date = Date()
+    let legacy = NotesStore.legacyAssistantBootstrap(documentID: documentID)
+    for id in [selected, other] {
+        try await store.saveConversation(.init(id: id, title: "test", createdAt: date, updatedAt: date))
+        try await store.appendMessage(.init(id: UUID(), conversationID: id, role: "user", content: legacy, createdAt: date))
+        try await store.appendMessage(.init(id: UUID(), conversationID: id, role: "user", content: "解释这个公式", createdAt: date.addingTimeInterval(1)))
+    }
+    try await NotesAssistantPanel.removeLegacyBootstrap(documentID: documentID, conversationID: selected, database: database)
+    #expect(try await store.messages(conversationID: selected).map(\.content) == ["解释这个公式"])
+    #expect(try await store.messages(conversationID: other).count == 2)
+    try await NotesAssistantPanel.removeLegacyBootstrap(documentID: documentID, conversationID: selected, database: database)
+    #expect(try await store.messages(conversationID: selected).count == 1)
+}
+
+@Test("MetricKit summary retains termination metadata and attributed frames before upload truncation")
+@MainActor func metricKitCrashSummarySurvivesTruncation() throws {
+    let metadata = ["exceptionType": "EXC_BAD_ACCESS", "terminationReason": "test termination"]
+    let source: [String: Any] = ["crashDiagnostics": [[
+        "diagnosticMetaData": metadata,
+        "callStackTree": ["callStacks": [
+            ["threadAttributed": false, "callStackRootFrames": [["binaryName": "unrelated", "padding": String(repeating: "x", count: 150_000)]]],
+            ["threadAttributed": true, "callStackRootFrames": [["binaryName": "FloeApp", "offsetIntoBinaryTextSegment": 42]]]
+        ]]
+    ]]]
+    let data = try JSONSerialization.data(withJSONObject: source)
+    let summary = RuntimeDiagnostics.compactEvidence(data)
+    #expect(summary.utf8.count < 12_000)
+    let object = try #require(JSONSerialization.jsonObject(with: Data(summary.utf8)) as? [String: Any])
+    let records = try #require(object["diagnostics"] as? [[String: Any]])
+    #expect(records.first?["diagnosticMetaData"] as? [String: String] == metadata)
+    #expect(records.first?["attributedThreadFound"] as? Bool == true)
+    let uploaded = FeedbackUploadService.boundedDiagnostics(summary + "\n" + String(decoding: data, as: UTF8.self))
+    #expect(uploaded.hasPrefix(summary))
+    #expect(uploaded.contains("EXC_BAD_ACCESS"))
+    #expect(summary.contains("FloeApp"))
+    #expect(!summary.contains("unrelated"))
+}
+
 @MainActor
 private final class SettingsAppearanceProbe {
     var didAppear = false

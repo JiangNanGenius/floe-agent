@@ -14,6 +14,10 @@ The owner's demonstration credential must not enter source, logs, examples, revi
 | --- | --- | --- |
 | Node startup and services | Live stdin handoff; separate service workers; native service control/ownership; actual version probe in settings | 11 desktop host tests pass, including real HTTP during foreground work, stop/port closure and bounded logs; native bridge syntax check passes; full App service test added but not run |
 | Python output | Stop retaining empty output fragments after the shared byte limit | Two tests of the extracted production runner pass; not iOS runtime evidence |
+| Document assistant | Native document scope is injected internally from live grants; no setup bubble on creation; exact legacy first-message migration; inset adaptive iPad pane and reduced composer chrome | Scope/revocation test passes; Swift parse and native layout scan pass; full-App UI screenshots/upgrade migration checks pending |
+| Python services | Own-GIL sub-interpreters, virtual cwd/environment, loopback listeners, bounded output, owner-only stop and lifecycle retention | Two desktop HTTP services pass; actual Objective-C bridge HTTP x3/owner/cleanup test passes; iOS native test added; service manager/UI/Agent routing still pending |
+| Bundled Python networking | Requests, HTTPX and pytest plus dependencies added as pinned pure wheels (48 total) | Lock validation and isolated CPython 3.13 HTTPS/import/pytest check pass; iOS execution and remaining native packages pending |
+| Crash diagnostics | Valid compact MetricKit termination/attributed-frame summary precedes large payload | Original uploaded payloads lost metadata to client truncation; no supported Qwen crash cause yet; App Store Connect crash endpoint returned HTTP 403; added summary regression pending App execution |
 | Notes ink | Paper canvas uses light appearance; transparency slider maps 0% to solid, 100% to invisible without inverting stored alpha | Pencil drawing, persistence and both device layouts pending |
 | Guidance queue | Withdraw pending guidance from runtime before editing/removing its durable row | Runtime race test added; execution and UI qualification pending |
 | Logging | Persisted debug/info/warning/error collection threshold, default info | Module compilation passed; settings/relaunch/filtering and full app checks pending |
@@ -46,3 +50,12 @@ This addition applies to all supported local runtimes, not just Node. A detached
 7. Archive immutable source in cloud CI, retain a recoverable IPA, upload and verify Apple processing and internal group availability. Record actual build number/source/toolchain/hash. Do not label the new TestFlight installable until verified.
 8. Record a real demo from the qualified build; update bilingual README/guides, release descriptions, compatibility and migration/recovery documents, review notes/sample files/PDF and public Beta metadata. Keep private logs and credentials out of public material.
 9. Publish matching GitHub prerelease and Feather artifacts, merge authorized work to main, remove only proven merged task-owned branches, and clean only regenerable work-owned build scratch. Preserve delivery artifacts, screenshots, logs, symbols, backups and unrelated work.
+
+## Current validation runs
+
+- First batch source `96c5ed1`: [cloud CI 34888434125](https://github.com/JiangNanGenius/floe-agent/actions/runs/34888434125). iOS 27 app compilation reached regression execution; SDK 26.6 build still running at this update. This is not a delivery/upload run.
+- `swift test --package-path FloeAgent/Qualification/Notes --filter assistantContextTracksLiveGrantsWithoutCopyingDocumentInstructions`: 1 passed, macOS module evidence.
+- `node --test FloeAgent/scripts/tests/node_host.test.cjs`: 11 passed, desktop host evidence including persistent HTTP and stop/port closure.
+- `/opt/homebrew/bin/python3.13 -m unittest discover -s FloeAgent/scripts/tests -p test_python_service.py`: 1 passed, two isolated desktop interpreters.
+- `scripts/tests/python_service_bridge.m`, compiled against host CPython 3.13 and Foundation with the production Objective-C bridge: actual HTTP x3, wrong-owner rejection and interpreter shutdown passed. The temporary executable/bootstrap/working directory were removed after success. This is not an iOS build.
+- App Store Connect crash-feedback attempt `34889396665` lacked a build ID and failed before requesting data; corrected attempt `34890729017` used the Build 172 identifier and returned HTTP 403. No crash log was retrieved from Apple; preserved server evidence remains authoritative but incomplete.

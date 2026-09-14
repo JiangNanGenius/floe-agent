@@ -25,6 +25,9 @@ DEFAULT_PACKAGES = [
     "platformdirs", "pypdf", "pyparsing", "pytz", "python-slugify", "six", "feedparser-sgmllib",
     "soupsieve", "sqlparse", "tabulate", "tenacity", "text-unidecode", "tomli",
     "typing-extensions", "vobject", "webencodings", "XlsxWriter",
+    # Networking and test presets, including their non-optional dependencies.
+    "requests", "charset-normalizer", "idna", "urllib3", "httpx", "anyio",
+    "httpcore", "h11", "pytest", "iniconfig", "pluggy", "pygments",
 ]
 
 

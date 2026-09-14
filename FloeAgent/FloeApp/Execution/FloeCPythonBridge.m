@@ -64,6 +64,84 @@ static void FloeRemoveInstallerModules(void) {
 }
 #endif
 
+@interface FloePythonServiceRecord : NSObject
+@property(nonatomic, copy) NSString *identifier;
+@property(nonatomic, copy) NSString *environmentID;
+@property(nonatomic, copy) NSString *state;
+@property(nonatomic, copy) NSString *failure;
+@property(atomic, assign) BOOL cancelled;
+@property(nonatomic, assign) NSUInteger limit;
+@property(nonatomic, strong) NSMutableData *output;
+@property(nonatomic, strong) NSMutableData *errors;
+@property(nonatomic, assign) BOOL truncated;
+- (BOOL)isActive;
+- (NSDictionary *)snapshot;
+- (void)append:(NSData *)data channel:(NSString *)channel;
+@end
+
+@implementation FloePythonServiceRecord
+- (instancetype)init {
+    if ((self = [super init])) {
+        _identifier = NSUUID.UUID.UUIDString; _state = @"starting";
+        _output = [NSMutableData new]; _errors = [NSMutableData new];
+    }
+    return self;
+}
+- (BOOL)isActive { @synchronized(self) { return [@[@"starting", @"running", @"stopping"] containsObject:_state]; } }
+- (void)append:(NSData *)data channel:(NSString *)channel {
+    @synchronized(self) {
+        NSUInteger used = _output.length + _errors.length;
+        NSUInteger count = MIN(data.length, used < _limit ? _limit - used : 0);
+        if (count < data.length) _truncated = YES;
+        NSMutableData *target = [channel isEqual:@"stderr"] ? _errors : _output;
+        if (count) [target appendBytes:data.bytes length:count];
+    }
+}
+- (NSDictionary *)snapshot {
+    @synchronized(self) {
+        return @{@"serviceID": _identifier, @"status": _state,
+                 @"stdout": [_output base64EncodedStringWithOptions:0],
+                 @"stderr": [_errors base64EncodedStringWithOptions:0],
+                 @"encoding": @"base64", @"truncated": @(_truncated), @"error": _failure ?: @""};
+    }
+}
+@end
+
+static NSMutableDictionary<NSString *, FloePythonServiceRecord *> *FloePythonServices(void) {
+    static NSMutableDictionary *records; static dispatch_once_t once;
+    dispatch_once(&once, ^{ records = [NSMutableDictionary new]; });
+    return records;
+}
+
+#if FLOE_HAS_CPYTHON
+static FloePythonServiceRecord *FloePythonServiceFromCapsule(PyObject *self) {
+    return (__bridge FloePythonServiceRecord *)PyCapsule_GetPointer(self, "floe.python.service");
+}
+static void FloePythonServiceCapsuleDestroyed(PyObject *capsule) {
+    void *pointer = PyCapsule_GetPointer(capsule, "floe.python.service");
+    if (pointer) CFRelease(pointer);
+}
+static PyObject *FloePythonServiceCancelled(PyObject *self, PyObject *args) {
+    FloePythonServiceRecord *record = FloePythonServiceFromCapsule(self);
+    if (!record) return NULL;
+    return PyBool_FromLong(record.cancelled);
+}
+static PyObject *FloePythonServiceWrite(PyObject *self, PyObject *args) {
+    PyObject *channel, *text;
+    if (!PyArg_ParseTuple(args, "UU", &channel, &text)) return NULL;
+    FloePythonServiceRecord *record = FloePythonServiceFromCapsule(self);
+    if (!record) return NULL;
+    Py_ssize_t count = 0;
+    const char *bytes = PyUnicode_AsUTF8AndSize(text, &count);
+    const char *name = PyUnicode_AsUTF8(channel);
+    if (!bytes || !name) return NULL;
+    [record append:[NSData dataWithBytes:bytes length:(NSUInteger)count] channel:[NSString stringWithUTF8String:name]];
+    Py_RETURN_NONE;
+}
+static PyMethodDef FloePythonServiceCancelledMethod = {"_floe_cancelled", FloePythonServiceCancelled, METH_NOARGS, NULL};
+static PyMethodDef FloePythonServiceWriteMethod = {"_floe_write", FloePythonServiceWrite, METH_VARARGS, NULL};
+#endif
+
 @implementation FloeCPythonBridge
 
 static NSError *FloePythonError(NSInteger code, NSString *message) {
@@ -359,6 +437,155 @@ static BOOL FloeEnsurePython(NSError **error) {
     withDuration[@"durationMs"] = @(durationMs);
     return withDuration;
 #endif
+}
+
++ (NSDictionary *)startService:(NSString *)script contextJSON:(NSString *)contextJSON
+                 environmentID:(NSString *)environmentID maxOutputBytes:(NSInteger)maxOutputBytes {
+#if !FLOE_HAS_CPYTHON
+    return @{@"status": @"unavailable", @"error": @"Bundled CPython is unavailable"};
+#else
+    NSDictionary *context = [NSJSONSerialization JSONObjectWithData:[contextJSON dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    NSString *directory = [context isKindOfClass:NSDictionary.class] ? context[@"workingDirectory"] : nil;
+    if (![context isKindOfClass:NSDictionary.class] || !environmentID.length || ![context[@"environmentID"] isEqual:environmentID] ||
+        ![directory isKindOfClass:NSString.class] || !directory.isAbsolutePath ||
+        script.length == 0 || [script lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 65536) {
+        return @{@"status": @"invalid", @"error": @"An explicit environment, working directory and bounded script are required"};
+    }
+    NSError *error = nil;
+    if (!FloeEnsurePython(&error)) return @{@"status": @"unavailable", @"error": error.localizedDescription ?: @"CPython could not start"};
+    NSString *bootstrapPath = [NSBundle.mainBundle pathForResource:@"PythonServiceBootstrap" ofType:@"py"];
+    NSString *bootstrap = bootstrapPath ? [NSString stringWithContentsOfFile:bootstrapPath encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (!bootstrap.length) return @{@"status": @"unavailable", @"error": @"Python service bootstrap is not bundled"};
+    FloePythonServiceRecord *record = [FloePythonServiceRecord new];
+    record.environmentID = environmentID; record.limit = MIN(1048576, MAX(1, maxOutputBytes));
+    NSMutableDictionary *records = FloePythonServices();
+    @synchronized(records) {
+        NSUInteger active = 0;
+        for (FloePythonServiceRecord *other in records.allValues) if (other.isActive) active++;
+        if (active >= 2) return @{@"status": @"busy", @"error": @"Two Python services are already active"};
+        // Durable service history belongs to the Swift job store. Bound only
+        // this native control cache; active records are never evicted.
+        if (records.count >= 32) {
+            for (NSString *key in records.allKeys) if (![records[key] isActive]) [records removeObjectForKey:key];
+        }
+        records[record.identifier] = record;
+    }
+    [NSThread detachNewThreadWithBlock:^{ @autoreleasepool {
+        PyGILState_STATE originalGIL = PyGILState_Ensure();
+        PyThreadState *originalState = PyThreadState_Get();
+        if (record.cancelled) {
+            PyGILState_Release(originalGIL);
+            @synchronized(record) { record.state = @"stopped"; }
+            return;
+        }
+        PyInterpreterConfig config = {
+            .use_main_obmalloc = 0, .allow_fork = 0, .allow_exec = 0,
+            .allow_threads = 1, .allow_daemon_threads = 0,
+            .check_multi_interp_extensions = 1, .gil = PyInterpreterConfig_OWN_GIL
+        };
+        PyThreadState *serviceState = NULL;
+        PyStatus created = Py_NewInterpreterFromConfig(&serviceState, &config);
+        if (PyStatus_Exception(created)) {
+            if (!PyThreadState_GetUnchecked()) PyEval_RestoreThread(originalState);
+            PyGILState_Release(originalGIL);
+            @synchronized(record) {
+                record.failure = created.err_msg ? [NSString stringWithUTF8String:created.err_msg] : @"Python service interpreter initialization failed";
+                record.state = @"failed";
+            }
+            return;
+        }
+        // No Python objects cross interpreter boundaries. The old GIL is
+        // released by creation; this thread now owns the service interpreter.
+        PyObject *globals = PyDict_New();
+        PyObject *source = PyUnicode_FromStringAndSize(script.UTF8String, [script lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+        PyObject *json = PyUnicode_FromString(contextJSON.UTF8String);
+        void *retainedOwner = (__bridge_retained void *)record;
+        PyObject *capsule = PyCapsule_New(retainedOwner, "floe.python.service", FloePythonServiceCapsuleDestroyed);
+        if (!capsule) CFRelease(retainedOwner);
+        PyObject *cancel = capsule ? PyCFunction_New(&FloePythonServiceCancelledMethod, capsule) : NULL;
+        PyObject *write = capsule ? PyCFunction_New(&FloePythonServiceWriteMethod, capsule) : NULL;
+        BOOL ready = globals && source && json && cancel && write;
+        if (ready) {
+            ready = PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins()) == 0
+                && PyDict_SetItemString(globals, "_floe_source", source) == 0
+                && PyDict_SetItemString(globals, "_floe_context_json", json) == 0
+                && PyDict_SetItemString(globals, "_floe_cancelled", cancel) == 0
+                && PyDict_SetItemString(globals, "_floe_write", write) == 0;
+        }
+        Py_XDECREF(source); Py_XDECREF(json); Py_XDECREF(cancel); Py_XDECREF(write); Py_XDECREF(capsule);
+        @synchronized(record) { record.state = record.cancelled ? @"stopping" : @"running"; }
+        NSString *program = [@"import json\n_floe_context=json.loads(_floe_context_json)\n" stringByAppendingString:bootstrap];
+        PyObject *execution = ready ? PyRun_String(program.UTF8String, Py_file_input, globals, globals) : NULL;
+        NSString *failure = nil;
+        if (!execution) {
+            PyObject *exception = PyErr_GetRaisedException();
+            PyObject *description = exception ? PyObject_Str(exception) : NULL;
+            const char *value = description ? PyUnicode_AsUTF8(description) : NULL;
+            failure = value ? [NSString stringWithUTF8String:value] : @"Python service failed";
+            Py_XDECREF(description); Py_XDECREF(exception); PyErr_Clear();
+        }
+        Py_XDECREF(execution); Py_XDECREF(globals);
+        // Cleanup can wait for native operations or child threads. Keep the
+        // record active until EndInterpreter returns; never free its owner early.
+        Py_EndInterpreter(serviceState);
+        PyEval_RestoreThread(originalState);
+        PyGILState_Release(originalGIL);
+        @synchronized(record) {
+            record.failure = failure;
+            record.state = record.cancelled ? @"stopped" : failure ? @"failed" : @"completed";
+        }
+    } }];
+    return record.snapshot;
+#endif
+}
+
++ (NSDictionary *)serviceStatus:(NSString *)serviceID environmentID:(NSString *)environmentID {
+    NSMutableDictionary *records = FloePythonServices();
+    @synchronized(records) {
+        FloePythonServiceRecord *record = records[serviceID];
+        if (![record.environmentID isEqual:environmentID]) return @{@"status": @"notFound"};
+        return record.snapshot;
+    }
+}
+
++ (NSDictionary *)stopService:(NSString *)serviceID environmentID:(NSString *)environmentID {
+    NSMutableDictionary *records = FloePythonServices();
+    FloePythonServiceRecord *record;
+    @synchronized(records) { record = records[serviceID]; }
+    if (![record.environmentID isEqual:environmentID]) return @{@"status": @"notFound"};
+    @synchronized(record) {
+        if (record.isActive) { record.cancelled = YES; record.state = @"stopping"; }
+    }
+    const NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 10;
+    while (record.isActive && NSProcessInfo.processInfo.systemUptime < deadline) [NSThread sleepForTimeInterval:0.025];
+    return record.snapshot;
+}
+
++ (BOOL)hasActiveServices:(NSString *)environmentID {
+    NSMutableDictionary *records = FloePythonServices();
+    @synchronized(records) {
+        for (FloePythonServiceRecord *record in records.allValues) {
+            if ([record.environmentID isEqual:environmentID] && record.isActive) return YES;
+        }
+    }
+    return NO;
+}
+
++ (BOOL)stopServices:(NSString *)environmentID {
+    NSMutableDictionary *records = FloePythonServices();
+    NSArray<FloePythonServiceRecord *> *snapshot;
+    @synchronized(records) { snapshot = records.allValues; }
+    // Signal all first, so multiple services unwind concurrently.
+    for (FloePythonServiceRecord *record in snapshot) {
+        @synchronized(record) {
+            if ([record.environmentID isEqual:environmentID] && record.isActive) {
+                record.cancelled = YES; record.state = @"stopping";
+            }
+        }
+    }
+    const NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 10;
+    while ([self hasActiveServices:environmentID] && NSProcessInfo.processInfo.systemUptime < deadline) [NSThread sleepForTimeInterval:0.025];
+    return ![self hasActiveServices:environmentID];
 }
 
 @end

@@ -157,6 +157,7 @@ struct ThreadComposerView: View {
     var contextID: UUID? = nil
     /// An unsent Home draft may select Notes without mounting a task workspace.
     var notesDraftID: UUID? = nil
+    var embedded: Bool = false
 
     @State private var isPickerPresented = false
     @State private var isNotesPickerPresented = false
@@ -719,8 +720,10 @@ struct ThreadComposerView: View {
             HStack(spacing: 10) {
                 modelPicker
                 reasoningPicker
-                projectPicker
-                targetPicker
+                if !embedded {
+                    projectPicker
+                    targetPicker
+                }
                 modePicker
                 if isRunning, let runningInputMode {
                     Menu {

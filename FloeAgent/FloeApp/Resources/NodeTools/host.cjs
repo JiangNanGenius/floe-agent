@@ -34,7 +34,7 @@ function start(job, service = false) {
   try {
     const path = require('node:path');
     if (typeof job.cwd !== 'string' || !path.isAbsolute(job.cwd) || !require('node:fs').statSync(job.cwd).isDirectory()) throw Error('A valid absolute working directory is required');
-    const data = { floeJob: true, stdin: job.stdin ?? '', cwd: job.cwd, args: job.args };
+    const data = { floeJob: true, service, stdin: job.stdin ?? '', cwd: job.cwd, args: job.args };
     if (Number.isInteger(job.stdinFD) && job.stdinFD >= 3) data.stdinFD = job.stdinFD;
     if (job.entry) data.entry = path.resolve(job.cwd, job.entry);
     else if (['-e', '--eval', '-p', '--print'].includes(job.args[0])) {

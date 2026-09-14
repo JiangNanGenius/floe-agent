@@ -976,6 +976,7 @@ final class ConversationCenter: ObservableObject {
                 availableToolNames: allowedToolNames,
                 skillInstructions: [
                     skills.instructions,
+                    try await NotesRepository.shared.runtimeContext(conversationID: conversationID),
                     runSurface == .ordinary ? AppleCapabilityPreferences.skillInstructions() : nil
                 ]
                     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
