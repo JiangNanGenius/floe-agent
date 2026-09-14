@@ -2,7 +2,7 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-Current candidate: **build 165**, incorporating the user's Goodnotes interaction preference, document tabs, a collapsible document header and a compact Pencil quick palette. Four navigation-state tests and the actual palette component compilation have passed locally. Full App, both SDK/device UI gates and distribution remain pending. Build 156 remains the latest verified TestFlight delivery.
+Current candidate: **build 165**, source `b80864f6fa566674a38e9b5924d9735137d597e4`, tag `v1.7.0-beta.22`, [release run 34840920641](https://github.com/JiangNanGenius/floe-agent/actions/runs/34840920641), incorporating the user's Goodnotes interaction preference, document tabs, a collapsible document header and a compact Pencil quick palette. Four navigation-state tests and the actual palette component compilation have passed locally. Full App, both SDK/device UI gates and distribution remain pending. Build 156 remains the latest verified TestFlight delivery.
 
 Build 164 (`f150e888028aa20a0131240e0c3d259756cac304` / `v1.7.0-beta.21`, [run 34833194332](https://github.com/JiangNanGenius/floe-agent/actions/runs/34833194332)) passed SDK 27 module, App and dual-device UI tests. Its run was cancelled before upload to incorporate the new requested scope; it was not delivered to TestFlight or published as a GitHub Release. Its evidence and screenshots below remain valid only for that source.
 

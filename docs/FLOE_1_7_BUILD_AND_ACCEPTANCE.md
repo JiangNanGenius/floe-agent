@@ -25,7 +25,7 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 
 推送固定提交后检查 CI 的 Linux、开发 SDK 和发布 SDK 作业。每项记录提交 SHA、Xcode/SDK、测试结果、失败日志和产物。重跑使用同一提交；代码变化后结果属于新提交。构建产物上传、签名归档、App Store Connect 处理、TestFlight 可安装分别记录。
 
-当前发布流水线分别验证 SDK 27 源码和 Xcode 26.6（17F113，实际 SDK 26.5）的上传构建，签名包由后者重建同一标签。`#if compiler(>=6.4)` 控制的 27 专属实现不会出现在这份上传包中，例如手记的新笔迹选择接口会走兼容选区入口。SDK 27 组件图不能用来证明 TestFlight 包含全部 27 专属能力；上传后记录中必须注明实际工具链。
+当前发布流水线先固定并校验标签，再并行验证 SDK 27 源码和 Xcode 26.6（17F113，实际 SDK 26.5）的上传构建。每个 SDK 只编译一次模拟器测试宿主，App 回归和 iPad／iPhone UI 使用 test-without-building；两套设备 Release 构建仍保留。两边均成功后，签名作业核对上传候选产物的 SHA-256、源码提交、包标识及版本号，复用已验证的应用，不再编译。`#if compiler(>=6.4)` 控制的 27 专属实现不会出现在这份上传包中，例如手记的新笔迹选择接口会走兼容选区入口。SDK 27 组件图不能用来证明 TestFlight 包含全部 27 专属能力；上传后记录中必须注明实际工具链。
 
 ## 完整验收门槛
 
