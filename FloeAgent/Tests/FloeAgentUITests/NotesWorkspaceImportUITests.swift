@@ -7,8 +7,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     func testWorkspacePDFImportOpensFullscreenAndSearchesBody() throws {
         continueAfterFailure = false
         let ipad = UIDevice.current.userInterfaceIdiom == .pad
-        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         let app = XCUIApplication()
+        // A preceding runtime suite can leave its host process alive. Setting
+        // orientation first waits for that unrelated event loop to become idle.
+        app.terminate()
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-pdf-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
