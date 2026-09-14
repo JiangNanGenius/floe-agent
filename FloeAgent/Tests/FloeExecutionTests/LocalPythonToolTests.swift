@@ -66,9 +66,10 @@ struct LocalPythonToolTests {
             )
         }
         let tool = LocalPythonTool(service: service)
+        let userScript = "import marko; print(marko.convert('# Title'))"
         let output = try await tool.execute(
             .init(
-                script: "import marko; print(marko.convert('# Title'))",
+                script: userScript,
                 pipCommand: "pip install marko==2.2.0",
                 packagePurpose: "Render the Markdown requested by the user",
                 packageCapabilities: ["document.render"]
@@ -79,10 +80,37 @@ struct LocalPythonToolTests {
         #expect(requests.count == 2)
         #expect(requests.first?.allowsManagedPackageInstaller == true)
         #expect(requests.first?.script.contains("marko==2.2.0") == true)
-        #expect(requests.first?.script.contains("os.makedirs(_parent, exist_ok=True)") == true)
-        #expect(requests.first?.script.contains("os.makedirs(_target, exist_ok=True)") == true)
+        // Verify the privilege boundary, not private implementation lines in
+        // the ownership-aware installer (its filesystem behavior has payload tests).
+        #expect(requests.first?.script.contains(userScript) == false)
+        #expect(requests.last?.script == userScript)
         #expect(requests.last?.allowsManagedPackageInstaller == false)
         #expect(output.exitStatus == 0)
+    }
+
+    @Test("failed managed installation never starts the user script")
+    func failedInstallPreventsExecution() async throws {
+        actor Recorder {
+            var requests: [ScriptExecutionRequest] = []
+            func append(_ request: ScriptExecutionRequest) { requests.append(request) }
+            func snapshot() -> [ScriptExecutionRequest] { requests }
+        }
+        let recorder = Recorder()
+        let service = LocalPythonService(version: "CPython 3.13") { request, _ in
+            await recorder.append(request)
+            return .jsException(message: "Package ownership conflict", stdout: "")
+        }
+        let output = try await LocalPythonTool(service: service).execute(
+            .init(script: "print('must not execute')", packages: ["marko==2.2.0"],
+                  packagePurpose: "Render the user's document", packageCapabilities: ["document.render"]),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        let requests = await recorder.snapshot()
+        #expect(requests.count == 1)
+        #expect(requests.first?.allowsManagedPackageInstaller == true)
+        #expect(requests.first?.script.contains("must not execute") == false)
+        #expect(output.exitStatus != 0)
+        #expect(output.summary.contains("Package ownership conflict"))
     }
 
     @Test("managed package specs reject direct URLs and script-level pip")

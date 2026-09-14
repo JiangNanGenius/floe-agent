@@ -12,13 +12,25 @@ struct LocalShellRuntimeTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let result = await IOSSystemShellBackend().run(.init(command: "apt update", cwd: ".", rootURL: root,
+        // `pkg` remains the limited compatibility catalog; the configured App
+        // replaces `apt` with PackagesCLI, where `update` is a valid operation.
+        let result = await IOSSystemShellBackend().run(.init(command: "pkg update", cwd: ".", rootURL: root,
             timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
         guard case .exited(let code, _, let errors, _, _, _) = result else {
             Issue.record("Unsupported package command did not terminate: \(result)"); return
         }
         #expect(code == 2)
         #expect(errors.contains("unsupported command"))
+        // The full apt implementation must also fail when this bare shell
+        // request has no resolved environment. It must not invent a container.
+        let unbound = await IOSSystemShellBackend().run(.init(command: "apt update", cwd: ".", rootURL: root,
+            timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .exited(let unboundCode, let output, let unboundErrors, _, _, _) = unbound else {
+            Issue.record("Unbound apt did not terminate: \(unbound)"); return
+        }
+        #expect(unboundCode == 100)
+        #expect(output.isEmpty)
+        #expect(unboundErrors.contains("no active container"))
     }
 
     @Test(.timeLimit(.minutes(1))) func pipelineTimeoutDrainsAndNextCommandRuns() async throws {
