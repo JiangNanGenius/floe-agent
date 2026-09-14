@@ -2,6 +2,12 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
+## Current qualification checkpoint — build 159
+
+The exact candidate is `ce7b514ed792f3cd17936a5ba55934f27eadfd9e` / `v1.7.0-beta.16`. [Release run 34804583803](https://github.com/JiangNanGenius/floe-agent/actions/runs/34804583803) has passed 1,266 Swift test executions: 1,164 main, 12 JavaScript engine, 12 JavaScript tool, 61 platform and 17 Notes. These are executions across suites, not unique App or device cases. [Machine-readable evidence](evidence/floe-1.7/release-159/swift-qualification.json) retains counts, exit status and log hashes.
+
+Full App regression, SDK 27 and accepted-SDK iPad/iPhone import UI, signing, Apple processing and private-group availability remain open. Build 156 is still the latest verified TestFlight delivery. Earlier checkpoint statements below are a chronological history, not the current qualification result.
+
 ## Changes under qualification
 
 - Remove the app-level 100-tool-call cap; preserve runtime no-progress, per-call timeout and output protections.
