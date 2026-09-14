@@ -66,3 +66,16 @@ The tip arc remains a quick tool switcher; these controls belong to the main pan
 Qualification reuses the production parameter panel in the small native host.
 It checks width presets and opacity across relaunch, the actual PKInkingTool
 values in unit tests, eight native brush modes, and native drawing save/reopen.
+
+## Verified component screenshots
+
+These unedited SDK 27 Simulator attachments show the production panel inside
+the native qualification host, not the complete Floe app. The source, test cases
+and original attachment hashes are retained in the [screenshot manifest](evidence/floe-1.7/release-167/brush-component-screenshots/manifest.json).
+The UI cases passed; that original run had a separate monoline serialization
+assertion failure, subsequently corrected and verified on both SDKs as recorded
+in the [unit qualification](evidence/floe-1.7/release-167/brush-unit-qualification.json).
+
+| iPad: eight brush styles | iPhone: changed width and opacity |
+| --- | --- |
+| ![Native iPad brush chooser](evidence/floe-1.7/release-167/brush-component-screenshots/ipad-brush-chooser.png) | ![Native iPhone brush width and opacity](evidence/floe-1.7/release-167/brush-component-screenshots/iphone-width-opacity.png) |

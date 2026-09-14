@@ -1,0 +1,24 @@
+{
+  "scope": "Production brush panel in the native component qualification host; not the full Floe application or a physical device.",
+  "sourceCommit": "f6874d530842461343ef8b4c0a3cb8998ed0793f",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34853249242",
+  "sdk": "27",
+  "screenshots": [
+    {
+      "file": "ipad-brush-chooser.png",
+      "originalAttachment": "813B0EE3-DCB7-4153-BBC3-297BB5BB8F13.png",
+      "sha256": "0ecc00baa93af6105b35b6d2cc36b71a87ca3ad16189c54c8e5f71fc6d6f553d",
+      "device": "iPad mini (A17 Pro)",
+      "testIdentifier": "PencilPaletteUITests/testAllBrushesReachNativeCanvasAndRememberPen()",
+      "timestamp": 1789395152.424
+    },
+    {
+      "file": "iphone-width-opacity.png",
+      "originalAttachment": "2C51C418-0078-4737-A551-0E9CEC0A4C00.png",
+      "sha256": "f4434ed0fa2ece58f0dd912b62f3fb3d4c1747d8df2ced5e2ca2277ca74939f8",
+      "device": "iPhone 17 Pro",
+      "testIdentifier": "PencilPaletteUITests/testBrushParametersApplyAndPersistAcrossReopen()",
+      "timestamp": 1789395069.074
+    }
+  ]
+}
