@@ -1,0 +1,14 @@
+{
+  "version": "1.7.0",
+  "build": "172",
+  "sourceSHA": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "tag": "v1.7.0-beta.29",
+  "workflowRun": 34870170373,
+  "policySHA": "9c741b0a4c7492fef7b5cbcaff4c74026efc4a80",
+  "deliveryUUID": "26175fe4-bdf0-45cf-ad28-7a77ddc7b3ea",
+  "uploadedAt": "2026-09-14T17:25:50Z",
+  "result": "UPLOAD SUCCEEDED with no errors",
+  "appleStateAtFirstRead": "PROCESSING",
+  "appleReadAt": "2026-09-14T17:27:19Z",
+  "installability": "not yet verified"
+}

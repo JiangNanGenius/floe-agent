@@ -1,0 +1,11 @@
+{
+  "file": "floe-public-beta-sample.pdf",
+  "sha256": "729a3ec2e43feaec13b30e06357d167ee4c846519cb557f335d232d5e71ecae3",
+  "bytes": 69188,
+  "pages": 2,
+  "englishTextExtracted": true,
+  "chineseTextExtracted": true,
+  "embeddedImage": true,
+  "renderedPagesVisuallyReviewed": 2,
+  "appAcceptance": "pending on submitted build"
+}

@@ -12,9 +12,13 @@ These assets are prepared as references, not evidence that the next build has pa
 
 These are unedited build 172 SDK 27 full-App simulator images using synthetic fixtures. They must not be labeled as the next submitted build or physical Pencil Pro evidence. Retake changed screens after the next build is frozen. UI test success is separate from physical-device acceptance.
 
+## Prepared sample
+
+The [bilingual PDF and expected results](sample-files/README.md) are ready: two pages, searchable English/Chinese text, a chart image and annotation space. PDF rendering and text extraction have been checked; app-level execution on the next build remains pending.
+
 ## Attach before review
 
-1. A small synthetic English/Chinese PDF, with selectable text and one image. Include an expected search phrase and a note explaining that no personal material is present.
+1. Run the prepared sample on the exact submitted build and retain the result.
 2. A short screen recording: fresh launch → Notes import → full-screen annotation → save/reopen → model configuration with secret fields obscured → one AI response and visible tool action. Record the actual submitted build; avoid edited footage that hides failure states.
 3. A brief PDF/Markdown reviewer walkthrough matching `review-notes.en-US.md`. Supply the real sample files, not just screenshots of them.
 4. Working private AI review-access instructions. Verify access from a clean installation and disclose any optional downloads, network requirements or necessary hardware.
