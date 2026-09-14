@@ -43,8 +43,18 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(file.waitForExistence(timeout: 10))
         capture("notes-workspace-import")
         file.tap()
-        let back = app.buttons["notes.back"].firstMatch
+        let back = app.buttons["notes.back"]
         XCTAssertTrue(back.waitForExistence(timeout: 20))
+        // Full-screen presentation can expose a control before its transition
+        // makes it interactive. Require the foreground control, not a covered
+        // library navigation item, and retain the tree for a failing transition.
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "notes-editor-after-import-tree"
+        tree.lifetime = .keepAlways
+        add(tree)
+        let editorReady = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: back)
+        wait(for: [editorReady], timeout: 10)
+        XCTAssertEqual(app.buttons.matching(identifier: "notes.back").count, 1)
         XCTAssertTrue(back.isHittable)
         XCTAssertFalse(app.navigationBars["从工作区导入"].exists)
         XCTAssertFalse(app.textFields["notes.search"].isHittable)

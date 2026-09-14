@@ -56,12 +56,6 @@ struct NotesRootView: View {
             .navigationTitle("手记")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if session.document != nil {
-                        Button("返回", systemImage: "chevron.left") { Task { await session.select(nil) } }
-                            .accessibilityIdentifier("notes.back")
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("空白手记", systemImage: "doc.badge.plus") { creation = .note }
