@@ -324,6 +324,16 @@ final class NotesSession {
         }
     }
 
+    /// A prepared workspace archive may contain linked maps. Commit its
+    /// documents together after the picker has released its presentation.
+    func importDocuments(_ values: [NoteDocument]) {
+        enqueue { [self] in
+            guard let store else { return }
+            document = try await store.createBundle(values).first
+            try await reload()
+        }
+    }
+
     private func enqueue(_ operation: @escaping @MainActor () async throws -> Void) {
         let previous = tail
         pendingWrites += 1

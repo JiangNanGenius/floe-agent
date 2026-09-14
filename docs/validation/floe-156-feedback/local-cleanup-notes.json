@@ -1,0 +1,12 @@
+{
+  "removed": "/tmp/floe-media-ui-derived",
+  "allocatedBytesBeforeRemoval": 3464896512,
+  "reason": "Completed task-owned Notes/Management build cache; no open files",
+  "retained": "All simulators, installed apps and their data, source and archived evidence",
+  "proof": {
+    "installedProductMatchingFiles": 93,
+    "relaunchPID": 23430,
+    "nativeSearchPassedAfterRelaunch": true
+  },
+  "utc": "2026-09-14T01:29:28.303023+00:00"
+}

@@ -15,7 +15,7 @@ struct NotesRootView: View {
     @State private var pendingCreation: (kind: Creation, title: String)?
     @State private var importing = false
     @State private var importingWorkspace = false
-    @State private var pendingWorkspaceImport: NoteDocument?
+    @State private var pendingWorkspaceImport: [NoteDocument]?
     @EnvironmentObject private var environment: AppEnvironment
     @State private var deleting: NoteDocument?
     @State private var renaming: RenameTarget?
@@ -123,15 +123,20 @@ struct NotesRootView: View {
             .sheet(isPresented: $importingWorkspace, onDismiss: {
                 if let value = pendingWorkspaceImport {
                     pendingWorkspaceImport = nil
-                    session.importDocument(value)
+                    session.importDocuments(value)
                 }
             }) {
                 OfficeWorkspaceAttachmentPicker(environment: environment, purpose: .notesImport) { url in
                     guard let store = session.store else { throw NoteError.resourceUnavailable }
-                    let value = try await NoteFileImporter.importFile(url, notebookID: selectedBook, store: store)
+                    let values: [NoteDocument]
+                    if url.pathExtension.lowercased() == "floenote" {
+                        values = try await NotesArchive.importDocuments(from: url, notebookID: selectedBook, store: store)
+                    } else {
+                        values = [try await NoteFileImporter.importFile(url, notebookID: selectedBook, store: store)]
+                    }
                     // Copy/import finishes before the picker releases a remote temporary file.
                     // Present the editor only after the workspace picker has dismissed.
-                    pendingWorkspaceImport = value
+                    pendingWorkspaceImport = values
                 }
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, .plainText, UTType(exportedAs: "org.floeagent.note", conformingTo: .data)] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) }) { result in
