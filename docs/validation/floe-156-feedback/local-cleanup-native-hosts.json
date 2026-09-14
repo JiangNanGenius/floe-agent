@@ -1,0 +1,29 @@
+{
+  "utc": "2026-09-14T02:16:27.451373+00:00",
+  "sourceCommit": "a633134a8339f27fc1a4664b1f797f03d5841bf9",
+  "removed": [
+    {
+      "path": "/tmp/floe-156-shell-native-check",
+      "allocatedBytes": 292433920,
+      "openFileCheck": "lsof +D returned 1 with no listed files"
+    },
+    {
+      "path": "/tmp/floe-156-speech-download",
+      "allocatedBytes": 86044672,
+      "openFileCheck": "lsof +D returned 1 with no listed files"
+    },
+    {
+      "path": "/tmp/floe-156-serve-sim-npm",
+      "allocatedBytes": 87367680,
+      "openFileCheck": "lsof +D returned 1 with no listed files"
+    }
+  ],
+  "allocatedTotal": 465846272,
+  "preserved": [
+    "All simulator devices and installed apps/data",
+    "Build134 app and data backup on external disk",
+    "Native Shell/Speech/Python JSON evidence and screenshot manifests",
+    "Current source and unrelated caches/files"
+  ],
+  "qualification": "Shell 26 cases and interactive result passed before shutdown; Speech production download/dismiss/relaunch/cancel/process-interruption results archived. Native hosts were explicitly terminated after checks. Removed paths are rebuildable derived products/npm cache, not user data."
+}

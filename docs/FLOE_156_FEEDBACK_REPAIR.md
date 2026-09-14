@@ -41,7 +41,7 @@ Second checkpoint e475212 qualification exposed a missing-leaf symlink escape in
 
 ## Remaining gates
 
-Background transfer runtime/relaunch/cancellation tests; official production source; Python/npm management and package isolation; native Shell/Node integration and stdin; configuration hydration audit; stable-prefix/context replay qualification and live cache measurements; Office/map library previews and writing-control UI checks; full App iPad/iPhone tests and screenshots; documentation reconciliation; signed TestFlight upload and availability; main merge and merged-branch cleanup.
+Latest open gates: complete App Shell/Python/Node/HTTPS and environment-isolation regression; iPad/iPhone complete App workspace import, fullscreen editing and screenshots; configuration hydration and stable-prefix/context replay review; official production apt source and package/model delivery; remaining Office/map interaction checks; signed TestFlight upload and availability; main merge and merged-branch cleanup. Native Whisper download/navigation/relaunch/cancel/process-interruption checks and native Notes OCR/search checks now have passing evidence below. Physical-device checks remain assigned to the user.
 
 Do not equate this checkpoint, CI dispatch, source parsing or component tests with the finished plan.
 

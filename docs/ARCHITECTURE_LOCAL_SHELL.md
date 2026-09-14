@@ -1,6 +1,6 @@
 # Floe Local Shell Substrate — Architecture
 
-Status: incomplete working-tree implementation after 1.6.6 (candidate 1.6.7 / build 143).
+Status: 1.7 Build 156 feedback repair candidate; full App regression and a new TestFlight delivery remain pending.
 
 > Implementation audit 2026-09-12: the mini-root filesystem-isolation claim below
 > is not established by the pinned ios_system binaries. Treat security/concurrency
@@ -15,7 +15,7 @@ local command environment.
 
 The shell substrate is being integrated with explicit workspace/conversation environment ownership. Environment layers do not isolate same-process native execution. Path checks on App file operations and per-tool permission decisions remain necessary; a mini-root or changed working directory is not an OS-level containment boundary.
 
-Four minimal iOS Simulator reproductions cover environment scope, no scope leakage, bounded stdin/output with exit status, and a loop piped to `tr`. They do not establish complete multi-stage pipeline, interactive cancellation or device acceptance. Node now uses a persistent host; see [Node runtime](FLOE_1_7_NODE_RUNTIME.md). Apt candidate entries and model catalog entries are not automatically usable: see [compatibility](FLOE_1_7_COMPATIBILITY.md).
+The current native simulator host passes 26 command cases and interactive input, covering scope, literal argument transport, exports, pipelines, bounded output, cancellation and worker shutdown. It uses callback fixtures for runtime dispatch; embedded Python/Node and complete App tests are separate. Dash routes expanded argv through literal delimiters before `ios_execve`, and resolves the production Python service through an internal alias so the upstream engine cannot rewrite it to missing PythonA/PythonB frameworks. Compound or builtin pipeline consumers that cannot run safely fail explicitly. Node now uses a persistent host; see [Node runtime](FLOE_1_7_NODE_RUNTIME.md). Apt candidate entries and model catalog entries are not automatically usable: see [compatibility](FLOE_1_7_COMPATIBILITY.md).
 
 ## 1. What this adds
 

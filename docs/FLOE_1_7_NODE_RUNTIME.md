@@ -10,9 +10,10 @@ process-terminating signal.
 Job input supports both streamed `process.stdin` and synchronous fd 0 reads. Unread
 stdin does not keep a finished worker alive. Output is drained continuously and
 retained under a shared byte limit with an explicit truncation flag. Worker environment
-maps, argv, and cwd are supplied from the execution context. The host restores cwd
-when the worker exits. This remains dependency/data layering, not a security sandbox.
-Cross-runtime concurrency involving process-wide cwd still requires qualification.
+maps, argv, and cwd are supplied from the execution context. Relative filesystem
+calls use the worker-local directory shim; jobs do not change the App process cwd.
+This remains dependency/data layering, not a security sandbox. Cross-runtime native
+filesystem access still requires qualification.
 
 ## Reproducible inputs
 
@@ -56,3 +57,10 @@ or package compatibility acceptance.
 The host no longer calls process.chdir for a job. A worker-local shim resolves common fs and fs.promises relative paths against the job directory, including streams, Buffer paths and file URLs. Native NodeMobile qualification passed 9 cases; every case kept the app process cwd unchanged and left no active worker. Four host tests passed, including filesystem operations and pinned package-manager startup.
 
 This is path routing, not native-code isolation. Child workers and relative filesystem calls inside native addons still require qualification. Dynamic import from the current `node -e` VM path is not implemented; file entry points support it.
+
+
+## Build 156 feedback candidate
+
+The latest native evidence under `validation/floe-156-feedback` contains nine bridge cases, seven adapter checks and a real HTTPS npm install/import/failure-preservation/uninstall cycle for `is-number@7.0.0`. Seven macOS host cases cover live input and cancellation as well. These are component results; the full App shell/runtime suite must pass independently.
+
+Dash protects every expanded argument using the pinned engine's literal argument transport and supplies exports via `ios_execve`. This prevents no-space JavaScript arrow functions from becoming shell redirections and makes exported variables visible to Node. The Python engine alias avoids upstream PythonA/PythonB framework rewriting. The native shell host verifies transport, exports and repeated callback dispatch; see [feedback qualification](FLOE_156_FEEDBACK_REPAIR.md) for full App status.
