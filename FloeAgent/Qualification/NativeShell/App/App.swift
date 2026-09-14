@@ -21,7 +21,11 @@ func runSmoke() {
  expanded += [#"dash -c 'floe_qualification_echo "a=>b|c;d>e<g" "" "中文"'"#]
  expanded += ["dash -c 'export FLOE_SHELL_TEST_SCOPE=exported; floe_qualification_echo --environment'"]
  expanded += ["dash -c 'python3 first; python3 second'"]
- for index in [2, 3, 1, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] {
+ let quote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+ expanded += ["space only", #"x "y" z"#, "x 'y' z", #"x 'y' "z""#].map {
+  "dash -c " + quote("floe_qualification_echo " + quote($0))
+ }
+ for index in [2, 3, 1, 0] + Array(4..<expanded.count) {
   let command = expanded[index]
   var out: NSString?, err: NSString?, code: Int32 = -1
   let env: [String: String] = index == 2 ? ["FLOE_SHELL_TEST_SCOPE": "scoped"] : [:]

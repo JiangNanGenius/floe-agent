@@ -83,25 +83,34 @@ static int floe_async_consumer_failed = 0;
 /* ios_execv serializes argv back into a command string. Its default quoting
  * only protects arguments containing spaces, so JS arrows, pipes and quotes
  * can be parsed as shell syntax a second time. Use the engine's literal
- * argument delimiter for every already-expanded argument. Prepare before
+ * argument delimiter for every already-expanded argument, serialized once as
+ * argv[0]. Otherwise concatenateArgv wraps space-containing arguments again
+ * and leaves literal record separators in Python/JavaScript source. Prepare before
  * ios_fork: a rejected argument must not leave an unpublished PID behind. */
 static char **floe_prepare_argv(char **argv)
 {
     size_t count = 0;
     while (argv[count]) count++;
-    char **prepared = stalloc((count + 1) * sizeof(char *));
+    char **prepared = stalloc(2 * sizeof(char *));
     const char *(*alias)(const char *) = dlsym(RTLD_DEFAULT, "floe_shell_command_alias");
-    prepared[0] = (char *)(alias ? alias(argv[0]) : argv[0]);
+    const char *command = alias ? alias(argv[0]) : argv[0];
+    size_t total = strlen(command) + 1;
     for (size_t i = 1; i < count; i++) {
         if (strchr(argv[i], 0x1e)) sh_error("command argument contains reserved transport character");
-        size_t length = strlen(argv[i]);
-        prepared[i] = stalloc(length + 3);
-        prepared[i][0] = 0x1e;
-        memcpy(prepared[i] + 1, argv[i], length);
-        prepared[i][length + 1] = 0x1e;
-        prepared[i][length + 2] = 0;
+        total += strlen(argv[i]) + 3;
     }
-    prepared[count] = NULL;
+    prepared[0] = stalloc(total);
+    char *cursor = stpcpy(prepared[0], command);
+    for (size_t i = 1; i < count; i++) {
+        size_t length = strlen(argv[i]);
+        *cursor++ = ' ';
+        *cursor++ = 0x1e;
+        memcpy(cursor, argv[i], length);
+        cursor += length;
+        *cursor++ = 0x1e;
+    }
+    *cursor = 0;
+    prepared[1] = NULL;
     return prepared;
 }
 #endif

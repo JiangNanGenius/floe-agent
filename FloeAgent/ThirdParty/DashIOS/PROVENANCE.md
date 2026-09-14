@@ -25,7 +25,8 @@ Floe feedback repair (2026-09-14): pipeline PIDs are allocated only after comman
 Argument/environment transport repair: the pinned ios_system `ios_execv`
 reconstructs a command string and only quotes arguments containing spaces.
 Floe protects expanded arguments with the engine's existing 0x1e literal
-delimiter before calling `ios_execve` with Dash's exported environment. Inputs
+delimiter, serializes the complete command once into the single `argv[0]`
+accepted by upstream `ios_execv`, then calls `ios_execve` with Dash's exported environment. This avoids `concatenateArgv` wrapping arguments containing spaces a second time. Inputs
 containing that reserved delimiter are rejected before allocating a PID. This
 prevents already-parsed JavaScript arrows, pipes and quotes from being parsed
 as shell redirections again. `floe_shell_command_alias` is an optional App hook
