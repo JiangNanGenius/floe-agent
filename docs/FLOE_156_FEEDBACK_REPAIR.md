@@ -2,13 +2,15 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-## Current qualification checkpoint — build 159
+## Previous qualification checkpoint — build 159
 
-The exact candidate is `ce7b514ed792f3cd17936a5ba55934f27eadfd9e` / `v1.7.0-beta.16`. [Release run 34804583803](https://github.com/JiangNanGenius/floe-agent/actions/runs/34804583803) has passed 1,266 Swift test executions: 1,164 main, 12 JavaScript engine, 12 JavaScript tool, 61 platform and 17 Notes. These are executions across suites, not unique App or device cases. [Machine-readable evidence](evidence/floe-1.7/release-159/swift-qualification.json) retains counts, exit status and log hashes.
+The previous candidate was `ce7b514ed792f3cd17936a5ba55934f27eadfd9e` / `v1.7.0-beta.16`. [Release run 34804583803](https://github.com/JiangNanGenius/floe-agent/actions/runs/34804583803) has passed 1,266 Swift test executions: 1,164 main, 12 JavaScript engine, 12 JavaScript tool, 61 platform and 17 Notes. These are executions across suites, not unique App or device cases. [Machine-readable evidence](evidence/floe-1.7/release-159/swift-qualification.json) retains counts, exit status and log hashes.
 
 Full App regression, SDK 27 and accepted-SDK iPad/iPhone import UI, signing, Apple processing and private-group availability remain open. Build 156 is still the latest verified TestFlight delivery. Earlier checkpoint statements below are a chronological history, not the current qualification result.
 
 ## Node shutdown correction — replacement build 160
+
+Current candidate: `8631ee9e1721e5cb5616a36d734f40951af1bfe4` / `v1.7.0-beta.17`, [release run 34810670478](https://github.com/JiangNanGenius/floe-agent/actions/runs/34810670478). Its App tests, dual-device UI, archive and TestFlight availability are still pending. Build 156 remains the latest verified delivery.
 
 The final build-159 attempt-1 log supersedes its stale live-log prefix: all 155 App tests passed in 92.111 seconds, but XCTest completion never returned. Disabling optional Xcode diagnostics did not fix this exit failure. Both release attempts were cancelled without archiving or uploading. A separate exact-source CI run, 34808379042, retains further diagnostics and Notes UI evidence.
 
