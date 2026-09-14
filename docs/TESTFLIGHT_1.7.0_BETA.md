@@ -6,7 +6,9 @@ The user requested a new TestFlight build for personal device testing and waived
 
 The same build 172 source separately passed 1,270 Swift test executions and 159 SDK 27 App regressions. Its original SDK 26 device and simulator builds passed, but a duplicate simulator-name selection error stopped tests before execution and prevented that workflow from retaining the device package. These outcomes remain distinct from the direct uploader.
 
-## Feedback repair candidate — not yet distributed
+Build 172 upload succeeded at 2026-09-14 17:25:50 UTC. Apple initially reported `PROCESSING`; [upload receipt](evidence/floe-1.7/release-172/testflight-upload.json). This is not yet an installability claim.
+
+## Feedback repair — uploaded, processing pending
 
 The `codex/floe-156-feedback-repair` branch contains the September 14 fixes and subsequent content-search/workspace-import additions. Build 156 below is still the last verified delivery. New source builds, component tests and screenshots do not establish a new TestFlight release. Current gates and evidence are tracked in [the feedback repair record](FLOE_156_FEEDBACK_REPAIR.md); physical-device checks remain with the user.
 
