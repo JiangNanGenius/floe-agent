@@ -104,7 +104,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         app.buttons["notes.ink.done"].tap()
         let inkClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fountain)
         wait(for: [inkClosed], timeout: 10)
-        XCTAssertTrue(app.buttons["notes.tool.pencil.tip"].isSelected)
+        let writingPen = app.buttons["notes.tool.pencil.tip"]
+        if !writingPen.isHittable { writingTools.swipeRight() }
+        XCTAssertTrue(writingPen.isSelected)
+        if !inkOptions.isHittable { writingTools.swipeLeft() }
         inkOptions.tap()
         XCTAssertTrue(fountain.waitForExistence(timeout: 5))
         XCTAssertTrue(fountain.isSelected)
