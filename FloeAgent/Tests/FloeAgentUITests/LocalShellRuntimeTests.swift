@@ -8,6 +8,19 @@ import FloeTools
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test(.timeLimit(.minutes(1))) func unsupportedPackageCommandsCannotReportSuccess() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = await IOSSystemShellBackend().run(.init(command: "apt update", cwd: ".", rootURL: root,
+            timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .exited(let code, _, let errors, _, _, _) = result else {
+            Issue.record("Unsupported package command did not terminate: \(result)"); return
+        }
+        #expect(code == 2)
+        #expect(errors.contains("unsupported command"))
+    }
+
     @Test(.timeLimit(.minutes(1))) func pipelineTimeoutDrainsAndNextCommandRuns() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

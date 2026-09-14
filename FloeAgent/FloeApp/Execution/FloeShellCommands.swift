@@ -582,6 +582,10 @@ enum FloeShellCommands {
     private static func registerPackages(_ registry: FloeShellCommandRegistry) {
         for name in ["apt", "apt-get", "pkg"] {
             registry.register(name) { arguments, stdout, stderr in
+                if arguments.dropFirst().contains("--help") || arguments.dropFirst().contains("-h") {
+                    FloeShellWrite(stdout, "usage: \(name) search TERM | list; installation runs through the apt tool\n")
+                    return 0
+                }
                 let subcommand = arguments.dropFirst().first { !$0.hasPrefix("-") } ?? "list"
                 switch subcommand {
                 case "search":
@@ -596,8 +600,8 @@ enum FloeShellCommands {
                     FloeShellWrite(stderr, "\(name): use the apt agent tool with action=\(subcommand) so the package review runs first\n")
                     return 1
                 default:
-                    FloeShellWrite(stdout, "usage: \(name) search TERM | list; installation runs through the apt tool\n")
-                    return 0
+                    FloeShellWrite(stderr, "\(name): unsupported command '\(subcommand)'; use search or list, or the environment package manager\n")
+                    return 2
                 }
             }
         }
