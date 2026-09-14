@@ -10,7 +10,7 @@ This guide includes the current development-branch workflow upgrade. See [scope,
 
 These instructions describe the development branch, not a newly delivered TestFlight build. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
 
-<img src="validation/floe-156-feedback/screenshots/full-app-ce7/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">
+<img src="validation/floe-156-feedback/screenshots/full-app-build164-sdk27/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">
 
 Development iPad capture: choose a chat or project, then select its file. This PDF passed the full-App import, fullscreen-open and body-search case. The image does not establish a new TestFlight release; see [capture provenance](validation/floe-156-feedback/screenshots/README.md).
 
@@ -372,4 +372,10 @@ The same passing component test also exercises portrait iPhone layout. This is a
 
 The Notes editor combines Back, title/save state and document actions in one header. Secondary actions move into a menu on iPhone. The writing palette provides pen, highlighter, eraser, lasso, AI region selection, ink color/width and undo/redo; its toolbar button works without Pencil Pro.
 
-Native squeeze and double-tap callbacks follow the system action preference, using the hover location for the contextual palette when available. Disabled gestures and system shortcuts are left to the system; finger drawing remains opt-in. See [Apple's Pencil interaction API](https://developer.apple.com/documentation/uikit/uipencilinteraction). This is build 164 candidate source: dual-device UI and distribution are pending, and physical squeeze delivery requires compatible hardware.
+Native squeeze and double-tap callbacks follow the system action preference, using the hover location for the contextual palette when available. Disabled gestures and system shortcuts are left to the system; finger drawing remains opt-in. See [Apple's Pencil interaction API](https://developer.apple.com/documentation/uikit/uipencilinteraction). Build 164 has passed this complete App UI flow on both iPad and iPhone with SDK 27. Accepted-SDK qualification and distribution remain pending; physical squeeze delivery requires compatible hardware.
+
+<img src="validation/floe-156-feedback/screenshots/full-app-build164-sdk27/ipad/notes-pencil-quick-menu.png" width="640" alt="Floe Notes writing palette on iPad">
+
+<img src="validation/floe-156-feedback/screenshots/full-app-build164-sdk27/iphone/notes-imported-pdf-fullscreen.png" width="300" alt="Full-screen Notes editor on iPhone">
+
+Original build-164 SDK 27 simulator captures: the iPad palette and the iPhone full-screen editor. See the [capture manifest](validation/floe-156-feedback/screenshots/full-app-build164-sdk27/manifest.json) for the fixed source and passing UI results.

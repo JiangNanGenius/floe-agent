@@ -14,6 +14,8 @@ The [cloud component evidence](evidence/floe-1.7/release-164/palette-component-q
 
 The fixed build-164 release source has passed [1,266 module test executions](evidence/floe-1.7/release-164/swift-qualification.json): 1,164 main, 12 JavaScript engine, 12 JavaScript tool, 61 platform and 17 Notes. Full App compilation, App/UI regression, signing and distribution are still pending.
 
+Build 164 also passed SDK 27 complete App compilation, [157 finalized App cases](evidence/floe-1.7/release-164/sdk27-app-qualification.json) with normal driver exit, and the [complete Notes UI case on both devices](evidence/floe-1.7/release-164/sdk27-notes-ui-qualification.json). The latter covers import, the compact full-screen header, palette selection/dismissal and body search. [Twelve original screenshots](validation/floe-156-feedback/screenshots/full-app-build164-sdk27/manifest.json) are retained and selected images are used in both guides. Accepted-SDK and distribution gates remain open.
+
 The user also explicitly requested a GitHub Release for this round. After successful qualification and verified TestFlight availability, publish the paired **prerelease** page with reviewed developer assets and bilingual notes; a Git tag alone does not fulfill that delivery.
 
 

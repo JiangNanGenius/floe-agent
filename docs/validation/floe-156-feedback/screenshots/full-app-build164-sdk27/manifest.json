@@ -1,0 +1,113 @@
+{
+  "build": 164,
+  "source_sha": "f150e888028aa20a0131240e0c3d259756cac304",
+  "tag": "v1.7.0-beta.21",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34833194332",
+  "scope": "Complete Floe App Notes workspace PDF import, fullscreen, compact toolbar, palette selection/dismissal and indexed body search. SDK 27 simulator; no hardware Pencil claim.",
+  "screenshots": [
+    {
+      "device": "ipad",
+      "path": "ipad/notes-document-body-search.png",
+      "original_export": "D891201B-7E8B-4849-9254-24E271AF180C.png",
+      "sha256": "88368be00a39a909c27e2cd8e8acb416f95ad30fa2d44f8006a8a50df0b106f8",
+      "bytes": 235665
+    },
+    {
+      "device": "ipad",
+      "path": "ipad/notes-pencil-quick-menu.png",
+      "original_export": "32938D52-65B1-4D99-A588-9F5093AA4A10.png",
+      "sha256": "aa2f6d44001aa43a07dc737fc0242bcee92603ec51cfbed7dcd121bfa0d78bb8",
+      "bytes": 697344
+    },
+    {
+      "device": "ipad",
+      "path": "ipad/notes-pencil-quick-menu-open.png",
+      "original_export": "4C3FD9B3-DD70-49B4-87A8-37CF6FC6ED3C.png",
+      "sha256": "1fe209833b48e3694a32a11d8654abb466da2b3a69e16b4d8243531ff708afec",
+      "bytes": 695242
+    },
+    {
+      "device": "ipad",
+      "path": "ipad/notes-imported-pdf-fullscreen.png",
+      "original_export": "612EF7B9-3AF1-40A9-9CCA-DF591BFFECC9.png",
+      "sha256": "fe688bf8c7eea5a1dbec15f8aff211b762e3e60091a13acd3f924d69b7d1d612",
+      "bytes": 594243
+    },
+    {
+      "device": "ipad",
+      "path": "ipad/notes-workspace-import.png",
+      "original_export": "194EC332-5E95-4260-9159-B103E9EDC990.png",
+      "sha256": "db1de4318101881612957b13775858c6e955f8d7afa9e8d8111d55090a512bd5",
+      "bytes": 191516
+    },
+    {
+      "device": "ipad",
+      "path": "ipad/notes-library.png",
+      "original_export": "B2F3B9A2-8DD4-4860-807B-683D03912362.png",
+      "sha256": "9e84986e94fc841d7cae7e1ea0411de534924717478eb0381c63614c0fcb5946",
+      "bytes": 179801
+    },
+    {
+      "device": "iphone",
+      "path": "iphone/notes-document-body-search.png",
+      "original_export": "E16E4FCD-4EE8-4568-9FD3-9E76E242F18F.png",
+      "sha256": "cbe70894ca4d1790b0ac38fc9e93b0a891a96933043ebc81048b04346d12b9fd",
+      "bytes": 196083
+    },
+    {
+      "device": "iphone",
+      "path": "iphone/notes-pencil-quick-menu.png",
+      "original_export": "DE7581E7-6372-4CFA-9E0F-DCDC0F3B68FB.png",
+      "sha256": "7b971b372d060182f6c98fc69cbed7a6e9f3da7a1a2158ad5e9fedcef86c5efc",
+      "bytes": 424284
+    },
+    {
+      "device": "iphone",
+      "path": "iphone/notes-pencil-quick-menu-open.png",
+      "original_export": "1FC2E852-8338-4D5C-A8AD-DDDEF2163785.png",
+      "sha256": "64ea7c3b3709a3d11258306e6bea937a1f133c7cb40f7fec21cc3c14fa49978e",
+      "bytes": 423031
+    },
+    {
+      "device": "iphone",
+      "path": "iphone/notes-imported-pdf-fullscreen.png",
+      "original_export": "E494D448-A788-4B4A-A344-AE6BE545B0B9.png",
+      "sha256": "d4c30f28abfb15c1c03c9d41bc330a606cd9b7fbf8e240f45d741e2819def807",
+      "bytes": 250703
+    },
+    {
+      "device": "iphone",
+      "path": "iphone/notes-workspace-import.png",
+      "original_export": "0F796182-C27C-42A5-8041-C780A95E8FFD.png",
+      "sha256": "6c66bd8e3932f0a748fa3451c8d902ee7a660804afabf636cd3790cb805ba73c",
+      "bytes": 105873
+    },
+    {
+      "device": "iphone",
+      "path": "iphone/notes-library.png",
+      "original_export": "E7669145-B359-401F-A062-364BAB0F64CC.png",
+      "sha256": "fa9cceffdb6e3d96bcd8f013f6f37096455b003d61b120d0ffbf46808b464d47",
+      "bytes": 145648
+    }
+  ],
+  "results": {
+    "ipad": {
+      "totalTestCount": 1,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "expectedFailures": 0,
+      "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody",
+      "result": "Passed"
+    },
+    "iphone": {
+      "totalTestCount": 1,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "expectedFailures": 0,
+      "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody",
+      "result": "Passed"
+    }
+  }
+}
