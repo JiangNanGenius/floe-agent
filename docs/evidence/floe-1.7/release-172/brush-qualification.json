@@ -1,0 +1,67 @@
+{
+  "sourceCommit": "84c85f5fe9e6621c7ce2e9889affe4b83a6bb1b6",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34863262123",
+  "productionBrushCodeUnchangedInReleaseCommit": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "scope": "Native production brush/palette component; 5 unit and 3 UI cases per device/SDK. Not full App or physical-device acceptance.",
+  "passedExecutions": 32,
+  "paths": [
+    {
+      "sdk": "26",
+      "device": "ipad",
+      "attempt": 1,
+      "tests": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "summarySHA256": "512c6e84abe0f51a1ce623228ddb9b9b1e48787e3dedab65105a718ce17dd0ab",
+      "deviceReleaseCompilation": "passed",
+      "deviceReleaseLogSHA256": "3677bc704af027c815ec366b9cda898489b878a00935645cdd6da995e84486c6"
+    },
+    {
+      "sdk": "27",
+      "device": "iphone",
+      "attempt": 1,
+      "tests": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "summarySHA256": "29bfbbf942474a087ee99eef3531ace2233cb28b5e47e69e7bd26dcb88fd8484"
+    },
+    {
+      "sdk": "26",
+      "device": "iphone",
+      "attempt": 2,
+      "tests": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "summarySHA256": "7d629ea32463d5bacdf4711231a148d87f93d603bf6518f01f70975258782e2f"
+    },
+    {
+      "sdk": "27",
+      "device": "ipad",
+      "attempt": 2,
+      "tests": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "summarySHA256": "9bedfd8227288498543ca25b62ff3555c75368c432b557020c748e4c5197f983",
+      "deviceReleaseCompilation": "passed",
+      "deviceReleaseLogSHA256": "8797910cdd65562b75cd72d300329b92b9b9cdd79ebd54cea13520854b29f8af"
+    }
+  ],
+  "retainedFailures": [
+    {
+      "sdk": "26",
+      "device": "iphone",
+      "attempt": 1,
+      "outcome": "No simulator destination available; no tests executed."
+    },
+    {
+      "sdk": "27",
+      "device": "ipad",
+      "attempt": 1,
+      "outcome": "7 passed and 1 failed: native canvas accessibility-value wait timed out for reed brush. Original code and assertions passed unchanged on attempt 2; initial recording and logs retained."
+    }
+  ]
+}
