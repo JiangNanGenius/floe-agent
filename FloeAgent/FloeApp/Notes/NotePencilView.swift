@@ -35,6 +35,7 @@ struct NotePencilView: UIViewRepresentable {
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
+        canvas.maximumSupportedContentVersion = .latest
         canvas.tool = tool
         canvas.delegate = context.coordinator
         canvas.addInteraction(UIPencilInteraction(delegate: context.coordinator))

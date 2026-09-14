@@ -251,6 +251,7 @@
 		6E35ADC25DC97B976CA965E9 /* AudioTranscribeTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = D405CD4463D90454D1362D71 /* AudioTranscribeTool.swift */; };
 		6E3F12597AECF29A35D51CB3 /* pandas__libs_testing.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1AA60BB315BB5872C44504C2 /* pandas__libs_testing.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6E438B5B53DA64FF688B9F37 /* _bisect.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */; };
+		6EAAA5324CE068B31BB1D716 /* NotesInkPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = D060F53FDB2AA1D99AFFD7BF /* NotesInkPreferences.swift */; };
 		6EFA9ED6557018D9EC2EFFC6 /* FileTreeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */; };
 		6EFE06F5EE84FD76D6026BBA /* pandas__libs_writers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6FC89A1BACBA33278669A2C9 /* CameraPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */; };
@@ -1107,6 +1108,7 @@
 		CE1EE021FED26EBFA80248B6 /* StepGroupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepGroupView.swift; sourceTree = "<group>"; };
 		CF1B779164527F33E4275795 /* FloePDFExceptionGuard.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloePDFExceptionGuard.mm; sourceTree = "<group>"; };
 		CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDestination.swift; sourceTree = "<group>"; };
+		D060F53FDB2AA1D99AFFD7BF /* NotesInkPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInkPreferences.swift; sourceTree = "<group>"; };
 		D080FF4A569CE32CE9D399DC /* _rational_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _rational_tests.xcframework; path = Vendor/PythonExtensions/_rational_tests.xcframework; sourceTree = "<group>"; };
 		D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeDocumentEditorView.swift; sourceTree = "<group>"; };
 		D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_json.xcframework; path = Vendor/PythonExtensions/pandas__libs_json.xcframework; sourceTree = "<group>"; };
@@ -1970,6 +1972,7 @@
 				A4896739DCF1CC3D7F68DFA4 /* NotesDocumentEditor.swift */,
 				5369FD272644A35E60E42386 /* NotesDocumentTabs.swift */,
 				FC237C9A630761F0880A780A /* NotesExport.swift */,
+				D060F53FDB2AA1D99AFFD7BF /* NotesInkPreferences.swift */,
 				7ADE79F616E839CB00E1B21F /* NotesKnowledgeAttachment.swift */,
 				247E8EC43E8E35A02BD9D4C6 /* NotesKnowledgePicker.swift */,
 				5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */,
@@ -2617,6 +2620,7 @@
 				3C49818CC0422F6C4B047C11 /* NotesDocumentEditor.swift in Sources */,
 				E947100032EDA1AA075473D5 /* NotesDocumentTabs.swift in Sources */,
 				866BA77E0D2C71789223F734 /* NotesExport.swift in Sources */,
+				6EAAA5324CE068B31BB1D716 /* NotesInkPreferences.swift in Sources */,
 				AA60E63E6C44DAACB2A2A12D /* NotesKnowledgeAttachment.swift in Sources */,
 				B9209D676C9FD45524B01776 /* NotesKnowledgePicker.swift in Sources */,
 				70520C3ACCCC3D82B68A7023 /* NotesLinkedMindMaps.swift in Sources */,

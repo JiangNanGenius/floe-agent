@@ -14,6 +14,8 @@ The user-defined interaction is:
 Use a thin open arc, with an empty center and room below for the hand. Avoid a
 large filled disk, a rectangular popover wrapper, black outlines and large
 colored wedges. Five tool icons have stable positions and 44-point targets.
+The default remains directly above the tip. Notes > writing toolbar > More > Tool arc position also offers upper-left and upper-right placements, stored across launches. Upper-left runs from lower-left to upper-right around the tip, leaving the lower-right hand area free; upper-right mirrors it. Icons remain upright.
+
 The current tool has a small selection highlight; preview names appear only
 when needed. Ink color and width remain in the main writing toolbar.
 
@@ -31,3 +33,10 @@ movement without committing, explicit tap, blank dismissal and preservation of
 the current tool on iPad and iPhone. Simulator checks use the production view
 and actual touch paths. Pencil Pro squeeze and hover delivery require the
 user's physical-device test after TestFlight is available.
+
+The brush panel uses native PencilKit ballpoint, fountain pen, monoline, pencil,
+crayon, watercolor, reed/calligraphy and highlighter tools. It renders native
+stroke samples and stores each type's color and width separately, preserving
+legacy pen/highlighter preferences. The pen slot restores the last non-marker
+brush. Width limits come from each native ink type. Native serialization,
+nonempty rendering and canvas-tool application are qualification requirements.

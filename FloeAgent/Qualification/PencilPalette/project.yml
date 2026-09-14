@@ -15,6 +15,7 @@ targets:
     sources:
       - App
       - ../../FloeApp/Notes/NotesPalettePresentation.swift
+      - ../../FloeApp/Notes/NotesInkPreferences.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.pencil.palette.qualification
@@ -28,6 +29,15 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+  PencilPaletteUnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [UnitTests]
+    dependencies:
+      - target: FloePencilPaletteQualification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.pencil.palette.tests
   PencilPaletteUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -43,5 +53,6 @@ schemes:
       targets:
         FloePencilPaletteQualification: all
         PencilPaletteUITests: [test]
+        PencilPaletteUnitTests: [test]
     test:
-      targets: [PencilPaletteUITests]
+      targets: [PencilPaletteUnitTests, PencilPaletteUITests]

@@ -92,6 +92,27 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let cancelled = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["notes.pencil.quickMenu.close"])
         wait(for: [cancelled], timeout: 10)
         XCTAssertTrue(toolbarMarker.isSelected)
+        let inkOptions = app.buttons["notes.ink.options"]
+        let writingTools = app.scrollViews["notes.writing.tools"]
+        if !inkOptions.isHittable { writingTools.swipeLeft() }
+        XCTAssertTrue(inkOptions.isHittable)
+        inkOptions.tap()
+        let fountain = app.buttons["notes.ink.brush.fountainPen"]
+        XCTAssertTrue(fountain.waitForExistence(timeout: 5))
+        capture("notes-native-brushes")
+        fountain.tap()
+        app.buttons["notes.ink.done"].tap()
+        let inkClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fountain)
+        wait(for: [inkClosed], timeout: 10)
+        XCTAssertTrue(app.buttons["notes.tool.pencil.tip"].isSelected)
+        inkOptions.tap()
+        XCTAssertTrue(fountain.waitForExistence(timeout: 5))
+        XCTAssertTrue(fountain.isSelected)
+        app.buttons["notes.ink.brush.marker"].tap()
+        app.buttons["notes.ink.done"].tap()
+        let markerPanelClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fountain)
+        wait(for: [markerPanelClosed], timeout: 10)
+        if !quickMenu.isHittable { writingTools.swipeRight() }
         let headerToggle = app.buttons["notes.header.toggle"]
         assertTouchTarget(headerToggle)
         let expandedPageY = app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.frame.minY

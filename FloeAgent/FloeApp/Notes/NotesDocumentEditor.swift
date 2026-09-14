@@ -46,11 +46,9 @@ struct NotesDocumentEditor: View {
     @State private var exportTask: Task<Void, Never>?
     @State private var exportProgress = ""
     @EnvironmentObject private var environment: AppEnvironment
+    @AppStorage(NotesPencilArcPlacement.preferenceKey) private var pencilArcPlacement: NotesPencilArcPlacement = .above
     @AppStorage("notes.fingerDrawing.enabled") private var fingerDrawing = false
-    @AppStorage("notes.pen.color") private var penColor = "#18181B"
-    @AppStorage("notes.marker.color") private var markerColor = "#FACC15"
-    @AppStorage("notes.pen.width") private var penWidth = 3.0
-    @AppStorage("notes.marker.width") private var markerWidth = 20.0
+    @State private var inkPreferences = NotesInkPreferences.shared
     @State private var showingInkOptions = false
     private typealias InkTool = NotesInkTool
     init(session: NotesSession, document: NoteDocument) {
@@ -70,14 +68,21 @@ struct NotesDocumentEditor: View {
 
     private var pencilTool: PKTool {
         switch tool {
-        case .pen: PKInkingTool(.pen, color: NotePageRenderer.color(penColor), width: min(12, max(0.5, penWidth)))
-        case .marker: PKInkingTool(.marker, color: NotePageRenderer.color(markerColor).withAlphaComponent(0.45), width: min(40, max(4, markerWidth)))
+        case .pen: inkPreferences.inkingTool(for: inkPreferences.selectedPen)
+        case .marker: inkPreferences.inkingTool(for: .marker)
         case .eraser: PKEraserTool(.vector)
         case .lasso, .region: PKLassoTool()
         }
     }
-    private var inkColor: Binding<String> { tool == .marker ? $markerColor : $penColor }
-    private var inkWidth: Binding<Double> { tool == .marker ? $markerWidth : $penWidth }
+    private var activeBrush: NotesBrushKind { tool == .marker ? .marker : inkPreferences.selectedPen }
+    private var inkColor: Binding<String> {
+        Binding(get: { inkPreferences.configuration(for: activeBrush).color },
+                set: { inkPreferences.setColor($0, for: activeBrush) })
+    }
+    private var inkWidth: Binding<Double> {
+        Binding(get: { inkPreferences.configuration(for: activeBrush).width },
+                set: { inkPreferences.setWidth($0, for: activeBrush) })
+    }
     private var page: NotePage? { document.pages.first { $0.id == pageID } ?? document.pages.first }
     private var mapImageIDs: Set<UUID> { Set(document.nodes.compactMap(\.imageResourceID)) }
     private var selectedMapNode: MindMapNode? {
@@ -510,11 +515,12 @@ struct NotesDocumentEditor: View {
                         if tool == value, value == .pen || value == .marker { showingInkOptions = true }
                         selectTool(value)
                     } label: {
-                        Label(value.rawValue, systemImage: value.icon).labelStyle(.iconOnly)
+                        Label(value == .pen ? inkPreferences.selectedPen.title : value.rawValue,
+                              systemImage: value == .pen ? inkPreferences.selectedPen.icon : value.icon).labelStyle(.iconOnly)
                             .font(.title3).frame(width: 44, height: 44)
                             .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
                             .foregroundStyle(tool == value ? Color.accentColor : .secondary)
-                    }.accessibilityLabel(value.rawValue).accessibilityAddTraits(tool == value ? .isSelected : [])
+                    }.accessibilityLabel(value == .pen ? inkPreferences.selectedPen.title : value.rawValue).accessibilityAddTraits(tool == value ? .isSelected : [])
                         .accessibilityIdentifier("notes.tool.\(value.icon)")
                 }
                 if tool == .pen || tool == .marker {
@@ -523,7 +529,7 @@ struct NotesDocumentEditor: View {
                             .frame(width: 22, height: 22)
                             .overlay(Circle().strokeBorder(.primary.opacity(0.15)))
                             .frame(width: 44, height: 44)
-                    }.accessibilityLabel("画笔颜色与粗细")
+                    }.accessibilityLabel("笔型、颜色与粗细")
                         .accessibilityIdentifier("notes.ink.options")
                         .popover(isPresented: $showingInkOptions) { inkOptions.padding(20).frame(width: 320).presentationCompactAdaptation(.popover) }
                 }
@@ -550,6 +556,11 @@ struct NotesDocumentEditor: View {
                 } label: { Label("插入", systemImage: "plus.square").labelStyle(.iconOnly).frame(width: 44, height: 44) }
                 Menu {
                     Toggle("手指书写", isOn: $fingerDrawing)
+                    Picker("工具弧位置", selection: $pencilArcPlacement) {
+                        ForEach(NotesPencilArcPlacement.allCases, id: \.self) { placement in
+                            Text(placement.title).tag(placement)
+                        }
+                    }
                     if let page {
                         Picker("纸张", selection: Binding(get: { page.paper }, set: { paper in
                             var updated = page; updated.paper = paper
@@ -604,8 +615,19 @@ struct NotesDocumentEditor: View {
     }
 
     private var inkOptions: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(tool == .marker ? "荧光笔" : "画笔").font(.headline)
+        ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("画笔").font(.headline)
+                Spacer()
+                Button("完成") { showingInkOptions = false }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("notes.ink.done")
+            }
+            NotesBrushPicker(selected: activeBrush) { kind in
+                if kind == .marker { selectTool(.marker) }
+                else { inkPreferences.select(kind); selectTool(.pen) }
+            }
             HStack(spacing: 2) {
                 ForEach(["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"], id: \.self) { hex in
                     Button { inkColor.wrappedValue = hex } label: {
@@ -623,8 +645,9 @@ struct NotesDocumentEditor: View {
                 }
             }), supportsOpacity: false)
             HStack { Text("粗细"); Spacer(); Text(inkWidth.wrappedValue, format: .number.precision(.fractionLength(1))).monospacedDigit() }
-            Slider(value: inkWidth, in: tool == .marker ? 4...40 : 0.5...12, step: 0.5).accessibilityLabel("画笔粗细")
+            Slider(value: inkWidth, in: activeBrush.widthRange).accessibilityLabel("画笔粗细")
         }
+        }.frame(maxHeight: 520)
     }
 }
 

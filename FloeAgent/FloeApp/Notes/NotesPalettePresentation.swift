@@ -59,12 +59,35 @@ enum NotesInkTool: String, CaseIterable {
     }
 }
 
+/// Stored by stable keys so display-name changes do not reset the preference.
+enum NotesPencilArcPlacement: String, CaseIterable {
+    case above, upperLeft, upperRight
+
+    static let preferenceKey = "notes.pencil.arcPlacement"
+    var title: String {
+        switch self {
+        case .above: "正上方"
+        case .upperLeft: "左上方"
+        case .upperRight: "右上方"
+        }
+    }
+    var startAngle: Double {
+        switch self {
+        case .above: -180
+        case .upperLeft: -225
+        case .upperRight: -135
+        }
+    }
+}
+
 /// Squeeze toggles a compact ring around the tip. Movement only previews;
 /// an explicit tool tap commits the selection and returns to the page.
 struct NotesPencilToolWheel: View {
     let tool: NotesInkTool
     let select: (NotesInkTool) -> Void
     let close: () -> Void
+    @AppStorage(NotesPencilArcPlacement.preferenceKey) private var placement: NotesPencilArcPlacement = .above
+    @State private var inkPreferences = NotesInkPreferences.shared
     @State private var preview: NotesInkTool?
     private let diameter: CGFloat = 220
     private let radius: CGFloat = 84
@@ -73,14 +96,14 @@ struct NotesPencilToolWheel: View {
         ZStack {
             Path { path in
                 path.addArc(center: CGPoint(x: diameter / 2, y: diameter / 2),
-                            radius: radius, startAngle: .degrees(-180), endAngle: .degrees(0), clockwise: false)
+                            radius: radius, startAngle: .degrees(placement.startAngle), endAngle: .degrees(placement.startAngle + 180), clockwise: false)
             }.stroke(.regularMaterial, style: StrokeStyle(lineWidth: 50, lineCap: .round))
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
                 .allowsHitTesting(false)
             ForEach(Array(NotesInkTool.allCases.enumerated()), id: \.element) { index, value in
-                let angle = Double(index) * 45 - 180
+                let angle = Double(index) * 45 + placement.startAngle
                 Button { select(value) } label: {
-                    Image(systemName: value.icon)
+                    Image(systemName: value == .pen ? inkPreferences.selectedPen.icon : value.icon)
                         .font(.system(size: 21, weight: .medium))
                         .foregroundStyle(tool == value || preview == value ? Color.accentColor : .primary)
                         .frame(width: 44, height: 44)
@@ -89,7 +112,7 @@ struct NotesPencilToolWheel: View {
                                 .padding(2)
                         }
                 }
-                .accessibilityLabel(value.rawValue)
+                .accessibilityLabel(value == .pen ? inkPreferences.selectedPen.title : value.rawValue)
                 .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
                 .accessibilityValue(preview == value ? "预览，轻触选择" : "")
                 .accessibilityAddTraits(tool == value ? .isSelected : [])
@@ -102,10 +125,11 @@ struct NotesPencilToolWheel: View {
                 Color.clear.frame(width: 44, height: 44)
             }.accessibilityLabel("关闭工具环，继续书写")
                 .accessibilityIdentifier("notes.pencil.quickMenu.close")
-            Text(preview?.rawValue ?? "")
+            Text(preview == .pen ? inkPreferences.selectedPen.title : preview?.rawValue ?? "")
                 .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 .lineLimit(1).frame(width: 92)
-                .position(x: diameter / 2, y: diameter / 2 + 30)
+                .position(x: diameter / 2 - 30 * cos((placement.startAngle + 90) * .pi / 180),
+                          y: diameter / 2 - 30 * sin((placement.startAngle + 90) * .pi / 180))
                 .allowsHitTesting(false).accessibilityHidden(true)
         }
         .frame(width: diameter, height: diameter)
@@ -114,7 +138,7 @@ struct NotesPencilToolWheel: View {
             .onChanged { preview = toolNear($0.location) })
         .simultaneousGesture(SpatialTapGesture().onEnded { tap in
             let isTool = NotesInkTool.allCases.indices.contains { index in
-                let angle = (Double(index) * 45 - 180) * .pi / 180
+                let angle = (Double(index) * 45 + placement.startAngle) * .pi / 180
                 let center = CGPoint(x: diameter / 2 + radius * cos(angle),
                                      y: diameter / 2 + radius * sin(angle))
                 return CGRect(x: center.x - 22, y: center.y - 22, width: 44, height: 44).contains(tap.location)
@@ -127,6 +151,7 @@ struct NotesPencilToolWheel: View {
             case .ended: preview = nil
             }
         }
+        .onChange(of: placement) { _, _ in preview = nil }
         .padding(6)
         .buttonStyle(NotesToolbarButtonStyle())
     }
@@ -134,10 +159,12 @@ struct NotesPencilToolWheel: View {
     private func toolNear(_ point: CGPoint) -> NotesInkTool? {
         let dx = point.x - diameter / 2, dy = point.y - diameter / 2
         let distance = hypot(dx, dy)
-        guard distance.isFinite, distance >= 56, distance <= diameter / 2 + 24, dy <= 24 else { return nil }
+        let middle = (placement.startAngle + 90) * .pi / 180
+        let towardArc = dx * cos(middle) + dy * sin(middle)
+        guard distance.isFinite, distance >= 56, distance <= diameter / 2 + 24, towardArc >= -24 else { return nil }
         let nearest = NotesInkTool.allCases.enumerated().min { lhs, rhs in
             func squaredDistance(_ index: Int) -> CGFloat {
-                let angle = (Double(index) * 45 - 180) * .pi / 180
+                let angle = (Double(index) * 45 + placement.startAngle) * .pi / 180
                 return pow(dx - radius * cos(angle), 2) + pow(dy - radius * sin(angle), 2)
             }
             return squaredDistance(lhs.offset) < squaredDistance(rhs.offset)
