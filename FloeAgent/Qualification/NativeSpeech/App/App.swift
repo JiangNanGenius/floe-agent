@@ -35,6 +35,9 @@ final class SpeechDownloadDelegate: NSObject, UIApplicationDelegate {
                     .navigationDestination(isPresented: $showSettings) { WhisperSettingsView() }
             }
             .task {
+                if ProcessInfo.processInfo.arguments.contains("--cancel-retry") {
+                    Task { await qualifyCancellation() }
+                }
                 var samples: [[String: Any]] = []
                 let destination = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("speech-download-evidence.json")
@@ -63,4 +66,47 @@ final class SpeechDownloadDelegate: NSObject, UIApplicationDelegate {
             }
         }
     }
+    @MainActor private func qualifyCancellation() async {
+        var evidence: [String: Any] = ["operation": "cancel running production download, retry and verify"]
+        let destination = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("speech-cancel-evidence.json")
+        do {
+            await WhisperModelStore.shared.beginInstallation()
+            var started = false
+            for _ in 0..<60 {
+                let state = await WhisperModelStore.shared.installationState()
+                if state.running && state.completed > 1_000_000 { started = true; evidence["bytesBeforeCancel"] = state.completed; break }
+                if let error = state.error { throw NSError(domain: "SpeechQualification", code: 1, userInfo: [NSLocalizedDescriptionKey: error]) }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            guard started else { throw NSError(domain: "SpeechQualification", code: 2, userInfo: [NSLocalizedDescriptionKey: "Download did not enter a cancellable state"]) }
+            await WhisperModelStore.shared.cancelInstallation()
+            var stopped = false
+            for _ in 0..<40 {
+                if !(await WhisperModelStore.shared.installationState()).running { stopped = true; break }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            evidence["cancellationStopped"] = stopped
+            guard stopped else { throw NSError(domain: "SpeechQualification", code: 3, userInfo: [NSLocalizedDescriptionKey: "Cancellation did not finish"]) }
+            await WhisperModelStore.shared.beginInstallation()
+            for _ in 0..<360 {
+                let state = await WhisperModelStore.shared.installationState()
+                if !state.running {
+                    if let error = state.error { throw NSError(domain: "SpeechQualification", code: 4, userInfo: [NSLocalizedDescriptionKey: error]) }
+                    let (lease, _) = try await WhisperModelStore.shared.acquire()
+                    await WhisperModelStore.shared.release(lease)
+                    evidence["retryVerified"] = true
+                    evidence["completedBytes"] = state.completed
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            if evidence["retryVerified"] == nil { throw NSError(domain: "SpeechQualification", code: 5, userInfo: [NSLocalizedDescriptionKey: "Retry did not finish before deadline"]) }
+        } catch { evidence["error"] = error.localizedDescription }
+        evidence["date"] = ISO8601DateFormatter().string(from: Date())
+        if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: destination, options: .atomic)
+        }
+    }
+
 }

@@ -202,9 +202,32 @@ jobs:
       - name: Office explicit save bridge contracts
         run: python3 scripts/test_office_explicit_save.py
 
-      # `test` builds the universal iPhone/iPad app and its test host once.
-      # Two preceding build-only destinations compiled the identical target.
-      - name: Canvas, PiP, and timeline app regression tests
+      - name: Build App regression host once
+        timeout-minutes: 90
+        run: |
+          xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -scheme FloeAgent \
+            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -derivedDataPath FloeAgent-AppRegressionBuild \
+            -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
+            -only-testing:FloeAppTests/CanvasAgentToolContractTests \
+            -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
+            -only-testing:FloeAppTests/ThreadTimelineTests \
+            -only-testing:FloeAppTests/BrowserProtocolTests \
+            -only-testing:FloeAppTests/HomeChatSeparationTests \
+            -only-testing:FloeAppTests/MailConnectorTests \
+            -only-testing:FloeAppTests/SkillLifecycleTests \
+            -only-testing:FloeAppTests/LocalPythonRuntimeTests \
+            -only-testing:FloeAppTests/LocalShellRuntimeTests \
+            -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing
+
+      - name: Run Canvas, PiP, timeline and execution regressions
+        timeout-minutes: 20
         run: |
           xcodebuild \
             -skipPackagePluginValidation \
@@ -225,8 +248,10 @@ jobs:
             -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+            -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 300 \
             CODE_SIGNING_ALLOWED=NO \
-            test
+            test-without-building
           python3 scripts/verify_app_regression_xcresult.py \
             --result-bundle FloeAgent-AppRegressionTests.xcresult
 
