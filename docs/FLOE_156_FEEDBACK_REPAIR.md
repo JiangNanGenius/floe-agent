@@ -12,13 +12,15 @@ Full App regression, SDK 27 and accepted-SDK iPad/iPhone import UI, signing, App
 
 Prior runtime candidate: `8631ee9e1721e5cb5616a36d734f40951af1bfe4` / `v1.7.0-beta.17`, [release run 34810670478](https://github.com/JiangNanGenius/floe-agent/actions/runs/34810670478). Its App tests, dual-device UI, archive and TestFlight availability are still pending. Build 156 remains the latest verified delivery.
 
-The final build-159 attempt-1 log supersedes its stale live-log prefix: all 155 App tests passed in 92.111 seconds, but XCTest completion never returned. Disabling optional Xcode diagnostics did not fix this exit failure. Both release attempts were cancelled without archiving or uploading. A separate exact-source CI run, 34808379042, retains further diagnostics and Notes UI evidence.
+The final build-159 attempt-1 log supersedes its stale live-log prefix: all 155 App tests passed in 92.111 seconds, but XCTest completion never returned. Disabling optional Xcode diagnostics did not fix this exit failure. Both release attempts were cancelled without archiving or uploading. A separate exact-source CI run, 34808379042, finalized passing full-App Notes import/full-screen/body-search results on both iPad and iPhone (one case each, no skips/failures). Eight original screenshots and hashes are retained in [the ce7 manifest](validation/floe-156-feedback/screenshots/full-app-ce7/manifest.json). Its separate App-unit runner timed out after assertions; overall CI failed.
 
 A desktop reproduction using the actual host script also hung on `process.exit(0)` while its command pipe stayed open. The sampled main thread was in `uv__threadpool_cleanup` → `uv_thread_join`; a filesystem worker remained in blocking `read`. The native bridge now configures its own command read descriptor as nonblocking, and the JS host uses bounded reads with a 20 ms retry instead of a permanently pending filesystem read. Descriptor ownership remains with the native bridge. Eight host regressions pass, including actual process exit after a completed job with the command writer still open, repeated workers, cancellation, live stdin and pinned package-manager startup. This is desktop evidence; build 160 must still pass complete App and dual-SDK release gates.
 
 Release App tests now retain bounded stall diagnostics for both SDKs. Their compile phase remains outside the quiet-test deadline; after tests begin, a stalled runner is sampled and returns a failure instead of waiting indefinitely. Five diagnostic-runner tests pass. Neither completed assertions nor forced driver termination satisfy the xcresult verifier.
 
-## Toolbar and Pencil follow-up — build 161 source prepared
+## Toolbar and Pencil follow-up — build 161 in qualification
+
+Candidate `178c89a2d6a7e08aeaeaa6fa47a414f7e5c3b902` / `v1.7.0-beta.18` is running [release qualification 34811854023](https://github.com/JiangNanGenius/floe-agent/actions/runs/34811854023). It is not yet distributed.
 
 The extra Notes navigation row is removed. Return, title/save state and document actions share the editor header; compact layouts put secondary document actions in a menu. Office keeps its own navigation toolbar. A native `UIPencilInteraction` receives ended squeezes and double taps, respects disabled/system-shortcut preferences, switches eraser/previous tool or presents a palette at the normalized hover position. The palette provides tools, ink color/width and undo/redo; a toolbar button exposes the same controls without Pencil Pro. Finger drawing stays opt-in.
 

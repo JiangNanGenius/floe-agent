@@ -33,6 +33,14 @@ The 1.7 environment/package/media flows remain under integration. Existing menu 
 
 Floe Agent 需要 iOS/iPadOS 26 或更高版本。文件审阅、浏览器接管、终端和多栏检查更适合在 iPad 上使用。
 
+## 候选版：书写工具与 Apple Pencil
+
+手记编辑器把返回、标题／保存状态和文档操作合在顶部一行，iPhone 的次要操作放入“文档操作”菜单。下方工具栏提供笔、荧光笔、橡皮、套索和 AI 选区；“画笔快捷菜单”可集中调整工具、颜色和粗细，并撤销／重做。
+
+支持捏压的 Apple Pencil 会按系统设置打开快捷菜单或切换工具；双击也遵循系统偏好。关闭手势或选择系统快捷指令时，Floe 不接管该动作。能够取得悬停位置时，菜单在笔尖附近打开；没有位置时在页面上方打开。手指书写仍需单独开启。[Apple Pencil 原生交互说明](https://developer.apple.com/documentation/uikit/uipencilinteraction)。
+
+这是 build 161 候选源码，双端界面测试和 TestFlight 分发尚待完成；模拟器不能替代 Pencil Pro 捏压的真机检查。
+
 ## 本轮修复候选：搜索与工作区导入
 
 以下描述开发分支，尚未作为新的 TestFlight 构建交付。完整 App 与真机结果以[修复验收记录](FLOE_156_FEEDBACK_REPAIR.md)为准。
@@ -44,7 +52,7 @@ Floe Agent 需要 iOS/iPadOS 26 或更高版本。文件审阅、浏览器接管
 
 主入口顺序为“新建任务 → 任务中心 → 手记 → 创意模式 → 插件”，之后是项目和会话列表；设置按钮在左下角。外观和语音识别位于“设置 → 通用”；依赖安装位于“设置 → 执行环境 → 选择项目或会话 → Python·PyPI / Node.js·npm”。
 
-<img src="validation/floe-156-feedback/screenshots/full-app-a6/ipad/notes-workspace-import.png" width="640" alt="手记从聊天工作区选择 PDF 文档">
+<img src="validation/floe-156-feedback/screenshots/full-app-ce7/ipad/notes-workspace-import.png" width="640" alt="手记从聊天工作区选择 PDF 文档">
 
 图为开发版 iPad 的工作区导入页面：先选会话或项目，再选其中的文件。图中 PDF 已通过完整 App 的导入、全屏打开和正文检索测试；截图不代表新版 TestFlight 已交付。来源与使用范围见[截图记录](validation/floe-156-feedback/screenshots/README.md)。
 

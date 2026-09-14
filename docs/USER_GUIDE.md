@@ -10,7 +10,7 @@ This guide includes the current development-branch workflow upgrade. See [scope,
 
 These instructions describe the development branch, not a newly delivered TestFlight build. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
 
-<img src="validation/floe-156-feedback/screenshots/full-app-a6/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">
+<img src="validation/floe-156-feedback/screenshots/full-app-ce7/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">
 
 Development iPad capture: choose a chat or project, then select its file. This PDF passed the full-App import, fullscreen-open and body-search case. The image does not establish a new TestFlight release; see [capture provenance](validation/floe-156-feedback/screenshots/README.md).
 
@@ -367,3 +367,9 @@ This iPad component fixture comes from `4550b6d`. It illustrates the PDF and map
 <img src="evidence/floe-1.7/notes/verified-455/iphone-portrait-pdf-map.png" alt="iPhone portrait map window" width="320">
 
 The same passing component test also exercises portrait iPhone layout. This is a component fixture; close the window to return to the PDF.
+
+## Candidate writing tools and Apple Pencil
+
+The Notes editor combines Back, title/save state and document actions in one header. Secondary actions move into a menu on iPhone. The writing palette provides pen, highlighter, eraser, lasso, AI region selection, ink color/width and undo/redo; its toolbar button works without Pencil Pro.
+
+Native squeeze and double-tap callbacks follow the system action preference, using the hover location for the contextual palette when available. Disabled gestures and system shortcuts are left to the system; finger drawing remains opt-in. See [Apple's Pencil interaction API](https://developer.apple.com/documentation/uikit/uipencilinteraction). This is build 161 candidate source: dual-device UI and distribution are pending, and physical squeeze delivery requires compatible hardware.

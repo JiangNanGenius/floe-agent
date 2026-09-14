@@ -1,0 +1,130 @@
+{
+  "source": "ce7b514ed792f3cd17936a5ba55934f27eadfd9e",
+  "build": "1.7.0 (159)",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34808379042",
+  "scope": "Full App Notes UI passed independently on both simulators. Overall CI failed on App unit-test shutdown. These captures predate build 161 toolbar/Pencil changes.",
+  "devices": {
+    "ipad": {
+      "summary": {
+        "totalTestCount": 1,
+        "passedTests": 1,
+        "failedTests": 0,
+        "skippedTests": 0,
+        "expectedFailures": 0,
+        "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody",
+        "result": "Passed"
+      },
+      "screenshots": [
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+          "deviceName": "iPad mini (A17 Pro)",
+          "exportedFileName": "E9999515-5D8C-4138-8870-545C7D4C000A.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-document-body-search_0_A298907F-BBE1-418E-9DBE-5F1E29CEE37C.png",
+          "timestamp": 1789364446.973,
+          "file": "ipad/notes-document-body-search.png",
+          "sha256": "c5fdc5b9996d37527deeeb56dc89624ca5d7c6fc16ad9f4379c425d01612d626",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+          "deviceName": "iPad mini (A17 Pro)",
+          "exportedFileName": "893EB3B9-5EED-4427-922B-6CB7A7F78CC0.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-imported-pdf-fullscreen_0_C273414D-F060-46C8-AF03-349A0F164817.png",
+          "timestamp": 1789364413.83,
+          "file": "ipad/notes-imported-pdf-fullscreen.png",
+          "sha256": "fb195c883ff335f763b44851d8360da26a5b8c9d6da34c6fd93405d0a69de329",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+          "deviceName": "iPad mini (A17 Pro)",
+          "exportedFileName": "D669B676-F337-4CAF-9CAF-88975ED18D60.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-workspace-import_0_A432C138-F0BD-44F0-9C3F-F89B7E2442AA.png",
+          "timestamp": 1789364408.523,
+          "file": "ipad/notes-workspace-import.png",
+          "sha256": "7293d29888b57fddd70116d0b6354889189a9eadcb88c136a469c5744b21156c",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+          "deviceName": "iPad mini (A17 Pro)",
+          "exportedFileName": "38882A8E-92CE-4BF7-859B-E14BB04A8365.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-library_0_B1672D92-C4C1-4FAC-A3A2-C58EF23948F1.png",
+          "timestamp": 1789364397.764,
+          "file": "ipad/notes-library.png",
+          "sha256": "7c52e534cf351f9809f9bfdc0f5ae6b664c1e50b51a9dea8901a98f6d9dc5498",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        }
+      ]
+    },
+    "iphone": {
+      "summary": {
+        "totalTestCount": 1,
+        "passedTests": 1,
+        "failedTests": 0,
+        "skippedTests": 0,
+        "expectedFailures": 0,
+        "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody",
+        "result": "Passed"
+      },
+      "screenshots": [
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "35BDF225-C0A4-4109-B40A-8D2B8343268A",
+          "deviceName": "iPhone 17 Pro",
+          "exportedFileName": "162CA0EA-AFEC-40BA-8A44-FB8DEB46DCE5.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-document-body-search_0_A3FEC3B4-756D-412D-A6E8-8417D22426FE.png",
+          "timestamp": 1789364766.847,
+          "file": "iphone/notes-document-body-search.png",
+          "sha256": "735e70219d8e0638154f64d4c37e76d7c604630a5d04f98d8ff312d9a8f16af6",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "35BDF225-C0A4-4109-B40A-8D2B8343268A",
+          "deviceName": "iPhone 17 Pro",
+          "exportedFileName": "43B13994-9003-4E40-B7AF-06966B3CD785.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-imported-pdf-fullscreen_0_57CF42B2-2802-40A0-990A-12AB4FDADA66.png",
+          "timestamp": 1789364750.262,
+          "file": "iphone/notes-imported-pdf-fullscreen.png",
+          "sha256": "5514fadaedd7d02c47e77a7bdadfeaaf5d353bff2c6c2aa8b0d1febc4a45cef3",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "35BDF225-C0A4-4109-B40A-8D2B8343268A",
+          "deviceName": "iPhone 17 Pro",
+          "exportedFileName": "038BB0E1-33CD-4077-B914-E001EF60EF16.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-workspace-import_0_DD44061B-648D-4937-A83F-9ADBF0A000D4.png",
+          "timestamp": 1789364744.601,
+          "file": "iphone/notes-workspace-import.png",
+          "sha256": "092952bffa06f3e14dd758a114ddf18de05aa3589eb50c5413e4b5297bc037df",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "35BDF225-C0A4-4109-B40A-8D2B8343268A",
+          "deviceName": "iPhone 17 Pro",
+          "exportedFileName": "F5585F25-9F99-474B-8EEC-EB3D482EE8A2.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "notes-library_0_6F9DEE60-00E5-4AB1-932E-D48B708F8A8D.png",
+          "timestamp": 1789364734.153,
+          "file": "iphone/notes-library.png",
+          "sha256": "c9e8d75eeb95bb9fa7def06bbb178d76504d6be97b7036ebf74402bcf8b1154d",
+          "test": "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"
+        }
+      ]
+    }
+  }
+}
