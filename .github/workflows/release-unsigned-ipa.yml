@@ -10,6 +10,10 @@ on:
         description: Existing SemVer tag to validate and build
         required: true
         type: string
+      reuse_accepted_run:
+        description: Reuse an existing exact-tag accepted-SDK artifact and upload without waiting for SDK 27 qualification
+        required: false
+        type: string
       recover_build_156:
         description: Retry only distribution of qualified immutable build 156
         required: false
@@ -29,6 +33,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  expedited-testflight:
+    if: github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/testflight-from-artifact.yml
+    with:
+      source_run: ${{ inputs.reuse_accepted_run }}
+      tag: ${{ inputs.tag }}
+    secrets: inherit
+
   recover-testflight:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish }}
     permissions:
@@ -38,7 +53,7 @@ jobs:
     secrets: inherit
 
   prepare-release:
-    if: ${{ !inputs.recover_build_156 }}
+    if: ${{ !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
     runs-on: macos-26
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -58,7 +73,7 @@ jobs:
 
   build-verify-release:
     needs: prepare-release
-    if: ${{ !inputs.recover_build_156 }}
+    if: ${{ !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
     # Verify the complete iOS 27 source path here. The upload job below
     # separately rebuilds this exact tag with the App Store accepted SDK.
     runs-on: xcode-27
