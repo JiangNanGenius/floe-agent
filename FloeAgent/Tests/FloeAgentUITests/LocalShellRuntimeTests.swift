@@ -8,6 +8,45 @@ import FloeTools
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test(.timeLimit(.minutes(3))) func managedNpmAndPnpmInstallAndExecuteRealPackages() async throws {
+        let runtime = IOSSystemNodeRuntime.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let owner = UUID().uuidString
+        defer { if !FloeNodeHasActiveTask(owner) { try? FileManager.default.removeItem(at: root) } }
+        let npm = try #require(FloeNodeBundledToolPath("npm"))
+        let env = ToolEnvironment(id: owner, writableLayerURL: root, layerURLs: [root], variables: ["FLOE_ENVIRONMENT_ID": owner])
+        let installer = ManagedNodeInstallService(runtime: runtime, npmEntry: npm) { environment, directory in
+            IOSSystemNodeRuntime.defaultEnvironment(containerRoot: environment.writableLayerURL, workspaceRoot: directory)
+        }
+        _ = try await installer.change(env, specification: "is-number@7.0.0", remove: false, cancellation: CancellationToken())
+        var variables = IOSSystemNodeRuntime.defaultEnvironment(containerRoot: root, workspaceRoot: root)
+        variables["FLOE_ENVIRONMENT_ID"] = owner
+        variables["NODE_PATH"] = root.appendingPathComponent("usr/lib/node_modules").path
+        let imported = await runtime.run(.init(entryScript: nil, arguments: ["-e", "console.log(require('is-number')(42))"], workingDirectory: root, environment: variables), cancellation: nil)
+        guard case .exited(let code, let output, let errors, _, _) = imported else { Issue.record("Managed npm import failed: \(imported)"); return }
+        #expect(code == 0 && output == "true\n", "\(errors)")
+        _ = try await installer.change(env, specification: "is-number", remove: true, cancellation: CancellationToken())
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("usr/lib/node_modules/is-number").path))
+
+        let project = root.appendingPathComponent("pnpm-project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try Data(#"{"name":"floe-registry-test","version":"1.0.0","private":true}"#.utf8).write(to: project.appendingPathComponent("package.json"))
+        let pnpm = try #require(FloeNodeBundledToolPath("pnpm"))
+        variables = IOSSystemNodeRuntime.defaultEnvironment(containerRoot: root, workspaceRoot: project)
+        variables["FLOE_ENVIRONMENT_ID"] = owner
+        variables["CI"] = "1"
+        let installed = await runtime.run(.init(entryScript: pnpm,
+            arguments: ["add", "--ignore-scripts", "--config.node-linker=hoisted", "--package-import-method=copy", "--registry=https://registry.npmjs.org/", "is-number@7.0.0"],
+            workingDirectory: project, environment: variables, timeout: 60), cancellation: nil)
+        guard case .exited(let installCode, _, let installErrors, _, _) = installed else { Issue.record("pnpm install failed: \(installed)"); return }
+        #expect(installCode == 0, "\(installErrors)")
+        let loaded = await runtime.run(.init(entryScript: nil, arguments: ["-e", "console.log(require('is-number')(42))"], workingDirectory: project, environment: variables), cancellation: nil)
+        guard case .exited(let loadCode, let value, let loadErrors, _, _) = loaded else { Issue.record("pnpm import failed: \(loaded)"); return }
+        #expect(loadCode == 0 && value == "true\n", "\(loadErrors)")
+        #expect(FileManager.default.fileExists(atPath: project.appendingPathComponent("pnpm-lock.yaml").path))
+    }
+
     @Test(.timeLimit(.minutes(1))) func nodeServiceSurvivesForegroundCommandsAndStopsOnlyItsOwner() async throws {
         let runtime = IOSSystemNodeRuntime.shared
         let owner = "service-test-\(UUID().uuidString)"

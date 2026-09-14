@@ -201,3 +201,28 @@ test('a command that does not read stdin finishes while its producer remains ope
     assert.equal(result.code, 0); assert.equal(stdout(result), '42\n');
   } finally { h.child.stdio[3].end(); h.close(); }
 });
+
+test('pinned npm and pnpm install over HTTPS and modules execute on the shared host', {
+  timeout: 180000, skip: process.env.FLOE_NETWORK_PACKAGE_TESTS !== '1'
+}, async () => {
+  const h = host(); await h.started;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'floe-node-registry-'));
+  try {
+    for (const [manager, entry] of [['npm', 'bin/npm-cli.js'], ['pnpm', 'bin/pnpm.cjs']]) {
+      const cwd = path.join(root, manager); fs.mkdirSync(cwd);
+      fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'floe-test', version: '1.0.0', private: true }));
+      const args = manager === 'npm'
+        ? ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--bin-links=false', '--registry=https://registry.npmjs.org/', 'is-number@7.0.0']
+        : ['add', '--ignore-scripts', '--config.node-linker=hoisted', '--package-import-method=copy', '--registry=https://registry.npmjs.org/', 'is-number@7.0.0'];
+      const result = await h.send(request(`${manager}-install`, '', {
+        entry: path.resolve(path.dirname(hostPath), manager, entry), args, cwd, timeoutMs: 60000,
+        maxOutputBytes: 32768, env: { HOME: cwd, PATH: process.env.PATH, npm_config_cache: path.join(cwd, '.cache'), CI: '1' }
+      }));
+      assert.equal(result.code, 0, `${manager}: ${stdout(result)}\n${Buffer.from(result.stderr ?? '', 'base64').toString()}`);
+      const imported = await h.send(request(`${manager}-import`, "console.log(require('is-number')(42), require('is-number')('bad'))", { cwd }));
+      assert.equal(imported.code, 0, Buffer.from(imported.stderr ?? '', 'base64').toString());
+      assert.equal(stdout(imported), 'true false\n');
+      assert.ok(fs.existsSync(path.join(cwd, manager === 'npm' ? 'package-lock.json' : 'pnpm-lock.yaml')));
+    }
+  } finally { h.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
