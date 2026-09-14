@@ -35,4 +35,4 @@ is used for ordinary commands, pipeline consumers and the exec builtin.
 
 The native host now contains 26 cases, including literal empty/CJK arguments,
 exported variables and repeated Python-alias callback dispatch. Those callback
-fixtures do not qualify actual Python/Node inference or full App integration.
+fixtures do not qualify actual Python/Node execution or full App integration.

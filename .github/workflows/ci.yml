@@ -274,6 +274,8 @@ jobs:
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 180 \
               CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || status=1
+            python3 scripts/verify_notes_ui_xcresult.py --result-bundle "FloeAgent-Notes-$name.xcresult" \
+              --summary-output "FloeAgent-Notes-$name-summary.json" || status=1
             if test -d "FloeAgent-Notes-$name.xcresult"; then
               mkdir -p "FloeAgent-Notes-Screenshots/$name"
               xcrun xcresulttool export attachments --path "FloeAgent-Notes-$name.xcresult" \
@@ -367,6 +369,7 @@ jobs:
             FloeAgent/FloeAgent-AppRegressionTests.xcresult
             FloeAgent/FloeAgent-Notes-*.xcresult
             FloeAgent/FloeAgent-Notes-*.log
+            FloeAgent/FloeAgent-Notes-*-summary.json
             FloeAgent/FloeAgent-Notes-Screenshots
             ${{ runner.temp }}/SwiftTestDiagnostics
           if-no-files-found: ignore
