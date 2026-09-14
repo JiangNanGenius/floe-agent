@@ -333,3 +333,15 @@ simulator; SDK 27 iPad first timed out reading the native reed tool through AX.
 Both failed jobs passed unchanged on attempt 2. The original logs/recording remain
 private, and the [public qualification summary](evidence/floe-1.7/release-172/brush-qualification.json)
 keeps these failures explicit. Full App and TestFlight gates are separate.
+
+### Requested expedited TestFlight delivery
+
+The user requested a new TestFlight build for personal testing, allowing the
+dual-device qualification gate to be bypassed when this speeds up delivery.
+The new distribution-only path reuses the exact-tag accepted-SDK artifact from
+run 34864482336 and does not wait for SDK 27. It checks the source workflow, tag,
+commit, accepted-SDK job and artifact provenance before restoring the application;
+version, bundle identifier, signing and Apple validation remain mandatory.
+The already-running source job cannot be edited in place, so its existing steps
+continue until the artifact is retained. Nothing is rebuilt by the upload path.
+Incomplete qualification remains separate from actual TestFlight availability.
