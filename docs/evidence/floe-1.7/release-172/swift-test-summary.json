@@ -1,0 +1,100 @@
+{
+  "sourceCommit": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34864482336",
+  "scope": "Swift and focused module test executions; full App and distribution are separate gates",
+  "testExecutions": 1270,
+  "suites": [
+    {
+      "suite": "full",
+      "testExecutions": 1164,
+      "groups": [
+        58,
+        17,
+        41,
+        13,
+        40,
+        83,
+        8,
+        98,
+        132,
+        9,
+        29,
+        40,
+        17,
+        4,
+        154,
+        42,
+        117,
+        262
+      ],
+      "runnerSummary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 133.931,
+        "testsStarted": true
+      },
+      "logSHA256": "486a199c072ce2c0e51ae56ddb43f41e0ff820b6d612976ddb53a389928868ff"
+    },
+    {
+      "suite": "javascript-engine",
+      "testExecutions": 12,
+      "groups": [
+        12
+      ],
+      "runnerSummary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 12.877,
+        "testsStarted": true
+      },
+      "logSHA256": "ed57df99131535fe874082c5b9a3b308321a0bb46a7b002acdebcde4edaab432"
+    },
+    {
+      "suite": "javascript-tool",
+      "testExecutions": 12,
+      "groups": [
+        12
+      ],
+      "runnerSummary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 11.311,
+        "testsStarted": true
+      },
+      "logSHA256": "4c54a3ffc685047a078e5995958bb8a9f240a1971120977592e7e4681625d045"
+    },
+    {
+      "suite": "notes",
+      "testExecutions": 21,
+      "groups": [
+        21
+      ],
+      "runnerSummary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 20.49,
+        "testsStarted": true
+      },
+      "logSHA256": "ed777f004f8283953a5dbbc93dcb90eb3f3429858c8c895c97416391814fe2c7"
+    },
+    {
+      "suite": "platform",
+      "testExecutions": 61,
+      "groups": [
+        1,
+        3,
+        20,
+        16,
+        18,
+        3
+      ],
+      "runnerSummary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 63.983,
+        "testsStarted": true
+      },
+      "logSHA256": "46660478cadcf05ec9c54ef651ecdc012432ff38af665f509583c0b35c345e6f"
+    }
+  ]
+}

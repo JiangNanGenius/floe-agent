@@ -1,0 +1,15 @@
+{
+  "sourceCommit": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34864482336",
+  "job": 104044835140,
+  "deviceReleaseBuild": "passed",
+  "simulatorTestHostBuild": "passed",
+  "appRegression": "not_started",
+  "notesDualDeviceUI": "skipped_due_to_prior_step_failure",
+  "failure": "Simulator selector required exactly one iPad mini (A17 Pro) across iOS 26 runtime inventory; actual count was three.",
+  "deviceArtifact": "not_retained_by_original_workflow",
+  "testflightUpload": "not_attempted",
+  "logSHA256": "5e8b309d0d94b3d6145a840bc5b5256f18b4e19e7afd52f3e79381154835a7d9",
+  "recoveryRun": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34870170373",
+  "recoveryPolicy": "User requested direct device build and upload without simulator qualification."
+}
