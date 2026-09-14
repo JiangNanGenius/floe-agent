@@ -109,6 +109,10 @@ GitHub prereleases include an unsigned IPA for advanced testers and downstream p
 > [!WARNING]
 > The GitHub IPA is not the TestFlight/App Store package and cannot normally be installed as downloaded. Floe Agent does not provide signing certificates or a sideloading service.
 
+### Feather source
+
+The current feedback release adds a [Feather source](docs/FEATHER_SOURCE.md). Its stable feed will be activated after the new qualified GitHub IPA is published.
+
 ### Build from source
 
 Requirements: macOS, a full Xcode installation with the iOS 26 SDK or newer, Swift 6.2+, and XcodeGen. Xcode 27 is required to compile the iOS 27 Foundation Models path used by the current release target.

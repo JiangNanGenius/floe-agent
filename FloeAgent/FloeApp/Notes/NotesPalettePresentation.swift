@@ -71,11 +71,14 @@ struct NotesPencilToolWheel: View {
 
     var body: some View {
         ZStack {
-            Circle().strokeBorder(.regularMaterial, lineWidth: 50)
+            Path { path in
+                path.addArc(center: CGPoint(x: diameter / 2, y: diameter / 2),
+                            radius: radius, startAngle: .degrees(-180), endAngle: .degrees(0), clockwise: false)
+            }.stroke(.regularMaterial, style: StrokeStyle(lineWidth: 50, lineCap: .round))
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
                 .allowsHitTesting(false)
             ForEach(Array(NotesInkTool.allCases.enumerated()), id: \.element) { index, value in
-                let angle = Double(index) * 72 - 90
+                let angle = Double(index) * 45 - 180
                 Button { select(value) } label: {
                     Image(systemName: value.icon)
                         .font(.system(size: 21, weight: .medium))
@@ -94,8 +97,9 @@ struct NotesPencilToolWheel: View {
                           y: diameter / 2 + radius * sin(angle * .pi / 180))
             }
             Button(action: close) {
-                Image(systemName: "xmark").font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary).frame(width: 44, height: 44)
+                // The open center stays visually empty and behaves like other
+                // blank page space; it remains a named close action for VoiceOver.
+                Color.clear.frame(width: 44, height: 44)
             }.accessibilityLabel("关闭工具环，继续书写")
                 .accessibilityIdentifier("notes.pencil.quickMenu.close")
             Text(preview?.rawValue ?? "")
@@ -108,6 +112,15 @@ struct NotesPencilToolWheel: View {
         .contentShape(Circle())
         .highPriorityGesture(DragGesture(minimumDistance: 8)
             .onChanged { preview = toolNear($0.location) })
+        .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+            let isTool = NotesInkTool.allCases.indices.contains { index in
+                let angle = (Double(index) * 45 - 180) * .pi / 180
+                let center = CGPoint(x: diameter / 2 + radius * cos(angle),
+                                     y: diameter / 2 + radius * sin(angle))
+                return CGRect(x: center.x - 22, y: center.y - 22, width: 44, height: 44).contains(tap.location)
+            }
+            if !isTool { close() }
+        })
         .onContinuousHover { phase in
             switch phase {
             case .active(let location): preview = toolNear(location)
@@ -121,10 +134,15 @@ struct NotesPencilToolWheel: View {
     private func toolNear(_ point: CGPoint) -> NotesInkTool? {
         let dx = point.x - diameter / 2, dy = point.y - diameter / 2
         let distance = hypot(dx, dy)
-        guard distance.isFinite, distance >= 56, distance <= diameter / 2 + 24 else { return nil }
-        let angle = (atan2(dy, dx) * 180 / .pi + 450).truncatingRemainder(dividingBy: 360)
-        let index = Int((angle / 72).rounded()) % NotesInkTool.allCases.count
-        return NotesInkTool.allCases[index]
+        guard distance.isFinite, distance >= 56, distance <= diameter / 2 + 24, dy <= 24 else { return nil }
+        let nearest = NotesInkTool.allCases.enumerated().min { lhs, rhs in
+            func squaredDistance(_ index: Int) -> CGFloat {
+                let angle = (Double(index) * 45 - 180) * .pi / 180
+                return pow(dx - radius * cos(angle), 2) + pow(dy - radius * sin(angle), 2)
+            }
+            return squaredDistance(lhs.offset) < squaredDistance(rhs.offset)
+        }
+        return nearest?.element
     }
 }
 #endif
