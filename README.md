@@ -30,6 +30,8 @@ Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified 
 
 The [Build 156 feedback repair candidate](docs/FLOE_156_FEEDBACK_REPAIR.md) adds background-only browser operations with explicit human handoff, direct HTTP/API workflows, shared HTTPS certificate configuration, configured-only search discovery, and shell/Python/Node reliability repairs. These changes are under qualification and are not a newer TestFlight build yet.
 
+Candidate Notes also adds **＋ → From Floe Workspace**: select a document generated in a conversation or project and import an independent copy into Notes. The cover library opens documents in a full-screen editor and searches indexed document contents. See the [import and search guide](docs/USER_GUIDE.md#current-repair-candidate-content-search-and-workspace-imports); full-App iPad/iPhone acceptance is still underway.
+
 The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
 
 Environment ownership and persistence, signed repository fixtures, bounded media exports and native shell/Node smoke cases have focused verification. Environment migration, complete package installation flows, model inference, the workbench and device acceptance remain open. The 15 package entries and 33 model entries are candidates, not an available download catalog.

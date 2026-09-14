@@ -34,6 +34,6 @@ used to route python/python3 to the single production CPython service without
 the engine's upstream PythonA/PythonB library-name rewrite. The same transport
 is used for ordinary commands, pipeline consumers and the exec builtin.
 
-The native host now contains 26 cases, including literal empty/CJK arguments,
+The native host contains the 26 previously executed cases, including literal empty/CJK arguments,
 exported variables and repeated Python-alias callback dispatch. Those callback
 fixtures do not qualify actual Python/Node execution or full App integration.

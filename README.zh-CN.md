@@ -30,6 +30,8 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
 
+[反馈修复候选版](docs/FLOE_156_FEEDBACK_REPAIR.md)的手记新增 **“＋”→“从 Floe 工作区导入”**，可以选择会话或项目中生成的文档，复制到手记独立保存。封面资料列表支持打开文档进入全屏编辑，并搜索已经索引的正文。详见[搜索与导入说明](docs/USER_GUIDE.zh-CN.md#本轮修复候选搜索与工作区导入)；完整 App 的 iPad/iPhone 验收仍在进行，这些修改尚未作为新构建上传。
+
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 
 参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[升级与恢复](docs/FLOE_1_7_MIGRATION.md)、[构建与验收](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)。历次版本记录保留在[文档索引](docs/README.md)。
