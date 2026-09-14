@@ -558,6 +558,7 @@ struct OfficeDocumentEditorView: View {
     let relativePath: String
     @ObservedObject var session: OfficeFileSession
     var onSaved: (() async -> Bool)?
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var confirmingDiscard = false
@@ -603,7 +604,7 @@ struct OfficeDocumentEditorView: View {
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回") {
-                        if session.phase == .failed { dismiss() }
+                        if session.phase == .failed { dismissEditor() }
                         else { Task { await saveAndDismiss() } }
                     }
                     .disabled(!session.canAct && session.phase != .failed)
@@ -631,7 +632,7 @@ struct OfficeDocumentEditorView: View {
                         }
                         if onSaved == nil {
                             Button("保留修改并返回") {
-                                Task { if await session.keepChangesAndReturn() { dismiss() } }
+                                Task { if await session.keepChangesAndReturn() { dismissEditor() } }
                             }
                         }
                         Button("放弃修改", role: .destructive) { confirmingDiscard = true }
@@ -692,16 +693,20 @@ struct OfficeDocumentEditorView: View {
                     if onSaved == nil {
                         Button("保留修改并返回") {
                             session.error = nil
-                            Task { if await session.keepChangesAndReturn() { dismiss() } }
+                            Task { if await session.keepChangesAndReturn() { dismissEditor() } }
                         }
                     }
                 } message: { Text(session.error ?? "") }
             .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("放弃修改", role: .destructive) {
-                    Task { if await session.discardAndReturn() { dismiss() } }
+                    Task { if await session.discardAndReturn() { dismissEditor() } }
                 }
                 Button("继续编辑", role: .cancel) {}
             }
+    }
+
+    private func dismissEditor() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     private func saveAndDismiss() async {
@@ -710,7 +715,7 @@ struct OfficeDocumentEditorView: View {
         // so a conflict/error leaves a usable editor and export path.
         let saved = onSaved == nil ? await session.saveAndReturn() : await session.saveInPlace()
         guard saved else { return }
-        if await onSaved?() ?? true { dismiss() }
+        if await onSaved?() ?? true { dismissEditor() }
     }
 }
 

@@ -47,8 +47,32 @@ struct NotesOfficeView: View {
                     pendingCommit = true
                     await commit()
                     return !pendingCommit
+                }, onClose: {
+                    // The Office host calls this only after a successful save,
+                    // explicit discard, or closing its failed editor. Do not
+                    // let SwiftUI dismiss the cover before Notes clears selection.
+                    session.removeLeaveGuard(for: document.id)
+                    Task { await session.select(nil) }
                 })
 
+            }
+        }
+        .onAppear {
+            session.registerLeaveGuard(for: document.id) {
+                guard !committing else { session.errorMessage = "正在保存 Office 文档，请稍后切换。"; return false }
+                if !OfficeFileSession.available { return true }
+                if office.phase == .failed, !pendingCommit, !office.hasUncommittedChanges { return true }
+                guard office.canAct else { session.errorMessage = "Office 正在打开或保存，请稍后切换。"; return false }
+                if !office.readOnly {
+                    guard await office.saveInPlace() else {
+                        session.errorMessage = office.error ?? "Office 保存未完成，编辑副本已保留。"
+                        return false
+                    }
+                    pendingCommit = true
+                }
+                if pendingCommit { await commit() }
+                if pendingCommit { session.errorMessage = message ?? "未能保存到手记，请重试。"; return false }
+                return true
             }
         }
         .task { await prepare() }
@@ -87,6 +111,7 @@ struct NotesOfficeView: View {
             }
         }
         .onDisappear {
+            session.removeLeaveGuard(for: document.id)
             Task { await office.release() }
         }
     }

@@ -9,7 +9,9 @@ import PencilKit
 private struct PaletteFixture: View {
     @State private var presented = false
     @State private var point = CGPoint(x: 0.5, y: 0.08)
-    @State private var selected = false
+    @State private var tool: NotesInkTool = .pen
+    @State private var color = "#18181B"
+    @State private var width = 3.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +19,7 @@ private struct PaletteFixture: View {
                 ForEach(["top", "center", "bottom"], id: \.self) { location in
                     Button(location) {
                         point = CGPoint(x: 0.5, y: location == "top" ? 0.08 : location == "bottom" ? 0.95 : 0.5)
-                        selected = false
+                        tool = .pen
                         presented = true
                     }.accessibilityIdentifier("palette.open.\(location)")
                 }
@@ -26,19 +28,9 @@ private struct PaletteFixture: View {
             Text("Palette layout qualification").frame(height: 52)
             DrawingViewport()
                 .notesPencilPalette(isPresented: $presented, point: point) {
-                    VStack {
-                        Text("Palette").accessibilityIdentifier("palette.title")
-                        Button { selected = true } label: {
-                            Image(systemName: "highlighter")
-                        }.accessibilityIdentifier("palette.marker")
-                            .accessibilityAddTraits(selected ? .isSelected : [])
-                        Spacer()
-                        Text("A tall palette exercises placement near both viewport edges.")
-                        Spacer()
-                        Button("Done") { presented = false }
-                            .accessibilityIdentifier("palette.close")
-                    }.padding(16).frame(width: 320, height: 440)
-                        .buttonStyle(NotesToolbarButtonStyle())
+                    NotesPencilQuickPalette(tool: tool, color: $color, width: $width,
+                                           canUndo: true, canRedo: true, select: { tool = $0 },
+                                           undo: {}, redo: {}, close: { presented = false })
                 }
         }
     }

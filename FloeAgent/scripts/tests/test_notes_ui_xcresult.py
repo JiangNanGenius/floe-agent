@@ -12,7 +12,7 @@ class NotesUIGateTests(unittest.TestCase):
         return ({"result": "Passed", "totalTestCount": 1, "passedTests": 1,
                  "failedTests": 0, "skippedTests": 0, "expectedFailures": 0},
                 {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier":
-                 "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody()"})
+                 "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch()"})
 
     def test_actual_case_passes(self):
         summary, tree = self.fixture()

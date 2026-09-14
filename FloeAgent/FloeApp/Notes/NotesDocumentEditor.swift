@@ -8,6 +8,8 @@ import FloeNotes
 struct NotesDocumentEditor: View {
     let session: NotesSession
     let document: NoteDocument
+    @AppStorage("notes.editor.headerCollapsed") private var headerCollapsed = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var headerHeight: CGFloat = 64
     @State private var pageID: UUID?
     @State private var drawing: Data?
@@ -50,12 +52,22 @@ struct NotesDocumentEditor: View {
     @AppStorage("notes.pen.width") private var penWidth = 3.0
     @AppStorage("notes.marker.width") private var markerWidth = 20.0
     @State private var showingInkOptions = false
-    private enum InkTool: String, CaseIterable {
-        case pen = "笔", marker = "荧光笔", eraser = "橡皮", lasso = "套索", region = "AI 选区"
-        var icon: String {
-            switch self { case .pen: "pencil.tip"; case .marker: "highlighter"; case .eraser: "eraser"; case .lasso: "lasso"; case .region: "viewfinder" }
-        }
+    private typealias InkTool = NotesInkTool
+    init(session: NotesSession, document: NoteDocument) {
+        self.session = session
+        self.document = document
+        let restored = session.editorState(for: document.id)
+        _pageID = State(initialValue: restored.pageID)
+        _tool = State(initialValue: restored.tool.flatMap(InkTool.init(rawValue:)) ?? .pen)
     }
+
+    private func rememberEditor() {
+        var state = session.editorState(for: document.id)
+        state.pageID = page?.id
+        state.tool = tool.rawValue
+        session.rememberEditor(state, for: document.id)
+    }
+
     private var pencilTool: PKTool {
         switch tool {
         case .pen: PKInkingTool(.pen, color: NotePageRenderer.color(penColor), width: min(12, max(0.5, penWidth)))
@@ -98,10 +110,21 @@ struct NotesDocumentEditor: View {
 
     private var editorContent: some View {
         VStack(spacing: 0) {
-            if document.kind != .office {
+            if !headerCollapsed {
+                if document.kind == .office {
+                    NotesDocumentTabs(session: session).padding(.horizontal, 8).background(.bar)
+                } else {
                 header
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+                }
                 Divider()
+            }
+            if document.kind != .notebook {
+                HStack {
+                    headerVisibilityButton
+                    if headerCollapsed { NotesDocumentTabs(session: session) }
+                    Spacer(minLength: 0)
+                }.padding(.horizontal, 8).background(.bar)
             }
             if document.kind == .office {
                 NotesOfficeView(session: session, document: document)
@@ -124,7 +147,13 @@ struct NotesDocumentEditor: View {
                                    onSelectionCount: { selectedStrokeCount = $0 },
                                    captureSelectionRequest: captureSelectionRequest, regionSelection: tool == .region,
                                    onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) }, elementImages: elementImages,
-                                   onPencilAction: handlePencilAction)
+                                   onPencilAction: handlePencilAction,
+                                   initialViewport: session.editorState(for: document.id).viewports[page.id],
+                                   onViewportChanged: { viewport in
+                        var state = session.editorState(for: document.id)
+                        state.viewports[page.id] = viewport
+                        session.rememberEditor(state, for: document.id)
+                    })
                         .notesPencilPalette(isPresented: $showingPencilMenu, point: pencilMenuPoint) {
                             pencilQuickMenu
                         }
@@ -139,6 +168,16 @@ struct NotesDocumentEditor: View {
             }
         }
         .background(Color(uiColor: .secondarySystemBackground))
+        .allowsHitTesting(!session.isSwitchingDocument)
+        .onChange(of: pageID) { _, _ in rememberEditor() }
+        .onChange(of: tool) { _, _ in rememberEditor() }
+        .onChange(of: scenePhase) { _, value in
+            if value != .active { rememberEditor(); session.persistTabs() }
+        }
+        .onDisappear { rememberEditor(); session.persistTabs() }
+        .alert("手记", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
+            Button("好") { session.errorMessage = nil }
+        } message: { Text(session.errorMessage ?? "") }
         .overlay {
             if let mapWindow, document.kind != .mindMap,
                document.linkedMindMaps?.contains(where: { $0.id == mapWindow.id }) == true {
@@ -348,7 +387,7 @@ struct NotesDocumentEditor: View {
                 Task { await session.select(nil) }
             }.labelStyle(.iconOnly).frame(width: 44, height: 44)
                 .accessibilityIdentifier("notes.back")
-            headerTitle
+            NotesDocumentTabs(session: session)
             if sizeClass == .compact {
                 Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
@@ -369,12 +408,15 @@ struct NotesDocumentEditor: View {
             .buttonStyle(NotesToolbarButtonStyle())
     }
 
-    private var headerTitle: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(document.title).font(.headline).lineLimit(1)
-            Text(session.pendingWrites > 0 ? "正在保存…" : session.unsavedDocumentIDs.contains(document.id) ? "尚有未保存修改" : "已保存到本机")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }.frame(minWidth: 100, maxWidth: .infinity, alignment: .leading)
+    private var headerVisibilityButton: some View {
+        Button {
+            headerCollapsed.toggle()
+            headerHeight = headerCollapsed ? 0 : 52
+        } label: {
+            Image(systemName: headerCollapsed ? "chevron.down" : "chevron.up")
+                .frame(width: 44, height: 44)
+        }.accessibilityLabel(headerCollapsed ? "显示文档标签与标题栏" : "收起文档标签与标题栏")
+            .accessibilityIdentifier("notes.header.toggle")
     }
 
     private var headerActions: some View {
@@ -452,7 +494,9 @@ struct NotesDocumentEditor: View {
     }
 
     private var writingTools: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 0) {
+            headerVisibilityButton
+            ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Button {
                     showingInkOptions = false
@@ -530,6 +574,7 @@ struct NotesDocumentEditor: View {
             }.buttonStyle(NotesToolbarButtonStyle()).foregroundStyle(.primary).padding(.horizontal, 8).padding(.vertical, 4)
         }.background(.bar)
             .accessibilityIdentifier("notes.writing.tools")
+        }
     }
 
     private func selectTool(_ value: InkTool) {
@@ -556,37 +601,14 @@ struct NotesDocumentEditor: View {
     }
 
     private var pencilQuickMenu: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("书写工具").font(.headline)
-                Spacer()
-                Button("完成", systemImage: "checkmark") { showingPencilMenu = false }
-                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
-                    .accessibilityIdentifier("notes.pencil.quickMenu.close")
-            }
-            HStack(spacing: 8) {
-                ForEach(InkTool.allCases, id: \.self) { value in
-                    Button {
-                        selectTool(value)
-                        if value != .pen && value != .marker { showingPencilMenu = false }
-                    } label: {
-                        Image(systemName: value.icon).font(.title3).frame(width: 44, height: 44)
-                            .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
-                    }.accessibilityLabel(value.rawValue)
-                        .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
-                        .accessibilityAddTraits(tool == value ? .isSelected : [])
-                }
-            }
-            if tool == .pen || tool == .marker { inkOptions }
-            HStack {
-                Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
-                    .disabled(!session.canUndo || session.pendingWrites > 0)
-                Spacer()
-                Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
-                    .disabled(!session.canRedo || session.pendingWrites > 0)
-            }.frame(minHeight: 44)
-        }.padding(16).frame(width: 320)
-            .buttonStyle(NotesToolbarButtonStyle())
+        NotesPencilQuickPalette(tool: tool, color: inkColor, width: inkWidth,
+                               canUndo: session.canUndo && session.pendingWrites == 0,
+                               canRedo: session.canRedo && session.pendingWrites == 0,
+                               select: { value in
+            selectTool(value)
+            if value != .pen && value != .marker { showingPencilMenu = false }
+        }, undo: { session.undo() }, redo: { session.undo(redo: true) },
+                               close: { showingPencilMenu = false })
     }
 
     private var inkOptions: some View {

@@ -2,7 +2,14 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-Current candidate: **build 164**, source `f150e888028aa20a0131240e0c3d259756cac304`, tag `v1.7.0-beta.21`, [release run 34833194332](https://github.com/JiangNanGenius/floe-agent/actions/runs/34833194332). Complete App qualification and distribution are pending. Build 163 was not archived, uploaded or published as a GitHub Release.
+Current candidate: **build 165**, incorporating the user's Goodnotes interaction preference, document tabs, a collapsible document header and a compact Pencil quick palette. Four navigation-state tests and the actual palette component compilation have passed locally. Full App, both SDK/device UI gates and distribution remain pending. Build 156 remains the latest verified TestFlight delivery.
+
+Build 164 (`f150e888028aa20a0131240e0c3d259756cac304` / `v1.7.0-beta.21`, [run 34833194332](https://github.com/JiangNanGenius/floe-agent/actions/runs/34833194332)) passed SDK 27 module, App and dual-device UI tests. Its run was cancelled before upload to incorporate the new requested scope; it was not delivered to TestFlight or published as a GitHub Release. Its evidence and screenshots below remain valid only for that source.
+
+Build 165 adds ordered document tabs with independent page/tool/zoom state, close-without-delete, persisted open tabs with the library remaining the initial screen, and Office save guards before switching. The document title/tab header can be hidden while writing tools remain accessible. Squeeze uses a compact three-row palette for tools, six colors, three stroke widths and undo/redo; detailed ink settings remain in the main toolbar. Native gesture delivery still requires the user's hardware check.
+
+The release workflow now builds each SDK's simulator test hosts once and uses `test-without-building` for App regressions and both device UI cases. Debug test hosts retain the existing DEBUG-only UI fixtures; independent Release device builds remain mandatory under both SDKs. This removes the extra SDK 27 simulator Release build and separate UI host build requests. Actual wall-clock savings have not yet been measured; the two SDK jobs are still sequential.
+
 
 Previous candidate: **build 163**, `7ef24846e87da67fe3f5b5db9fad545489dc7be8` / `v1.7.0-beta.20`, [release run 34823071123](https://github.com/JiangNanGenius/floe-agent/actions/runs/34823071123). This candidate includes the independently identifiable toolbar controls and full 44-point button hit regions. Its UI gate failed; archive, upload and GitHub publication were skipped.
 

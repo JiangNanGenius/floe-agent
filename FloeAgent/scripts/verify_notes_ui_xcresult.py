@@ -10,7 +10,7 @@ def verify(summary, tree):
     counts = {key: required_count(summary, key) for key in
               ("totalTestCount", "passedTests", "failedTests", "skippedTests", "expectedFailures")}
     cases = [node for node in nodes(tree) if node.get("nodeType") == "Test Case"]
-    expected = "NotesWorkspaceImportUITests/testWorkspacePDFImportOpensFullscreenAndSearchesBody"
+    expected = "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch"
     identity = str(cases[0].get("nodeIdentifier", "")).removesuffix("()") if len(cases) == 1 else ""
     if (summary.get("result") != "Passed" or counts["totalTestCount"] != 1
             or counts["passedTests"] != 1 or any(counts[key] for key in

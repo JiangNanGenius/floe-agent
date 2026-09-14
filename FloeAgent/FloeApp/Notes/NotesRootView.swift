@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 import PencilKit
 
 struct NotesRootView: View {
-    @State private var session = NotesSession()
+    @State private var session = NotesSession(tabDefaults: .standard)
     @State private var query = ""
     @AppStorage("notes.library.grid") private var grid = true
     @State private var section: SectionFilter = .recent

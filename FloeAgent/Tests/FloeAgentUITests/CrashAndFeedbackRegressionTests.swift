@@ -11,6 +11,7 @@ import Testing
 import FloeAgentRuntime
 import FloePersistence
 import FloeCore
+import FloeNotes
 import FloeProviders
 import FloeLocalModels
 @testable import FloeApp
@@ -51,6 +52,52 @@ private actor ContinuedProcessingExpirationTestGate {
 
 @Suite("FloeApp crash and feedback regressions")
 struct CrashAndFeedbackRegressionTests {
+    @Test @MainActor
+    func notesTabCloseWaitsForEditorSaveAndPreservesFailedEditor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-tabs-save-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let a = try await store.create(NoteDocument(title: "A"))
+        let b = try await store.create(NoteDocument(title: "B"))
+        let session = NotesSession()
+        await session.open(using: store)
+        #expect(await session.select(a))
+        #expect(await session.select(b))
+        session.registerLeaveGuard(for: b.id) { false }
+        await session.closeTab(b.id)
+        #expect(session.document?.id == b.id)
+        #expect(session.tabs.documentIDs == [a.id, b.id])
+        #expect(!(await session.select(nil)))
+        session.registerLeaveGuard(for: b.id) { true }
+        await session.closeTab(b.id)
+        #expect(session.document?.id == a.id && session.tabs.documentIDs == [a.id])
+        #expect(try await store.document(b.id) == b)
+        #expect(try await store.historyState(b.id).canUndo == false)
+        session.removeLeaveGuard(for: b.id)
+    }
+
+    @Test @MainActor
+    func notesTabRestorationKeepsLibraryAsInitialScreen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-tabs-restore-\(UUID())")
+        let suite = "notes-tabs-tests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let a = try await store.create(NoteDocument(title: "A"))
+        let first = NotesSession(tabDefaults: defaults)
+        await first.open(using: store)
+        #expect(await first.select(a))
+        var state = NoteWorkspaceTabs.EditorState()
+        state.pageID = a.pages.first?.id; state.tool = "套索"
+        first.rememberEditor(state, for: a.id)
+        #expect(await first.select(nil))
+        let restored = NotesSession(tabDefaults: defaults)
+        await restored.open(using: store)
+        #expect(restored.document == nil)
+        #expect(restored.tabs.documentIDs == [a.id])
+        #expect(restored.editorState(for: a.id) == state)
+    }
+
     @MainActor
     @Test("Settings renders in a separate regular-width host without an inherited environment object")
     func settingsPresentationOwnsItsEnvironment() async throws {

@@ -1,10 +1,10 @@
 # Pencil palette placement qualification
 
 This small app compiles the **production** `NotesPalettePresentation.swift`
-presenter and button style without the full Floe application. A PencilKit
-viewport presents a deliberately tall palette at its top, center and bottom.
+presenter, quick palette and button style without the full Floe application. A PencilKit
+viewport presents the production three-row palette at its top, center and bottom.
 The UI case requires visible, hittable controls, 44-point targets (with half a
-point of AX rounding tolerance), selection and dismissal on iPad and iPhone.
+point of AX rounding tolerance), tool, color and width selection, and dismissal on iPad and iPhone.
 
 This qualifies the presentation boundary only. It does not establish Notes
 import, document persistence, full-App routing or physical Pencil gesture

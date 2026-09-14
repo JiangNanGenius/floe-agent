@@ -13,6 +13,37 @@ final class NotesSession {
     private(set) var recentDocumentIDs: [UUID] = []
     private(set) var notebooks: [Notebook] = []
     private(set) var document: NoteDocument?
+    private(set) var tabs = NoteWorkspaceTabs()
+    private(set) var isSwitchingDocument = false
+    @ObservationIgnored private var tabDefaults: UserDefaults?
+    @ObservationIgnored private var editorStates: [UUID: NoteWorkspaceTabs.EditorState] = [:]
+    @ObservationIgnored private var leaveGuards: [UUID: @MainActor () async -> Bool] = [:]
+    private static let tabsKey = "notes.workspace.tabs.v1"
+
+    init(tabDefaults: UserDefaults? = nil) {
+        self.tabDefaults = tabDefaults
+        if let data = tabDefaults?.data(forKey: Self.tabsKey),
+           let restored = try? JSONDecoder().decode(NoteWorkspaceTabs.self, from: data) {
+            tabs = restored
+            editorStates = restored.editors
+        }
+    }
+
+    func editorState(for id: UUID) -> NoteWorkspaceTabs.EditorState { editorStates[id] ?? .init() }
+    func rememberEditor(_ state: NoteWorkspaceTabs.EditorState, for id: UUID) {
+        editorStates[id] = state
+    }
+    func registerLeaveGuard(for id: UUID, action: @escaping @MainActor () async -> Bool) { leaveGuards[id] = action }
+    func removeLeaveGuard(for id: UUID) { leaveGuards.removeValue(forKey: id) }
+
+    func persistTabs() {
+        for (id, state) in editorStates { tabs.updateEditor(state, for: id) }
+        let available = Set(documents.filter { $0.deletedAt == nil }.map(\.id))
+        tabs.prune(availableIDs: available)
+        editorStates = editorStates.filter { available.contains($0.key) }
+        if let data = try? JSONEncoder().encode(tabs) { tabDefaults?.set(data, forKey: Self.tabsKey) }
+    }
+
     private(set) var pendingWrites = 0
     private(set) var canUndo = false
     private(set) var canRedo = false
@@ -68,7 +99,9 @@ final class NotesSession {
                   files.contains(where: { $0.pathExtension == "drawing" }) else { return nil }
             return id
         })
-        if let id = document?.id { document = documents.first { $0.id == id } }
+        if let id = document?.id { document = documents.first { $0.id == id && $0.deletedAt == nil } }
+        if let id = document?.id { tabs.open(id) }
+        persistTabs()
         if let id = document?.id {
             let history = try await store.historyState(id)
             canUndo = history.canUndo; canRedo = history.canRedo
@@ -130,13 +163,42 @@ final class NotesSession {
         }
     }
 
-    func select(_ value: NoteDocument?) async {
+    @discardableResult
+    func select(_ value: NoteDocument?) async -> Bool {
+        guard !isSwitchingDocument else { return false }
+        if document?.id == value?.id { return true }
+        isSwitchingDocument = true
+        defer { isSwitchingDocument = false }
         await tail?.value
-        document = value.flatMap { selected in documents.first { $0.id == selected.id } }
+        guard pendingWrites == 0 else { errorMessage = "正在保存，请稍后切换文档。"; return false }
+        if let current = document?.id {
+            guard !unsavedDocumentIDs.contains(current) else {
+                errorMessage = "当前文档尚未保存，请先重试保存，再切换或关闭标签。"
+                return false
+            }
+            if let save = leaveGuards[current], !(await save()) { return false }
+        }
+        let target = value.flatMap { selected in documents.first { $0.id == selected.id && $0.deletedAt == nil } }
+        if value != nil && target == nil { errorMessage = "此文档已被删除。"; return false }
         do {
-            if let id = document?.id, let store { try await store.markOpened(id) }
+            if let id = target?.id, let store { try await store.markOpened(id) }
+            document = target
+            requestedPageID = nil
             try await reload()
-        } catch { errorMessage = error.localizedDescription }
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+
+    func closeTab(_ id: UUID) async {
+        guard !isSwitchingDocument else { return }
+        var updated = tabs
+        updated.close(id)
+        if document?.id == id {
+            let next = updated.selectedID.flatMap { id in documents.first { $0.id == id && $0.deletedAt == nil } }
+            guard await select(next) else { return }
+        }
+        tabs.close(id)
+        persistTabs()
     }
 
     @discardableResult
@@ -162,7 +224,7 @@ final class NotesSession {
                 value.title = kind == .mindMap ? "未命名导图" : "未命名手记"
                 if !value.nodes.isEmpty { value.nodes[0].title = value.title }
             }
-            document = try await store.create(value)
+            showCreatedDocument(try await store.create(value))
             try await reload()
         }
     }
@@ -200,7 +262,7 @@ final class NotesSession {
                 }
             }.value
             let value = try await NoteFileImporter.importFile(file, notebookID: notebookID, store: store)
-            document = try await store.create(value)
+            showCreatedDocument(try await store.create(value))
             try await reload()
         }
     }
@@ -311,7 +373,7 @@ final class NotesSession {
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             let values = try await NotesArchive.importDocuments(from: url, notebookID: notebookID, store: store)
-            document = try await store.createBundle(values).first
+            showCreatedDocument(try await store.createBundle(values).first)
             try await reload()
         }
     }
@@ -319,7 +381,7 @@ final class NotesSession {
     func importDocument(_ value: NoteDocument) {
         enqueue { [self] in
             guard let store else { return }
-            document = try await store.create(value)
+            showCreatedDocument(try await store.create(value))
             try await reload()
         }
     }
@@ -329,9 +391,18 @@ final class NotesSession {
     func importDocuments(_ values: [NoteDocument]) {
         enqueue { [self] in
             guard let store else { return }
-            document = try await store.createBundle(values).first
+            showCreatedDocument(try await store.createBundle(values).first)
             try await reload()
         }
+    }
+
+    private func showCreatedDocument(_ value: NoteDocument?) {
+        // Office recovery can create another document while its editor is open.
+        // Keep that editor mounted; switching to the new tab runs its save guard.
+        if let current = document, current.kind == .office, let value {
+            tabs.open(value.id)
+            tabs.open(current.id)
+        } else { document = value }
     }
 
     private func enqueue(_ operation: @escaping @MainActor () async throws -> Void) {

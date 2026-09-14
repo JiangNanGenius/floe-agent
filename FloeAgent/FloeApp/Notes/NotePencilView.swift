@@ -20,10 +20,17 @@ struct NotePencilView: UIViewRepresentable {
     // The anchor is normalized to the visible viewport, independent of paper zoom.
     var onPencilAction: (UIPencilPreferredAction, CGPoint) -> Void = { _, _ in }
 
+    var initialViewport: NoteWorkspaceTabs.Viewport? = nil
+    var onViewportChanged: (NoteWorkspaceTabs.Viewport) -> Void = { _ in }
+
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
     func makeUIView(context: Context) -> PKCanvasView {
         let canvas = NotesPKCanvasView()
         canvas.pageSize = CGSize(width: page.width, height: page.height)
+        canvas.initialViewport = initialViewport
+        canvas.onViewportChanged = { [weak coordinator = context.coordinator] value in
+            coordinator?.parent.onViewportChanged(value)
+        }
         // The page backdrop owns paper/PDF pixels; PencilKit only draws the ink above it.
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
@@ -203,6 +210,8 @@ struct NotePencilView: UIViewRepresentable {
 private final class NotesPKCanvasView: PKCanvasView {
     var pageSize = CGSize.zero
     weak var pageBackdrop: UIImageView?
+    var initialViewport: NoteWorkspaceTabs.Viewport?
+    var onViewportChanged: (NoteWorkspaceTabs.Viewport) -> Void = { _ in }
     private var viewportSize = CGSize.zero
     private var pagePosition = CGPoint.zero
     private var updatingViewport = false
@@ -212,6 +221,7 @@ private final class NotesPKCanvasView: PKCanvasView {
         guard !updatingViewport, bounds.size == viewportSize, zoomScale > 0 else { return }
         pagePosition = CGPoint(x: max(0, contentOffset.x) / zoomScale,
                                y: max(0, contentOffset.y) / zoomScale)
+        onViewportChanged(.init(x: pagePosition.x, y: pagePosition.y, zoom: zoomScale))
     }
     override func layoutSubviews() {
         guard !updatingViewport else { super.layoutSubviews(); return }
@@ -220,7 +230,13 @@ private final class NotesPKCanvasView: PKCanvasView {
         updatingViewport = resized
         super.layoutSubviews()
         if resized {
-            if firstLayout { zoomScale = min(1, bounds.width / pageSize.width) }
+            if firstLayout {
+                if let initialViewport {
+                    let safe = NoteWorkspaceTabs.Viewport(x: initialViewport.x, y: initialViewport.y, zoom: initialViewport.zoom)
+                    zoomScale = safe.zoom
+                    pagePosition = CGPoint(x: safe.x, y: safe.y)
+                } else { zoomScale = min(1, bounds.width / pageSize.width) }
+            }
             viewportSize = bounds.size
             alignPageBackdrop()
             let maximumX = max(0, pageSize.width * zoomScale - bounds.width)

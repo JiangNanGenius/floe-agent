@@ -4,7 +4,7 @@ import UIKit
 
 @MainActor
 final class NotesWorkspaceImportUITests: XCTestCase {
-    func testWorkspacePDFImportOpensFullscreenAndSearchesBody() throws {
+    func testWorkspaceImportTabsFocusAndBodySearch() throws {
         continueAfterFailure = false
         let ipad = UIDevice.current.userInterfaceIdiom == .pad
         let app = XCUIApplication()
@@ -79,12 +79,53 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(marker.frame.minY, app.frame.minY)
         marker.tap()
         XCTAssertTrue(marker.isSelected)
+        let paletteColor = app.buttons["notes.pencil.quickMenu.color.1"]
+        paletteColor.tap(); XCTAssertTrue(paletteColor.isSelected)
+        let paletteWidth = app.buttons["notes.pencil.quickMenu.width.32"]
+        paletteWidth.tap(); XCTAssertTrue(paletteWidth.isSelected)
         capture("notes-pencil-quick-menu")
         app.buttons["notes.pencil.quickMenu.close"].tap()
         let toolbarMarker = app.buttons["notes.tool.highlighter"]
         let paletteDismissed = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: toolbarMarker)
         wait(for: [paletteDismissed], timeout: 10)
         XCTAssertTrue(toolbarMarker.isSelected)
+        let headerToggle = app.buttons["notes.header.toggle"]
+        assertTouchTarget(headerToggle)
+        let expandedPageY = app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.frame.minY
+        headerToggle.tap()
+        XCTAssertFalse(back.exists)
+        XCTAssertTrue(quickMenu.isHittable)
+        XCTAssertTrue(toolbarMarker.isHittable)
+        XCTAssertLessThan(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.frame.minY, expandedPageY)
+        capture("notes-focused-writing")
+        headerToggle.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertTrue(back.isHittable)
+        // Create a second document, then switch back through retained tabs.
+        let tabs = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND NOT identifier BEGINSWITH %@", "notes.tab.", "notes.tab.close.")).allElementsBoundByIndex
+        let originalTab = try XCTUnwrap(tabs.first { $0.isSelected })
+        let originalID = originalTab.identifier
+        back.tap()
+        create.tap()
+        app.buttons["空白手记"].tap()
+        let title = app.textFields["notes.create.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.tap(); title.typeText("标签验收")
+        app.buttons["创建"].tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        let original = app.buttons[originalID]
+        // On narrow phones the selected tab is scrolled into view. Reveal its predecessor.
+        if !original.isHittable { app.scrollViews.containing(.button, identifier: originalID).firstMatch.swipeRight() }
+        XCTAssertTrue(original.isHittable)
+        original.tap()
+        XCTAssertTrue(toolbarMarker.waitForExistence(timeout: 10))
+        XCTAssertTrue(toolbarMarker.isSelected)
+        capture("notes-document-tabs")
+        let closeOriginal = app.buttons[originalID.replacingOccurrences(of: "notes.tab.", with: "notes.tab.close.")]
+        XCTAssertTrue(closeOriginal.isHittable)
+        closeOriginal.tap()
+        XCTAssertFalse(app.buttons[originalID].exists)
+        XCTAssertTrue(back.waitForExistence(timeout: 10))
         // The same palette is opened by Pencil interactions; physical squeeze
         // delivery is a device check, not simulated by this button test.
         back.tap()
