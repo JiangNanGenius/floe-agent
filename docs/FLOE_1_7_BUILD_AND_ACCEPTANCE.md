@@ -63,3 +63,11 @@ TestFlight 就绪检查同时要求：`VALID`、未过期、现有私有内部 F
 ### Build 156 分发恢复
 
 Apple 校验前运行 `prepare_app_store_bundle.py`：按摘要移除 pnpm 非 iOS 资源，保留 libssh2 原有 arm64 切片并修正其最低版本占位符，不伪造 SDK 元数据。恢复工作流将固定应用源码与单独的打包策略提交绑定，验证原始云端作业的成功构建/测试后再复用证据。重新签名、上传与处理状态均须重新检查，参见[实际包验证记录](evidence/floe-1.7/release-156/distribution-recovery.md)。
+
+## 加急 TestFlight 与产物恢复
+
+常规发布仍按当轮约定完成验证。用户明确要求跳过模拟器验证时，`release-unsigned-ipa.yml` 提供两条独立入口：优先使用 `reuse_accepted_run` 重用同一固定 tag 的受支持上传 SDK 产物；只有没有可复用产物时才使用 `direct_testflight`，从固定 tag 构建设备 Release 包。不要同时填写两个入口，也不要移动 tag 或借用另一构建的验证结果。
+
+`testflight-direct.yml` 保留签名、描述文件和 Apple 上传校验，并在签名前保存未签名恢复包。常规上传 SDK 路径在可选模拟器检查之前保留 `accepted-sdk-device-recovery-*`；该早期备份尚未经过最终 bundle 规范化，不能直接当作已验收分发包。产物来源、处理阶段与 SHA 必须一起保留。这样重试分发无需因为后续检查失败而丢失已编译文件。
+
+构建完成、产物保存、上传成功、Apple 处理、测试组可安装是五个不同状态。Apple 回执并不等于 TestFlight 已可更新。公开 Beta 的验证约定需按下一版本重新确定，不自动继承 build 172 的加急豁免。
