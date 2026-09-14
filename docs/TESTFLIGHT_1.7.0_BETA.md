@@ -1,5 +1,11 @@
 # Floe 1.7.0 — TestFlight preparation and candidate history
 
+## Build 172 direct-upload candidate
+
+The user requested a new TestFlight build for personal device testing and waived iPad/iPhone simulator qualification as an upload gate. [Direct build and upload](https://github.com/JiangNanGenius/floe-agent/actions/runs/34870170373) uses immutable tag `v1.7.0-beta.29`, source `fb86fef896d41871fa98c8871237606f56c5ff39`. It retains the unsigned device artifact before signing and still requires bundle/profile validation and Apple's upload validation. Availability below stays at build 156 until actual Apple processing and Floe QA visibility are verified.
+
+The same build 172 source separately passed 1,270 Swift test executions and 159 SDK 27 App regressions. Its original SDK 26 device and simulator builds passed, but a duplicate simulator-name selection error stopped tests before execution and prevented that workflow from retaining the device package. These outcomes remain distinct from the direct uploader.
+
 ## Feedback repair candidate — not yet distributed
 
 The `codex/floe-156-feedback-repair` branch contains the September 14 fixes and subsequent content-search/workspace-import additions. Build 156 below is still the last verified delivery. New source builds, component tests and screenshots do not establish a new TestFlight release. Current gates and evidence are tracked in [the feedback repair record](FLOE_156_FEEDBACK_REPAIR.md); physical-device checks remain with the user.
