@@ -364,7 +364,7 @@ jobs:
             echo "app_regression_tests=${{ steps.app_regression.outputs.passed }}/${{ steps.app_regression.outputs.total }} passed"
             echo "app_regression_failed=${{ steps.app_regression.outputs.failed }}"
             echo "app_regression_skipped=${{ steps.app_regression.outputs.skipped }}"
-            echo "simulator_release_build=passed"
+            echo "simulator_debug_test_host_build=passed"
             echo "unsigned_device_build=passed"
             echo "remote_agent_asset=packaged"
           } > release-assets/TEST-SUMMARY.txt
