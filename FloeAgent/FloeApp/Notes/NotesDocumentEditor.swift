@@ -587,12 +587,8 @@ struct NotesDocumentEditor: View {
             selectTool(tool == .eraser ? (previousTool == .eraser ? .pen : previousTool) : .eraser)
         case .switchPrevious:
             selectTool(previousTool)
-        case .showColorPalette, .showInkAttributes:
-            if tool != .pen && tool != .marker { selectTool(.pen) }
-            showingInkOptions = false
-            pencilMenuPoint = point
-            showingPencilMenu.toggle()
-        case .showContextualPalette:
+        case .showColorPalette, .showInkAttributes, .showContextualPalette:
+            // Opening or cancelling the wheel must not silently change tools.
             showingInkOptions = false
             pencilMenuPoint = point
             showingPencilMenu.toggle()
