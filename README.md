@@ -32,6 +32,8 @@ The [Build 156 feedback repair release](docs/FLOE_156_FEEDBACK_REPAIR.md) adds b
 
 Notes also adds **＋ → From Floe Workspace**: select a document generated in a conversation or project and import an independent copy into Notes. The cover library opens documents in a full-screen editor and searches indexed document contents. See the [import and search guide](docs/USER_GUIDE.md#current-repair-candidate-content-search-and-workspace-imports); the SDK 27 full-App Notes UI case passed on both iPad and iPhone; physical-device acceptance remains with the tester.
 
+The [next repair is under validation](docs/FLOE_172_REPAIR_EXECUTION.md): it removes document-assistant setup chatter, refines the iPad assistant pane, repairs runtime ownership and expands actual package-install checks. No new repair TestFlight build has been uploaded yet.
+
 The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
 
 Environment ownership and persistence, signed repository fixtures, bounded media exports and native shell/Node smoke cases have focused verification. Environment migration, complete package installation flows, model inference, the workbench and device acceptance remain open. The 15 package entries and 33 model entries are candidates, not an available download catalog.

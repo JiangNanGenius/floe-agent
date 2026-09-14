@@ -337,6 +337,12 @@ The Canvas Assistant now uses the main chat's Markdown, live reasoning and tool
 frames, and provides access to earlier conversation records.
 
 
+## Document assistant refinement under validation
+
+The repair following Build 172 opens the document assistant directly to your conversation. The document name stays in the panel header; document IDs and tool setup instructions no longer appear as an opening chat message. Ask a question, request an edit, or save an answer as note content using the same assistant. Existing document access and edit permissions still apply.
+
+On a wide iPad layout the assistant sits beside the document in an inset pane; smaller windows use a dismissible sheet. Model, mode and permission controls remain available. Close the assistant to reclaim writing space without deleting its conversation. These changes are in validation and are not yet available in a new TestFlight build; see the [repair ledger](FLOE_172_REPAIR_EXECUTION.md).
+
 ## 1.7 development candidate: Notes and local speech
 
 These instructions describe the 1.7 internal beta. Check the [implementation record](FLOE_1_7_CONTINUATION_STATUS.md) for full-app, device and TestFlight status.
