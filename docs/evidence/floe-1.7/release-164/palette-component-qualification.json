@@ -1,0 +1,109 @@
+{
+  "source_sha": "f150e888028aa20a0131240e0c3d259756cac304",
+  "workflow_run": 34831901457,
+  "scope": "Production palette presenter and button style in a lightweight host, not the full Floe App or physical Pencil gestures",
+  "overall_workflow": "failure",
+  "ipad": {
+    "SDK27": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "log_sha256": "826d5dd1b11d636537c5220dd4ca955d0012b124e29ba3882c63822e93d5f5d5",
+      "test_summary": {
+        "devicesAndConfigurations": [
+          {
+            "device": {
+              "architecture": "arm64",
+              "deviceId": "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+              "deviceName": "iPad mini (A17 Pro)",
+              "modelName": "iPad mini (A17 Pro)",
+              "osBuildNumber": "24A5423a",
+              "osVersion": "27.0",
+              "platform": "iOS Simulator"
+            },
+            "expectedFailures": 0,
+            "failedTests": 0,
+            "passedTests": 1,
+            "skippedTests": 0,
+            "testPlanConfiguration": {
+              "configurationId": "1",
+              "configurationName": "Test Scheme Action"
+            }
+          }
+        ],
+        "environmentDescription": "FloePencilPaletteQualification · Built with macOS 27.0",
+        "expectedFailures": 0,
+        "failedTests": 0,
+        "finishTime": 1789380964.917,
+        "passedTests": 1,
+        "result": "Passed",
+        "runtimeWarnings": [
+          {
+            "issueType": "Runtime Warning",
+            "message": "Update the Info.plist: Support for all orientations will soon be required."
+          }
+        ],
+        "skippedTests": 0,
+        "startTime": 1789380714.834,
+        "statistics": [],
+        "testFailures": [],
+        "title": "Test - FloePencilPaletteQualification",
+        "topInsights": [],
+        "totalTestCount": 1
+      }
+    },
+    "SDK26": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "log_sha256": "ef1c0550b5738f34ab7a6aff335d1e5c3b161a47a13d62121e3b344ec2938891",
+      "test_summary": {
+        "devicesAndConfigurations": [
+          {
+            "device": {
+              "architecture": "arm64",
+              "deviceId": "1E926EE8-2A0B-4C47-B835-0C52B77DE728",
+              "deviceName": "iPad mini (A17 Pro)",
+              "modelName": "iPad mini (A17 Pro)",
+              "osBuildNumber": "23F77",
+              "osVersion": "26.5",
+              "platform": "iOS Simulator"
+            },
+            "expectedFailures": 0,
+            "failedTests": 0,
+            "passedTests": 1,
+            "skippedTests": 0,
+            "testPlanConfiguration": {
+              "configurationId": "1",
+              "configurationName": "Test Scheme Action"
+            }
+          }
+        ],
+        "environmentDescription": "FloePencilPaletteQualification · Built with macOS 26.6.2",
+        "expectedFailures": 0,
+        "failedTests": 0,
+        "finishTime": 1789381416.431,
+        "passedTests": 1,
+        "result": "Passed",
+        "runtimeWarnings": [
+          {
+            "issueType": "Runtime Warning",
+            "message": "Update the Info.plist: Support for all orientations will soon be required."
+          }
+        ],
+        "skippedTests": 0,
+        "startTime": 1789380740.893,
+        "statistics": [],
+        "testFailures": [],
+        "title": "Test - FloePencilPaletteQualification",
+        "topInsights": [],
+        "totalTestCount": 1
+      }
+    }
+  },
+  "iphone": {
+    "SDK27": "App launch timeout before palette assertions",
+    "SDK26": "Step deadline before test initialization"
+  },
+  "release_gate": "Both devices must still pass complete App Notes UI before archive or upload"
+}
