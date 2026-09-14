@@ -1,5 +1,7 @@
 # Contributing to Floe Agent
 
+Repository instructions for coding agents: [AGENTS.md](AGENTS.md).
+
 Thank you for helping build Floe Agent. The project ships prerelease builds, its interfaces are still moving, and changes involving credentials, browser control, files, or remote computers require especially careful review. [简体中文贡献指南](CONTRIBUTING.zh-CN.md)
 
 ## Floe 1.7 integration workflow

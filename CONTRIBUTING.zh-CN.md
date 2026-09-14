@@ -1,5 +1,7 @@
 # 为 Floe Agent 贡献代码
 
+Repository instructions for coding agents: [AGENTS.md](AGENTS.md).
+
 [English](CONTRIBUTING.md) · [中文 README](README.zh-CN.md) · [安全策略](SECURITY.zh-CN.md)
 
 感谢参与 Floe Agent。项目已经发布预览版本，但接口仍在调整；涉及凭据、文件、浏览器控制或远程电脑的改动需要更严格的安全审阅。
