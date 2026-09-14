@@ -46,6 +46,7 @@
     "optionalImageGeneration": "user-configured; disclose honestly; respond to any reviewer access request separately",
     "anyCloudCredentialAuthorized": false,
     "anyCloudSpendingAuthorized": false,
-    "localInferenceQualification": "pending; verify supported hardware, model download, response and any advertised tool/vision capability"
+    "localInferenceQualification": "pending; verify supported hardware, model download, response and any advertised tool/vision capability",
+    "ownerReportedLocalAI": "Usable with limited functionality; specific build/model/device not recorded"
   }
 }

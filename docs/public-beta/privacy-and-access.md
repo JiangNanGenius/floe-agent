@@ -25,3 +25,18 @@ The reviewer can directly exercise Notes, PDFs, documents and Canvas. Supply acc
 Public testers supply their own cloud credentials. No shared free trial or developer-funded account is promised. Any future paid review access or public trial requires a separate owner decision. Keep all credentials out of public descriptions, What to Test, repository files and app defaults.
 
 Chatbox publicly offers both BYOK and its own hosted subscription. Its private App Review credentials or correspondence have not been established from public sources; its App Store presence is not evidence that Apple always accepts a zero-access submission. Sources: [Chatbox](https://chatboxai.app/en), [Apple review guidance](https://developer.apple.com/app-store/review/guidelines/#before-you-submit).
+
+## Local capability boundary checked in source
+
+The owner reports that local AI works but has limited functionality. Device, model and build for that observation were not specified; it is not evidence that all features of the next submission have been exercised.
+
+`FloeAgent/Sources/FloeLocalModels/LocalProviderAdapter.swift` currently exposes downloaded local models as text/tools/approval, preloads with `wantsVision: false`, and filters tool inventory through `mlxAdmissibleToolNames`. Apple Foundation Model tool exposure is restricted to `apple.*`; the advertised capabilities also omit direct vision. This is source evidence, not a new inference test.
+
+| Review path | What it can establish | What it cannot substitute for |
+| --- | --- | --- |
+| Downloaded local model | Actual text generation and the supported subset of tools, after executing those paths | Cloud provider authentication, full browser/remote tool scope, direct model vision or image generation |
+| Apple Foundation Model | Device-available text generation and permitted Apple tools | The complete Floe Agent tool inventory or every downloaded local model |
+| Notes, PDF, Office and Canvas editor | Direct editing, persistence, navigation and search operations actually demonstrated | Every assistant or remote/cloud feature embedded in those editors |
+| Cloud BYOK setup and genuine recording | Configuration flow and supplemental evidence of recorded behavior | Guaranteed live reviewer access or guaranteed approval |
+
+Keep this matrix aligned with the exact submitted build. The chosen local model must not silently call a paid auxiliary provider during a purported no-cloud demonstration.
