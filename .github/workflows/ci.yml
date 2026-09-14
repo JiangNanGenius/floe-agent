@@ -241,6 +241,7 @@ jobs:
             -skipMacroValidation \
             -destination "platform=iOS Simulator,id=$test_device" \
             -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
+            -collect-test-diagnostics never \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
             -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
@@ -273,6 +274,7 @@ jobs:
             xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
               -destination "platform=iOS Simulator,name=$device" \
               -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
+              -collect-test-diagnostics never \
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 180 \

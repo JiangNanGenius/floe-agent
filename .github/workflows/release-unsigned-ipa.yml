@@ -100,7 +100,14 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/ci-jobs.json"
             if jq -e '[.jobs[] | select(.name == "build-test" or .name == "appstore-sdk-compatibility" or .name == "spm-linux-build") | select(.conclusion == "success")] | length == 3' "$RUNNER_TEMP/ci-jobs.json" >/dev/null; then
               gh run download "$CI_RUN_ID" --repo "$GITHUB_REPOSITORY" --name ci-artifacts --dir "$RUNNER_TEMP/ReusedCI"
-              test -d "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult"
+              # Artifact upload paths can retain the checkout's common ancestor.
+              # Select exactly one result bundle and normalize its location.
+              reused_result="$(find "$RUNNER_TEMP/ReusedCI" -type d -name 'FloeAgent-AppRegressionTests.xcresult' -prune -print)"
+              test "$(printf '%s\n' "$reused_result" | grep -c .)" = 1
+              test -d "$reused_result"
+              if [ "$reused_result" != "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult" ]; then
+                ditto "$reused_result" "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult"
+              fi
               echo "run_id=$CI_RUN_ID" >> "$GITHUB_OUTPUT"
               echo "Reusing exact-SHA CI $CI_RUN_ID; stable-SDK tests and binary checks still run."
             fi
@@ -197,6 +204,7 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
             -resultBundlePath "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
+            -collect-test-diagnostics never \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
             -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
@@ -226,6 +234,52 @@ jobs:
             ${{ runner.temp }}/FloeAgent-AppRegressionTests.xcresult
             ${{ runner.temp }}/FloeAgent-AppRegressionTests-SUMMARY.txt
             FloeAgent/Package.resolved
+          if-no-files-found: ignore
+
+      - name: Build SDK 27 Notes import UI tests
+        timeout-minutes: 30
+        run: |
+          xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
+            -skipPackagePluginValidation -skipMacroValidation \
+            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
+            -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
+            CODE_SIGNING_ALLOWED=NO build-for-testing
+
+      - name: Require iPad and iPhone Notes import with the SDK 27
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          qualification="$RUNNER_TEMP/FloeSDK27-Notes"
+          mkdir -p "$qualification"
+          xctestrun=$(find "$RUNNER_TEMP/FloeAppRegressionDerivedData/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
+          test -n "$xctestrun"
+          notes_result=0
+          for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
+            case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
+            xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,name=$device" \
+              -resultBundlePath "$qualification/$name.xcresult" \
+              -collect-test-diagnostics never \
+              -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
+              -parallel-testing-enabled NO -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 240 \
+              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$qualification/$name.log" || notes_result=1
+            python3 scripts/verify_notes_ui_xcresult.py --result-bundle "$qualification/$name.xcresult" \
+              --summary-output "$qualification/$name-summary.json" || notes_result=1
+            if test -d "$qualification/$name.xcresult"; then
+              mkdir -p "$qualification/screenshots/$name"
+              xcrun xcresulttool export attachments --path "$qualification/$name.xcresult" \
+                --output-path "$qualification/screenshots/$name" || notes_result=1
+            fi
+          done
+          exit "$notes_result"
+
+      - name: Retain SDK 27 Notes UI evidence before distribution
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sdk27-notes-ui-${{ steps.release.outputs.version }}-build${{ steps.release.outputs.build }}
+          path: ${{ runner.temp }}/FloeSDK27-Notes/
           if-no-files-found: ignore
 
       - name: Generate dependency and license artifacts
@@ -426,6 +480,7 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
             -resultBundlePath "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
+            -collect-test-diagnostics never \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
             -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
@@ -468,6 +523,7 @@ jobs:
             case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
             xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,name=$device" \
               -resultBundlePath "$qualification/$name.xcresult" \
+              -collect-test-diagnostics never \
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 240 \

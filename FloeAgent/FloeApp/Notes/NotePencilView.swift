@@ -204,10 +204,11 @@ private final class NotesPKCanvasView: PKCanvasView {
         if resized {
             if firstLayout { zoomScale = min(1, bounds.width / pageSize.width) }
             viewportSize = bounds.size
+            alignPageBackdrop()
             let maximumX = max(0, pageSize.width * zoomScale - bounds.width)
             let maximumY = max(0, pageSize.height * zoomScale - bounds.height)
-            contentOffset = CGPoint(x: min(maximumX, pagePosition.x * zoomScale),
-                                    y: min(maximumY, pagePosition.y * zoomScale))
+            contentOffset = CGPoint(x: contentInset.left > 0 ? -contentInset.left : min(maximumX, pagePosition.x * zoomScale),
+                                    y: contentInset.top > 0 ? -contentInset.top : min(maximumY, pagePosition.y * zoomScale))
         }
         alignPageBackdrop()
         updatingViewport = false
@@ -215,6 +216,17 @@ private final class NotesPKCanvasView: PKCanvasView {
     }
     func alignPageBackdrop() {
         pageBackdrop?.frame = CGRect(x: 0, y: 0, width: pageSize.width * zoomScale, height: pageSize.height * zoomScale)
+        // Center undersized paper using scroll insets, keeping the paper and
+        // PencilKit drawing at the same unshifted page-space origin. Selection
+        // coordinates therefore remain valid through zoom and rotation.
+        let horizontal = max(0, (bounds.width - pageSize.width * zoomScale) / 2)
+        let vertical = max(0, (bounds.height - pageSize.height * zoomScale) / 2)
+        let insets = UIEdgeInsets(top: vertical, left: horizontal, bottom: vertical, right: horizontal)
+        if contentInset != insets { contentInset = insets }
+        var offset = contentOffset
+        if horizontal > 0 { offset.x = -horizontal }
+        if vertical > 0 { offset.y = -vertical }
+        if contentOffset != offset { contentOffset = offset }
     }
 }
 #endif

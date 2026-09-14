@@ -1,0 +1,28 @@
+{
+  "source": "a633134a8339f27fc1a4664b1f797f03d5841bf9",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34798414773",
+  "device": "iPad mini (A17 Pro), iOS 27 simulator",
+  "scope": "Full Floe App, development qualification",
+  "testResult": "FAILED: 180-second UI case deadline; subsequent verbose diagnostics timed out after 600 seconds. These captures do not establish a passing test or a released build.",
+  "missing": "No exported body-search screenshot. No valid iPhone case result.",
+  "images": [
+    {
+      "file": "notes-library.png",
+      "original": "195D9090-96CA-49C7-9FCC-FFA8F9419BBC.png",
+      "sha256": "2a776b12b79772c013baf9ece183b58a551507ca5612349f1c8763e73d874765",
+      "observed": "Notes library"
+    },
+    {
+      "file": "notes-workspace-import.png",
+      "original": "FF3B4291-0D4D-434D-A937-8C5E7A05C5C3.png",
+      "sha256": "9cd8852bf2b60f0433db24f57e3aa396922b2d1d387c85eb9c8cc18ed115485c",
+      "observed": "PDF selection from a chat workspace"
+    },
+    {
+      "file": "notes-imported-pdf-fullscreen.png",
+      "original": "42C18B75-43D8-4F7B-BC88-0BD5640AA38F.png",
+      "sha256": "abaa4c00b04023e6c25a748cd4f5a20c50cd7d7c39953d5ef7c814dd27ced31d",
+      "observed": "Imported PDF in the full-screen editor"
+    }
+  ]
+}
