@@ -23,6 +23,10 @@ on:
         description: 'Run only the iPad and iPhone feedback component UI checks and capture screenshots'
         type: boolean
         default: false
+      palette_only:
+        description: 'With feedback_ui, run only the Pencil palette component on both SDKs'
+        type: boolean
+        default: false
       publish_skill_hub:
         description: 'Sign and commit official Skill Hub artifacts on the selected trusted branch'
         type: boolean
@@ -39,6 +43,8 @@ jobs:
   feedback-ui:
     if: github.event_name == 'workflow_dispatch' && inputs.feedback_ui
     uses: ./.github/workflows/feedback-ui.yml
+    with:
+      palette_only: ${{ inputs.palette_only }}
   build-native-wheels:
     if: github.event_name == 'workflow_dispatch' && inputs.native_wheels_package != ''
     # CPython's upstream testbed still uses UIApplicationDelegate rather than
