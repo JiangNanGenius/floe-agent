@@ -524,6 +524,22 @@ jobs:
           mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"
           ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
 
+      - name: Preserve the completed device build before simulator qualification
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${{ needs.prepare-release.outputs.source_sha }}" > "$RUNNER_TEMP/FloeSignedPayload/SOURCE-SHA.txt"
+          printf '%s\n' 'stage=unsigned_device_build_before_normalization_and_tests' > "$RUNNER_TEMP/FloeSignedPayload/RECOVERY-STAGE.txt"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/FloeSignedPayload" "$RUNNER_TEMP/accepted-sdk-device-recovery.zip"
+          shasum -a 256 "$RUNNER_TEMP/accepted-sdk-device-recovery.zip" > "$RUNNER_TEMP/accepted-sdk-device-recovery.zip.sha256"
+      - name: Retain the device build even if later qualification fails
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: accepted-sdk-device-recovery-${{ needs.prepare-release.outputs.version }}-build${{ needs.prepare-release.outputs.build }}
+          path: |
+            ${{ runner.temp }}/accepted-sdk-device-recovery.zip
+            ${{ runner.temp }}/accepted-sdk-device-recovery.zip.sha256
+          if-no-files-found: error
+
       - name: Build accepted-SDK simulator test hosts once
         timeout-minutes: 45
         run: |
