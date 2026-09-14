@@ -53,8 +53,10 @@ actor EnvironmentLanguagePackageService {
                     // Older uninstallers left empty dist-info directories.
                     // They carry no installed package; tolerate those remnants
                     // while still reporting incomplete, nonempty metadata.
-                    if language == .python,
-                       try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty { continue }
+                    if language == .python {
+                        let checked = try contained(directory.lastPathComponent, in: root)
+                        if try FileManager.default.contentsOfDirectory(atPath: checked.path).isEmpty { continue }
+                    }
                     let relative = String(directory.path.dropFirst(root.path.count + 1)) + (language == .python ? "/METADATA" : "/package.json")
                     let metadata = try contained(relative, in: root)
                     let data = try boundedData(metadata)
