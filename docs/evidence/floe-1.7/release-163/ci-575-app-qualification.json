@@ -1,0 +1,39 @@
+{
+  "build": 163,
+  "tag": null,
+  "source": "575e3dd90ff64aca0ba34be5badf57252325d3c2",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34819547461",
+  "sdk": "27.0",
+  "scope": "CI source before 7ef2484 toolbar identity correction; finalized App regressions passed, both Notes UI cases failed. Not release acceptance.",
+  "counts": {
+    "suite": "canvas-pip-timeline-app-regression",
+    "total": "157",
+    "passed": "157",
+    "failed": "0",
+    "skipped": "0",
+    "expected_failures": "0",
+    "result": "Passed",
+    "suite_CanvasTouchInteractionTests": "5",
+    "suite_CanvasSavedImageBatchAtomicityTests": "9",
+    "suite_CanvasAgentToolContractTests": "8",
+    "suite_CrashAndFeedbackRegressionTests": "39",
+    "suite_ThreadTimelineTests": "31",
+    "suite_HomeChatSeparationTests": "6",
+    "suite_HomeTaskCreationTests": "2",
+    "suite_BrowserProtocolTests": "8",
+    "suite_MailConnectorTests": "5",
+    "suite_SkillLifecycleTests": "25",
+    "suite_LocalPythonRuntimeTests": "5",
+    "suite_LocalShellRuntimeTests": "12",
+    "suite_EnvironmentLanguagePackageTests": "2"
+  },
+  "process": {
+    "exitCode": 0,
+    "reason": "exited",
+    "elapsedSeconds": 471.198,
+    "testsStarted": true
+  },
+  "verifier": "FloeAgent/scripts/verify_app_regression_xcresult.py",
+  "verifierSHA256": "7d793ccdd218e8ec98498e6e2b854455fd60fee6f5542b330021d102dfa8aa4e",
+  "logSHA256": "8e0edd90d77441de0357f9e7f5da7532a4b428c32ed207d437d87d3cb353793a"
+}
