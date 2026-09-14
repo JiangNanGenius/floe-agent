@@ -11,6 +11,8 @@ struct ConversationBatchManagementView: View {
     @State private var selected: Set<UUID> = []
     @State private var archived = false
     @State private var query = ""
+    @State private var contentMatches: [UUID: String] = [:]
+    @State private var searching = false
     @State private var busy = false
     @State private var error: String?
     @State private var confirmingDelete = false
@@ -24,7 +26,7 @@ struct ConversationBatchManagementView: View {
 
     private var visible: [ConversationRecord] {
         conversations.filter {
-            ($0.archivedAt != nil) == archived && (query.isEmpty || $0.title.localizedStandardContains(query))
+            ($0.archivedAt != nil) == archived && (query.isEmpty || $0.title.localizedStandardContains(query) || contentMatches[$0.id] != nil)
         }
     }
 
@@ -36,7 +38,8 @@ struct ConversationBatchManagementView: View {
                     Text("已归档").tag(true)
                 }.pickerStyle(.segmented)
                 if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                if visible.isEmpty {
+                if searching { ProgressView("正在搜索对话内容…") }
+                if visible.isEmpty && !searching {
                     ContentUnavailableView("没有匹配的任务", systemImage: "bubble.left.and.bubble.right")
                 }
                 ForEach(visible) { conversation in
@@ -48,6 +51,9 @@ struct ConversationBatchManagementView: View {
                                 .foregroundStyle(selected.contains(conversation.id) ? Color.accentColor : .secondary)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(conversation.title).foregroundStyle(.primary).lineLimit(2)
+                                if let snippet = contentMatches[conversation.id] {
+                                    Text(snippet).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                                }
                                 Text(conversation.updatedAt, style: .date).font(.caption).foregroundStyle(.secondary)
                             }
                         }.frame(minHeight: 44)
@@ -57,7 +63,8 @@ struct ConversationBatchManagementView: View {
                 }
             }
             .navigationTitle("选择任务")
-            .searchable(text: $query, prompt: "搜索任务")
+            .searchable(text: $query, prompt: "搜索标题与对话内容")
+            .task(id: query) { await searchContents() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("action.done") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
@@ -84,7 +91,7 @@ struct ConversationBatchManagementView: View {
             .interactiveDismissDisabled(busy)
             .task { await load() }
             .onChange(of: archived) { _, _ in selected.removeAll() }
-            .onChange(of: query) { _, _ in selected.formIntersection(Set(visible.map(\.id))) }
+
             .confirmationDialog("停止运行并归档所选任务？", isPresented: $confirmingArchive, titleVisibility: .visible) {
                 Button("停止并归档") { Task { await perform(deleting: false) } }
                 Button("action.cancel", role: .cancel) {}
@@ -96,6 +103,20 @@ struct ConversationBatchManagementView: View {
                 Text("任务及其私有工作区将被删除，共享项目文件保留。此操作不可撤销。")
             }
         }
+    }
+
+    private func searchContents() async {
+        contentMatches = [:]
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { searching = false; return }
+        searching = true
+        do {
+            try await Task.sleep(for: .milliseconds(220))
+            let hits = try await center.environment.intelligenceStore.matchingConversationSnippets(value)
+            guard !Task.isCancelled else { return }
+            contentMatches = hits; searching = false
+        } catch is CancellationError { return }
+        catch { guard !Task.isCancelled else { return }; self.error = error.localizedDescription; searching = false }
     }
 
     private func load() async {

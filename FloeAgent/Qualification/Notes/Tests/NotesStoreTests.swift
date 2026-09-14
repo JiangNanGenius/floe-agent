@@ -10,6 +10,49 @@ struct NotesStoreTests {
         return url
     }
 
+    @Test func visualTextCacheRejectsStalePageAndRebuildDoesNotEraseNotes() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let saved = try await store.create(NoteDocument(title: "课件"))
+        let page = saved.pages[0]
+        try await store.cachePageOCR(documentID: saved.id, pageID: page.id, sourceKey: page.visualIndexKey, text: "积分公式", error: nil)
+        #expect(try await store.search("积分").count == 1)
+        var changedPage = page
+        changedPage.elements = [.init(text: "新的批注")]
+        let updated = try await store.apply(.init(documentID: saved.id, expectedRevision: saved.revision, title: "Annotation", edits: [.updatePage(changedPage)]))
+        #expect(try await store.search("积分").isEmpty)
+        try await store.cachePageOCR(documentID: saved.id, pageID: page.id, sourceKey: page.visualIndexKey, text: "迟到的识别", error: nil)
+        #expect(try await store.search("迟到").isEmpty)
+        try await store.resetSearchIndex(documentID: saved.id)
+        #expect(try await store.document(saved.id).revision == updated.revision)
+        #expect(try await store.search("新的批注").count == 1)
+    }
+
+    @Test func officeFullTextCacheFollowsResourceAndPreservesHistory() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let first = root.appendingPathComponent("first.docx")
+        try Data("first".utf8).write(to: first)
+        let resource = try await store.importResource(from: first, mediaType: "application/octet-stream")
+        var original = NoteDocument(kind: .office, title: "无关键词的标题")
+        original.officeResourceID = resource; original.officeFileName = "lesson.docx"
+        let saved = try await store.create(original)
+        let beforeHistory = try await store.historyState(saved.id)
+        try await store.cacheOfficeText(documentID: saved.id, resourceID: resource, text: "边际成本 mixed English 100%_", error: nil)
+        let indexed = try await store.document(saved.id)
+        #expect(indexed.revision == saved.revision && indexed.updatedAt == saved.updatedAt)
+        #expect(try await store.historyState(saved.id).canUndo == beforeHistory.canUndo)
+        #expect(try await store.search("边际成本").map(\.id) == [saved.id])
+        #expect(try await store.search("100%_").map(\.id) == [saved.id])
+        let second = root.appendingPathComponent("second.docx")
+        try Data("second".utf8).write(to: second)
+        let replacement = try await store.importResource(from: second, mediaType: "application/octet-stream")
+        let changed = try await store.apply(.init(documentID: saved.id, expectedRevision: saved.revision, title: "Replace", edits: [.replaceOfficeResource(replacement)]))
+        #expect(try await store.search("边际成本").isEmpty)
+        try await store.cacheOfficeText(documentID: saved.id, resourceID: resource, text: "stale callback", error: nil)
+        #expect(try await store.document(saved.id) == changed)
+    }
+
     @Test func linkedMapsKeepIndependentHistoryAndArchiveAttachments() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root.appendingPathComponent("source"))

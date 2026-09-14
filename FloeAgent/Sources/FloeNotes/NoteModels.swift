@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
+import Crypto
 
 public enum NoteError: Error, LocalizedError, Sendable {
     case notFound, conflict, invalidDocument(String), invalidOperation(String), resourceUnavailable
@@ -76,6 +77,22 @@ public struct NotePage: Codable, Hashable, Identifiable, Sendable {
     public var isBookmarked: Bool
     /// Extracted source text is distinct from editable or AI-generated annotations.
     public var extractedText: String?
+    public var ocrText: String?
+    public var ocrSourceKey: String?
+    public var ocrError: String?
+    public var needsVisualIndex: Bool {
+        drawingResourceID != nil || elements.contains { $0.kind == .image }
+            || (backgroundResourceID != nil && (extractedText ?? "").isEmpty)
+    }
+    public var visualIndexKey: String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let geometry = "\(width):\(height):\(pdfPageIndex ?? -1):\(backgroundResourceID?.uuidString ?? ""):\(drawingResourceID?.uuidString ?? "")"
+        var data = Data(geometry.utf8)
+        if let elements = try? encoder.encode(elements) { data.append(elements) }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    public var indexedVisualText: String? { ocrSourceKey == visualIndexKey ? ocrText : nil }
+
     public var textExtractionTruncated: Bool?
     public init(id: UUID = UUID(), width: Double = 768, height: Double = 1024,
                 paper: Paper = .plain, backgroundResourceID: UUID? = nil, pdfPageIndex: Int? = nil,
@@ -207,6 +224,10 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     public var deletedAt: Date?
     public var officeResourceID: UUID?
     public var officeFileName: String?
+    /// Rebuildable text cache, valid only for this immutable Office resource.
+    public var officeTextResourceID: UUID?
+    public var officeExtractedText: String?
+    public var officeTextError: String?
     public init(id: UUID = UUID(), kind: Kind = .notebook, notebookID: UUID? = nil, title: String) {
         self.id = id; self.kind = kind; self.notebookID = notebookID; self.title = title; self.revision = 0
         self.pages = kind == .notebook ? [NotePage()] : []
@@ -221,7 +242,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID].compactMap { $0 })
     }
     public var searchableText: String {
-        ([title] + tags + pages.compactMap(\.extractedText) + pages.flatMap { $0.elements.map(\.text) }
+        ([title] + tags + ((officeTextResourceID == officeResourceID ? officeExtractedText : nil).map { [$0] } ?? []) + pages.compactMap(\.extractedText) + pages.compactMap(\.indexedVisualText) + pages.flatMap { $0.elements.map(\.text) }
          + nodes.flatMap { [$0.title, $0.note] + ($0.attachments ?? []).flatMap { [$0.fileName, $0.caption] } }).joined(separator: "\n")
     }
     public func validate() throws {

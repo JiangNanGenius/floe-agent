@@ -25,6 +25,8 @@ final class NotesSession {
     @ObservationIgnored private var scheduledInk: Set<InkKey> = []
     @ObservationIgnored private var tail: Task<Void, Never>?
     @ObservationIgnored private var observation: Task<Void, Never>?
+    @ObservationIgnored private var indexing: Task<Void, Never>?
+    private(set) var indexingDocumentID: UUID?
 
     func open(using existingStore: NotesStore? = nil) async {
         guard store == nil else { return }
@@ -50,13 +52,14 @@ final class NotesSession {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    deinit { observation?.cancel() }
+    deinit { observation?.cancel(); indexing?.cancel() }
 
     func reload() async throws {
         guard let store else { return }
         documents = try await store.documents(includeTrash: true)
         notebooks = try await store.notebooks()
         recentDocumentIDs = try await store.recentDocuments().map(\.id)
+        startOfficeIndexing()
         let recovery = try inkRecoveryRoot()
         let folders = (try? FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
         recoverableInkDocumentIDs = Set(folders.compactMap { folder in
@@ -70,6 +73,61 @@ final class NotesSession {
             let history = try await store.historyState(id)
             canUndo = history.canUndo; canRedo = history.canRedo
         } else { canUndo = false; canRedo = false }
+    }
+
+    private func startOfficeIndexing() {
+        guard indexing == nil, let store,
+              documents.contains(where: { $0.deletedAt == nil && (($0.kind == .office && $0.officeResourceID != nil && $0.officeTextResourceID != $0.officeResourceID) || $0.pages.contains { $0.needsVisualIndex && $0.ocrSourceKey != $0.visualIndexKey }) }) else { return }
+        indexing = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.indexing = nil; self.indexingDocumentID = nil
+                if !Task.isCancelled { Task { try? await self.reload() } }
+            }
+            for document in self.documents where document.deletedAt == nil {
+                for page in document.pages where page.needsVisualIndex && page.ocrSourceKey != page.visualIndexKey {
+                    guard !Task.isCancelled else { return }
+                    self.indexingDocumentID = document.id
+                    let key = page.visualIndexKey
+                    do {
+                        let text = try await NoteFileImporter.visualSearchText(page: page, store: store)
+                        try Task.checkCancellation()
+                        try await store.cachePageOCR(documentID: document.id, pageID: page.id, sourceKey: key, text: text, error: nil)
+                    } catch is CancellationError { return }
+                    catch { try? await store.cachePageOCR(documentID: document.id, pageID: page.id, sourceKey: key, text: nil, error: error.localizedDescription) }
+                }
+            }
+            for document in self.documents where document.deletedAt == nil && document.kind == .office {
+                guard !Task.isCancelled else { return }
+                guard let resource = document.officeResourceID,
+                      document.officeTextResourceID != resource else { continue }
+                self.indexingDocumentID = document.id
+                do {
+                    let source = try await store.resourceURL(resource)
+                    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("notes-index-\(UUID().uuidString)")
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    defer { try? FileManager.default.removeItem(at: directory) }
+                    let file = directory.appendingPathComponent("document").appendingPathExtension((document.officeFileName as NSString?)?.pathExtension ?? "")
+                    // Immutable resources allow a cheap hard link; fallback is a bounded source copy.
+                    do { try FileManager.default.linkItem(at: source, to: file) }
+                    catch { try FileManager.default.copyItem(at: source, to: file) }
+                    let text = try await NoteFileImporter.officeSearchText(url: file)
+                    try Task.checkCancellation()
+                    try await store.cacheOfficeText(documentID: document.id, resourceID: resource, text: text, error: nil)
+                } catch is CancellationError { return }
+                catch {
+                    try? await store.cacheOfficeText(documentID: document.id, resourceID: resource, text: nil, error: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func rebuildSearchIndex(documentID: UUID) {
+        enqueue { [self] in
+            guard let store else { return }
+            try await store.resetSearchIndex(documentID: documentID)
+            try await reload()
+        }
     }
 
     func select(_ value: NoteDocument?) async {

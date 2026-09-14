@@ -1,0 +1,77 @@
+{
+  "scope": "NativeManagement component host, real iOS 27 iPad mini simulator; not full App",
+  "sourceCommit": "512459b57db768d66101f1141ca5db3ead07b782",
+  "pixelHeightComparison": [
+    {
+      "preview": "long",
+      "backgroundSpansAtX50": [
+        [
+          311,
+          466,
+          156
+        ]
+      ]
+    },
+    {
+      "preview": "short",
+      "backgroundSpansAtX50": [
+        [
+          311,
+          466,
+          156
+        ]
+      ]
+    }
+  ],
+  "images": [
+    {
+      "file": "ipad-management-fixture.png",
+      "width": 1488,
+      "height": 2266,
+      "sha256": "ea627fa0f8538c5a093b27c58a7036abca02d2333ccb8b7e1fb1561be80327b7",
+      "scope": "NativeManagement fixture host"
+    },
+    {
+      "file": "ipad-thread-short-fixture.png",
+      "width": 1488,
+      "height": 2266,
+      "sha256": "bdb9ede0fa50dbd5d0e74c2b8d38fc79fceeb496b606f9de7b6ac05c79c75f69",
+      "scope": "NativeManagement fixture host"
+    },
+    {
+      "file": "ipad-thread-collapsed-fixture.png",
+      "width": 1488,
+      "height": 2266,
+      "sha256": "4f2ea0c70b5f9ae00050ca417eca4f709c7fb66aa421d7dbc9c6a9f7affb2915",
+      "scope": "NativeManagement fixture host"
+    },
+    {
+      "file": "ipad-thread-long-fixture.png",
+      "width": 1488,
+      "height": 2266,
+      "sha256": "8a717148f7c72341b79d2a30b2d64ef8420855b6a78f123f4e569c01db222b21",
+      "scope": "NativeManagement fixture host"
+    },
+    {
+      "file": "ipad-package-detail-fixture.png",
+      "width": 1488,
+      "height": 2266,
+      "sha256": "0a8a5ff37b625d1cb738b606a6b9e3fdaa1d380f3185d69a1aa22e89d12c0309",
+      "scope": "NativeManagement fixture host"
+    },
+    {
+      "file": "ipad-python-fixture.png",
+      "width": 1488,
+      "height": 2266,
+      "sha256": "5d1dd48e29f41e7da8221b51cb1dedbf1c49a515207f40702aae95f543a4c561",
+      "scope": "NativeManagement fixture host"
+    },
+    {
+      "file": "ipad-speech-hidden-complete.png",
+      "width": 1488,
+      "height": 2266,
+      "sha256": "bb68c8729df8e4597b4583137c1c14652d58bce0789d8d90d2b78eaea3277969",
+      "scope": "NativeSpeech download host"
+    }
+  ]
+}

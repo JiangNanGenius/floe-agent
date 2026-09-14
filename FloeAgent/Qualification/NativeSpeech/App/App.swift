@@ -35,6 +35,9 @@ final class SpeechDownloadDelegate: NSObject, UIApplicationDelegate {
                     .navigationDestination(isPresented: $showSettings) { WhisperSettingsView() }
             }
             .task {
+                if ProcessInfo.processInfo.arguments.contains("--start-download") {
+                    await WhisperModelStore.shared.beginInstallation()
+                }
                 if ProcessInfo.processInfo.arguments.contains("--cancel-retry") {
                     Task { await qualifyCancellation() }
                 }

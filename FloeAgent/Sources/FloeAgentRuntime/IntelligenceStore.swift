@@ -973,6 +973,29 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             """, arguments: [id.uuidString, deletedAt, revision])
     }
 
+    /// UI library search: one hit per conversation, with literal CJK/substring matching.
+    /// Does not share the agent's paged message-result limit or expose non-searchable tasks.
+    public func matchingConversationSnippets(_ query: String) async throws -> [UUID: String] {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return [:] }
+        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+        return try await database.reader { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.conversation_id,
+                    substr(m.content, max(1, instr(lower(m.content), lower(?)) - 45), 180) AS excerpt
+                FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                WHERE c.is_searchable=1 AND m.content LIKE ? ESCAPE '\\'
+                GROUP BY m.conversation_id
+                """, arguments: [value, "%\(escaped)%"])
+            var matches: [UUID: String] = [:]
+            for row in rows {
+                if let id = UUID(uuidString: row["conversation_id"]) { matches[id] = row["excerpt"] }
+            }
+            return matches
+        }
+    }
+
     public func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit] {
         let match = Self.ftsQuery(request.query)
         guard !match.isEmpty else { return [] }

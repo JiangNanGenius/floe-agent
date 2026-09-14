@@ -39,6 +39,12 @@ final class CanvasProjectFileWriter: @unchecked Sendable {
         }
     }
 
+    func delete(canvasID: UUID, at url: URL) throws {
+        try withCanvasLock(canvasID: canvasID) {
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        }
+    }
+
     /// Writes `project` only when the file still has `expectedRevision`.
     /// Normal mutations must advance the revision exactly once. The two
     /// opt-outs are intentionally limited to initial file creation and

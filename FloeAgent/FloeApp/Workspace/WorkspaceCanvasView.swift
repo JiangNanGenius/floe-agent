@@ -105,6 +105,14 @@ struct CreativeModeHubView: View {
     @State private var imageGenerationReady = false
     @State private var hasImageGenerationModel = false
     @State private var listRevision = 0
+    @State private var searchText = ""
+    @State private var savedCanvases: [WorkspaceCanvasRegistry.CanvasSummary] = []
+    @State private var organization = CanvasLibraryOrganization()
+    @State private var selectedFolder: UUID?
+    @State private var editingFolder: UUID?
+    @State private var showsFolderName = false
+    @State private var folderName = ""
+
     @State private var renamingCanvas: WorkspaceCanvasRegistry.CanvasSummary?
     @State private var renameValue = ""
     @State private var importsCanvasPackage = false
@@ -120,8 +128,12 @@ struct CreativeModeHubView: View {
     var body: some View {
         canvasList
         .navigationTitle("创意模式")
+        .searchable(text: $searchText, prompt: "搜索画布名称、文字与节点内容")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Button("新建文件夹", systemImage: "folder.badge.plus") {
+                    editingFolder = nil; folderName = ""; showsFolderName = true
+                }
                 Button("导入画布", systemImage: "square.and.arrow.down") {
                     importsCanvasPackage = true
                 }
@@ -130,7 +142,19 @@ struct CreativeModeHubView: View {
                 }
             }
         }
-        .task { await refreshPrerequisites() }
+        .task {
+            do { organization = try CanvasLibraryOrganization.load() }
+            catch { environment.workspaceCenter.actionError = error.localizedDescription }
+            await refreshPrerequisites()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .floeCanvasProjectDidChange)) { _ in
+            listRevision += 1
+        }
+        .task(id: listRevision) {
+            let values = await Task.detached(priority: .utility) { WorkspaceCanvasRegistry.summaries() }.value
+            guard !Task.isCancelled else { return }
+            savedCanvases = values
+        }
         .onAppear { Task { await refreshPrerequisites() } }
         .sheet(isPresented: $showsWorkspacePicker) {
             NavigationStack {
@@ -180,12 +204,25 @@ struct CreativeModeHubView: View {
             }
             exportedCanvas = nil
         }
-        .fullScreenCover(item: $presentation) { item in
+        .fullScreenCover(item: $presentation, onDismiss: { listRevision += 1 }) { item in
             WorkspaceCanvasView(
                 canvasID: item.id,
                 name: item.name,
                 workspace: item.workspace
             )
+        }
+        .alert(editingFolder == nil ? "新建文件夹" : "重命名文件夹", isPresented: $showsFolderName) {
+            TextField("文件夹名称", text: $folderName)
+            Button("取消", role: .cancel) {}
+            Button("保存") {
+                updateOrganization { value in
+                    let name = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !name.isEmpty else { throw FloeError.validationFailed("请输入文件夹名称。") }
+                    if let id = editingFolder, let index = value.folders.firstIndex(where: { $0.id == id }) {
+                        value.folders[index].name = name
+                    } else { value.folders.append(.init(id: UUID(), name: name)) }
+                }
+            }
         }
         .alert("重命名画布", isPresented: Binding(
             get: { renamingCanvas != nil },
@@ -261,19 +298,49 @@ struct CreativeModeHubView: View {
                 }
             }
 
-            let privateCanvases = WorkspaceCanvasRegistry.summaries().filter { $0.workspaceID == nil }
-            if let recent = privateCanvases.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
-                Section("最近使用") { canvasSummaryRow(recent) }
-            }
-            if !privateCanvases.isEmpty {
-                Section("私人画布") {
-                    ForEach(privateCanvases.sorted(by: { $0.updatedAt > $1.updatedAt })) { summary in
-                        canvasSummaryRow(summary)
+            if !organization.folders.isEmpty {
+                Section("文件夹") {
+                    Button("全部画布", systemImage: "square.grid.2x2") { selectedFolder = nil }
+                    ForEach(organization.folders) { folder in
+                        Button { selectedFolder = folder.id } label: {
+                            HStack {
+                                Label(folder.name, systemImage: selectedFolder == folder.id ? "folder.fill" : "folder")
+                                Spacer()
+                                if selectedFolder == folder.id { Image(systemName: "checkmark") }
+                            }
+                        }
+                        .contextMenu {
+                            Button("重命名", systemImage: "pencil") {
+                                editingFolder = folder.id; folderName = folder.name; showsFolderName = true
+                            }
+                            Button("解散文件夹", systemImage: "folder.badge.minus") {
+                                updateOrganization { value in
+                                    value.folders.removeAll { $0.id == folder.id }
+                                    value.assignments = value.assignments.filter { $0.value != folder.id }
+                                }
+                                if selectedFolder == folder.id { selectedFolder = nil }
+                            }
+                        }
                     }
                 }
             }
+            let search = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summaries = savedCanvases
+            let matches = summaries.filter {
+                (search.isEmpty ? (selectedFolder == nil || organization.assignments[$0.id] == selectedFolder) : $0.searchableText.localizedStandardContains(search))
+            }.sorted { $0.updatedAt > $1.updatedAt }
+            if search.isEmpty && selectedFolder == nil, let recent = summaries.max(by: { $0.updatedAt < $1.updatedAt }) {
+                Section("最近使用") { canvasSummaryRow(recent) }
+            }
+            Section(search.isEmpty ? (selectedFolder == nil ? "私人画布" : "文件夹内的画布") : "搜索结果") {
+                let visible = matches.filter { !search.isEmpty || selectedFolder != nil || $0.workspaceID == nil }
+                ForEach(visible) { summary in canvasSummaryRow(summary) }
+                if visible.isEmpty {
+                    Text(search.isEmpty ? "这里还没有画布" : "没有匹配的画布内容").foregroundStyle(.secondary)
+                }
+            }
 
-            if !environment.workspaceCenter.projectWorkspaces.isEmpty {
+            if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedFolder == nil && !environment.workspaceCenter.projectWorkspaces.isEmpty {
                 Section("工作区画布") {
                     ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                     Button {
@@ -309,7 +376,8 @@ struct CreativeModeHubView: View {
 
     private func canvasSummaryRow(_ summary: WorkspaceCanvasRegistry.CanvasSummary) -> some View {
         Button {
-            presentation = CanvasPresentation(id: summary.id, name: summary.name, workspace: nil)
+            presentation = CanvasPresentation(id: summary.id, name: summary.name,
+                workspace: environment.workspaceCenter.projectWorkspaces.first { $0.id == summary.workspaceID })
         } label: {
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 8)
@@ -318,6 +386,9 @@ struct CreativeModeHubView: View {
                     .overlay { Image(systemName: "rectangle.and.pencil.and.ellipsis") }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(summary.name).foregroundStyle(.primary)
+                    if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(summary.excerpt(matching: searchText)).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    }
                     HStack(spacing: 6) {
                         Text(summary.updatedAt.formatted(date: .abbreviated, time: .shortened))
                         if summary.syncEnabled { Label("同步", systemImage: "icloud") }
@@ -334,6 +405,12 @@ struct CreativeModeHubView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            Menu("移到文件夹", systemImage: "folder") {
+                Button("未分类") { updateOrganization { $0.assignments[summary.id] = nil } }
+                ForEach(organization.folders) { folder in
+                    Button(folder.name) { updateOrganization { $0.assignments[summary.id] = folder.id } }
+                }
+            }
             Button("重命名", systemImage: "pencil") {
                 renamingCanvas = summary
                 renameValue = summary.name
@@ -379,6 +456,15 @@ struct CreativeModeHubView: View {
                 }
             }
         }
+    }
+
+    private func updateOrganization(_ change: (inout CanvasLibraryOrganization) throws -> Void) {
+        do {
+            var candidate = organization
+            try change(&candidate)
+            try candidate.save()
+            organization = candidate
+        } catch { environment.workspaceCenter.actionError = error.localizedDescription }
     }
 
     @MainActor
@@ -723,16 +809,39 @@ private struct CanvasConnectionCreatePalette: View {
 /// Product-level presence contract for the one optional CanvasProject owned
 /// by a Workspace. Merely opening the file inspector must never manufacture a
 /// canvas; creation happens only from an explicit Workspace action.
+struct CanvasLibraryOrganization: Codable {
+    struct Folder: Codable, Identifiable { var id: UUID; var name: String }
+    var folders: [Folder] = []
+    var assignments: [UUID: UUID] = [:]
+    static func location() throws -> URL {
+        try WorkspaceCanvasRegistry.projectURL(canvasID: WorkspaceCanvasRegistry.privateCanvasID, createDirectory: true)
+            .deletingLastPathComponent().appendingPathComponent("library-organization.json")
+    }
+    static func load() throws -> Self {
+        let url = try location()
+        guard FileManager.default.fileExists(atPath: url.path) else { return .init() }
+        return try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+    }
+    func save() throws { try JSONEncoder().encode(self).write(to: Self.location(), options: .atomic) }
+}
+
 enum WorkspaceCanvasRegistry {
     static let privateCanvasID = UUID(uuidString: "4D17C2E1-AD82-4A39-97E7-F10ECA77A114")!
 
-    struct CanvasSummary: Identifiable, Hashable {
+    struct CanvasSummary: Identifiable, Hashable, Sendable {
         let id: UUID
         let name: String
         let workspaceID: UUID?
         let updatedAt: Date
         let syncEnabled: Bool
         let pendingMediaJobs: Int
+        let searchableText: String
+        func excerpt(matching query: String) -> String {
+            let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let range = searchableText.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else { return String(searchableText.prefix(180)) }
+            let start = searchableText.index(range.lowerBound, offsetBy: -45, limitedBy: searchableText.startIndex) ?? searchableText.startIndex
+            return (start == searchableText.startIndex ? "" : "…") + String(searchableText[start...].prefix(180))
+        }
     }
 
     static func summaries() -> [CanvasSummary] {
@@ -752,7 +861,10 @@ enum WorkspaceCanvasRegistry {
                 syncEnabled: project.sync.isEnabled,
                 pendingMediaJobs: project.documents.flatMap(\.nodes).filter {
                     $0.kind == .generationTask && $0.generationJobID != nil
-                }.count
+                }.count,
+                searchableText: ([project.name] + project.documents.flatMap { document in
+                    [document.name] + document.nodes.flatMap { [$0.title ?? "", $0.text] }
+                }).joined(separator: "\n")
             )
         }
     }
@@ -832,7 +944,8 @@ enum WorkspaceCanvasRegistry {
     static func delete(canvasID: UUID) throws {
         let url = try projectURL(canvasID: canvasID, createDirectory: false)
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+        try CanvasProjectFileWriter.shared.delete(canvasID: canvasID, at: url)
+        NotificationCenter.default.post(name: .floeCanvasProjectDidChange, object: nil, userInfo: ["canvasID": canvasID])
     }
 
     static func project(canvasID: UUID) throws -> CanvasProject {
@@ -3549,15 +3662,10 @@ struct WorkspaceCanvasView: View {
                         .zIndex(45)
                 }
                 if showsAgent {
-                    let compactAgentPanel = geometry.size.width < 620
-                    let agentPanelWidth = isAgentCollapsed
-                        ? min(232, geometry.size.width - 16)
-                        : (compactAgentPanel
-                            ? max(0, geometry.size.width - 24)
-                            : min(392, max(320, geometry.size.width - 24)))
-                    let agentPanelHeight = isAgentCollapsed
-                        ? 56
-                        : min(compactAgentPanel ? 520 : 640, max(0, geometry.size.height - 24))
+                    let panel = CanvasAssistantPanelLayout(size: geometry.size, collapsed: isAgentCollapsed)
+                    let compactAgentPanel = panel.compact
+                    let agentPanelWidth = panel.width
+                    let agentPanelHeight = panel.height
                     CanvasAgentFloatingPanel(
                         store: store,
                         workspace: workspace,
@@ -8234,6 +8342,22 @@ private struct CanvasTriangleShape: Shape {
     }
 }
 
+/// One geometry contract for rendering and drag bounds, including small split views.
+struct CanvasAssistantPanelLayout {
+    let compact: Bool
+    let width: CGFloat
+    let height: CGFloat
+
+    init(size: CGSize, collapsed: Bool) {
+        compact = size.width < 620
+        let usableWidth = max(0, size.width - 24)
+        let usableHeight = max(0, size.height - 24)
+        width = collapsed ? min(300, usableWidth)
+            : min(compact ? usableWidth : max(360, size.width * 0.38), min(460, usableWidth))
+        height = min(collapsed ? 56 : (compact ? 540 : 720), usableHeight)
+    }
+}
+
 /// A focused creative assistant embedded in the native canvas. It receives
 /// search, web reading, materials and media generation, without full browser
 /// control or unrelated system administration tools.
@@ -8326,15 +8450,13 @@ private struct CanvasAgentFloatingPanel: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("画布助手")
                     .font(.subheadline.weight(.semibold))
-                Text(isRunning ? "正在处理" : "连接当前画布")
+                    .lineLimit(1)
+                Text(isRunning ? "任务进行中" : "连接当前画布")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            if isRunning {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            Spacer()
+            Spacer(minLength: 0)
             Button {
                 withAnimation(reduceMotion ? nil : .snappy) { isCollapsed.toggle() }
             } label: {
@@ -8377,13 +8499,10 @@ private struct CanvasAgentFloatingPanel: View {
     }
 
     private func clampedOffset(_ proposed: CGSize) -> CGSize {
-        let compact = availableSize.width < 620
-        let panelWidth = isCollapsed
-            ? min(232, availableSize.width - 16)
-            : (compact ? max(0, availableSize.width - 24) : min(392, max(320, availableSize.width - 24)))
-        let panelHeight = isCollapsed
-            ? 56
-            : min(compact ? 520 : 640, max(0, availableSize.height - 24))
+        let panel = CanvasAssistantPanelLayout(size: availableSize, collapsed: isCollapsed)
+        let compact = panel.compact
+        let panelWidth = panel.width
+        let panelHeight = panel.height
         let anchorX = compact ? availableSize.width / 2 : availableSize.width - panelWidth / 2 - 12
         let anchorY = compact ? availableSize.height - panelHeight / 2 - 12 : panelHeight / 2 + 12
         let minimumX = 12 + panelWidth / 2 - anchorX
@@ -8624,18 +8743,6 @@ private struct SharedCanvasAgentConversation: View {
                         .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 6)))
                 }
 
-                if viewModel.isRunning {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        if let state = viewModel.liveStateName {
-                            Text(RunStateLocalizer.title(for: state))
-                        } else {
-                            Text("正在处理…")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
                 if let error = viewModel.actionError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -8649,12 +8756,6 @@ private struct SharedCanvasAgentConversation: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
-            HStack {
-                Button("添加手记资料", systemImage: "book.closed") { isNotesPickerPresented = true }
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("canvas.agent.notes")
-                Spacer()
-            }
             ForEach(viewModel.attachments) { attachment in
                 HStack {
                     Label(attachment.displayName, systemImage: "doc").lineLimit(1)
@@ -8680,58 +8781,70 @@ private struct SharedCanvasAgentConversation: View {
                     }
                 }
             }
-            if availableModels.count > 1 {
-                Picker("画布助手模型", selection: $viewModel.selectedModelID) {
-                    ForEach(availableModels) { model in
-                        Text(model.displayName).tag(Optional(model.id))
-                    }
-                }
-                .pickerStyle(.menu)
-                .font(FloeTheme.Typography.metadata)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
             if voiceInput.state.hasSession || voiceInput.state == .requestingPermission {
                 canvasVoiceCaptureRow
             } else {
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField("描述要查找、整理或生成的内容", text: $prompt, axis: .vertical)
-                    .lineLimit(1...5)
-                    .textFieldStyle(.plain)
-                    .submitLabel(.send)
-                    .onSubmit { Task { await submit() } }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                Button {
-                    dictationPrefix = prompt
-                    voiceInput.requestStart()
-                } label: {
-                    Image(systemName: "microphone.circle")
-                        .font(.title2)
-                        .foregroundStyle(FloeTheme.primary)
-                        .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("描述要查找、整理或生成的内容", text: $prompt, axis: .vertical)
+                        .lineLimit(2...5)
+                        .textFieldStyle(.plain)
+                        .submitLabel(.send)
+                        .onSubmit { Task { await submit() } }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 12)
+                        .accessibilityIdentifier("canvas.agent.input")
+                    HStack(spacing: 4) {
+                        Button("添加手记资料", systemImage: "plus") { isNotesPickerPresented = true }
+                            .labelStyle(.iconOnly)
+                            .frame(width: 44, height: 44)
+                            .accessibilityIdentifier("canvas.agent.notes")
+                        if !availableModels.isEmpty {
+                            Menu {
+                                Picker("画布助手模型", selection: $viewModel.selectedModelID) {
+                                    ForEach(availableModels) { model in
+                                        Text(model.displayName).tag(Optional(model.id))
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(availableModels.first(where: { $0.id == viewModel.selectedModelID })?.displayName ?? "选择模型")
+                                        .lineLimit(1).truncationMode(.middle)
+                                    Image(systemName: "chevron.down").font(.caption2)
+                                }
+                                .font(.caption)
+                                .frame(minHeight: 44)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        Button {
+                            dictationPrefix = prompt
+                            voiceInput.requestStart()
+                        } label: {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 17, weight: .semibold))
+                                .frame(width: 34, height: 34)
+                                .background(FloeTheme.primary.opacity(0.09), in: Circle())
+                                .frame(width: 44, height: 44)
+                        }
+                        .disabled(voiceInput.state == .requestingPermission || voiceInput.state == .preparing || voiceInput.state == .stopping)
+                        .accessibilityLabel("语音输入")
+                        .accessibilityIdentifier("canvas.agent.voice")
+                        Button { Task { await submit() } } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                                .background(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.selectedModelID == nil ? Color.secondary : FloeTheme.primary, in: Circle())
+                                .frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("发送到画布助手")
+                        .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.selectedModelID == nil)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(FloeTheme.primary)
+                    .padding(.horizontal, 4)
                 }
-                .buttonStyle(.plain)
-                .disabled(voiceInput.state == .requestingPermission
-                          || voiceInput.state == .preparing
-                          || voiceInput.state == .stopping)
-                .accessibilityLabel("语音输入")
-                .accessibilityIdentifier("canvas.agent.voice")
-                Button {
-                    Task { await submit() }
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(FloeTheme.primary, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .padding(4)
-                .accessibilityLabel("发送到画布助手")
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          || viewModel.selectedModelID == nil)
-            }
-            .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             HStack {
                 if viewModel.isRunning {

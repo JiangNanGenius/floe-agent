@@ -91,7 +91,10 @@ struct CanvasAgentToolContractTests {
         defer { withExtendedLifetime(environment) {} }
         let registry = ToolRunnerRegistry.shared
         let executable = registry.allDescriptors.filter { !$0.name.hasPrefix("mcp.") }
-        let declared = ToolCatalog.allDescriptors.filter { !$0.name.hasPrefix("mcp.") }
+        let declared = ToolCatalog.allDescriptors.filter {
+            !$0.name.hasPrefix("mcp.") && (!["web.search", "web.searchAI"].contains($0.name)
+                || WebSearchSettingsCenter.toolIsAvailable($0.name))
+        }
         #expect(Set(executable.map(\.name)) == Set(declared.map(\.name)))
         for descriptor in executable {
             #expect(registry.runner(named: descriptor.name) != nil)

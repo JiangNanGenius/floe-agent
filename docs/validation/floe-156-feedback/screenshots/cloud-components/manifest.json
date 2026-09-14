@@ -1,0 +1,118 @@
+{
+  "run": 34792006293,
+  "commit": "e53dbc9",
+  "images": [
+    {
+      "file": "cloud-components/ipad/appearance-自动_0_4FDB9773-25CC-419C-A5FE-2AFB309AB9B9.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testAppearanceChoicesAndThinkingDisclosure()",
+      "sha256": "965e850febf777a9ad7785395bc74c3ef4d5432f74dab2b569ff81663dabe480",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/ipad/appearance-日间_0_817D22B9-593B-4492-A3E9-3FA2ADEF402B.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testAppearanceChoicesAndThinkingDisclosure()",
+      "sha256": "1fd049fe147bf840f9c7c8e470df39f326d29e13168a486e59672ee33c8e84bd",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/ipad/appearance-夜间_0_B9770DBD-762B-4846-A8A8-929DDBAD2525.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testAppearanceChoicesAndThinkingDisclosure()",
+      "sha256": "58289ee8857d0f23231b1a18f64a411c6089f7b838418345d487f9f32f6ef3fb",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/ipad/thread-folded-active_0_2DC0E1FC-D88C-4427-8066-DD8BA3CFC9F3.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testCollapsedBatchStaysCollapsedWhenToolArrives()",
+      "sha256": "a8ffac11a5313073d0f589f1a7db5370352dca55c43ed45549aad95b156aba5e",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/ipad/thread-expanded_0_2F9BB645-4E56-4956-BF28-559F9F9ED956.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testCollapsedBatchStaysCollapsedWhenToolArrives()",
+      "sha256": "0e7c45ff510031dc8b5ab5245b146547be3323e21baae45879d92d886da057cf",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/ipad/python-management-fixture-runtime-unavailable_0_4BAECD36-65DA-42F4-9B6C-5B65FC78E844.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testLanguagePackageNavigationShowsSelectedEnvironment()",
+      "sha256": "a977d23e3e849832cbcbea54af836844df2a86af4f012ccfd5380a6f6f70dd82",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/ipad/environment-language-managers_0_662201F8-E3E6-4C25-A173-73AA1E690474.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testLanguagePackageNavigationShowsSelectedEnvironment()",
+      "sha256": "7c3998d2ec29d5e5474042480acd7b7c3b22c84b42a834d36d7a6bc6f1f51ab8",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/ipad/previous-round-auto-collapsed_0_3A1BBE78-EEBA-493D-8797-F591543AF9CA.png",
+      "device": "iPad mini (A17 Pro)",
+      "test": "ManagementUITests/testStreamingPreviewKeepsHeightAndPreviousRoundCollapses()",
+      "sha256": "cb9ab981bd2cd3e6a1e5b7d95168faae5b7d22df62584b2322342caab976c2e1",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/appearance-自动_0_78D5A59F-FED2-49E7-9A0B-CC79EA831EFA.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testAppearanceChoicesAndThinkingDisclosure()",
+      "sha256": "a18c5a365c18f0934c8ccbadaa21726592d05095fed50696014e8dfaee983305",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/appearance-日间_0_CB7E607E-5F22-4459-AC4D-01D88C85C46E.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testAppearanceChoicesAndThinkingDisclosure()",
+      "sha256": "503b90538213da3350e11b7b33bea3820bad0cfb1e652bf463c0f774b87abf0b",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/appearance-夜间_0_CEC9D723-1043-4578-A24C-C87166E3F5F8.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testAppearanceChoicesAndThinkingDisclosure()",
+      "sha256": "847c326b1f9f3f7126a5602676c90a19f9a3b11e3201dc183975c5e81aaf5535",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/thread-folded-active_0_7B427DA2-CF2B-4066-A2BC-3F544F791AC2.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testCollapsedBatchStaysCollapsedWhenToolArrives()",
+      "sha256": "d6e373ddc8cfb9eef301b2d2fb32514aa6fd0975f34d85d8f36e6537c8873f9f",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/thread-expanded_0_BB93DC0D-BBF4-410F-BF23-A6363263BAB8.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testCollapsedBatchStaysCollapsedWhenToolArrives()",
+      "sha256": "ca3dc54fa4e6c18bd36f3333fbdd92d8e663321a09d474592fd8e091a423a169",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/python-management-fixture-runtime-unavailable_0_7747144F-122D-4F2B-8E0E-F085B88EA33A.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testLanguagePackageNavigationShowsSelectedEnvironment()",
+      "sha256": "d60566af185936cb70876d17aa8efe778dde67432baffa30f4363df785b41438",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/environment-language-managers_0_54FA27BC-E81E-4957-8860-2AB3BFD213B0.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testLanguagePackageNavigationShowsSelectedEnvironment()",
+      "sha256": "b2961d9bdc8053e9355b37f1ad49c52b15dcc4e8f726b8637b072707c114e21e",
+      "scope": "NativeManagement fixture component, not full App"
+    },
+    {
+      "file": "cloud-components/iphone/previous-round-auto-collapsed_0_B09C70A7-16CC-4545-80C8-EC6BD2F62E81.png",
+      "device": "iPhone 17 Pro",
+      "test": "ManagementUITests/testStreamingPreviewKeepsHeightAndPreviousRoundCollapses()",
+      "sha256": "5071dad59c92bd0775aa56c72721c300817da237dee3d5ab8770c6669af4a83e",
+      "scope": "NativeManagement fixture component, not full App"
+    }
+  ]
+}

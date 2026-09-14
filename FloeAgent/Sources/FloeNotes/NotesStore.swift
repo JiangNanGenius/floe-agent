@@ -327,6 +327,48 @@ public actor NotesStore {
         return removed
     }
 
+    public func resetSearchIndex(documentID: UUID) throws {
+        try database.write { db in
+            var value = try read(documentID, db: db)
+            guard value.deletedAt == nil else { return }
+            value.officeTextResourceID = nil; value.officeExtractedText = nil; value.officeTextError = nil
+            for index in value.pages.indices {
+                value.pages[index].ocrSourceKey = nil; value.pages[index].ocrText = nil; value.pages[index].ocrError = nil
+            }
+            try db.execute(sql: "UPDATE documents SET body=? WHERE id=?", arguments: [try encoder.encode(value), documentID.uuidString])
+            try updateReferencesAndSearch(value, db: db)
+        }
+        publishChange()
+    }
+
+    public func cachePageOCR(documentID: UUID, pageID: UUID, sourceKey: String, text: String?, error: String?) throws {
+        try database.write { db in
+            var value = try read(documentID, db: db)
+            guard value.deletedAt == nil, let index = value.pages.firstIndex(where: { $0.id == pageID }),
+                  value.pages[index].visualIndexKey == sourceKey else { return }
+            value.pages[index].ocrSourceKey = sourceKey
+            value.pages[index].ocrText = text.map { String($0.prefix(2_000_000)) }
+            value.pages[index].ocrError = error
+            try db.execute(sql: "UPDATE documents SET body=? WHERE id=?", arguments: [try encoder.encode(value), documentID.uuidString])
+            try updateReferencesAndSearch(value, db: db)
+        }
+        publishChange()
+    }
+
+    /// Index metadata never changes the editable revision, timestamps or undo history.
+    public func cacheOfficeText(documentID: UUID, resourceID: UUID, text: String?, error: String?) throws {
+        try database.write { db in
+            var value = try read(documentID, db: db)
+            guard value.deletedAt == nil, value.officeResourceID == resourceID else { return }
+            value.officeTextResourceID = resourceID
+            value.officeExtractedText = text.map { String($0.prefix(2_000_000)) }
+            value.officeTextError = error
+            try db.execute(sql: "UPDATE documents SET body=? WHERE id=?", arguments: [try encoder.encode(value), documentID.uuidString])
+            try updateReferencesAndSearch(value, db: db)
+        }
+        publishChange()
+    }
+
     /// Returns source documents, not synthesized answers. Literal substring matching also supports CJK.
     public func search(_ query: String, limit: Int = 50) throws -> [NoteDocument] {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)

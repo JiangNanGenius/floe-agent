@@ -7,6 +7,22 @@ import Testing
 
 @Suite("Conversation full-text search")
 struct ConversationSearchTests {
+    @Test("Library search includes CJK message substrings, literal wildcard characters and old conversations")
+    func libraryContentsSearch() async throws {
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database)
+        let store = SQLiteIntelligenceStore(database: database)
+        let id = UUID()
+        try await conversations.saveConversation(.init(id: id, title: "Unrelated title", createdAt: Date(), updatedAt: Date()))
+        for index in 0..<60 {
+            try await conversations.appendMessage(.init(id: UUID(), conversationID: id, role: "user", content: "第\(index) 条包含边际成本和100%_混合 English", createdAt: Date()))
+        }
+        #expect(try await store.matchingConversationSnippets("边际成本").keys.sorted { $0.uuidString < $1.uuidString } == [id])
+        #expect(try await store.matchingConversationSnippets("100%_")[id]?.contains("100%_") == true)
+        #expect(try await store.matchingConversationSnippets("missing").isEmpty)
+        #expect(try await store.matchingConversationSnippets(" ").isEmpty)
+    }
+
     @Test("Search ranks FTS hits without bm25 auxiliary-function context error")
     func searchRanksHits() async throws {
         let database = try DatabaseManager.inMemory()

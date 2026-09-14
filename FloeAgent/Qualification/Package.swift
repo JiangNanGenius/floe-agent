@@ -1,6 +1,7 @@
 // swift-tools-version:6.2
 import PackageDescription
 let package = Package(name: "FloePlatformQualification", platforms: [.macOS(.v26)], dependencies: [.package(path: "..")], targets: [
+    .testTarget(name: "ConversationSearchQualificationTests", dependencies: [.product(name: "FloeAgentRuntime", package: "FloeAgent"), .product(name: "FloePersistence", package: "FloeAgent")], path: "Tests/SearchTests"),
     .testTarget(name: "SkillHubTests", dependencies: [.product(name: "FloeSkills", package: "FloeAgent")], path: "Tests/SkillHubTests"),
     .testTarget(name: "MediaTests", dependencies: [.product(name: "FloeMedia", package: "FloeAgent"), .product(name: "FloeTools", package: "FloeAgent")], path: "Tests/MediaTests"),
     .testTarget(name: "PersistenceTests", dependencies: [.product(name: "FloePersistence", package: "FloeAgent")], path: "Tests/PersistenceTests"),

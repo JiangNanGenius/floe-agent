@@ -13,6 +13,8 @@ struct NotesRootView: View {
     @State private var newTitle = ""
     @State private var creation: Creation?
     @State private var importing = false
+    @State private var importingWorkspace = false
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var deleting: NoteDocument?
     @State private var renaming: RenameTarget?
     @State private var selectedBook: UUID?
@@ -76,6 +78,7 @@ struct NotesRootView: View {
                             Button("Excel 表格") { creation = .sheet }
                             Button("PowerPoint 演示文稿") { creation = .slides }
                         }
+                        Button("从 Floe 工作区导入", systemImage: "folder") { importingWorkspace = true }
                         Button("导入手记、PDF、Office 或图片", systemImage: "square.and.arrow.down") { importing = true }
                     } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
                     .accessibilityLabel("新建或导入")
@@ -109,7 +112,15 @@ struct NotesRootView: View {
                         }
                 }.presentationDetents([.medium])
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, UTType(exportedAs: "org.floeagent.note", conformingTo: .data)] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) }) { result in
+            .sheet(isPresented: $importingWorkspace) {
+                OfficeWorkspaceAttachmentPicker(environment: environment) { url in
+                    guard let store = session.store else { throw NoteError.resourceUnavailable }
+                    let value = try await NoteFileImporter.importFile(url, notebookID: selectedBook, store: store)
+                    // Copy/import finishes before the picker releases a remote temporary file.
+                    session.importDocument(value)
+                }
+            }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, .plainText, UTType(exportedAs: "org.floeagent.note", conformingTo: .data)] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) }) { result in
                 Task {
                     do {
                         let url = try result.get()
@@ -140,7 +151,7 @@ struct NotesRootView: View {
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索手记与导图", text: $query)
+                TextField("搜索所有文档的名称与内容", text: $query)
                     .accessibilityIdentifier("notes.search")
             }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12)).padding()
             HStack {
@@ -159,6 +170,14 @@ struct NotesRootView: View {
                         .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                 }
             }.padding(.horizontal)
+            if let id = session.indexingDocumentID {
+                ProgressView("正在索引：\(session.documents.first(where: { $0.id == id })?.title ?? "文档")")
+                    .font(.caption).padding(.horizontal)
+            }
+            if !query.isEmpty {
+                let incomplete = session.documents.filter { $0.deletedAt == nil && (($0.kind == .office && ($0.officeTextResourceID != $0.officeResourceID || $0.officeTextError != nil)) || $0.pages.contains { $0.textExtractionTruncated == true || ($0.needsVisualIndex && ($0.ocrSourceKey != $0.visualIndexKey || $0.ocrError != nil)) }) }.count
+                if incomplete > 0 { Text("\(incomplete) 份文档尚未完整索引，搜索结果可能不完整。").font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
+            }
             ScrollView {
               LazyVGrid(columns: grid ? [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 20)] : [GridItem(.flexible())], spacing: 24) {
                 if selectedBook == nil && section != .trash && query.isEmpty {
@@ -173,7 +192,17 @@ struct NotesRootView: View {
                     }
                 }
                 ForEach(filtered) { document in
-                    Button { Task { await session.select(document) } } label: {
+                    Button {
+                        Task {
+                            await session.select(document)
+                            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                session.requestedPageID = document.pages.first { page in
+                                    ((page.extractedText ?? "") + "\n" + (page.indexedVisualText ?? "") + "\n" + page.elements.map(\.text).joined(separator: "\n"))
+                                        .localizedStandardContains(query.trimmingCharacters(in: .whitespacesAndNewlines))
+                                }?.id
+                            }
+                        }
+                    } label: {
                         let layout = grid ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
                         layout {
                             NotesCoverPreview(document: document, store: session.store)
@@ -183,6 +212,17 @@ struct NotesRootView: View {
                                 Text(document.title).font(.headline).foregroundStyle(.primary)
                                 Text(document.kind == .mindMap ? "\(document.nodes.count) 个主题" : document.kind == .office ? (document.officeFileName ?? "Office 文档") : "\(document.pages.count) 页")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(searchSnippet(document.searchableText))
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                                }
+                                if document.kind == .office {
+                                    if document.officeTextResourceID != document.officeResourceID {
+                                        Label("等待正文索引", systemImage: "text.magnifyingglass").font(.caption2).foregroundStyle(.secondary)
+                                    } else if document.officeTextError != nil {
+                                        Label("正文未索引", systemImage: "exclamationmark.circle").font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
                                 Text(document.updatedAt, style: .relative).font(.caption2).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -195,6 +235,7 @@ struct NotesRootView: View {
                             Button("恢复", systemImage: "arrow.uturn.backward") { session.trash(document, restore: true) }
                             Button("永久删除", systemImage: "trash", role: .destructive) { deleting = document }
                         } else {
+                            Button("重新索引正文", systemImage: "text.magnifyingglass") { session.rebuildSearchIndex(documentID: document.id) }
                             Button("重命名", systemImage: "pencil") { renaming = .init(id: document.id, title: document.title, notebook: false) }
                             Button(document.isFavorite ? "取消收藏" : "收藏", systemImage: "star") {
                                 session.apply([.favorite(!document.isFavorite)], title: "收藏", documentID: document.id)
@@ -221,10 +262,20 @@ struct NotesRootView: View {
                 .overlay {
                     if session.store == nil { ProgressView("正在打开手记…") }
                     else if filtered.isEmpty {
-                        ContentUnavailableView("还没有内容", systemImage: "book.closed", description: Text("新建手记、导入课件，或开始一张思维导图。"))
+                        ContentUnavailableView(query.isEmpty ? "还没有内容" : "没有找到匹配的内容",
+                            systemImage: query.isEmpty ? "book.closed" : "magnifyingglass",
+                            description: Text(query.isEmpty ? "新建手记、导入课件，或开始一张思维导图。" : "试试其他关键词。扫描件和手写内容需要识别后才能按文字搜索。"))
                     }
                 }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func searchSnippet(_ text: String) -> String {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = text.range(of: search, options: [.caseInsensitive, .diacriticInsensitive]) else { return String(text.prefix(140)) }
+        let start = text.index(range.lowerBound, offsetBy: -45, limitedBy: text.startIndex) ?? text.startIndex
+        let end = text.index(range.upperBound, offsetBy: 100, limitedBy: text.endIndex) ?? text.endIndex
+        return (start == text.startIndex ? "" : "…") + text[start..<end] + (end == text.endIndex ? "" : "…")
     }
 
     private var filtered: [NoteDocument] {
@@ -238,8 +289,12 @@ struct NotesRootView: View {
             case .recent: matchesSection = value.deletedAt == nil && recentOrder[value.id] != nil
             case .all: matchesSection = value.deletedAt == nil
             }
+            let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !search.isEmpty {
+                // Global search must include documents outside Recently Opened or the current notebook.
+                return value.deletedAt == nil && value.searchableText.localizedStandardContains(search)
+            }
             return matchesSection && (selectedBook == nil || value.notebookID == selectedBook)
-                && (query.isEmpty || value.searchableText.localizedStandardContains(query))
         }.sorted { first, second in
             if section == .recent { return (recentOrder[first.id] ?? Int.max) < (recentOrder[second.id] ?? Int.max) }
             return first.updatedAt > second.updatedAt

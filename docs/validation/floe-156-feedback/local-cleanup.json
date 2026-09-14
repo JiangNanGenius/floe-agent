@@ -1,0 +1,6 @@
+{
+  "removed": "/tmp/floe-156-node-native-check",
+  "logicalBytes": 2190500031,
+  "reason": "Task-owned completed NativeNode build cache; node JSON evidence retained; no open files at removal",
+  "retained": "All simulator devices, installed apps, source, evidence, other build caches"
+}

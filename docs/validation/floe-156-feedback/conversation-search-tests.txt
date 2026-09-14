@@ -1,0 +1,817 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin GenerateDoccReference
+Building for debugging...
+[2/38] /Volumes/TECLAST/IOS runner.swift
+[3/38] Write sources
+[3/38] Copying PrivacyInfo.xcprivacy
+[4/38] Write sources
+[7/38] Copying PrivacyInfo.xcprivacy
+[7/38] Write sources
+[10/38] Copying PrivacyInfo.xcprivacy
+[11/38] Copying Info.plist
+[12/38] Write sources
+[26/38] Copying Info.plist
+[26/38] Copying catastrophic-patterns.json
+[28/38] Write sources
+[31/38] Copying PrivacyInfo.xcprivacy
+[32/38] Write sources
+[34/38] Copying Fixtures
+[35/38] Write swift-version-39B54973F684ADAB.txt
+[37/201] Compiling GRDB CGFloat.swift
+[38/201] Compiling GRDB SQL.swift
+[39/201] Compiling GRDB SQLInterpolation.swift
+[40/201] Compiling GRDB SQLRequest.swift
+[41/201] Compiling GRDB Data.swift
+[42/201] Compiling GRDB DatabaseDateComponents.swift
+[43/201] Compiling GRDB DatabaseValueConvertible+ReferenceConvertible.swift
+[44/201] Compiling GRDB Date.swift
+[45/201] Compiling GRDB Decimal.swift
+[46/209] Compiling GRDB SchedulingWatchdog.swift
+[47/209] Compiling GRDB SerializedDatabase.swift
+[48/209] Compiling GRDB Statement.swift
+[49/209] Compiling BitByteData MsbBitWriter.swift
+[50/209] Compiling BitByteData SignedNumberRepresentation.swift
+[54/209] Emitting module BitByteData
+[55/209] Compiling GRDB Row.swift
+[56/209] Compiling GRDB RowAdapter.swift
+[57/209] Compiling GRDB RowDecodingError.swift
+[58/209] Emitting module Crypto
+[59/209] Compiling GRDB QuoteDumpFormat.swift
+[60/209] Compiling GRDB FTS3.swift
+[61/209] Compiling GRDB FTS3Pattern.swift
+[62/209] Compiling GRDB FTS3TokenizerDescriptor.swift
+[63/209] Compiling GRDB FTS4.swift
+[64/209] Compiling GRDB FTS5.swift
+[65/209] Compiling GRDB FTS5CustomTokenizer.swift
+[66/209] Compiling GRDB Configuration.swift
+[67/209] Compiling GRDB Cursor.swift
+[68/209] Compiling GRDB Database+Schema.swift
+[69/209] Compiling GRDB Database+Statements.swift
+[70/209] Compiling GRDB Database.swift
+[71/209] Compiling GRDB DatabaseBackupProgress.swift
+[72/209] Compiling GRDB DatabaseCollation.swift
+[73/209] Compiling GRDB DatabaseError.swift
+[74/209] Compiling GRDB DatabaseFunction.swift
+[75/209] Compiling GRDB DatabasePool.swift
+[76/209] Compiling GRDB DatabasePublishers.swift
+[77/209] Compiling GRDB DatabaseQueue.swift
+[78/209] Compiling GRDB DatabaseReader.swift
+[79/209] Compiling ZIPFoundation URL+ZIP.swift
+[80/209] Compiling ZIPFoundation resource_bundle_accessor.swift
+[81/209] Compiling GRDB URL.swift
+[82/209] Compiling GRDB UUID.swift
+[83/209] Compiling GRDB DatabaseValueConvertible+Decodable.swift
+[84/209] Compiling GRDB DatabaseValueConvertible+Encodable.swift
+[85/209] Compiling GRDB DatabaseValueConvertible+RawRepresentable.swift
+[86/209] Compiling GRDB JSONRequiredEncoder.swift
+[87/209] Compiling GRDB Optional.swift
+[88/209] Compiling GRDB StandardLibrary.swift
+[89/209] Compiling GRDB TransactionClock.swift
+[90/209] Compiling GRDB TransactionObserver.swift
+[91/209] Compiling GRDB WALSnapshot.swift
+[92/209] Compiling GRDB WALSnapshotTransaction.swift
+[93/209] Compiling GRDB Database+Dump.swift
+[94/209] Compiling GRDB DatabaseReader+dump.swift
+[95/209] Compiling GRDB DumpFormat.swift
+[96/209] Compiling GRDB DebugDumpFormat.swift
+[97/209] Compiling GRDB JSONDumpFormat.swift
+[98/209] Compiling GRDB LineDumpFormat.swift
+[99/209] Compiling GRDB ListDumpFormat.swift
+[111/229] Compiling BitByteData resource_bundle_accessor.swift
+[117/229] Compiling ZIPFoundation Entry.swift
+[118/229] Compiling ZIPFoundation FileManager+ZIP.swift
+[119/229] Compiling ZIPFoundation FileManager+ZIPDeprecated.swift
+[120/229] Emitting module ZIPFoundation
+[130/229] Compiling Crypto SymmetricKeys.swift
+[131/229] Compiling Crypto HMAC.swift
+[132/229] Compiling Crypto MACFunctions.swift
+[133/229] Compiling Crypto MessageAuthenticationCode.swift
+[134/229] Compiling Crypto AES.swift
+[135/229] Compiling Crypto ECDSASignature_boring.swift
+[136/229] Compiling Crypto ECDSA_boring.swift
+[137/229] Compiling Crypto EdDSA_boring.swift
+[138/229] Compiling Crypto ECDSA.swift
+[139/229] Compiling Crypto Ed25519.swift
+[140/229] Compiling Crypto Signature.swift
+[141/229] Compiling Crypto CryptoKitErrors_boring.swift
+[142/229] Compiling Crypto RNG_boring.swift
+[143/229] Compiling Crypto SafeCompare_boring.swift
+[144/229] Compiling Crypto Zeroization_boring.swift
+[145/229] Compiling Crypto PrettyBytes.swift
+[146/229] Compiling Crypto SafeCompare.swift
+[147/229] Compiling Crypto SecureBytes.swift
+[148/229] Compiling Crypto Zeroization.swift
+[149/229] Compiling Crypto resource_bundle_accessor.swift
+[150/316] Compiling SWCompression BZip2+Compress.swift
+[151/316] Compiling SWCompression BZip2+Lengths.swift
+[152/316] Compiling SWCompression BZip2.swift
+[153/316] Compiling SWCompression BZip2Error.swift
+[154/316] Compiling SWCompression BurrowsWheeler.swift
+[155/316] Emitting module GRDB
+[156/316] Compiling SWCompression 7zCoder+Equatable.swift
+[157/316] Compiling SWCompression 7zCoder.swift
+[158/316] Compiling SWCompression 7zCoderInfo.swift
+[159/316] Compiling SWCompression 7zContainer.swift
+[160/316] Compiling SWCompression 7zEntry.swift
+[161/316] Compiling SWCompression 7zEntryInfo.swift
+[162/316] Compiling SWCompression 7zError.swift
+[163/316] Compiling SWCompression 7zFileInfo.swift
+[164/316] Compiling SWCompression 7zFolder.swift
+[165/316] Compiling SWCompression 7zHeader.swift
+[166/316] Compiling SWCompression 7zPackInfo.swift
+[167/316] Compiling SWCompression 7zProperty.swift
+[168/316] Compiling SWCompression 7zStreamInfo.swift
+[169/316] Compiling SWCompression 7zSubstreamInfo.swift
+[170/316] Compiling SWCompression CompressionMethod+7z.swift
+[171/316] Compiling SWCompression MsbBitReader+7z.swift
+[172/316] Compiling SWCompression BZip2+BlockSize.swift
+[178/316] Compiling SWCompression SuffixArray.swift
+[179/316] Compiling SWCompression Archive.swift
+[204/384] Compiling SWCompression CheckSums.swift
+[205/384] Compiling SWCompression Code.swift
+[206/384] Compiling SWCompression CodeLength.swift
+[207/384] Compiling SWCompression DecodingTree.swift
+[208/384] Compiling SWCompression EncodingTree.swift
+[209/384] Compiling SWCompression CompressionAlgorithm.swift
+[210/384] Compiling SWCompression CompressionMethod.swift
+[211/384] Compiling SWCompression Container.swift
+[212/384] Compiling SWCompression ContainerEntry.swift
+[213/384] Compiling SWCompression ContainerEntryInfo.swift
+[214/384] Compiling SWCompression ContainerEntryType.swift
+[215/384] Compiling SWCompression DosAttributes.swift
+[216/384] Compiling SWCompression Permissions.swift
+[217/384] Compiling SWCompression DataError.swift
+[218/384] Compiling SWCompression DecompressionAlgorithm.swift
+[219/384] Compiling SWCompression DeltaFilter.swift
+[220/384] Compiling SWCompression Extensions.swift
+[221/384] Emitting module SWCompression
+[222/384] Compiling SWCompression FileSystemType.swift
+[223/384] Compiling SWCompression Deflate+Compress.swift
+[224/384] Compiling SWCompression Deflate+Constants.swift
+[225/384] Compiling SWCompression Deflate.swift
+[226/384] Compiling SWCompression DeflateError.swift
+[227/384] Compiling SWCompression FileSystemType+Gzip.swift
+[228/384] Compiling SWCompression GzipArchive.swift
+[229/384] Compiling SWCompression GzipError.swift
+[230/384] Compiling SWCompression GzipHeader+ExtraField.swift
+[231/384] Compiling SWCompression GzipHeader.swift
+[232/384] Compiling SWCompression LZ4+Compress.swift
+[233/384] Compiling SWCompression LZ4.swift
+[234/384] Compiling SWCompression XxHash32.swift
+[235/384] Compiling SWCompression LZMA.swift
+[236/384] Compiling SWCompression LZMABitTreeDecoder.swift
+[237/384] Compiling SWCompression LZMAConstants.swift
+[238/384] Compiling SWCompression LZMADecoder.swift
+[239/384] Compiling SWCompression LZMAError.swift
+[240/384] Compiling SWCompression LZMALenDecoder.swift
+[241/384] Compiling SWCompression LZMAProperties.swift
+[279/404] Compiling SWCompression LZMARangeDecoder.swift
+[280/404] Compiling SWCompression LZMA2.swift
+[281/404] Compiling SWCompression LZMA2Decoder.swift
+[282/404] Compiling SWCompression LZMA2Error.swift
+[283/404] Compiling SWCompression ContainerEntryType+Tar.swift
+[284/404] Compiling SWCompression Data+Tar.swift
+[285/404] Compiling SWCompression LittleEndianByteReader+Tar.swift
+[286/404] Compiling SWCompression TarContainer.swift
+[287/404] Compiling SWCompression TarCreateError.swift
+[288/404] Compiling SWCompression TarEntry.swift
+[289/404] Compiling SWCompression TarEntryInfo.swift
+[301/451] Compiling SWCompression TarError.swift
+[302/451] Compiling SWCompression TarExtendedHeader.swift
+[303/451] Compiling SWCompression TarHeader.swift
+[304/451] Compiling SWCompression TarParser.swift
+[305/451] Compiling SWCompression TarReader.swift
+[306/451] Compiling SWCompression TarWriter.swift
+[307/451] Compiling SWCompression LittleEndianByteReader+XZ.swift
+[308/451] Compiling SWCompression Sha256.swift
+[309/451] Compiling SWCompression XZArchive.swift
+[310/451] Compiling SWCompression XZBlock.swift
+[311/451] Compiling SWCompression XZError.swift
+[312/451] Compiling SWCompression XZStreamHeader.swift
+[313/451] Compiling SWCompression BuiltinExtraFields.swift
+[314/451] Compiling SWCompression CompressionMethod+Zip.swift
+[315/451] Compiling SWCompression FileSystemType+Zip.swift
+[316/451] Compiling SWCompression LittleEndianByteReader+Zip.swift
+[317/451] Compiling SWCompression ZipCentralDirectoryEntry.swift
+[318/451] Compiling SWCompression ZipContainer.swift
+[319/451] Compiling SWCompression ZipEndOfCentralDirectory.swift
+[320/451] Compiling SWCompression ZipEntry.swift
+[321/451] Compiling SWCompression ZipEntryInfo.swift
+[322/451] Compiling SWCompression ZipEntryInfoHelper.swift
+[323/451] Compiling SWCompression ZipError.swift
+[324/451] Compiling SWCompression ZipExtraField.swift
+[325/451] Compiling SWCompression ZipLocalHeader.swift
+[326/451] Compiling SWCompression ZlibArchive.swift
+[327/451] Compiling SWCompression ZlibError.swift
+[328/451] Compiling SWCompression ZlibHeader.swift
+[329/451] Compiling SWCompression resource_bundle_accessor.swift
+[354/451] Compiling GRDB CaseInsensitiveIdentifier.swift
+[355/451] Compiling GRDB Inflections+English.swift
+[356/451] Compiling GRDB Inflections.swift
+[357/451] Compiling GRDB Mutex.swift
+[358/451] Compiling GRDB OnDemandFuture.swift
+[359/451] Compiling GRDB OrderedDictionary.swift
+[360/451] Compiling GRDB Pool.swift
+[361/451] Compiling GRDB ReadWriteLock.swift
+[362/451] Compiling GRDB ReceiveValuesOn.swift
+[363/451] Compiling GRDB Refinable.swift
+[364/451] Compiling GRDB Utils.swift
+[365/451] Compiling GRDB DatabaseCancellable.swift
+[366/451] Compiling GRDB ValueConcurrentObserver.swift
+[367/451] Compiling GRDB ValueWriteOnlyObserver.swift
+[368/451] Compiling GRDB Fetch.swift
+[369/451] Compiling GRDB Map.swift
+[370/451] Compiling GRDB RemoveDuplicates.swift
+[371/451] Compiling GRDB Trace.swift
+[372/451] Compiling GRDB ValueReducer.swift
+[373/451] Compiling GRDB SharedValueObservation.swift
+[374/451] Compiling GRDB ValueObservation.swift
+[375/451] Compiling GRDB ValueObservationScheduler.swift
+[376/451] Compiling GRDB resource_bundle_accessor.swift
+[382/451] Compiling GRDB SQLForeignKeyRequest.swift
+[383/451] Compiling GRDB SQLFunctions.swift
+[384/451] Compiling GRDB SQLOperators.swift
+[385/451] Compiling GRDB SQLOrdering.swift
+[386/451] Compiling GRDB SQLRelation.swift
+[387/451] Compiling GRDB SQLSelection.swift
+[388/451] Compiling GRDB SQLSubquery.swift
+[389/451] Compiling GRDB Table.swift
+[390/451] Compiling GRDB SQLColumnGenerator.swift
+[391/451] Compiling GRDB SQLGenerationContext.swift
+[392/451] Compiling GRDB SQLIndexGenerator.swift
+[393/451] Compiling GRDB SQLQueryGenerator.swift
+[394/451] Compiling GRDB SQLTableAlterationGenerator.swift
+[395/451] Compiling GRDB SQLTableGenerator.swift
+[396/451] Compiling GRDB TableAlias.swift
+[397/451] Compiling GRDB SQLInterpolation+QueryInterface.swift
+[398/451] Compiling GRDB ColumnDefinition.swift
+[399/451] Compiling GRDB Database+SchemaDefinition.swift
+[400/451] Compiling GRDB ForeignKeyDefinition.swift
+[401/451] Compiling GRDB IndexDefinition.swift
+[402/451] Compiling GRDB TableAlteration.swift
+[403/451] Compiling GRDB TableDefinition.swift
+[404/451] Compiling GRDB VirtualTableModule.swift
+[405/451] Compiling GRDB TableRecord+Association.swift
+[406/451] Compiling GRDB TableRecord+QueryInterfaceRequest.swift
+[407/451] Compiling GRDB EncodableRecord+Encodable.swift
+[408/451] Compiling GRDB EncodableRecord.swift
+[409/451] Compiling GRDB FetchableRecord+Decodable.swift
+[410/451] Compiling GRDB FetchableRecord+TableRecord.swift
+[411/451] Compiling GRDB FetchableRecord.swift
+[412/451] Compiling GRDB MutablePersistableRecord+DAO.swift
+[413/451] Compiling GRDB MutablePersistableRecord+Delete.swift
+[414/451] Compiling GRDB MutablePersistableRecord+Insert.swift
+[415/451] Compiling GRDB MutablePersistableRecord+Save.swift
+[416/451] Compiling GRDB MutablePersistableRecord+Update.swift
+[417/451] Compiling GRDB MutablePersistableRecord+Upsert.swift
+[418/451] Compiling GRDB MutablePersistableRecord.swift
+[419/451] Compiling GRDB PersistableRecord+Insert.swift
+[420/451] Compiling GRDB PersistableRecord+Save.swift
+[421/451] Compiling GRDB PersistableRecord+Upsert.swift
+[422/451] Compiling GRDB PersistableRecord.swift
+[423/451] Compiling GRDB Record.swift
+[424/451] Compiling GRDB TableRecord.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[449/458] Emitting module FloeCore
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[450/458] Compiling FloeCore ScreenShareSessionState.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[451/458] Compiling FloeCore SecretRedactor.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[452/458] Compiling FloeCore SettingsProbes.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[453/458] Compiling FloeCore StreamingTextAnimator.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[454/458] Compiling FloeCore TimelinePageCoverage.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[455/458] Compiling FloeCore ToolNameSpelling.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[456/458] Compiling FloeCore VisualTextRecognition.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[457/465] Compiling FloeModels TaskSchedule.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[458/465] Compiling FloeModels ToolCall.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[459/466] Compiling FloeModels AgentEvent.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[460/466] Compiling FloeModels AgentThread.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[461/466] Emitting module FloeModels
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[462/466] Compiling FloeModels RunningInput.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[463/466] Compiling FloeModels TaskPolicy.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[464/466] Compiling FloeModels Workspace.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[465/501] Compiling FloeTools ToolAliasTable.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[466/501] Compiling FloeTools ToolCapabilityGroups.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[467/501] Compiling FloeTools ToolCatalog.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[468/501] Emitting module FloeTools
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[469/504] Compiling FloeProviders ImageProviderAdapter.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[470/504] Compiling FloeProviders ModelDiscovery.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[472/506] Compiling FloeProviders NativeToolCapability.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[473/506] Compiling FloeProviders ProviderAdapter.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[474/506] Compiling FloeProviders ProviderAdapterFactory.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[475/506] Compiling FloeProviders ReasoningCompatibility.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[476/506] Emitting module FloeSecurity
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[480/506] Emitting module FloeProviders
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[481/509] Compiling FloeSecurity SecretIngressScanner.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[482/509] Compiling FloeSecurity resource_bundle_accessor.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[483/509] Compiling FloeTools ToolContext.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[484/509] Compiling FloeProviders OpenAIChatCompletions.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[485/509] Compiling FloeProviders OpenAIResponses.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[486/509] Compiling FloeProviders ImageAdapters.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[487/509] Compiling FloeProviders ImageGenerationPresetResolver.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[490/517] Compiling FloeMedia MediaExport.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[491/517] Compiling FloeMedia MediaExtraTools.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[492/517] Compiling FloeMedia MediaImageEncoding.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[493/522] Compiling FloeSkills BundledDomainSkills.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[494/522] Compiling FloeSkills OfficialBundledSkills.generated.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[495/522] Compiling FloeSkills OfficialSkillHub.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[496/522] Compiling FloeSkills OfficialSkillHubKeys.generated.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[497/540] Compiling FloeEnvironments EnvironmentFileTransaction.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[498/540] Compiling FloeSkills SkillListTool.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[499/540] Compiling FloeSkills SkillManagement.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[500/540] Compiling FloeSkills SkillModels.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[501/540] Compiling FloeEnvironments EnvironmentRoots.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[502/540] Compiling FloeEnvironments FloeEnvCommand.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[503/540] Compiling FloeEnvironments ContainerRecord.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[504/540] Compiling FloeEnvironments EnvironmentExecutionCoordinator.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[505/540] Compiling FloeEnvironments ContainerCAS.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[506/540] Compiling FloeEnvironments ContainerLifecycle.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[507/540] Compiling FloeEnvironments ContainerPromote.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[508/540] Compiling FloeEnvironments EnvironmentRegistry.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[509/540] Emitting module FloeSkills
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[514/546] Compiling FloeSkills SkillPackageValidator.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[515/546] Compiling FloeSkills SkillToolRegistration.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[516/546] Compiling FloeSkills SkillUpgrade.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[518/546] Compiling FloeMedia MediaTools.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[519/546] Compiling FloeMedia MediaTranscodePipeline.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:163:13: warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+161 |             return records[existing.id] ?? existing
+162 |         }
+163 |         var record = ContainerRecord(
+    |             `- warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+164 |             kind: .project,
+165 |             ownerID: workspaceID,
+
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:209:13: warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+207 |             return records[existing.id] ?? existing
+208 |         }
+209 |         var record = ContainerRecord(
+    |             `- warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+210 |             kind: .session,
+211 |             ownerID: conversationID,
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:163:13: warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+161 |             return records[existing.id] ?? existing
+162 |         }
+163 |         var record = ContainerRecord(
+    |             `- warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+164 |             kind: .project,
+165 |             ownerID: workspaceID,
+
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:209:13: warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+207 |             return records[existing.id] ?? existing
+208 |         }
+209 |         var record = ContainerRecord(
+    |             `- warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+210 |             kind: .session,
+211 |             ownerID: conversationID,
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:163:13: warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+161 |             return records[existing.id] ?? existing
+162 |         }
+163 |         var record = ContainerRecord(
+    |             `- warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+164 |             kind: .project,
+165 |             ownerID: workspaceID,
+
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloeEnvironments/EnvironmentRegistry.swift:209:13: warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+207 |             return records[existing.id] ?? existing
+208 |         }
+209 |         var record = ContainerRecord(
+    |             `- warning: variable 'record' was never mutated; consider changing to 'let' constant [#VariableNeverMutated]
+210 |             kind: .session,
+211 |             ownerID: conversationID,
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+[523/549] Emitting module FloeEnvironments
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[527/595] Compiling FloePersistence V34RunConversationModes.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[528/595] Compiling FloePersistence V35GeneralAuxiliaryLLM.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[529/595] Compiling FloePersistence V36LocalWorkspaceCleanup.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[530/595] Compiling FloePersistence V37TaskChecklists.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[531/595] Compiling FloePersistence V38ImageAutonomy.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[532/595] Compiling FloePersistence V39BackgroundJobs.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[533/595] Compiling FloePersistence V3AgentDaily.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[534/595] Compiling FloePersistence V40ExecutionEnvironments.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[535/595] Compiling FloePersistence V30MemoryOrganization.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[536/595] Compiling FloePersistence V31TimelinePerformance.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[537/595] Compiling FloePersistence V32CanvasRunContexts.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[538/595] Compiling FloePersistence V33GeneratedAssetReservations.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[547/595] Compiling FloePersistence V4ModelPreferences.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[548/595] Compiling FloePersistence V5Workspace.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[549/595] Compiling FloePersistence V6AppSettings.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[550/609] Compiling FloePersistence V16ProviderCompatibilityAndPackageReview.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[551/609] Compiling FloePersistence V17ModelReasoningEffort.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[552/609] Compiling FloePersistence V18RunUsageDimensions.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[553/609] Compiling FloePersistence V19DetailedRunUsage.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[554/609] Compiling FloePersistence V1Initial.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[555/609] Compiling FloePersistence V20RunResponseTiming.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[556/609] Compiling FloePersistence V21MemoryLifecycle.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[557/609] Compiling FloePersistence V22RemoteDevices.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[558/609] Compiling FloePersistence V23ModelPickerVisibility.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[559/609] Compiling FloePersistence V24VideoModelRouting.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[560/609] Compiling FloePersistence V25DeferredSyncPayloads.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[561/609] Compiling FloePersistence V26CreativeMediaJobs.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[562/609] Compiling FloePersistence V27CloudReleaseModes.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[563/609] Compiling FloePersistence V28CanvasModelRouting.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[564/609] Compiling FloePersistence V2ConfigSync.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[569/609] Emitting module FloePersistence
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[573/622] Compiling FloePackages Deb822.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[574/622] Compiling FloePackages DebArchive.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[575/622] Compiling FloePackages DpkgDatabase.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[576/625] Compiling FloePackages EnvironmentManagementService.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[577/625] Compiling FloePackages OpenPGP.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[578/625] Emitting module FloeMedia
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[579/625] Compiling FloePackages AptEngine.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[580/625] Compiling FloePackages AptIndex.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[581/625] Compiling FloePackages AptSources.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[582/628] Emitting module FloePackages
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[586/628] Compiling FloePackages ArArchive.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[587/628] Compiling FloePackages PackageTransaction.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[588/628] Compiling FloePackages PackagesCLI.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[589/628] Compiling FloePackages TarArchive.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloePackages/OpenPGP.swift:132:13: warning: initialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+130 |             break
+131 |         }
+132 |         let fingerprintData = body.prefix(reader.offset)
+    |             `- warning: initialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+133 |         let fingerprint: String
+134 |         if version >= 5 {
+
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloePackages/OpenPGP.swift:566:28: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+564 | 
+565 |     private static func ecdsaDER(from material: Data) -> Data? {
+566 |         guard var reader = try? Reader(material) else { return nil }
+    |                            `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+567 |         guard let r = try? mpi(&reader), let s = try? mpi(&reader) else { return nil }
+568 |         func integer(_ data: Data) -> Data {
+
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloePackages/OpenPGP.swift:132:13: warning: initialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+130 |             break
+131 |         }
+132 |         let fingerprintData = body.prefix(reader.offset)
+    |             `- warning: initialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+133 |         let fingerprint: String
+134 |         if version >= 5 {
+
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloePackages/OpenPGP.swift:566:28: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+564 | 
+565 |     private static func ecdsaDER(from material: Data) -> Data? {
+566 |         guard var reader = try? Reader(material) else { return nil }
+    |                            `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+567 |         guard let r = try? mpi(&reader), let s = try? mpi(&reader) else { return nil }
+568 |         func integer(_ data: Data) -> Data {
+
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+[592/628] Compiling FloePackages PackageDependencyResolver.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloePackages/OpenPGP.swift:132:13: warning: initialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+130 |             break
+131 |         }
+132 |         let fingerprintData = body.prefix(reader.offset)
+    |             `- warning: initialization of immutable value 'fingerprintData' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+133 |         let fingerprint: String
+134 |         if version >= 5 {
+
+/Volumes/TECLAST/IOS AI AGENT/FloeAgent/Sources/FloePackages/OpenPGP.swift:566:28: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+564 | 
+565 |     private static func ecdsaDER(from material: Data) -> Data? {
+566 |         guard var reader = try? Reader(material) else { return nil }
+    |                            `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+567 |         guard let r = try? mpi(&reader), let s = try? mpi(&reader) else { return nil }
+568 |         func integer(_ data: Data) -> Data {
+
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+[593/632] Compiling FloePersistence BackgroundJobStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[594/632] Compiling FloePersistence CanvasRunContextStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[595/632] Compiling FloePersistence CanvasSyncOperationStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[596/632] Compiling FloePersistence ConfigSyncMetadataStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[597/632] Compiling FloePersistence ConversationStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[598/632] Compiling FloePersistence CreativeAssetStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[599/632] Compiling FloePersistence CredentialStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[600/632] Compiling FloePersistence DatabaseManager.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[601/632] Compiling FloePersistence MediaGenerationJobStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[602/632] Compiling FloePersistence V10ConversationContinuity.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[603/632] Compiling FloePersistence V11ArchiveCredentials.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[604/632] Compiling FloePersistence V12RunningInputs.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[605/632] Compiling FloePersistence V13PersonalizationMemory.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[606/632] Compiling FloePersistence V14PlanGoalControls.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[607/632] Compiling FloePersistence V15ProviderDisplayName.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[608/632] Compiling FloePersistence V7WorkbenchIntelligence.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[609/632] Compiling FloePersistence V8TaskOwnership.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[610/632] Compiling FloePersistence V9HarnessAndPermissions.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[611/632] Compiling FloePersistence ModelConfigurationStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[612/632] Compiling FloePersistence PersistenceCodec.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[613/632] Compiling FloePersistence RemoteHostStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[614/632] Compiling FloePersistence RemoteSessionRegistry.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[615/632] Compiling FloePersistence RunLaunchStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[616/632] Compiling FloePersistence RunStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[617/632] Compiling FloePersistence RunningInputStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[618/632] Compiling FloePersistence SettingsStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[619/632] Compiling FloePersistence SkillStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[620/632] Compiling FloePersistence TaskScheduleStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[621/632] Compiling FloePersistence WorkspaceStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[622/637] Emitting module SkillHubTests
+[623/637] Compiling SkillHubTests SignedCatalogTests.swift
+[624/640] Compiling MediaTests ModelArtifactTests.swift
+[625/640] Compiling EnvironmentTests EnvironmentPromotionTests.swift
+[626/640] Compiling PersistenceTests DraftNotesLaunchTests.swift
+[627/640] Emitting module PersistenceTests
+[628/640] Compiling PersistenceTests JobEnvironmentTests.swift
+[629/640] Compiling PackageTests RepositoryInstallTests.swift
+[630/640] Compiling PackageTests EnvironmentManagementTests.swift
+[631/640] Compiling PackageTests PackageIntegrityTests.swift
+[632/640] Compiling PackageTests PackageTransactionTests.swift
+[633/640] Emitting module PackageTests
+[634/667] Compiling PackageTests resource_bundle_accessor.swift
+[635/667] Emitting module EnvironmentTests
+[636/667] Compiling EnvironmentTests EnvironmentPersistenceTests.swift
+[637/667] Compiling MediaTests AudioEditTests.swift
+[638/667] Emitting module MediaTests
+[639/667] Compiling MediaTests MediaExportTests.swift
+[640/667] Emitting module FloeAgentRuntime
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[641/675] Compiling FloeAgentRuntime PlanningModels.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[642/675] Compiling FloeAgentRuntime SubagentRunner.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[643/675] Compiling FloeAgentRuntime TaskChecklistStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[644/675] Compiling FloeAgentRuntime TaskChecklistTools.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[645/675] Compiling FloeAgentRuntime TaskTitlePrompt.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[646/675] Compiling FloeAgentRuntime ToolDiscovery.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[647/675] Compiling FloeAgentRuntime ToolWorkflowGuidance.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[648/675] Compiling FloeAgentRuntime WorkspaceContextBriefing.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[649/675] Compiling FloeAgentRuntime ConversationRunService.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[650/675] Compiling FloeAgentRuntime ConversationTools.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[651/675] Compiling FloeAgentRuntime DelegateTool.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[652/675] Compiling FloeAgentRuntime DreamPromptInput.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[653/675] Compiling FloeAgentRuntime GoalEvidenceReviewContract.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[654/675] Compiling FloeAgentRuntime GoalModels.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[655/675] Compiling FloeAgentRuntime Harness.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[656/675] Compiling FloeAgentRuntime HarnessExecutionLedger.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[657/675] Compiling FloeAgentRuntime HarnessInvariant.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[658/675] Compiling FloeAgentRuntime IntelligenceStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[659/675] Compiling FloeAgentRuntime MemoryEmbeddings.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[660/675] Compiling FloeAgentRuntime MemoryMaintenance.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[661/675] Compiling FloeAgentRuntime MemoryReview.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[662/675] Compiling FloeAgentRuntime MemoryTools.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[663/675] Compiling FloeAgentRuntime Personalization.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[664/675] Compiling FloeAgentRuntime PlanToolPolicy.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[665/675] Compiling FloeAgentRuntime AgentCheckpoint.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[666/675] Compiling FloeAgentRuntime AgentPromptComposer.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[667/675] Compiling FloeAgentRuntime AgentReminderCenter.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[668/675] Compiling FloeAgentRuntime AgentRuntime.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[669/675] Compiling FloeAgentRuntime AgentState.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[670/675] Compiling FloeAgentRuntime ContextEngine.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[671/675] Compiling FloeAgentRuntime ConversationDiscoveryStore.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[672/675] Compiling FloeAgentRuntime ConversationHistoryAssembler.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[673/675] Compiling FloeAgentRuntime ConversationHistoryContracts.swift
+<unknown>:0: warning: upcoming feature 'InferSendableFromCaptures' already enabled as of the Swift 6 language mode
+[674/677] Compiling ConversationSearchQualificationTests ConversationSearchTests.swift
+[675/677] Emitting module ConversationSearchQualificationTests
+[676/679] Compiling FloePlatformQualificationPackageTests runner.swift
+[677/679] Emitting module FloePlatformQualificationPackageTests
+[677/679] Write Objects.LinkFileList
+[678/679] Linking FloePlatformQualificationPackageTests
+Build complete! (91.72s)
+warning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Conversation full-text search" started.
+◇ Test "Library search includes CJK message substrings, literal wildcard characters and old conversations" started.
+◇ Test "Search honours workspace ownership filter and date range" started.
+◇ Test "Search ranks FTS hits without bm25 auxiliary-function context error" started.
+✔ Test "Search ranks FTS hits without bm25 auxiliary-function context error" passed after 0.145 seconds.
+✔ Test "Search honours workspace ownership filter and date range" passed after 0.151 seconds.
+✔ Test "Library search includes CJK message substrings, literal wildcard characters and old conversations" passed after 0.199 seconds.
+✔ Suite "Conversation full-text search" passed after 0.199 seconds.
+✔ Test run with 3 tests in 1 suite passed after 0.200 seconds.

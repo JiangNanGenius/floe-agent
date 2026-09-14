@@ -524,6 +524,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
+        # ios_system resolves callbacks from the main executable via dlsym.
+        # Xcode's debug dylib moves those callbacks out of that image.
+        ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
         MARKETING_VERSION: "1.7.0"
         CURRENT_PROJECT_VERSION: "156"

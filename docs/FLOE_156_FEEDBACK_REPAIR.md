@@ -94,3 +94,28 @@ The release workflow now selects the same home/chat and language-package regress
 Screenshots are retained under `validation/floe-156-feedback/screenshots/`, with device, source scope and observed state recorded in its manifest. Component fixtures are not presented as full-App or installed-package acceptance. The local NativeManagement build succeeded; XCTest failed to connect to the Simulator test runner before executing UI assertions. A separate browser mirror reached the real iPad fixture frame; navigation checks remain pending.
 
 Environment durability qualification passed 16 tests locally with Swift Testing, including compatible runtime metadata migration, preserving unrelated rebuild flags, linked metadata rejection, management selection and deletion leases. Evidence: `validation/floe-156-feedback/environment-migration-tests.txt`. The new language-package suite is explicitly assigned to the App unit-test host, rather than the separate UI-test runner.
+
+
+### Actual Whisper download and iPad component evidence
+
+The NativeSpeech target uses production settings, installation and background URLSession code with the production pinned Hugging Face manifest. A real 490,671,464-byte installation succeeded on an iOS 27 iPad mini simulator. During a second download, leaving settings at 590 bytes retained the task; 35 subsequent running samples had settings hidden, and the download completed. Relaunch revalidated every installed file. A further test cancelled at 1,639,126 bytes, observed the task stop, retried and verified all 490,671,464 bytes. No inference was performed; system-initiated process restoration during an active transfer and physical-device suspension remain separate checks. Evidence: `speech-download-page-dismissed.json`, `speech-download-relaunch-verified.json`, `speech-cancel-evidence.json` under `validation/floe-156-feedback`. In the first recorder, `verified` retained the previous installation's value during reinstallation; the subsequent fresh process and cancellation test independently verified the completed generation.
+
+Actual iPad component navigation reached selected-project details and Python management. Unaltered long/short reasoning screenshots have identical first-card background spans (156 native pixels at x=50); advancing to the next round hid the old tool cards. Screenshot source scope, dimensions and hashes are in `validation/floe-156-feedback/screenshots/manifest.json`. Automated iPad/iPhone component checks run separately in CI; these do not replace full-App acceptance.
+
+### 用户补充范围（2026-09-14，尚未全部验收）
+
+- 画布助手：统一面板尺寸与拖动边界，整理输入栏，更换语音图标；保留双端截图。
+- 画布管理：修复删除后“最近／私人画布”残留，加入文件夹及内容搜索。
+- 手记：外层全文搜索，显示文档内命中片段并定位；不能仅匹配标题。
+- 会话整理及其他搜索：检查正文检索覆盖、结果片段及跳转；区分未索引与无结果。
+- 交付结束后清理本轮临时构建与下载副本，保留源码、已归档证据和已有模拟器数据。
+
+旧检查点 10d3443 的完整 App 回归没有通过：151 项测试报告 16 个问题。日志明确显示 shell 注册函数 `floe_shell_command_main` 无法被动态查找到，导致 Python/Node 命令未注册。另一个失败来自静态工具目录与已按配置过滤的运行时目录直接比较。正在修复，不能把独立运行时资格测试当成完整 App 通过。
+
+新增验证：会话正文检索 3 项测试通过（中文片段、literal `%/_`、同会话超过 50 条消息、既有 FTS 排序与工作区范围）。手记 16 项存储测试通过，Office 文本缓存与不可变资源绑定，不改变编辑版本或撤销历史，替换资源立即使旧正文失效。Office 索引目前使用经过限制的 Open XML 读取器；不支持的旧二进制格式显示未索引，不能宣称所有格式均已可全文检索。扫描件与手写 OCR 的全库索引仍需补齐。
+
+云端 NativeManagement 组件 UI：运行 34792006293，iPad 和 iPhone 各 4 项通过、0 失败。16 张原始截图已归档于 `validation/floe-156-feedback/screenshots/cloud-components`，具有来源与哈希清单。属于组件宿主，不是完整 Floe App 或真机截图。
+
+本地已安全清理 `/tmp/floe-156-node-native-check`，逻辑大小 2,190,500,031 字节；删除前检查无打开文件，Node 运行/适配/包测试 JSON 已归档。未移除模拟器、安装的 App、其他构建缓存或源码。
+
+最新源码继续补入逐页 Vision OCR（中文＋英语）与资源/笔迹版本绑定的缓存，过期结果不能覆盖新内容；这条真实识别链仍待原生样本验收。手记存储测试现为 17 项通过。增加“重新索引正文”恢复入口，扫描件、Office 失败或未完成索引数量在搜索时可见。

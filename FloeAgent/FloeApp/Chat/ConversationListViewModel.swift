@@ -19,6 +19,8 @@ final class ConversationListViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     /// The Chat list search query.
     @Published var searchText = ""
+    @Published private(set) var searchSnippets: [UUID: String] = [:]
+    @Published private(set) var isSearching = false
 
     let center: ConversationCenter
     private var centerChanges: AnyCancellable?
@@ -36,14 +38,28 @@ final class ConversationListViewModel: ObservableObject {
         center.conversations
     }
 
-    /// Conversations filtered by the search query (title substring,
-    /// case-insensitive). An empty query returns the full list.
+    /// Conversations matching either their title or persisted message content.
     var filteredConversations: [ConversationRecord] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return conversations }
         return conversations.filter {
-            $0.title.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            $0.title.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil || searchSnippets[$0.id] != nil
         }
+    }
+
+    func searchContents() async {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchSnippets = [:]
+        guard !query.isEmpty else { isSearching = false; return }
+        isSearching = true
+        do {
+            try await Task.sleep(for: .milliseconds(220))
+            let matches = try await center.environment.intelligenceStore.matchingConversationSnippets(query)
+            guard !Task.isCancelled, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            searchSnippets = matches
+            isSearching = false
+        } catch is CancellationError { return }
+        catch { guard !Task.isCancelled else { return }; isSearching = false; actionError = error.localizedDescription }
     }
 
     /// True when no provider+model is configured — the list must show the

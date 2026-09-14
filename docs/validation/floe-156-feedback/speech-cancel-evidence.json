@@ -1,0 +1,8 @@
+{
+  "bytesBeforeCancel" : 1639126,
+  "cancellationStopped" : true,
+  "completedBytes" : 490671464,
+  "date" : "2026-09-14T00:18:42Z",
+  "operation" : "cancel running production download, retry and verify",
+  "retryVerified" : true
+}

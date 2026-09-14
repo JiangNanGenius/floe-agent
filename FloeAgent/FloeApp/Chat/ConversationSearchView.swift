@@ -15,7 +15,9 @@ struct ConversationSearchView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @State private var query = ""
-    @State private var results: [ConversationSearchHit] = []
+    @State private var results: [ConversationRecord] = []
+    @State private var snippets: [UUID: String] = [:]
+    @State private var searchError: String?
     @State private var isSearching = false
 
     var body: some View {
@@ -23,23 +25,24 @@ struct ConversationSearchView: View {
             Section {
                 TextField("搜索对话内容…", text: $query)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit { Task { await search() } }
+
                 if isSearching {
                     ProgressView()
                 }
             }
             Section("结果") {
-                if results.isEmpty, !query.isEmpty {
+                if let searchError { Text(searchError).foregroundStyle(.red) }
+                if results.isEmpty, !query.isEmpty, !isSearching, searchError == nil {
                     ContentUnavailableView("没有找到匹配的消息", systemImage: "magnifyingglass")
                 } else {
                     ForEach(results) { hit in
                         Button {
-                            router.openConversation(hit.conversationID)
+                            router.openConversation(hit.id)
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(hit.conversationTitle)
+                                Text(hit.title)
                                     .font(.headline)
-                                Text(hit.snippet)
+                                Text(snippets[hit.id] ?? hit.title)
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(3)
@@ -53,18 +56,24 @@ struct ConversationSearchView: View {
             }
         }
         .navigationTitle("搜索对话")
+        .task(id: query) { await search() }
     }
 
     private func search() async {
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        results = []; snippets = [:]; searchError = nil
+        guard !value.isEmpty else { isSearching = false; return }
         isSearching = true
-        defer { isSearching = false }
         do {
-            let request = ConversationSearchRequest(query: query, limit: 50)
-            results = try await environment.intelligenceStore.search(request)
-        } catch {
-            results = []
-        }
+            try await Task.sleep(for: .milliseconds(220))
+            let matches = try await environment.intelligenceStore.matchingConversationSnippets(value)
+            let conversations = try await environment.conversationStore.conversations(includeArchived: true)
+            guard !Task.isCancelled else { return }
+            snippets = matches
+            results = conversations.filter { !CanvasAgentIdentity.isCanvasConversation($0) && ($0.title.localizedStandardContains(value) || matches[$0.id] != nil) }
+            isSearching = false
+        } catch is CancellationError { return }
+        catch { guard !Task.isCancelled else { return }; isSearching = false; searchError = error.localizedDescription }
     }
 }
 #endif

@@ -43,6 +43,7 @@ struct ConversationListView: View {
         .navigationTitle("tab.chat")
         .toolbar { toolbarContent }
         .task { await viewModel.load() }
+        .task(id: viewModel.searchText) { await viewModel.searchContents() }
         .refreshable { await viewModel.load() }
         .searchable(
             text: $viewModel.searchText,
@@ -136,6 +137,7 @@ struct ConversationListView: View {
                             ConversationRow(
                             conversation: conversation,
                             fallbackTitle: String(localized: "chat.untitled"),
+                            searchSnippet: viewModel.searchSnippets[conversation.id],
                             isSelected: horizontalSizeClass == .regular
                                 && router.selectedConversationID == conversation.id
                         )
@@ -337,6 +339,7 @@ struct ArchivedConversationsView: View {
 private struct ConversationRow: View {
     let conversation: ConversationRecord
     let fallbackTitle: String
+    var searchSnippet: String? = nil
     var isSelected: Bool = false
 
     var body: some View {
@@ -346,6 +349,7 @@ private struct ConversationRow: View {
                     .font(FloeTheme.Typography.body)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                if let searchSnippet { Text(searchSnippet).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
                 Text(conversation.updatedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
