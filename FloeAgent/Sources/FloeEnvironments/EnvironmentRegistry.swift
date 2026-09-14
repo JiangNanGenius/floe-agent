@@ -15,6 +15,7 @@ public actor EnvironmentRegistry {
     public static let sharedContainerID = "shared"
     public static let sharedContainerName = "shared"
 
+    private let compatibleBaseRevisions: Set<String>
     private let roots: EnvironmentRoots
     private let fileManager = FileManager.default
     private var records: [String: ContainerRecord] = [:]
@@ -22,9 +23,10 @@ public actor EnvironmentRegistry {
     private var loaded = false
     public private(set) var baseRevision: String
 
-    public init(roots: EnvironmentRoots = .shared, baseRevision: String) {
+    public init(roots: EnvironmentRoots = .shared, baseRevision: String, compatibleBaseRevisions: Set<String> = []) {
         self.roots = roots
         self.baseRevision = baseRevision
+        self.compatibleBaseRevisions = compatibleBaseRevisions
     }
 
     /// Loads the registry, creating the shared container on first use.
@@ -43,8 +45,18 @@ public actor EnvironmentRegistry {
             records = Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, $0) })
             quota = snapshot.quota
             for (id, var record) in records where record.baseRevision != baseRevision {
-                record.requiresRebuild = true
-                record.rebuildReason = "Base revision changed; rebuild dependencies before execution"
+                if compatibleBaseRevisions.contains(record.baseRevision), record.state != .deleting,
+                   record.layerFormat == ContainerRecord.currentLayerFormat {
+                    do {
+                        try adoptCompatibleBase(&record, registrySnapshot: data)
+                    } catch {
+                        record.requiresRebuild = true
+                        record.rebuildReason = "Runtime metadata migration failed; data retained: \(error.localizedDescription)"
+                    }
+                } else {
+                    record.requiresRebuild = true
+                    record.rebuildReason = "Base revision changed; rebuild dependencies before execution"
+                }
                 records[id] = record
             }
         }
@@ -60,6 +72,57 @@ public actor EnvironmentRegistry {
         }
         try persist()
         loaded = true
+    }
+
+    /// Only caller-proven ABI aliases may use this path. Preserve recovery copies
+    /// and unrelated rebuild flags; no dependency or user-data file is removed.
+    private func adoptCompatibleBase(_ record: inout ContainerRecord, registrySnapshot: Data) throws {
+        guard !record.id.isEmpty, record.id != ".", record.id != "..",
+              !record.id.contains("/"), !record.id.contains("\\"), !record.id.contains("\0") else {
+            throw FloeError.validationFailed("Invalid environment identifier")
+        }
+        let root = roots.layerURL(id: record.id, kind: record.kind)
+        let manifestURL = root.appendingPathComponent(LayerManifest.fileName)
+        let snapshotBackup = roots.registryURL.appendingPathExtension("pre-runtime-version-migration")
+        let manifestBackup = manifestURL.appendingPathExtension("pre-runtime-version-migration")
+        for url in [manifestURL, manifestBackup, snapshotBackup] { try validateMigrationPath(url) }
+        guard var manifest = try LayerManifest.loadChecked(from: root), manifest.id == record.id,
+              manifest.layerFormat == record.layerFormat,
+              manifest.baseRevision == record.baseRevision || manifest.baseRevision == baseRevision else {
+            throw FloeError.validationFailed("Layer manifest does not match its environment")
+        }
+        if !fileManager.fileExists(atPath: snapshotBackup.path) { try registrySnapshot.write(to: snapshotBackup, options: .atomic) }
+        if !fileManager.fileExists(atPath: manifestBackup.path) {
+            try Data(contentsOf: manifestURL).write(to: manifestBackup, options: .atomic)
+        }
+        let previous = record.baseRevision
+        manifest.baseRevision = baseRevision
+        for index in manifest.packages.indices where manifest.packages[index].requiresBase == previous {
+            manifest.packages[index].requiresBase = baseRevision
+        }
+        try manifest.write(to: root)
+        record.baseRevision = baseRevision
+        if record.rebuildReason == "Base revision changed; rebuild dependencies before execution" {
+            record.requiresRebuild = false; record.rebuildReason = nil
+        }
+    }
+
+    private func validateMigrationPath(_ url: URL) throws {
+        // Resolve the caller-owned root (e.g. /var on iOS), but reject symlinks
+        // below it so metadata migration never follows a dependency-owned path.
+        let base = roots.rootURL.standardizedFileURL
+        let candidate = url.standardizedFileURL
+        guard candidate.path.hasPrefix(base.path + "/") else {
+            throw FloeError.validationFailed("Migration path escapes environment storage")
+        }
+        var cursor = candidate
+        while cursor != base {
+            if let attributes = try? fileManager.attributesOfItem(atPath: cursor.path),
+               attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+                throw FloeError.validationFailed("Migration metadata must not be a symbolic link")
+            }
+            cursor.deleteLastPathComponent()
+        }
     }
 
     public func setBaseRevision(_ revision: String) {

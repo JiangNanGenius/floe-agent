@@ -348,7 +348,8 @@ final class AppEnvironment: ObservableObject {
         // registry can resolve the active container.
         let environmentRoots = EnvironmentRoots()
         let environmentRegistry = EnvironmentRegistry(
-            baseRevision: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "dev"
+            baseRevision: FloePlatformServices.environmentBaseRevision,
+            compatibleBaseRevisions: ["156"]
         )
         let containerCAS = ContainerCAS(roots: environmentRoots)
         let environmentExecutions = EnvironmentExecutionCoordinator(roots: environmentRoots, registry: environmentRegistry)

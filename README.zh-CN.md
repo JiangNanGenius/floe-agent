@@ -88,7 +88,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.5.3（build 134）** 已向现有 **Floe QA 内部 TestFlight 测试组**开放。2026 年 9 月 9 日（悉尼时间）已核实 Apple 处理通过和测试组可见性。查看[发布说明](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.5.3)与[验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)；真机验收和未完成的 Office 能力仍列在[本轮更新目标](docs/WORKFLOW_UPGRADE.md)中。
+Floe Agent **1.7.0（build 156）** 是目前分发记录中已向 **Floe QA 内部 TestFlight 测试组**开放的最新构建，详见[TestFlight 状态记录](docs/TESTFLIGHT_1.7.0_BETA.md)。[反馈修复候选版](docs/FLOE_156_FEEDBACK_REPAIR.md)仍在验收中；代码修改和测试截图不代表已有更新的构建上传。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
 
 ### 未签名 IPA
 

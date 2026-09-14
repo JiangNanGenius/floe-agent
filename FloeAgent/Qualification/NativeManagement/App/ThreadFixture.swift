@@ -4,6 +4,8 @@ import FloeSecurity
 
 struct ThreadFixtureView: View {
     @State private var events = Self.initialEvents
+    @State private var latest = true
+    @State private var previewIsShort = false
     private static let runID = UUID()
     private static func event(_ sequence: Int, kind: RunEventRecord.Kind, call: String, name: String, status: String = "ok") -> RunEventRecord {
         let payload = ["callID": call, "tool": name, "status": status, "summary": "示例文件已读取"]
@@ -19,12 +21,14 @@ struct ThreadFixtureView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                ReasoningBlockView(text: "先检查素材的时长与尺寸，再确认字幕区间和导出设置。保留源文件，完成后验证输出。", isStreaming: true)
-                StepGroupView(events: events, isLatest: true, isLive: true, hasError: false, pendingApprovals: [])
+                ReasoningBlockView(text: previewIsShort ? "继续检查。" : String(repeating: "先检查素材的时长与尺寸，再确认字幕区间和导出设置。", count: 4), isStreaming: true)
+                StepGroupView(events: events, isLatest: latest, isLive: latest, hasError: false, pendingApprovals: [])
                 ToolCallCardView(name: "audio.edit", status: "failed", inputSummary: "音轨：旁白.wav", resultSummary: "混音采样率不一致，请先转换为相同采样率。")
             }.padding()
         }.navigationTitle("任务执行")
         .toolbar {
+            Button("切换思考片段") { previewIsShort.toggle() }.accessibilityIdentifier("fixture.reasoningFragment")
+            Button("下一轮") { latest = false }.accessibilityIdentifier("fixture.nextRound")
             Button("追加工具", systemImage: "plus") {
                 withAnimation(.easeOut(duration: 0.22)) {
                     events.append(Self.event(5, kind: .toolRequest, call: "c", name: "video.transcode", status: "running"))

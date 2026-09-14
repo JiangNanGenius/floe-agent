@@ -242,4 +242,55 @@ extension EnvironmentPersistenceTests {
         do { _ = try await coordinator.acquireManagement(environmentID: "missing", cancellation: CancellationToken()); Issue.record("Missing environment selected a fallback") } catch {}
     }
 
+    @Test func provenRuntimeAliasMigratesMetadataWithoutRemovingDependencies() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let old = EnvironmentRegistry(roots: roots, baseRevision: "156")
+        let project = try await old.ensureProjectContainer(workspaceID: "a", workspaceRootPath: "/a")
+        let layer = roots.layerURL(id: project.id, kind: .project)
+        let dependency = layer.appendingPathComponent("retained.py")
+        try Data("user dependency".utf8).write(to: dependency)
+        try await old.markRebuild(id: project.id, reason: "Base revision changed; rebuild dependencies before execution")
+        let migrated = EnvironmentRegistry(roots: roots, baseRevision: "runtime-v1", compatibleBaseRevisions: ["156"])
+        try await migrated.prepare()
+        #expect(await migrated.record(id: project.id)?.requiresRebuild == false)
+        #expect(await migrated.record(id: project.id)?.baseRevision == "runtime-v1")
+        #expect(LayerManifest.load(from: layer)?.baseRevision == "runtime-v1")
+        #expect(try Data(contentsOf: dependency) == Data("user dependency".utf8))
+        #expect(FileManager.default.fileExists(atPath: roots.registryURL.appendingPathExtension("pre-runtime-version-migration").path))
+        let restarted = EnvironmentRegistry(roots: roots, baseRevision: "runtime-v1", compatibleBaseRevisions: ["156"])
+        try await restarted.prepare()
+        #expect(await restarted.record(id: project.id)?.requiresRebuild == false)
+        let incompatible = EnvironmentRegistry(roots: roots, baseRevision: "runtime-v2")
+        try await incompatible.prepare()
+        #expect(await incompatible.record(id: project.id)?.requiresRebuild == true)
+        #expect(try Data(contentsOf: dependency) == Data("user dependency".utf8))
+    }
+
+    @Test func runtimeAliasRetainsUnrelatedRebuildAndRejectsLinkedMetadata() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let old = EnvironmentRegistry(roots: roots, baseRevision: "156")
+        let project = try await old.ensureProjectContainer(workspaceID: "a", workspaceRootPath: "/a")
+        try await old.markRebuild(id: project.id, reason: "Missing native dependency")
+        let layer = roots.layerURL(id: project.id, kind: .project)
+        let migrated = EnvironmentRegistry(roots: roots, baseRevision: "runtime-v1", compatibleBaseRevisions: ["156"])
+        try await migrated.prepare()
+        #expect(await migrated.record(id: project.id)?.requiresRebuild == true)
+        #expect(await migrated.record(id: project.id)?.rebuildReason == "Missing native dependency")
+        let metadata = layer.appendingPathComponent(LayerManifest.fileName)
+        let outside = root.appendingPathComponent("unmanaged.json")
+        let bytes = try Data(contentsOf: metadata)
+        try bytes.write(to: outside)
+        try FileManager.default.removeItem(at: metadata)
+        try FileManager.default.createSymbolicLink(at: metadata, withDestinationURL: outside)
+        let next = EnvironmentRegistry(roots: roots, baseRevision: "runtime-v2", compatibleBaseRevisions: ["runtime-v1"])
+        try await next.prepare()
+        #expect(await next.record(id: project.id)?.baseRevision == "runtime-v1")
+        #expect(await next.record(id: project.id)?.requiresRebuild == true)
+        #expect(try Data(contentsOf: outside) == bytes)
+    }
+
 }

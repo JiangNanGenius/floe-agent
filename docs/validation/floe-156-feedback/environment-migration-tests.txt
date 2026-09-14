@@ -1,0 +1,41 @@
+Local macOS Swift Testing, Xcode 27 SDK; production FloeEnvironments sources.
+Not iOS UI or device qualification.
+
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Environment durability" started.
+◇ Test failedCreationAndTransitionRollBackRegistryMemory() started.
+◇ Test inheritedRebuildBlocksExistingAndNewSessions() started.
+◇ Test corruptRegistryIsPreserved() started.
+◇ Test provenRuntimeAliasMigratesMetadataWithoutRemovingDependencies() started.
+◇ Test corruptCASIndexNeverAuthorizesCollection() started.
+◇ Test casRetainsSharedBlobsAndCopiesAreIndependent() started.
+◇ Test explicitEnvironmentCannotCrossWorkspace() started.
+◇ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() started.
+◇ Test failedStopPreservesEnvironment() started.
+◇ Test failedCASReferenceWriteDoesNotEnableCollection() started.
+◇ Test projectDeletionPreservesDependentSessionAndFiles() started.
+◇ Test managementSelectionAndDeletionLease() started.
+◇ Test projectsAndCancellationRemainScoped() started.
+◇ Test sessionOwnershipIncludesWorkspace() started.
+◇ Test registrySurvivesRestartAndMarksNewBase() started.
+◇ Test runtimeAliasRetainsUnrelatedRebuildAndRejectsLinkedMetadata() started.
+✔ Test corruptCASIndexNeverAuthorizesCollection() passed after 0.347 seconds.
+✔ Test corruptRegistryIsPreserved() passed after 0.347 seconds.
+✔ Test casRetainsSharedBlobsAndCopiesAreIndependent() passed after 0.347 seconds.
+✔ Test failedCASReferenceWriteDoesNotEnableCollection() passed after 0.350 seconds.
+✔ Test failedStopPreservesEnvironment() passed after 0.350 seconds.
+✔ Test explicitEnvironmentCannotCrossWorkspace() passed after 0.350 seconds.
+✔ Test projectDeletionPreservesDependentSessionAndFiles() passed after 0.350 seconds.
+✔ Test failedCreationAndTransitionRollBackRegistryMemory() passed after 0.350 seconds.
+✔ Test inheritedRebuildBlocksExistingAndNewSessions() passed after 0.361 seconds.
+✔ Test provenRuntimeAliasMigratesMetadataWithoutRemovingDependencies() passed after 0.372 seconds.
+✔ Test templateCopySurvivesSourceCASCollectionAndRejectsDuplicateName() passed after 0.373 seconds.
+✔ Test managementSelectionAndDeletionLease() passed after 0.435 seconds.
+✔ Test runtimeAliasRetainsUnrelatedRebuildAndRejectsLinkedMetadata() passed after 0.456 seconds.
+✔ Test registrySurvivesRestartAndMarksNewBase() passed after 0.487 seconds.
+✔ Test sessionOwnershipIncludesWorkspace() passed after 0.487 seconds.
+✔ Test projectsAndCancellationRemainScoped() passed after 0.526 seconds.
+✔ Suite "Environment durability" passed after 0.527 seconds.
+✔ Test run with 16 tests in 1 suite passed after 0.528 seconds.

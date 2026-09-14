@@ -6,6 +6,36 @@ final class ManagementUITests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+    func testStreamingPreviewKeepsHeightAndPreviousRoundCollapses() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--thread", "-AppleLanguages", "(zh-Hans)"]
+        app.launch()
+        let reasoning = app.buttons["reasoning.expand"]
+        XCTAssertTrue(reasoning.waitForExistence(timeout: 20))
+        let height = reasoning.frame.height
+        for _ in 0..<4 {
+            app.buttons["fixture.reasoningFragment"].tap()
+            XCTAssertEqual(reasoning.frame.height, height, accuracy: 1)
+        }
+        app.buttons["fixture.nextRound"].tap()
+        XCTAssertFalse(app.staticTexts["workspace.readFile"].exists)
+        capture(app, name: "previous-round-auto-collapsed")
+    }
+    func testLanguagePackageNavigationShowsSelectedEnvironment() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)"]
+        app.launch()
+        let project = app.buttons.containing(.staticText, identifier: "Floe 项目").firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 20))
+        project.tap()
+        let python = app.buttons["Python · PyPI"]
+        XCTAssertTrue(python.waitForExistence(timeout: 10))
+        capture(app, name: "environment-language-managers")
+        python.tap()
+        XCTAssertTrue(app.navigationBars["Python · PyPI"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields.firstMatch.exists)
+        capture(app, name: "python-management-fixture-runtime-unavailable")
+    }
     func testCollapsedBatchStaysCollapsedWhenToolArrives() {
         let app = XCUIApplication()
         app.launchArguments = ["--thread", "-AppleLanguages", "(zh-Hans)"]

@@ -15,6 +15,8 @@ import AVFoundation
 
 final class FloePlatformServices: @unchecked Sendable {
     static let shared = FloePlatformServices()
+    // Bump only when bundled runtime ABI/layer compatibility changes, never for an App build.
+    static let environmentBaseRevision = "ios-v1-cpython313-node18204-wasi1"
 
     private let lock = NSLock()
     private var registry: EnvironmentRegistry?

@@ -202,6 +202,8 @@ jobs:
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             -only-testing:FloeAppTests/ThreadTimelineTests \
+            -only-testing:FloeAppTests/HomeChatSeparationTests \
+            -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
@@ -429,6 +431,8 @@ jobs:
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             -only-testing:FloeAppTests/ThreadTimelineTests \
+            -only-testing:FloeAppTests/HomeChatSeparationTests \
+            -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \

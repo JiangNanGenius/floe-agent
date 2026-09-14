@@ -692,6 +692,7 @@ targets:
           - CrashAndFeedbackRegressionTests.swift
           - LocalShellRuntimeTests.swift
           - LocalPythonRuntimeTests.swift
+          - EnvironmentLanguagePackageTests.swift
           - RemoteImageInspectToolTests.swift
           - ImportantFileShortcutTests.swift
           - CreativeAssetIngestionTests.swift
@@ -722,6 +723,7 @@ targets:
       - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
       - path: Tests/FloeAgentUITests/LocalShellRuntimeTests.swift
       - path: Tests/FloeAgentUITests/LocalPythonRuntimeTests.swift
+      - path: Tests/FloeAgentUITests/EnvironmentLanguagePackageTests.swift
       - path: Tests/FloeAgentUITests/RemoteImageInspectToolTests.swift
       - path: Tests/FloeAgentUITests/ImportantFileShortcutTests.swift
       - path: Tests/FloeAgentUITests/CreativeAssetIngestionTests.swift

@@ -27,7 +27,7 @@ public struct EnvironmentRoots: Sendable {
     public var trashURL: URL { rootURL.appendingPathComponent(".trash", isDirectory: true) }
     public var registryURL: URL { rootURL.appendingPathComponent("containers.json") }
 
-    /// Base slices are versioned by app build. The app injects the bundled
+    /// Base slices are versioned by runtime ABI compatibility, independently of app builds. The app injects the bundled
     /// slice directory (or nil when the app ships without one).
     public func baseSliceURL(build: String) -> URL {
         rootURL.appendingPathComponent("Base", isDirectory: true)

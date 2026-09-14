@@ -93,7 +93,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Floe Agent **1.5.3 (build 134)** is available to the existing **Floe QA internal TestFlight group**. Apple processing and group visibility were verified on September 9, 2026 (Australia/Sydney). See the [release notes](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.5.3) and [verification record](docs/RELEASE_VERIFICATION_1.5.3.md). Physical-device acceptance and unfinished Office capabilities remain listed in the [upgrade scope](docs/WORKFLOW_UPGRADE.md).
+Floe Agent **1.7.0 (build 156)** is the latest build recorded as available to the **Floe QA internal TestFlight group**. See the [TestFlight availability record](docs/TESTFLIGHT_1.7.0_BETA.md). The [feedback repair candidate](docs/FLOE_156_FEEDBACK_REPAIR.md) is still under qualification; its code changes and screenshots do not indicate a newer uploaded build. Earlier 1.5.3 evidence is retained in the [historical verification record](docs/RELEASE_VERIFICATION_1.5.3.md).
 
 ### Unsigned IPA
 

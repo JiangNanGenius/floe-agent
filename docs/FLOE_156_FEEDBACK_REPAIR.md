@@ -81,3 +81,16 @@ The Python installer now merges wheel files by RECORD ownership, removes old-ver
 The native shell smoke now covers 22 cases plus interactive input. Literal and variable-expanded missing commands, a missing middle stage, successful variable-expanded consumers, and later commands all terminate. A newly reproduced `while :; do printf data; done | cat` timeout originally left the producer pipe open, wedging the consumer and later commands. The producer now closes/restores its streams on exception unwind before joining the consumer; the same test now exits 130 with its worker stopped and the next command succeeds. All 22 worker-stop checks and the interactive test passed on the iOS 27 simulator. Evidence replaces `validation/floe-156-feedback/shell-results.json` and `shell-interactive-results.json`.
 
 The iOS shell still cannot safely execute builtin/function/compound consumers concurrently inside a pipe; these return explicit unsupported errors (exit 2), with script/file alternatives, instead of hanging. Native external consumers and compound producers remain supported. This is not a claim of complete desktop POSIX or native-process isolation. npm's global prefix now defaults to the selected environment's `usr` directory.
+
+
+### Stable runtime identity and upgrade recovery
+
+Ordinary App updates previously changed the environment base revision because it came from `CFBundleVersion`. The candidate uses an explicit runtime ABI revision instead. Build 156 is the sole legacy compatibility alias: its Python bootstrap, Node lock and dependency pins match this candidate. Migration retains the original registry and layer manifests as `*.pre-runtime-version-migration`, changes compatible metadata only, and preserves unrelated rebuild flags. Unknown runtime revisions still require rebuild without deleting dependencies. Migration rejects linked metadata paths.
+
+The release workflow now selects the same home/chat and language-package regression suites as CI, so the TestFlight gate cannot omit the newly required package suite.
+
+### Screenshot collection
+
+Screenshots are retained under `validation/floe-156-feedback/screenshots/`, with device, source scope and observed state recorded in its manifest. Component fixtures are not presented as full-App or installed-package acceptance. The local NativeManagement build succeeded; XCTest failed to connect to the Simulator test runner before executing UI assertions. A separate browser mirror reached the real iPad fixture frame; navigation checks remain pending.
+
+Environment durability qualification passed 16 tests locally with Swift Testing, including compatible runtime metadata migration, preserving unrelated rebuild flags, linked metadata rejection, management selection and deletion leases. Evidence: `validation/floe-156-feedback/environment-migration-tests.txt`. The new language-package suite is explicitly assigned to the App unit-test host, rather than the separate UI-test runner.
