@@ -26,6 +26,14 @@ The extra Notes navigation row is removed. Return, title/save state and document
 
 The actual Pencil bridge and renderer passed SDK 27 Swift type checking against the existing native Notes module. Full-App iPad/iPhone UI coverage now checks the compact header height and changing tools through the palette, with a retained screenshot. These new UI assertions and physical Pencil gestures have not passed yet. The immutable build-160 run does not contain this later UI change.
 
+## App shutdown finalized; home-suite gate corrected for build 162
+
+Build 160 finalized its xcresult and exited normally: 155/155 App cases passed, zero failures/skips/expected failures, with `xcodebuild` exit 0. The release verifier then rejected the result because it expected eight cases inside `HomeChatSeparationTests`, while that suite contains six navigation cases. Two existing task-creation contract cases live in `HomeTaskCreationTests`, which the workflow had not selected. This is a rejected release gate, not a TestFlight delivery.
+
+The corrected gate requires **both** six navigation cases and two task-creation cases, and selects both suites in CI and each release SDK. It does not reduce their combined minimum or waive missing cases. Four verifier regressions check both suites, either omission, and workflow selection. The next full App run must execute the two additional cases. The finalized build-160 result establishes the runtime exit correction, not acceptance of the later Notes toolbar.
+
+Build 162 also ensures system color/ink-attribute shortcuts expose ink controls when an eraser or lasso was active, and dismisses the separate ink popover before opening the quick palette. New full-App UI and distribution remain pending.
+
 ## Changes under qualification
 
 - Remove the app-level 100-tool-call cap; preserve runtime no-progress, per-call timeout and output protections.

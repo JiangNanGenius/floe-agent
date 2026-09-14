@@ -1,0 +1,37 @@
+{
+  "source": "8631ee9e1721e5cb5616a36d734f40951af1bfe4",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34810670478",
+  "build": 160,
+  "result": "App assertions passed and xcresult finalized; release verifier rejected incorrect home-suite selection/count",
+  "appCounts": {
+    "totalTestCount": 155,
+    "passedTests": 155,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "expectedFailures": 0,
+    "result": "Passed"
+  },
+  "process": {
+    "exitCode": 0,
+    "reason": "exited",
+    "elapsedSeconds": 926.442,
+    "testsStarted": true
+  },
+  "suites": {
+    "BrowserProtocolTests": 8,
+    "CanvasAgentToolContractTests": 8,
+    "CanvasTouchInteractionTests": 5,
+    "CanvasSavedImageBatchAtomicityTests": 9,
+    "CrashAndFeedbackRegressionTests": 39,
+    "EnvironmentLanguagePackageTests": 2,
+    "HomeChatSeparationTests": 6,
+    "LocalPythonRuntimeTests": 5,
+    "LocalShellRuntimeTests": 12,
+    "MailConnectorTests": 5,
+    "SkillLifecycleTests": 25,
+    "ThreadTimelineTests": 31
+  },
+  "summarySHA256": "4ef013763433aaa1c23106ee8f456c1c3cd91221f2abfc6ff757afc705ce2eb0",
+  "testsSHA256": "c5870eb7464eba8aad02bdbf4265e9024c8b35c957d3b6618fa0c36ee2e64219",
+  "nextGate": "Require HomeChatSeparationTests (6) AND HomeTaskCreationTests (2); neither omission is accepted."
+}

@@ -218,6 +218,7 @@ jobs:
             -only-testing:FloeAppTests/ThreadTimelineTests \
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/HomeChatSeparationTests \
+            -only-testing:FloeAppTests/HomeTaskCreationTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
             -only-testing:FloeAppTests/LocalPythonRuntimeTests \
@@ -249,6 +250,7 @@ jobs:
             -only-testing:FloeAppTests/ThreadTimelineTests \
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/HomeChatSeparationTests \
+            -only-testing:FloeAppTests/HomeTaskCreationTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
             -only-testing:FloeAppTests/LocalPythonRuntimeTests \

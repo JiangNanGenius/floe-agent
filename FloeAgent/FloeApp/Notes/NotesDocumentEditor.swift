@@ -461,6 +461,7 @@ struct NotesDocumentEditor: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Button {
+                    showingInkOptions = false
                     pencilMenuPoint = CGPoint(x: 0.5, y: 0.08)
                     showingPencilMenu.toggle()
                 } label: {
@@ -547,7 +548,13 @@ struct NotesDocumentEditor: View {
             selectTool(tool == .eraser ? (previousTool == .eraser ? .pen : previousTool) : .eraser)
         case .switchPrevious:
             selectTool(previousTool)
-        case .showColorPalette, .showInkAttributes, .showContextualPalette:
+        case .showColorPalette, .showInkAttributes:
+            if tool != .pen && tool != .marker { selectTool(.pen) }
+            showingInkOptions = false
+            pencilMenuPoint = point
+            showingPencilMenu.toggle()
+        case .showContextualPalette:
+            showingInkOptions = false
             pencilMenuPoint = point
             showingPencilMenu.toggle()
         default: break // Disabled gestures and system shortcuts belong to the system.
