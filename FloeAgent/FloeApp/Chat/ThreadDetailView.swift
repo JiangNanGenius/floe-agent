@@ -101,7 +101,7 @@ struct ThreadDetailView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
         .navigationTitle(viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { stateToolbar }
+        .toolbar { if !embedded { stateToolbar } }
         .task {
             if !embedded { viewModel.selectedRunID = router.selectedRunID }
             await viewModel.load()
@@ -357,7 +357,7 @@ struct ThreadDetailView: View {
                         ThreadUsageFooter(summary: usage)
                     }
 
-                        if viewModel.events.isEmpty && viewModel.messages.isEmpty {
+                        if !embedded && viewModel.events.isEmpty && viewModel.messages.isEmpty {
                             ContentUnavailableView {
                                 Label("thread.empty", systemImage: "text.bubble")
                             } description: {
