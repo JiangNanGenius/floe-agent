@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 
 
 def sample_children(parent, destination):
@@ -60,11 +61,33 @@ def stop_group(process):
     process.wait()
 
 
+def sample_simulator(identifier, destination):
+    """Read only the explicitly selected test simulator; never stop its apps."""
+    if sys.platform != "darwin" or not identifier:
+        return
+    try:
+        rows = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
+        marker = f"/CoreSimulator/Devices/{identifier}/"
+        for row in rows.splitlines():
+            fields = row.strip().split(None, 1)
+            if len(fields) != 2 or marker not in fields[1]:
+                continue
+            if not any(name in fields[1] for name in ("Floe Agent.app/", "FloeAgentUITests-Runner.app/")):
+                continue
+            subprocess.run(["sample", fields[0], "3", "-file", str(destination / f"simulator-sample-{fields[0]}.txt")],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        subprocess.run(["xcrun", "simctl", "io", identifier, "screenshot", str(destination / "simulator-stalled.png")],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=900)
     parser.add_argument("--stall-timeout", type=float, default=180)
+    parser.add_argument("--simulator-id", type=lambda value: str(uuid.UUID(value)).upper())
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -73,7 +96,10 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=False)
     path = args.output_dir / "tests.log"
     start = last_output = time.monotonic()
-    seen_tests = execution_ready = sampled = False
+    seen_tests = sampled = False
+    # A prebuilt xctestrun has no compile stage. Its launch can stall before
+    # XCTest emits the first test, which still needs bounded diagnostics.
+    execution_ready = args.simulator_id is not None
     previous = b""
     reason = "exited"
     with path.open("wb") as log, path.open("rb") as reader:
@@ -84,7 +110,7 @@ def main():
                 if data:
                     sys.stdout.buffer.write(data)
                     sys.stdout.buffer.flush()
-                    seen_tests |= b"Test run started" in previous + data
+                    seen_tests |= any(marker in previous + data for marker in (b"Test run started", b"Test Suite ", b"Test Case "))
                     execution_ready |= seen_tests or b"Build complete!" in previous + data
                     previous = data[-128:]
                     last_output = time.monotonic()
@@ -97,9 +123,18 @@ def main():
                 if execution_ready and not sampled and now - last_output >= args.stall_timeout / 2:
                     print("\nTest output stalled; capturing owned test processes.", flush=True)
                     sample_children(process.pid, args.output_dir)
+                    sample_simulator(args.simulator_id, args.output_dir)
                     sampled = True
                 if now - start >= args.timeout or (execution_ready and now - last_output >= args.stall_timeout):
                     reason = "timeout" if now - start >= args.timeout else "stalled"
+                    if args.simulator_id:
+                        # Give xcodebuild a chance to finish its xcresult before
+                        # escalating cleanup to this driver's own process group.
+                        try:
+                            os.killpg(process.pid, signal.SIGINT)
+                            process.wait(timeout=30)
+                        except (ProcessLookupError, subprocess.TimeoutExpired):
+                            pass
                     stop_group(process)
                     sys.stdout.buffer.write(reader.read())
                     break

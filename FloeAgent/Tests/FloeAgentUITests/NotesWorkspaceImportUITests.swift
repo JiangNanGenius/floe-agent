@@ -48,6 +48,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         search.tap()
         search.typeText("Inline reading") // Text inside the PDF, absent from its filename.
         XCTAssertTrue(app.staticTexts["预览验收"].firstMatch.waitForExistence(timeout: 10))
+        // The title already existed before typing. Require the actual body-match
+        // snippet so an unchanged library cannot pass as a working search.
+        let snippet = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Inline reading")).firstMatch
+        XCTAssertTrue(snippet.waitForExistence(timeout: 10))
         capture("notes-document-body-search")
     }
 
