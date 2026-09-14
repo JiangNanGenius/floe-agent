@@ -31,7 +31,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         capture("notes-library")
         create.tap()
         app.buttons["notes.import.workspace"].tap()
-        let workspace = app.staticTexts["批量选择测试"].firstMatch
+        // The phone's offscreen sidebar retains a conversation with this same
+        // title. Select the import row's own identity, not a global text match.
+        let workspace = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
+            "workspace.import.source.", "批量选择测试"
+        )).firstMatch
         XCTAssertTrue(workspace.waitForExistence(timeout: 10))
         workspace.tap()
         let file = app.buttons["office.attachment.workspace.file.预览验收.pdf"]

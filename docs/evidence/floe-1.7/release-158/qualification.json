@@ -1,0 +1,9 @@
+{
+  "build": 158,
+  "tag": "v1.7.0-beta.15",
+  "source": "6d7457dd7437f27dfb1923870d925ba245cb003b",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34803874180",
+  "status": "CANCEL_REQUESTED_BEFORE_APP_ARCHIVE_AND_UPLOAD",
+  "reason": "Parallel a6a57e9 phone UI case selected the offscreen sidebar chat by duplicate title. Build 159 scopes the locator to the workspace-import row identity.",
+  "parallelRun": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34802103604"
+}
