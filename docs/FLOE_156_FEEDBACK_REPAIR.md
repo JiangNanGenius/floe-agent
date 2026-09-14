@@ -127,3 +127,14 @@ Actual iPad component navigation reached selected-project details and Python man
 shell 原生宿主新增动态注册回调的管道用例（索引 22），返回 `callback-resolved`、退出码 0 且执行线程停止。Debug 关闭可执行代码独立 dylib 后，该回调位于 ios_system 查找的主可执行文件。此结果不代替完整 App 的 Python/Node 注册回归。
 
 Whisper 补充中断验证：在测试宿主安装进度为 1,639,126 / 490,671,464 字节时，对该宿主进程发送 SIGKILL。重新启动未传入开始下载参数，由生产恢复入口自动继续；56 秒后报告 490,671,464 字节完成、无错误、文件重新校验通过。证据为 `validation/floe-156-feedback/speech-process-interruption.json`。这是模拟器中的进程中断与恢复，不是系统触发的真机后台回收验收。
+
+
+### 2026-09-14 native execution follow-up
+
+Full App run [34793895830](https://github.com/JiangNanGenius/floe-agent/actions/runs/34793895830), source `a8b57c5`, built on the development SDK and passed the separate App Store SDK compatibility build. App assertions ran 153 tests and reported 13 issues; the test driver subsequently timed out, leaving an incomplete xcresult. This is a failed qualification, not a release result.
+
+The actual failures identified argument re-parsing in `ios_execv` (JavaScript arrows became redirection), missing Dash exports at the runtime boundary, the upstream engine's PythonA/PythonB rewrite, missing cancellable sleep, and an empty dist-info directory left after uninstall. Dash now transports expanded arguments literally and passes exports through `ios_execve`; the production Python callback uses an internal command alias. Sleep is registered with cancellation. Uninstall prunes only empty parents of owned files; inventory tolerates empty remnants from older versions. Nonempty corrupt metadata still reports an error.
+
+The persistent CPython host also reproduced a negative import-finder cache after first-time installation. Refreshing import caches at execution entry fixed the real install-then-import failure. The native iPad simulator host now passes colorama 0.4.6 → 0.4.5 → 0.4.6, imports 0.4.6, uninstalls, and verifies no remaining dist-info directories. Evidence: `validation/floe-156-feedback/python-native-package-results.json`. The package ownership/rollback host suite passes 13 tests. Native Shell now passes 26 cases, including literal punctuation/empty/CJK arguments, exported variables and repeated Python alias dispatch; that host uses callback stubs and is not a substitute for the full App Python/Node tests.
+
+Cloud native Notes [34795345444](https://github.com/JiangNanGenius/floe-agent/actions/runs/34795345444), source `e7c8d23`, passes two XCTest cases on iPad and two on iPhone, using actual Vision OCR, Word indexing and persisted content search. Original OCR inputs and manifests are retained under `validation/floe-156-feedback/samples/notes-search/cloud`. These input images are not UI screenshots. Full App workspace-import UI and the repaired execution tests remain separate gates. CI now runs the built xctestrun directly to avoid re-resolving the package graph during test-without-building.

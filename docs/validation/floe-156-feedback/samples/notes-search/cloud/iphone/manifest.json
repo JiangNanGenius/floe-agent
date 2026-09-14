@@ -1,0 +1,26 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "35BDF225-C0A4-4109-B40A-8D2B8343268A",
+        "deviceName" : "iPhone 17 Pro",
+        "exportedFileName" : "91AD39EA-70AE-451E-B894-0950DDBF210E.txt",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "bilingual-Vision-OCR-output_0_9E292F58-896A-4E04-BEA5-58DEC9157BE3.txt",
+        "timestamp" : 1789349384.677
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "35BDF225-C0A4-4109-B40A-8D2B8343268A",
+        "deviceName" : "iPhone 17 Pro",
+        "exportedFileName" : "623FC3AD-89BC-40D4-8810-24BF0B3CC419.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "bilingual-scanned-page-original_0_F302D480-1C50-411A-A93B-2063510AA272.png",
+        "timestamp" : 1789349384.675
+      }
+    ],
+    "testIdentifier" : "NativeNotesTests/testScannedBilingualPageUsesRealVisionAndBecomesSearchable()",
+    "testIdentifierURL" : "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NativeNotesTests/testScannedBilingualPageUsesRealVisionAndBecomesSearchable"
+  }
+]

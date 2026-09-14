@@ -544,7 +544,19 @@ void FloeShellRegisterCommand(NSString *name) {
 #if FLOE_HAS_IOS_SYSTEM
     FloeEnsureEngineInitialized();
     replaceCommand(name, @"floe_shell_command_main", true);
+    // The pinned engine rewrites every command beginning with python into
+    // pythonA/pythonB framework names, even after replaceCommand. Dispatch
+    // Floe's single CPython service through an internal non-Python alias.
+    if ([name isEqualToString:@"python3"] || [name isEqualToString:@"python"]) {
+        replaceCommand([@"floe_runtime_" stringByAppendingString:name], @"floe_shell_command_main", true);
+    }
 #endif
+}
+
+extern "C" __attribute__((visibility("default"), used)) const char *floe_shell_command_alias(const char *name) {
+    if (strcmp(name, "python3") == 0) return "floe_runtime_python3";
+    if (strcmp(name, "python") == 0) return "floe_runtime_python";
+    return name;
 }
 
 NSString *FloeShellCurrentWorkingDirectory(void) {

@@ -1,0 +1,43 @@
+{
+  "sourceCommit": "e7c8d23571ebbbb726e4795415446e5605661c05",
+  "runURL": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34795345444",
+  "scope": "Native Notes importer, actual Vision and persistent content search; not full App navigation",
+  "devices": [
+    {
+      "device": "ipad",
+      "result": "Executed 2 tests, with 0 failures (0 unexpected) in 8.328 (8.334) seconds",
+      "files": [
+        {
+          "name": "ipad/B40339B5-2D4C-4B14-AB08-E8FE434306CF.txt",
+          "sha256": "ad2541c48d68108aa5ae5c316a5d94802a63f127aa421abc7aca2ac9de965ffd"
+        },
+        {
+          "name": "ipad/ECF559E8-CA63-4A1A-B92B-8FA7BD671577.png",
+          "sha256": "f8422ff88089e18a43feef875cb85cac593763e9fc66e6cf2d83652bd5e80f00"
+        },
+        {
+          "name": "ipad/manifest.json",
+          "sha256": "fef79815dfe019db5ae67eb4ada7a5aac9426673239db6f37e65f9fc3e95bc51"
+        }
+      ]
+    },
+    {
+      "device": "iphone",
+      "result": "Executed 2 tests, with 0 failures (0 unexpected) in 95.092 (95.100) seconds",
+      "files": [
+        {
+          "name": "iphone/623FC3AD-89BC-40D4-8810-24BF0B3CC419.png",
+          "sha256": "eaf1b82ac855d6047c0d90e349d50883b3380b7a57b79e5a481000fb8d78f725"
+        },
+        {
+          "name": "iphone/91AD39EA-70AE-451E-B894-0950DDBF210E.txt",
+          "sha256": "ad2541c48d68108aa5ae5c316a5d94802a63f127aa421abc7aca2ac9de965ffd"
+        },
+        {
+          "name": "iphone/manifest.json",
+          "sha256": "1fef539dd16666eb3eb2ec67a9451770639ff1510f8e20dcffb5d7d6cfdea9f0"
+        }
+      ]
+    }
+  ]
+}

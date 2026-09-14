@@ -71,6 +71,17 @@ def remove_distribution(root, name):
         raise
     finally:
         shutil.rmtree(backup)
+    # Inventory enumerates dist-info directories. Leaving an empty directory
+    # after removing METADATA makes the next inventory fail as a corrupt install.
+    # Only prune parents of owned files, deepest first; shared/unowned files keep
+    # their directories intact and the managed root itself is never removed.
+    parents = {parent for _, path in paths for parent in path.parents
+               if parent != root and parent.is_relative_to(root)}
+    for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
     return len(moved)
 
 

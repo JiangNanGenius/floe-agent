@@ -175,7 +175,8 @@ public func floeShellCommandMain(
     _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int32 {
     let rawName = argv?[0].map { String(cString: $0) } ?? "command"
-    let name = rawName.split(separator: "/").last.map(String.init) ?? rawName
+    let commandName = rawName.split(separator: "/").last.map(String.init) ?? rawName
+    let name = commandName == "floe_runtime_python3" ? "python3" : commandName == "floe_runtime_python" ? "python" : commandName
     guard let handler = FloeShellCommandRegistry.shared.handler(for: name) else {
         FloeShellWrite(FloeShellCurrentStderr(), "\(name): Floe has no local implementation\n")
         return 127
@@ -254,6 +255,30 @@ enum FloeShellCommands {
     static func install() {
         let registry = FloeShellCommandRegistry.shared
         registerPython(registry)
+        registry.register("python") { arguments, stdout, stderr in
+            guard let handler = registry.handler(for: "python3") else { return 127 }
+            return await handler(["python3"] + arguments.dropFirst(), stdout, stderr)
+        }
+        registry.register("sleep") { arguments, _, stderr in
+            var seconds = 0.0
+            guard arguments.count > 1 else { FloeShellWrite(stderr, "sleep: specify a duration\n"); return 2 }
+            for argument in arguments.dropFirst() {
+                let suffix = argument.last ?? "s"
+                let multiplier: Double = suffix == "m" ? 60 : suffix == "h" ? 3600 : suffix == "d" ? 86400 : 1
+                let number = "smhd".contains(suffix) ? String(argument.dropLast()) : argument
+                guard let value = Double(number), value.isFinite, value >= 0 else {
+                    FloeShellWrite(stderr, "sleep: invalid duration\n"); return 2
+                }
+                seconds += value * multiplier
+            }
+            guard seconds.isFinite, seconds <= 86400 else { FloeShellWrite(stderr, "sleep: duration exceeds one day\n"); return 2 }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+            while ContinuousClock.now < deadline {
+                if registry.context?.cancellation.isCancelled == true { return 130 }
+                do { try await Task.sleep(for: .milliseconds(25)) } catch { return 130 }
+            }
+            return 0
+        }
         registerHash(registry)
         registerNetwork(registry)
         registerPackages(registry)

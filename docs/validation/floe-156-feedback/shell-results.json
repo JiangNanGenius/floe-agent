@@ -1,186 +1,210 @@
 [
   {
-    "workerStopped" : true,
-    "stderr" : "",
-    "exit" : 0,
     "stdout" : "scoped",
+    "stderr" : "",
     "index" : 2,
-    "status" : 0
-  },
-  {
+    "workerStopped" : true,
     "status" : 0,
-    "stdout" : "unset",
-    "workerStopped" : true,
-    "index" : 3,
-    "exit" : 0,
-    "stderr" : ""
-  },
-  {
-    "stderr" : "",
-    "status" : 0,
-    "stdout" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "workerStopped" : true,
-    "exit" : 7,
-    "index" : 1
-  },
-  {
-    "index" : 0,
-    "exit" : 0,
-    "workerStopped" : true,
-    "stdout" : "HELLO\nWORLD\n",
-    "stderr" : "",
-    "status" : 0
-  },
-  {
-    "exit" : 0,
-    "status" : 0,
-    "workerStopped" : true,
-    "stdout" : "FIRST\nTWO\n",
-    "stderr" : "",
-    "index" : 4
-  },
-  {
-    "status" : 0,
-    "exit" : 127,
-    "stderr" : "dash: 1: floe_nonexistent_command_qualification: not found\n",
-    "index" : 5,
-    "stdout" : "",
-    "workerStopped" : true
-  },
-  {
-    "status" : 3,
-    "exit" : 130,
-    "stdout" : "",
-    "index" : 6,
-    "stderr" : "",
-    "workerStopped" : true
-  },
-  {
-    "exit" : 0,
-    "status" : 0,
-    "workerStopped" : true,
-    "index" : 7,
-    "stdout" : "after-cancel\n",
-    "stderr" : ""
-  },
-  {
-    "index" : 8,
-    "stdout" : "",
-    "status" : 2,
-    "exit" : 130,
-    "stderr" : "",
-    "workerStopped" : true
-  },
-  {
-    "stdout" : "",
-    "workerStopped" : true,
-    "stderr" : "dash: 1: floe_missing_pipeline_command: not found\n",
-    "index" : 9,
-    "exit" : 127,
-    "status" : 0
-  },
-  {
-    "workerStopped" : true,
-    "stdout" : "after_missing_pipe",
-    "status" : 0,
-    "stderr" : "",
-    "index" : 10,
     "exit" : 0
   },
   {
+    "stdout" : "unset",
+    "workerStopped" : true,
+    "exit" : 0,
+    "index" : 3,
+    "stderr" : "",
+    "status" : 0
+  },
+  {
+    "exit" : 7,
+    "stderr" : "",
     "status" : 0,
-    "stderr" : "dash: 1: floe-missing-command: not found\n",
+    "index" : 1,
+    "stdout" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "workerStopped" : true
+  },
+  {
+    "stderr" : "",
+    "workerStopped" : true,
+    "status" : 0,
+    "index" : 0,
+    "exit" : 0,
+    "stdout" : "HELLO\nWORLD\n"
+  },
+  {
+    "index" : 4,
+    "status" : 0,
+    "stderr" : "",
+    "exit" : 0,
+    "workerStopped" : true,
+    "stdout" : "FIRST\nTWO\n"
+  },
+  {
+    "status" : 0,
+    "exit" : 127,
+    "index" : 5,
+    "stdout" : "",
+    "stderr" : "dash: 1: floe_nonexistent_command_qualification: not found\n",
+    "workerStopped" : true
+  },
+  {
+    "index" : 6,
+    "workerStopped" : true,
+    "exit" : 130,
+    "stdout" : "",
+    "stderr" : "",
+    "status" : 3
+  },
+  {
+    "status" : 0,
+    "exit" : 0,
+    "stderr" : "",
+    "index" : 7,
+    "workerStopped" : true,
+    "stdout" : "after-cancel\n"
+  },
+  {
+    "exit" : 130,
+    "status" : 2,
+    "stderr" : "",
+    "stdout" : "",
+    "index" : 8,
+    "workerStopped" : true
+  },
+  {
+    "stdout" : "",
+    "index" : 9,
+    "exit" : 127,
+    "stderr" : "dash: 1: floe_missing_pipeline_command: not found\n",
+    "status" : 0,
+    "workerStopped" : true
+  },
+  {
+    "exit" : 0,
+    "index" : 10,
+    "status" : 0,
+    "stderr" : "",
+    "workerStopped" : true,
+    "stdout" : "after_missing_pipe"
+  },
+  {
+    "workerStopped" : true,
     "index" : 11,
     "stdout" : "",
-    "workerStopped" : true,
-    "exit" : 127
+    "status" : 0,
+    "exit" : 127,
+    "stderr" : "dash: 1: floe-missing-command: not found\n"
   },
   {
     "index" : 12,
-    "stderr" : "",
+    "status" : 0,
+    "exit" : 0,
     "stdout" : "after_expanded_missing",
     "workerStopped" : true,
-    "status" : 0,
-    "exit" : 0
-  },
-  {
-    "status" : 0,
-    "exit" : 2,
-    "stderr" : "dash: 1: builtin pipeline consumers are not supported by this iOS shell; use a script or redirect a ",
-    "workerStopped" : true,
-    "index" : 13,
-    "stdout" : ""
-  },
-  {
-    "index" : 14,
-    "exit" : 0,
-    "stderr" : "",
-    "status" : 0,
-    "workerStopped" : true,
-    "stdout" : "after_builtin_consumer"
-  },
-  {
-    "index" : 15,
-    "exit" : 0,
-    "stdout" : "variable-consumer",
-    "workerStopped" : true,
-    "status" : 0,
     "stderr" : ""
   },
   {
+    "stderr" : "dash: 1: builtin pipeline consumers are not supported by this iOS shell; use a script or redirect a ",
+    "index" : 13,
     "workerStopped" : true,
-    "index" : 16,
-    "status" : 0,
-    "exit" : 127,
+    "exit" : 2,
     "stdout" : "",
-    "stderr" : "dash: 1: floe-missing-middle: not found\n"
+    "status" : 0
+  },
+  {
+    "stderr" : "",
+    "index" : 14,
+    "status" : 0,
+    "exit" : 0,
+    "stdout" : "after_builtin_consumer",
+    "workerStopped" : true
   },
   {
     "exit" : 0,
-    "stderr" : "",
+    "status" : 0,
+    "stdout" : "variable-consumer",
     "workerStopped" : true,
+    "stderr" : "",
+    "index" : 15
+  },
+  {
+    "index" : 16,
+    "exit" : 127,
+    "stderr" : "dash: 1: floe-missing-middle: not found\n",
+    "stdout" : "",
+    "workerStopped" : true,
+    "status" : 0
+  },
+  {
     "stdout" : "after_missing_middle",
+    "stderr" : "",
+    "exit" : 0,
+    "workerStopped" : true,
     "index" : 17,
     "status" : 0
   },
   {
     "stderr" : "dash: 0: compound pipeline consumers are not supported by this iOS shell; use a Python\/Node script o",
-    "exit" : 2,
-    "index" : 18,
     "workerStopped" : true,
+    "stdout" : "",
+    "index" : 18,
     "status" : 0,
-    "stdout" : ""
+    "exit" : 2
   },
   {
-    "status" : 0,
-    "stdout" : "after_compound_consumer",
+    "index" : 19,
     "workerStopped" : true,
     "exit" : 0,
-    "stderr" : "",
-    "index" : 19
+    "stdout" : "after_compound_consumer",
+    "status" : 0,
+    "stderr" : ""
   },
   {
     "status" : 2,
     "index" : 20,
-    "stdout" : "datadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadata",
-    "exit" : 130,
+    "workerStopped" : true,
     "stderr" : "",
-    "workerStopped" : true
+    "exit" : 130,
+    "stdout" : "datadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadatadata"
   },
   {
-    "stdout" : "after_pipeline_timeout",
-    "stderr" : "",
-    "status" : 0,
     "index" : 21,
+    "stdout" : "after_pipeline_timeout",
+    "status" : 0,
+    "stderr" : "",
     "workerStopped" : true,
     "exit" : 0
   },
   {
-    "exit" : 0,
-    "stdout" : "callback-resolved\n",
-    "workerStopped" : true,
     "stderr" : "",
+    "workerStopped" : true,
+    "stdout" : "callback-resolved\n",
     "index" : 22,
-    "status" : 0
+    "status" : 0,
+    "exit" : 0
+  },
+  {
+    "stderr" : "",
+    "workerStopped" : true,
+    "status" : 0,
+    "exit" : 0,
+    "stdout" : "a=>b|c;d>e<g  中文\n",
+    "index" : 23
+  },
+  {
+    "status" : 0,
+    "stderr" : "",
+    "workerStopped" : true,
+    "index" : 24,
+    "exit" : 0,
+    "stdout" : "exported\n"
+  },
+  {
+    "stdout" : "first\nsecond\n",
+    "workerStopped" : true,
+    "index" : 25,
+    "status" : 0,
+    "exit" : 0,
+    "stderr" : ""
   }
 ]

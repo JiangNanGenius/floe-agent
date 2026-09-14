@@ -1,0 +1,553 @@
+{
+  "name": "FloePythonSmoke",
+  "options": {
+    "deploymentTarget": {
+      "iOS": "26.0"
+    }
+  },
+  "targets": {
+    "FloePythonSmoke": {
+      "type": "application",
+      "platform": "iOS",
+      "sources": [
+        "App",
+        {
+          "path": "../../FloeApp/Execution/FloeCPythonBridge.m"
+        },
+        {
+          "path": "../../FloeApp/Execution/FloeTLSConfiguration.m"
+        },
+        {
+          "path": "../../FloeApp/Resources/python",
+          "type": "folder",
+          "buildPhase": "resources"
+        },
+        {
+          "path": "../../Sources/FloeExecution/Resources/managed_package_install.py",
+          "buildPhase": "resources"
+        },
+        {
+          "path": "../../Sources/FloeExecution/Resources/managed_package_remove.py",
+          "buildPhase": "resources"
+        }
+      ],
+      "dependencies": [
+        {
+          "framework": "../../Vendor/Python.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_asyncio.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_bisect.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_blake2.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_bounded_integers.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_brotli.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_bz2.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_codecs_cn.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_codecs_hk.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_codecs_iso2022.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_codecs_jp.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_codecs_kr.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_codecs_tw.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_common.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_contextvars.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_csv.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_ctypes.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_datetime.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_dbm.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_decimal.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_elementtree.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_generator.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_hashlib.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_heapq.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_imaging.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_imagingft.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_imagingmath.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_imagingmorph.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_imagingtk.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_json.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_lsprof.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_lzma.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_md5.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_mt19937.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_multiarray_tests.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_multiarray_umath.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_multibytecodec.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_opcode.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_operand_flag_tests.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_pcg64.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_philox.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_pickle.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_pocketfft_umath.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_queue.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_random.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_rational_tests.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_sfc64.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_sha1.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_sha2.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_sha3.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_simd.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_socket.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_sqlite3.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_ssl.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_statistics.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_struct.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_struct_ufunc_tests.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_umath_linalg.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_umath_tests.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_uuid.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/_zoneinfo.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/array.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/binascii.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/bit_generator.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/cmath.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/fcntl.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/frozenlist__frozenlist.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/greenlet__greenlet.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/lapack_lite.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/math.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/mmap.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/mtrand.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/multidict__multidict.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs__cyutility.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_algos.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_arrays.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_byteswap.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_groupby.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_hashing.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_hashtable.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_index.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_indexing.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_internals.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_interval.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_join.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_json.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_lib.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_missing.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_ops.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_ops_dispatch.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_pandas_datetime.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_pandas_parser.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_parsers.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_properties.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_reshape.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_sas.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_sparse.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_testing.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslib.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_base.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_ccalendar.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_conversion.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_dtypes.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_fields.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_nattype.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_np_datetime.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_offsets.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_parsing.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_period.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_strptime.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_timedeltas.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_timestamps.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_timezones.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_tzconversion.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_tslibs_vectorized.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_window_aggregations.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_window_indexers.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pandas__libs_writers.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/pyexpat.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/regex__regex.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/resource.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/select.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/termios.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/unicodedata.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/zlib.xcframework",
+          "embed": true
+        },
+        {
+          "framework": "../../Vendor/PythonExtensions/zstandard_backend_c.xcframework",
+          "embed": true
+        }
+      ],
+      "settings": {
+        "base": {
+          "PRODUCT_BUNDLE_IDENTIFIER": "dev.floe.python-smoke",
+          "GENERATE_INFOPLIST_FILE": true,
+          "SWIFT_VERSION": "6.0",
+          "SWIFT_OBJC_BRIDGING_HEADER": "../../FloeApp/Execution/FloeCPythonBridge.h",
+          "CODE_SIGNING_ALLOWED": false,
+          "TARGETED_DEVICE_FAMILY": "1,2",
+          "INFOPLIST_KEY_UILaunchScreen_Generation": true
+        }
+      }
+    }
+  }
+}

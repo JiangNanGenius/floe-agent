@@ -1,0 +1,113 @@
+[
+  {
+    "metadataDirectories" : [
+      {
+        "entries" : [
+          "RECORD",
+          "licenses",
+          "WHEEL",
+          "REQUESTED",
+          "INSTALLER",
+          "METADATA"
+        ],
+        "metadataExists" : true,
+        "name" : "colorama-0.4.6.dist-info"
+      }
+    ],
+    "response" : {
+      "durationMs" : 4589,
+      "error" : "",
+      "resultJSON" : null,
+      "status" : "ok",
+      "stderr" : "",
+      "stderrTruncated" : false,
+      "stdout" : "Collecting colorama==0.4.6\n  Downloading colorama-0.4.6-py2.py3-none-any.whl.metadata (17 kB)\nDownloading colorama-0.4.6-py2.py3-none-any.whl (25 kB)\nInstalling collected packages: colorama\nSuccessfully installed colorama-0.4.6\nmanagedPackages=colorama==0.4.6\nresolvedDistributions=colorama\n",
+      "truncated" : false
+    },
+    "version" : "0.4.6"
+  },
+  {
+    "metadataDirectories" : [
+      {
+        "entries" : [
+          "RECORD",
+          "WHEEL",
+          "top_level.txt",
+          "LICENSE.txt",
+          "REQUESTED",
+          "INSTALLER",
+          "METADATA"
+        ],
+        "metadataExists" : true,
+        "name" : "colorama-0.4.5.dist-info"
+      }
+    ],
+    "response" : {
+      "durationMs" : 1492,
+      "error" : "",
+      "resultJSON" : null,
+      "status" : "ok",
+      "stderr" : "",
+      "stderrTruncated" : false,
+      "stdout" : "Collecting colorama==0.4.5\n  Downloading colorama-0.4.5-py2.py3-none-any.whl.metadata (15 kB)\nDownloading colorama-0.4.5-py2.py3-none-any.whl (16 kB)\nInstalling collected packages: colorama\nSuccessfully installed colorama-0.4.5\nmanagedPackages=colorama==0.4.5\nresolvedDistributions=colorama\n",
+      "truncated" : false
+    },
+    "version" : "0.4.5"
+  },
+  {
+    "metadataDirectories" : [
+      {
+        "entries" : [
+          "RECORD",
+          "licenses",
+          "WHEEL",
+          "REQUESTED",
+          "INSTALLER",
+          "METADATA"
+        ],
+        "metadataExists" : true,
+        "name" : "colorama-0.4.6.dist-info"
+      }
+    ],
+    "response" : {
+      "durationMs" : 1410,
+      "error" : "",
+      "resultJSON" : null,
+      "status" : "ok",
+      "stderr" : "",
+      "stderrTruncated" : false,
+      "stdout" : "Collecting colorama==0.4.6\n  Using cached colorama-0.4.6-py2.py3-none-any.whl.metadata (17 kB)\nUsing cached colorama-0.4.6-py2.py3-none-any.whl (25 kB)\nInstalling collected packages: colorama\nSuccessfully installed colorama-0.4.6\nmanagedPackages=colorama==0.4.6\nresolvedDistributions=colorama\n",
+      "truncated" : false
+    },
+    "version" : "0.4.6"
+  },
+  {
+    "response" : {
+      "durationMs" : 57,
+      "error" : "",
+      "resultJSON" : null,
+      "status" : "ok",
+      "stderr" : "",
+      "stderrTruncated" : false,
+      "stdout" : "0.4.6\n",
+      "truncated" : false
+    },
+    "step" : "import"
+  },
+  {
+    "remainingDistributions" : [
+
+    ],
+    "response" : {
+      "durationMs" : 191,
+      "error" : "",
+      "resultJSON" : null,
+      "status" : "ok",
+      "stderr" : "",
+      "stderrTruncated" : false,
+      "stdout" : "uninstalled=colorama\nfilesRemoved=19\n",
+      "truncated" : false
+    },
+    "step" : "remove"
+  }
+]

@@ -230,13 +230,14 @@ jobs:
       - name: Run Canvas, PiP, timeline and execution regressions
         timeout-minutes: 20
         run: |
+          xctestrun=$(find FloeAgent-AppRegressionBuild/Build/Products -maxdepth 1 -name '*.xctestrun' -print -quit)
+          test -n "$xctestrun"
           xcodebuild \
+            -xctestrun "$xctestrun" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
-            -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
-            -derivedDataPath FloeAgent-AppRegressionBuild \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
             -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
@@ -262,11 +263,12 @@ jobs:
         run: |
           set -o pipefail
           status=0
+          xctestrun=$(find FloeAgent-AppRegressionBuild/Build/Products -maxdepth 1 -name '*.xctestrun' -print -quit)
+          test -n "$xctestrun"
           for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
             case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
-            xcodebuild -skipPackagePluginValidation -skipMacroValidation -scheme FloeAgent \
+            xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
               -destination "platform=iOS Simulator,name=$device" \
-              -derivedDataPath FloeAgent-AppRegressionBuild \
               -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
               -parallel-testing-enabled NO -test-timeouts-enabled YES \

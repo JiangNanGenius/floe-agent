@@ -1,0 +1,26 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+        "deviceName" : "iPad mini (A17 Pro)",
+        "exportedFileName" : "B40339B5-2D4C-4B14-AB08-E8FE434306CF.txt",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "bilingual-Vision-OCR-output_0_4F44F3D1-4296-4F9B-8C3C-2C9A50D0DCC7.txt",
+        "timestamp" : 1789349120.668
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+        "deviceName" : "iPad mini (A17 Pro)",
+        "exportedFileName" : "ECF559E8-CA63-4A1A-B92B-8FA7BD671577.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "bilingual-scanned-page-original_0_E86FE9B6-7CB7-4033-8A5A-10019F97CAB9.png",
+        "timestamp" : 1789349120.667
+      }
+    ],
+    "testIdentifier" : "NativeNotesTests/testScannedBilingualPageUsesRealVisionAndBecomesSearchable()",
+    "testIdentifierURL" : "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NativeNotesTests/testScannedBilingualPageUsesRealVisionAndBecomesSearchable"
+  }
+]

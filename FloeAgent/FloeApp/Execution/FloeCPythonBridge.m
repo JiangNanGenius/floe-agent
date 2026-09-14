@@ -307,6 +307,9 @@ static BOOL FloeEnsurePython(NSError **error) {
         " _os.environ.update(_floe_context.get('environment',{}))\n"
         " _sys.path[:]=_floe_search+_floe_path\n"
         " if _floe_context.get('workingDirectory'): _sys.path.insert(0,_floe_context['workingDirectory'])\n"
+        // Package transactions replace directory generations. The persistent
+        // interpreter may retain a negative finder for a previously absent root.
+        " __import__('importlib').invalidate_caches()\n"
         " if 'standardInput' in _floe_context: _sys.stdin=_io.TextIOWrapper(_io.BytesIO(_floe_context['standardInput'].encode('utf-8')),encoding='utf-8')\n"
         " if 'arguments' in _floe_context: _sys.argv=_floe_context['arguments']\n"
         " _floe_globals={'__builtins__':__builtins__,'__name__':'__main__','printJSON':_floe_printJSON}\n"

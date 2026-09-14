@@ -97,6 +97,8 @@ class PayloadTests(unittest.TestCase):
             self.assertTrue((root / 'shared.py').exists())
             self.assertFalse((root / 'only.py').exists())
             self.assertFalse((root / 'my_package-1.0.dist-info/METADATA').exists())
+            self.assertFalse((root / 'my_package-1.0.dist-info').exists())
+            self.assertTrue((root / 'other-1.0.dist-info/METADATA').exists())
 
     def test_remove_entrypoint_uses_selected_environment_and_decoded_input(self):
         with tempfile.TemporaryDirectory() as directory:

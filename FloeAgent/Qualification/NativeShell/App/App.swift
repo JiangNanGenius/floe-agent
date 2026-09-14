@@ -6,6 +6,7 @@ import Darwin
 func runSmoke() {
  let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
  FloeShellRegisterCommand("floe_qualification_echo")
+ FloeShellRegisterCommand("python3")
  var results: [[String: Any]] = []
  try? Data("[]".utf8).write(to: root.appendingPathComponent("shell-results.json"), options: .atomic)
  let commands = ["dash -c 'for x in hello world; do echo \"$x\"; done | tr a-z A-Z'", "dash -c 'cat; exit 7'", "dash -c 'printf %s \"$FLOE_SHELL_TEST_SCOPE\"'", "dash -c 'printf %s \"${FLOE_SHELL_TEST_SCOPE-unset}\"'"]
@@ -17,7 +18,10 @@ func runSmoke() {
  expanded += ["dash -c 'cmd=cat; printf variable-consumer | \"$cmd\"'", "dash -c 'printf data | floe-missing-middle | cat'", "dash -c 'printf after_missing_middle'", "dash -c 'printf data | while read x; do echo \"$x\"; done'", "dash -c 'printf after_compound_consumer'"]
  expanded += ["dash -c 'while :; do printf data; done | cat'", "dash -c 'printf after_pipeline_timeout'"]
  expanded += ["dash -c 'floe_qualification_echo callback-resolved | cat'"]
- for index in [2, 3, 1, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
+ expanded += [#"dash -c 'floe_qualification_echo "a=>b|c;d>e<g" "" "中文"'"#]
+ expanded += ["dash -c 'export FLOE_SHELL_TEST_SCOPE=exported; floe_qualification_echo --environment'"]
+ expanded += ["dash -c 'python3 first; python3 second'"]
+ for index in [2, 3, 1, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25] {
   let command = expanded[index]
   var out: NSString?, err: NSString?, code: Int32 = -1
   let env: [String: String] = index == 2 ? ["FLOE_SHELL_TEST_SCOPE": "scoped"] : [:]
@@ -61,7 +65,11 @@ func runInteractiveSmoke() {
 @_cdecl("floe_shell_command_main")
 public func commandMain(_ argc: Int32, _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32 {
  let arguments = (0..<Int(argc)).compactMap { argv?[$0].map { String(cString: $0) } }
- guard arguments.first == "floe_qualification_echo" else { return 127 }
+ guard ["floe_qualification_echo", "python3", "floe_runtime_python3"].contains(arguments.first ?? "") else { return 127 }
+ if arguments.dropFirst().first == "--environment" {
+  FloeShellWrite(FloeShellCurrentStdout(), (FloeShellCurrentEnvironment()["FLOE_SHELL_TEST_SCOPE"] ?? "unset") + "\n")
+  return 0
+ }
  FloeShellWrite(FloeShellCurrentStdout(), arguments.dropFirst().joined(separator: " ") + "\n")
  return 0
 }

@@ -67,6 +67,7 @@
 #endif
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
+#include <dlfcn.h>
 #define EV_NOFORK 4 /* don't wait after starting a command -- required for pipes */
 #endif
 
@@ -78,6 +79,31 @@ int evalskip;			/* set if we are skipping commands */
 static int floe_pipeline_pid = -1;
 static int floe_async_consumer = 0;
 static int floe_async_consumer_failed = 0;
+
+/* ios_execv serializes argv back into a command string. Its default quoting
+ * only protects arguments containing spaces, so JS arrows, pipes and quotes
+ * can be parsed as shell syntax a second time. Use the engine's literal
+ * argument delimiter for every already-expanded argument. Prepare before
+ * ios_fork: a rejected argument must not leave an unpublished PID behind. */
+static char **floe_prepare_argv(char **argv)
+{
+    size_t count = 0;
+    while (argv[count]) count++;
+    char **prepared = stalloc((count + 1) * sizeof(char *));
+    const char *(*alias)(const char *) = dlsym(RTLD_DEFAULT, "floe_shell_command_alias");
+    prepared[0] = (char *)(alias ? alias(argv[0]) : argv[0]);
+    for (size_t i = 1; i < count; i++) {
+        if (strchr(argv[i], 0x1e)) sh_error("command argument contains reserved transport character");
+        size_t length = strlen(argv[i]);
+        prepared[i] = stalloc(length + 3);
+        prepared[i][0] = 0x1e;
+        memcpy(prepared[i] + 1, argv[i], length);
+        prepared[i][length + 1] = 0x1e;
+        prepared[i][length + 2] = 0;
+    }
+    prepared[count] = NULL;
+    return prepared;
+}
 #endif
 STATIC int skipcount;		/* number of levels to skip */
 MKINIT int loopnest;		/* current loop nesting level */
@@ -996,9 +1022,12 @@ bail:
 
 	default:
 #if TARGET_OS_IPHONE
+        {
+        char **prepared = floe_prepare_argv(argv);
+        char **exported = environment();
 		if (!(flags & EV_NOFORK)) {
 			int pid = ios_fork();
-			ios_execv(argv[0], argv);
+			ios_execve(prepared[0], prepared, exported);
 			ios_waitpid(pid);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
@@ -1007,9 +1036,10 @@ bail:
 			break;
 		} else {
             if (floe_pipeline_pid < 0) floe_pipeline_pid = ios_fork();
-			ios_execv(argv[0], argv);
+			ios_execve(prepared[0], prepared, exported);
 			break;
 		}
+        }
 #else 		
 		/* Fork off a child process if necessary. */
 		if (!(flags & EV_EXIT) || have_traps()) {
@@ -1292,8 +1322,10 @@ execcmd(int argc, char **argv)
 		mflag = 0;
 		optschanged();
 #if TARGET_OS_IPHONE
+		char **prepared = floe_prepare_argv(argv + 1);
+		char **exported = environment();
 		int pid = ios_fork();
-		ios_execv(argv[1], argv+1);
+		ios_execve(prepared[0], prepared, exported);
 		ios_waitpid(pid);
 		ios_stopInteractive(); 
 #else 		
