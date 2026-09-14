@@ -20,7 +20,7 @@ Release App tests now retain bounded stall diagnostics for both SDKs. Their comp
 
 ## Toolbar and Pencil follow-up — build 161 in qualification
 
-Candidate `178c89a2d6a7e08aeaeaa6fa47a414f7e5c3b902` / `v1.7.0-beta.18` is running [release qualification 34811854023](https://github.com/JiangNanGenius/floe-agent/actions/runs/34811854023). It is not yet distributed.
+Candidate `178c89a2d6a7e08aeaeaa6fa47a414f7e5c3b902` / `v1.7.0-beta.18` is running [release qualification 34811854023](https://github.com/JiangNanGenius/floe-agent/actions/runs/34811854023). It is not yet distributed. Its [1,266 Swift/module executions](evidence/floe-1.7/release-161/swift-qualification.json) passed (1,164 main, 12 JavaScript engine, 12 JavaScript tool, 61 platform, 17 Notes); full App and UI qualification remain pending. Build 160 also passed the same scoped counts and its SDK 27 simulator Release compile; this does not establish test-host shutdown or distribution.
 
 The extra Notes navigation row is removed. Return, title/save state and document actions share the editor header; compact layouts put secondary document actions in a menu. Office keeps its own navigation toolbar. A native `UIPencilInteraction` receives ended squeezes and double taps, respects disabled/system-shortcut preferences, switches eraser/previous tool or presents a palette at the normalized hover position. The palette provides tools, ink color/width and undo/redo; a toolbar button exposes the same controls without Pencil Pro. Finger drawing stays opt-in.
 
