@@ -12,6 +12,21 @@ import os
 /// Category-tagged logger. Never log secrets: providers redact credentials
 /// before constructing log messages.
 public struct FloeLogger: Sendable {
+    public enum Level: String, CaseIterable, Sendable {
+        case debug, info, warning, error
+
+        public func includes(_ level: Level) -> Bool {
+            let levels = Self.allCases
+            return levels.firstIndex(of: level)! >= levels.firstIndex(of: self)!
+        }
+    }
+
+    public static let levelPreferenceKey = "diagnostics.minimumLogLevel"
+
+    public static var minimumLevel: Level {
+        get { Level(rawValue: UserDefaults.standard.string(forKey: levelPreferenceKey) ?? "") ?? .info }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: levelPreferenceKey) }
+    }
     public enum Category: String, Sendable {
         case core, providers, runtime, tools, persistence, security, sync, ssh, vnc, app
     }
@@ -175,6 +190,7 @@ public struct FloeLogger: Sendable {
     }
 
     public func debug(_ message: @autoclosure () -> String) {
+        guard Self.minimumLevel.includes(.debug) else { return }
         let resolved = message()
         let redacted = SecretRedactor.redact(resolved)
         Self.buffer.append(Entry(
@@ -187,6 +203,7 @@ public struct FloeLogger: Sendable {
     }
 
     public func info(_ message: @autoclosure () -> String) {
+        guard Self.minimumLevel.includes(.info) else { return }
         let resolved = message()
         let redacted = SecretRedactor.redact(resolved)
         Self.buffer.append(Entry(
@@ -199,6 +216,7 @@ public struct FloeLogger: Sendable {
     }
 
     public func warning(_ message: @autoclosure () -> String) {
+        guard Self.minimumLevel.includes(.warning) else { return }
         let resolved = message()
         let redacted = SecretRedactor.redact(resolved)
         Self.buffer.append(Entry(

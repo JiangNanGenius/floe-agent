@@ -196,22 +196,16 @@ final class FloePlatformServices: @unchecked Sendable {
                     containerRoot: context.environment?.writableLayerURL ?? context.rootURL,
                     workspaceRoot: context.rootURL
                 )
-                var stdin: String?
-                if let input = FloeShellCommandRegistry.input, !context.interactiveSession, !input.isTerminal,
-                   !["-v", "--version", "--help", "-h"].contains(userArguments.first ?? "") {
-                    guard let value = await input.readAsync(cancellation: context.cancellation) else {
-                        if context.cancellation.isCancelled { return 130 }
-                        FloeShellWrite(stderr, "\(name): stdin exceeds 256 KiB or could not be read\n")
-                        return 2
-                    }
-                    stdin = value
-                }
                 var variables = environment.merging(context.environment?.variables ?? [:]) { _, resolved in resolved }
                     .merging(context.shellVariables) { _, shell in shell }
                 // Ownership metadata is supplied by the resolver, never by an export.
                 if let id = context.environment?.id { variables["FLOE_ENVIRONMENT_ID"] = id }
                 let liveInput: Int32?
-                if context.interactiveSession, let stream = FloeShellCommandRegistry.input?.stream {
+                // Do not drain stdin before starting Node. A script may never
+                // read it, or may produce output before its producer sends EOF.
+                // The native pump retains its own descriptor and stops when
+                // the Worker exits, including cancellation and timeout.
+                if let stream = FloeShellCommandRegistry.input?.stream {
                     liveInput = fileno(stream)
                 } else { liveInput = nil }
                 let request = NodeRunRequest(
@@ -219,7 +213,7 @@ final class FloePlatformServices: @unchecked Sendable {
                     arguments: userArguments,
                     workingDirectory: context.workingDirectory,
                     environment: variables,
-                    stdin: stdin,
+                    stdin: nil,
                     stdinFileDescriptor: liveInput,
                     timeout: 300,
                     maxOutputBytes: 256 * 1024

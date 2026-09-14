@@ -77,29 +77,35 @@ public actor EnvironmentManagementService {
                   ([source.suite] + source.components).allSatisfy({ !$0.isEmpty && $0.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil }) else {
                 throw FloeError.validationFailed("请输入 HTTPS 软件源地址，以及有效的发行版和组件")
             }
-            if armoredKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let replacingID,
-               let old = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true).first(where: { $0.id == replacingID }),
-               let path = old.signedBy, path.hasPrefix("etc/apt/keyrings/") {
-                let url = try AptSources.confinedURL(path, root: container.layerURL)
-                guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 1_048_576 else {
-                    throw FloeError.validationFailed("公钥文件超过 1 MB")
+            var receipt = "已保存无签名软件源；仅对此源信任"
+            if source.trusted {
+                source.signedBy = nil
+            } else {
+                if armoredKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let replacingID,
+                   let old = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true).first(where: { $0.id == replacingID }),
+                   let path = old.signedBy, path.hasPrefix("etc/apt/keyrings/") {
+                    let url = try AptSources.confinedURL(path, root: container.layerURL)
+                    guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 1_048_576 else {
+                        throw FloeError.validationFailed("公钥文件超过 1 MB")
+                    }
+                    armoredKey = try String(contentsOf: url, encoding: .utf8)
                 }
-                armoredKey = try String(contentsOf: url, encoding: .utf8)
+                guard armoredKey.utf8.count <= 1_048_576 else { throw FloeError.validationFailed("公钥文件超过 1 MB") }
+                let keys = try OpenPGP.parseKeyring(Data(armoredKey.utf8))
+                guard let key = keys.first, !key.revoked, key.signingKey != nil else {
+                    throw FloeError.validationFailed("请提供有效的 OpenPGP 签名公钥")
+                }
+                let keyPath = "etc/apt/keyrings/" + key.primary.fingerprint + ".asc"
+                let target = try AptSources.confinedURL(keyPath, root: container.layerURL)
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(armoredKey.utf8).write(to: target, options: .atomic)
+                source.signedBy = keyPath; source.trusted = false
+                receipt = "已保存软件源；签名指纹：" + key.primary.fingerprint
             }
-            guard armoredKey.utf8.count <= 1_048_576 else { throw FloeError.validationFailed("公钥文件超过 1 MB") }
-            let keys = try OpenPGP.parseKeyring(Data(armoredKey.utf8))
-            guard let key = keys.first, !key.revoked, key.signingKey != nil else {
-                throw FloeError.validationFailed("请提供有效的 OpenPGP 签名公钥")
-            }
-            let keyPath = "etc/apt/keyrings/" + key.primary.fingerprint + ".asc"
-            let target = try AptSources.confinedURL(keyPath, root: container.layerURL)
-            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(armoredKey.utf8).write(to: target, options: .atomic)
-            source.signedBy = keyPath; source.trusted = false
             var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
             sources.removeAll { $0.id == source.id || $0.id == replacingID }; sources.append(source)
             try AptSources.write(sources, toContainer: container.layerURL, replacingAll: true)
-            return "已保存软件源；签名指纹：" + key.primary.fingerprint
+            return receipt
         case .deleteSource(let sourceID):
             var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
             sources.removeAll { $0.id == sourceID }

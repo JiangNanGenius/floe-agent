@@ -8,6 +8,56 @@ import FloeTools
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test(.timeLimit(.minutes(1))) func nodeServiceSurvivesForegroundCommandsAndStopsOnlyItsOwner() async throws {
+        let runtime = IOSSystemNodeRuntime.shared
+        let owner = "service-test-\(UUID().uuidString)"
+        let root = FileManager.default.temporaryDirectory
+        let started = await runtime.startService(.init(entryScript: nil, arguments: ["-e", """
+            const server = require('node:http').createServer((req,res) => res.end('service-response'));
+            server.listen(0,'127.0.0.1',() => console.log(server.address().port));
+            """], workingDirectory: root, environment: ["FLOE_ENVIRONMENT_ID": owner]), environmentID: owner)
+        let id = try #require(started.serviceID)
+        do {
+            #expect(started.state == "started")
+            #expect(FloeNodeHasActiveTask(owner))
+            var port: Int?
+            for _ in 0..<100 {
+                let status = await runtime.serviceStatus(id: id, environmentID: owner)
+                port = Int(status.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+                if port != nil { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            let endpointPort = try #require(port)
+            let wrongOwner = await runtime.stopService(id: id, environmentID: "different-environment")
+            #expect(wrongOwner.state == "notFound")
+            for _ in 0..<3 {
+                let response = await runtime.run(.init(entryScript: nil, arguments: ["-e", """
+                    require('node:http').get('http://127.0.0.1:\(endpointPort)/',r=>r.on('data',b=>process.stdout.write(b))).on('error',e=>{console.error(e.code);process.exitCode=1});
+                    """], workingDirectory: root, timeout: 5), cancellation: nil)
+                guard case .exited(let code, let output, let errors, _, _) = response else {
+                    Issue.record("Foreground HTTP call failed while service was alive: \(response)")
+                    break
+                }
+                #expect(code == 0 && output == "service-response", "\(errors)")
+            }
+            try await runtime.stopServices(environmentID: owner)
+            #expect(!FloeNodeHasActiveTask(owner))
+            let stopped = await runtime.serviceStatus(id: id, environmentID: owner)
+            #expect(stopped.state == "notFound")
+            let closed = await runtime.run(.init(entryScript: nil, arguments: ["-e", """
+                require('node:http').get('http://127.0.0.1:\(endpointPort)/',r=>{r.resume();process.exitCode=1}).on('error',e=>console.log(e.code));
+                """], workingDirectory: root, timeout: 5), cancellation: nil)
+            guard case .exited(let code, let output, _, _, _) = closed else {
+                Issue.record("Stopped endpoint check did not finish: \(closed)")
+                return
+            }
+            #expect(code == 0 && output.contains("ECONNREFUSED"))
+        } catch {
+            try? await runtime.stopServices(environmentID: owner)
+            throw error
+        }
+    }
+
     @Test(.timeLimit(.minutes(1))) func unsupportedPackageCommandsCannotReportSuccess() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

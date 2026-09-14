@@ -40,7 +40,14 @@ FloeNodeBridgeStatus FloeNodeRun(
     BOOL *outTruncated
 );
 
+/// Control a service independently of the foreground execution queue.
+/// Call off the main thread. An unknown result retains ownership until reconciled.
+NSDictionary *FloeNodeServiceCommand(NSDictionary *request, NSString *environmentID);
+NSArray<NSString *> *FloeNodeServiceIDs(NSString *environmentID);
+
 BOOL FloeNodeRuntimeAvailable(void);
+/// Initializes the host if needed and returns its actual version. Call off the main thread.
+NSString * _Nullable FloeNodeRuntimeVersion(void);
 BOOL FloeNodeHasActiveTask(NSString *environmentID);
 
 /// Absolute path of the bundled tool entry point for a command name

@@ -24,6 +24,7 @@ public actor AptEngine {
     }
 
     public struct Downloader: Sendable {
+        public enum Failure: Error { case notFound }
         public var fetch: @Sendable (_ url: URL, _ maxBytes: Int) async throws -> Data
         public init(fetch: @escaping @Sendable (URL, Int) async throws -> Data) {
             self.fetch = fetch
@@ -151,7 +152,28 @@ public actor AptEngine {
         guard let inReleaseURL = source.releaseURL() else {
             throw AptError.untrusted(source.uri)
         }
-        let data = try await downloader.fetch(inReleaseURL, 32 * 1024 * 1024)
+        let data: Data
+        do {
+            data = try await downloader.fetch(inReleaseURL, 32 * 1024 * 1024)
+        } catch Downloader.Failure.notFound {
+            let releaseURL = inReleaseURL.deletingLastPathComponent().appendingPathComponent("Release")
+            let release = try await downloader.fetch(releaseURL, 32 * 1024 * 1024)
+            guard let signatureURL = source.releaseGPGURL() else { throw AptError.untrusted(source.uri) }
+            let signatureData: Data
+            do {
+                signatureData = try await downloader.fetch(signatureURL, 1_048_576)
+            } catch Downloader.Failure.notFound {
+                // Only confirmed absence permits explicit unsigned trust.
+                // Network errors and invalid signatures must never downgrade.
+                guard source.trusted, source.signedBy == nil else { throw AptError.untrusted(source.uri) }
+                return String(decoding: release, as: UTF8.self)
+            }
+            guard let signature = try OpenPGP.packets(in: OpenPGP.decodeIfArmored(signatureData)).first(where: { $0.tag == 2 }),
+                  !trustedKeys.isEmpty else { throw AptError.untrusted(source.uri) }
+            if let signatureVerifier { try signatureVerifier(signature.body, release, trustedKeys) }
+            else { try OpenPGP.verify(signaturePacketBody: signature.body, over: release, keys: trustedKeys) }
+            return String(decoding: release, as: UTF8.self)
+        }
         guard !trustedKeys.isEmpty else { throw AptError.untrusted(source.uri) }
         let clearsigned = try OpenPGP.parseClearsigned(data)
         if let signatureVerifier {

@@ -78,7 +78,7 @@ import PencilKit
         XCTAssertEqual(store.configuration(for: .fountainPen).opacity, 1)
         XCTAssertEqual(store.configuration(for: .marker).opacity, 0.45)
         store.setOpacity(-1, for: .marker)
-        XCTAssertEqual(store.inkingTool(for: .marker).color.cgColor.alpha, 0.1, accuracy: 0.001)
+        XCTAssertEqual(store.inkingTool(for: .marker).color.cgColor.alpha, 0, accuracy: 0.001)
         store.setOpacity(2, for: .marker)
         XCTAssertEqual(store.inkingTool(for: .marker).color.cgColor.alpha, 1)
     }

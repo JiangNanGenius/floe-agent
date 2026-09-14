@@ -21,6 +21,7 @@ struct DiagnosticsAboutView: View {
     @State private var presentsFeedback = false
     @AppStorage("diagnostics.includeDeviceInfo") private var includeDeviceInfo = false
     @State private var presentsFullLog = false
+    @AppStorage(FloeLogger.levelPreferenceKey) private var minimumLogLevel = "info"
 
     var body: some View {
         Form {
@@ -75,6 +76,17 @@ struct DiagnosticsAboutView: View {
                     }
                     .frame(minHeight: FloeTheme.minimumTarget)
                 }
+            }
+
+            Section("diagnostics.logging.settings") {
+                Picker("diagnostics.logging.level", selection: $minimumLogLevel) {
+                    Text("diagnostics.logging.debug").tag("debug")
+                    Text("diagnostics.logging.info").tag("info")
+                    Text("diagnostics.logging.warning").tag("warning")
+                    Text("diagnostics.logging.error").tag("error")
+                }
+                Text("diagnostics.logging.explanation")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
 
             Section {

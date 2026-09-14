@@ -922,18 +922,18 @@ private struct PendingInputQueueView: View {
                             .foregroundStyle(input.status == .queued ? .secondary : FloeTheme.pending)
                     }
                     Spacer(minLength: 4)
-                    if input.status == .queued {
+                    if input.status == .queued || input.status == .steerPending {
                         let queuedIndex = queuedInputs.firstIndex(where: { $0.id == input.id })
                         Menu {
                             Button("编辑", systemImage: "pencil") { onEdit(input) }
                             Button("上移", systemImage: "arrow.up") { onMove(input, -1) }
-                                .disabled(queuedIndex == queuedInputs.startIndex)
+                                .disabled(queuedIndex == nil || queuedIndex == queuedInputs.startIndex)
                             Button("下移", systemImage: "arrow.down") { onMove(input, 1) }
-                                .disabled(queuedIndex == queuedInputs.indices.last)
+                                .disabled(queuedIndex == nil || queuedIndex == queuedInputs.indices.last)
                             Button("转为引导", systemImage: "arrow.triangle.turn.up.right.diamond") {
                                 onSteer(input)
                             }
-                            .disabled(!canSteer)
+                            .disabled(!canSteer || input.status != .queued)
                             Divider()
                             Button("删除", systemImage: "trash", role: .destructive) { onDelete(input) }
                         } label: {

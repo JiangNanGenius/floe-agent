@@ -5,6 +5,35 @@ import FloeEnvironments
 
 @Suite("Package integrity")
 struct PackageIntegrityTests {
+    @Test(arguments: [false, true])
+    func unsignedRepositoryRequiresExplicitSourceTrust(trusted: Bool) async throws {
+        let fixtures = try #require(Bundle.module.url(forResource: "Repository", withExtension: nil, subdirectory: "Fixtures"))
+        let signed = try Data(contentsOf: fixtures.appendingPathComponent("dists/floe-qualification/InRelease"))
+        let release = try OpenPGP.parseClearsigned(signed).text
+        let engine = AptEngine(downloader: .init { url, _ in
+            if ["InRelease", "Release.gpg"].contains(url.lastPathComponent) {
+                throw AptEngine.Downloader.Failure.notFound
+            }
+            if url.lastPathComponent == "Release" { return release }
+            return try Data(contentsOf: fixtures.appendingPathComponent(String(url.path.dropFirst())))
+        })
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let report = await engine.update(container: .init(id: "unsigned", rootURL: root, layerURL: root, layerKind: .project, baseRevision: "one"),
+            sources: [.init(uri: "https://example.invalid", suite: "floe-qualification", components: ["data"], trusted: trusted)])
+        #expect(report.packages == (trusted ? 5 : 0))
+        #expect(report.failures.isEmpty == trusted)
+    }
+
+    @Test func unsignedTrustDoesNotHideTransportFailure() async throws {
+        let engine = AptEngine(downloader: .init { _, _ in throw URLError(.serverCertificateUntrusted) })
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let report = await engine.update(container: .init(id: "tls", rootURL: root, layerURL: root, layerKind: .project, baseRevision: "one"),
+            sources: [.init(uri: "https://example.invalid", suite: "stable", trusted: true)])
+        #expect(report.packages == 0)
+        #expect(report.failures.count == 1)
+    }
+
     private func fixture(_ name: String) throws -> Data {
         try Data(contentsOf: #require(Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Fixtures")))
     }

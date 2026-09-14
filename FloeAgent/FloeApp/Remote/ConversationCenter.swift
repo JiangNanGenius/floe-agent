@@ -1864,14 +1864,28 @@ final class ConversationCenter: ObservableObject {
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Input must not be empty")
         }
+        if let value { try await withdrawPendingGuidance(value) }
         try await environment.runningInputStore.updateContent(id: id, content: trimmed)
         if let value { publishSession(value.conversationID) }
     }
 
     func removePendingInput(id: UUID) async throws {
         let value = try await environment.runningInputStore.input(id: id)
+        if let value { try await withdrawPendingGuidance(value) }
         try await environment.runningInputStore.cancel(id: id)
         if let value { publishSession(value.conversationID) }
+    }
+
+    private func withdrawPendingGuidance(_ input: PendingUserInput) async throws {
+        guard input.status == .steerPending else { return }
+        if let runID = input.targetRunID, let service = runServices[runID] {
+            guard await service.withdrawSteer(id: input.id) else {
+                throw FloeError.validationFailed("这条引导已开始发送，无法撤回。请发送新的更正消息。")
+            }
+        }
+        // Preserve withdrawn content as an ordinary queued message first.
+        // If the subsequent edit/delete fails, the original remains recoverable.
+        try await environment.runningInputStore.restoreQueued(id: input.id)
     }
 
     func reorderPendingInputs(conversationID: UUID, orderedIDs: [UUID]) async throws {

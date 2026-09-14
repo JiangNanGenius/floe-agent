@@ -1,0 +1,48 @@
+# Build 172 feedback repair and delivery ledger
+
+Updated: 2026-09-15. This is an implementation ledger, not a release acceptance claim.
+
+## Delivery boundary
+
+Repair and qualify the complete app, then upload a new internal TestFlight build. Prepare public Beta review materials for the owner's review; do not submit public Beta yet. GitHub prerelease, Feather, documentation, main merge and task-owned branch cleanup are separate deliverables. No build for this repair has been uploaded yet.
+
+The owner's demonstration credential must not enter source, logs, examples, review materials or reviewer access. Generated video is limited to **10 seconds total**, including uncertain charged attempts. Screen recordings are separate. Use only the authorized small amount of image/model generation.
+
+## Work in progress
+
+| Area | Implemented candidate | Evidence / remaining work |
+| --- | --- | --- |
+| Node startup and services | Live stdin handoff; separate service workers; native service control/ownership; actual version probe in settings | 11 desktop host tests pass, including real HTTP during foreground work, stop/port closure and bounded logs; native bridge syntax check passes; full App service test added but not run |
+| Python output | Stop retaining empty output fragments after the shared byte limit | Two tests of the extracted production runner pass; not iOS runtime evidence |
+| Notes ink | Paper canvas uses light appearance; transparency slider maps 0% to solid, 100% to invisible without inverting stored alpha | Pencil drawing, persistence and both device layouts pending |
+| Guidance queue | Withdraw pending guidance from runtime before editing/removing its durable row | Runtime race test added; execution and UI qualification pending |
+| Logging | Persisted debug/info/warning/error collection threshold, default info | Module compilation passed; settings/relaunch/filtering and full app checks pending |
+| Report retention | Private server patch retains up to 500 events and evicts whole old reports | Store tests pass; server API/docs alignment and deployment pending |
+| APT trust | Explicit unsigned-source choice; only missing signature files may use that choice; signature/network failures do not downgrade | Seven package integrity tests pass; detached signature, third-party source and install UI qualification pending |
+
+## Persistent local services — Node, Python and Shell
+
+This addition applies to all supported local runtimes, not just Node. A detached one-shot job with the existing timeout is **not** a persistent service implementation.
+
+- One service owns an explicit environment, conversation/project, working directory, invocation and cancellation handle. Its lifetime is independent of a tool response, preview tab or settings view.
+- Reuse background task persistence and management. Provide start, status, bounded live logs, stop and restart through Agent tools and the environment/task UI. Record actual endpoints after readiness checks; starting a worker is not proof that HTTP is listening.
+- Separate ordinary execution deadlines from service lifetime. A service must not occupy the foreground Shell gate or prevent later Node/Python commands and package operations from completing.
+- Node uses the once-initialized runtime with independently owned service workers. Python requires an explicitly managed execution model: the current single-interpreter runner temporarily changes process-wide cwd, environment, streams and imports, so simply starting a second thread is insufficient.
+- Shell service launches must keep ownership of the actual runtime/server and children. Reject unsupported daemonization or native executables with actionable errors; never report an untracked process as managed.
+- Default preview access is loopback only. Authorize only the owned, verified endpoint for the browser, revoke on stop/failure, and preserve the existing static-file preview. Do not open the sidebar automatically.
+- Closing a preview or changing chats keeps the service available. Stopping a chat generation does not silently delete a separately started project service. Explicit stop, owner deletion and environment deletion stop owned services and wait for actual worker exit before releasing files/dependencies.
+- Bound concurrent workers, retained logs and resource use. Surface busy/failed/stopping states. A cancellation request does not establish termination; blocked native cleanup must keep the environment protected.
+- App suspension does not imply uninterrupted iOS execution. Recheck endpoints on foreground return; after process death mark in-process services interrupted and offer restart. Do not advertise a dead URL or silently rerun project code at launch.
+- Verify Node and Python HTTP responses, foreground execution while a service is alive, independent services in two environments, port collisions, repeated start/stop/restart, cancellation during startup, environment deletion, navigation, suspension and relaunch. Capture real responses and worker/resource cleanup evidence.
+
+## Outstanding repair and qualification gates
+
+1. Diagnose device Shell timeouts and Node availability/version using supplied task exports and preserved server reports. Decode/symbolicate Qwen first-inference and PDF crash evidence; verify memory handling without assuming an OOM cause.
+2. Complete pip/npm/pnpm through UI, Agent and Shell: actual download, staged install, import/require, HTTP(S), cancellation, rollback, uninstall, inheritance and cross-environment ownership. Implement package-manager selection using project metadata and lockfiles, with explicit conflict handling.
+3. Bundle requested common Python packages with tested pins and correct native ABI/signing. Audit Python wheels, native npm addons and executable/WASI packages separately; follow the [native package completion plan](FLOE_1_7_NATIVE_PACKAGE_COMPLETION_PLAN.md). Publish only verified artifacts to the official source with standard ecosystem names and indexes.
+4. Complete third-party source management and authentication. Keep TLS trust, repository signatures, checksums and ABI checks distinct. APT is a Shell package command, with legacy adapters only where needed.
+5. Finish Office chrome, Notes ink/tool controls, model setting migration, model capability overrides, Whisper view-independent download, streaming layout/collapse, browser handoff, enabled search-tool discovery and content search regressions. Verify existing requested features against current code before duplicating work.
+6. Cover the current development SDK and upload SDK, iPad first and iPhone compatibility, clean install and upgrade, repeated mixed execution across two projects/multiple sessions, and original chat/Office/Notes/Canvas/media workflows. Preserve suitable screenshots and actual outputs. Distinguish module/host/simulator/device evidence.
+7. Archive immutable source in cloud CI, retain a recoverable IPA, upload and verify Apple processing and internal group availability. Record actual build number/source/toolchain/hash. Do not label the new TestFlight installable until verified.
+8. Record a real demo from the qualified build; update bilingual README/guides, release descriptions, compatibility and migration/recovery documents, review notes/sample files/PDF and public Beta metadata. Keep private logs and credentials out of public material.
+9. Publish matching GitHub prerelease and Feather artifacts, merge authorized work to main, remove only proven merged task-owned branches, and clean only regenerable work-owned build scratch. Preserve delivery artifacts, screenshots, logs, symbols, backups and unrelated work.

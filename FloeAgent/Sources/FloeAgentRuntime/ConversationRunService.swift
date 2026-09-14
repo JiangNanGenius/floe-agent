@@ -517,6 +517,10 @@ public actor ConversationRunService {
         await runtime.steer(input, expectedRunID: expectedRunID)
     }
 
+    public func withdrawSteer(id: UUID) async -> Bool {
+        await runtime.withdrawSteer(id: id)
+    }
+
     // MARK: - Sink handling
 
     private func handleLiveness(_ snapshot: AgentLivenessSnapshot) async {

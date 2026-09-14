@@ -150,3 +150,54 @@ test('sync stdin read and node - remain cancellable while no bytes arrive', { ti
     } finally { h.child.stdio[3].end(); h.close(); }
   }
 });
+
+test('managed service keeps HTTP alive while foreground workers run and stops before acknowledgement', { timeout: 15000 }, async () => {
+  const h = host(); await h.started;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'floe-node-service-'));
+  try {
+    const source = `const server = require('node:http').createServer((req, res) => res.end(process.env.SERVICE_VALUE));
+      server.listen(0, '127.0.0.1', () => require('node:fs').writeFileSync('port', String(server.address().port)));`;
+    const started = await h.send(request('web-service', source, {
+      service: 'start', cwd: root, env: { SERVICE_VALUE: 'owned-response' }, timeoutMs: 50
+    }));
+    assert.equal(started.status, 'started');
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(path.join(root, 'port')) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    const port = fs.readFileSync(path.join(root, 'port'), 'utf8');
+    const url = `http://127.0.0.1:${port}/`;
+    assert.equal(await (await fetch(url)).text(), 'owned-response');
+    assert.equal(stdout(await h.send(request('foreground-with-service', 'console.log(42)'))), '42\n');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await (await fetch(url)).text(), 'owned-response', 'foreground timeout must not expire a service');
+    assert.equal((await h.send({ id: 'inspect-service', service: 'status', serviceID: 'web-service' })).status, 'running');
+    assert.equal((await h.send({ id: 'stop-service', service: 'stop', serviceID: 'web-service' })).status, 'stopped');
+    await assert.rejects(fetch(url));
+    assert.equal((await h.send({ id: 'inspect-stopped', service: 'status', serviceID: 'web-service' })).status, 'notFound');
+    assert.equal(stdout(await h.send(request('after-service', 'console.log(43)'))), '43\n');
+  } finally { h.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('service worker limits, bounded logs and independent cancellation', { timeout: 15000 }, async () => {
+  const h = host(); await h.started;
+  try {
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await h.send(request(`service-${i}`, "setInterval(() => console.log('x'.repeat(10000)), 5)", { service: 'start', maxOutputBytes: 100 }))).status, 'started');
+    }
+    assert.equal((await h.send(request('overflow', 'setInterval(() => {}, 100)', { service: 'start' }))).status, 'busy');
+    assert.equal((await h.send(request('service-0', '42', { service: 'start' }))).status, 'busy');
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const logs = await h.send({ id: 'logs', service: 'status', serviceID: 'service-0' });
+    assert.equal(stdout(logs).length, 100); assert.equal(logs.truncated, true);
+    assert.equal((await h.send({ id: 'stop-one', service: 'stop', serviceID: 'service-0' })).status, 'stopped');
+    assert.equal((await h.send({ id: 'other-alive', service: 'status', serviceID: 'service-1' })).status, 'running');
+    assert.equal((await h.send(request('replacement', 'setInterval(() => {}, 100)', { service: 'start' }))).status, 'started');
+  } finally { h.close(); }
+});
+
+test('a command that does not read stdin finishes while its producer remains open', { timeout: 10000 }, async () => {
+  const h = host(true); await h.started;
+  try {
+    const result = await h.send(request('no-input-needed', 'console.log(42)', { stdinFD: 3 }));
+    assert.equal(result.code, 0); assert.equal(stdout(result), '42\n');
+  } finally { h.child.stdio[3].end(); h.close(); }
+});

@@ -1,6 +1,6 @@
 'use strict';
-// One persistent runtime, one worker at a time. A response is sent only after
-// worker exit, so cancellation completion also proves ownership is released.
+// One persistent runtime: one foreground worker plus explicitly owned services.
+// Stop replies are sent only after worker exit, never at cancellation request time.
 const fs = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
 const decoder = new StringDecoder('utf8');
@@ -12,14 +12,19 @@ const outputFD = Number(process.argv[3] ?? 1);
 // libuv joins that worker during process exit, including XCTest host exit.
 const output = fs.createWriteStream(null, { fd: outputFD, autoClose: false });
 let current = null;
+const services = new Map();
+const maximumServices = 3;
 function reply(value) { output.write(JSON.stringify(value) + '\n'); }
-async function stop(reason) {
-  if (!current) return;
-  current.reason = reason;
-  await current.worker.terminate();
+async function stop(reason, state = current) {
+  if (!state) return;
+  state.reason = reason;
+  await state.worker.terminate();
 }
-function start(job) {
-  if (current) { reply({ id: job.id, status: 'busy', code: 125, stderr: 'Previous worker has not stopped' }); return; }
+function start(job, service = false) {
+  if (service && (services.size >= maximumServices || services.has(job.id) || current?.id === job.id)) {
+    reply({ id: job.id, status: 'busy', code: 125, stderr: 'Service limit or duplicate service ID' }); return;
+  }
+  if (!service && (current || services.has(job.id))) { reply({ id: job.id, status: 'busy', code: 125, stderr: 'Previous worker has not stopped' }); return; }
   if (typeof job.id !== 'string' || !Array.isArray(job.args) || !Number.isFinite(job.timeoutMs) ||
       job.timeoutMs < 1 || job.timeoutMs > 600000 || !Number.isInteger(job.maxOutputBytes) ||
       job.maxOutputBytes < 1 || job.maxOutputBytes > 1048576) {
@@ -49,7 +54,8 @@ function start(job) {
     reply({ id: job.id, status: 'failed', code: 125, stderr: String(error) }); return;
   }
   const state = { worker, id: job.id, stdout: [], stderr: [], bytes: 0, truncated: false, reason: null };
-  current = state;
+  if (service) services.set(job.id, state);
+  else current = state;
   function capture(channel, chunk) {
     const bytes = Buffer.from(chunk);
     const retained = bytes.subarray(0, Math.max(0, job.maxOutputBytes - state.bytes));
@@ -62,21 +68,35 @@ function start(job) {
   worker.stdout.on('data', chunk => capture('stdout', chunk));
   worker.stderr.on('data', chunk => capture('stderr', chunk));
   worker.on('error', error => capture('stderr', String(error)));
-  const timer = setTimeout(() => { void stop('timedOut'); }, job.timeoutMs);
+  const timer = service ? null : setTimeout(() => { void stop('timedOut', state); }, job.timeoutMs);
   worker.on('exit', code => {
     clearTimeout(timer);
-    current = null;
-    reply({ id: job.id, status: state.reason ?? 'ok', code,
+    if (service) services.delete(job.id);
+    else if (current === state) current = null;
+    reply({ id: job.id, ...(service ? { event: 'serviceExited' } : {}), status: state.reason ?? 'ok', code,
       stdout: Buffer.from(Buffer.concat(state.stdout).toString('utf8')).toString('base64'), stderr: Buffer.from(Buffer.concat(state.stderr).toString('utf8')).toString('base64'),
       encoding: 'base64', truncated: state.truncated });
   });
+  if (service) reply({ id: job.id, status: 'started', serviceID: job.id, note: 'Worker started; endpoint readiness must be verified separately' });
+}
+async function controlService(request) {
+  const state = services.get(request.serviceID);
+  if (!state) { reply({ id: request.id, status: 'notFound', code: 1 }); return; }
+  if (request.service === 'stop') {
+    await stop('cancelled', state);
+    reply({ id: request.id, status: 'stopped', serviceID: request.serviceID, code: 0 });
+  } else if (request.service === 'status') {
+    reply({ id: request.id, status: state.reason ? 'stopping' : 'running', serviceID: state.id,
+      stdout: Buffer.concat(state.stdout).toString('base64'), stderr: Buffer.concat(state.stderr).toString('base64'),
+      encoding: 'base64', truncated: state.truncated });
+  } else reply({ id: request.id, status: 'invalid', code: 125, stderr: 'Unknown service operation' });
 }
 let buffered = '';
 let inputClosed = false;
 function closeInput() {
   if (inputClosed) return;
   inputClosed = true;
-  void stop('cancelled').finally(() => output.end());
+  void Promise.all([current, ...services.values()].filter(Boolean).map(state => stop('cancelled', state))).finally(() => output.end());
 }
 function consume(chunk) {
   buffered += decoder.write(chunk);
@@ -86,7 +106,11 @@ function consume(chunk) {
     const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
     try {
       const request = JSON.parse(line);
-      if (request.cancel) { if (current?.id === request.cancel) void stop('cancelled'); }
+      if (request.cancel) {
+        const state = current?.id === request.cancel ? current : services.get(request.cancel);
+        if (state) void stop('cancelled', state);
+      } else if (request.service === 'start') start(request, true);
+      else if (request.service) void controlService(request).catch(error => reply({ id: request.id, status: 'failed', code: 125, stderr: String(error) }));
       else start(request);
     } catch (error) { reply({ status: 'invalid', code: 125, stderr: String(error) }); }
   }

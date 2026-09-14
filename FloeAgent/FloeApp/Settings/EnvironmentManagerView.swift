@@ -131,6 +131,7 @@ private struct EnvironmentDetailView: View {
     @State private var sourceSuite = "stable"
     @State private var sourceComponent = "main"
     @State private var sourceKey = ""
+    @State private var trustUnsignedSource = false
     @State private var current: FloePlatformServices.EnvironmentReport?
     @State private var packages: FloePlatformServices.PackageReport?
     @State private var error: String?
@@ -266,11 +267,17 @@ private struct EnvironmentDetailView: View {
                         TextField("发行版", text: $sourceSuite).textInputAutocapitalization(.never).autocorrectionDisabled()
                         TextField("组件", text: $sourceComponent).textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
-                    Section("OpenPGP 签名公钥") {
-                        TextEditor(text: $sourceKey).font(.caption.monospaced()).frame(minHeight: 160)
-                        Text("从软件源发布者获取公钥。下载的软件包索引必须通过此公钥验证。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        if editingSource != nil { Text("留空保留已保存的签名公钥。").font(.footnote).foregroundStyle(.secondary) }
+                    Section("packages.source.trust") {
+                        Toggle("packages.source.unsigned", isOn: $trustUnsignedSource)
+                        Text("packages.source.unsigned.help").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if !trustUnsignedSource {
+                        Section("OpenPGP 签名公钥") {
+                            TextEditor(text: $sourceKey).font(.caption.monospaced()).frame(minHeight: 160)
+                            Text("从软件源发布者获取公钥。下载的软件包索引必须通过此公钥验证。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            if editingSource != nil { Text("留空保留已保存的签名公钥。").font(.footnote).foregroundStyle(.secondary) }
+                        }
                     }
                 }
                 .navigationTitle(editingSource == nil ? "添加软件源" : "编辑软件源")
@@ -280,9 +287,9 @@ private struct EnvironmentDetailView: View {
                         Button("保存") {
                             start(.saveSource(AptSource(uri: sourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                 suite: sourceSuite, components: sourceComponent.split(separator: " ").map(String.init),
-                                enabled: editingSource?.enabled ?? true), sourceKey, replacingID: editingSource?.id), "正在保存软件源…")
+                                trusted: trustUnsignedSource, enabled: editingSource?.enabled ?? true), sourceKey, replacingID: editingSource?.id), "正在保存软件源…")
                             addingSource = false
-                        }.disabled(sourceURL.isEmpty || sourceSuite.isEmpty || (sourceKey.isEmpty && editingSource?.signedBy == nil))
+                        }.disabled(sourceURL.isEmpty || sourceSuite.isEmpty || (!trustUnsignedSource && sourceKey.isEmpty && editingSource?.signedBy == nil))
                     }
                 }
             }
@@ -304,6 +311,7 @@ private struct EnvironmentDetailView: View {
         sourceSuite = source?.suite ?? "stable"
         sourceComponent = source?.components.joined(separator: " ") ?? "main"
         sourceKey = ""
+        trustUnsignedSource = source?.trusted ?? false
         addingSource = true
     }
     private func start(_ action: FloePlatformServices.PackageAction, _ title: String) { jobs.start(id: report.id, title: title, action: action) }

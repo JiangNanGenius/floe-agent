@@ -63,6 +63,11 @@ struct InputPipe {
 };
 struct Host {
     NSLock *serial = [NSLock new];
+    NSLock *startup = [NSLock new];
+    NSLock *writer = [NSLock new];
+    NSMutableDictionary<NSString *, NSDictionary *> *controlReplies = [NSMutableDictionary new];
+    NSMutableSet<NSString *> *pendingControls = [NSMutableSet new];
+    NSMutableDictionary<NSString *, NSString *> *serviceEnvironments = [NSMutableDictionary new];
     NSCondition *condition = [NSCondition new];
     int commands = -1;
     int results = -1;
@@ -73,6 +78,7 @@ struct Host {
     NSString *activeID = nil;
     NSString *environmentID = nil;
     NSDictionary *response = nil;
+    NSString *version = nil;
 };
 Host &host() { static Host value; return value; }
 
@@ -81,15 +87,30 @@ bool send(NSDictionary *message) {
     if (!data || data.length > 2 * 1024 * 1024) return false;
     NSMutableData *line = [data mutableCopy];
     [line appendBytes:"\n" length:1];
-    const uint8_t *bytes = (const uint8_t *)line.bytes;
-    NSUInteger offset = 0;
-    while (offset < line.length) {
-        ssize_t count = write(host().commands, bytes + offset, line.length - offset);
-        if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) return false;
-        offset += count;
+    auto &h = host();
+    const double deadline = NSProcessInfo.processInfo.systemUptime + 5;
+    while (![h.writer tryLock]) {
+        if (NSProcessInfo.processInfo.systemUptime >= deadline) return false;
+        [NSThread sleepForTimeInterval:0.01];
     }
-    return true;
+    @try {
+        const uint8_t *bytes = (const uint8_t *)line.bytes;
+        NSUInteger offset = 0;
+        while (offset < line.length) {
+            pollfd target{h.commands, POLLOUT, 0};
+            if (NSProcessInfo.processInfo.systemUptime >= deadline || h.commands < 0) break;
+            if (poll(&target, 1, 20) <= 0) continue;
+            ssize_t count = write(h.commands, bytes + offset, line.length - offset);
+            if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+            if (count <= 0) break;
+            offset += count;
+        }
+        if (offset == line.length) return true;
+        // A truncated frame cannot safely be followed by another request.
+        // Closing the pipe makes the host stop every owned worker on EOF.
+        if (h.commands >= 0) { close(h.commands); h.commands = -1; }
+        return false;
+    } @finally { [h.writer unlock]; }
 }
 
 void receive() {
@@ -107,8 +128,15 @@ void receive() {
                 NSDictionary *reply = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                 [h.condition lock];
                 if ([reply isKindOfClass:NSDictionary.class]) {
-                    if ([reply[@"status"] isEqual:@"ready"]) h.ready = true;
-                    else if ([reply[@"id"] isEqual:h.activeID]) {
+                    if ([reply[@"status"] isEqual:@"ready"]) {
+                        h.version = [reply[@"version"] isKindOfClass:NSString.class] ? reply[@"version"] : nil;
+                        h.ready = true;
+                    }
+                    else if ([reply[@"event"] isEqual:@"serviceExited"]) {
+                        [h.serviceEnvironments removeObjectForKey:reply[@"id"]];
+                    } else if ([reply[@"id"] isKindOfClass:NSString.class] && [h.pendingControls containsObject:reply[@"id"]]) {
+                        h.controlReplies[reply[@"id"]] = reply;
+                    } else if ([reply[@"id"] isEqual:h.activeID]) {
                         h.response = reply;
                         h.activeID = nil;
                         h.environmentID = nil;
@@ -123,7 +151,7 @@ void receive() {
     [h.condition lock]; h.alive = false; [h.condition broadcast]; [h.condition unlock];
 }
 
-bool start(NSTimeInterval remaining) {
+bool startUnlocked(NSTimeInterval remaining) {
     auto &h = host();
     if (h.started) return h.alive && h.ready;
     h.started = true; // node_start may only ever run once in this process.
@@ -142,6 +170,7 @@ bool start(NSTimeInterval remaining) {
     }
     h.commands = commands[1]; h.results = results[0];
     fcntl(h.commands, F_SETNOSIGPIPE, 1);
+    fcntl(h.commands, F_SETFL, fcntl(h.commands, F_GETFL) | O_NONBLOCK);
     NSArray<NSString *> *args = @[@"node", script, [NSString stringWithFormat:@"%d", commands[0]], [NSString stringWithFormat:@"%d", results[1]]];
     const int commandReadFD = commands[0], resultWriteFD = results[1];
     // Node loads extra roots once at runtime initialization, not per Worker.
@@ -160,6 +189,7 @@ bool start(NSTimeInterval remaining) {
             [h.condition lock]; h.alive = false;
             if (h.activeInput) { h.activeInput->stopped = true; h.activeInput.reset(); }
             h.activeID = nil; h.environmentID = nil;
+            [h.serviceEnvironments removeAllObjects];
             [h.condition broadcast]; [h.condition unlock];
         }
     }];
@@ -172,6 +202,16 @@ bool start(NSTimeInterval remaining) {
 #else
     return false;
 #endif
+}
+bool start(NSTimeInterval remaining) {
+    auto &h = host();
+    const double deadline = NSProcessInfo.processInfo.systemUptime + remaining;
+    while (![h.startup tryLock]) {
+        if (NSProcessInfo.processInfo.systemUptime >= deadline) return false;
+        [NSThread sleepForTimeInterval:0.01];
+    }
+    @try { return startUnlocked(MAX(0.001, deadline - NSProcessInfo.processInfo.systemUptime)); }
+    @finally { [h.startup unlock]; }
 }
 NSString *decode(NSDictionary *response, NSString *key) {
     NSString *value = [response[key] isKindOfClass:NSString.class] ? response[key] : @"";
@@ -191,8 +231,23 @@ BOOL FloeNodeRuntimeAvailable(void) {
 }
 BOOL FloeNodeHasActiveTask(NSString *environmentID) {
     auto &h = host(); [h.condition lock];
-    BOOL active = h.activeID != nil && [h.environmentID isEqual:environmentID];
+    BOOL active = (h.activeID != nil && [h.environmentID isEqual:environmentID]) ||
+        [h.serviceEnvironments.allValues containsObject:environmentID];
     [h.condition unlock]; return active;
+}
+NSString *FloeNodeRuntimeVersion(void) {
+    if (!FloeNodeRuntimeAvailable() || !start(10)) return nil;
+    auto &h = host(); [h.condition lock];
+    NSString *version = h.alive ? h.version : nil;
+    [h.condition unlock]; return version;
+}
+NSArray<NSString *> *FloeNodeServiceIDs(NSString *environmentID) {
+    auto &h = host(); [h.condition lock];
+    NSMutableArray<NSString *> *ids = [NSMutableArray new];
+    for (NSString *id in h.serviceEnvironments) {
+        if ([h.serviceEnvironments[id] isEqual:environmentID]) [ids addObject:id];
+    }
+    [h.condition unlock]; return ids;
 }
 NSString *FloeNodeBundledToolPath(NSString *command) {
     NSDictionary *paths = @{@"npm": @"npm/bin/npm-cli.js", @"npx": @"npm/bin/npx-cli.js", @"pnpm": @"pnpm/bin/pnpm.cjs", @"pnpx": @"pnpm/bin/pnpx.cjs", @"yarn": @"yarn/bin/yarn.js"};
@@ -261,4 +316,42 @@ FloeNodeBridgeStatus FloeNodeRun(NSString *entryScript, NSArray<NSString *> *arg
             [h.condition lock]; [h.condition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]]; [h.condition unlock];
         }
     } @finally { [h.serial unlock]; }
+}
+
+NSDictionary *FloeNodeServiceCommand(NSDictionary *request, NSString *environmentID) {
+    NSString *operation = request[@"service"];
+    if (![operation isKindOfClass:NSString.class] || ![@[@"start", @"status", @"stop"] containsObject:operation] || !environmentID.length) {
+        return @{@"status": @"invalid", @"stderr": @"An operation and owning environment are required"};
+    }
+    if (!FloeNodeRuntimeAvailable() || !start(10)) return @{@"status": @"unavailable"};
+    auto &h = host();
+    NSString *id = NSUUID.UUID.UUIDString;
+    NSMutableDictionary *message = [request mutableCopy]; message[@"id"] = id;
+    NSString *serviceID = [operation isEqual:@"start"] ? id : request[@"serviceID"];
+    if (![serviceID isKindOfClass:NSString.class]) return @{@"status": @"invalid"};
+    [h.condition lock];
+    if ([operation isEqual:@"start"]) h.serviceEnvironments[id] = environmentID;
+    else if (![h.serviceEnvironments[serviceID] isEqual:environmentID]) {
+        [h.condition unlock]; return @{@"status": @"notFound"};
+    }
+    [h.pendingControls addObject:id];
+    [h.condition unlock];
+    bool sent = send(message);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+    [h.condition lock];
+    while (sent && h.alive && !h.controlReplies[id] && deadline.timeIntervalSinceNow > 0) {
+        [h.condition waitUntilDate:deadline];
+    }
+    NSDictionary *response = h.controlReplies[id];
+    if ([operation isEqual:@"start"] && response && ![response[@"status"] isEqual:@"started"]) {
+        [h.serviceEnvironments removeObjectForKey:serviceID];
+    }
+    if (response && ![operation isEqual:@"start"] && ([@[@"stopped", @"notFound"] containsObject:response[@"status"]])) {
+        [h.serviceEnvironments removeObjectForKey:serviceID];
+    }
+    [h.pendingControls removeObject:id]; [h.controlReplies removeObjectForKey:id];
+    [h.condition unlock];
+    // An uncertain start retains its environment ownership and ID, allowing
+    // an explicit stop/reconciliation instead of releasing a live worker.
+    return response ?: @{@"status": @"unknown", @"serviceID": serviceID};
 }

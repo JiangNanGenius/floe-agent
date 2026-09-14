@@ -27,6 +27,10 @@ struct ExecutionEnvironmentView: View {
                     name: String(localized: "settings.exec.python_local"),
                     state: center.localPythonCapability
                 )
+                capabilityRow(
+                    name: String(localized: "settings.exec.node_local"),
+                    state: center.nodeCapability
+                )
                 LabeledContent("settings.exec.remote_terminal") {
                     Text(String.localizedStringWithFormat(
                         String(localized: "settings.exec.remote_terminal.value"),

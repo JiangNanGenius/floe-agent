@@ -1036,6 +1036,16 @@ public actor FloeAgentRuntime {
         }
     }
 
+    /// Atomically withdraw only guidance not yet copied into model context.
+    /// A false result means consumption won the race; callers must not pretend
+    /// that editing or cancelling can retract an already delivered message.
+    public func withdrawSteer(id: UUID) -> Bool {
+        guard let index = pendingSteers.firstIndex(where: { $0.id == id }) else { return false }
+        pendingSteers.remove(at: index)
+        acceptedSteerIDs.remove(id)
+        return true
+    }
+
     // MARK: Core loop
 
     /// preparing → streamingModel; consumes the provider stream.

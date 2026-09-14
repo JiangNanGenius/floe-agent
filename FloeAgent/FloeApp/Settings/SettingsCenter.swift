@@ -85,6 +85,7 @@ final class SettingsCenter: ObservableObject {
 
     @Published private(set) var jsCapability: CapabilityState = .unknown
     @Published private(set) var localPythonCapability: CapabilityState = .unknown
+    @Published private(set) var nodeCapability: CapabilityState = .unknown
     @Published private(set) var remotePythonCapability: CapabilityState = .unknown
     @Published private(set) var remoteHostCount = 0
     @Published private(set) var activeRemoteSessionCount = 0
@@ -186,6 +187,7 @@ final class SettingsCenter: ObservableObject {
         async let memory = approvalGrants.allGrants
         async let js = JavaScriptCoreProbe().probe()
         async let localPython = environment.localPythonProbe.probe()
+        async let node = IOSSystemNodeRuntime.shared.probe()
         // Real remote-Python probe from FloeExecution (wired in
         // AppEnvironment); replaces the always-unavailable placeholder.
         async let remotePython = environment.remotePythonProbe.probe()
@@ -205,6 +207,7 @@ final class SettingsCenter: ObservableObject {
         workspaces = await workspacesResult
         jsCapability = await js
         localPythonCapability = await localPython
+        nodeCapability = await node
         remotePythonCapability = await remotePython
         iCloudDrive = await iCloud
         keychainState = await keychain
@@ -659,6 +662,7 @@ final class SettingsCenter: ObservableObject {
         lines.append("adapter_kinds: \(capabilitySummary.adapterKinds.joined(separator: ", "))")
         lines.append("js: \(describe(jsCapability))")
         lines.append("python_local: \(describe(localPythonCapability))")
+        lines.append("node_local: \(describe(nodeCapability))")
         lines.append("python_remote: \(describe(remotePythonCapability))")
         lines.append("icloud_drive: \(describe(iCloudDrive))")
         lines.append("keychain: \(describe(keychainState))")

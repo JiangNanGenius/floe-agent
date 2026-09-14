@@ -57,6 +57,7 @@ enum DiagnosticsExporter {
 
         lines.append("js: \(describe(center.jsCapability))")
         lines.append("python_local: \(describe(center.localPythonCapability))")
+        lines.append("node_local: \(describe(center.nodeCapability))")
         lines.append("python_remote: \(describe(center.remotePythonCapability))")
         lines.append("icloud_drive: \(describe(center.iCloudDrive))")
         lines.append("keychain: \(describe(center.keychainState))")

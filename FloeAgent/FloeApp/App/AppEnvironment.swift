@@ -365,6 +365,7 @@ final class AppEnvironment: ObservableObject {
                 },
                 cancelJobs: { id in
                     await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
+                    try await IOSSystemNodeRuntime.shared.stopServices(environmentID: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                 },
                 terminateWorkers: { id in
@@ -390,12 +391,16 @@ final class AppEnvironment: ObservableObject {
                 let temp = FileManager.default.temporaryDirectory
                     .appendingPathComponent("floe-apt-\(UUID().uuidString)")
                 defer { try? FileManager.default.removeItem(at: temp) }
-                _ = try await packageHTTP.download(
-                    url: url,
-                    timeout: 120,
-                    maxBytes: min(maxBytes, 64 * 1024 * 1024),
-                    to: temp
-                )
+                do {
+                    _ = try await packageHTTP.download(
+                        url: url,
+                        timeout: 120,
+                        maxBytes: min(maxBytes, 64 * 1024 * 1024),
+                        to: temp
+                    )
+                } catch HTTPRequestError.httpStatus(404) {
+                    throw AptEngine.Downloader.Failure.notFound
+                }
                 return try Data(floeContentsOf: temp)
             }
         )

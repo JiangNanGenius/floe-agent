@@ -27,6 +27,7 @@ public struct HTTPResponse: Sendable, Equatable {
 }
 
 public enum HTTPRequestError: Error, Sendable, LocalizedError {
+    case httpStatus(Int)
     case invalidURL(String)
     case invalidMethod(String)
     case invalidHeaders(String)
@@ -35,6 +36,7 @@ public enum HTTPRequestError: Error, Sendable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .httpStatus(let code): "HTTP request failed: download returned HTTP \(code); no destination file was created"
         case .invalidURL(let url): "Invalid URL: \(url)"
         case .invalidMethod(let method): "Unsupported HTTP method: \(method)"
         case .invalidHeaders(let detail): "Invalid headers: \(detail)"
@@ -193,7 +195,7 @@ public struct HTTPRequestService: Sendable {
         let statusCode = http?.statusCode ?? 0
         guard (200...299).contains(statusCode) else {
             try? FileManager.default.removeItem(at: temporary)
-            throw HTTPRequestError.requestFailed("download returned HTTP \(statusCode); no destination file was created")
+            throw HTTPRequestError.httpStatus(statusCode)
         }
         let contentType = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
         let size = (try? FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?

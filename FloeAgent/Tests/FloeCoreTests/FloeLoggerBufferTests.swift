@@ -7,6 +7,15 @@ import Foundation
 import Testing
 @testable import FloeCore
 
+@Test("Log level thresholds include severity and exclude verbose entries")
+func logLevelThresholds() {
+    for (thresholdIndex, threshold) in FloeLogger.Level.allCases.enumerated() {
+        for (levelIndex, level) in FloeLogger.Level.allCases.enumerated() {
+            #expect(threshold.includes(level) == (levelIndex >= thresholdIndex))
+        }
+    }
+}
+
 @Suite("FloeCore.FloeLoggerBuffer")
 struct FloeLoggerBufferTests {
 

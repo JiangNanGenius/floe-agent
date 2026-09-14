@@ -26,6 +26,9 @@ struct NotePencilView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
     func makeUIView(context: Context) -> PKCanvasView {
         let canvas = NotesPKCanvasView()
+        // Paper/PDF colors are authored pixels, independent of the app theme.
+        // PencilKit otherwise adapts dark ink to the surrounding dark interface.
+        canvas.overrideUserInterfaceStyle = .light
         canvas.pageSize = CGSize(width: page.width, height: page.height)
         canvas.initialViewport = initialViewport
         canvas.onViewportChanged = { [weak coordinator = context.coordinator] value in

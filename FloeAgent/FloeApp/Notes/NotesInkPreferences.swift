@@ -115,7 +115,7 @@ enum NotesBrushKind: String, CaseIterable, Codable {
     private static func clampedOpacity(_ opacity: Double?, for kind: NotesBrushKind) -> Double {
         let fallback = kind == .marker ? 0.45 : 1.0
         let value = opacity ?? fallback
-        return value.isFinite ? min(1, max(0.1, value)) : fallback
+        return value.isFinite ? min(1, max(0, value)) : fallback
     }
     func inkingTool(for kind: NotesBrushKind) -> PKInkingTool {
         let value = configuration(for: kind)
@@ -173,8 +173,8 @@ struct NotesInkOptionsPanel: View {
     private var width: Binding<Double> {
         Binding(get: { config.width }, set: { preferences.setWidth($0, for: selected) })
     }
-    private var opacity: Binding<Double> {
-        Binding(get: { config.opacity ?? 1 }, set: { preferences.setOpacity($0, for: selected) })
+    private var transparency: Binding<Double> {
+        Binding(get: { 1 - (config.opacity ?? 1) }, set: { preferences.setOpacity(1 - $0, for: selected) })
     }
     static func widths(for kind: NotesBrushKind) -> [Double] {
         let middle = Double(kind.inkType.defaultWidth)
@@ -218,12 +218,13 @@ struct NotesInkOptionsPanel: View {
                     Slider(value: width, in: selected.widthRange).accessibilityLabel("画笔粗细")
                         .accessibilityIdentifier("notes.ink.width.slider")
                     HStack {
-                        Text("不透明度").font(.subheadline.weight(.medium))
+                        Text("notes.ink.transparency").font(.subheadline.weight(.medium))
                         Spacer()
-                        Text("\(Int((config.opacity ?? 1) * 100))%").monospacedDigit().foregroundStyle(.secondary)
+                        Text("\(Int(((1 - (config.opacity ?? 1)) * 100).rounded()))%").monospacedDigit().foregroundStyle(.secondary)
                     }
-                    Slider(value: opacity, in: 0.1...1).accessibilityLabel("画笔不透明度")
+                    Slider(value: transparency, in: 0...1).accessibilityLabel("notes.ink.transparency")
                         .accessibilityIdentifier("notes.ink.opacity.slider")
+                    Text("notes.ink.transparency.help").font(.caption).foregroundStyle(.secondary)
                     Divider()
                     HStack {
                         Text("颜色").font(.subheadline.weight(.medium))

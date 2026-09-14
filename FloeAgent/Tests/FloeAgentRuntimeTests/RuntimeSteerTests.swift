@@ -58,6 +58,27 @@ private final class SteerBoundaryAdapter: ProviderAdapter, @unchecked Sendable {
 
 @Suite("FloeAgentRuntime.RuntimeSteer")
 struct RuntimeSteerTests {
+    @Test("Withdrawn guidance never reaches the next model request")
+    func withdrawnGuidance() async throws {
+        let adapter = SteerBoundaryAdapter()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: TestFixtures.testModel(providerID: provider.id)),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: MockExecutor())
+        let task = Task { try await runtime.start(goal: "initial") }
+        for _ in 0..<200 {
+            if await runtime.state.name == "streamingModel", !adapter.requests.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let id = UUID()
+        #expect(await runtime.steer(.init(id: id, content: "withdraw me"), expectedRunID: runtime.runID) == .accepted)
+        #expect(await runtime.withdrawSteer(id: id))
+        #expect(await runtime.withdrawSteer(id: id) == false)
+        adapter.finishFirst()
+        try await task.value
+        #expect(adapter.requests.count == 1)
+        #expect(adapter.requests.allSatisfy { !$0.messages.contains { $0.id == id } })
+    }
+
     @Test("guidance waits for completion boundary and continues the same run")
     func completionBoundary() async throws {
         let adapter = SteerBoundaryAdapter()

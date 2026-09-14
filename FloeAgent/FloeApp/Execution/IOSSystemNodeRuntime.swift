@@ -10,6 +10,94 @@ final class IOSSystemNodeRuntime: NodeRuntime, @unchecked Sendable {
 
     var isAvailable: Bool { FloeNodeRuntimeAvailable() }
 
+    func probe() async -> CapabilityState {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                if let version = FloeNodeRuntimeVersion() {
+                    continuation.resume(returning: .available(version: "Node.js \(version)"))
+                } else {
+                    continuation.resume(returning: .unavailable(reason: String(localized: "settings.exec.node.unavailable")))
+                }
+            }
+        }
+    }
+
+    struct ServiceResult: Sendable {
+        let serviceID: String?
+        let state: String
+        let stdout: String
+        let stderr: String
+        let truncated: Bool
+
+        init(_ response: [String: Any]) {
+            serviceID = response["serviceID"] as? String
+            state = response["status"] as? String ?? "unknown"
+            let encoded = response["encoding"] as? String == "base64"
+            func decode(_ key: String) -> String {
+                let value = response[key] as? String ?? ""
+                guard encoded else { return value }
+                return Data(base64Encoded: value).map { String(decoding: $0, as: UTF8.self) } ?? ""
+            }
+            stdout = decode("stdout")
+            stderr = decode("stderr")
+            truncated = response["truncated"] as? Bool ?? false
+        }
+    }
+
+    /// The returned worker ID is ownership, not proof of an HTTP endpoint.
+    /// The service manager must probe readiness before exposing a preview URL.
+    func startService(_ request: NodeRunRequest, environmentID: String) async -> ServiceResult {
+        guard !environmentID.isEmpty,
+              request.environment["FLOE_ENVIRONMENT_ID"] == environmentID,
+              request.maxOutputBytes > 0,
+              request.stdinFileDescriptor == nil else {
+            return ServiceResult(["status": "invalid", "stderr": "A service needs an owning environment and cannot borrow foreground stdin"])
+        }
+        var message: [String: Any] = [
+            "service": "start", "args": request.arguments,
+            "cwd": request.workingDirectory.path, "env": request.environment,
+            "stdin": Data((request.stdin ?? "").utf8).base64EncodedString(),
+            // Required by the host request validator; services have no ordinary
+            // command timer and are stopped by their manager instead.
+            "timeoutMs": 10_000,
+            "maxOutputBytes": min(request.maxOutputBytes, 1_048_576)
+        ]
+        if let entry = request.entryScript { message["entry"] = entry }
+        return await serviceCommand(message, environmentID: environmentID)
+    }
+
+    func serviceStatus(id: String, environmentID: String) async -> ServiceResult {
+        await serviceCommand(["service": "status", "serviceID": id], environmentID: environmentID)
+    }
+
+    func stopService(id: String, environmentID: String) async -> ServiceResult {
+        await serviceCommand(["service": "stop", "serviceID": id], environmentID: environmentID)
+    }
+
+    func stopServices(environmentID: String) async throws {
+        for id in FloeNodeServiceIDs(environmentID) {
+            let result = await stopService(id: id, environmentID: environmentID)
+            guard result.state == "stopped" || result.state == "notFound" else {
+                throw FloeError.validationFailed("Node service has not stopped; environment data was retained")
+            }
+        }
+    }
+
+    private func serviceCommand(_ message: [String: Any], environmentID: String) async -> ServiceResult {
+        guard let data = try? JSONSerialization.data(withJSONObject: message) else {
+            return ServiceResult(["status": "invalid", "stderr": "Invalid Node service request"])
+        }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    continuation.resume(returning: ServiceResult(["status": "invalid"]))
+                    return
+                }
+                continuation.resume(returning: ServiceResult(FloeNodeServiceCommand(request, environmentID) as? [String: Any] ?? [:]))
+            }
+        }
+    }
+
     func run(_ request: NodeRunRequest, cancellation: CancellationToken?) async -> NodeRunOutcome {
         guard isAvailable else {
             return .failed(message: "The bundled Node.js runtime is not linked in this build")

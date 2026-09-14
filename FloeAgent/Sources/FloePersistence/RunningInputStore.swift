@@ -172,7 +172,7 @@ public actor SQLiteRunningInputStore: RunningInputStore {
             try db.execute(sql: """
                 UPDATE pending_user_inputs
                 SET status = 'queued', mode = 'queue', target_run_id = NULL, updated_at = ?
-                WHERE id = ? AND status = 'promoting'
+                WHERE id = ? AND status IN ('promoting', 'steerPending')
                 """, arguments: [PersistenceCodec.encode(Date()), id.uuidString])
         }
     }
