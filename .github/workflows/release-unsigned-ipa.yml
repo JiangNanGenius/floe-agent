@@ -37,7 +37,27 @@ jobs:
     uses: ./.github/workflows/testflight-recovery.yml
     secrets: inherit
 
+  prepare-release:
+    if: ${{ !inputs.recover_build_156 }}
+    runs-on: macos-26
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      build: ${{ steps.release.outputs.build }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - name: Freeze and validate the release source before parallel qualification
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG"
+
   build-verify-release:
+    needs: prepare-release
     if: ${{ !inputs.recover_build_156 }}
     # Verify the complete iOS 27 source path here. The upload job below
     # separately rebuilds this exact tag with the App Store accepted SDK.
@@ -65,7 +85,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ needs.prepare-release.outputs.source_sha }}
 
       - name: Require Xcode 27.0 release toolchain
         run: |
@@ -361,15 +381,13 @@ jobs:
           path: FloeAgent/release-assets/
           if-no-files-found: error
 
-  testflight:
-    name: Archive and upload the same commit to TestFlight
-    needs: build-verify-release
+  accepted-sdk-build:
+    name: Qualify and build the accepted SDK in parallel
+    needs: prepare-release
     permissions:
       contents: read
       actions: read
-    # App Store Connect rejects the public Xcode 27 preview runner until Apple
-    # ships an accepted RC. Keep the Xcode 27 source/feature gate above, then
-    # rebuild this exact tag with the latest accepted stable SDK for upload.
+    # No signing material is used here. Distribution waits for both SDK jobs.
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -379,17 +397,23 @@ jobs:
     defaults:
       run:
         working-directory: FloeAgent
+    outputs:
+      total: ${{ steps.stable_app_regression.outputs.total }}
+      passed: ${{ steps.stable_app_regression.outputs.passed }}
+      failed: ${{ steps.stable_app_regression.outputs.failed }}
+      skipped: ${{ steps.stable_app_regression.outputs.skipped }}
+      input_sha256: ${{ steps.stage.outputs.sha256 }}
     steps:
       - name: Check out the exact verified release commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-          ref: ${{ needs.build-verify-release.outputs.source_sha }}
+          ref: ${{ needs.prepare-release.outputs.source_sha }}
 
       - name: Require the App Store accepted Xcode toolchain
         run: |
-          test "$(git rev-parse HEAD)" = "${{ needs.build-verify-release.outputs.source_sha }}"
-          test "$(git rev-parse "refs/tags/${{ needs.build-verify-release.outputs.tag }}^{commit}")" = "${{ needs.build-verify-release.outputs.source_sha }}"
+          test "$(git rev-parse HEAD)" = "${{ needs.prepare-release.outputs.source_sha }}"
+          test "$(git rev-parse "refs/tags/${{ needs.prepare-release.outputs.tag }}^{commit}")" = "${{ needs.prepare-release.outputs.source_sha }}"
           XCODE_VERSION="$(xcodebuild -version)"
           printf '%s\n' "$XCODE_VERSION"
           printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
@@ -400,24 +424,6 @@ jobs:
             26.*) ;;
             *) exit 1 ;;
           esac
-
-      - name: Download the tested and attested unsigned application
-        uses: actions/download-artifact@v5
-        with:
-          name: unsigned-ipa-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
-          path: ${{ runner.temp }}/UnsignedRelease
-
-      - name: Validate the exact verified application
-        run: |
-          IPA_PATH="$(find "$RUNNER_TEMP/UnsignedRelease" -type f -name '*.ipa' -print -quit)"
-          test -n "$IPA_PATH"
-          mkdir -p "$RUNNER_TEMP/FloeVerifiedPayload"
-          unzip -q "$IPA_PATH" -d "$RUNNER_TEMP/FloeVerifiedPayload"
-          APP_PATH="$(find "$RUNNER_TEMP/FloeVerifiedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
-          test -n "$APP_PATH"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
 
       - name: Restore bundled font cache
         uses: actions/cache@v4
@@ -458,8 +464,8 @@ jobs:
           STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$STABLE_APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP_PATH/Info.plist")" = org.floeagent.ios
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.prepare-release.outputs.version }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.prepare-release.outputs.build }}"
           mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"
           ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
 
@@ -514,7 +520,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: accepted-sdk-app-diagnostics-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          name: accepted-sdk-app-diagnostics-${{ needs.prepare-release.outputs.version }}-build${{ needs.prepare-release.outputs.build }}
           path: |
             ${{ runner.temp }}/FloeStable-AppRegressionTests.xcresult
             ${{ runner.temp }}/FloeStable-AppRegressionTests-SUMMARY.txt
@@ -553,7 +559,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: accepted-sdk-notes-ui-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          name: accepted-sdk-notes-ui-${{ needs.prepare-release.outputs.version }}-build${{ needs.prepare-release.outputs.build }}
           path: ${{ runner.temp }}/FloeStable-Notes/
           if-no-files-found: ignore
 
@@ -561,6 +567,104 @@ jobs:
         run: |
           APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           python3 scripts/prepare_app_store_bundle.py --app "$APP_PATH" --report "$RUNNER_TEMP/bundle-normalization.json"
+
+      - name: Stage the qualified accepted-SDK application without rebuilding it
+        id: stage
+        run: |
+          input="$RUNNER_TEMP/AcceptedDistributionInput"
+          mkdir -p "$input"
+          ditto "$RUNNER_TEMP/FloeSignedPayload" "$input/FloeSignedPayload"
+          ditto "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" "$input/FloeStable-AppRegressionTests.xcresult"
+          cp "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt" "$input/"
+          cp "$RUNNER_TEMP/bundle-normalization.json" "$input/"
+          printf '%s\n' "${{ needs.prepare-release.outputs.source_sha }}" > "$input/SOURCE-SHA.txt"
+          ditto -c -k --sequesterRsrc --keepParent "$input" "$RUNNER_TEMP/accepted-sdk-input.zip"
+          echo "sha256=$(shasum -a 256 "$RUNNER_TEMP/accepted-sdk-input.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Retain the accepted-SDK distribution input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk-input-${{ needs.prepare-release.outputs.version }}-build${{ needs.prepare-release.outputs.build }}
+          path: ${{ runner.temp }}/accepted-sdk-input.zip
+          if-no-files-found: error
+
+  testflight:
+    name: Archive and upload the same commit to TestFlight
+    needs: [build-verify-release, accepted-sdk-build]
+    permissions:
+      contents: read
+      actions: read
+    # Both SDK qualifications must succeed before any signing key is installed.
+    # Reuse the already-qualified accepted-SDK device application byte-for-byte.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      REQUIRED_XCODE_VERSION: Xcode 26.6
+      REQUIRED_XCODE_BUILD: 17F113
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+      - name: Check out the exact verified release commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build-verify-release.outputs.source_sha }}
+
+      - name: Require the App Store accepted Xcode toolchain
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.build-verify-release.outputs.source_sha }}"
+          test "$(git rev-parse "refs/tags/${{ needs.build-verify-release.outputs.tag }}^{commit}")" = "${{ needs.build-verify-release.outputs.source_sha }}"
+          XCODE_VERSION="$(xcodebuild -version)"
+          printf '%s\n' "$XCODE_VERSION"
+          printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
+          printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          printf 'iPhoneOS SDK %s\n' "$SDK_VERSION"
+          case "$SDK_VERSION" in
+            26.*) ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Download the tested and attested unsigned application
+        uses: actions/download-artifact@v5
+        with:
+          name: unsigned-ipa-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: ${{ runner.temp }}/UnsignedRelease
+
+      - name: Validate the exact verified application
+        run: |
+          IPA_PATH="$(find "$RUNNER_TEMP/UnsignedRelease" -type f -name '*.ipa' -print -quit)"
+          test -n "$IPA_PATH"
+          mkdir -p "$RUNNER_TEMP/FloeVerifiedPayload"
+          unzip -q "$IPA_PATH" -d "$RUNNER_TEMP/FloeVerifiedPayload"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeVerifiedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
+
+      - name: Download the qualified accepted-SDK distribution input
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk-input-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: ${{ runner.temp }}/AcceptedInput
+      - name: Verify and restore the exact qualified accepted-SDK application
+        run: |
+          echo "${{ needs.accepted-sdk-build.outputs.input_sha256 }}  $RUNNER_TEMP/AcceptedInput/accepted-sdk-input.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/AcceptedInput/accepted-sdk-input.zip" -d "$RUNNER_TEMP/AcceptedInput"
+          input="$RUNNER_TEMP/AcceptedInput/AcceptedDistributionInput"
+          test "$(cat "$input/SOURCE-SHA.txt")" = "${{ needs.build-verify-release.outputs.source_sha }}"
+          ditto "$input/FloeSignedPayload" "$RUNNER_TEMP/FloeSignedPayload"
+          ditto "$input/FloeStable-AppRegressionTests.xcresult" "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult"
+          cp "$input/FloeStable-AppRegressionTests-SUMMARY.txt" "$RUNNER_TEMP/"
+          cp "$input/bundle-normalization.json" "$RUNNER_TEMP/"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
+          python3 scripts/verify_app_regression_xcresult.py --result-bundle "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult"
 
       - name: Install App Store Connect API key
         env:
@@ -704,9 +808,9 @@ jobs:
             echo "build=${{ needs.build-verify-release.outputs.build }}"
             echo "commit=${{ needs.build-verify-release.outputs.source_sha }}"
             echo "accepted_sdk_toolchain=$REQUIRED_XCODE_VERSION ($REQUIRED_XCODE_BUILD)"
-            echo "accepted_sdk_app_regression_tests=${{ steps.stable_app_regression.outputs.passed }}/${{ steps.stable_app_regression.outputs.total }} passed"
-            echo "accepted_sdk_app_regression_failed=${{ steps.stable_app_regression.outputs.failed }}"
-            echo "accepted_sdk_app_regression_skipped=${{ steps.stable_app_regression.outputs.skipped }}"
+            echo "accepted_sdk_app_regression_tests=${{ needs.accepted-sdk-build.outputs.passed }}/${{ needs.accepted-sdk-build.outputs.total }} passed"
+            echo "accepted_sdk_app_regression_failed=${{ needs.accepted-sdk-build.outputs.failed }}"
+            echo "accepted_sdk_app_regression_skipped=${{ needs.accepted-sdk-build.outputs.skipped }}"
             echo "testflight_upload=accepted_by_transport"
             echo "apple_processing_state=not_verified"
             echo "floe_qa_visibility=not_verified"
