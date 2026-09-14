@@ -169,8 +169,8 @@ struct NotesDocumentEditor: View {
         }
         .background(Color(uiColor: .secondarySystemBackground))
         .allowsHitTesting(!session.isSwitchingDocument)
-        .onChange(of: pageID) { _, _ in rememberEditor() }
-        .onChange(of: tool) { _, _ in rememberEditor() }
+        .onChange(of: pageID) { _, _ in showingPencilMenu = false; rememberEditor() }
+        .onChange(of: tool) { _, _ in showingPencilMenu = false; rememberEditor() }
         .onChange(of: scenePhase) { _, value in
             if value != .active { rememberEditor(); session.persistTabs() }
         }

@@ -79,7 +79,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(marker.frame.minY, app.frame.minY)
         marker.tap()
         let toolbarMarker = app.buttons["notes.tool.highlighter"]
-        let wheelDismissed = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: toolbarMarker)
+        let wheelDismissed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["notes.pencil.quickMenu.close"])
         wait(for: [wheelDismissed], timeout: 10)
         XCTAssertTrue(toolbarMarker.isSelected)
         XCTAssertFalse(app.buttons["notes.pencil.quickMenu.close"].exists)
@@ -89,7 +89,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(marker.isSelected)
         capture("notes-pencil-quick-menu")
         app.buttons["notes.pencil.quickMenu.close"].tap()
-        let cancelled = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: toolbarMarker)
+        let cancelled = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["notes.pencil.quickMenu.close"])
         wait(for: [cancelled], timeout: 10)
         XCTAssertTrue(toolbarMarker.isSelected)
         let headerToggle = app.buttons["notes.header.toggle"]

@@ -2,7 +2,11 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-Current candidate: **build 166**, source `82cccf4ead7e64e5d8600c476142a4a362a3282f`, tag `v1.7.0-beta.23`, [release run 34843027626](https://github.com/JiangNanGenius/floe-agent/actions/runs/34843027626). It replaces the rejected three-row Pencil palette with the user-requested circular tool wheel. The production wheel compiled locally; full App, both SDK/device UI gates and distribution remain pending. Build 156 remains the latest verified TestFlight delivery. Build 165 (`b80864f6fa566674a38e9b5924d9735137d597e4`, `v1.7.0-beta.22`, [run 34840920641](https://github.com/JiangNanGenius/floe-agent/actions/runs/34840920641)) was cancelled before upload when the interaction requirement changed.
+Current candidate: **build 167**, replacing the popover host with a wheel placed directly over the page, clamped inside its visible bounds. It removes rectangular popover chrome and avoids a retained modal host after repeated selection on iPhone. Production component and UI-test host compilation passed locally; cloud UI qualification and distribution remain pending. Build 156 remains the latest verified TestFlight delivery.
+
+Build 166 (`82cccf4ead7e64e5d8600c476142a4a362a3282f`, `v1.7.0-beta.23`, [release run 34843027626](https://github.com/JiangNanGenius/floe-agent/actions/runs/34843027626)) was cancelled before upload. Its [component run 34842984634](https://github.com/JiangNanGenius/floe-agent/actions/runs/34842984634) passed iPad under both SDKs, but SDK 26 iPhone retained the wheel after repeated selection and SDK 27 iPhone did not finalize before the step deadline. Original screenshots also showed unwanted rectangular system chrome around the circle. These failures are not waived by the iPad passes.
+
+Build 165 (`b80864f6fa566674a38e9b5924d9735137d597e4`, `v1.7.0-beta.22`, [run 34840920641](https://github.com/JiangNanGenius/floe-agent/actions/runs/34840920641)) was cancelled before upload when the user replaced its three-row palette with the radial interaction requirement.
 
 Build 164 (`f150e888028aa20a0131240e0c3d259756cac304` / `v1.7.0-beta.21`, [run 34833194332](https://github.com/JiangNanGenius/floe-agent/actions/runs/34833194332)) passed SDK 27 module, App and dual-device UI tests. Its run was cancelled before upload to incorporate the new requested scope; it was not delivered to TestFlight or published as a GitHub Release. Its evidence and screenshots below remain valid only for that source.
 

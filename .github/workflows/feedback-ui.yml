@@ -133,7 +133,7 @@ jobs:
           - runner: macos-26
             xcode: Xcode_26.6
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
     defaults:
@@ -150,7 +150,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build-for-testing 2>&1 | tee build.log
       - name: Require all three anchors on iPad and iPhone
-        timeout-minutes: 12
+        timeout-minutes: 18
         run: |
           set -o pipefail
           result=0

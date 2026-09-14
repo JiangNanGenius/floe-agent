@@ -29,7 +29,7 @@ import UIKit
             }
             marker.tap()
             let opener = app.buttons["palette.open.\(location)"]
-            let dismissed = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: opener)
+            let dismissed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["notes.pencil.quickMenu.close"])
             wait(for: [dismissed], timeout: 10)
             XCTAssertTrue(opener.isHittable)
             XCTAssertFalse(app.buttons["notes.pencil.quickMenu.close"].exists)
@@ -38,7 +38,7 @@ import UIKit
             XCTAssertTrue(marker.waitForExistence(timeout: 5))
             XCTAssertTrue(marker.isSelected)
             app.buttons["notes.pencil.quickMenu.close"].tap()
-            let cancelled = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: opener)
+            let cancelled = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["notes.pencil.quickMenu.close"])
             wait(for: [cancelled], timeout: 10)
             XCTAssertEqual(app.staticTexts["palette.selectedTool"].label, "荧光笔")
         }

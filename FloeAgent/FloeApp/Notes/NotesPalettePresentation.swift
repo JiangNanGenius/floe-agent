@@ -7,14 +7,28 @@ extension View {
         isPresented: Binding<Bool>, point: CGPoint,
         @ViewBuilder content: @escaping () -> Palette
     ) -> some View {
-        // Anchor directly to the visible canvas. A positioned 1-point overlay
-        // expands its layout bounds and can put the popover above the window.
-        popover(isPresented: isPresented,
-                attachmentAnchor: .point(UnitPoint(
-                    x: point.x.isFinite ? min(0.95, max(0.05, point.x)) : 0.5,
-                    y: point.y.isFinite ? min(0.95, max(0.05, point.y)) : 0.15
-                )), arrowEdge: nil) {
-            content().presentationCompactAdaptation(.popover)
+        // Keep the wheel in the page coordinate space. A system popover adds
+        // rectangular chrome and can retain its modal host after rapid reuse.
+        overlay {
+            GeometryReader { geometry in
+                if isPresented.wrappedValue {
+                    let size = geometry.size
+                    let extent: CGFloat = 292
+                    let x = point.x.isFinite ? min(1, max(0, point.x)) : 0.5
+                    let y = point.y.isFinite ? min(1, max(0, point.y)) : 0.15
+                    let scale = min(1, min(size.width, size.height) / (extent + 16))
+                    let half = extent * scale / 2 + 8
+                    ZStack(alignment: .topLeading) {
+                        Color.clear.contentShape(Rectangle())
+                            .onTapGesture { isPresented.wrappedValue = false }
+                            .accessibilityHidden(true)
+                        content()
+                            .scaleEffect(scale)
+                            .position(x: min(size.width - half, max(half, size.width * x)),
+                                      y: min(size.height - half, max(half, size.height * y)))
+                    }
+                }
+            }
         }
     }
 }
@@ -56,13 +70,13 @@ struct NotesPencilToolWheel: View {
 
     var body: some View {
         ZStack {
-            Circle().fill(.regularMaterial)
-            Circle().strokeBorder(.primary.opacity(0.10), lineWidth: 1)
+            Circle().fill(.regularMaterial).allowsHitTesting(false)
+            Circle().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1).allowsHitTesting(false)
             ForEach(Array(NotesInkTool.allCases.enumerated()), id: \.element) { index, value in
                 let angle = Double(index) * 72 - 90
                 NotesToolWheelSector(angle: angle)
                     .fill(tool == value ? Color.accentColor.opacity(0.14) : Color.clear)
-                    .accessibilityHidden(true)
+                    .accessibilityHidden(true).allowsHitTesting(false)
                 Button { select(value) } label: {
                     VStack(spacing: 4) {
                         Image(systemName: value.icon).font(.system(size: 23, weight: .medium))
@@ -81,7 +95,7 @@ struct NotesPencilToolWheel: View {
                 Image(systemName: "xmark").font(.system(size: 17, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 64, height: 64)
-                    .background(.primary.opacity(0.05), in: Circle())
+                    .background(Color.primary.opacity(0.05), in: Circle())
                     .contentShape(Circle())
             }.accessibilityLabel("取消，继续书写")
                 .accessibilityIdentifier("notes.pencil.quickMenu.close")
@@ -89,7 +103,7 @@ struct NotesPencilToolWheel: View {
         .frame(width: diameter, height: diameter)
         .padding(6)
         .buttonStyle(NotesToolbarButtonStyle())
-        .presentationBackground(.clear)
+        .shadow(color: .black.opacity(0.16), radius: 14, y: 4)
     }
 }
 
