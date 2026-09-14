@@ -1,0 +1,28 @@
+name: FloeSpeechDownloadSmoke
+options:
+  deploymentTarget:
+    iOS: '26.0'
+targets:
+  FloeSpeechDownloadSmoke:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: ../../FloeApp/Voice/WhisperModelStore.swift
+      - path: ../../FloeApp/Voice/WhisperSettingsView.swift
+      - path: ../../FloeApp/Resources/Whisper
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.floe.speech-download-smoke
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: '6.0'
+schemes:
+  FloeSpeechDownloadSmoke:
+    build:
+      targets:
+        FloeSpeechDownloadSmoke: all

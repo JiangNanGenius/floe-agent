@@ -1,0 +1,61 @@
+name: Feedback component UI qualification
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: floe-feedback-ui-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  ipad-and-iphone:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: FloeAgent/Qualification/NativeManagement
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare component project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Test iPad interactions and retain screenshots
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          xcodebuild -project FloeManagementSmoke.xcodeproj -scheme FloeManagementSmoke \
+            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -derivedDataPath build -resultBundlePath ipad.xcresult \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 120 CODE_SIGNING_ALLOWED=NO test 2>&1 | tee ipad.log
+      - name: Test iPhone interactions and retain screenshots
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          xcodebuild -project FloeManagementSmoke.xcodeproj -scheme FloeManagementSmoke \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -derivedDataPath build -resultBundlePath iphone.xcresult \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 120 CODE_SIGNING_ALLOWED=NO test 2>&1 | tee iphone.log
+      - name: Export original screenshots
+        if: always()
+        run: |
+          for device in ipad iphone; do
+            if test -d "$device.xcresult"; then
+              mkdir -p "screenshots/$device"
+              xcrun xcresulttool export attachments --path "$device.xcresult" --output-path "screenshots/$device" || true
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feedback-component-ui-${{ github.sha }}
+          path: |
+            FloeAgent/Qualification/NativeManagement/*.log
+            FloeAgent/Qualification/NativeManagement/*.xcresult
+            FloeAgent/Qualification/NativeManagement/screenshots
+          retention-days: 14
