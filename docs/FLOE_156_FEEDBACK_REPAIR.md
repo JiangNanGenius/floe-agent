@@ -125,3 +125,5 @@ Actual iPad component navigation reached selected-project details and Python man
 手记支持从 Floe 项目及聊天工作区选择文件，导入器复制原始数据后才释放来源访问权限；选择器关闭后再进入编辑器，避免与全屏编辑的呈现冲突。Agent 的限范围资料搜索也包含版本有效的 OCR 与 Office 正文缓存，保留来源类型。
 
 shell 原生宿主新增动态注册回调的管道用例（索引 22），返回 `callback-resolved`、退出码 0 且执行线程停止。Debug 关闭可执行代码独立 dylib 后，该回调位于 ios_system 查找的主可执行文件。此结果不代替完整 App 的 Python/Node 注册回归。
+
+Whisper 补充中断验证：在测试宿主安装进度为 1,639,126 / 490,671,464 字节时，对该宿主进程发送 SIGKILL。重新启动未传入开始下载参数，由生产恢复入口自动继续；56 秒后报告 490,671,464 字节完成、无错误、文件重新校验通过。证据为 `validation/floe-156-feedback/speech-process-interruption.json`。这是模拟器中的进程中断与恢复，不是系统触发的真机后台回收验收。

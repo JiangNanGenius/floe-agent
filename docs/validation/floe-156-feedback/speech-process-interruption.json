@@ -1,0 +1,25 @@
+{
+  "pid": 18160,
+  "beforeInterruption": {
+    "bytes": 1639126,
+    "date": "2026-09-14T01:23:46Z",
+    "error": "",
+    "installed": true,
+    "running": true,
+    "settingsVisible": false,
+    "total": 490671464,
+    "verified": false
+  },
+  "mechanism": "SIGKILL of qualification app process only",
+  "afterRelaunch": {
+    "bytes": 490671464,
+    "date": "2026-09-14T01:24:42Z",
+    "error": "",
+    "installed": true,
+    "running": false,
+    "settingsVisible": false,
+    "total": 490671464,
+    "verified": true
+  },
+  "scope": "Production download store in iPad simulator qualification host; not system-initiated device termination"
+}

@@ -1,5 +1,9 @@
 # Floe 1.7.0 — TestFlight preparation and candidate history
 
+## Feedback repair candidate — not yet distributed
+
+The `codex/floe-156-feedback-repair` branch contains the September 14 fixes and subsequent content-search/workspace-import additions. Build 156 below is still the last verified delivery. New source builds, component tests and screenshots do not establish a new TestFlight release. Current gates and evidence are tracked in [the feedback repair record](FLOE_156_FEEDBACK_REPAIR.md); physical-device checks remain with the user.
+
 ## Internal delivery — 2026-09-14 (Australia/Sydney)
 
 **Available: 1.7.0 (156), internal Floe QA TestFlight.** Apple `VALID`, unexpired, exactly one existing private internal group, and `IN_BETA_TESTING` were confirmed at 2026-09-13 15:15:02 UTC. English and Simplified Chinese beta notes were written and read back. [Availability evidence](evidence/floe-1.7/release-156/TESTFLIGHT_AVAILABLE.json).
