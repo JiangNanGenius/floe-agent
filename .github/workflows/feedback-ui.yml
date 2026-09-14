@@ -168,6 +168,13 @@ jobs:
           set -o pipefail
           brew install xcodegen
           xcodegen generate
+          # Device Release compilation has a different optimizer path from the
+          # simulator test host. Check it once per SDK before expensive App CI.
+          if [[ "$PALETTE_DEVICE_KEY" == "ipad" ]]; then
+            xcodebuild -project FloePencilPaletteQualification.xcodeproj -scheme FloePencilPaletteQualification \
+              -configuration Release -destination 'generic/platform=iOS' -derivedDataPath device-build \
+              SWIFT_STRICT_CONCURRENCY=complete CODE_SIGNING_ALLOWED=NO build 2>&1 | tee device-release-build.log
+          fi
           xcodebuild -project FloePencilPaletteQualification.xcodeproj -scheme FloePencilPaletteQualification \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build-for-testing 2>&1 | tee build.log

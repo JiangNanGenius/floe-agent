@@ -102,22 +102,9 @@ struct NotesPencilToolWheel: View {
                 .allowsHitTesting(false)
             ForEach(Array(NotesInkTool.allCases.enumerated()), id: \.element) { index, value in
                 let angle = Double(index) * 45 + placement.startAngle
-                Button { select(value) } label: {
-                    Image(systemName: value == .pen ? inkPreferences.selectedPen.icon : value.icon)
-                        .font(.system(size: 21, weight: .medium))
-                        .foregroundStyle(tool == value || preview == value ? Color.accentColor : .primary)
-                        .frame(width: 44, height: 44)
-                        .background {
-                            Circle().fill(Color.accentColor.opacity(tool == value ? 0.16 : preview == value ? 0.08 : 0))
-                                .padding(2)
-                        }
-                }
-                .accessibilityLabel(value == .pen ? inkPreferences.selectedPen.title : value.rawValue)
-                .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
-                .accessibilityValue(preview == value ? "预览，轻触选择" : "")
-                .accessibilityAddTraits(tool == value ? .isSelected : [])
-                .position(x: diameter / 2 + radius * cos(angle * .pi / 180),
-                          y: diameter / 2 + radius * sin(angle * .pi / 180))
+                toolButton(value)
+                    .position(x: diameter / 2 + radius * cos(angle * .pi / 180),
+                              y: diameter / 2 + radius * sin(angle * .pi / 180))
             }
             Button(action: close) {
                 // The open center stays visually empty and behaves like other
@@ -156,15 +143,40 @@ struct NotesPencilToolWheel: View {
         .buttonStyle(NotesToolbarButtonStyle())
     }
 
+    private func toolButton(_ value: NotesInkTool) -> some View {
+        let isSelected = tool == value
+        let isPreviewed = preview == value
+        let highlightOpacity: Double = isSelected ? 0.16 : (isPreviewed ? 0.08 : 0)
+        let foreground: Color = isSelected || isPreviewed ? .accentColor : .primary
+        let icon = value == .pen ? inkPreferences.selectedPen.icon : value.icon
+        let title = value == .pen ? inkPreferences.selectedPen.title : value.rawValue
+        return Button { select(value) } label: {
+            Image(systemName: icon)
+                .font(.system(size: 21, weight: .medium))
+                .foregroundStyle(foreground)
+                .frame(width: 44, height: 44)
+                .background {
+                    Circle()
+                        .fill(Color.accentColor.opacity(highlightOpacity))
+                        .padding(2)
+                }
+        }
+        .accessibilityLabel(title)
+        .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
+        .accessibilityValue(isPreviewed ? "预览，轻触选择" : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
     private func toolNear(_ point: CGPoint) -> NotesInkTool? {
         let dx = point.x - diameter / 2, dy = point.y - diameter / 2
         let distance = hypot(dx, dy)
-        let middle = (placement.startAngle + 90) * .pi / 180
+        let startAngle = placement.startAngle
+        let middle = (startAngle + 90) * .pi / 180
         let towardArc = dx * cos(middle) + dy * sin(middle)
         guard distance.isFinite, distance >= 56, distance <= diameter / 2 + 24, towardArc >= -24 else { return nil }
         let nearest = NotesInkTool.allCases.enumerated().min { lhs, rhs in
             func squaredDistance(_ index: Int) -> CGFloat {
-                let angle = (Double(index) * 45 + placement.startAngle) * .pi / 180
+                let angle = (Double(index) * 45 + startAngle) * .pi / 180
                 return pow(dx - radius * cos(angle), 2) + pow(dy - radius * sin(angle), 2)
             }
             return squaredDistance(lhs.offset) < squaredDistance(rhs.offset)
