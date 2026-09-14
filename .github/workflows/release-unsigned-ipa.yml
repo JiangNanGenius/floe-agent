@@ -10,6 +10,11 @@ on:
         description: Existing SemVer tag to validate and build
         required: true
         type: string
+      direct_testflight:
+        description: Build the existing tag and upload directly without simulator qualification (explicit user request)
+        required: false
+        default: false
+        type: boolean
       reuse_accepted_run:
         description: Reuse an existing exact-tag accepted-SDK artifact and upload without waiting for SDK 27 qualification
         required: false
@@ -33,6 +38,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  direct-testflight:
+    if: github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/testflight-direct.yml
+    with:
+      tag: ${{ inputs.tag }}
+    secrets: inherit
+
   expedited-testflight:
     if: github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != ''
     permissions:
@@ -53,7 +68,7 @@ jobs:
     secrets: inherit
 
   prepare-release:
-    if: ${{ !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
+    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
     runs-on: macos-26
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -73,7 +88,7 @@ jobs:
 
   build-verify-release:
     needs: prepare-release
-    if: ${{ !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
+    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
     # Verify the complete iOS 27 source path here. The upload job below
     # separately rebuilds this exact tag with the App Store accepted SDK.
     runs-on: xcode-27
