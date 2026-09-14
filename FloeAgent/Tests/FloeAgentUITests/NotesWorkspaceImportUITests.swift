@@ -9,7 +9,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let ipad = UIDevice.current.userInterfaceIdiom == .pad
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         let app = XCUIApplication()
-        app.launchArguments = ["-ui-testing", "--ui-test-batch-fixture", "--ui-test-pdf-fixture"]
+        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-pdf-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
         defer { app.terminate() }
