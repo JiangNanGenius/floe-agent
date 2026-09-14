@@ -131,6 +131,7 @@
 		3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */; };
 		362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; };
 		387FBEF01A308524B273A103 /* pandas__libs_tslibs_nattype.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D60F63746F389D3AC1409E9A /* pandas__libs_tslibs_nattype.xcframework */; };
+		38B8A13076DD53D0AAE4F448 /* NotesPalettePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82DB29DC9BABBD2FE6410C1C /* NotesPalettePresentation.swift */; };
 		38D12FDA70DBDEB3E3F91853 /* select.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8EEDB221C5E3501DEF3F7015 /* select.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		39115D1FF0C2180535C94DCC /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940DE18872CD21D45A855A30 /* FilesView.swift */; };
 		3A66AAE493907FEC14A90D2E /* pandas__libs_ops_dispatch.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */; };
@@ -982,6 +983,7 @@
 		81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentEditor.swift; sourceTree = "<group>"; };
 		828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShellCommands.swift; sourceTree = "<group>"; };
 		82CCECA26179BEA9F020C01A /* pandas__libs_reshape.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_reshape.xcframework; path = Vendor/PythonExtensions/pandas__libs_reshape.xcframework; sourceTree = "<group>"; };
+		82DB29DC9BABBD2FE6410C1C /* NotesPalettePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesPalettePresentation.swift; sourceTree = "<group>"; };
 		8351C46DA1F3C3E41CF3739B /* WhisperModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelStore.swift; sourceTree = "<group>"; };
 		83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideLauncherView.swift; sourceTree = "<group>"; };
 		8496EE48316FEA0DF993901A /* CapabilityStoreAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityStoreAdapters.swift; sourceTree = "<group>"; };
@@ -1969,6 +1971,7 @@
 				247E8EC43E8E35A02BD9D4C6 /* NotesKnowledgePicker.swift */,
 				5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */,
 				931809561A553D3D4D78ABA6 /* NotesOfficeView.swift */,
+				82DB29DC9BABBD2FE6410C1C /* NotesPalettePresentation.swift */,
 				51E3758CCEC79AE4FCA6D6B4 /* NotesRepository.swift */,
 				1838729ECF5E85526DF5F217 /* NotesRootView.swift */,
 				6C6C6EF70E9F50E66B502984 /* NotesSession.swift */,
@@ -2614,6 +2617,7 @@
 				B9209D676C9FD45524B01776 /* NotesKnowledgePicker.swift in Sources */,
 				70520C3ACCCC3D82B68A7023 /* NotesLinkedMindMaps.swift in Sources */,
 				8A1DC131203E20C7D4FCA1CB /* NotesOfficeView.swift in Sources */,
+				38B8A13076DD53D0AAE4F448 /* NotesPalettePresentation.swift in Sources */,
 				2EDE28250D1308B8F85CA363 /* NotesRepository.swift in Sources */,
 				9F0EDF153307BB68F8B68775 /* NotesRootView.swift in Sources */,
 				022DCFD99F85967EC9162972 /* NotesSession.swift in Sources */,
@@ -2814,7 +2818,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -2862,7 +2866,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2946,7 +2950,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2992,7 +2996,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -3103,7 +3107,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -3133,7 +3137,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -3182,7 +3186,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -3228,7 +3232,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 163;
+				CURRENT_PROJECT_VERSION = 164;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;

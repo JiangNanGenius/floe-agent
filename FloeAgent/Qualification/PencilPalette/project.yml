@@ -1,0 +1,47 @@
+name: FloePencilPaletteQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: '6.0'
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  FloePencilPaletteQualification:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - ../../FloeApp/Notes/NotesPalettePresentation.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.pencil.palette.qualification
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    info:
+      path: App/Info.plist
+      properties:
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+  PencilPaletteUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: FloePencilPaletteQualification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.pencil.palette.uitests
+schemes:
+  FloePencilPaletteQualification:
+    build:
+      targets:
+        FloePencilPaletteQualification: all
+        PencilPaletteUITests: [test]
+    test:
+      targets: [PencilPaletteUITests]

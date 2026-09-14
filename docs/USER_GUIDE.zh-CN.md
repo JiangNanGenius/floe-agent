@@ -39,7 +39,7 @@ Floe Agent 需要 iOS/iPadOS 26 或更高版本。文件审阅、浏览器接管
 
 支持捏压的 Apple Pencil 会按系统设置打开快捷菜单或切换工具；双击也遵循系统偏好。关闭手势或选择系统快捷指令时，Floe 不接管该动作。能够取得悬停位置时，菜单在笔尖附近打开；没有位置时在页面上方打开。手指书写仍需单独开启。[Apple Pencil 原生交互说明](https://developer.apple.com/documentation/uikit/uipencilinteraction)。
 
-这是 build 163 候选源码，双端界面测试和 TestFlight 分发尚待完成；模拟器不能替代 Pencil Pro 捏压的真机检查。
+这是 build 164 候选源码，双端界面测试和 TestFlight 分发尚待完成；模拟器不能替代 Pencil Pro 捏压的真机检查。
 
 ## 本轮修复候选：搜索与工作区导入
 

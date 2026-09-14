@@ -1,0 +1,38 @@
+{
+  "build": 163,
+  "tag": "v1.7.0-beta.20",
+  "source": "7ef24846e87da67fe3f5b5db9fad545489dc7be8",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34823071123",
+  "sdk": "27.0",
+  "scope": "Finalized full App regression result, not Notes UI or distribution acceptance",
+  "counts": {
+    "total": "157",
+    "passed": "157",
+    "failed": "0",
+    "skipped": "0",
+    "expectedFailures": "0",
+    "result": "Passed",
+    "suite_CanvasTouchInteractionTests": 5,
+    "suite_CanvasSavedImageBatchAtomicityTests": 9,
+    "suite_CanvasAgentToolContractTests": 8,
+    "suite_CrashAndFeedbackRegressionTests": 39,
+    "suite_ThreadTimelineTests": 31,
+    "suite_HomeChatSeparationTests": 6,
+    "suite_HomeTaskCreationTests": 2,
+    "suite_BrowserProtocolTests": 8,
+    "suite_MailConnectorTests": 5,
+    "suite_SkillLifecycleTests": 25,
+    "suite_LocalPythonRuntimeTests": 5,
+    "suite_LocalShellRuntimeTests": 12,
+    "suite_EnvironmentLanguagePackageTests": 2
+  },
+  "process": {
+    "exitCode": 0,
+    "reason": "exited",
+    "elapsedSeconds": 1002.552,
+    "testsStarted": true
+  },
+  "verifier": "FloeAgent/scripts/verify_app_regression_xcresult.py",
+  "verifierSHA256": "7d793ccdd218e8ec98498e6e2b854455fd60fee6f5542b330021d102dfa8aa4e",
+  "logSHA256": "70ce542085c39e4deed8d480e8cd664a6865782d1115a89f77c3cf92d7afda6a"
+}

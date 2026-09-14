@@ -57,8 +57,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         wait(for: [editorReady], timeout: 10)
         XCTAssertEqual(app.buttons.matching(identifier: "notes.back").count, 1)
         XCTAssertTrue(back.isHittable)
-        XCTAssertGreaterThanOrEqual(back.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
+        assertTouchTarget(back)
         XCTAssertFalse(app.navigationBars["从工作区导入"].exists)
         XCTAssertFalse(app.textFields["notes.search"].isHittable)
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
@@ -70,18 +69,22 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertLessThan(tools.frame.maxY - back.frame.minY, 120)
         let quickMenu = app.buttons["notes.pencil.quickMenu"]
         XCTAssertTrue(quickMenu.isHittable)
-        XCTAssertGreaterThanOrEqual(quickMenu.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(quickMenu.frame.height, 44)
+        assertTouchTarget(quickMenu)
         quickMenu.tap()
         let marker = app.buttons["notes.pencil.quickMenu.highlighter"]
         XCTAssertTrue(marker.waitForExistence(timeout: 5))
-        XCTAssertGreaterThanOrEqual(marker.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(marker.frame.height, 44)
+        capture("notes-pencil-quick-menu-open")
+        assertTouchTarget(marker)
+        XCTAssertTrue(marker.isHittable)
+        XCTAssertGreaterThanOrEqual(marker.frame.minY, app.frame.minY)
         marker.tap()
         XCTAssertTrue(marker.isSelected)
         capture("notes-pencil-quick-menu")
         app.buttons["notes.pencil.quickMenu.close"].tap()
-        XCTAssertTrue(app.buttons["notes.tool.highlighter"].isSelected)
+        let toolbarMarker = app.buttons["notes.tool.highlighter"]
+        let paletteDismissed = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: toolbarMarker)
+        wait(for: [paletteDismissed], timeout: 10)
+        XCTAssertTrue(toolbarMarker.isSelected)
         // The same palette is opened by Pencil interactions; physical squeeze
         // delivery is a device check, not simulated by this button test.
         back.tap()
@@ -102,5 +105,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         image.name = name
         image.lifetime = .keepAlways
         add(image)
+    }
+
+    private func assertTouchTarget(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+        // AX screen-coordinate conversion can return 43.999999999999986 for
+        // a 44-point label. Allow subpixel rounding, not a smaller touch target.
+        XCTAssertGreaterThanOrEqual(element.frame.width, 43.5, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(element.frame.height, 43.5, file: file, line: line)
     }
 }

@@ -1,7 +1,16 @@
 name: Feedback component UI qualification
 on:
   workflow_dispatch:
+    inputs:
+      palette_only:
+        description: 'Only qualify the production Pencil palette presenter on both devices and SDKs'
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      palette_only:
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -9,6 +18,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   notes-content-search:
+    if: ${{ !inputs.palette_only }}
     runs-on: xcode-27
     timeout-minutes: 40
     env:
@@ -62,6 +72,7 @@ jobs:
             FloeAgent/Qualification/NativeNotes/screenshots
           retention-days: 14
   ipad-and-iphone:
+    if: ${{ !inputs.palette_only }}
     runs-on: xcode-27
     timeout-minutes: 45
     env:
@@ -111,4 +122,63 @@ jobs:
             FloeAgent/Qualification/NativeManagement/*.log
             FloeAgent/Qualification/NativeManagement/*.xcresult
             FloeAgent/Qualification/NativeManagement/screenshots
+          retention-days: 14
+  pencil-palette:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: xcode-27
+            xcode: Xcode_27.0
+          - runner: macos-26
+            xcode: Xcode_26.6
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: FloeAgent/Qualification/PencilPalette
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the production palette presenter qualification host
+        run: |
+          set -o pipefail
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project FloePencilPaletteQualification.xcodeproj -scheme FloePencilPaletteQualification \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build-for-testing 2>&1 | tee build.log
+      - name: Require all three anchors on iPad and iPhone
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          result=0
+          for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
+            case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
+            xcodebuild -project FloePencilPaletteQualification.xcodeproj -scheme FloePencilPaletteQualification \
+              -destination "platform=iOS Simulator,name=$device" -derivedDataPath build \
+              -resultBundlePath "$name.xcresult" -parallel-testing-enabled NO \
+              -collect-test-diagnostics never -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 180 CODE_SIGNING_ALLOWED=NO test-without-building \
+              2>&1 | tee "$name.log" || result=1
+          done
+          exit "$result"
+      - name: Retain original palette screenshots
+        if: always()
+        run: |
+          for name in ipad iphone; do
+            if test -d "$name.xcresult"; then
+              mkdir -p "screenshots/$name"
+              xcrun xcresulttool export attachments --path "$name.xcresult" --output-path "screenshots/$name"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pencil-palette-${{ matrix.xcode }}-${{ github.sha }}
+          path: |
+            FloeAgent/Qualification/PencilPalette/*.log
+            FloeAgent/Qualification/PencilPalette/*.xcresult
+            FloeAgent/Qualification/PencilPalette/screenshots
           retention-days: 14

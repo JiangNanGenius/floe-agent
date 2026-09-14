@@ -125,14 +125,8 @@ struct NotesDocumentEditor: View {
                                    captureSelectionRequest: captureSelectionRequest, regionSelection: tool == .region,
                                    onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) }, elementImages: elementImages,
                                    onPencilAction: handlePencilAction)
-                        .overlay(alignment: .topLeading) {
-                            GeometryReader { geometry in
-                                Color.clear.frame(width: 1, height: 1)
-                                    .position(x: pencilMenuPoint.x * geometry.size.width, y: pencilMenuPoint.y * geometry.size.height)
-                                    .popover(isPresented: $showingPencilMenu) {
-                                        pencilQuickMenu.presentationCompactAdaptation(.popover)
-                                    }
-                            }.allowsHitTesting(showingPencilMenu)
+                        .notesPencilPalette(isPresented: $showingPencilMenu, point: pencilMenuPoint) {
+                            pencilQuickMenu
                         }
                         .id(page.id)
                         .onChange(of: page.id) { _, _ in
@@ -617,21 +611,6 @@ struct NotesDocumentEditor: View {
             HStack { Text("粗细"); Spacer(); Text(inkWidth.wrappedValue, format: .number.precision(.fractionLength(1))).monospacedDigit() }
             Slider(value: inkWidth, in: tool == .marker ? 4...40 : 0.5...12, step: 0.5).accessibilityLabel("画笔粗细")
         }
-    }
-}
-
-// Put the hit region inside the button label. A frame around a Button can
-// reserve space while leaving only the small glyph interactive. Do not attach
-// a shared accessibility identifier to toolbar stacks: SwiftUI propagates it
-// to the individual controls and masks their own identifiers.
-private struct NotesToolbarButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(Rectangle())
-            .opacity(isEnabled ? (configuration.isPressed ? 0.55 : 1) : 0.35)
     }
 }
 

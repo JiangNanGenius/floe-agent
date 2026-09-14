@@ -2,7 +2,16 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-Current candidate: **build 163**, `7ef24846e87da67fe3f5b5db9fad545489dc7be8` / `v1.7.0-beta.20`, [release run 34823071123](https://github.com/JiangNanGenius/floe-agent/actions/runs/34823071123). This candidate includes the independently identifiable toolbar controls and full 44-point button hit regions. Release qualification and TestFlight availability are pending.
+Follow-up candidate: **build 164**, under focused palette-layout qualification before the next release run. Build 163 was not archived, uploaded or published as a GitHub Release.
+
+Previous candidate: **build 163**, `7ef24846e87da67fe3f5b5db9fad545489dc7be8` / `v1.7.0-beta.20`, [release run 34823071123](https://github.com/JiangNanGenius/floe-agent/actions/runs/34823071123). This candidate includes the independently identifiable toolbar controls and full 44-point button hit regions. Its UI gate failed; archive, upload and GitHub publication were skipped.
+
+Build 163 release source `7ef2484` passed [1,266 module executions](evidence/floe-1.7/release-163/swift-qualification.json), SDK 27 Release compilation and [157 finalized App regressions](evidence/floe-1.7/release-163/sdk27-app-qualification.json). Both devices passed the foreground editor/header checks. The UI gate then found a real iPad placement error: the palette marker was at y = -62, outside the window. A positioned transparent overlay supplied the wrong popover attachment bounds. The follow-up uses a normalized point on the actual canvas viewport and lets the system select the arrow edge. It also allows subpixel AX rounding in the 44-point hit-area checks; the iPhone failure was 43.999999999999986 versus 44. A small qualification host exercises the production presenter and button style at top, center and bottom anchors before full-App qualification.
+
+Local palette qualification passed all three iPad anchors. The initial iPhone run reached and selected the palette but checked the underlying toolbar during its dismissal transition; the test now waits for the control to become hittable. Subsequent local attempts failed at simulator App launch or AX initialization, before validating the correction. Original results are retained privately. The focused cloud workflow now runs this production presenter on both devices under SDK 27 and the accepted SDK 26; these component results cannot replace the complete App UI gate.
+
+The user also explicitly requested a GitHub Release for this round. After successful qualification and verified TestFlight availability, publish the paired **prerelease** page with reviewed developer assets and bilingual notes; a Git tag alone does not fulfill that delivery.
+
 
 Previous candidate: **build 162**, `07ff6ffef9dadd9d403db6e790cc646f5422d7cd` / `v1.7.0-beta.19`, [release run 34814479336](https://github.com/JiangNanGenius/floe-agent/actions/runs/34814479336). This includes the compact Notes header, native Pencil quick palette and corrected navigation/task-creation test selection. Build 156 remains the latest verified TestFlight delivery.
 
