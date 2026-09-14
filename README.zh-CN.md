@@ -26,11 +26,11 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**1.7.0（156）已在 Floe QA 内部 TestFlight 可安装，Apple 状态为 VALID / IN_BETA_TESTING。** 正式发布另行安排，分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**1.7.0（172）已在 Floe QA 内部 TestFlight 可安装，Apple 状态为 VALID / IN_BETA_TESTING。** 正式发布另行安排，分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
 当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
 
-[反馈修复候选版](docs/FLOE_156_FEEDBACK_REPAIR.md)的手记新增 **“＋”→“从 Floe 工作区导入”**，可以选择会话或项目中生成的文档，复制到手记独立保存。封面资料列表支持打开文档进入全屏编辑，并搜索已经索引的正文。详见[搜索与导入说明](docs/USER_GUIDE.zh-CN.md#本轮修复候选搜索与工作区导入)；SDK 27 完整 App 的手记 UI 用例已在 iPad/iPhone 通过；build 172 已上传成功，正在等待 Apple 处理并核对内部组可安装状态，真机验收仍由用户执行。
+[反馈修复版](docs/FLOE_156_FEEDBACK_REPAIR.md)的手记新增 **“＋”→“从 Floe 工作区导入”**，可以选择会话或项目中生成的文档，复制到手记独立保存。封面资料列表支持打开文档进入全屏编辑，并搜索已经索引的正文。详见[搜索与导入说明](docs/USER_GUIDE.zh-CN.md#本轮修复候选搜索与工作区导入)；SDK 27 完整 App 的手记 UI 用例已在 iPad/iPhone 通过；build 172 已在 Floe QA TestFlight 可安装；固定源码还通过 1,270 次 Swift 测试执行和 159 项 SDK 27 完整 App 回归，真机验收仍由用户执行。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 
@@ -219,3 +219,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。
 
 1.7 界面更新加入「通用 → 自动/日间/夜间」外观、项目与会话容器管理，以及可折叠的思考与工具调用组。功能可用性和测试版验收进展见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+
+### Feather 安装源
+
+使用自行签名安装的用户可添加 [Floe Feather 源](docs/FEATHER_SOURCE.md)。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。

@@ -10,9 +10,9 @@ Build 172 增加八种原生笔型，各自保存颜色、粗细和不透明度�
 
 [English](USER_GUIDE.md) · [官方网站](https://www.floe-agent.com/) · [中文 README](../README.zh-CN.md) · [安全策略](../SECURITY.zh-CN.md)
 
-本指南覆盖现有 Floe 工作流与1.7 内部测试版（156）的内容，界面以已安装构建为准。请结合[1.7 实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)和[升级与恢复](FLOE_1_7_MIGRATION.md)阅读；源码提交或构建成功不代表 TestFlight 已可安装。
+本指南覆盖现有 Floe 工作流与1.7 内部测试版（172）的内容，界面以已安装构建为准。请结合[1.7 实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)和[升级与恢复](FLOE_1_7_MIGRATION.md)阅读；源码提交或构建成功不代表 TestFlight 已可安装。
 
-本文包含当前开发分支的工作流升级；范围、截图及未完成验收见[本轮更新](WORKFLOW_UPGRADE.md)。发布可用性需另行确认。
+本文包含build 172 的工作流升级；范围、截图及未完成验收见[本轮更新](WORKFLOW_UPGRADE.md)。发布可用性需另行确认。
 
 ## 1.7 开发功能与使用边界 / Development features
 

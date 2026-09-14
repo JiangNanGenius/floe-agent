@@ -1,10 +1,10 @@
 # Floe Agent Feather source
 
-This source is being added with the current feedback release. It is not live
-until a qualified GitHub IPA has been published and `feather.json` is present
-on `main`.
+The source starts with Floe Agent 1.7.0 (build 172), published as GitHub Beta 29.
+It points to the verified SDK 27 unsigned developer IPA; TestFlight uses its
+separate accepted-SDK signed package.
 
-The stable URL will be:
+The stable source URL is:
 
 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
 
@@ -27,7 +27,7 @@ GitHub app release refreshes the same source URL without rebuilding the app.
 
 ## 简体中文
 
-本轮会提供可添加到 Feather 的 Floe Agent 软件源，当前仍待合格安装包正式上传到 GitHub 预发布页后启用。
+Floe Agent 软件源首版为 1.7.0（172），对应 GitHub Beta 29 的 SDK 27 未签名开发者 IPA；TestFlight 使用独立的上传 SDK 签名包。
 
 在 Feather 的「软件源 / Sources」中添加上方地址，选择 Floe Agent 下载，再使用自己的证书和描述文件签名安装。这里提供的是开发者未签名 IPA，TestFlight 是独立渠道。
 

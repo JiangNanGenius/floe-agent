@@ -1,0 +1,39 @@
+{
+  "version": "1.7.0",
+  "build": "172",
+  "buildID": "26175fe4-bdf0-45cf-ad28-7a77ddc7b3ea",
+  "source": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "tag": "v1.7.0-beta.29",
+  "distribution_policy": "9c741b0a4c7492fef7b5cbcaff4c74026efc4a80",
+  "upload_run": 34870170373,
+  "prepare_run": 34877274179,
+  "verification_run": 34877319188,
+  "verified_utc": "2026-09-14T17:52:18Z",
+  "processingState": "VALID",
+  "internalBuildState": "IN_BETA_TESTING",
+  "expired": false,
+  "group": "Floe QA",
+  "internal_group_count": 1,
+  "unexpected_group_count": 0,
+  "public_link_enabled": false,
+  "beta_notes": [
+    "en-US",
+    "zh-Hans"
+  ],
+  "xcode": "26.6 (17F113)",
+  "sdk": "26.5",
+  "signed_artifact_id": 10360177664,
+  "signed_artifact_zip_sha256": "24d6f36d914f84b71fd496025b4df8d364cf5f1152eb2c87aee03a0caceb60f5",
+  "physical_device_acceptance": "user performs after TestFlight installation",
+  "accepted_sdk_simulator_gate": "waived at user request; original selector failed before tests",
+  "sdk27_qualification": {
+    "swift_executions": 1270,
+    "full_app_tests": 159,
+    "notes_ui_devices": [
+      "iPad",
+      "iPhone"
+    ]
+  },
+  "full_package_model_delivery": "incomplete",
+  "production_release": false
+}

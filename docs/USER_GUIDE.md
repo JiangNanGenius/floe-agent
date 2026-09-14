@@ -2,9 +2,9 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide covers existing Floe workflows and the 1.7 internal beta (build 156). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
+This guide covers existing Floe workflows and the 1.7 internal beta (build 172). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
 
-This guide includes the current development-branch workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
+This guide includes the build 172 workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
 
 ## Current repair candidate: content search and workspace imports
 

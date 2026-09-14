@@ -1,4 +1,17 @@
-# Floe 1.7.0 — TestFlight preparation and candidate history
+# Floe 1.7 TestFlight delivery
+
+## Current delivery: 1.7.0 (172)
+
+**Available in the existing internal Floe QA group.** Apple `VALID`, unexpired, one private internal group and `IN_BETA_TESTING` were verified at 2026-09-14 17:52:18 UTC. English and Simplified Chinese notes were written and read back. [Availability evidence](evidence/floe-1.7/release-172/TESTFLIGHT_AVAILABLE.json).
+
+Source: `fb86fef896d41871fa98c8871237606f56c5ff39` / `v1.7.0-beta.29`. Direct packaging policy: `9c741b0`; [successful build/upload](https://github.com/JiangNanGenius/floe-agent/actions/runs/34870170373), [group/notes preparation](https://github.com/JiangNanGenius/floe-agent/actions/runs/34877274179), [availability verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34877319188).
+
+SDK 27 source qualification passed 1,270 Swift executions, 159 full-App regressions and the Notes UI case on iPad and iPhone. The direct Xcode 26.6 / SDK 26.5 uploader built, validated and signed the same app source; simulator qualification was explicitly waived for this expedited delivery. Original accepted-SDK selector failure and earlier attempts remain recorded. Physical-device checks belong to the user. Full package/model capability delivery remains incomplete. Public/external TestFlight review and production App Store release are not part of this delivery.
+
+[GitHub Beta 29](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.29) supplies a separately qualified SDK 27 unsigned IPA; [Feather instructions](FEATHER_SOURCE.md) describe that developer-signed installation route.
+
+## Earlier checkpoints (historical states)
+
 
 ## Build 172 direct-upload candidate
 

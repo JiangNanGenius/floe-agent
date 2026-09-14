@@ -5,7 +5,7 @@ Accepted scope: integrate environments, package management, Node, media processi
 workbench. Prepare a TestFlight-ready build; do not publish a production release.
 Environments provide dependency/data layering, not process security isolation.
 
-Release source: `v1.7.0-beta.13` / `65969b8`. Build 156 is available in internal Floe QA TestFlight (VALID / IN_BETA_TESTING). Actual upload uses Xcode 26.6 / SDK 26.5; SDK 27 is separately source-qualified. See [delivery evidence](evidence/floe-1.7/release-156/TESTFLIGHT_AVAILABLE.json). The checkpoints below retain their original scopes; full package/model delivery and physical-device acceptance remain incomplete.
+Release source: `v1.7.0-beta.29` / `fb86fef`. Build 172 is available in internal Floe QA TestFlight (VALID / IN_BETA_TESTING). Actual upload uses Xcode 26.6 / SDK 26.5; SDK 27 is separately source-qualified. See [delivery evidence](evidence/floe-1.7/release-172/TESTFLIGHT_AVAILABLE.json). The checkpoints below retain their original scopes; full package/model delivery and physical-device acceptance remain incomplete.
 
 ## Checkpoints
 
