@@ -17,7 +17,7 @@ private struct PaletteFixture: View {
                 ForEach(["top", "center", "bottom"], id: \.self) { location in
                     Button(location) {
                         point = CGPoint(x: 0.5, y: location == "top" ? 0.08 : location == "bottom" ? 0.95 : 0.5)
-                        presented = true
+                        presented.toggle()
                     }.accessibilityIdentifier("palette.open.\(location)")
                 }
             }.padding(4).buttonStyle(NotesToolbarButtonStyle())

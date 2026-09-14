@@ -20,6 +20,8 @@ The Feedback component UI workflow accepts `palette_only=true` for this small
 iPad/iPhone gate on SDK 27 and the accepted SDK 26, without compiling the full
 application. This gate does not replace the full-App release checks.
 
-The wheel contains pen, highlighter, eraser, lasso and AI selection in fixed positions, with cancel in its center. Color and width remain in the main writing toolbar.
+The compact ring contains pen, highlighter, eraser, lasso and AI selection in fixed positions. Moving, hovering and lifting never commit a tool: an explicit tap confirms selection. A second squeeze, the center close control or a blank-area tap closes it. Color and width remain in the main writing toolbar.
+
+The UI case drags from the center toward a tool, lifts without committing, then taps to select. It also covers repeated toggling and blank-area dismissal. Native Pencil hover and squeeze delivery still require compatible hardware.
 
 The circle is placed directly over the visible page and clamped at its edges; it does not use a system popover. Tests require the wheel to disappear after selection and cancellation, including selecting an already active tool. The component step allows cold simulator startup separately from its bounded test-case allowance.
