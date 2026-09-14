@@ -12,6 +12,10 @@ These assets are prepared as references, not evidence that the next build has pa
 
 These are unedited build 172 SDK 27 full-App simulator images using synthetic fixtures. They must not be labeled as the next submitted build or physical Pencil Pro evidence. Retake changed screens after the next build is frozen. UI test success is separate from physical-device acceptance.
 
+## Complete walkthrough
+
+The [11-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It is based on delivered build 172 and remains a review-preparation draft.
+
 ## Prepared sample
 
 The [bilingual PDF and expected results](sample-files/README.md) are ready: two pages, searchable English/Chinese text, a chart image and annotation space. PDF rendering and text extraction have been checked; app-level execution on the next build remains pending.

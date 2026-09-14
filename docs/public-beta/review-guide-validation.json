@@ -1,0 +1,14 @@
+{
+  "file": "floe-public-beta-review-guide.pdf",
+  "baseline": "1.7.0 (172)",
+  "pages": 11,
+  "sha256": "59fca144c00ff57a337058285ec6022a1486c1d1d1861889522502fa9850757b",
+  "bytes": 1917232,
+  "textExtractionChecked": true,
+  "renderedPagesReviewed": 11,
+  "screenshots": "original build 172 SDK 27 captures, rotated only in PDF layout",
+  "reviewStatus": "draft, external review not submitted",
+  "cloudCredits": "none authorized",
+  "localInference": "owner reports usable, limited capabilities",
+  "createdAt": "2026-09-14T18:10:01.014630+00:00"
+}
