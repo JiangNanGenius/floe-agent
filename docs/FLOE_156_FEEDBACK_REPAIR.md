@@ -12,6 +12,8 @@ Local palette qualification passed all three iPad anchors. The initial iPhone ru
 
 The [cloud component evidence](evidence/floe-1.7/release-164/palette-component-qualification.json) confirms one passing iPad case under each SDK, with all three anchor positions, selection and dismissal. Its iPhone paths failed before menu assertions: SDK 27 timed out launching the App, and SDK 26 reached the step deadline before initialization. These results do not qualify iPhone behavior. The full Floe release workflow retains its mandatory dual-device Notes UI gate before archiving or uploading.
 
+The fixed build-164 release source has passed [1,266 module test executions](evidence/floe-1.7/release-164/swift-qualification.json): 1,164 main, 12 JavaScript engine, 12 JavaScript tool, 61 platform and 17 Notes. Full App compilation, App/UI regression, signing and distribution are still pending.
+
 The user also explicitly requested a GitHub Release for this round. After successful qualification and verified TestFlight availability, publish the paired **prerelease** page with reviewed developer assets and bilingual notes; a Git tag alone does not fulfill that delivery.
 
 
