@@ -4,6 +4,9 @@ This branch implements the September 14 feedback plan. It is not a release or a 
 
 Current candidate: **build 162**, `07ff6ffef9dadd9d403db6e790cc646f5422d7cd` / `v1.7.0-beta.19`, [release run 34814479336](https://github.com/JiangNanGenius/floe-agent/actions/runs/34814479336). This includes the compact Notes header, native Pencil quick palette and corrected navigation/task-creation test selection. Build 156 remains the latest verified TestFlight delivery.
 
+Build 162 has now passed [1,266 Swift/module executions](evidence/floe-1.7/release-162/swift-qualification.json), SDK 27 simulator Release compilation, and [157 full App cases in 13 suites](evidence/floe-1.7/release-162/sdk27-app-qualification.json), with a finalized xcresult, no failures/skips and a normal test-driver exit. Both home suites executed and satisfied their separate minimums. Notes UI, accepted-SDK qualification, signing/upload and private-group availability remain pending.
+
+
 ## Previous qualification checkpoint — build 159
 
 The previous candidate was `ce7b514ed792f3cd17936a5ba55934f27eadfd9e` / `v1.7.0-beta.16`. [Release run 34804583803](https://github.com/JiangNanGenius/floe-agent/actions/runs/34804583803) has passed 1,266 Swift test executions: 1,164 main, 12 JavaScript engine, 12 JavaScript tool, 61 platform and 17 Notes. These are executions across suites, not unique App or device cases. [Machine-readable evidence](evidence/floe-1.7/release-159/swift-qualification.json) retains counts, exit status and log hashes.
