@@ -44,7 +44,7 @@ The following are core requirements:
 - Full-control mode requires explicit local authentication and has visible expiry.
 - High-confidence catastrophic actions stop for separate user confirmation, including while full control is active.
 - SSH-tunneled VNC is the safe default. Direct VNC is an explicit legacy-network option; Floe warns before use and keeps its password in Keychain.
-- Arbitrary downloaded or model-generated code is never executed on iOS. An installed skill may bundle pure-Python scripts only after one-time package audit; later reuse is bound to the same immutable content fingerprint and scope.
+- Local shell, Python and JavaScript tools can execute user- or model-created scripts in their bundled runtimes, subject to task/tool permissions. Compatible package installation is supported within the documented runtime limits; this is not a guarantee that generated code is harmless or isolated from other native code in the App process. An installed skill's permission-free script reuse still requires its audited immutable content fingerprint and scope.
 - Visible browser references are document-scoped, and sensitive login/upload/payment flows require explicit user review or takeover.
 - Skill packages are statically validated and cannot dynamically register native runners or grant themselves authority. Bundled pure-Python helpers remain sandboxed and do not inherit remote, credential, or filesystem authority.
 

@@ -1,6 +1,6 @@
 # 为 Floe Agent 贡献代码
 
-Repository instructions for coding agents: [AGENTS.md](AGENTS.md).
+代码 Agent 的仓库工作约定见 [AGENTS.md](AGENTS.md)。
 
 [English](CONTRIBUTING.md) · [中文 README](README.zh-CN.md) · [安全策略](SECURITY.zh-CN.md)
 
