@@ -1,0 +1,32 @@
+{
+  "checkedAt": "2026-09-14T17:56:40.614376+00:00",
+  "mergedMain": "54c5c9c0bc071e93546f39484d0cdc9a8b0e3346",
+  "method": "fast-forward",
+  "removedRemote": [
+    {
+      "remoteBranch": "codex/floe-156-feedback-repair",
+      "mergedSHA": "54c5c9c0bc071e93546f39484d0cdc9a8b0e3346"
+    },
+    {
+      "remoteBranch": "codex/floe-156-validation",
+      "mergedSHA": "ce7b514ed792f3cd17936a5ba55934f27eadfd9e"
+    }
+  ],
+  "removedLocal": [
+    "codex/floe-156-feedback-repair"
+  ],
+  "preservedIndependentBranches": [
+    {
+      "branch": "codex/local-shell-qualification-20260912",
+      "sha": "5d796811fc18c7441641669b3a7ef1393f2b00b1",
+      "unmergedCommits": 3
+    },
+    {
+      "branch": "codex/office-workflow-upgrade",
+      "sha": "81b21ad4117f512cab6789418011e7302add3af6",
+      "unmergedCommits": 20
+    }
+  ],
+  "preservedWorktree": "/Volumes/TECLAST/FloeShellVerify-20260912",
+  "unrelatedUntrackedPreserved": true
+}

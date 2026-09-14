@@ -10,6 +10,8 @@ SDK 27 source qualification passed 1,270 Swift executions, 159 full-App regressi
 
 [GitHub Beta 29](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.29) supplies a separately qualified SDK 27 unsigned IPA; [Feather instructions](FEATHER_SOURCE.md) describe that developer-signed installation route.
 
+Main was fast-forwarded to the delivered integration. Task-owned merged branches were removed; the independent Office and occupied shell branches remain. [Branch cleanup](evidence/floe-1.7/release-172/branch-cleanup.json). The public [Feather feed check](evidence/floe-1.7/release-172/feather-published.json) returned HTTP 200 for the source, icon and IPA.
+
 ## Earlier checkpoints (historical states)
 
 

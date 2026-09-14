@@ -1,0 +1,18 @@
+{
+  "verifiedAt": "2026-09-14T17:56:13.813304+00:00",
+  "sourceURL": "https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json",
+  "sourceStatus": 200,
+  "matchesCommittedFeed": true,
+  "iconStatus": 200,
+  "assetStatus": 200,
+  "assetBytes": 782542450,
+  "version": "1.7.0",
+  "build": "172",
+  "assetSHA256": "c415978ded0356074841a0b3774b97fe05ec5403b12dccd7eb185482be93764c",
+  "assetSHA256Scope": "downloaded SDK 27 artifact checked against checksum and GitHub attestation before publication; public HEAD confirms length",
+  "tag": "v1.7.0-beta.29",
+  "sourceCommit": "fb86fef896d41871fa98c8871237606f56c5ff39",
+  "releasePublishedAt": "2026-09-14T17:53:53Z",
+  "signedCredentialsDistributed": false,
+  "featherAppInstallation": "requires user signing; not device-tested"
+}
