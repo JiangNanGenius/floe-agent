@@ -1,13 +1,33 @@
 {
   "status": "draft_not_submitted",
-  "target": {"bundleIdentifier": "org.floeagent.ios", "version": null, "build": null, "sourceCommit": null, "afterBuild": "172"},
+  "target": {
+    "bundleIdentifier": "org.floeagent.ios",
+    "version": null,
+    "build": null,
+    "sourceCommit": null,
+    "afterBuild": "172"
+  },
   "websiteCandidate": "https://www.floe-agent.com/",
   "supportURL": null,
   "privacyPolicyURL": null,
   "feedbackEmail": null,
-  "reviewContact": {"firstName": null, "lastName": null, "email": null, "phone": null},
-  "reviewAccess": {"confirmed": false, "instructions": "Provide dedicated working AI review access privately; do not store credentials in this file."},
-  "externalGroup": {"id": null, "name": null, "publicLinkEnabled": false, "testerLimit": null, "criteria": null},
+  "reviewContact": {
+    "firstName": null,
+    "lastName": null,
+    "email": null,
+    "phone": null
+  },
+  "reviewAccess": {
+    "confirmed": false,
+    "instructions": "Provide dedicated working AI review access privately; do not store credentials in this file."
+  },
+  "externalGroup": {
+    "id": null,
+    "name": null,
+    "publicLinkEnabled": false,
+    "testerLimit": null,
+    "criteria": null
+  },
   "localizations": {
     "zh-Hans": {
       "betaAppDescription": "Floe Agent 是以 iPad 为优先、同时支持 iPhone 的 AI 工作空间。你可以持续处理 AI 任务、查看工具执行记录，在独立的手记工作区阅读 PDF、书写批注、整理文档，并通过创意画布组织想法与内容。支持连接你选择的模型服务；云端 AI 功能需要配置相应服务，可能产生第三方费用。本次公开测试重点关注手记编辑与保存、文档搜索、模型配置和任务执行的可靠性。部分高级媒体、软件包和模型能力仍在完善，具体范围以该测试版说明为准。",
@@ -17,5 +37,12 @@
       "betaAppDescription": "Floe Agent is an iPad-first AI workspace with iPhone support. Continue AI tasks with visible tool activity, read and annotate PDFs in a separate Notes workspace, organize documents, and develop ideas in a creative canvas. Connect your chosen model providers; cloud AI requires a configured service and may incur third-party charges. This public beta focuses on reliable editing and saving, document search, model configuration, and task execution. Some advanced media, package, and model capabilities remain in development; consult the build-specific testing notes for their current scope.",
       "whatToTest": "Use backed-up test documents. Check PDF import, full-screen editing, save and reopen on iPad and iPhone. Switch document tabs, collapse the header, search document text and open results. Try pen, highlighter, eraser and lasso; change width, color and opacity, and test the tip tool arc with Pencil Pro if available. Configure a model, run a multi-turn task, inspect tool progress, stop execution and confirm settings survive relaunch. Start the Whisper download, leave Settings, then test mixed English and Mandarin after installation. Check Canvas search, organization and deletion after relaunch. Send feedback through TestFlight with device, OS, build number, steps and expected versus actual results. Redact credentials and personal content from screenshots."
     }
+  },
+  "reviewAccessConstraints": {
+    "imageGenerationCredentialAuthorized": false,
+    "imageGenerationSpendingAuthorized": false,
+    "proposedCoreDemo": "Notes, documents, chat and tool use with a separately limited general-purpose model",
+    "generalModelCredentialStatus": "not yet supplied",
+    "optionalImageGeneration": "user-configured; disclose honestly; respond to any reviewer access request separately"
   }
 }

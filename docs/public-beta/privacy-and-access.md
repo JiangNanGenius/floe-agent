@@ -25,3 +25,7 @@ For the current bring-your-own-key app, prepare a separate review credential wit
 The reviewer uses the ordinary provider settings and the same app behavior as other users. Do not add an undisclosed review-only feature switch. Put the credential in the private App Review information, never Beta App Description, What to Test, invitation email, public documentation or an embedded app default.
 
 Public beta testers continue to supply their own credentials. A shared free trial would be a separate product decision requiring server-held upstream credentials, per-user quotas and usage controls; never distribute the reviewer key as a public trial key.
+
+## Owner constraint: no paid image-generation review credential
+
+The owner does not authorize providing an image-generation key or funding image-generation calls for review. Plan the core walkthrough around Notes, documents, chat and tool use with a separately limited general-purpose model. Image generation remains an optional user-configured integration and is not a primary demonstration or headline claim. Disclose its real presence and requirements; do not hide or alter it specially for review. Apple may still request access to verify an included feature. If that happens, resolve the actual request with the owner rather than silently supplying a costly key or claiming acceptance is guaranteed.
