@@ -70,9 +70,23 @@ download_wheel() {
         if ! curl --fail --location --retry 5 --retry-all-errors \
             --connect-timeout 30 --max-time 300 --retry-max-time 900 \
             --output "$partial" "$url"; then
-            rm -f "$partial"
-            echo "error: $package $arch wheel download failed" >&2
-            return 1
+            # GitHub's browser download route can return a cached 504 while
+            # its release-asset API still serves the exact pinned bytes.
+            local release_path repository release_tag asset
+            release_path="${url#https://github.com/}"
+            repository="${release_path%%/releases/download/*}"
+            release_path="${release_path#*/releases/download/}"
+            release_tag="${release_path%%/*}"
+            asset="${release_path#*/}"
+            if [[ "$url" != https://github.com/*/releases/download/* ]] ||
+               [[ "$asset" == */* || "$asset" == *'?'* || "$asset" == *'*'* ]] ||
+               ! command -v gh >/dev/null ||
+               ! gh release download "$release_tag" --repo "$repository" \
+                    --pattern "$asset" --output "$partial" --clobber; then
+                rm -f "$partial"
+                echo "error: $package $arch wheel download failed" >&2
+                return 1
+            fi
         fi
         local downloaded
         downloaded="$(shasum -a 256 "$partial" | awk '{print $1}')" || { rm -f "$partial"; return 1; }

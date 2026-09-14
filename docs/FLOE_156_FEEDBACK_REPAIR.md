@@ -2,7 +2,7 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-Current candidate: **build 167**. The production open arc from `a266c0a` passed [all four SDK/device component paths](evidence/floe-1.7/release-167/above-arc-qualification.json) in [run 34846659384](https://github.com/JiangNanGenius/floe-agent/actions/runs/34846659384), including three anchors, movement without committing, explicit taps, toggling and blank dismissal. Original screenshots are retained privately. The subsequent user-requested changes add persistent above/upper-left/upper-right placement and eight native brushes with independent settings and native stroke previews. Their production component and expanded test host compile locally; new runtime and complete App qualification remain pending. Build 156 remains the latest verified TestFlight delivery.
+Current candidate: **build 168**. The production open arc from `a266c0a` passed [all four SDK/device component paths](evidence/floe-1.7/release-167/above-arc-qualification.json) in [run 34846659384](https://github.com/JiangNanGenius/floe-agent/actions/runs/34846659384), including three anchors, movement without committing, explicit taps, toggling and blank dismissal. Original screenshots are retained privately. The subsequent user-requested changes add persistent above/upper-left/upper-right placement and eight native brushes with independent settings and native stroke previews. The final brush UI and persistence checks now pass across both SDKs and both devices: [12 UI cases](evidence/floe-1.7/release-167/brush-ui-qualification.json) and [20 native unit cases](evidence/floe-1.7/release-167/brush-unit-qualification.json). Complete App qualification remains pending. Build 156 remains the latest verified TestFlight delivery.
 
 Build 166 (`82cccf4ead7e64e5d8600c476142a4a362a3282f`, `v1.7.0-beta.23`, [release run 34843027626](https://github.com/JiangNanGenius/floe-agent/actions/runs/34843027626)) was cancelled before upload. Its [component run 34842984634](https://github.com/JiangNanGenius/floe-agent/actions/runs/34842984634) passed iPad under both SDKs, but SDK 26 iPhone retained the wheel after repeated selection and SDK 27 iPhone did not finalize before the step deadline. Original screenshots also showed unwanted rectangular system chrome around the circle. These failures are not waived by the iPad passes.
 
@@ -255,3 +255,21 @@ The revised test permits only this observed alias, additionally checks every
 control point's position, dimensions and opacity, and still requires identical
 rendering. Only those unit checks need rerunning; production UI source is unchanged.
 Original component screenshots remain separate from complete App screenshots.
+
+### Build 168 download recovery
+
+Build 167 / `v1.7.0-beta.24` at `5e50569` failed before App qualification in
+[run 34855706377](https://github.com/JiangNanGenius/floe-agent/actions/runs/34855706377).
+No TestFlight upload or GitHub app prerelease occurred. The SDK 27 bootstrap
+received repeated 504 responses for the Brotli simulator wheel; the accepted
+SDK reached package resolution and received 504 responses for seven shell
+framework assets. Original build logs are retained privately.
+
+The same Brotli wheel is available through GitHub's release API with the exact
+locked SHA-256. Build 168 adds an API fallback for failed GitHub wheel downloads,
+while preserving checksum validation and atomic cache commits. Three focused
+checks cover successful fallback, corrupt data rejection, and refusing to use
+the GitHub API for other hosts. The nine shell binary targets use the explicit
+`?download=1` route to the same assets; all checksums remain unchanged. The awk
+artifact was downloaded from that route and verified against its original hash,
+and the package manifest parses successfully. No brush/editor source changed.

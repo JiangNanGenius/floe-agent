@@ -1,0 +1,175 @@
+{
+  "sourceCommit": "5e5056956f4eaaa680c8ee039982ccdfe3ccac91",
+  "run": 34854840324,
+  "scope": "Five native brush persistence, migration and rendering tests per SDK/device. UI source was unchanged from the separately retained f6874d5 UI qualification. Physical Pencil and full App acceptance are separate.",
+  "results": [
+    {
+      "sdk": "27",
+      "device": "ipad",
+      "attempt": 1,
+      "summary": {
+        "devicesAndConfigurations": [
+          {
+            "device": {
+              "architecture": "arm64",
+              "deviceId": "AEFBE12E-8BB0-4C8A-8CE6-1D895E62B839",
+              "deviceName": "iPad mini (A17 Pro)",
+              "modelName": "iPad mini (A17 Pro)",
+              "osBuildNumber": "24A5423a",
+              "osVersion": "27.0",
+              "platform": "iOS Simulator"
+            },
+            "expectedFailures": 0,
+            "failedTests": 0,
+            "passedTests": 5,
+            "skippedTests": 0,
+            "testPlanConfiguration": {
+              "configurationId": "1",
+              "configurationName": "Test Scheme Action"
+            }
+          }
+        ],
+        "environmentDescription": "FloePencilPaletteQualification · Built with macOS 27.0",
+        "expectedFailures": 0,
+        "failedTests": 0,
+        "finishTime": 1789395714.655,
+        "passedTests": 5,
+        "result": "Passed",
+        "runtimeWarnings": [],
+        "skippedTests": 0,
+        "startTime": 1789395595.611,
+        "statistics": [],
+        "testFailures": [],
+        "title": "Test - FloePencilPaletteQualification",
+        "topInsights": [],
+        "totalTestCount": 5
+      }
+    },
+    {
+      "sdk": "27",
+      "device": "iphone",
+      "attempt": 1,
+      "summary": {
+        "devicesAndConfigurations": [
+          {
+            "device": {
+              "architecture": "arm64",
+              "deviceId": "35BDF225-C0A4-4109-B40A-8D2B8343268A",
+              "deviceName": "iPhone 17 Pro",
+              "modelName": "iPhone 17 Pro",
+              "osBuildNumber": "24A5423a",
+              "osVersion": "27.0",
+              "platform": "iOS Simulator"
+            },
+            "expectedFailures": 0,
+            "failedTests": 0,
+            "passedTests": 5,
+            "skippedTests": 0,
+            "testPlanConfiguration": {
+              "configurationId": "1",
+              "configurationName": "Test Scheme Action"
+            }
+          }
+        ],
+        "environmentDescription": "FloePencilPaletteQualification · Built with macOS 27.0",
+        "expectedFailures": 0,
+        "failedTests": 0,
+        "finishTime": 1789395831.038,
+        "passedTests": 5,
+        "result": "Passed",
+        "runtimeWarnings": [],
+        "skippedTests": 0,
+        "startTime": 1789395597.251,
+        "statistics": [],
+        "testFailures": [],
+        "title": "Test - FloePencilPaletteQualification",
+        "topInsights": [],
+        "totalTestCount": 5
+      }
+    },
+    {
+      "sdk": "26",
+      "device": "ipad",
+      "attempt": 1,
+      "summary": {
+        "devicesAndConfigurations": [
+          {
+            "device": {
+              "architecture": "arm64",
+              "deviceId": "1E926EE8-2A0B-4C47-B835-0C52B77DE728",
+              "deviceName": "iPad mini (A17 Pro)",
+              "modelName": "iPad mini (A17 Pro)",
+              "osBuildNumber": "23F77",
+              "osVersion": "26.5",
+              "platform": "iOS Simulator"
+            },
+            "expectedFailures": 0,
+            "failedTests": 0,
+            "passedTests": 5,
+            "skippedTests": 0,
+            "testPlanConfiguration": {
+              "configurationId": "1",
+              "configurationName": "Test Scheme Action"
+            }
+          }
+        ],
+        "environmentDescription": "FloePencilPaletteQualification · Built with macOS 26.6.2",
+        "expectedFailures": 0,
+        "failedTests": 0,
+        "finishTime": 1789395973.964,
+        "passedTests": 5,
+        "result": "Passed",
+        "runtimeWarnings": [],
+        "skippedTests": 0,
+        "startTime": 1789395654.153,
+        "statistics": [],
+        "testFailures": [],
+        "title": "Test - FloePencilPaletteQualification",
+        "topInsights": [],
+        "totalTestCount": 5
+      }
+    },
+    {
+      "sdk": "26",
+      "device": "iphone",
+      "attempt": 2,
+      "summary": {
+        "devicesAndConfigurations": [
+          {
+            "device": {
+              "architecture": "arm64",
+              "deviceId": "22452A91-4697-4369-8812-53ADB77EB73B",
+              "deviceName": "iPhone 17 Pro",
+              "modelName": "iPhone 17 Pro",
+              "osBuildNumber": "23F77",
+              "osVersion": "26.5",
+              "platform": "iOS Simulator"
+            },
+            "expectedFailures": 0,
+            "failedTests": 0,
+            "passedTests": 5,
+            "skippedTests": 0,
+            "testPlanConfiguration": {
+              "configurationId": "1",
+              "configurationName": "Test Scheme Action"
+            }
+          }
+        ],
+        "environmentDescription": "FloePencilPaletteQualification · Built with macOS 26.6.2",
+        "expectedFailures": 0,
+        "failedTests": 0,
+        "finishTime": 1789396369.769,
+        "passedTests": 5,
+        "result": "Passed",
+        "runtimeWarnings": [],
+        "skippedTests": 0,
+        "startTime": 1789396096.73,
+        "statistics": [],
+        "testFailures": [],
+        "title": "Test - FloePencilPaletteQualification",
+        "topInsights": [],
+        "totalTestCount": 5
+      }
+    }
+  ]
+}
