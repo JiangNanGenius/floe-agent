@@ -1,0 +1,70 @@
+{
+  "build": 159,
+  "tag": "v1.7.0-beta.16",
+  "source": "ce7b514ed792f3cd17936a5ba55934f27eadfd9e",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34804583803",
+  "scope": "Swift regression and module qualifications; not full App, UI, device inference or distribution acceptance",
+  "executions": 1266,
+  "parts": [
+    {
+      "name": "full",
+      "executions": 1164,
+      "testRuns": 18,
+      "summary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 90.955,
+        "testsStarted": true
+      },
+      "logSHA256": "a9ba0d46c2339e6e05ea32d2da7721633b77f5157d3e91f453b71d75e2922e72"
+    },
+    {
+      "name": "javascript-engine",
+      "executions": 12,
+      "testRuns": 1,
+      "summary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 12.241,
+        "testsStarted": true
+      },
+      "logSHA256": "1eec8fcda67da788106dc577acfa1c264d0ee0dc638b5fb9220b62000cde3cc1"
+    },
+    {
+      "name": "javascript-tool",
+      "executions": 12,
+      "testRuns": 1,
+      "summary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 11.34,
+        "testsStarted": true
+      },
+      "logSHA256": "e3faff22ec4c3bd52f15ef5c550e23e78db879dc13aa5f5e48d76c837cd1fda0"
+    },
+    {
+      "name": "platform",
+      "executions": 61,
+      "testRuns": 6,
+      "summary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 59.684,
+        "testsStarted": true
+      },
+      "logSHA256": "f2dd07b9cb1c7b0faa628641078a354e69c738768226663d01ce2c15e26825bc"
+    },
+    {
+      "name": "notes",
+      "executions": 17,
+      "testRuns": 1,
+      "summary": {
+        "exitCode": 0,
+        "reason": "exited",
+        "elapsedSeconds": 17.684,
+        "testsStarted": true
+      },
+      "logSHA256": "20156ada4b50884065850a8b3491c22f9331da6babc3468fd7fb8bf42b1c2fc9"
+    }
+  ]
+}
