@@ -50,6 +50,23 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertFalse(app.textFields["notes.search"].isHittable)
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
         capture("notes-imported-pdf-fullscreen")
+        // Navigation and document actions share one row; no empty navigation
+        // strip above the editor. This also catches phone header wrapping.
+        let tools = app.scrollViews["notes.writing.tools"].firstMatch
+        XCTAssertTrue(tools.exists)
+        XCTAssertLessThan(tools.frame.maxY - back.frame.minY, 120)
+        let quickMenu = app.buttons["notes.pencil.quickMenu"]
+        XCTAssertTrue(quickMenu.isHittable)
+        quickMenu.tap()
+        let marker = app.buttons["notes.pencil.quickMenu.highlighter"]
+        XCTAssertTrue(marker.waitForExistence(timeout: 5))
+        marker.tap()
+        XCTAssertTrue(marker.isSelected)
+        capture("notes-pencil-quick-menu")
+        app.buttons["notes.pencil.quickMenu.close"].tap()
+        XCTAssertTrue(app.buttons["notes.tool.highlighter"].isSelected)
+        // The same palette is opened by Pencil interactions; physical squeeze
+        // delivery is a device check, not simulated by this button test.
         back.tap()
         let search = app.textFields["notes.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 10))

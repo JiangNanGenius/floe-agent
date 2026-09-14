@@ -48,15 +48,7 @@ struct NotesRootView: View {
                         NotesDocumentEditor(session: session, document: document)
                             .id(document.id)
                             .navigationBarTitleDisplayMode(.inline)
-                            .toolbar {
-                                if document.kind != .office {
-                                    ToolbarItem(placement: .topBarLeading) {
-                                        Button("返回手记", systemImage: "chevron.left") {
-                                            Task { await session.select(nil) }
-                                        }.accessibilityIdentifier("notes.back")
-                                    }
-                                }
-                            }
+                            .toolbar(document.kind == .office ? .visible : .hidden, for: .navigationBar)
                     }
                 }
                 .interactiveDismissDisabled()

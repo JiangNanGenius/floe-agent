@@ -20,6 +20,10 @@ struct NotesDocumentEditor: View {
     @State private var inspectingElement: NoteElement?
     @State private var loadedPageID: UUID?
     @State private var tool: InkTool = .pen
+    @State private var previousTool: InkTool = .pen
+    @State private var pencilMenuPoint = CGPoint(x: 0.5, y: 0.15)
+    @State private var showingPencilMenu = false
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var showPages = false
     @State private var showText = false
     @State private var textDraft = ""
@@ -119,7 +123,17 @@ struct NotesDocumentEditor: View {
                     }, deleteSelectionRequest: deleteSelectionRequest,
                                    onSelectionCount: { selectedStrokeCount = $0 },
                                    captureSelectionRequest: captureSelectionRequest, regionSelection: tool == .region,
-                                   onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) }, elementImages: elementImages)
+                                   onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) }, elementImages: elementImages,
+                                   onPencilAction: handlePencilAction)
+                        .overlay(alignment: .topLeading) {
+                            GeometryReader { geometry in
+                                Color.clear.frame(width: 1, height: 1)
+                                    .position(x: pencilMenuPoint.x * geometry.size.width, y: pencilMenuPoint.y * geometry.size.height)
+                                    .popover(isPresented: $showingPencilMenu) {
+                                        pencilQuickMenu.presentationCompactAdaptation(.popover)
+                                    }
+                            }.allowsHitTesting(showingPencilMenu)
+                        }
                         .id(page.id)
                         .onChange(of: page.id) { _, _ in
                             selectedStrokeCount = 0
@@ -335,13 +349,30 @@ struct NotesDocumentEditor: View {
     }
 
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { headerTitle; headerActions }
-            VStack(alignment: .leading, spacing: 4) {
-                headerTitle
-                ScrollView(.horizontal, showsIndicators: false) { headerActions }
+        HStack(spacing: 4) {
+            Button("返回手记", systemImage: "chevron.left") {
+                Task { await session.select(nil) }
+            }.labelStyle(.iconOnly).frame(width: 44, height: 44)
+                .accessibilityIdentifier("notes.back")
+            headerTitle
+            if sizeClass == .compact {
+                Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                    .disabled(!session.canUndo || session.pendingWrites > 0)
+                Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { showAssistant.toggle() }
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                    .accessibilityIdentifier("notes.assistant")
+                Menu {
+                    headerActionItems
+                } label: {
+                    Label("文档操作", systemImage: "ellipsis").labelStyle(.iconOnly).frame(width: 44, height: 44)
+                }.accessibilityIdentifier("notes.document.actions")
+            } else {
+                headerActions
             }
-        }.padding(.horizontal).padding(.vertical, 6)
+        }.padding(.horizontal, 8).padding(.vertical, 4)
+            .background(.bar)
+            .accessibilityIdentifier("notes.editor.header")
     }
 
     private var headerTitle: some View {
@@ -353,7 +384,12 @@ struct NotesDocumentEditor: View {
     }
 
     private var headerActions: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 8) { headerActionItems }
+            .labelStyle(.iconOnly)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder private var headerActionItems: some View {
             if session.recoverableInkDocumentIDs.contains(document.id), !session.unsavedDocumentIDs.contains(document.id), session.pendingWrites == 0 {
                 Button("恢复笔迹", systemImage: "arrow.uturn.backward.circle") { session.recoverInk(documentID: document.id) }
                     .help("恢复未完成保存的笔迹；恢复后可撤销。")
@@ -362,13 +398,13 @@ struct NotesDocumentEditor: View {
                 Button("重试保存", systemImage: "arrow.clockwise") { session.retrySaving() }
             }
             Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { showAssistant.toggle() }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: 44, minHeight: 44)
                 .accessibilityIdentifier("notes.assistant")
             Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: 44, minHeight: 44)
                 .disabled(!session.canUndo || session.pendingWrites > 0)
             Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: 44, minHeight: 44)
                 .disabled(!session.canRedo || session.pendingWrites > 0)
             Group {
                 if exportTask != nil {
@@ -381,21 +417,21 @@ struct NotesDocumentEditor: View {
                             Button(document.kind == .notebook ? "PDF" : "Markdown 大纲") { exportDocument() }
                         }
                     } label: { Label("导出", systemImage: "square.and.arrow.up") }
-                        .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                        .frame(minWidth: 44, minHeight: 44)
                         .disabled(session.pendingWrites > 0 || session.unsavedDocumentIDs.contains(document.id))
                 }
             }
             if document.kind != .mindMap {
                 Button("文档导图", systemImage: "point.3.connected.trianglepath.dotted") { showLinkedMaps = true }
-                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("notes.linkedMaps")
             }
             if document.kind == .notebook {
                 Button("页面", systemImage: "rectangle.stack") { showPages = true }
-                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: 44, minHeight: 44)
             } else if document.kind == .mindMap {
                 Button("主题内容与附件", systemImage: "paperclip") { topicToInspect = selectedMapNode }
-                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: 44, minHeight: 44)
                     .disabled(selectedMapNode == nil || session.pendingWrites > 0)
                 Menu {
                     if let node = selectedMapNode {
@@ -414,27 +450,33 @@ struct NotesDocumentEditor: View {
                         }
                     }
                 } label: { Label("主题图片", systemImage: "photo") }
-                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: 44, minHeight: 44)
                     .disabled(selectedMapNode == nil || session.pendingWrites > 0)
                 Button(showOutline ? "导图" : "大纲", systemImage: showOutline ? "point.3.connected.trianglepath.dotted" : "list.bullet.indent") { showOutline.toggle() }
-                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: 44, minHeight: 44)
             }
-        }.fixedSize(horizontal: true, vertical: false)
     }
 
     private var writingTools: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                Button {
+                    pencilMenuPoint = CGPoint(x: 0.5, y: 0.08)
+                    showingPencilMenu.toggle()
+                } label: {
+                    Image(systemName: "pencil.and.scribble").font(.title3).frame(width: 44, height: 44)
+                }.accessibilityLabel("画笔快捷菜单").accessibilityIdentifier("notes.pencil.quickMenu")
                 ForEach(InkTool.allCases, id: \.self) { value in
                     Button {
                         if tool == value, value == .pen || value == .marker { showingInkOptions = true }
-                        tool = value
+                        selectTool(value)
                     } label: {
                         Label(value.rawValue, systemImage: value.icon).labelStyle(.iconOnly)
                             .font(.title3).frame(width: 44, height: 44)
                             .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
                             .foregroundStyle(tool == value ? Color.accentColor : .secondary)
                     }.accessibilityLabel(value.rawValue).accessibilityAddTraits(tool == value ? .isSelected : [])
+                        .accessibilityIdentifier("notes.tool.\(value.icon)")
                 }
                 if tool == .pen || tool == .marker {
                     Button { showingInkOptions = true } label: {
@@ -444,7 +486,7 @@ struct NotesDocumentEditor: View {
                             .frame(width: 44, height: 44)
                     }.accessibilityLabel("画笔颜色与粗细")
                         .accessibilityIdentifier("notes.ink.options")
-                        .popover(isPresented: $showingInkOptions) { inkOptions.presentationCompactAdaptation(.popover) }
+                        .popover(isPresented: $showingInkOptions) { inkOptions.padding(20).frame(width: 300).presentationCompactAdaptation(.popover) }
                 }
                 Divider().frame(height: 24)
                 if #available(iOS 27.0, *), selectedStrokeCount > 0 {
@@ -490,8 +532,60 @@ struct NotesDocumentEditor: View {
                         session.apply([.insertPage(NotePage(), at: document.pages.count)], title: "新增页面", documentID: document.id)
                     }
                 } label: { Label("更多", systemImage: "ellipsis").labelStyle(.iconOnly).frame(width: 44, height: 44) }
-            }.buttonStyle(.plain).foregroundStyle(.primary).padding(.horizontal, 12).padding(.vertical, 4)
+            }.buttonStyle(.plain).foregroundStyle(.primary).padding(.horizontal, 8).padding(.vertical, 4)
         }.background(.bar)
+            .accessibilityIdentifier("notes.writing.tools")
+    }
+
+    private func selectTool(_ value: InkTool) {
+        if tool != value { previousTool = tool; tool = value }
+    }
+
+    private func handlePencilAction(_ action: UIPencilPreferredAction, point: CGPoint) {
+        switch action {
+        case .switchEraser:
+            selectTool(tool == .eraser ? (previousTool == .eraser ? .pen : previousTool) : .eraser)
+        case .switchPrevious:
+            selectTool(previousTool)
+        case .showColorPalette, .showInkAttributes, .showContextualPalette:
+            pencilMenuPoint = point
+            showingPencilMenu.toggle()
+        default: break // Disabled gestures and system shortcuts belong to the system.
+        }
+    }
+
+    private var pencilQuickMenu: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("书写工具").font(.headline)
+                Spacer()
+                Button("完成", systemImage: "checkmark") { showingPencilMenu = false }
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                    .accessibilityIdentifier("notes.pencil.quickMenu.close")
+            }
+            HStack(spacing: 8) {
+                ForEach(InkTool.allCases, id: \.self) { value in
+                    Button {
+                        selectTool(value)
+                        if value != .pen && value != .marker { showingPencilMenu = false }
+                    } label: {
+                        Image(systemName: value.icon).font(.title3).frame(width: 44, height: 44)
+                            .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
+                    }.accessibilityLabel(value.rawValue)
+                        .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
+                        .accessibilityAddTraits(tool == value ? .isSelected : [])
+                }
+            }
+            if tool == .pen || tool == .marker { inkOptions }
+            HStack {
+                Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
+                    .disabled(!session.canUndo || session.pendingWrites > 0)
+                Spacer()
+                Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
+                    .disabled(!session.canRedo || session.pendingWrites > 0)
+            }.frame(minHeight: 44)
+        }.padding(16).frame(width: 308)
+            .accessibilityIdentifier("notes.pencil.palette")
     }
 
     private var inkOptions: some View {
@@ -515,7 +609,7 @@ struct NotesDocumentEditor: View {
             }), supportsOpacity: false)
             HStack { Text("粗细"); Spacer(); Text(inkWidth.wrappedValue, format: .number.precision(.fractionLength(1))).monospacedDigit() }
             Slider(value: inkWidth, in: tool == .marker ? 4...40 : 0.5...12, step: 0.5).accessibilityLabel("画笔粗细")
-        }.padding(20).frame(width: 300)
+        }
     }
 }
 

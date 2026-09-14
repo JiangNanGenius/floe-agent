@@ -17,6 +17,8 @@ struct NotePencilView: UIViewRepresentable {
     var regionSelection = false
     var onSelectionCapture: (CGRect, Data) -> Void = { _, _ in }
     var elementImages: [UUID: Data] = [:]
+    // The anchor is normalized to the visible viewport, independent of paper zoom.
+    var onPencilAction: (UIPencilPreferredAction, CGPoint) -> Void = { _, _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
     func makeUIView(context: Context) -> PKCanvasView {
@@ -28,6 +30,7 @@ struct NotePencilView: UIViewRepresentable {
         canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
         canvas.tool = tool
         canvas.delegate = context.coordinator
+        canvas.addInteraction(UIPencilInteraction(delegate: context.coordinator))
         canvas.minimumZoomScale = 0.1; canvas.maximumZoomScale = 5
         canvas.contentInsetAdjustmentBehavior = .never
         canvas.contentSize = CGSize(width: page.width, height: page.height)
@@ -107,7 +110,22 @@ struct NotePencilView: UIViewRepresentable {
             }
         }
     }
-    final class Coordinator: NSObject, PKCanvasViewDelegate {
+    final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+            guard squeeze.phase == .ended else { return }
+            performPencilAction(UIPencilInteraction.preferredSqueezeAction, interaction: interaction, location: squeeze.hoverPose?.location)
+        }
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+            performPencilAction(UIPencilInteraction.preferredTapAction, interaction: interaction, location: tap.hoverPose?.location)
+        }
+        private func performPencilAction(_ action: UIPencilPreferredAction, interaction: UIPencilInteraction, location: CGPoint?) {
+            guard action != .ignore, action != .runSystemShortcut, let view = interaction.view else { return }
+            let point = location.map {
+                CGPoint(x: min(0.95, max(0.05, ($0.x - view.bounds.minX) / max(1, view.bounds.width))),
+                        y: min(0.95, max(0.05, ($0.y - view.bounds.minY) / max(1, view.bounds.height))))
+            } ?? CGPoint(x: 0.5, y: 0.15)
+            parent.onPencilAction(action, point)
+        }
         var parent: NotePencilView
         weak var backdrop: UIImageView?
         var loadedDrawing: Data?
