@@ -10,8 +10,6 @@ private struct PaletteFixture: View {
     @State private var presented = false
     @State private var point = CGPoint(x: 0.5, y: 0.08)
     @State private var tool: NotesInkTool = .pen
-    @State private var color = "#18181B"
-    @State private var width = 3.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,18 +17,16 @@ private struct PaletteFixture: View {
                 ForEach(["top", "center", "bottom"], id: \.self) { location in
                     Button(location) {
                         point = CGPoint(x: 0.5, y: location == "top" ? 0.08 : location == "bottom" ? 0.95 : 0.5)
-                        tool = .pen
                         presented = true
                     }.accessibilityIdentifier("palette.open.\(location)")
                 }
             }.padding(4).buttonStyle(NotesToolbarButtonStyle())
             // Reserve the same two toolbar rows as the real editor.
-            Text("Palette layout qualification").frame(height: 52)
+            Text(tool.rawValue).frame(height: 52).accessibilityIdentifier("palette.selectedTool")
             DrawingViewport()
                 .notesPencilPalette(isPresented: $presented, point: point) {
-                    NotesPencilQuickPalette(tool: tool, color: $color, width: $width,
-                                           canUndo: true, canRedo: true, select: { tool = $0 },
-                                           undo: {}, redo: {}, close: { presented = false })
+                    NotesPencilToolWheel(tool: tool, select: { tool = $0; presented = false },
+                                         close: { presented = false })
                 }
         }
     }

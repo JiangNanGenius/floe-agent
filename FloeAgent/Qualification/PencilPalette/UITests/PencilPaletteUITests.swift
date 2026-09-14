@@ -17,24 +17,30 @@ import UIKit
             screenshot.name = "palette-\(location)"
             screenshot.lifetime = .keepAlways
             add(screenshot)
-            for element in [marker, app.buttons["notes.pencil.quickMenu.close"]] {
+            for identifier in ["pencil.tip", "highlighter", "eraser", "lasso", "viewfinder", "close"] {
+                let element = app.buttons["notes.pencil.quickMenu.\(identifier)"]
                 XCTAssertTrue(element.isHittable)
                 XCTAssertGreaterThanOrEqual(element.frame.width, 43.5)
                 XCTAssertGreaterThanOrEqual(element.frame.height, 43.5)
+                XCTAssertGreaterThanOrEqual(element.frame.minX, app.frame.minX)
+                XCTAssertLessThanOrEqual(element.frame.maxX, app.frame.maxX)
                 XCTAssertGreaterThanOrEqual(element.frame.minY, app.frame.minY)
                 XCTAssertLessThanOrEqual(element.frame.maxY, app.frame.maxY)
             }
             marker.tap()
-            XCTAssertTrue(marker.isSelected)
-            let color = app.buttons["notes.pencil.quickMenu.color.1"]
-            color.tap(); XCTAssertTrue(color.isSelected)
-            let width = app.buttons["notes.pencil.quickMenu.width.32"]
-            width.tap(); XCTAssertTrue(width.isSelected)
-            app.buttons["notes.pencil.quickMenu.close"].tap()
             let opener = app.buttons["palette.open.\(location)"]
             let dismissed = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: opener)
             wait(for: [dismissed], timeout: 10)
             XCTAssertTrue(opener.isHittable)
+            XCTAssertFalse(app.buttons["notes.pencil.quickMenu.close"].exists)
+            XCTAssertEqual(app.staticTexts["palette.selectedTool"].label, "荧光笔")
+            opener.tap()
+            XCTAssertTrue(marker.waitForExistence(timeout: 5))
+            XCTAssertTrue(marker.isSelected)
+            app.buttons["notes.pencil.quickMenu.close"].tap()
+            let cancelled = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: opener)
+            wait(for: [cancelled], timeout: 10)
+            XCTAssertEqual(app.staticTexts["palette.selectedTool"].label, "荧光笔")
         }
     }
 }

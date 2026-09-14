@@ -45,79 +45,68 @@ enum NotesInkTool: String, CaseIterable {
     }
 }
 
-/// A small, stable-height palette at the Pencil tip. Detailed settings stay in
-/// the main toolbar; all quick controls remain 44 points even on an iPhone.
-struct NotesPencilQuickPalette: View {
+/// Squeeze opens a spatial tool selector; selecting a tool immediately returns
+/// to the page. Ink customization stays in the persistent writing toolbar.
+struct NotesPencilToolWheel: View {
     let tool: NotesInkTool
-    @Binding var color: String
-    @Binding var width: Double
-    let canUndo: Bool
-    let canRedo: Bool
     let select: (NotesInkTool) -> Void
-    let undo: () -> Void
-    let redo: () -> Void
     let close: () -> Void
-    private let colors = ["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"]
-    private let colorNames = ["黑色", "蓝色", "红色", "绿色", "紫色", "黄色"]
-    private var widths: [Double] { tool == .marker ? [8, 20, 32] : [1, 3, 6] }
-    private var usesInk: Bool { tool == .pen || tool == .marker }
+    private let diameter: CGFloat = 280
+    private let radius: CGFloat = 92
 
     var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 2) {
-                ForEach(NotesInkTool.allCases, id: \.self) { value in
-                    Button { select(value) } label: {
-                        Image(systemName: value.icon).font(.title3)
-                            .frame(width: 44, height: 44)
-                            .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 12))
-                    }.accessibilityLabel(value.rawValue)
-                        .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
-                        .accessibilityAddTraits(tool == value ? .isSelected : [])
+        ZStack {
+            Circle().fill(.regularMaterial)
+            Circle().strokeBorder(.primary.opacity(0.10), lineWidth: 1)
+            ForEach(Array(NotesInkTool.allCases.enumerated()), id: \.element) { index, value in
+                let angle = Double(index) * 72 - 90
+                NotesToolWheelSector(angle: angle)
+                    .fill(tool == value ? Color.accentColor.opacity(0.14) : Color.clear)
+                    .accessibilityHidden(true)
+                Button { select(value) } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: value.icon).font(.system(size: 23, weight: .medium))
+                        Text(value.rawValue).font(.caption2.weight(.medium))
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }.foregroundStyle(tool == value ? Color.accentColor : .primary)
+                        .frame(width: 64, height: 64).contentShape(Circle())
                 }
-                Button(action: close) { Image(systemName: "xmark").font(.callout).frame(width: 44, height: 44) }
-                    .accessibilityLabel("继续书写").accessibilityIdentifier("notes.pencil.quickMenu.close")
+                .accessibilityLabel(value.rawValue)
+                .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
+                .accessibilityAddTraits(tool == value ? .isSelected : [])
+                .position(x: diameter / 2 + radius * cos(angle * .pi / 180),
+                          y: diameter / 2 + radius * sin(angle * .pi / 180))
             }
-            Divider()
-            HStack(spacing: 2) {
-                ForEach(Array(colors.enumerated()), id: \.element) { index, hex in
-                    Button { color = hex } label: {
-                        Circle().fill(swatch(hex)).frame(width: 25, height: 25)
-                            .overlay(Circle().strokeBorder(.primary.opacity(0.15)))
-                            .overlay {
-                                if color.uppercased() == hex {
-                                    Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(index == 5 ? .black : .white)
-                                }
-                            }.frame(width: 44, height: 44)
-                    }.accessibilityLabel(colorNames[index])
-                        .accessibilityIdentifier("notes.pencil.quickMenu.color.\(index)")
-                        .accessibilityAddTraits(color.uppercased() == hex ? .isSelected : [])
-                }
-            }.disabled(!usesInk)
-            HStack(spacing: 2) {
-                ForEach(widths, id: \.self) { value in
-                    Button { width = value } label: {
-                        Capsule().fill(.primary).frame(width: 22, height: min(9, max(2, value / (tool == .marker ? 4 : 1))))
-                            .frame(width: 44, height: 44)
-                            .background(abs(width - value) < 0.25 ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 12))
-                    }.accessibilityLabel("粗细 \(value.formatted())")
-                        .accessibilityIdentifier("notes.pencil.quickMenu.width.\(Int(value))")
-                        .accessibilityAddTraits(abs(width - value) < 0.25 ? .isSelected : [])
-                        .disabled(!usesInk)
-                }
-                Spacer(minLength: 0)
-                Button(action: undo) { Image(systemName: "arrow.uturn.backward").frame(width: 44, height: 44) }
-                    .accessibilityLabel("撤销").disabled(!canUndo)
-                Button(action: redo) { Image(systemName: "arrow.uturn.forward").frame(width: 44, height: 44) }
-                    .accessibilityLabel("重做").disabled(!canRedo)
-            }
-        }.padding(10).frame(width: 294)
-            .buttonStyle(NotesToolbarButtonStyle())
+            Button(action: close) {
+                Image(systemName: "xmark").font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 64, height: 64)
+                    .background(.primary.opacity(0.05), in: Circle())
+                    .contentShape(Circle())
+            }.accessibilityLabel("取消，继续书写")
+                .accessibilityIdentifier("notes.pencil.quickMenu.close")
+        }
+        .frame(width: diameter, height: diameter)
+        .padding(6)
+        .buttonStyle(NotesToolbarButtonStyle())
+        .presentationBackground(.clear)
     }
+}
 
-    private func swatch(_ hex: String) -> Color {
-        let rgb = UInt32(hex.dropFirst(), radix: 16) ?? 0
-        return Color(red: Double((rgb >> 16) & 255) / 255,
-                     green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
+private struct NotesToolWheelSector: Shape {
+    let angle: Double
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outer = min(rect.width, rect.height) / 2 - 5
+        let inner: CGFloat = 40
+        let start = Angle.degrees(angle - 33)
+        let end = Angle.degrees(angle + 33)
+        var path = Path()
+        path.addArc(center: center, radius: outer, startAngle: start, endAngle: end, clockwise: false)
+        path.addLine(to: CGPoint(x: center.x + inner * cos(end.radians), y: center.y + inner * sin(end.radians)))
+        path.addArc(center: center, radius: inner, startAngle: end, endAngle: start, clockwise: true)
+        path.closeSubpath()
+        return path
     }
 }
 #endif

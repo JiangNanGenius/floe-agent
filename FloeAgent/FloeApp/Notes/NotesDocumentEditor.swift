@@ -601,14 +601,10 @@ struct NotesDocumentEditor: View {
     }
 
     private var pencilQuickMenu: some View {
-        NotesPencilQuickPalette(tool: tool, color: inkColor, width: inkWidth,
-                               canUndo: session.canUndo && session.pendingWrites == 0,
-                               canRedo: session.canRedo && session.pendingWrites == 0,
-                               select: { value in
+        NotesPencilToolWheel(tool: tool, select: { value in
             selectTool(value)
-            if value != .pen && value != .marker { showingPencilMenu = false }
-        }, undo: { session.undo() }, redo: { session.undo(redo: true) },
-                               close: { showingPencilMenu = false })
+            showingPencilMenu = false
+        }, close: { showingPencilMenu = false })
     }
 
     private var inkOptions: some View {

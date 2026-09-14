@@ -1,10 +1,10 @@
 # Pencil palette placement qualification
 
 This small app compiles the **production** `NotesPalettePresentation.swift`
-presenter, quick palette and button style without the full Floe application. A PencilKit
-viewport presents the production three-row palette at its top, center and bottom.
+presenter, radial tool wheel and button style without the full Floe application. A PencilKit
+viewport presents the production circular tool wheel at its top, center and bottom.
 The UI case requires visible, hittable controls, 44-point targets (with half a
-point of AX rounding tolerance), tool, color and width selection, and dismissal on iPad and iPhone.
+point of AX rounding tolerance), tool selection with immediate dismissal, retained selection highlighting, and cancel without changing tools on iPad and iPhone.
 
 This qualifies the presentation boundary only. It does not establish Notes
 import, document persistence, full-App routing or physical Pencil gesture
@@ -19,3 +19,5 @@ The test saves an original screenshot for each anchor.
 The Feedback component UI workflow accepts `palette_only=true` for this small
 iPad/iPhone gate on SDK 27 and the accepted SDK 26, without compiling the full
 application. This gate does not replace the full-App release checks.
+
+The wheel contains pen, highlighter, eraser, lasso and AI selection in fixed positions, with cancel in its center. Color and width remain in the main writing toolbar.

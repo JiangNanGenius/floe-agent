@@ -78,16 +78,19 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(marker.isHittable)
         XCTAssertGreaterThanOrEqual(marker.frame.minY, app.frame.minY)
         marker.tap()
+        let toolbarMarker = app.buttons["notes.tool.highlighter"]
+        let wheelDismissed = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: toolbarMarker)
+        wait(for: [wheelDismissed], timeout: 10)
+        XCTAssertTrue(toolbarMarker.isSelected)
+        XCTAssertFalse(app.buttons["notes.pencil.quickMenu.close"].exists)
+        // Reopening highlights the current tool; the center cancels without changing it.
+        quickMenu.tap()
+        XCTAssertTrue(marker.waitForExistence(timeout: 5))
         XCTAssertTrue(marker.isSelected)
-        let paletteColor = app.buttons["notes.pencil.quickMenu.color.1"]
-        paletteColor.tap(); XCTAssertTrue(paletteColor.isSelected)
-        let paletteWidth = app.buttons["notes.pencil.quickMenu.width.32"]
-        paletteWidth.tap(); XCTAssertTrue(paletteWidth.isSelected)
         capture("notes-pencil-quick-menu")
         app.buttons["notes.pencil.quickMenu.close"].tap()
-        let toolbarMarker = app.buttons["notes.tool.highlighter"]
-        let paletteDismissed = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: toolbarMarker)
-        wait(for: [paletteDismissed], timeout: 10)
+        let cancelled = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: toolbarMarker)
+        wait(for: [cancelled], timeout: 10)
         XCTAssertTrue(toolbarMarker.isSelected)
         let headerToggle = app.buttons["notes.header.toggle"]
         assertTouchTarget(headerToggle)
