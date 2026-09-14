@@ -51,6 +51,21 @@ if ! awk -F': ' -v version="$VERSION" -v build="$BUILD" '
     exit 1
 fi
 
+# Reject stale checked-in Xcode metadata in the initial, dependency-free job.
+# xcodegen's full consistency check still runs later after bootstrap.
+if ! awk -F'=' -v version="$VERSION" -v build="$BUILD" '
+    $1 ~ /^[[:space:]]*MARKETING_VERSION[[:space:]]*$/ {
+        versions++; gsub(/[\";[:space:]]/, "", $2); if ($2 != version) mismatch=1
+    }
+    $1 ~ /^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*$/ {
+        builds++; gsub(/[\";[:space:]]/, "", $2); if ($2 != build) mismatch=1
+    }
+    END { if (mismatch || !versions || !builds) exit 1 }
+' FloeAgent.xcodeproj/project.pbxproj; then
+    echo "error: generated Xcode project must match version $VERSION and build $BUILD; regenerate and commit it" >&2
+    exit 1
+fi
+
 SCREEN_SHARE_PLIST="FloeScreenShare/Info.plist"
 SCREEN_SHARE_DISPLAY_NAME="$(plutil -extract CFBundleDisplayName raw -o - "$SCREEN_SHARE_PLIST" 2>/dev/null || true)"
 if [[ -z "$SCREEN_SHARE_DISPLAY_NAME" ]]; then

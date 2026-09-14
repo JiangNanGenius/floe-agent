@@ -2,7 +2,7 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-Current candidate: **build 171**. The production open arc from `a266c0a` passed [all four SDK/device component paths](evidence/floe-1.7/release-167/above-arc-qualification.json) in [run 34846659384](https://github.com/JiangNanGenius/floe-agent/actions/runs/34846659384), including three anchors, movement without committing, explicit taps, toggling and blank dismissal. Original screenshots are retained privately. The subsequent user-requested changes add persistent above/upper-left/upper-right placement and eight native brushes with independent settings and native stroke previews. Before the build 171 expression-only refactor, brush UI and persistence checks passed across both SDKs and both devices: [12 UI cases](evidence/floe-1.7/release-167/brush-ui-qualification.json) and [20 native unit cases](evidence/floe-1.7/release-167/brush-unit-qualification.json). The refactored arc is being requalified, including the newly added device Release compiler checks. Complete App qualification remains pending. Build 156 remains the latest verified TestFlight delivery.
+Current candidate: **build 172**. The production open arc from `a266c0a` passed [all four SDK/device component paths](evidence/floe-1.7/release-167/above-arc-qualification.json) in [run 34846659384](https://github.com/JiangNanGenius/floe-agent/actions/runs/34846659384), including three anchors, movement without committing, explicit taps, toggling and blank dismissal. Original screenshots are retained privately. The subsequent user-requested changes add persistent above/upper-left/upper-right placement and eight native brushes with independent settings and native stroke previews. Before the build 171 expression-only refactor, brush UI and persistence checks passed across both SDKs and both devices: [12 UI cases](evidence/floe-1.7/release-167/brush-ui-qualification.json) and [20 native unit cases](evidence/floe-1.7/release-167/brush-unit-qualification.json). The refactored arc is being requalified, including the newly added device Release compiler checks. Complete App qualification remains pending. Build 156 remains the latest verified TestFlight delivery.
 
 Build 166 (`82cccf4ead7e64e5d8600c476142a4a362a3282f`, `v1.7.0-beta.23`, [release run 34843027626](https://github.com/JiangNanGenius/floe-agent/actions/runs/34843027626)) was cancelled before upload. Its [component run 34842984634](https://github.com/JiangNanGenius/floe-agent/actions/runs/34842984634) passed iPad under both SDKs, but SDK 26 iPhone retained the wheel after repeated selection and SDK 27 iPhone did not finalize before the step deadline. Original screenshots also showed unwanted rectangular system chrome around the circle. These failures are not waived by the iPad passes.
 
@@ -313,3 +313,13 @@ Build 171 extracts the button view and explicitly types its color and opacity
 values. Selection, preview and dismissal behavior are unchanged. Component CI
 now compiles a device Release host once per SDK as well as running the existing
 iPad/iPhone unit and UI checks. Full App qualification and delivery remain pending.
+
+### Build 171 generated project gate and build 172
+
+Build 171 stopped before SDK 27 App compilation: `project.yml` declared 171,
+while the committed generated Xcode project still declared 170. This was a
+release-preparation omission. No upload occurred; the other SDK job was cancelled.
+Build 172 regenerates and commits the matching project. The initial release
+preflight now checks every generated marketing/build version before expensive
+dependency setup; the full xcodegen consistency gate remains enabled.
+The production brush code is unchanged from `84c85f5`.
