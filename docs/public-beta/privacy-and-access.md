@@ -17,3 +17,11 @@ Confirm the operating entity, public feedback address, privacy-policy URL, servi
 Review access needs a dedicated, working configuration rather than a developer's primary key. Store secrets only in the appropriate private review fields or an owner-approved secure channel. Record non-secret setup steps, a contact for access failures, and a plan to revoke/rotate access after review. Do not create a billing commitment or publish a test credential merely to complete this worksheet.
 
 Apple requires accurate metadata, working review access and appropriate privacy disclosures. Review the submitted behavior against [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/), especially runtime/package behavior and third-party AI data flows. No exception or approval is presumed.
+
+## Recommended reviewer AI access
+
+For the current bring-your-own-key app, prepare a separate review credential with provider-supported spending/rate limits and access to the models needed by the walkthrough. This is a proposal; no credential or billing limit has been created. Include provider name, base URL, model ID, supported vision/tool capabilities and exact configuration steps in the private review instructions. Check that the service is reachable from the reviewer's location and does not require a personal phone/OTP or payment step. Keep it usable throughout review, then revoke or rotate it after the review and any follow-up are complete.
+
+The reviewer uses the ordinary provider settings and the same app behavior as other users. Do not add an undisclosed review-only feature switch. Put the credential in the private App Review information, never Beta App Description, What to Test, invitation email, public documentation or an embedded app default.
+
+Public beta testers continue to supply their own credentials. A shared free trial would be a separate product decision requiring server-held upstream credentials, per-user quotas and usage controls; never distribute the reviewer key as a public trial key.
