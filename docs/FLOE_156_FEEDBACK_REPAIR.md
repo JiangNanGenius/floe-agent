@@ -2,7 +2,7 @@
 
 This branch implements the September 14 feedback plan. It is not a release or a completed acceptance report.
 
-Current candidate: **build 169**. The production open arc from `a266c0a` passed [all four SDK/device component paths](evidence/floe-1.7/release-167/above-arc-qualification.json) in [run 34846659384](https://github.com/JiangNanGenius/floe-agent/actions/runs/34846659384), including three anchors, movement without committing, explicit taps, toggling and blank dismissal. Original screenshots are retained privately. The subsequent user-requested changes add persistent above/upper-left/upper-right placement and eight native brushes with independent settings and native stroke previews. The final brush UI and persistence checks now pass across both SDKs and both devices: [12 UI cases](evidence/floe-1.7/release-167/brush-ui-qualification.json) and [20 native unit cases](evidence/floe-1.7/release-167/brush-unit-qualification.json). Complete App qualification remains pending. Build 156 remains the latest verified TestFlight delivery.
+Current candidate: **build 170**. The production open arc from `a266c0a` passed [all four SDK/device component paths](evidence/floe-1.7/release-167/above-arc-qualification.json) in [run 34846659384](https://github.com/JiangNanGenius/floe-agent/actions/runs/34846659384), including three anchors, movement without committing, explicit taps, toggling and blank dismissal. Original screenshots are retained privately. The subsequent user-requested changes add persistent above/upper-left/upper-right placement and eight native brushes with independent settings and native stroke previews. The final brush UI and persistence checks now pass across both SDKs and both devices: [12 UI cases](evidence/floe-1.7/release-167/brush-ui-qualification.json) and [20 native unit cases](evidence/floe-1.7/release-167/brush-unit-qualification.json). Complete App qualification remains pending. Build 156 remains the latest verified TestFlight delivery.
 
 Build 166 (`82cccf4ead7e64e5d8600c476142a4a362a3282f`, `v1.7.0-beta.23`, [release run 34843027626](https://github.com/JiangNanGenius/floe-agent/actions/runs/34843027626)) was cancelled before upload. Its [component run 34842984634](https://github.com/JiangNanGenius/floe-agent/actions/runs/34842984634) passed iPad under both SDKs, but SDK 26 iPhone retained the wheel after repeated selection and SDK 27 iPhone did not finalize before the step deadline. Original screenshots also showed unwanted rectangular system chrome around the circle. These failures are not waived by the iPad passes.
 
@@ -290,3 +290,12 @@ verified all nine cache hits from an otherwise empty package build directory.
 Python wheel downloads prefer the release API when available and retain HTTPS
 fallback. Seven focused transport/cache tests cover valid reuse, corrupt payloads,
 foreign-host rejection and API unavailability. Brush and editor source is unchanged.
+
+### Build 170 workflow validation
+
+Build 169's workflow was rejected before any job started because `runner.temp`
+is unavailable in a job-level `env` expression. The cache path is now initialized
+in a setup step through `GITHUB_ENV`. Actions semantic lint (with the repository's
+existing `xcode-27` runner label declared) and shell syntax validation pass.
+No application or dependency implementation changed in this correction; build
+170 supersedes the unstarted build 169. Published tags are not moved.

@@ -71,7 +71,6 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       REQUIRED_XCODE_VERSION: Xcode 27.0
       GH_TOKEN: ${{ github.token }}
-      FLOE_SPM_CACHE_ROOT: ${{ runner.temp }}/FloePackageCache
     defaults:
       run:
         working-directory: FloeAgent
@@ -94,6 +93,9 @@ jobs:
           printf '%s\n' "$XCODE_VERSION"
           printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
           test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.0
+
+      - name: Select the job-local package cache
+        run: echo "FLOE_SPM_CACHE_ROOT=$RUNNER_TEMP/FloePackageCache" >> "$GITHUB_ENV"
 
       - name: Restore verified shell binary archives
         uses: actions/cache@v4
@@ -404,7 +406,6 @@ jobs:
       REQUIRED_XCODE_VERSION: Xcode 26.6
       REQUIRED_XCODE_BUILD: 17F113
       GH_TOKEN: ${{ github.token }}
-      FLOE_SPM_CACHE_ROOT: ${{ runner.temp }}/FloePackageCache
     defaults:
       run:
         working-directory: FloeAgent
@@ -450,6 +451,9 @@ jobs:
             python3 scripts/fonts/fetch_fonts.py
             python3 scripts/fonts/fetch_fonts.py --check
           }
+
+      - name: Select the job-local package cache
+        run: echo "FLOE_SPM_CACHE_ROOT=$RUNNER_TEMP/FloePackageCache" >> "$GITHUB_ENV"
 
       - name: Restore verified shell binary archives
         uses: actions/cache@v4
