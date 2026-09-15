@@ -43,14 +43,14 @@ for i,s in enumerate(sections):
 story += [Spacer(1,12),Paragraph('<link href="https://developer.apple.com/app-store/review/guidelines/" color="#347584">Apple App Review Guidelines</link> · <link href="https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information" color="#347584">TestFlight information</link> · <link href="https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.29" color="#347584">Floe Beta 29</link>',styles['FloeCaption'])]
 def footer(c,doc):
  c.setStrokeColor(colors.HexColor('#DCE7EB'));c.line(44,43,551,43)
- c.setFont('CJK',8);c.setFillColor(colors.HexColor('#607A86'));c.drawString(44,29,'FLOE · REVIEW PREPARATION / 审核准备稿 · baseline 172 / candidate 173');c.drawRightString(551,29,str(doc.page))
+ c.setFont('CJK',8);c.setFillColor(colors.HexColor('#607A86'));c.drawString(44,29,'FLOE · REVIEW PREPARATION / 审核准备稿 · '+data['baseline']+' / '+data['candidate']);c.drawRightString(551,29,str(doc.page))
 out=Path('output/pdf/floe-public-beta-review-guide.pdf')
 doc=SimpleDocTemplate(str(out),pagesize=(595,842),rightMargin=44,leftMargin=44,topMargin=45,bottomMargin=59,title='Floe Agent - Public Beta Review Walkthrough',author='Floe Agent')
 doc.build(story,onFirstPage=footer,onLaterPages=footer)
 
 r=PdfReader(out)
 text='\n'.join(p.extract_text() for p in r.pages)
-for token in ['173','Whisper','lantern garden 472','星河手记验证','BYOK']:
+for token in [data['candidate'].split('(')[-1].rstrip(')'),'Whisper','lantern garden 472','星河手记验证','BYOK']:
  assert token in text,token
 Path('docs/public-beta/review-walkthrough.md').write_text('# Complete review walkthrough / 完整审核演示说明\n\nBaseline: '+data['baseline']+'. Candidate: '+data['candidate']+'. '+data['status']+'.\n\n'+'\n\n'.join('## '+s['title']+' / '+s['englishTitle']+'\n\n'+'\n\n'.join(x['english']+'\n\n'+x['chinese'] for x in s['items']) for s in sections)+'\n')
 shutil.copy2(out,'docs/public-beta/floe-public-beta-review-guide.pdf')
