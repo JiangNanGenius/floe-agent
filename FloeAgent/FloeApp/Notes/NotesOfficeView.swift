@@ -64,7 +64,7 @@ struct NotesOfficeView: View {
                         } label: {
                             Image(systemName: "bubble.left.and.bubble.right")
                                 .frame(width: 44, height: 44)
-                        }.accessibilityLabel("Floe 助手与思维导图")
+                        }.accessibilityLabel("notes.office.assistantAndMindMaps")
                             .accessibilityIdentifier("notes.office.assistant")
                     }
                 ))
