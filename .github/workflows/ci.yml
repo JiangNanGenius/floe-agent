@@ -399,7 +399,9 @@ jobs:
 
       - name: Verify IDE native saves and retain workbench screenshots
         if: ${{ !cancelled() }}
-        timeout-minutes: 15
+        # Two device legs, each rebuilding the drawing engine; a slow snapshot
+        # window once pushed the phase past fifteen minutes despite passing.
+        timeout-minutes: 25
         run: |
           set -o pipefail
           status=0
