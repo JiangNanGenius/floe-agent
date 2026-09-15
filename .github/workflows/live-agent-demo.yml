@@ -38,7 +38,7 @@ concurrency:
 jobs:
   record:
     if: ${{ inputs.authorize_text_calls && github.run_attempt == 1 }}
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 25
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
