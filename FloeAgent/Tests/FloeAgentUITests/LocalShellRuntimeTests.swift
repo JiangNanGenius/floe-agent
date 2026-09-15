@@ -201,15 +201,15 @@ struct LocalShellRuntimeTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        // `pkg` remains the limited compatibility catalog; the configured App
-        // replaces `apt` with PackagesCLI, where `update` is a valid operation.
+        // All package aliases now use the same environment-bound service.
+        // Even `pkg` must fail without an owner instead of inventing a root.
         let result = await IOSSystemShellBackend().run(.init(command: "pkg update", cwd: ".", rootURL: root,
             timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
         guard case .exited(let code, _, let errors, _, _, _) = result else {
             Issue.record("Unsupported package command did not terminate: \(result)"); return
         }
-        #expect(code == 2)
-        #expect(errors.contains("unsupported command"))
+        #expect(code == 100)
+        #expect(errors.contains("no active container"))
         // The full apt implementation must also fail when this bare shell
         // request has no resolved environment. It must not invent a container.
         let unbound = await IOSSystemShellBackend().run(.init(command: "apt update", cwd: ".", rootURL: root,

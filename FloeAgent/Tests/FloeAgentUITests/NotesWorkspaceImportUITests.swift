@@ -23,7 +23,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let create = app.buttons["notes.create"]
         XCTAssertTrue(create.waitForExistence(timeout: 15))
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)], timeout: 10)
-        create.tap(); app.buttons["Office"].tap(); app.buttons["notes.create.word"].tap()
+        create.tap(); app.buttons["Office"].tap()
+        // UIKit's nested menu retains the visible title but drops SwiftUI's
+        // accessibilityIdentifier on its generated action buttons.
+        let word = app.buttons["Word 文档"]
+        XCTAssertTrue(word.waitForExistence(timeout: 5)); word.tap()
         let title = app.textFields["notes.create.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         title.tap(); title.typeText("Office toolbar check")
