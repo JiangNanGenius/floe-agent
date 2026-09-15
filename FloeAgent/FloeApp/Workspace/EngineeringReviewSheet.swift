@@ -41,11 +41,16 @@ struct EngineeringReviewSheet: View {
                 if let selection = center.environment.conversationCenter.defaultProviderAndModel() {
                     LabeledContent("engineering.review.model", value: selection.1.displayName)
                 }
-                DisclosureGroup("engineering.review.evidence") {
+                DisclosureGroup {
                     Text(capture.context).font(.caption.monospaced()).textSelection(.enabled)
                         .accessibilityIdentifier("engineering.review.context")
+                } label: {
+                    // Keep the identifier on the label: marking the group itself
+                    // swallows SwiftUI's tap-to-toggle action and XCTest taps
+                    // then never expand the evidence section.
+                    Text("engineering.review.evidence")
+                        .accessibilityIdentifier("engineering.review.evidence")
                 }
-                .accessibilityIdentifier("engineering.review.evidence")
                 if let error { Text(error).foregroundStyle(.red) }
             }
             .navigationTitle("engineering.review.title").navigationBarTitleDisplayMode(.inline)
