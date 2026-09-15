@@ -559,6 +559,9 @@ struct OfficeDocumentEditorView: View {
     @ObservedObject var session: OfficeFileSession
     var onSaved: (() async -> Bool)?
     var onClose: (() -> Void)? = nil
+    /// A feature-owned tab strip replaces the standalone navigation title.
+    var inlineHeader: AnyView? = nil
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var confirmingDiscard = false
@@ -576,69 +579,24 @@ struct OfficeDocumentEditorView: View {
             .navigationTitle((relativePath as NSString).lastPathComponent)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if session.supportsAttachmentInsertion {
-                    ToolbarItem(placement: .primaryAction) {
-                        Menu {
-                            Button("从工作区选择", systemImage: "folder") { choosingWorkspaceAttachment = true }
-                            Button("从文件选择", systemImage: "doc") { choosingAttachment = true }
-                            Divider()
-                            Button("查看文档附件", systemImage: "paperclip") { showingAttachments = true }
-                        } label: { Label("附件", systemImage: "paperclip") }
-                            .disabled(!session.canAct)
-                            .accessibilityIdentifier("office.editor.insertAttachment")
-                    }
+                if inlineHeader == nil {
+                    ToolbarItem(placement: .cancellationAction) { backButton }
+                    ToolbarItem(placement: .primaryAction) { documentActions }
                 }
-                if session.supportsDrawing {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button(session.drawingMode ? "结束批注" : "画笔批注", systemImage: "pencil.tip") {
-                            Task { do { try await session.toggleDrawing() } catch { session.error = error.localizedDescription } }
-                        }.disabled(!session.canAct).accessibilityIdentifier("office.drawing.toggle")
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let inlineHeader {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 4) {
+                            backButton
+                            inlineHeader.frame(maxWidth: .infinity, alignment: .leading)
+                            documentActions
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.bar)
+                        Divider()
                     }
-                }
-                if session.supportsPresentation {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("放映", systemImage: "play.rectangle") {
-                            Task { do { try await session.startPresentation() } catch { session.error = error.localizedDescription } }
-                        }.disabled(!session.canAct).accessibilityIdentifier("office.presentation.start")
-                    }
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("返回") {
-                        if session.phase == .failed { dismissEditor() }
-                        else { Task { await saveAndDismiss() } }
-                    }
-                    .disabled(!session.canAct && session.phase != .failed)
-                    .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Menu {
-                        Button("保存并返回") {
-                            Task { await saveAndDismiss() }
-                        }
-                        if !session.exportFormats.isEmpty {
-                            Menu("导出格式", systemImage: "square.and.arrow.up") {
-                                ForEach(session.exportFormats, id: \.self) { format in
-                                    Button(format.uppercased()) {
-                                        Task {
-                                            do { convertedExport = .init(url: try await session.exportDocument(format: format)) }
-                                            catch { session.error = error.localizedDescription }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Button("另存副本…", systemImage: "doc.on.doc") {
-                            Task { export = await session.prepareSaveCopy() }
-                        }
-                        if onSaved == nil {
-                            Button("保留修改并返回") {
-                                Task { if await session.keepChangesAndReturn() { dismissEditor() } }
-                            }
-                        }
-                        Button("放弃修改", role: .destructive) { confirmingDiscard = true }
-                    } label: { Image(systemName: "ellipsis.circle") }
-                    .disabled(!session.canAct)
-                    .accessibilityLabel("文档操作")
+                    .accessibilityIdentifier("office.editor.header")
                 }
             }
             .interactiveDismissDisabled()
@@ -703,6 +661,85 @@ struct OfficeDocumentEditorView: View {
                 }
                 Button("继续编辑", role: .cancel) {}
             }
+    }
+
+    private var backButton: some View {
+        Button("返回", systemImage: "chevron.left") {
+            if session.phase == .failed { dismissEditor() }
+            else { Task { await saveAndDismiss() } }
+        }
+        .labelStyle(.iconOnly).frame(width: 44, height: 44)
+        .disabled(!session.canAct && session.phase != .failed)
+        .accessibilityIdentifier("office.editor.back")
+        .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
+    }
+
+    @ViewBuilder private var primaryActions: some View {
+        if session.supportsAttachmentInsertion {
+            Menu {
+                Button("从工作区选择", systemImage: "folder") { choosingWorkspaceAttachment = true }
+                Button("从文件选择", systemImage: "doc") { choosingAttachment = true }
+                Divider()
+                Button("查看文档附件", systemImage: "paperclip") { showingAttachments = true }
+            } label: { Label("附件", systemImage: "paperclip").frame(minWidth: 44, minHeight: 44) }
+                .disabled(!session.canAct)
+                .accessibilityIdentifier("office.editor.insertAttachment")
+        }
+        if session.supportsDrawing {
+            Button {
+                Task { do { try await session.toggleDrawing() } catch { session.error = error.localizedDescription } }
+            } label: {
+                Label(session.drawingMode ? "结束批注" : "画笔批注", systemImage: "pencil.tip")
+                    .frame(minWidth: 44, minHeight: 44)
+            }.disabled(!session.canAct).accessibilityIdentifier("office.drawing.toggle")
+        }
+        if session.supportsPresentation {
+            Button {
+                Task { do { try await session.startPresentation() } catch { session.error = error.localizedDescription } }
+            } label: { Label("放映", systemImage: "play.rectangle").frame(minWidth: 44, minHeight: 44) }
+                .disabled(!session.canAct).accessibilityIdentifier("office.presentation.start")
+        }
+    }
+
+    private var documentMenu: some View {
+        Menu {
+            if inlineHeader != nil && sizeClass == .compact {
+                primaryActions.labelStyle(.titleAndIcon)
+                Divider()
+            }
+            Button("保存并返回") { Task { await saveAndDismiss() } }
+            if !session.exportFormats.isEmpty {
+                Menu("导出格式", systemImage: "square.and.arrow.up") {
+                    ForEach(session.exportFormats, id: \.self) { format in
+                        Button(format.uppercased()) {
+                            Task {
+                                do { convertedExport = .init(url: try await session.exportDocument(format: format)) }
+                                catch { session.error = error.localizedDescription }
+                            }
+                        }
+                    }
+                }
+            }
+            Button("另存副本…", systemImage: "doc.on.doc") { Task { export = await session.prepareSaveCopy() } }
+            if onSaved == nil {
+                Button("保留修改并返回") {
+                    Task { if await session.keepChangesAndReturn() { dismissEditor() } }
+                }
+            }
+            Button("放弃修改", role: .destructive) { confirmingDiscard = true }
+        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+            .disabled(!session.canAct)
+            .accessibilityLabel("文档操作")
+    }
+
+    private var documentActions: some View {
+        HStack(spacing: 4) {
+            if inlineHeader == nil || sizeClass != .compact { primaryActions }
+            documentMenu
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .controlSize(.regular)
     }
 
     private func dismissEditor() {

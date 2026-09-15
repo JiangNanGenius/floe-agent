@@ -82,3 +82,7 @@ Two macOS tests passed: read-only selection/conflict handling; real pinned npm a
 
 - Combined targeted qualification now passes **10 tests** (eight background-job lifecycle/ownership tests and two package-manager tests, including real HTTPS installs). Environment module compilation also passes. The current cloud run [34919306177](https://github.com/JiangNanGenius/floe-agent/actions/runs/34919306177) is fixed to `ec7d135a`; the later manager and orientation changes require a separate immutable-source run.
 - Inspection of the prior iPad screenshot attachments showed portrait output despite the intended landscape test. The next test explicitly detects the simulator model, sets landscape after launch and asserts actual App dimensions. Cloud UI runs will retain real simulator recordings alongside screenshots; no recording or demo is claimed complete before those runs finish.
+
+## Office chrome repair candidate
+
+The Notes-hosted Office editor now uses one native row for return, document tabs, assistant/mind-map access and document actions. It removes the duplicate outer title and empty collapse row; on compact widths, attachment/drawing/presentation actions move into the document menu. Standalone Office retains its navigation bar. Save/owner-commit/discard/recovery paths are unchanged. Swift parsing passes; full-App layout and save/reopen qualification are pending.

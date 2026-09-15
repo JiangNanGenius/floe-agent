@@ -9,6 +9,8 @@ import FloeCore
 struct NotesOfficeView: View {
     let session: NotesSession
     let document: NoteDocument
+    var onAssistant: () -> Void
+    var onLinkedMaps: () -> Void
     @StateObject private var office = OfficeFileSession()
     @State private var draftURL: URL?
     @State private var baseRevision: Int?
@@ -53,7 +55,19 @@ struct NotesOfficeView: View {
                     // let SwiftUI dismiss the cover before Notes clears selection.
                     session.removeLeaveGuard(for: document.id)
                     Task { await session.select(nil) }
-                })
+                }, inlineHeader: AnyView(
+                    HStack(spacing: 4) {
+                        NotesDocumentTabs(session: session)
+                        Menu {
+                            Button("Floe 助手", systemImage: "bubble.left.and.bubble.right", action: onAssistant)
+                            Button("思维导图", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
+                        } label: {
+                            Image(systemName: "bubble.left.and.bubble.right")
+                                .frame(width: 44, height: 44)
+                        }.accessibilityLabel("Floe 助手与思维导图")
+                            .accessibilityIdentifier("notes.office.assistant")
+                    }
+                ))
 
             }
         }

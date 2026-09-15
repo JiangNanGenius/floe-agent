@@ -123,16 +123,12 @@ struct NotesDocumentEditor: View {
 
     private var editorContent: some View {
         VStack(spacing: 0) {
-            if !headerCollapsed {
-                if document.kind == .office {
-                    NotesDocumentTabs(session: session).padding(.horizontal, 8).background(.bar)
-                } else {
+            if !headerCollapsed, document.kind != .office {
                 header
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
-                }
                 Divider()
             }
-            if document.kind != .notebook {
+            if document.kind == .mindMap {
                 HStack {
                     headerVisibilityButton
                     if headerCollapsed { NotesDocumentTabs(session: session) }
@@ -140,7 +136,8 @@ struct NotesDocumentEditor: View {
                 }.padding(.horizontal, 8).background(.bar)
             }
             if document.kind == .office {
-                NotesOfficeView(session: session, document: document)
+                NotesOfficeView(session: session, document: document,
+                                onAssistant: { showAssistant.toggle() }, onLinkedMaps: { showLinkedMaps = true })
             } else if document.kind == .mindMap {
                 if showOutline { MindMapOutlineView(session: session, document: document) }
                 else { NoteMindMapView(document: document, onEdit: { edits, revision in

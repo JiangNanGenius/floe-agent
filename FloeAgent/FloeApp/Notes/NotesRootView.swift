@@ -48,7 +48,7 @@ struct NotesRootView: View {
                         NotesDocumentEditor(session: session, document: document)
                             .id(document.id)
                             .navigationBarTitleDisplayMode(.inline)
-                            .toolbar(document.kind == .office ? .visible : .hidden, for: .navigationBar)
+                            .toolbar(.hidden, for: .navigationBar)
                     }
                 }
                 .interactiveDismissDisabled()
