@@ -38,6 +38,22 @@ fn diagnostics(document: &CadDocument) -> Vec<String> {
     document.notifications.iter().map(ToString::to_string).collect()
 }
 
+fn blocking_diagnostics(document: &CadDocument) -> bool {
+    use acadrust::notification::NotificationType;
+    document.notifications.omitted_count() > 0 || document.notifications.iter().any(|n| {
+        // acadrust 0.5.5 uses Warning for these four successful header/map
+        // progress reports (dwg_reader.rs:1258,1550,1630,1745). Preserve them in
+        // inspection, but do not mistake them for lost/unsupported content.
+        let informational = n.notification_type == NotificationType::Warning && (
+            n.message.starts_with("Reading DWG file version: AC")
+            || n.message.starts_with("AC18 inner header: page_map_address=")
+            || (n.message.starts_with("AC18: Read ") && (
+                n.message.ends_with(" page records from page map")
+                || n.message.ends_with(" section descriptors from section map"))));
+        !informational
+    })
+}
+
 // Serde excludes some native references. Compare the complete entity value as
 // well as the preserved reference fields; only ownership synthesized for newly
 // inserted entities is permitted to change during writing.
@@ -68,13 +84,14 @@ fn verify(document: &CadDocument, reopened: &CadDocument) -> Result<(), String> 
     if document.version != reopened.version || document.entity_count() != reopened.entity_count() {
         return Err("CAD round-trip changed version or entity count; original preserved".into());
     }
-    if !reopened.notifications.is_empty() || reopened.notifications.omitted_count() > 0 {
+    if blocking_diagnostics(reopened) {
         return Err(format!("CAD round-trip diagnostics: {:?}", diagnostics(reopened)));
     }
     for entity in document.entities() {
         let handle = entity.common().handle;
         let other = reopened.get_entity(handle).ok_or("CAD round-trip lost an entity")?;
         if !equivalent(&entity_image(entity), &entity_image(other)) {
+            #[cfg(test)] eprintln!("Entity before: {}\nEntity after: {}", entity_image(entity), entity_image(other));
             return Err(format!("CAD round-trip changed entity {handle}; original preserved"));
         }
         let a = entity.common();
@@ -166,7 +183,7 @@ impl CadSession {
 
     pub fn edit(&mut self, request: &str) -> Result<(), String> {
         if request.len() > 32_768 { return Err("CAD edit request limit".into()); }
-        if !self.document.notifications.is_empty() || self.document.notifications.omitted_count() > 0 {
+        if blocking_diagnostics(&self.document) {
             return Err(format!("This drawing has unresolved read diagnostics; editing is disabled: {:?}", diagnostics(&self.document)));
         }
         let edit: Edit = serde_json::from_str(request).map_err(|e| e.to_string())?;
@@ -228,7 +245,7 @@ impl CadSession {
 
     /// Must succeed before offering bytes to the native compare-and-swap writer.
     pub fn save(&self) -> Result<Vec<u8>, String> {
-        if !self.document.notifications.is_empty() { return Err("Unresolved CAD diagnostics".into()); }
+        if blocking_diagnostics(&self.document) { return Err("Unresolved CAD diagnostics".into()); }
         let bytes = encode(&self.document, &self.format)?;
         verify(&self.document, &read(&bytes, &self.format)?)?;
         Ok(bytes)
@@ -276,6 +293,9 @@ mod tests {
                 session.edit(r#"{"operation":"addCircle","center":[80,20,0],"radius":3,"layer":"Dimensions"}"#).unwrap();
                 assert!(session.undo()); assert!(session.redo());
                 let output = session.save().unwrap_or_else(|e|panic!("{format} {version:?}: {e}"));
+                std::fs::create_dir_all("qualification-fixtures").unwrap();
+                std::fs::write(format!("qualification-fixtures/input-{version:?}.{format}"),&input).unwrap();
+                std::fs::write(format!("qualification-fixtures/edited-{version:?}.{format}"),&output).unwrap();
                 if format == "dwg" { assert_eq!(&output[..6], &input[..6]); }
                 let reopened = read(&output,format).unwrap();
                 assert_eq!(reopened.entity_count(),4);
@@ -304,5 +324,8 @@ mod tests {
         doc.notifications.notify(acadrust::notification::NotificationType::NotSupported,"unknown entity");
         let session = CadSession { document:doc,format:"dwg".into(),undo:vec![],redo:vec![] };
         assert!(session.save().is_err());
+        let mut doc = fixture(DxfVersion::AC1032);
+        doc.notifications.notify(acadrust::notification::NotificationType::Warning,"AC18: Invalid compressed size 0 for page 1");
+        assert!(blocking_diagnostics(&doc));
     }
 }

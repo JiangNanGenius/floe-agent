@@ -50,4 +50,5 @@ jobs:
             FloeAgent/ThirdParty/CADEngine/cad-tests.log
             FloeAgent/ThirdParty/CADEngine/cad-artifacts.sha256
             FloeAgent/ThirdParty/CADEngine/dependency-metadata.json
+            FloeAgent/ThirdParty/CADEngine/qualification-fixtures
           retention-days: 14
