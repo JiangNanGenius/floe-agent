@@ -138,7 +138,8 @@ import PencilKit
             // surfaces later as a misleading canvas timeout. The marker keeps
             // the previous pen kind, so check its tool label instead.
             if name == "marker" {
-                let markerTool = expectation(for: NSPredicate(format: "label == %@", "marker"),
+                // NotesInkTool raw values are fixed Chinese strings, not localized.
+                let markerTool = expectation(for: NSPredicate(format: "label == %@", "荧光笔"),
                                              evaluatedWith: app.staticTexts["palette.selectedTool"])
                 wait(for: [markerTool], timeout: 5)
             } else {
