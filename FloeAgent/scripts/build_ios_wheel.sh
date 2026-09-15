@@ -118,4 +118,12 @@ fi
 
 cd "$source_dir"
 python -m cibuildwheel --platform ios . --output-dir "$repo_root/ios-wheelhouse/out/$FLOE_WHEEL_NAME"
+if [ "$FLOE_WHEEL_NAME" = "lxml" ]; then
+    # The static dependencies require iOS 17. Match wheel metadata to Mach-O
+    # LC_BUILD_VERSION instead of inheriting the testbed Python's iOS 13 tag.
+    for arch in iphoneos iphonesimulator; do
+        python -m wheel tags --platform-tag "ios_17_0_arm64_$arch" --remove \
+            "$out_dir"/lxml-*-cp313-cp313-ios_13_0_arm64_"$arch".whl
+    done
+fi
 echo "wheel candidates written to ios-wheelhouse/out/$FLOE_WHEEL_NAME"

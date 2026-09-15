@@ -55,6 +55,7 @@
 		144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17F136474D0FB91E6F810317 /* ThreadDetailView.swift */; };
 		152D5427B6D2BCBE090BAE34 /* VideoProviderAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1202B558B5346402D1ABD69D /* VideoProviderAdapterTests.swift */; };
 		158A4F0C9123183E73090756 /* CanvasAgentToolContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE65485FC8E0E948FC57BB93 /* CanvasAgentToolContractTests.swift */; };
+		167D1795878ECD2E4910C4B8 /* lxml_builder.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 00B70DCD3A3E65360BFB96E2 /* lxml_builder.xcframework */; };
 		16803A444C43C3B228DB9373 /* EnvironmentManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */; };
 		17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1D2F99E9E151908419336F /* MailSettingsView.swift */; };
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
@@ -86,6 +87,7 @@
 		231450C31B4BABA097EDE191 /* PDFium.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 276A4BD225189F342404A19B /* PDFium.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		232956B5D2159E67076246D5 /* _statistics.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		240295D920ACB16AC985D2EF /* BackgroundVideoService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBD2CBE0215EF9478D86E581 /* BackgroundVideoService.swift */; };
+		2406CED5A3D4447717C05C9C /* lxml_html__difflib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 938F15E110BD6C763BB7F89E /* lxml_html__difflib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		24501BB1BDCC1E8922982E4C /* _ctypes.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF07847A2353D846B363915C /* ThreadTimelineTests.swift */; };
 		2552449B3F6DFD39F032C0FF /* _bz2.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -106,6 +108,7 @@
 		2B89EFA4B10C970A94C681FC /* Canvas3DDirectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891BEBD07BB7F67542319E7C /* Canvas3DDirectorView.swift */; };
 		2BBF22D90B958D418033B3CB /* LibArchive.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F499370272EB0BEEEA44D795 /* LibArchive.xcframework */; };
 		2C5B8D631FA0D9B73EB77DFB /* _imagingtk.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3CA6D19DD3F9D91C5F985652 /* _imagingtk.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		2C72BF7B79493F661B9F6CC2 /* lxml_etree.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC12D28953CC5213B3ED2340 /* lxml_etree.xcframework */; };
 		2CC7C52CAEAD5EEE7E681D83 /* _mt19937.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2D1426A11BF0547700CA8D5D /* iPadBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */; };
 		2EB4F0026F6D3C7036234EB2 /* NetworkStatusMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */; };
@@ -117,6 +120,7 @@
 		30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FBC9F374C911EA91D944FB0 /* MoreView.swift */; };
 		30FD0FEA4A7230A40A214672 /* NoteElementInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A9CCB047EB72AD2922ED38 /* NoteElementInspector.swift */; };
 		311AEDE3D09FC84B37113EAD /* frozenlist__frozenlist.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 45BFF6DBD374D777C39302B6 /* frozenlist__frozenlist.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		311D0348F8399C9BC4B7EC10 /* lxml_sax.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 48159E1ECF2DA120D5D5CBDA /* lxml_sax.xcframework */; };
 		313555104A755FCB1D5ABD01 /* dashA.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 703BE45E358D57D074DC5538 /* dashA.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		31A880D7E77E4D90E1CA89EF /* WorkspaceCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */; };
 		32180DBBC109A9CEFC4C00A5 /* AgentPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */; };
@@ -158,6 +162,7 @@
 		436FDD6DD750FD77FF840D91 /* WebSearchSettingsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F4735140291FC5F3FC031CE /* WebSearchSettingsCenter.swift */; };
 		43C527CE147ACB5ABE71DF71 /* _random.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 12C202262489FD354A0B595A /* _random.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		43DD160B5685B1FDE3B0D8B5 /* _sfc64.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1078C97511E013940FBDC94D /* _sfc64.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		43F715402D8B89C595BFA554 /* lxml_objectify.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FF89A6A8643D44C081A76806 /* lxml_objectify.xcframework */; };
 		4439885B5FEC7EBB773C2D97 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79C8C2B8701925AEC218168 /* BrowserView.swift */; };
 		44549AE8F5937ED7F55B253B /* pandas__libs_internals.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */; };
 		448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */; };
@@ -197,6 +202,7 @@
 		557E5740D65A080E412BDBA3 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = B1B02F2500B5B465399C11B7 /* FloePersistence */; };
 		5783D26BF683BAD283217A43 /* ImportantFileShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */; };
 		5865F29C2F55DD59CDA460A4 /* zstandard_backend_c.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A042C89A9C3804838987595F /* zstandard_backend_c.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		589BE0455B33617FCF0BAF3D /* lxml_etree.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EC12D28953CC5213B3ED2340 /* lxml_etree.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		58D18406B9BED399837BAE37 /* pandas__libs_tslibs_offsets.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74A3D870B4F77241BEEA52E6 /* pandas__libs_tslibs_offsets.xcframework */; };
 		59878DE003DC7D51B58A1669 /* ProviderListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A0E75544F5FA28387CB77B /* ProviderListView.swift */; };
 		5AE108D9A18E2DF3B4591CDA /* lodash.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 981B8A91A33287F0FDC3129C /* lodash.min.js */; };
@@ -355,6 +361,7 @@
 		9D88F7400A99BF770F8A8DB4 /* ProviderEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */; };
 		9DFE07FCD5B35D30B226DDFE /* pandas__libs_missing.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8F1C7614F842F707C441F28 /* pandas__libs_missing.xcframework */; };
 		9EBA6EE31AFF90B6B71400C8 /* _codecs_cn.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40BAFE31EE72FD82F859328D /* _codecs_cn.xcframework */; };
+		9EDA0A66D1A636D290B8FAE8 /* lxml__elementpath.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE397F0443DFA31DDB61E630 /* lxml__elementpath.xcframework */; };
 		9F0EDF153307BB68F8B68775 /* NotesRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1838729ECF5E85526DF5F217 /* NotesRootView.swift */; };
 		9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C1C39FA1A8D05FF5A1E63EE /* OnboardingView.swift */; };
 		9FF83450C60A97AEFB3FC5D0 /* _sha3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 855EFD5014DCA004E8103D32 /* _sha3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -380,6 +387,7 @@
 		AB3605779C6F0C4864D85CE2 /* VNCViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */; };
 		AB7BCBD6DC7FD37ADEF2C945 /* RuntimeDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */; };
 		ABAF2700584FE5E93C50DA1B /* FloeDocuments in Frameworks */ = {isa = PBXBuildFile; productRef = 42091B03632EF4B82CED17C8 /* FloeDocuments */; };
+		AC58F9CBAC5B6BE64D89197E /* lxml_html_diff.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E4E2DE83EE417B6DB0AC039A /* lxml_html_diff.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */; };
 		AD229E781FF8EEAD58275F19 /* _datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1B3181E829C356459CFA9723 /* _datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AD2B7510302B99C8EF3B6E85 /* _generator.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EBC215027D7DF2A3C8B1DE14 /* _generator.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -420,8 +428,10 @@
 		BDA1E6D0F8438717CAC15C45 /* pandas__libs_tslibs_tzconversion.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 454525682D752CA18BC08BD3 /* pandas__libs_tslibs_tzconversion.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BE299593F762EB0243E748A2 /* _pcg64.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BE3C6E177C8B0010918C0EDA /* EnvironmentLanguagePackageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD2CFD611878BC20AF443EB /* EnvironmentLanguagePackageTests.swift */; };
+		BE3CD89E20C40E384A1EFD8C /* lxml__elementpath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EE397F0443DFA31DDB61E630 /* lxml__elementpath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BE534C8C1F5C827155E0256E /* HomeLaunchpadViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */; };
 		BEE09DF321378355A79E26BC /* DeviceFontStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D140791C6A26A79F8AB52F7 /* DeviceFontStore.swift */; };
+		BEF37E54ED87ABF98B782D52 /* lxml_sax.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 48159E1ECF2DA120D5D5CBDA /* lxml_sax.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BEFDD6EB71B069F44842E36A /* Bundled in Resources */ = {isa = PBXBuildFile; fileRef = 238052542CCEFF5EA4FF6DC3 /* Bundled */; };
 		BF0F2E2F2B4C891C0D179306 /* pandas__libs_algos.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */; };
 		BF5BC698063F29786AAA2C71 /* pandas__libs_tslibs_strptime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */; };
@@ -475,6 +485,7 @@
 		CEB9C5AFF1E17132712C5FC8 /* _codecs_jp.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */; };
 		CEDE8D8AD83D823BBC4E1662 /* RemoteSessionSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */; };
 		CEFB2B4D39543148513CE9F4 /* cmath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 04588885DF3B30D110854AAB /* cmath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		CFBBA8122D041545D4816671 /* lxml_html__difflib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 938F15E110BD6C763BB7F89E /* lxml_html__difflib.xcframework */; };
 		CFDFA46BD586771C15C03388 /* WhisperStreamingTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB4679E77F7EF6B2EA20794E /* WhisperStreamingTranscriber.swift */; };
 		D22B0A2A27F38C4AA93FC7E5 /* FloeSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DEFB59A49152ED0F642C4865 /* FloeSSH */; };
 		D235FC7B7E50E4FD24FA01A6 /* NoteFileImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C1ABF02CBBFDC44F9B0577 /* NoteFileImporter.swift */; };
@@ -501,8 +512,10 @@
 		DECA492E992BBEDBE6178CE2 /* pandas__libs_sas.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DED99885DA007AF7130DA1F2 /* pandas__libs_tslibs_timestamps.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0EC05C4A2D3FF390E3DBFCB0 /* pandas__libs_tslibs_timestamps.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DF328431A01C3722680442AB /* VNCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7FE946AC097054C1CB5A16 /* VNCView.swift */; };
+		DF3FE44302CD4F5C007B0210 /* lxml_objectify.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FF89A6A8643D44C081A76806 /* lxml_objectify.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DFA28E00B18DDBC56D222CC1 /* SettingsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */; };
 		E10A86078685C6E6527103D6 /* pandas__libs_algos.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		E26051CA38E47DE8CB1B8673 /* lxml_builder.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 00B70DCD3A3E65360BFB96E2 /* lxml_builder.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E2667D676B12957E2787BD59 /* FilesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00969624B0A954308417634B /* FilesViewModel.swift */; };
 		E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219CD6341FB443743691F92D /* LocalPreviewServer.swift */; };
 		E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */; };
@@ -514,6 +527,7 @@
 		E6105A0FE81E537BF3500635 /* pandas__libs_tslibs_np_datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E617FB6AC1EB2366C4F9A4CE /* ReasoningBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F88E75D475229D4424D2FC1 /* ReasoningBlockView.swift */; };
 		E68B9F53A71EC8231AA004DE /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
+		E7C54DAD8CE4A22A4C451388 /* lxml_html_diff.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E4E2DE83EE417B6DB0AC039A /* lxml_html_diff.xcframework */; };
 		E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */; };
 		E848083DD6CD8D1D0C33B8EE /* ThreadComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */; };
 		E9075DDE4B9BCC5B1C61D735 /* Whisper in Resources */ = {isa = PBXBuildFile; fileRef = 7858BFEF9F60D96BAA0E621E /* Whisper */; };
@@ -696,6 +710,13 @@
 				311AEDE3D09FC84B37113EAD /* frozenlist__frozenlist.xcframework in Embed Frameworks */,
 				8E9C5DF470019A5633BA750D /* greenlet__greenlet.xcframework in Embed Frameworks */,
 				DD38734DF72C90DBA0FA7A1E /* lapack_lite.xcframework in Embed Frameworks */,
+				BE3CD89E20C40E384A1EFD8C /* lxml__elementpath.xcframework in Embed Frameworks */,
+				E26051CA38E47DE8CB1B8673 /* lxml_builder.xcframework in Embed Frameworks */,
+				589BE0455B33617FCF0BAF3D /* lxml_etree.xcframework in Embed Frameworks */,
+				2406CED5A3D4447717C05C9C /* lxml_html__difflib.xcframework in Embed Frameworks */,
+				AC58F9CBAC5B6BE64D89197E /* lxml_html_diff.xcframework in Embed Frameworks */,
+				DF3FE44302CD4F5C007B0210 /* lxml_objectify.xcframework in Embed Frameworks */,
+				BEF37E54ED87ABF98B782D52 /* lxml_sax.xcframework in Embed Frameworks */,
 				82B159D872E7531B37FCC99C /* mtrand.xcframework in Embed Frameworks */,
 				7532642AB801554C952A6A8B /* multidict__multidict.xcframework in Embed Frameworks */,
 				766C8713ECB4CA8AD887B597 /* pandas__libs__cyutility.xcframework in Embed Frameworks */,
@@ -759,6 +780,7 @@
 
 /* Begin PBXFileReference section */
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
+		00B70DCD3A3E65360BFB96E2 /* lxml_builder.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lxml_builder.xcframework; path = Vendor/PythonExtensions/lxml_builder.xcframework; sourceTree = "<group>"; };
 		016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlayerView.swift; sourceTree = "<group>"; };
 		018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARFixtures.generated.swift; sourceTree = "<group>"; };
 		020723F1965651F1C7D6CD77 /* LocalShellRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalShellRuntimeTests.swift; sourceTree = "<group>"; };
@@ -898,6 +920,7 @@
 		46C5D94B0311C71146C0A52C /* _contextvars.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _contextvars.xcframework; path = Vendor/PythonExtensions/_contextvars.xcframework; sourceTree = "<group>"; };
 		47008301B5CA511920D10074 /* _lsprof.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _lsprof.xcframework; path = Vendor/PythonExtensions/_lsprof.xcframework; sourceTree = "<group>"; };
 		474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_byteswap.xcframework; path = Vendor/PythonExtensions/pandas__libs_byteswap.xcframework; sourceTree = "<group>"; };
+		48159E1ECF2DA120D5D5CBDA /* lxml_sax.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lxml_sax.xcframework; path = Vendor/PythonExtensions/lxml_sax.xcframework; sourceTree = "<group>"; };
 		4946D26E8EA2D8E70FF337DB /* _multibytecodec.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _multibytecodec.xcframework; path = Vendor/PythonExtensions/_multibytecodec.xcframework; sourceTree = "<group>"; };
 		4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = unicodedata.xcframework; path = Vendor/PythonExtensions/unicodedata.xcframework; sourceTree = "<group>"; };
 		49CB9C8F1ACA4A5878C21531 /* NotePageRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePageRenderer.swift; sourceTree = "<group>"; };
@@ -1024,6 +1047,7 @@
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		926B95CD92D851FFE3BB0DFE /* python */ = {isa = PBXFileReference; lastKnownFileType = folder; name = python; path = FloeApp/Resources/python; sourceTree = SOURCE_ROOT; };
 		931809561A553D3D4D78ABA6 /* NotesOfficeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesOfficeView.swift; sourceTree = "<group>"; };
+		938F15E110BD6C763BB7F89E /* lxml_html__difflib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lxml_html__difflib.xcframework; path = Vendor/PythonExtensions/lxml_html__difflib.xcframework; sourceTree = "<group>"; };
 		93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailConnectorTests.swift; sourceTree = "<group>"; };
 		940DE18872CD21D45A855A30 /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		95A8E32A62F993F42084705E /* FloeShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShortcuts.swift; sourceTree = "<group>"; };
@@ -1153,6 +1177,7 @@
 		E388FA201B460E867D612C38 /* FloeScreenShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeScreenShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformBackgroundPolicy.swift; sourceTree = "<group>"; };
 		E4D444391A1A5C38A59A2C54 /* ConversationBatchManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationBatchManagementView.swift; sourceTree = "<group>"; };
+		E4E2DE83EE417B6DB0AC039A /* lxml_html_diff.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lxml_html_diff.xcframework; path = Vendor/PythonExtensions/lxml_html_diff.xcframework; sourceTree = "<group>"; };
 		E5AC44E2A3E68DA153AED855 /* ZLImageEditor-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "ZLImageEditor-LICENSE.txt"; sourceTree = "<group>"; };
 		E7E878F704F2A5D35DAD0C0B /* dashC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashC.xcframework; path = Frameworks/dashC.xcframework; sourceTree = "<group>"; };
 		E9C72C2A24D117C574C0444C /* BrowserSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSessionCenter.swift; sourceTree = "<group>"; };
@@ -1163,6 +1188,8 @@
 		EBF4EA91353CD8A801DCA98A /* ErrorEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorEventView.swift; sourceTree = "<group>"; };
 		EBFC00F1FCA508F70838C348 /* _uuid.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _uuid.xcframework; path = Vendor/PythonExtensions/_uuid.xcframework; sourceTree = "<group>"; };
 		EC0B76B524CD1FC5833106AE /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
+		EC12D28953CC5213B3ED2340 /* lxml_etree.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lxml_etree.xcframework; path = Vendor/PythonExtensions/lxml_etree.xcframework; sourceTree = "<group>"; };
+		EE397F0443DFA31DDB61E630 /* lxml__elementpath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lxml__elementpath.xcframework; path = Vendor/PythonExtensions/lxml__elementpath.xcframework; sourceTree = "<group>"; };
 		EE446478DBD5263458338578 /* fcntl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = fcntl.xcframework; path = Vendor/PythonExtensions/fcntl.xcframework; sourceTree = "<group>"; };
 		EF3AEE5793F42AA8E356F322 /* FloePlatformServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloePlatformServices.swift; sourceTree = "<group>"; };
 		F056190E229F36B3FC87CD73 /* _csv.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _csv.xcframework; path = Vendor/PythonExtensions/_csv.xcframework; sourceTree = "<group>"; };
@@ -1191,6 +1218,7 @@
 		FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_ops_dispatch.xcframework; path = Vendor/PythonExtensions/pandas__libs_ops_dispatch.xcframework; sourceTree = "<group>"; };
 		FF07847A2353D846B363915C /* ThreadTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTimelineTests.swift; sourceTree = "<group>"; };
 		FF649704B99081AF2F7E2480 /* pandas__libs_pandas_parser.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_pandas_parser.xcframework; path = Vendor/PythonExtensions/pandas__libs_pandas_parser.xcframework; sourceTree = "<group>"; };
+		FF89A6A8643D44C081A76806 /* lxml_objectify.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = lxml_objectify.xcframework; path = Vendor/PythonExtensions/lxml_objectify.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1305,6 +1333,13 @@
 				CAA9C73BFF21F2B45E99D3A3 /* frozenlist__frozenlist.xcframework in Frameworks */,
 				6D5B4AC7509B507968C75258 /* greenlet__greenlet.xcframework in Frameworks */,
 				CCBF6AC11B7FB893FB5A60A5 /* lapack_lite.xcframework in Frameworks */,
+				9EDA0A66D1A636D290B8FAE8 /* lxml__elementpath.xcframework in Frameworks */,
+				167D1795878ECD2E4910C4B8 /* lxml_builder.xcframework in Frameworks */,
+				2C72BF7B79493F661B9F6CC2 /* lxml_etree.xcframework in Frameworks */,
+				CFBBA8122D041545D4816671 /* lxml_html__difflib.xcframework in Frameworks */,
+				E7C54DAD8CE4A22A4C451388 /* lxml_html_diff.xcframework in Frameworks */,
+				43F715402D8B89C595BFA554 /* lxml_objectify.xcframework in Frameworks */,
+				311D0348F8399C9BC4B7EC10 /* lxml_sax.xcframework in Frameworks */,
 				6C8F45B8571FF3FD40EFF490 /* mtrand.xcframework in Frameworks */,
 				003FE1D17EDBCEBAD080D2EF /* multidict__multidict.xcframework in Frameworks */,
 				DB50F1F1A2CF3AA30E3CA297 /* pandas__libs__cyutility.xcframework in Frameworks */,
@@ -1901,6 +1936,13 @@
 				F499370272EB0BEEEA44D795 /* LibArchive.xcframework */,
 				B2C7F4E1D9EC1405A1792A0A /* libc++.tbd */,
 				E235AA51EFF99AA0DEA509BD /* libz.tbd */,
+				EE397F0443DFA31DDB61E630 /* lxml__elementpath.xcframework */,
+				00B70DCD3A3E65360BFB96E2 /* lxml_builder.xcframework */,
+				EC12D28953CC5213B3ED2340 /* lxml_etree.xcframework */,
+				938F15E110BD6C763BB7F89E /* lxml_html__difflib.xcframework */,
+				E4E2DE83EE417B6DB0AC039A /* lxml_html_diff.xcframework */,
+				FF89A6A8643D44C081A76806 /* lxml_objectify.xcframework */,
+				48159E1ECF2DA120D5D5CBDA /* lxml_sax.xcframework */,
 				BB881F2DC155C2D3A5681681 /* math.xcframework */,
 				BBD2144374FF4E9AD173B157 /* mmap.xcframework */,
 				9B923E6C40B9B0CB6BE969E7 /* mtrand.xcframework */,

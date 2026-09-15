@@ -26,6 +26,7 @@ DEFAULT_PACKAGES = [
     "soupsieve", "sqlparse", "tabulate", "tenacity", "text-unidecode", "tomli",
     "typing-extensions", "vobject", "webencodings", "XlsxWriter",
     # Networking and test presets, including their non-optional dependencies.
+    "python-docx", "python-pptx",
     "requests", "charset-normalizer", "idna", "urllib3", "httpx", "anyio",
     "httpcore", "h11", "pytest", "iniconfig", "pluggy", "pygments",
 ]

@@ -328,6 +328,20 @@ targets:
         embed: true
       - framework: Vendor/PythonExtensions/lapack_lite.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/lxml__elementpath.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lxml_builder.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lxml_etree.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lxml_html__difflib.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lxml_html_diff.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lxml_objectify.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lxml_sax.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/mtrand.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/multidict__multidict.xcframework

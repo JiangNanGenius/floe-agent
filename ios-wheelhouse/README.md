@@ -33,11 +33,11 @@ wheel 构建成功只证明该产线的测试范围；接入 1.7 还要验证当
 ## 硬性边界
 
 - **不做运行时下载原生代码**（Apple 2.5.2）：所有原生 wheel 构建期内置，`.so` 全部转签名 XCFramework。
-- scipy / scikit-learn / statsmodels：iOS 无 Fortran/LAPACK 工具链，**不可行**，继续走 Pyodide(WASM) 或 SSH 远端。
+- scipy / scikit-learn / statsmodels：当前产线未完成所需 Fortran/BLAS/LAPACK 的交叉构建与 ABI 验证，暂未内置；保留原生构建评估，不将历史构建障碍写成永久不可行。现有远端或 WASM 能力需单独验证。
 - Rust 包（orjson / pydantic-core）：maturin 交叉链路为实验项，先在 CI 验证再 pin。
 
 ## lxml 候选产线（2026-09-15）
 
 `lxml` 配方固定 6.1.3 sdist，并使用 `prepare_lxml_ios.py` 分别交叉构建静态 libxml2 2.14.6 和 libxslt 1.1.45，三个源码均校验 SHA-256。编译配置拒绝 macOS 或未知架构，禁止误用 Homebrew 库；依赖版权声明随 wheel 包含。测试床执行中文 XML、XPath、XSLT，以及 python-docx 1.2.0 / python-pptx 1.0.2 的生成、保存和重读。
 
-这仍是候选产线，未发布到可安装目录或加入 App。双 wheel、测试床结果、静态依赖归属检查和完整 App 导入通过后才更新发布 pin。wheel 构建可以与 App CI 独立运行，不互相覆盖或取消。
+[CI 34923284307](https://github.com/JiangNanGenius/floe-agent/actions/runs/34923284307) 已生成双 wheel，iOS 模拟器测试床完成上述功能。14 个原生模块均为对应 arm64 平台、最低 iOS 17，动态依赖仅 Python.framework 和 Apple 系统库。wheel 0.46.3 将上游错误的 iOS 13 标签校正为 17；已逐文件确认只有 WHEEL/RECORD 元数据改变。候选发布于 [runtime-lxml-6.1.3-cp313](https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-lxml-6.1.3-cp313)，携带来源和双 SHA-256。App 已添加构建 pin 与 Office Python 保存重读测试，完整 App 验证及真机验收仍待完成。wheel 构建与 App CI 独立运行。

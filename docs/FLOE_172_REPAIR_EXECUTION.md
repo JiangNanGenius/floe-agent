@@ -120,3 +120,10 @@ Native lxml candidate build `34923069149` compiled libxml2 for iOS, then failed 
 ## Simulator build scope
 
 The SDK 27 cloud log showed unused x86_64 MLX/NIO compilations alongside arm64 on the Apple Silicon runner. CI and release simulator build commands now select `ARCHS=arm64 ONLY_ACTIVE_ARCH=YES`; iPad/iPhone runs and SDK 26/27 checks remain. Device archive settings are unchanged. Both workflow files pass actionlint; elapsed-time improvement is not claimed before a new run.
+
+
+## lxml and Office Python integration
+
+Candidate run `34923284307` (source `aa35a5e0`) passed: device and simulator wheels compiled with SDK 26.5, and the iOS simulator testbed executed Chinese XML/XPath/XSLT plus DOCX/PPTX save/reopen (one test, 9.506 seconds in the test process). All 14 Mach-O modules were inspected: correct platform/arm64, minimum iOS 17, no Homebrew dependency; libxml2/libxslt are static, iconv/zlib use Apple system libraries. Original artifacts/logs remain private qualification evidence.
+
+The dependency prerelease `runtime-lxml-6.1.3-cp313` preserves tested code bytes and corrects only WHEEL/RECORD minimum-OS metadata using wheel 0.46.3. It includes provenance and hashes. Floe build pins, generated framework references, license inventory, runtime probes, and exact python-docx 1.2.0 / python-pptx 1.0.2 pure-wheel pins are added with a full-App round-trip regression. This dependency publication is not a new App release or TestFlight upload; App/runtime integration remains pending CI.
