@@ -23,11 +23,18 @@ jobs:
       - name: Resolve initial lock or verify committed lock
         run: |
           if [ ! -f Cargo.lock ]; then cargo generate-lockfile; fi
-          cargo metadata --locked --format-version 1 > dependency-metadata.json
+          cargo metadata --locked --format-version 1 --filter-platform wasm32-unknown-unknown > dependency-metadata.json
       - name: Native edit and same-format reopen qualification
         run: |
           set -o pipefail
           cargo test --locked --jobs 2 -- --nocapture 2>&1 | tee cad-tests.log
+      - name: Preserve native result before WASM packaging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cad-native-${{ github.sha }}
+          path: FloeAgent/ThirdParty/CADEngine/cad-tests.log
+          retention-days: 14
       - name: Compile bounded-memory WebAssembly
         if: ${{ !cancelled() }}
         env:

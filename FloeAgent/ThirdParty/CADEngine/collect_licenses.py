@@ -11,8 +11,16 @@ lock = tomllib.loads((root / 'Cargo.lock').read_text())
 checksums = {(p['name'], p['version']): p.get('checksum') for p in lock['package']}
 notices = ['# Floe CAD engine third-party notices\n\nFloe wrapper: MPL-2.0.\n']
 inventory = []
+nodes = {n['id']: n for n in metadata['resolve']['nodes']}
+reachable, pending = set(), [metadata['resolve']['root']]
+while pending:
+    node = pending.pop()
+    if node in reachable:
+        continue
+    reachable.add(node)
+    pending.extend(d['pkg'] for d in nodes[node]['deps'])
 for package in sorted(metadata['packages'], key=lambda p: (p['name'], p['version'])):
-    if package['name'] == 'floe-cad-engine':
+    if package['name'] == 'floe-cad-engine' or package['id'] not in reachable:
         continue
     folder = Path(package['manifest_path']).parent
     files = sorted(p for p in folder.iterdir() if p.is_file() and p.name.upper().startswith(('LICENSE', 'LICENCE', 'COPYING', 'NOTICE')))
