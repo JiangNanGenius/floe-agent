@@ -178,6 +178,21 @@ jobs:
           xcodebuild -project FloePencilPaletteQualification.xcodeproj -scheme FloePencilPaletteQualification \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build-for-testing 2>&1 | tee build.log
+      - name: Prepare and diagnose the exact SDK simulator before XCTest
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
+          xcrun simctl list devices available -j > simulator-inventory.json
+          device="$(python3 ../../scripts/select_test_simulator.py --sdk-major "$major" --name "$PALETTE_DEVICE" < simulator-inventory.json)"
+          echo "PALETTE_SIMULATOR_ID=$device" >> "$GITHUB_ENV"
+          # Cold SpringBoard startup previously consumed the launch assertion
+          # window. Finish it explicitly and retain failures before UI tests.
+          xcrun simctl boot "$device" > simulator-boot.log 2>&1 || true
+          xcrun simctl bootstatus "$device" -b 2>&1 | tee -a simulator-boot.log
+          xcrun simctl install "$device" build/Build/Products/Debug-iphonesimulator/FloePencilPaletteQualification.app
+          xcrun simctl launch "$device" org.floeagent.pencil.palette.qualification 2>&1 | tee simulator-prewarm.log
+          xcrun simctl terminate "$device" org.floeagent.pencil.palette.qualification
       - name: Qualify arc positions, brush rendering and settings on this device
         timeout-minutes: 12
         run: |
@@ -185,11 +200,18 @@ jobs:
           test_scope=()
           if [[ "$PALETTE_UNIT_ONLY" == "true" ]]; then test_scope=(-only-testing:PencilPaletteUnitTests); fi
           xcodebuild -project FloePencilPaletteQualification.xcodeproj -scheme FloePencilPaletteQualification \
-            "${test_scope[@]}" -destination "platform=iOS Simulator,name=$PALETTE_DEVICE" -derivedDataPath build \
+            "${test_scope[@]}" -destination "platform=iOS Simulator,id=$PALETTE_SIMULATOR_ID" -derivedDataPath build \
             -resultBundlePath "$PALETTE_DEVICE_KEY.xcresult" -parallel-testing-enabled NO \
             -collect-test-diagnostics never -test-timeouts-enabled YES \
             -maximum-test-execution-time-allowance 240 CODE_SIGNING_ALLOWED=NO test-without-building \
             2>&1 | tee "$PALETTE_DEVICE_KEY.log"
+      - name: Retain simulator launch diagnostics after a failure
+        if: failure() && env.PALETTE_SIMULATOR_ID != ''
+        timeout-minutes: 2
+        run: |
+          xcrun simctl spawn "$PALETTE_SIMULATOR_ID" log show --last 10m --style compact \
+            --predicate 'process == "SpringBoard" OR process == "runningboardd" OR process == "FloePencilPaletteQualification"' \
+            > simulator-launch-diagnostics.log 2>&1 || true
       - name: Retain original palette and brush screenshots
         if: always()
         run: |
@@ -203,6 +225,7 @@ jobs:
           name: pencil-palette${{ inputs.palette_unit_only && '-unit' || '' }}-${{ matrix.xcode }}-${{ matrix.device_key }}-${{ github.sha }}
           path: |
             FloeAgent/Qualification/PencilPalette/*.log
+            FloeAgent/Qualification/PencilPalette/simulator-inventory.json
             FloeAgent/Qualification/PencilPalette/*.xcresult
             FloeAgent/Qualification/PencilPalette/screenshots
           retention-days: 14
