@@ -1,0 +1,61 @@
+{
+  "source": "a35b884fc8e8a64c4c32a27a833b9ae781073dbf",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34927501424",
+  "platform": "macOS 26 cloud host, not iPad",
+  "result": "passed",
+  "records": [
+    {
+      "elapsedSeconds": 7.492637038230896,
+      "event": "load-complete",
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 1284,
+      "mlxPeakBytes": 2367530912,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2503711296
+    },
+    {
+      "elapsedSeconds": 6.847156047821045,
+      "event": "generation-complete",
+      "generationDurationMs": 183,
+      "inputTokens": 31,
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 0,
+      "mlxPeakBytes": 2466721095,
+      "outputTokens": 4,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2510117696,
+      "text": "你好！Hello!",
+      "turn": 1
+    },
+    {
+      "elapsedSeconds": 0.46854090690612793,
+      "event": "generation-complete",
+      "generationDurationMs": 90,
+      "inputTokens": 31,
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 0,
+      "mlxPeakBytes": 2523830381,
+      "outputTokens": 2,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2510363456,
+      "text": "5.",
+      "turn": 2
+    },
+    {
+      "elapsedSeconds": 43.834437012672424,
+      "event": "generation-complete",
+      "generationDurationMs": 60,
+      "inputTokens": 5773,
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 0,
+      "mlxPeakBytes": 2780603888,
+      "outputTokens": 1,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2483215168,
+      "text": "blue",
+      "turn": 3
+    }
+  ],
+  "processPeakFootprintBytes": 4904835840,
+  "limitation": "After-stage memory samples are not stage peaks. Does not reproduce or establish the cause of the original iPad crash."
+}

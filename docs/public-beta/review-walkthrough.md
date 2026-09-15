@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (172). Public review not submitted.
+Baseline: 1.7.0 (172). Candidate: 1.7.0 (173). review preparation, candidate under qualification, not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 172. This internal TestFlight build is available 
 
 基线：1.7.0（172），已交付 Floe QA 内部 TestFlight；尚未提交外部 Beta 审核。
 
-This guide covers the current product and the next review preparation. Future feature refinements must be checked against the final submitted binary.
+Build 173 is the next candidate under qualification. It has not been uploaded or made available in TestFlight. This draft separates the delivered baseline from candidate evidence.
 
-本说明覆盖当前产品及下一次送审准备。后续功能强化需与最终送审安装包核对。
+173 为正在验证的下一候选版，尚未上传或在 TestFlight 开放。本草稿区分已交付基线和候选代码证据。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -70,9 +70,9 @@ Switch document tabs and return to the original page. Closing a tab must not del
 
 ## 03  画笔、选区与保存 / Pencil, selection and persistence
 
-Tap the current pen or color control to choose among eight native brush styles and adjust color, width and opacity. Each brush keeps its own settings and stroke preview.
+Tap the active pen or color control to choose among eight native brush styles and adjust color, width and transparency. In the candidate, 0% transparency means solid ink; each brush retains its own values and preview.
 
-再次点击当前笔或颜色控件，可选择八种原生笔型，调整颜色、粗细与透明度；各笔型独立保存参数并提供笔迹预览。
+点击当前笔或颜色控件，选择八种原生笔型并调整颜色、粗细和透明度；候选版的 0% 透明度表示实心，各笔型独立保存参数和预览。
 
 Finger drawing is a separate option. With Pencil-only input, use a finger for navigation rather than adding ink. Write on the sample, switch documents, then reopen.
 
@@ -172,6 +172,10 @@ Cloud visual questions require a compatible configured model. Saved capability o
 
 云端读图需配置兼容模型；模型能力覆盖与设置应在重启后直接生效，无需再次点击保存。
 
+For a multi-step request, the assistant should create or update its checklist early and report meaningful progress. Queued follow-up messages can be withdrawn or edited before insertion; check that withdrawn text is never sent.
+
+多步骤请求应及早建立或更新任务清单，并报告有意义的进展。排队的引导消息在插入前可以撤回或编辑，需检查已撤回内容不会发送。
+
 ## 07  画布、导图与媒体 / Canvas, mind maps and media
 
 Create a canvas, add content and reopen it. Test folders, content search, moving and deletion; deleted canvases should not reappear in Recent or private lists.
@@ -216,9 +220,13 @@ Environment layers separate dependencies, files and lifecycle; they do not provi
 
 环境分层隔离依赖、文件与生命周期，并非同进程原生代码的强安全隔离；停止／删除环境需遵守任务归属。
 
-Local shell, Python, JavaScript/Node and supported WASM paths may execute user- or model-created scripts. Disclose this behavior accurately. Ordinary Linux native binaries are not universally runnable.
+Use Shell for apt commands and pip/npm/pnpm installation. Node.js and the JavaScriptCore fallback are identified separately. Package-manager selection belongs to the current environment; conflicting project lockfiles require an explicit choice.
 
-本地 shell、Python、JavaScript/Node 及受支持 WASM 路径可执行用户或模型生成的脚本，需如实说明；普通 Linux 原生二进制并非普遍可运行。
+在 Shell 中使用 apt 及 pip/npm/pnpm 安装命令，Node.js 与 JavaScriptCore 回退分别标识。包管理器选择属于当前环境；项目锁文件冲突时需明确选择。
+
+A local Node or Python preview server is an owned service. Closing a browser preview does not imply stopping it. Stop it from service management; task/environment termination must stop only the corresponding owned workers.
+
+本地 Node 或 Python 预览服务器由服务系统管理。关闭浏览器预览不等于停止服务；可在服务管理中关闭，任务／环境终止时只停止所属服务。
 
 Direct HTTP/API and HTTPS paths can operate without opening browser UI. Browser panels should open automatically only for explicit human-interaction handoff. Keep TLS verification enabled.
 
@@ -254,7 +262,21 @@ A changed binary requires a new upload build number. The marketing version may r
 
 修改安装包后再次上传须递增构建号；版本号可继续为 1.7.0。固定最终审核 Build，并使截图与说明一致。
 
-## 10  演示结果与反馈 / Expected results and feedback
+## 10  本轮修复验证状态 / Candidate repair evidence - 15 September 2026
+
+The document assistant no longer starts with a visible internal instruction message. The captured UI uses synthetic documents; no cloud model response is demonstrated.
+
+文档助手不再用可见的内部指令消息开场。截图使用合成文档，不代表已经演示云端模型回答。
+
+Source f5b6d3bd passed the full-App execution regression step and SDK 26 compatibility build. Its Notes UI step failed and is being investigated. Final build 173 qualification is a separate run.
+
+f5b6d3bd 已通过完整 App 执行回归步骤与 SDK 26 兼容构建；手记 UI 步骤失败，正在排查。最终 173 构建另行验证。
+
+A macOS Qwen diagnostic passed cold load, repeated short prompts and a 5,773-token prompt. It does not establish an iPad crash fix or a device memory pass.
+
+macOS Qwen 诊断已通过冷加载、重复短问题和 5,773 token 长输入；不等于 iPad 崩溃已修复或真机内存验收通过。
+
+## 11  演示结果与反馈 / Expected results and feedback
 
 Sample page 1: search “lantern garden 472” and “星河手记验证”. Expected location: the sample PDF, page 1. Add ink, close, reopen and compare.
 

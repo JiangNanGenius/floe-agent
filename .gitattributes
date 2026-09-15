@@ -4,3 +4,6 @@ FloeAgent/FloeApp/Resources/DocumentConversion/THIRD-PARTY-NOTICES.txt linguist-
 # Unified diffs retain single-space context markers, including blank lines.
 # Their exact bytes are verified against engine.lock.json before application.
 FloeAgent/ThirdParty/Collabora/patches/*.patch -whitespace
+
+# Rendered documents are binary; never normalize PDF streams or whitespace.
+*.pdf binary

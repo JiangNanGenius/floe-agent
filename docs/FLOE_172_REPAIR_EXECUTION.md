@@ -169,3 +169,14 @@ The extended Qwen diagnostic `34926481087` (`5f66923e`) passed a 5,773-token doc
 
 
 Local follow-up passed six Shell boundary/discovery tests and three guidance-queue tests. The first attempt exposed an invalid test assertion reading an ID from provider role/content tuples; it now checks that the withdrawn message content never reaches a provider request. Original compiler output is retained. No runtime queue behavior was weakened to pass the test. Root SwiftPM resolution removed the App-only WhisperKit pin; that incidental lock rewrite was restored, with dependency versions unchanged.
+
+
+## Fixed-source App result and search repair
+
+Full-App source `f5b6d3bd`, run `34924942672`, passed **169/169** native regressions with zero skips and expected failures. This closes the bounded output `isatty()` and Node owned-temp-directory failures and includes pip/npm/pnpm, bundled native lxml/Office, HTTPS and persistent Node/Python service checks. SDK 26 compatibility and Linux compilation passed. The complete run failed its Notes UI gate: iPhone passed in 97.096 seconds, while iPad timed out querying the PDF result title after entering body search. Original logs, screenshots, recordings and xcresults are retained privately; the saved simulator App is not an uploadable IPA.
+
+The iPad screenshot shows the matching PDF preview but the landscape keyboard covers its below-cover title and excerpt. `d23a3ffd` switches active search to compact rows, keeps the cover preference outside search, dismisses keyboard focus on Search and enables interactive scroll dismissal. The UI case submits the query and still requires both the expected document and actual body-match snippet. The 180-second timeout is unchanged. This UI repair needs its own cloud result; it is not accepted merely from a screenshot diagnosis. The final candidate also includes the additional Office UI flow and current APT/prompt repairs.
+
+Qwen diagnostic `34927501424` (`a35b884f`) passed again with per-stage process footprint: cold load 7.493 seconds / 2,503,711,296 bytes; first short response 6.847 seconds / 2,510,117,696 bytes; second 0.469 seconds / 2,510,363,456 bytes; 5,773-token request 43.834 seconds / 2,483,215,168 bytes. These are samples after each stage, not within-stage maxima. Whole-process peak footprint was 4,904,835,840 bytes; inference MLX peak was 2,780,603,888 bytes. Do not infer iPad crash resolution or assign the transient process peak to a stage from these endpoint samples.
+
+The review PDF now has 12 visually checked pages, including separately labelled repair evidence and original candidate imagery. No developer key is included or authorized for reviewers. A real iPad screen-recording draft is available privately; final-source AI demonstration, physical-device evidence, internal TestFlight upload and public Beta submission are not completed.
