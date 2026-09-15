@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """Real TLS RDP traffic through xrdp. No mocked native callbacks or inputs."""
 import ctypes as C
+from collections import deque
 import hashlib
 import json
 import os
@@ -41,7 +42,7 @@ def wait(predicate, seconds=20):
 
 class Session:
     def __init__(self, accept=True):
-        self.states, self.frames, self.certificates = [], [], 0
+        self.states, self.frames, self.certificates = [], deque(maxlen=200), 0
         self.last = None
         self.guard = threading.Lock()
         @State
@@ -57,8 +58,7 @@ class Session:
             pixel = payload[(height-10)*stride + 10*4: (height-10)*stride + 10*4+3]
             with self.guard:
                 self.last = (payload, width, height, stride)
-                if len(self.frames) < 200:
-                    self.frames.append((hashlib.sha256(payload).hexdigest(), pixel.hex()))
+                self.frames.append((hashlib.sha256(payload).hexdigest(), pixel.hex()))
             if pixel == bytes.fromhex('563412') and not (root / 'desktop.ppm').exists():
                 rgb = bytearray()
                 for y in range(height):
@@ -89,7 +89,7 @@ class Session:
         self.pointer = None
         elapsed = time.monotonic()-started
         assert elapsed < 5, elapsed
-        records.append({'states':self.states,'frames':len(self.frames),'samplePixels':[pixel for _,pixel in self.frames[-10:]],'certificateCallbacks':self.certificates,'shutdownSeconds':round(elapsed,3)})
+        records.append({'states':self.states,'frames':len(self.frames),'samplePixels':[pixel for _,pixel in list(self.frames)[-10:]],'certificateCallbacks':self.certificates,'shutdownSeconds':round(elapsed,3)})
         if self.last:
             payload,width,height,stride = self.last
             rgb = bytearray()

@@ -62,6 +62,11 @@ static BOOL end_paint(rdpContext *context) {
         s->local_error = FLOE_ERROR_FRAME;
         return FALSE;
     }
+    // EndPaint can run for protocol batches with no dirty pixels. Publishing
+    // these would repeatedly copy a full desktop and invalidate tool evidence.
+    if (gdi->primary && gdi->primary->hdc && gdi->primary->hdc->hwnd &&
+        gdi->primary->hdc->hwnd->invalid && gdi->primary->hdc->hwnd->invalid->null)
+        return TRUE;
     if (s->callbacks.frame)
         s->callbacks.frame(s->callbacks.user, gdi->primary_buffer,
                            (uint32_t)gdi->width, (uint32_t)gdi->height, gdi->stride);
