@@ -64,7 +64,7 @@ import UIKit
         if allowPaste.waitForExistence(timeout: 2) { allowPaste.tap() }
         // Assert presence only, without interpolating any field value into logs.
         let filled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            (field.value as? String)?.isEmpty == false && field.value as? String != emptyValue
+            (field.value as? String)?.count == key.count && field.value as? String != emptyValue
         }, object: field)
         let fillResult = XCTWaiter.wait(for: [filled], timeout: 5)
         if fillResult != .completed {
@@ -72,7 +72,13 @@ import UIKit
         }
         XCTAssertEqual(fillResult, .completed)
         app.buttons["action.save"].tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: field)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 20), .completed)
         XCTAssertTrue(provider.waitForExistence(timeout: 15))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !provider.label.contains("Waiting for secret") && !provider.label.contains("等待密钥")
+        }, object: provider)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
     }
 
     func testLiveMarkdownCreationAndReadback() throws {

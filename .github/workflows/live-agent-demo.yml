@@ -96,6 +96,14 @@ jobs:
           TEST_RUNNER_FLOE_LIVE_AGENT_KEY: ${{ secrets.FLOE_LIVE_DEMO_ARK_KEY }}
         run: |
           test -n "$TEST_RUNNER_FLOE_LIVE_AGENT_KEY"
+          python3 - <<'PYKEY'
+          import os, urllib.request
+          request = urllib.request.Request('https://ark.cn-beijing.volces.com/api/v3/models',
+              headers={'Authorization': 'Bearer '+os.environ['TEST_RUNNER_FLOE_LIVE_AGENT_KEY']})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              assert response.status == 200
+          print('Credential accepted by provider model directory; no generation requested.')
+          PYKEY
           xctestrun=$(find "$RUNNER_TEMP/live-driver/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
           xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,id=$FLOE_DEMO_SIM" \
             -only-testing:LiveAgentUITests/LiveAgentUITests/testConfigureAuthorizedCredential \
