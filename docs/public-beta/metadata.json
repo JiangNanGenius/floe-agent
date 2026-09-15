@@ -48,5 +48,16 @@
     "anyCloudSpendingAuthorized": false,
     "localInferenceQualification": "pending; verify supported hardware, model download, response and any advertised tool/vision capability",
     "ownerReportedLocalAI": "Usable with limited functionality; specific build/model/device not recorded"
+  },
+  "developerDemonstrationOnly": {
+    "provider": "Volcengine Ark",
+    "textModel": "deepseek-v4-1-flash-260910",
+    "boundedTextCallsAuthorized": true,
+    "imageGeneration": "small amount authorized for demonstration only",
+    "generatedVideoSecondsLimit": 10,
+    "generatedVideoSecondsUsed": 0,
+    "credentialMayBeSharedWithReviewers": false,
+    "credentialIncludedInMaterials": false,
+    "successfulAppRecording": "pending on build 175"
   }
 }

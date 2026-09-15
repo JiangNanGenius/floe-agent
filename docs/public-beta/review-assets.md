@@ -14,7 +14,7 @@ These are unedited build 172 SDK 27 full-App simulator images using synthetic fi
 
 ## Complete walkthrough
 
-The [12-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes delivered build 172 from the build 173 candidate and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
+The [12-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes delivered build 172 from the build 175 candidate and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
 
 ## Prepared sample
 
@@ -31,4 +31,6 @@ Invitation screenshots in TestFlight may be drawn from the app's latest approved
 
 ## Repair candidate recordings
 
-[Original candidate screenshots and source hashes](../evidence/floe-1.7/build172-repair/notes-83cbc383/README.md) show the document assistant without an internal opening message. An approximately 79-second iPad screen-recording cut with selectable Chinese subtitles is retained privately. It demonstrates actual import, assistant opening, brush controls, tabs and search from source `83cbc383`; it contains no generated AI answers and is not the final build 173 review video. No paid provider call was used.
+[Original candidate screenshots and source hashes](../evidence/floe-1.7/build172-repair/notes-83cbc383/README.md) show the document assistant without an internal opening message. An approximately 79-second iPad screen-recording cut with selectable Chinese subtitles is retained privately. It demonstrates actual import, assistant opening, brush controls, tabs and search from source `83cbc383`; it contains no generated AI answers and is not the final candidate review video. No paid provider call was used.
+
+The real Ark DeepSeek App recording on source `431e281d` created Markdown but failed before reading it back. It remains private failure evidence. A bounded stream diagnostic reproduced the empty-ID overwrite; [old/new replay evidence](../evidence/floe-1.7/build172-repair/ark-tool-identity-replay.json) supports the build 175 repair. A successful final-source App recording is still required.

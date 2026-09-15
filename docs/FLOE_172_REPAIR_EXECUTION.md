@@ -8,6 +8,25 @@ Repair and qualify the complete app, then upload a new internal TestFlight build
 
 The owner's demonstration credential must not enter source, logs, examples, review materials or reviewer access. Generated video is limited to **10 seconds total**, including uncertain charged attempts. Screen recordings are separate. Use only the authorized small amount of image/model generation.
 
+## Current candidate checkpoint
+
+Build 175 / `8958d8f1482c3236f73172076b76adc83da86f5f` / `v1.7.0-beta.32`
+adds durable Notes conversation isolation and the Ark stream identity repair.
+The latest preceding App suite passed 172/172, including Notes migration,
+Keychain CRUD and owned preview service HTTP/log/stop/revocation. Its iPad UI
+case timed out; iPhone passed. [Original result](evidence/floe-1.7/build172-repair/app-431e281d.json).
+
+A real paid text App demo created Markdown and then failed with an empty/duplicate
+tool identity. The provider sends an empty ID continuation after its real ID;
+the prior parser overwrote the valid value. The same retained real fragments
+fail against old source and pass against the fix. No invented IDs or relaxed
+runtime identity checks are used. [Replay](evidence/floe-1.7/build172-repair/ark-tool-identity-replay.json).
+Full-source cloud tests and a successful real App video remain pending. No paid
+video generation has been used; the owner's key is excluded from review access.
+
+The table below is the initial implementation checkpoint; later dated findings
+and the current evidence above supersede its pending test labels.
+
 ## Work in progress
 
 | Area | Implemented candidate | Evidence / remaining work |
