@@ -59,6 +59,7 @@ extension WorkspaceFileService {
     }
 
     private func preserveBinaryVersion(path: String, data: Data) throws -> String {
+        try guardResolver.assertWritableSize(bytes: data.count)
         let pathDigest = FloeDigest.sha256Hex(Data(path.utf8)).prefix(16)
         let digest = FloeDigest.sha256Hex(data)
         let suffix = (path as NSString).pathExtension.lowercased()

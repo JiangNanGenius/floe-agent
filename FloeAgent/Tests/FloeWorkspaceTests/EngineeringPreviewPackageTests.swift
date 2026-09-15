@@ -34,7 +34,7 @@ struct EngineeringPreviewPackageTests {
     @Test func limitsAndUnsupportedDecodersAreExplicit() throws {
         #expect(EngineeringPreviewKind.identify("BOARD.DXF") == .dxf)
         #expect(EngineeringPreviewKind.identify("part.step") == .unsupported)
-        #expect(EngineeringPreviewKind.identify("drawing.dwg") == .unsupported)
+        #expect(EngineeringPreviewKind.identify("drawing.dwg") == .dwg)
         #expect(EngineeringPreviewKind.identify("report.pdf") == nil)
         #expect(throws: Error.self) { try EngineeringPreviewPackage.single(name: "part.stl", bytes: Data(count: EngineeringPreviewPackage.maximumBytes + 1)) }
         let remote = try EngineeringPreviewPackage.single(name: "part.obj", bytes: Data("mtllib missing.mtl\n".utf8))

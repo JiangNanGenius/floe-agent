@@ -1042,7 +1042,12 @@ final class AppEnvironment: ObservableObject {
                 guard let sample = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil)?.appendingPathComponent("sample-plate.dxf") else {
                     throw CocoaError(.fileNoSuchFile)
                 }
-                try Data(contentsOf: sample).write(to: lease.url.appendingPathComponent("工程图验收.dxf"), options: .atomic)
+                for (source, name) in [(sample, "工程图验收.dxf"), (sample.deletingLastPathComponent().appendingPathComponent("sample-editable.dwg"), "可编辑图纸验收.dwg")] {
+                    let destination = lease.url.appendingPathComponent(name)
+                    if !FileManager.default.fileExists(atPath: destination.path) {
+                        try Data(contentsOf: source).write(to: destination, options: .atomic)
+                    }
+                }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-pdf-fixture") {

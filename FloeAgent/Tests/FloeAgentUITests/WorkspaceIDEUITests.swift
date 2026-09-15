@@ -64,6 +64,47 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(full.waitForExistence(timeout: 10))
     }
 
+    func testDWGEditSaveAndColdReopen() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
+        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-engineering-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launch()
+        defer { app.terminate() }
+        try openFile(app, ipad: ipad, name: "可编辑图纸验收.dwg")
+        let full = app.buttons["file.preview.engineering.fullscreen"]
+        XCTAssertTrue(full.waitForExistence(timeout: 60)); full.tap()
+        let edit = app.webViews.buttons["编辑"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 60)); edit.tap()
+        let marker = "CAD-" + UUID().uuidString.prefix(8)
+        let add = app.webViews.buttons["文字"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10)); add.tap()
+        let text = app.webViews.textFields["文字"]
+        XCTAssertTrue(text.waitForExistence(timeout: 10)); text.tap(); text.typeText(String(marker))
+        app.webViews.buttons["添加文字"].tap()
+        let dirty = app.webViews.staticTexts["有未保存的修改"]
+        XCTAssertTrue(dirty.waitForExistence(timeout: 20))
+        app.webViews.buttons["保存"].tap()
+        XCTAssertTrue(app.webViews.staticTexts["已保存，原版已保留"].waitForExistence(timeout: 30))
+        capture("engineering-dwg-native-saved")
+        app.buttons["engineering.done"].tap()
+        app.terminate(); app.launch()
+        try openFile(app, ipad: ipad, name: "可编辑图纸验收.dwg")
+        XCTAssertTrue(full.waitForExistence(timeout: 60)); full.tap()
+        XCTAssertTrue(edit.waitForExistence(timeout: 60))
+        let review = app.webViews.buttons["AI 审图"]
+        XCTAssertTrue(review.waitForExistence(timeout: 10)); review.tap()
+        XCTAssertTrue(app.buttons["engineering.review.send"].waitForExistence(timeout: 20))
+        app.buttons["engineering.review.evidence"].tap()
+        let evidence = app.staticTexts["engineering.review.context"]
+        XCTAssertTrue(evidence.waitForExistence(timeout: 10))
+        XCTAssertTrue(evidence.label.contains(String(marker)), "Native cold readback must retain the saved text")
+        // Captured native pixels + parsed geometry, without a paid model call.
+        capture("engineering-dwg-native-review")
+    }
+
     private func openFile(_ app: XCUIApplication, ipad: Bool, name: String) throws {
         if !ipad {
             let sidebar = app.buttons["phone.sidebar.open"]
@@ -71,7 +112,17 @@ final class WorkspaceIDEUITests: XCTestCase {
         }
         let settings = app.buttons["sidebar.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15)); settings.tap()
-        let files = app.staticTexts["settings.section.files"].firstMatch
+        // Compact NavigationLink rows are buttons and virtualize below the
+        // fold. The iPad sidebar uses text labels. Exercise the real list.
+        let files = ipad ? app.staticTexts["settings.section.files"].firstMatch : app.buttons["settings.section.files"]
+        if !ipad {
+            let sections = app.collectionViews["settings.sections"]
+            XCTAssertTrue(sections.waitForExistence(timeout: 10))
+            for _ in 0..<6 {
+                if files.exists && files.isHittable { break }
+                sections.swipeUp()
+            }
+        }
         XCTAssertTrue(files.waitForExistence(timeout: 10)); files.tap()
         let manage = app.buttons["settings.files.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()

@@ -1,6 +1,6 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob:; worker-src 'self' blob:; font-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob:; worker-src 'self' blob:; font-src 'self'; base-uri 'none'; form-action 'none'">
 <link rel="icon" href="data:,"><title>Floe Engineering Preview</title><link rel="stylesheet" href="viewer.css"><script type="module" src="viewer.js"></script></head>
-<body><header><span id="format"></span><span id="status" role="status"></span><button id="fit"></button><button id="layersButton" hidden></button></header>
+<body><header><span id="format"></span><span id="status" role="status"></span><button id="fit"></button><button id="layersButton" hidden></button><button id="review" hidden></button></header>
 <main id="view"></main><aside id="layers" hidden></aside><div id="error" role="alert" hidden></div><footer id="hint"></footer></body></html>

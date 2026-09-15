@@ -8,7 +8,10 @@ import FloeTools
 import FloeCore
 @testable import FloeApp
 
-@Suite("FloeApp.FloeBrowserProtocol")
+// Each case owns real WebKit processes. Simultaneous cold process launches
+// caused a load timeout before this suite could exercise its protocol checks.
+// Keep the same timeouts and assertions, but bound concurrent browser hosts.
+@Suite("FloeApp.FloeBrowserProtocol", .serialized)
 struct BrowserProtocolTests {
     @Test("Service previews are scoped to the owning task and revoked on shutdown")
     func servicePreviewOwnership() throws {

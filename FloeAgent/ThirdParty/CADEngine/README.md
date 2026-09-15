@@ -19,7 +19,7 @@ shipping assets. No runtime code or font may be loaded from a CDN. Bindings
 must run inside a disposable, timed Web Worker. Native saving must use the
 original file SHA and preserve a recoverable draft on conflicts.
 
-This crate is **not yet connected to the app**. Neither successful compilation
+This crate is connected through the bundled worker and scoped native save/review bridge; full-App qualification is pending. Neither successful compilation
 nor same-library round-trip tests establish AutoCAD compatibility. External
 fixtures, browser interactions, binary conflict protection and full-App checks
 are required before documenting editable formats or uploading a release.

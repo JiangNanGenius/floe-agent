@@ -14,4 +14,12 @@ html = (root / 'index.html').read_text()
 assert "default-src 'none'" in html and "connect-src 'self' blob:" in html
 assert 'https:' not in html and 'http:' not in html
 assert (root / 'THIRD_PARTY_NOTICES.txt').stat().st_size > 1000
+sources = json.loads((root / 'CAD_SOURCES.json').read_text())
+assert len(sources['sourceSHA']) == 40
+cad = next(p for p in sources['packages'] if p['name'] == 'acadrust')
+assert cad['version'] == '0.5.5' and cad['license'] == 'MPL-2.0'
+assert cad['sha256'] == '6298485f7afd00af7880f285f01ab387143a1fbb20c42f9048830c95b19dda5d'
+assert (root / 'floe_cad_engine_bg.wasm').read_bytes().startswith(b'\x00asm')
+assert (root / 'CAD_NOTICES.txt').stat().st_size > 1000
+assert "'wasm-unsafe-eval'" in html
 print(f'Engineering viewer: {len(manifest)} hashes, closed network policy and notices verified')

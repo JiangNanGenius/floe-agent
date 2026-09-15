@@ -1,16 +1,23 @@
 {
+  "CAD_NOTICES.txt": "38414e9de5245c8753aadd81a4de803c884146f6381df864e4f9c1082d91dbff",
+  "CAD_SOURCES.json": "f6ea73544945ef28fc2e7808e1187daa4c2838c6793f480db43ca0ea90f7df3c",
   "MiSans-Regular.ttf": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
   "THIRD_PARTY_NOTICES.txt": "354d4591562ee7d854507cd4a79a9a9e37b83c1179213201a0c30f294af9f4cc",
+  "cad-editor.js": "480199a8972fc74d8c60f9033925a2d8889efc927ef25cd3231f65c06a151966",
+  "cad-worker.js": "bd276890b544e71c8ddeb2abc82dd6b4b7bf1d4501f0a9cc0353d70d19ecec27",
   "dxf-worker.js": "eafd29924ac974ff307ae47ef95e827521b90c25d80d6e10f6cd276e59e7bbce",
   "dxf.js": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
   "dxf.js.LEGAL.txt": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
+  "floe_cad_engine.js": "4c3dccc1cef71624330948c25f871e5a7a8b5f06085370d1fef9b56df4bce3ee",
+  "floe_cad_engine_bg.wasm": "63e031c94d75e940aacf8953fd46433065193451b024f611d57fdc1ef5bfd831",
   "gerber-to-svg.min.js": "8f16104893ab462f0bc1513ac2c6508fce59fcb10fab648848dddcfa7aafb76c",
   "gerber-to-svg.min.js.LICENSE.txt": "a41d4ce5d77ff2e5a5c511d8287e8752530ceb955fd04c1f48855a8d9796708a",
   "gerber-worker.js": "c34ebdcca12d59a0339cbe962d459edb6fbd118ab5e965f30ae3502d1d3c270b",
-  "index.html": "2c15b9918516e3c7de9d82111d1c535a9668ae9935a9fcf415178c1d40532fed",
+  "index.html": "05073b9dc3041d346d7ee45843276936fede2e07255f916a4af5e6dba0261e3c",
   "mesh.js": "fe07c0a7c84d394a6c38ec688aea58ac3b0640d0e758a06519f5d759a89ba8f9",
   "mesh.js.LEGAL.txt": "46932ad3a815be80035378068fafa8e515ab6cd6d184e405ff22383f0e6bab93",
+  "sample-editable.dwg": "67c70f76a8cd634b528be3f8de7160409704f68f2450d03749aa85cc3775bfdb",
   "sample-plate.dxf": "76d7580228e8732bb91decb98668f4ee12499b3483825f35d7fa8d3aef016c7d",
-  "viewer.css": "f2e9ddc2afec0ac4b2ecd53c3b646ac8f39c7bd615ad150434bd7092690dd262",
-  "viewer.js": "8d888a9ed4bc1dcd567f9785b13a65951fa04bc49480866e9b89cd5c76ca2837"
+  "viewer.css": "aab523aaf81322980925d9f22c30c98c7cdbe4e47bee4c6678eb1be86deb7934",
+  "viewer.js": "e894d555e29ff9aa37753f23919a6fcd85cbe256b651476c76bbfa309957e479"
 }

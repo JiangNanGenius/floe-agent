@@ -42,6 +42,10 @@ struct FilePreviewView: View {
     @State private var mediaEditorSource: URL?
     @State private var engineeringPackage: EngineeringPreviewPackage?
     @State private var isEngineeringFullScreen = false
+    @State private var engineeringReview: EngineeringReviewCapture?
+    @State private var engineeringRoot: URL?
+    @State private var cadDirty = false
+    @State private var confirmDiscardCAD = false
 
     var body: some View {
         Group {
@@ -55,7 +59,7 @@ struct FilePreviewView: View {
                 if isEngineeringFullScreen {
                     Color.clear
                 } else {
-                    EngineeringFilePreview(package: engineeringPackage)
+                    engineeringView(engineeringPackage)
                 }
             } else if nativeOfficeURL != nil {
                 if isOfficeEditorPresented {
@@ -96,19 +100,36 @@ struct FilePreviewView: View {
                 Task { await load() }
             }
         }
-        .fullScreenCover(isPresented: $isEngineeringFullScreen) {
+        .fullScreenCover(isPresented: $isEngineeringFullScreen, onDismiss: { Task { await load() } }) {
             if let engineeringPackage {
                 NavigationStack {
-                    EngineeringFilePreview(package: engineeringPackage)
+                    engineeringView(engineeringPackage, editing: true)
                         .navigationTitle(fileName)
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
-                                Button("engineering.done") { isEngineeringFullScreen = false }
+                                Button("engineering.done") {
+                                    if cadDirty { confirmDiscardCAD = true } else { isEngineeringFullScreen = false }
+                                }
                                     .accessibilityIdentifier("engineering.done")
                             }
                         }
                 }
+                .interactiveDismissDisabled(cadDirty)
+                .confirmationDialog("engineering.cad.unsaved", isPresented: $confirmDiscardCAD, titleVisibility: .visible) {
+                    Button("engineering.cad.discard", role: .destructive) { cadDirty = false; isEngineeringFullScreen = false }
+                    Button("engineering.cad.keepEditing", role: .cancel) {}
+                }
+                .sheet(item: $engineeringReview) { capture in
+                    if let id = conversationID ?? router.selectedConversationID {
+                        EngineeringReviewSheet(capture: capture, conversationID: id, center: center)
+                    }
+                }
+            }
+        }
+        .sheet(item: Binding(get: { isEngineeringFullScreen ? nil : engineeringReview }, set: { engineeringReview = $0 })) { capture in
+            if let id = conversationID ?? router.selectedConversationID {
+                EngineeringReviewSheet(capture: capture, conversationID: id, center: center)
             }
         }
         .fullScreenCover(item: $mediaEditorSource, onDismiss: { Task { await load() } }) { url in
@@ -136,6 +157,21 @@ struct FilePreviewView: View {
         )) { Button("好", role: .cancel) {} } message: {
             Text(previewError ?? "")
         }
+    }
+
+    private func engineeringView(_ package: EngineeringPreviewPackage, editing: Bool = false) -> some View {
+        EngineeringFilePreview(package: package, onReview: (conversationID ?? router.selectedConversationID) == nil ? nil : { capture in
+            engineeringReview = EngineeringReviewCapture(context: "Workspace path: \(relativePath)\n" + capture.context, image: capture.image)
+        }, onSave: editing && engineeringRoot != nil && (package.kind == .dxf || package.kind == .dwg) ? { data, baseline in
+            guard let service = center.fileService, service.guardResolver.rootURL == engineeringRoot else {
+                throw CocoaError(.fileReadNoPermission)
+            }
+            let path = relativePath
+            let result = try await Task.detached(priority: .userInitiated) {
+                try service.commitBinaryEdit(path: path, data: data, expectedSHA256: baseline)
+            }.value
+            return result.write.sha256
+        } : nil, onDirty: { cadDirty = $0 })
     }
 
     private var fileName: String {
@@ -311,6 +347,8 @@ struct FilePreviewView: View {
         binaryPreviewURL = nil
         nativeOfficeURL = nil
         engineeringPackage = nil
+        engineeringRoot = nil
+        cadDirty = false
         remotePreview.clear()
         if center.fileService == nil, let conversationID {
             do {
@@ -331,6 +369,7 @@ struct FilePreviewView: View {
                     let bytes = try await center.readRemotePreview(relativePath: relativePath)
                     package = try EngineeringPreviewPackage.single(name: fileName, bytes: bytes)
                 } else {
+                    engineeringRoot = service.guardResolver.rootURL
                     let path = relativePath
                     let work = Task.detached(priority: .userInitiated) {
                         try EngineeringPreviewPackage.load(path: path, service: service)

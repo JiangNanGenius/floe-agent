@@ -11,6 +11,7 @@ def verify(summary, tree):
     expected = {
         "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen",
         "WorkspaceIDEUITests/testEngineeringDrawingInlineAndFullScreen",
+        "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen",
     }
     found = {str(case.get("nodeIdentifier", "")).removesuffix("()") for case in cases}
     if (summary.get("result") != "Passed" or summary.get("totalTestCount") != len(expected)

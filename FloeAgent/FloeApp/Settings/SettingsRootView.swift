@@ -121,6 +121,7 @@ struct SettingsRootView: View {
                     .accessibilityIdentifier("settings.section.\(section.rawValue)")
                     .frame(minHeight: FloeTheme.minimumTarget)
                 }
+                .accessibilityIdentifier("settings.sections")
                 .navigationTitle("settings.title")
                 .navigationDestination(for: SettingsSection.self) { section in
                     detailView(for: section)

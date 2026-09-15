@@ -442,4 +442,6 @@ Both editors remain available. If a text file changes before saving, review the 
 
 ### Engineering file previews (development candidate)
 
-Workspace files and the IDE now route DXF, mesh and Gerber/drill files to a local read-only viewer, with full-screen expansion. DXF supports layer visibility; models support rotate, zoom and pan. Format-specific limits and the distinction between browser checks and App acceptance are recorded in [Engineering viewers](FLOE_ENGINEERING_VIEWERS.md). DWG, STEP and KiCad decoders are still pending; this is not an all-format CAD editor.
+Open DXF/DWG, mesh or Gerber/drill files from workspace files or the IDE, then expand the preview. DXF/DWG offer Edit for lines, circles and text, numeric moves, undo/redo and same-format Save. Previous versions and conflicting drafts stay in `Recovered Edits`; a conflicting save never silently replaces someone else's revision. Remote CAD and other 3D/PCB formats remain read only.
+
+Choose **Ask AI** to attach the current viewport and parsed drawing information, inspect the evidence, add a question and send with your configured model. Missing references and sampled geometry are identified. This helps review visible content; it does not establish complete engineering approval. See [the format and evidence matrix](FLOE_ENGINEERING_VIEWERS.md) for verified versions and pending App/STEP/KiCad work.

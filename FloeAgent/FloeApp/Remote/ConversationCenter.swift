@@ -737,7 +737,10 @@ final class ConversationCenter: ObservableObject {
             purpose: purpose
         )
         try await environment.conversationStore.saveConversation(record)
-        await reload()
+        // Creating/restarting a document assistant is a storage operation.
+        // Do not block it on a full model discovery and provider refresh.
+        // This also keeps dedicated assistant records out of ordinary history.
+        await refreshConversationInList(record.id)
         return record
     }
 

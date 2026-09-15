@@ -1,0 +1,1139 @@
+{
+  "engineSourceSHA": "b82850f42510a43a27058b81bf466f0fd4a5635e",
+  "engineRun": 34974090590,
+  "scope": "Synthetic desktop browser component; native disk bridge mocked; no model invocation",
+  "browser": [
+    {
+      "width": 1194,
+      "format": "dxf",
+      "loaded": {
+        "ok": true,
+        "details": "二维图纸"
+      },
+      "reopened": {
+        "canRedo": false,
+        "canUndo": false,
+        "diagnostics": [],
+        "entities": [
+          {
+            "editable": true,
+            "entity": {
+              "Line": {
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 48,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "end": {
+                  "x": 100,
+                  "y": 50,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "thickness": 0
+              }
+            },
+            "handle": "30"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 40,
+                  "y": 30,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 49,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 12,
+                "thickness": 0
+              }
+            },
+            "handle": "31"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Text": {
+                "alignment_point": null,
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 50,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "generation_flags": 0,
+                "height": 2.5,
+                "horizontal_alignment": "Left",
+                "insertion_point": {
+                  "x": 5,
+                  "y": 8,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "oblique_angle": 0,
+                "rotation": 0,
+                "style": "Standard",
+                "thickness": 0,
+                "value": "尺寸 / CAD",
+                "vertical_alignment": "Baseline",
+                "width_factor": 1
+              }
+            },
+            "handle": "32"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 80,
+                  "y": 25,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 53,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 7,
+                "thickness": 0
+              }
+            },
+            "handle": "35"
+          }
+        ],
+        "entityCount": 4,
+        "format": "dxf",
+        "offset": 0,
+        "omittedDiagnostics": 0,
+        "scope": "Parsed CAD entities only; external references and engineering correctness are not verified.",
+        "version": "AC1032"
+      },
+      "review": {
+        "type": "DXF",
+        "bounds": {
+          "minX": 0,
+          "maxX": 100,
+          "minY": 0,
+          "maxY": 50
+        },
+        "origin": {
+          "x": 0,
+          "y": 0
+        },
+        "viewport": {
+          "x": 50.00000000000001,
+          "y": 25.000000000000004,
+          "zoom": 1
+        },
+        "layers": [
+          {
+            "name": "0",
+            "visible": true
+          }
+        ],
+        "version": "AC1032",
+        "units": 0,
+        "entityCount": 4,
+        "entities": [
+          {
+            "type": "LINE",
+            "vertices": [
+              {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              {
+                "x": 100,
+                "y": 50,
+                "z": 0
+              }
+            ],
+            "handle": "30",
+            "ownerHandle": "15",
+            "layer": "0"
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "31",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 40,
+              "y": 30,
+              "z": 0
+            },
+            "radius": 12
+          },
+          {
+            "type": "TEXT",
+            "handle": "32",
+            "ownerHandle": "15",
+            "layer": "0",
+            "startPoint": {
+              "x": 5,
+              "y": 8,
+              "z": 0
+            },
+            "textHeight": 2.5,
+            "text": "尺寸 / CAD",
+            "styleName": "Standard",
+            "halign": 0,
+            "valign": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "35",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 80,
+              "y": 25,
+              "z": 0
+            },
+            "radius": 7
+          }
+        ],
+        "truncated": false,
+        "missingGlyphs": false,
+        "nativeDiagnostics": [],
+        "selectedHandle": "",
+        "limitations": "Viewport may simplify dimensions, line styles and layouts. Sampled entities are not a complete engineering review."
+      },
+      "errors": []
+    },
+    {
+      "width": 1194,
+      "format": "dwg",
+      "loaded": {
+        "ok": true,
+        "details": "二维图纸"
+      },
+      "reopened": {
+        "canRedo": false,
+        "canUndo": false,
+        "diagnostics": [
+          "[Warning] Reading DWG file version: AC1032 (AC24)",
+          "[Warning] AC18 inner header: page_map_address=0x5040, section_map_id=15",
+          "[Warning] AC18: Read 16 page records from page map",
+          "[Warning] AC18: Read 12 section descriptors from section map"
+        ],
+        "entities": [
+          {
+            "editable": true,
+            "entity": {
+              "Line": {
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 48,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "end": {
+                  "x": 100,
+                  "y": 50,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "thickness": 0
+              }
+            },
+            "handle": "30"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 40,
+                  "y": 30,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 49,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 12,
+                "thickness": 0
+              }
+            },
+            "handle": "31"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Text": {
+                "alignment_point": null,
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 50,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "generation_flags": 0,
+                "height": 2.5,
+                "horizontal_alignment": "Left",
+                "insertion_point": {
+                  "x": 5,
+                  "y": 8,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "oblique_angle": 0,
+                "rotation": 0,
+                "style": "Standard",
+                "thickness": 0,
+                "value": "尺寸 / CAD",
+                "vertical_alignment": "Baseline",
+                "width_factor": 1
+              }
+            },
+            "handle": "32"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 80,
+                  "y": 25,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 52,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 7,
+                "thickness": 0
+              }
+            },
+            "handle": "34"
+          }
+        ],
+        "entityCount": 4,
+        "format": "dwg",
+        "offset": 0,
+        "omittedDiagnostics": 0,
+        "scope": "Parsed CAD entities only; external references and engineering correctness are not verified.",
+        "version": "AC1032"
+      },
+      "review": {
+        "type": "DWG",
+        "bounds": {
+          "minX": 0,
+          "maxX": 100,
+          "minY": 0,
+          "maxY": 50
+        },
+        "origin": {
+          "x": 0,
+          "y": 0
+        },
+        "viewport": {
+          "x": 50.00000000000001,
+          "y": 25.000000000000004,
+          "zoom": 1
+        },
+        "layers": [
+          {
+            "name": "0",
+            "visible": true
+          }
+        ],
+        "version": "AC1032",
+        "units": 0,
+        "entityCount": 4,
+        "entities": [
+          {
+            "type": "LINE",
+            "vertices": [
+              {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              {
+                "x": 100,
+                "y": 50,
+                "z": 0
+              }
+            ],
+            "handle": "30",
+            "ownerHandle": "15",
+            "layer": "0"
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "31",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 40,
+              "y": 30,
+              "z": 0
+            },
+            "radius": 12
+          },
+          {
+            "type": "TEXT",
+            "handle": "32",
+            "ownerHandle": "15",
+            "layer": "0",
+            "startPoint": {
+              "x": 5,
+              "y": 8,
+              "z": 0
+            },
+            "textHeight": 2.5,
+            "text": "尺寸 / CAD",
+            "styleName": "Standard",
+            "halign": 0,
+            "valign": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "34",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 80,
+              "y": 25,
+              "z": 0
+            },
+            "radius": 7
+          }
+        ],
+        "truncated": false,
+        "missingGlyphs": false,
+        "nativeDiagnostics": [
+          "[Warning] Reading DWG file version: AC1032 (AC24)",
+          "[Warning] AC18 inner header: page_map_address=0x5040, section_map_id=15",
+          "[Warning] AC18: Read 16 page records from page map",
+          "[Warning] AC18: Read 12 section descriptors from section map"
+        ],
+        "selectedHandle": "",
+        "limitations": "Viewport may simplify dimensions, line styles and layouts. Sampled entities are not a complete engineering review."
+      },
+      "errors": []
+    },
+    {
+      "width": 390,
+      "format": "dxf",
+      "loaded": {
+        "ok": true,
+        "details": "二维图纸"
+      },
+      "reopened": {
+        "canRedo": false,
+        "canUndo": false,
+        "diagnostics": [],
+        "entities": [
+          {
+            "editable": true,
+            "entity": {
+              "Line": {
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 48,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "end": {
+                  "x": 100,
+                  "y": 50,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "thickness": 0
+              }
+            },
+            "handle": "30"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 40,
+                  "y": 30,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 49,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 12,
+                "thickness": 0
+              }
+            },
+            "handle": "31"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Text": {
+                "alignment_point": null,
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 50,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "generation_flags": 0,
+                "height": 2.5,
+                "horizontal_alignment": "Left",
+                "insertion_point": {
+                  "x": 5,
+                  "y": 8,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "oblique_angle": 0,
+                "rotation": 0,
+                "style": "Standard",
+                "thickness": 0,
+                "value": "尺寸 / CAD",
+                "vertical_alignment": "Baseline",
+                "width_factor": 1
+              }
+            },
+            "handle": "32"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 80,
+                  "y": 25,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 53,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 7,
+                "thickness": 0
+              }
+            },
+            "handle": "35"
+          }
+        ],
+        "entityCount": 4,
+        "format": "dxf",
+        "offset": 0,
+        "omittedDiagnostics": 0,
+        "scope": "Parsed CAD entities only; external references and engineering correctness are not verified.",
+        "version": "AC1032"
+      },
+      "review": {
+        "type": "DXF",
+        "bounds": {
+          "minX": 0,
+          "maxX": 100,
+          "minY": 0,
+          "maxY": 50
+        },
+        "origin": {
+          "x": 0,
+          "y": 0
+        },
+        "viewport": {
+          "x": 50.00000000000001,
+          "y": 25.000000000000004,
+          "zoom": 1
+        },
+        "layers": [
+          {
+            "name": "0",
+            "visible": true
+          }
+        ],
+        "version": "AC1032",
+        "units": 0,
+        "entityCount": 4,
+        "entities": [
+          {
+            "type": "LINE",
+            "vertices": [
+              {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              {
+                "x": 100,
+                "y": 50,
+                "z": 0
+              }
+            ],
+            "handle": "30",
+            "ownerHandle": "15",
+            "layer": "0"
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "31",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 40,
+              "y": 30,
+              "z": 0
+            },
+            "radius": 12
+          },
+          {
+            "type": "TEXT",
+            "handle": "32",
+            "ownerHandle": "15",
+            "layer": "0",
+            "startPoint": {
+              "x": 5,
+              "y": 8,
+              "z": 0
+            },
+            "textHeight": 2.5,
+            "text": "尺寸 / CAD",
+            "styleName": "Standard",
+            "halign": 0,
+            "valign": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "35",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 80,
+              "y": 25,
+              "z": 0
+            },
+            "radius": 7
+          }
+        ],
+        "truncated": false,
+        "missingGlyphs": false,
+        "nativeDiagnostics": [],
+        "selectedHandle": "",
+        "limitations": "Viewport may simplify dimensions, line styles and layouts. Sampled entities are not a complete engineering review."
+      },
+      "errors": []
+    },
+    {
+      "width": 390,
+      "format": "dwg",
+      "loaded": {
+        "ok": true,
+        "details": "二维图纸"
+      },
+      "reopened": {
+        "canRedo": false,
+        "canUndo": false,
+        "diagnostics": [
+          "[Warning] Reading DWG file version: AC1032 (AC24)",
+          "[Warning] AC18 inner header: page_map_address=0x5040, section_map_id=15",
+          "[Warning] AC18: Read 16 page records from page map",
+          "[Warning] AC18: Read 12 section descriptors from section map"
+        ],
+        "entities": [
+          {
+            "editable": true,
+            "entity": {
+              "Line": {
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 48,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "end": {
+                  "x": 100,
+                  "y": 50,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "thickness": 0
+              }
+            },
+            "handle": "30"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 40,
+                  "y": 30,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 49,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 12,
+                "thickness": 0
+              }
+            },
+            "handle": "31"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Text": {
+                "alignment_point": null,
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 50,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "generation_flags": 0,
+                "height": 2.5,
+                "horizontal_alignment": "Left",
+                "insertion_point": {
+                  "x": 5,
+                  "y": 8,
+                  "z": 0
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "oblique_angle": 0,
+                "rotation": 0,
+                "style": "Standard",
+                "thickness": 0,
+                "value": "尺寸 / CAD",
+                "vertical_alignment": "Baseline",
+                "width_factor": 1
+              }
+            },
+            "handle": "32"
+          },
+          {
+            "editable": true,
+            "entity": {
+              "Circle": {
+                "center": {
+                  "x": 80,
+                  "y": 25,
+                  "z": 0
+                },
+                "common": {
+                  "color": "ByLayer",
+                  "color_name": null,
+                  "extended_data": {
+                    "records": []
+                  },
+                  "full_visual_style_handle": null,
+                  "handle": 52,
+                  "invisible": false,
+                  "layer": "0",
+                  "line_weight": "ByLayer",
+                  "linetype": "",
+                  "linetype_scale": 1,
+                  "reactors": [],
+                  "transparency": "by_layer",
+                  "xdictionary_handle": null
+                },
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "radius": 7,
+                "thickness": 0
+              }
+            },
+            "handle": "34"
+          }
+        ],
+        "entityCount": 4,
+        "format": "dwg",
+        "offset": 0,
+        "omittedDiagnostics": 0,
+        "scope": "Parsed CAD entities only; external references and engineering correctness are not verified.",
+        "version": "AC1032"
+      },
+      "review": {
+        "type": "DWG",
+        "bounds": {
+          "minX": 0,
+          "maxX": 100,
+          "minY": 0,
+          "maxY": 50
+        },
+        "origin": {
+          "x": 0,
+          "y": 0
+        },
+        "viewport": {
+          "x": 50.00000000000001,
+          "y": 25.000000000000004,
+          "zoom": 1
+        },
+        "layers": [
+          {
+            "name": "0",
+            "visible": true
+          }
+        ],
+        "version": "AC1032",
+        "units": 0,
+        "entityCount": 4,
+        "entities": [
+          {
+            "type": "LINE",
+            "vertices": [
+              {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              {
+                "x": 100,
+                "y": 50,
+                "z": 0
+              }
+            ],
+            "handle": "30",
+            "ownerHandle": "15",
+            "layer": "0"
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "31",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 40,
+              "y": 30,
+              "z": 0
+            },
+            "radius": 12
+          },
+          {
+            "type": "TEXT",
+            "handle": "32",
+            "ownerHandle": "15",
+            "layer": "0",
+            "startPoint": {
+              "x": 5,
+              "y": 8,
+              "z": 0
+            },
+            "textHeight": 2.5,
+            "text": "尺寸 / CAD",
+            "styleName": "Standard",
+            "halign": 0,
+            "valign": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "34",
+            "ownerHandle": "15",
+            "layer": "0",
+            "center": {
+              "x": 80,
+              "y": 25,
+              "z": 0
+            },
+            "radius": 7
+          }
+        ],
+        "truncated": false,
+        "missingGlyphs": false,
+        "nativeDiagnostics": [
+          "[Warning] Reading DWG file version: AC1032 (AC24)",
+          "[Warning] AC18 inner header: page_map_address=0x5040, section_map_id=15",
+          "[Warning] AC18: Read 16 page records from page map",
+          "[Warning] AC18: Read 12 section descriptors from section map"
+        ],
+        "selectedHandle": "",
+        "limitations": "Viewport may simplify dimensions, line styles and layouts. Sampled entities are not a complete engineering review."
+      },
+      "errors": []
+    }
+  ],
+  "independentDWGReader": {
+    "package": "@mlightcad/libredwg-web",
+    "version": "0.7.10",
+    "archiveSHA256": "4556d5ee55b20fbc02cc4edc301b701153be9c61e19bfe01f3d71373685e656b",
+    "cases": 2,
+    "assertions": [
+      "4 entities",
+      "Chinese original text retained",
+      "added circle center 80,25 radius 7"
+    ],
+    "result": "passed"
+  }
+}
