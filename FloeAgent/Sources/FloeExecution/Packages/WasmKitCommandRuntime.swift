@@ -61,11 +61,13 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
                 args: [moduleURL.lastPathComponent] + arguments,
                 environment: environment,
                 preopens: ["/workspace": rootURL.resolvingSymlinksInPath().path, ".": directory.path, "/tmp": temporary.path],
-                borrowStandardStreams: true,
                 stdin: FileDescriptor(rawValue: input.fileDescriptor),
                 stdout: FileDescriptor(rawValue: output.pipe.fileHandleForWriting.fileDescriptor),
                 stderr: FileDescriptor(rawValue: errors.pipe.fileHandleForWriting.fileDescriptor)
             )
+            // 0.3.1 keeps host stdio borrowed by default and requires explicit
+            // teardown: its deinit traps if owned descriptors leak.
+            defer { try? wasi.close() }
             var imports = Imports()
             wasi.link(to: &imports, store: store)
             let module = try parseWasm(filePath: FilePath(moduleURL.path))

@@ -1,3 +1,4 @@
+import SystemExtras
 import SystemPackage
 import WasmParser
 
@@ -17,15 +18,26 @@ public func parseWasm(filePath: FilePath, features: WasmFeatureSet = .default) t
         let accessMode: FileDescriptor.AccessMode = .readOnly
     #endif
     let fileHandle = try FileDescriptor.open(filePath, accessMode)
-    defer { try? fileHandle.close() }
-    let stream = try FileHandleStream(fileHandle: fileHandle)
-    let module = try parseModule(stream: stream, features: features)
-    return module
+    return try withThrowing {
+        let stream = try FileHandleStream(fileHandle: fileHandle)
+        let module = try parseModule(stream: stream, features: features)
+        return module
+    } defer: {
+        try fileHandle.close()
+    }
 }
 
 /// Parse a given byte array as a WebAssembly binary format file
 /// > Note: <https://webassembly.github.io/spec/core/binary/index.html>
-public func parseWasm(bytes: [UInt8], features: WasmFeatureSet = .default) throws -> Module {
+public func parseWasm(bytes: [UInt8], features: WasmFeatureSet = .default) throws(WasmKitError) -> Module {
+    let stream = StaticByteStream(bytes: bytes)
+    let module = try parseModule(stream: stream, features: features)
+    return module
+}
+
+/// Parse a given byte slice as a WebAssembly binary format file
+/// > Note: <https://webassembly.github.io/spec/core/binary/index.html>
+public func parseWasm(bytes: ArraySlice<UInt8>, features: WasmFeatureSet = .default) throws -> Module {
     let stream = StaticByteStream(bytes: bytes)
     let module = try parseModule(stream: stream, features: features)
     return module
@@ -33,13 +45,14 @@ public func parseWasm(bytes: [UInt8], features: WasmFeatureSet = .default) throw
 
 /// > Note:
 /// <https://webassembly.github.io/spec/core/binary/modules.html#binary-module>
-func parseModule<Stream: ByteStream>(stream: Stream, features: WasmFeatureSet = .default) throws -> Module {
+func parseModule<Stream: ByteStream>(stream: Stream, features: WasmFeatureSet = .default) throws(WasmKitError) -> Module {
     var types: [FunctionType] = []
     var typeIndices: [TypeIndex] = []
     var codes: [Code] = []
     var tables: [TableType] = []
     var memories: [MemoryType] = []
     var globals: [WasmParser.Global] = []
+    var tags: [WasmParser.Tag] = []
     var elements: [ElementSegment] = []
     var data: [DataSegment] = []
     var start: FunctionIndex?
@@ -52,7 +65,7 @@ func parseModule<Stream: ByteStream>(stream: Stream, features: WasmFeatureSet = 
         stream: stream, features: features
     )
 
-    while let payload = try parser.parseNext() {
+    while let payload = try WasmKitError.wrap({ () throws(WasmParserError) in try parser.parseNext() }) {
         switch payload {
         case .header: break
         case .customSection(let customSection):
@@ -69,6 +82,8 @@ func parseModule<Stream: ByteStream>(stream: Stream, features: WasmFeatureSet = 
             memories = memorySection.map(\.type)
         case .globalSection(let globalSection):
             globals = globalSection
+        case .tagSection(let tagSection):
+            tags = tagSection
         case .exportSection(let exportSection):
             exports = exportSection
         case .startSection(let functionIndex):
@@ -85,22 +100,28 @@ func parseModule<Stream: ByteStream>(stream: Stream, features: WasmFeatureSet = 
     }
 
     guard typeIndices.count == codes.count else {
-        throw ValidationError(
-            .inconsistentFunctionAndCodeLength(
-                functionCount: typeIndices.count,
-                codeCount: codes.count
-            ))
+        throw
+            WasmKitError(
+                message: .inconsistentFunctionAndCodeLength(
+                    functionCount: typeIndices.count,
+                    codeCount: codes.count
+                ),
+                offset: parser.offset
+            )
     }
 
     if let dataCount = dataCount, dataCount != UInt32(data.count) {
-        throw ValidationError(
-            .inconsistentDataCountAndDataSectionLength(
-                dataCount: dataCount,
-                dataSection: data.count
-            ))
+        throw
+            WasmKitError(
+                message: .inconsistentDataCountAndDataSectionLength(
+                    dataCount: dataCount,
+                    dataSection: data.count
+                ),
+                offset: parser.offset
+            )
     }
 
-    let functions = try codes.enumerated().map { index, code in
+    let functions = try codes.enumerated().map { index, code throws(WasmKitError) in
         // SAFETY: The number of typeIndices is guaranteed to be the same as the number of codes
         let funcTypeIndex = typeIndices[index]
         let funcType = try Module.resolveType(funcTypeIndex, typeSection: types)
@@ -121,6 +142,7 @@ func parseModule<Stream: ByteStream>(stream: Stream, features: WasmFeatureSet = 
         globals: globals,
         memories: memories,
         tables: tables,
+        tags: tags,
         customSections: customSections,
         features: features,
         dataCount: dataCount

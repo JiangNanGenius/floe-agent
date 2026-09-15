@@ -2,6 +2,7 @@ import WASI
 import WasmKit
 
 public typealias WASIBridgeToHost = WASI.WASIBridgeToHost
+public typealias MemoryFileSystem = WASI.MemoryFileSystem
 
 extension WASIBridgeToHost {
 
@@ -32,7 +33,7 @@ extension WASIBridgeToHost {
         }
     }
 
-    private func makeHostFunction(_ function: WASIHostFunction) -> ((Caller, [Value]) throws -> [Value]) {
+    private func makeHostFunction(_ function: WASIHostFunction) -> Function.Implementation {
         { caller, values -> [Value] in
             guard case .memory(let memory) = caller.instance?.export("memory") else {
                 throw WASIError(description: "Missing required \"memory\" export")

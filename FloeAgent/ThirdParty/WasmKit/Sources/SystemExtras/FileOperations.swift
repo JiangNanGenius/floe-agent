@@ -249,7 +249,16 @@ extension FileDescriptor {
 
     @_alwaysEmitIntoClient
     public var device: UInt64 {
-      UInt64(rawValue.st_dev)
+      // Preserve bit pattern for dev_t (may be signed or unsigned depending on platform)
+      let dev = rawValue.st_dev
+      return withUnsafeBytes(of: dev) { bytes in
+        var result: UInt64 = 0
+        let copyCount = min(bytes.count, MemoryLayout<UInt64>.size)
+        withUnsafeMutableBytes(of: &result) { resultBytes in
+          resultBytes.prefix(copyCount).copyBytes(from: bytes.prefix(copyCount))
+        }
+        return result
+      }
     }
 
     @_alwaysEmitIntoClient
@@ -323,11 +332,11 @@ extension FileDescriptor {
     }
     .map { Attributes(rawValue: info) }
     #else
-    var stat: stat = .init()
+    var statBuffer: stat = .init()
     return nothingOrErrno(retryOnInterrupt: false) {
-      system_fstat(self.rawValue, &stat)
+      system_fstat(self.rawValue, &statBuffer)
     }
-    .map { Attributes(rawValue: stat) }
+    .map { Attributes(rawValue: statBuffer) }
     #endif
   }
 
@@ -560,6 +569,10 @@ extension FileDescriptor {
     @_alwaysEmitIntoClient
     public init(rawValue: CInterop.DirP) {
       self.rawValue = rawValue
+    }
+
+    public func close() {
+      _ = system_closedir(rawValue)
     }
 
     public func next() -> Result<DirectoryEntry, Errno>? {

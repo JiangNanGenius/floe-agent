@@ -34,6 +34,9 @@ import struct WasmTypes.FunctionType
 /// }
 /// ```
 public struct Function: Equatable {
+    /// The type of a host function implementation closure.
+    public typealias Implementation = (borrowing Caller, [Value]) throws -> [Value]
+
     internal let handle: InternalFunction
     let store: Store
 
@@ -52,7 +55,7 @@ public struct Function: Equatable {
     public init(
         store: Store,
         parameters: [ValueType], results: [ValueType] = [],
-        body: @escaping (Caller, [Value]) throws -> [Value]
+        body: @escaping Implementation
     ) {
         self.init(store: store, type: FunctionType(parameters: parameters, results: results), body: body)
     }
@@ -66,7 +69,7 @@ public struct Function: Equatable {
     public init(
         store: Store,
         type: FunctionType,
-        body: @escaping (Caller, [Value]) throws -> [Value]
+        body: @escaping Implementation
     ) {
         self.init(handle: store.allocator.allocate(type: type, implementation: body, engine: store.engine), store: store)
     }
@@ -157,8 +160,8 @@ struct InternalFunction: Equatable, Hashable {
 }
 
 extension InternalFunction: ValidatableEntity {
-    static func createOutOfBoundsError(index: Int, count: Int) -> any Error {
-        ValidationError(.indexOutOfBounds("function", index, max: count))
+    static func createOutOfBoundsError(index: Int, count: Int) -> WasmKitError {
+        WasmKitError(message: .indexOutOfBounds("function", index, max: count))
     }
 }
 
@@ -189,8 +192,9 @@ extension InternalFunction {
         guard expectedTypes.count == values.count else { return false }
         for (expected, value) in zip(expectedTypes, values) {
             switch (expected, value) {
-            case (.i32, .i32), (.i64, .i64), (.f32, .f32), (.f64, .f64),
-                (.ref(.funcRef), .ref(.function)), (.ref(.externRef), .ref(.extern)):
+            case (.i32, .i32), (.i64, .i64), (.f32, .f32), (.f64, .f64), (.v128, .v128),
+                (.ref(.funcRef), .ref(.function)), (.ref(.externRef), .ref(.extern)),
+                (.ref(.exnRef), .ref(.exception)):
                 break
             default: return false
             }
@@ -218,7 +222,7 @@ extension InternalFunction {
         let entity = self.wasm
         switch entity.code {
         case .compiled(let iseq), .debuggable(_, let iseq):
-            return (iseq, entity.numberOfNonParameterLocals, entity)
+            return (iseq, entity.numberOfNonParameterLocalSlots, entity)
         case .uncompiled:
             preconditionFailure()
         }
@@ -229,14 +233,14 @@ struct WasmFunctionEntity {
     let type: InternedFuncType
     let instance: InternalInstance
     let index: FunctionIndex
-    let numberOfNonParameterLocals: Int
+    let numberOfNonParameterLocalSlots: Int
     var code: CodeBody
 
     init(index: FunctionIndex, type: InternedFuncType, code: InternalUncompiledCode, instance: InternalInstance) {
         self.type = type
         self.instance = instance
         self.code = .uncompiled(code)
-        self.numberOfNonParameterLocals = code.locals.count
+        self.numberOfNonParameterLocalSlots = code.locals.reduce(into: 0) { $0 += $1.stackSlotCount }
         self.index = index
     }
 
@@ -254,19 +258,18 @@ struct WasmFunctionEntity {
         let store = store.value
         let engine = store.engine
         let type = self.type
-        var translator = try InstructionTranslator(
-            allocator: store.allocator.iseqAllocator,
-            engineConfiguration: engine.configuration,
-            funcTypeInterner: engine.funcTypeInterner,
-            module: instance,
-            type: engine.resolveType(type),
-            locals: code.locals,
-            functionIndex: index,
-            codeSize: code.expression.count,
-            isIntercepting: engine.interceptor != nil
-        )
         let iseq = try code.withValue { code in
-            try translator.translate(code: code)
+            try InstructionTranslator(
+                allocator: store.allocator.iseqAllocator,
+                engineConfiguration: engine.configuration,
+                funcTypeInterner: engine.funcTypeInterner,
+                module: instance,
+                type: engine.resolveType(type),
+                locals: code.locals,
+                functionIndex: index,
+                codeSize: code.expression.count,
+                isIntercepting: engine.interceptor != nil
+            ).translate(code: code)
         }
         self.code = .compiled(iseq)
         return iseq

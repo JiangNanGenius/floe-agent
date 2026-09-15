@@ -1,3 +1,4 @@
+import SystemExtras
 import SystemPackage
 
 struct DirEntry {
@@ -6,6 +7,14 @@ struct DirEntry {
 }
 
 extension DirEntry: WASIDir, FdWASIEntry {
+    func readlink(atPath path: String) throws -> [UInt8] {
+        #if os(Windows) || os(WASI)
+            throw WASIAbi.Errno.ENOTSUP
+        #else
+            return try SandboxPrimitives.readlinkAt(start: fd, path: path)
+        #endif
+    }
+
     func openFile(
         symlinkFollow: Bool,
         path: String,
@@ -82,18 +91,24 @@ extension DirEntry: WASIDir, FdWASIEntry {
             symlinkFollow: symlinkFollow, path: path,
             oflags: [], accessMode: .write, fdflags: []
         )
-        let (access, modification) = try WASIAbi.Timestamp.platformTimeSpec(
-            atim: atim, mtim: mtim, fstFlags: fstFlags
-        )
-        try WASIAbi.Errno.translatingPlatformErrno {
-            try fd.setTimes(access: access, modification: modification)
+        try withThrowing {
+            let (access, modification) = try WASIAbi.Timestamp.platformTimeSpec(
+                atim: atim, mtim: mtim, fstFlags: fstFlags
+            )
+            try WASIAbi.Errno.translatingPlatformErrno {
+                try fd.setTimes(access: access, modification: modification)
+            }
+        } defer: {
+            try fd.close()
         }
     }
 
     func removeFile(atPath path: String) throws {
-        let (dir, basename) = try SandboxPrimitives.openParent(start: fd, path: path)
-        try WASIAbi.Errno.translatingPlatformErrno {
-            try dir.remove(at: FilePath(basename), options: [])
+        let result = try SandboxPrimitives.openParent(start: fd, path: path)
+        try result.withFields { dir, basename in
+            try WASIAbi.Errno.translatingPlatformErrno {
+                try dir.remove(at: FilePath(basename), options: [])
+            }
         }
     }
 
@@ -101,19 +116,24 @@ extension DirEntry: WASIDir, FdWASIEntry {
         #if os(Windows)
             throw WASIAbi.Errno.ENOSYS
         #else
-            let (dir, basename) = try SandboxPrimitives.openParent(start: fd, path: path)
-            try WASIAbi.Errno.translatingPlatformErrno {
-                try dir.remove(at: FilePath(basename), options: .removeDirectory)
+            let path = SandboxPrimitives.stripDirSuffix(path)
+            let result = try SandboxPrimitives.openParent(start: fd, path: path)
+            try result.withFields { dir, basename in
+                try WASIAbi.Errno.translatingPlatformErrno {
+                    try dir.remove(at: FilePath(basename), options: .removeDirectory)
+                }
             }
         #endif
     }
 
     func symlink(from sourcePath: String, to destPath: String) throws {
-        let (destDir, destBasename) = try SandboxPrimitives.openParent(
+        let result = try SandboxPrimitives.openParent(
             start: fd, path: destPath
         )
-        try WASIAbi.Errno.translatingPlatformErrno {
-            try destDir.createSymlink(original: FilePath(sourcePath), link: FilePath(destBasename))
+        try result.withFields { destDir, destBasename in
+            try WASIAbi.Errno.translatingPlatformErrno {
+                try destDir.createSymlink(original: FilePath(sourcePath), link: FilePath(destBasename))
+            }
         }
     }
 
@@ -134,48 +154,85 @@ extension DirEntry: WASIDir, FdWASIEntry {
             let oldPath = SandboxPrimitives.stripDirSuffix(sourcePath)
             let newPath = SandboxPrimitives.stripDirSuffix(destPath)
 
-            let (sourceDir, sourceBasename) = try SandboxPrimitives.openParent(
+            let sourceResult = try SandboxPrimitives.openParent(
                 start: fd, path: oldPath
             )
-            let (destDir, destBasename) = try SandboxPrimitives.openParent(
+            let destResult = try SandboxPrimitives.openParent(
                 start: newDir.fd, path: newPath
             )
+            try sourceResult.withFields { sourceDir, sourceBasename in
+                try destResult.withFields { destDir, destBasename in
+                    // Re-append a slash if the original path had one
+                    let finalSourceBasename = oldHasTrailingSlash ? sourceBasename + "/" : sourceBasename
+                    let finalDestBasename = newHasTrailingSlash ? destBasename + "/" : destBasename
 
-            // Re-append a slash if the original path had one
-            let finalSourceBasename = oldHasTrailingSlash ? sourceBasename + "/" : sourceBasename
-            let finalDestBasename = newHasTrailingSlash ? destBasename + "/" : destBasename
-
-            try WASIAbi.Errno.translatingPlatformErrno {
-                try sourceDir.rename(
-                    at: FilePath(finalSourceBasename),
-                    to: destDir,
-                    at: FilePath(finalDestBasename)
-                )
+                    try WASIAbi.Errno.translatingPlatformErrno {
+                        try sourceDir.rename(
+                            at: FilePath(finalSourceBasename),
+                            to: destDir,
+                            at: FilePath(finalDestBasename)
+                        )
+                    }
+                }
             }
         #endif
     }
 
-    func readEntries(
-        cookie: WASIAbi.DirCookie
-    ) throws -> AnyIterator<Result<ReaddirElement, any Error>> {
-        #if os(Windows)
-            throw WASIAbi.Errno.ENOSYS
-        #else
-            // Duplicate fd because readdir takes the ownership of
-            // the given fd and closedir also close the underlying fd
-            let newFd = try WASIAbi.Errno.translatingPlatformErrno {
-                try fd.open(at: ".", .readOnly, options: [])
+    #if os(Windows)
+        struct ReadEntriesResult: WASIReaddirIterator {
+            init(fd: FileDescriptor, cookie: WASIAbi.DirCookie) throws {
+                throw WASIAbi.Errno.ENOSYS
             }
-            let iterator = try WASIAbi.Errno.translatingPlatformErrno {
-                try newFd.contentsOfDirectory()
+
+            mutating func next() -> Result<ReaddirElement, any Error>? {
+                return nil
             }
-            .lazy.enumerated()
-            .map { (entryIndex, entry) in
+
+            mutating func close() {}
+        }
+    #else
+        struct ReadEntriesResult: WASIReaddirIterator {
+            let fd: FileDescriptor
+            let stream: FileDescriptor.DirectoryStream
+            var entryIndex: Int
+
+            init(
+                fd: FileDescriptor,
+                cookie: WASIAbi.DirCookie
+            ) throws {
+                // Duplicate fd because readdir takes the ownership of
+                // the given fd and closedir also close the underlying fd
+                let newFd = try WASIAbi.Errno.translatingPlatformErrno {
+                    try fd.open(at: ".", .readOnly, options: [])
+                }
+                let stream: FileDescriptor.DirectoryStream
+                do {
+                    stream = try newFd.contentsOfDirectory()
+                } catch let errno as Errno {
+                    throw try WASIAbi.Errno(platformErrno: errno)
+                }
+
+                self.fd = fd
+                self.entryIndex = 0
+                self.stream = stream
+
+                let skippedCount = Int(cookie)
+                while entryIndex < skippedCount {
+                    guard let entry = next() else { break }
+                    _ = try entry.get()
+                }
+            }
+
+            mutating func next() -> Result<ReaddirElement, any Error>? {
+                guard let entry = stream.next() else {
+                    return nil
+                }
+                defer { entryIndex += 1 }
                 return Result(catching: { () -> ReaddirElement in
                     let entry = try entry.get()
                     let name = entry.name
                     let stat = try WASIAbi.Errno.translatingPlatformErrno {
-                        try fd.attributes(at: name, options: [])
+                        try fd.attributes(at: name, options: [.noFollow])
                     }
                     let dirent = WASIAbi.Dirent(
                         // We can't use telldir and seekdir because the location data
@@ -189,16 +246,24 @@ extension DirEntry: WASIDir, FdWASIEntry {
                     return (dirent, name)
                 })
             }
-            .dropFirst(Int(cookie))
-            .makeIterator()
-            return AnyIterator(iterator)
-        #endif
+
+            mutating func close() {
+                stream.close()
+            }
+        }
+    #endif
+    func readEntries(
+        cookie: WASIAbi.DirCookie
+    ) throws -> ReadEntriesResult {
+        return try ReadEntriesResult(fd: fd, cookie: cookie)
     }
 
     func createDirectory(atPath path: String) throws {
-        let (dir, basename) = try SandboxPrimitives.openParent(start: fd, path: path)
-        try WASIAbi.Errno.translatingPlatformErrno {
-            try dir.createDirectory(at: FilePath(basename), permissions: .ownerReadWriteExecute)
+        let result = try SandboxPrimitives.openParent(start: fd, path: path)
+        try result.withFields { dir, basename in
+            try WASIAbi.Errno.translatingPlatformErrno {
+                try dir.createDirectory(at: FilePath(basename), permissions: .ownerReadWriteExecute)
+            }
         }
     }
 
@@ -210,14 +275,16 @@ extension DirEntry: WASIDir, FdWASIEntry {
             if !symlinkFollow {
                 options.insert(.noFollow)
             }
-            let (dir, basename) = try SandboxPrimitives.openParent(start: fd, path: path)
-            let attributes = try basename.withCString { cBasename in
-                try WASIAbi.Errno.translatingPlatformErrno {
-                    try dir.attributes(at: cBasename, options: options)
+            let result = try SandboxPrimitives.openParent(start: fd, path: path)
+            return try result.withFields { dir, basename in
+                let attributes = try basename.withCString { cBasename in
+                    try WASIAbi.Errno.translatingPlatformErrno {
+                        try dir.attributes(at: cBasename, options: options)
+                    }
                 }
-            }
 
-            return WASIAbi.Filestat(stat: attributes)
+                return WASIAbi.Filestat(stat: attributes)
+            }
         #endif
     }
 }

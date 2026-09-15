@@ -9,7 +9,7 @@ let package = Package(name: "WasmKit", platforms: [.macOS(.v15), .iOS(.v18)], pr
 ], dependencies: [.package(url: "https://github.com/apple/swift-system", from: "1.5.0")], targets: [
     .target(name: "WasmKit", dependencies: ["_CWasmKit", "WasmParser", "WasmTypes", "SystemExtras", .product(name: "SystemPackage", package: "swift-system")], exclude: ["CMakeLists.txt"]),
     .target(name: "_CWasmKit"),
-    .target(name: "WasmParser", dependencies: ["WasmTypes", .product(name: "SystemPackage", package: "swift-system")], exclude: ["CMakeLists.txt"]),
+    .target(name: "WasmParser", dependencies: ["WasmTypes", "SystemExtras", .product(name: "SystemPackage", package: "swift-system")], exclude: ["CMakeLists.txt"]),
     .target(name: "WasmTypes", exclude: ["CMakeLists.txt"]),
     .target(name: "WasmKitWASI", dependencies: ["WasmKit", "WASI"], exclude: ["CMakeLists.txt"]),
     .target(name: "WASI", dependencies: ["WasmTypes", "SystemExtras"], exclude: ["CMakeLists.txt"]),

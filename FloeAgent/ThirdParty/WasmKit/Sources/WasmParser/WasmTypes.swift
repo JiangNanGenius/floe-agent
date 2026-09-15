@@ -3,7 +3,7 @@ import WasmTypes
 /// Function code in a module
 /// > Note:
 /// <https://webassembly.github.io/spec/core/binary/modules.html#binary-code>
-public struct Code {
+public struct Code: Sendable {
     /// Local variables in the function
     public let locals: [ValueType]
     /// Expression body of the function
@@ -34,7 +34,7 @@ extension Code: Equatable {
     }
 }
 
-public struct MemArg: Equatable {
+public struct MemArg: Equatable, Sendable {
     public let offset: UInt64
     public let align: UInt32
 
@@ -44,7 +44,7 @@ public struct MemArg: Equatable {
     }
 }
 
-public enum BlockType: Equatable {
+public enum BlockType: Equatable, Sendable {
     case empty
     case type(ValueType)
     case funcType(UInt32)
@@ -52,7 +52,7 @@ public enum BlockType: Equatable {
 
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/types.html#limits>
-public struct Limits: Equatable {
+public struct Limits: Equatable, Sendable {
     public var min: UInt64
     public var max: UInt64?
     public var isMemory64: Bool
@@ -72,7 +72,7 @@ public typealias MemoryType = Limits
 
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/types.html#table-types>
-public struct TableType: Equatable {
+public struct TableType: Equatable, Sendable {
     public var elementType: ReferenceType
     public var limits: Limits
 
@@ -84,14 +84,14 @@ public struct TableType: Equatable {
 
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/types.html#global-types>
-public enum Mutability: Equatable {
+public enum Mutability: Equatable, Sendable {
     case constant
     case variable
 }
 
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/types.html#global-types>
-public struct GlobalType: Equatable {
+public struct GlobalType: Equatable, Sendable {
     public let mutability: Mutability
     public let valueType: ValueType
 
@@ -103,7 +103,7 @@ public struct GlobalType: Equatable {
 
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/types.html#external-types>
-public enum ExternalType {
+public enum ExternalType: Sendable {
     case function(FunctionType)
     case table(TableType)
     case memory(MemoryType)
@@ -111,14 +111,14 @@ public enum ExternalType {
 }
 
 public enum IEEE754 {
-    public struct Float32: Equatable {
+    public struct Float32: Equatable, Sendable {
         public let bitPattern: UInt32
 
         public init(bitPattern: UInt32) {
             self.bitPattern = bitPattern
         }
     }
-    public struct Float64: Equatable {
+    public struct Float64: Equatable, Sendable {
         public let bitPattern: UInt64
 
         public init(bitPattern: UInt64) {
@@ -127,7 +127,7 @@ public enum IEEE754 {
     }
 }
 
-public struct BrTable: Equatable {
+public struct BrTable: Equatable, Sendable {
     public let labelIndices: [UInt32]
     public let defaultIndex: UInt32
 
@@ -138,7 +138,7 @@ public struct BrTable: Equatable {
 }
 
 /// A custom section in a module
-public struct CustomSection: Equatable {
+public struct CustomSection: Equatable, Sendable {
     public let name: String
     public let bytes: ArraySlice<UInt8>
 }
@@ -160,13 +160,15 @@ public typealias GlobalIndex = UInt32
 public typealias ElementIndex = UInt32
 /// Index type for data segments within a module
 public typealias DataIndex = UInt32
+/// Index type for tags within a module
+public typealias TagIndex = UInt32
 
 public typealias ConstExpression = [Instruction]
 
 /// Table entry in a module
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/modules.html#tables>
-public struct Table: Equatable {
+public struct Table: Equatable, Sendable {
     public let type: TableType
 
     public init(type: TableType) {
@@ -176,22 +178,57 @@ public struct Table: Equatable {
 
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/modules.html#memories>
-public struct Memory: Equatable {
+public struct Memory: Equatable, Sendable {
     public let type: MemoryType
 }
 
 /// Global entry in a module
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/modules.html#globals>
-public struct Global: Equatable {
+public struct Global: Equatable, Sendable {
     public let type: GlobalType
     public let initializer: ConstExpression
+}
+
+/// Tag entry in a module
+/// > Note:
+/// <https://webassembly.github.io/exception-handling/core/syntax/modules.html#tags>
+public struct Tag: Equatable {
+    /// The type index of the tag's function type (parameters = exception payload, results must be empty).
+    public let type: TypeIndex
+
+    public init(type: TypeIndex) {
+        self.type = type
+    }
+}
+
+/// Catch clause within a `try_table` instruction.
+/// > Note:
+/// <https://webassembly.github.io/exception-handling/core/binary/instructions.html#control-instructions>
+public enum CatchClause: Equatable, Sendable {
+    /// Catches an exception matching the given tag and branches with payload values.
+    case `catch`(tagIndex: TagIndex, labelIndex: UInt32)
+    /// Like `catch`, but also passes an `exnref`.
+    case catchRef(tagIndex: TagIndex, labelIndex: UInt32)
+    /// Catches any exception and branches with no extra values.
+    case catchAll(labelIndex: UInt32)
+    /// Like `catchAll`, but also passes an `exnref`.
+    case catchAllRef(labelIndex: UInt32)
+}
+
+/// The catch clauses of a `try_table` instruction.
+public struct TryCatch: Equatable, Sendable {
+    public let catches: [CatchClause]
+
+    public init(catches: [CatchClause]) {
+        self.catches = catches
+    }
 }
 
 /// Segment of elements that are initialized in a table
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/modules.html#element-segments>
-public struct ElementSegment: Equatable {
+public struct ElementSegment: Equatable, Sendable {
     @usableFromInline
     struct Flag: OptionSet, Sendable {
         @usableFromInline let rawValue: UInt32
@@ -215,7 +252,7 @@ public struct ElementSegment: Equatable {
         @usableFromInline static let usesExpressions = Flag(rawValue: 1 << 2)
     }
 
-    public enum Mode: Equatable {
+    public enum Mode: Equatable, Sendable {
         case active(table: UInt32, offset: ConstExpression)
         case declarative
         case passive
@@ -235,8 +272,8 @@ public struct ElementSegment: Equatable {
 /// Data segment in a module
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/modules.html#data-segments>
-public enum DataSegment: Equatable {
-    public struct Active: Equatable {
+public enum DataSegment: Equatable, Sendable {
+    public struct Active: Equatable, Sendable {
         public let index: UInt32
         public let offset: ConstExpression
         public let initializer: ArraySlice<UInt8>
@@ -255,7 +292,7 @@ public enum DataSegment: Equatable {
 /// Exported entity in a module
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/modules.html#exports>
-public struct Export: Equatable {
+public struct Export: Equatable, Sendable {
     /// Name of the export
     public let name: String
     /// Descriptor of the export
@@ -268,7 +305,7 @@ public struct Export: Equatable {
 }
 
 /// Export descriptor
-public enum ExportDescriptor: Equatable {
+public enum ExportDescriptor: Equatable, Sendable {
     /// Function export
     case function(FunctionIndex)
     /// Table export
@@ -277,12 +314,14 @@ public enum ExportDescriptor: Equatable {
     case memory(MemoryIndex)
     /// Global export
     case global(GlobalIndex)
+    /// Tag export
+    case tag(TagIndex)
 }
 
 /// Import entity in a module
 /// > Note:
 /// <https://webassembly.github.io/spec/core/syntax/modules.html#imports>
-public struct Import: Equatable {
+public struct Import: Equatable, Sendable {
     /// Module name imported from
     public let module: String
     /// Name of the import
@@ -298,7 +337,7 @@ public struct Import: Equatable {
 }
 
 /// Import descriptor
-public enum ImportDescriptor: Equatable {
+public enum ImportDescriptor: Equatable, Sendable {
     /// Function import
     case function(TypeIndex)
     /// Table import
@@ -307,6 +346,8 @@ public enum ImportDescriptor: Equatable {
     case memory(MemoryType)
     /// Global import
     case global(GlobalType)
+    /// Tag import
+    case tag(TypeIndex)
 }
 
 @usableFromInline
@@ -358,6 +399,16 @@ extension Instruction.Load {
         case .i64Load, .i64AtomicLoad: return 3
         case .f32Load: return 2
         case .f64Load: return 3
+        case .v128Load: return 4
+        case .v128Load8X8S, .v128Load8X8U: return 3
+        case .v128Load16X4S, .v128Load16X4U: return 3
+        case .v128Load32X2S, .v128Load32X2U: return 3
+        case .v128Load8Splat: return 0
+        case .v128Load16Splat: return 1
+        case .v128Load32Splat: return 2
+        case .v128Load64Splat: return 3
+        case .v128Load32Zero: return 2
+        case .v128Load64Zero: return 3
         case .i32Load8S: return 0
         case .i32Load8U, .i32AtomicLoad8U: return 0
         case .i32Load16S: return 1
@@ -379,6 +430,10 @@ extension Instruction.Load {
         case .i64Load, .i64AtomicLoad: return .i64
         case .f32Load: return .f32
         case .f64Load: return .f64
+        case .v128Load, .v128Load8X8S, .v128Load8X8U, .v128Load16X4S, .v128Load16X4U,
+            .v128Load32X2S, .v128Load32X2U, .v128Load8Splat, .v128Load16Splat, .v128Load32Splat,
+            .v128Load64Splat, .v128Load32Zero, .v128Load64Zero:
+            return .v128
         case .i32Load8S: return .i32
         case .i32Load8U, .i32AtomicLoad8U: return .i32
         case .i32Load16S: return .i32
@@ -403,6 +458,7 @@ extension Instruction.Store {
         case .i64Store, .i64AtomicStore: return 3
         case .f32Store: return 2
         case .f64Store: return 3
+        case .v128Store: return 4
         case .i32Store8, .i32AtomicStore8: return 0
         case .i32Store16, .i32AtomicStore16: return 1
         case .i64Store8, .i64AtomicStore8: return 0
@@ -419,6 +475,7 @@ extension Instruction.Store {
         case .i64Store, .i64AtomicStore: return .i64
         case .f32Store: return .f32
         case .f64Store: return .f64
+        case .v128Store: return .v128
         case .i32Store8, .i32AtomicStore8: return .i32
         case .i32Store16, .i32AtomicStore16: return .i32
         case .i64Store8, .i64AtomicStore8: return .i64

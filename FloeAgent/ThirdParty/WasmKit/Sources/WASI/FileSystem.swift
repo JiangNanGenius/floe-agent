@@ -1,4 +1,5 @@
 import SystemPackage
+import WasmTypes
 
 struct FileAccessMode: OptionSet {
     let rawValue: UInt32
@@ -6,7 +7,10 @@ struct FileAccessMode: OptionSet {
     static let write = FileAccessMode(rawValue: 1 << 1)
 }
 
-protocol WASIEntry {
+protocol WASIEntry: Sendable {
+    /// Whether this entry wraps a borrowed file descriptor that should not be
+    /// closed when the WASI instance is torn down (e.g. process stdio).
+    var isBorrowed: Bool { get }
     func attributes() throws -> WASIAbi.Filestat
     func fileType() throws -> WASIAbi.FileType
     func status() throws -> WASIAbi.Fdflags
@@ -20,6 +24,10 @@ protocol WASIEntry {
     func close() throws
 }
 
+extension WASIEntry {
+    var isBorrowed: Bool { false }
+}
+
 protocol WASIFile: WASIEntry {
     func fdStat() throws -> WASIAbi.FdStat
     func setFdStatFlags(_ flags: WASIAbi.Fdflags) throws
@@ -30,24 +38,27 @@ protocol WASIFile: WASIEntry {
     func tell() throws -> WASIAbi.FileSize
     func seek(offset: WASIAbi.FileDelta, whence: WASIAbi.Whence) throws -> WASIAbi.FileSize
 
-    func write<Buffer: Sequence>(
-        vectored buffer: Buffer
+    func write<M: GuestMemory, Buffer: Sequence>(
+        vectored buffer: Buffer, memory: M
     ) throws -> WASIAbi.Size where Buffer.Element == WASIAbi.IOVec
-    func pwrite<Buffer: Sequence>(
-        vectored buffer: Buffer, offset: WASIAbi.FileSize
+    func pwrite<M: GuestMemory, Buffer: Sequence>(
+        vectored buffer: Buffer, memory: M, offset: WASIAbi.FileSize
     ) throws -> WASIAbi.Size where Buffer.Element == WASIAbi.IOVec
-    func read<Buffer: Sequence>(
-        into buffer: Buffer
+    func read<M: GuestMemory, Buffer: Sequence>(
+        into buffer: Buffer, memory: M
     ) throws -> WASIAbi.Size where Buffer.Element == WASIAbi.IOVec
-    func pread<Buffer: Sequence>(
-        into buffer: Buffer, offset: WASIAbi.FileSize
+    func pread<M: GuestMemory, Buffer: Sequence>(
+        into buffer: Buffer, memory: M, offset: WASIAbi.FileSize
     ) throws -> WASIAbi.Size where Buffer.Element == WASIAbi.IOVec
 }
 
 protocol WASIDir: WASIEntry {
     typealias ReaddirElement = (dirent: WASIAbi.Dirent, name: String)
+    associatedtype ReadEntriesResult: WASIReaddirIterator where ReadEntriesResult.Element == ReaddirElement
 
     var preopenPath: String? { get }
+
+    func readlink(atPath path: String) throws -> [UInt8]
 
     func openFile(
         symlinkFollow: Bool,
@@ -62,13 +73,22 @@ protocol WASIDir: WASIEntry {
     func removeFile(atPath path: String) throws
     func symlink(from sourcePath: String, to destPath: String) throws
     func rename(from sourcePath: String, toDir newDir: any WASIDir, to destPath: String) throws
-    func readEntries(cookie: WASIAbi.DirCookie) throws -> AnyIterator<Result<ReaddirElement, any Error>>
+    func readEntries(cookie: WASIAbi.DirCookie) throws -> ReadEntriesResult
     func attributes(path: String, symlinkFollow: Bool) throws -> WASIAbi.Filestat
     func setFilestatTimes(
         path: String,
         atim: WASIAbi.Timestamp, mtim: WASIAbi.Timestamp,
         fstFlags: WASIAbi.FstFlags, symlinkFollow: Bool
     ) throws
+}
+
+protocol WASIReaddirIterator {
+    associatedtype Element
+    mutating func next() -> Result<Element, any Error>?
+    /// Closes the iterator and releases any owned resources.
+    ///
+    /// Callers must invoke this exactly once after iteration completes.
+    mutating func close()
 }
 
 enum FdEntry {
@@ -83,6 +103,13 @@ enum FdEntry {
             return directory
         }
     }
+
+    func asFile() -> (any WASIFile)? {
+        if case .file(let entry) = self {
+            return entry
+        }
+        return nil
+    }
 }
 
 /// A table that maps file descriptor to actual resource in host environment
@@ -96,20 +123,21 @@ struct FdTable {
         self.nextFd = 3
     }
 
-    mutating func closeAll() {
-        for entry in map.values { try? entry.asEntry().close() }
-        map.removeAll()
-    }
-
     /// Inserts a resource as the given file descriptor
     subscript(_ fd: WASIAbi.Fd) -> FdEntry? {
         get { self.map[fd] }
         set { self.map[fd] = newValue }
     }
 
+    /// Whether another descriptor can be installed, i.e. the table is below capacity.
+    var hasCapacity: Bool {
+        // Floe: bound guest-owned descriptors; WASIAbi.Fd.max is unbounded in practice.
+        map.count < 256
+    }
+
     /// Inserts an entry and returns the corresponding file descriptor
     mutating func push(_ entry: FdEntry) throws -> WASIAbi.Fd {
-        guard map.count < 256 else {
+        guard hasCapacity else {
             throw WASIAbi.Errno.ENFILE
         }
         // Find a free fd
@@ -124,4 +152,45 @@ struct FdTable {
             return fd
         }
     }
+
+    /// Closes all owned file descriptors, skipping borrowed ones (e.g. stdio).
+    mutating func closeAll() throws {
+        var firstError: (any Error)?
+        for (_, entry) in map {
+            let wasiEntry = entry.asEntry()
+            guard !wasiEntry.isBorrowed else { continue }
+            do {
+                try wasiEntry.close()
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        map = map.filter { $0.value.asEntry().isBorrowed }
+        if let firstError { throw firstError }
+    }
+}
+
+/// Content of a file that can be retrieved from the file system.
+public enum FileContent: Sendable {
+    case bytes([UInt8])
+    case handle(FileDescriptor)
+}
+
+/// Protocol for file system implementations used by WASI.
+///
+/// This protocol contains WASI-specific implementation details.
+protocol FileSystemImplementation: ~Copyable, Sendable {
+    /// Preopens a directory and returns a WASIDir implementation.
+    func preopenDirectory(guestPath: String, hostPath: String) throws -> any WASIDir
+
+    /// Opens a file or directory from a directory file descriptor.
+    func openAt(
+        dirFd: any WASIDir,
+        path: String,
+        oflags: WASIAbi.Oflags,
+        fsRightsBase: WASIAbi.Rights,
+        fsRightsInheriting: WASIAbi.Rights,
+        fdflags: WASIAbi.Fdflags,
+        symlinkFollow: Bool
+    ) throws -> FdEntry
 }

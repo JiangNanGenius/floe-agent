@@ -136,6 +136,60 @@ extension Instruction.BrTableOperand {
     }
 }
 
+/// An entry in the catch table for a `try_table` block.
+///
+/// A Wasm `try_table` instruction declares inline catch clauses (`catch`, `catch_ref`,
+/// `catch_all`, `catch_all_ref`). During translation, the translator compiles these clauses
+/// into an array of `CatchTableEntry` values — the "catch table" — which is the runtime
+/// representation used for exception dispatch.
+///
+/// The pipeline:
+/// 1. **Parse**: `try_table` is decoded into a `TryCatch` with an array of `CatchClause` values.
+/// 2. **Translate** (`visitTryTable`): Allocates a `CatchTableEntry` array, resolves tags to
+///    `InternalTag` handles, computes `payloadRegBase`, and schedules `pcOffset` fixups for
+///    when target labels are pinned. Catch clause label depths are resolved relative to the
+///    *enclosing* scope (the `try_table`'s own label is not yet in scope), so clauses are
+///    processed before pushing the `try_table` control frame.
+/// 3. **Execute**: The `catchHandlers` instruction registers entries as `ExceptionHandler`
+///    values on a handler stack. On `throw`, `handleException` walks the stack top-down to
+///    find a matching handler (by tag identity, or `catch_all`), unwinds `sp`, writes the
+///    exception payload into the target registers, and jumps to the handler `pc`.
+///    `catchHandlersEnd` pops handlers when control exits the `try_table` normally or via branch.
+struct CatchTableEntry {
+    /// The tag to match, as a raw `InternalTag` bit pattern. `0` for `catch_all`/`catch_all_ref`.
+    var rawTag: UInt64
+    /// Non-zero if this is a `catch_all` or `catch_all_ref` clause.
+    var isCatchAll: UInt8
+    /// Non-zero if this is a `catch_ref` or `catch_all_ref` clause (pushes `exnref`).
+    var isRef: UInt8
+    /// `pc` offset from the `catchHandlers` instruction to the handler's target.
+    var pcOffset: Int32
+    /// Register offset where payload values should be written (relative to `sp`).
+    var payloadRegBase: VReg
+
+    init(tag: InternalTag?, isRef: Bool, pcOffset: Int32, payloadRegBase: VReg) {
+        self.rawTag = tag.map { UInt64(UInt(bitPattern: $0.bitPattern)) } ?? 0
+        self.isCatchAll = tag == nil ? 1 : 0
+        self.isRef = isRef ? 1 : 0
+        self.pcOffset = pcOffset
+        self.payloadRegBase = payloadRegBase
+    }
+
+    var tag: InternalTag? {
+        isCatchAll != 0 ? nil : InternalTag(bitPattern: UInt(rawTag))
+    }
+}
+
+extension Instruction.CatchHandlersOperand {
+    init(baseAddress: UnsafePointer<CatchTableEntry>, count: UInt16) {
+        self.init(rawBaseAddress: UInt64(UInt(bitPattern: baseAddress)), count: count)
+    }
+
+    var baseAddress: UnsafePointer<CatchTableEntry> {
+        UnsafePointer(bitPattern: UInt(rawBaseAddress)).unsafelyUnwrapped
+    }
+}
+
 extension Instruction.CallOperand {
     init(callee: InternalFunction, spAddend: VReg) {
         self.init(rawCallee: UInt64(UInt(bitPattern: callee.bitPattern)), spAddend: spAddend)
@@ -329,6 +383,8 @@ struct InstructionPrintingContext {
             target.write("global.set \(global(op.global)), \(reg(op.reg))")
         case .const32(let op):
             target.write("\(reg(op.result)) = \(hex(op.value))")
+        case .v128Const(let op):
+            target.write("\(reg(op.result)) = v128.const lo:\(hex(op.lo)) hi:\(hex(op.hi))")
         case .call(let op):
             target.write("call \(callee(op.callee)), sp: +\(op.spAddend)")
         case .callIndirect(let op):
@@ -341,6 +397,17 @@ struct InstructionPrintingContext {
         case .i64Load(let op): load("i64.load", op)
         case .f32Load(let op): load("f32.load", op)
         case .f64Load(let op): load("f64.load", op)
+        case .i8x16Shuffle(let op):
+            let lanes = [
+                op.lane0, op.lane1, op.lane2, op.lane3,
+                op.lane4, op.lane5, op.lane6, op.lane7,
+                op.lane8, op.lane9, op.lane10, op.lane11,
+                op.lane12, op.lane13, op.lane14, op.lane15,
+            ]
+            target.write("\(reg(op.result)) = i8x16.shuffle \(reg(op.lhs)), \(reg(op.rhs)), \(lanes)")
+        case .simd(let op):
+            let name = SIMDOpcode(rawValue: op.opcode).map { "\($0)" } ?? "unknown(\(op.opcode))"
+            target.write("\(reg(op.result)) = simd.\(name) lane:\(op.lane) \(reg(op.input0)), \(reg(op.input1)), \(reg(op.input2)) offset:\(offset(op.offset))")
         case .i32Add(let op): binop("i32.add", op)
         case .i32Sub(let op): binop("i32.sub", op)
         case .i32Mul(let op): binop("i32.mul", op)

@@ -1,0 +1,14 @@
+{
+  "version": "5.4.8",
+  "source": "https://www.lua.org/ftp/lua-5.4.8.tar.gz",
+  "sha256": "4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae",
+  "license": "MIT",
+  "licenseUrl": "https://www.lua.org/license.html",
+  "wasiSdk": {
+    "version": "34.0",
+    "source": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-arm64-macos.tar.gz",
+    "sha256": "9c59398106b417f8f14913380fdf0097a8cc0ff4af9eb3ce0065a859e88d49e9",
+    "license": "Apache-2.0 WITH LLVM-exception"
+  },
+  "notes": "wasm32-wasip1 interpreter with try_table exception handling; Lua error recovery uses setjmp/longjmp lowered to the final EH encoding. os.execute() reports no shell, matching upstream's LUA_USE_IOS stance; tmpfile/tmpnam are jailed unique names."
+}
