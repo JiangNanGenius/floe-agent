@@ -138,3 +138,9 @@ That run also found pip's `../../bin/vba_extract.py` RECORD relocation. Normaliz
 
 
 Full-App follow-up [34924942672](https://github.com/JiangNanGenius/floe-agent/actions/runs/34924942672) is fixed to `f5b6d3bd`, including the source UI, Notes card changes, lxml/Office integration, pip resolver, output-stream interface and Node directory repairs. It was queued behind the prior evidence run at dispatch. A local Node Swift qualification attempt was interrupted when Command Line Tools invalidated the shared build cache and began recompiling dependencies; it is not a test pass. No local App build was started.
+
+
+Release CI reuse now accepts successful manual full-CI runs as well as pushes, always for the exact source SHA and all three successful required jobs. It verifies and retains both Notes UI bundles before omitting the repeated SDK 27 simulator build/tests. SDK 26 tests, both device builds and upload checks remain required. Workflow syntax passes actionlint; actual release execution remains pending.
+
+
+An independent manual cloud diagnostic now exercises production `MLXTextEngine` and the pinned Qwen3.8 snapshot through cold load, two short generations and shutdown with the constrained resource profile. It records MLX memory and host process peak RSS. This macOS diagnostic can provide a reproducible engine failure; it cannot establish the original iPad crash cause or device acceptance. No paid provider API or local multi-GB download is used.

@@ -157,7 +157,7 @@ jobs:
         id: verified_ci
         run: |
           SOURCE_SHA="$(git rev-parse HEAD)"
-          CI_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=success&event=push&per_page=10" --jq '.workflow_runs[0].id // empty')"
+          CI_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=success&per_page=10" --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")][0].id // empty')"
           if [ -n "$CI_RUN_ID" ]; then
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/ci-jobs.json"
             if jq -e '[.jobs[] | select(.name == "build-test" or .name == "appstore-sdk-compatibility" or .name == "spm-linux-build") | select(.conclusion == "success")] | length == 3' "$RUNNER_TEMP/ci-jobs.json" >/dev/null; then
@@ -170,6 +170,22 @@ jobs:
               if [ "$reused_result" != "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult" ]; then
                 ditto "$reused_result" "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult"
               fi
+              # Reuse both exact-source UI results too. A passing App unit
+              # bundle alone cannot replace the iPad/iPhone interaction gate.
+              mkdir -p "$RUNNER_TEMP/FloeSDK27-Notes"
+              for name in ipad iphone; do
+                notes_result="$(find "$RUNNER_TEMP/ReusedCI" -type d -name "FloeAgent-Notes-$name.xcresult" -prune -print)"
+                test "$(printf '%s\n' "$notes_result" | grep -c .)" = 1
+                test -d "$notes_result"
+                ditto "$notes_result" "$RUNNER_TEMP/FloeSDK27-Notes/$name.xcresult"
+                python3 scripts/verify_notes_ui_xcresult.py \
+                  --result-bundle "$RUNNER_TEMP/FloeSDK27-Notes/$name.xcresult" \
+                  --summary-output "$RUNNER_TEMP/FloeSDK27-Notes/$name-summary.json"
+                mkdir -p "$RUNNER_TEMP/FloeSDK27-Notes/screenshots/$name"
+                xcrun xcresulttool export attachments --path "$notes_result" \
+                  --output-path "$RUNNER_TEMP/FloeSDK27-Notes/screenshots/$name"
+              done
+              printf '%s\n' "$CI_RUN_ID" > "$RUNNER_TEMP/FloeSDK27-Notes/SOURCE-CI-RUN.txt"
               echo "run_id=$CI_RUN_ID" >> "$GITHUB_OUTPUT"
               echo "Reusing exact-SHA CI $CI_RUN_ID; stable-SDK tests and binary checks still run."
             fi
@@ -241,6 +257,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Build SDK 27 simulator test hosts once
+        if: steps.verified_ci.outputs.run_id == ''
         timeout-minutes: 45
         run: |
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" -project FloeAgent.xcodeproj -scheme FloeAgent \
@@ -304,6 +321,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Require iPad and iPhone Notes import with the SDK 27
+        if: steps.verified_ci.outputs.run_id == ''
         timeout-minutes: 20
         run: |
           set -o pipefail
