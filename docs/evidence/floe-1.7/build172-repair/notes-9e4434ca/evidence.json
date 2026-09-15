@@ -1,0 +1,120 @@
+{
+  "sourceSHA": "9e4434ca5bc3440a113b6a3a87fc12d5df9ba2e2",
+  "runURL": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34935599831",
+  "environment": "SDK 27 full App on iPad mini (A17 Pro) and iPhone 17 Pro simulators",
+  "appRegressions": {
+    "totalTestCount": 171,
+    "passedTests": 170,
+    "failedTests": 1,
+    "skippedTests": 0,
+    "result": "Failed"
+  },
+  "relevantCases": [
+    {
+      "nodeIdentifier": "CrashAndFeedbackRegressionTests/notesAssistantHistoryStaysDedicated()",
+      "result": "Passed"
+    },
+    {
+      "nodeIdentifier": "LocalShellRuntimeTests/serviceToolPublishesLivePreviewAndRevokesAfterStop()",
+      "result": "Failed"
+    }
+  ],
+  "notesUI": {
+    "ipad": {
+      "totalTestCount": 2,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "tests": {
+        "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch": "Passed",
+        "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen": "Skipped"
+      },
+      "result": "Passed",
+      "nativeOfficeAccepted": false,
+      "coverage": "simulator-notes-only"
+    },
+    "iphone": {
+      "totalTestCount": 2,
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "tests": {
+        "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch": "Passed",
+        "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen": "Skipped"
+      },
+      "result": "Passed",
+      "nativeOfficeAccepted": false,
+      "coverage": "simulator-notes-only"
+    }
+  },
+  "screenshots": [
+    {
+      "file": "ipad-document-body-search.png",
+      "sha256": "b63079595b415ea0f8d1fd82161752553e756d0cf7e0402f5a40a8195f19113f",
+      "captureTimestamp": 1789454143.189
+    },
+    {
+      "file": "ipad-document-tabs.png",
+      "sha256": "3be7a6a04fab22e867856062315c75cce411ec0676bdc3353b363afac66dc5a1",
+      "captureTimestamp": 1789454128.971
+    },
+    {
+      "file": "ipad-native-brushes.png",
+      "sha256": "6581c7cad2793d56bc12ac94fa3a23a7382532dac74f581f086d1b3f0ef6fd21",
+      "captureTimestamp": 1789454095.664
+    },
+    {
+      "file": "ipad-pencil-quick-menu.png",
+      "sha256": "5d0cbe3fe9e310ecd05ec87d59c27027bac88c30d8083a5f13bad20eb2509a70",
+      "captureTimestamp": 1789454091.62
+    },
+    {
+      "file": "ipad-document-assistant.png",
+      "sha256": "bbee25716130e42fcf544976b6b48147df2158dc4f16d1a8236b27a4ac2b7c4d",
+      "captureTimestamp": 1789454082.372
+    },
+    {
+      "file": "ipad-library.png",
+      "sha256": "03c49af1e2a8b28302d4f71e060a8351343301fd944eec4d2495f5120d643246",
+      "captureTimestamp": 1789454066.55
+    },
+    {
+      "file": "iphone-document-body-search.png",
+      "sha256": "b80c75822239dcfcfb2bcb8f0e7c65fe8758f9e8c8aadf7a04ab904287b012d4",
+      "captureTimestamp": 1789454583.422
+    },
+    {
+      "file": "iphone-document-tabs.png",
+      "sha256": "17370d8ea79f0df1a5e445b0182a600708da08b4df1a8d2ed0f910423f2dcc03",
+      "captureTimestamp": 1789454571.238
+    },
+    {
+      "file": "iphone-native-brushes.png",
+      "sha256": "92126a79b62a433dc803e86fbb084a9ee02d7a7269a0a49863726fcdd75ecb33",
+      "captureTimestamp": 1789454530.177
+    },
+    {
+      "file": "iphone-pencil-quick-menu.png",
+      "sha256": "e8237a66b284e8154894503a2253ebdf7b275f10bcbd4b419a811a0a2f655e96",
+      "captureTimestamp": 1789454526.31
+    },
+    {
+      "file": "iphone-document-assistant.png",
+      "sha256": "2499cbc6e8c70ecbf838f4fb32138ac094d4b32fa42f1d414ef504dc0a482175",
+      "captureTimestamp": 1789454517.035
+    },
+    {
+      "file": "iphone-library.png",
+      "sha256": "00c5408db9935eca9c2b46d5a12a9b249f419c0fcb24b613910a5b6531a02025",
+      "captureTimestamp": 1789454499.257
+    }
+  ],
+  "limitations": [
+    "Native Office is device-only and was explicitly skipped on both simulators.",
+    "Service HTTP/readback, cancellation and revocation passed; the startup stdout assertion read the snapshot before its asynchronous log arrived. The original failure is retained.",
+    "No real model invocation or physical-device acceptance is established by this evidence.",
+    "This source has not been uploaded as TestFlight build 173."
+  ]
+}

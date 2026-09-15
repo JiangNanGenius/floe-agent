@@ -425,7 +425,7 @@ Python 包也可通过 `pip`、`pip3` 或 `python3 -m pip` 管理：安装兼容
 
 修复候选版的软件包页面可点“软件源”修改当前环境的 Python Simple 索引或 npm 仓库，也可恢复官方地址。设置用于手动、Shell 和 Agent 安装；npm/pnpm 共用 Node 源。仅填写公开 HTTPS 源，不在网址中保存密钥。修改源会保留当前安装，下一次安装时生效；私有源认证及 Floe 语言包镜像尚未完成。
 
-修复候选版截图：[文档助手、画笔设置与 PDF 正文搜索](evidence/floe-1.7/build172-repair/notes-83cbc383/README.md)。来自 `83cbc383` 的完整 App 模拟器操作，不代表新版 TestFlight 已可安装。
+修复候选版截图：[文档助手、画笔设置与 PDF 正文搜索](evidence/floe-1.7/build172-repair/notes-9e4434ca/README.md)。来自 `9e4434ca` 的完整 App 模拟器操作，不代表新版 TestFlight 已可安装。
 
 ### 173 修复候选：搜索、画笔与诊断
 

@@ -268,9 +268,9 @@ The document assistant no longer starts with a visible internal instruction mess
 
 文档助手不再用可见的内部指令消息开场。截图使用合成文档，不代表已经演示云端模型回答。
 
-Source f5b6d3bd passed the full-App execution regression step and SDK 26 compatibility build. Its Notes UI step failed and is being investigated. Final build 173 qualification is a separate run.
+Source 9e4434ca passed Notes import, tabs and body search on iPad and iPhone simulators, and the dedicated Notes conversation migration test. Native Office is device-only and was explicitly skipped. One full-App assertion checked startup logs too early; 170 of 171 tests passed. Final candidate qualification is running separately.
 
-f5b6d3bd 已通过完整 App 执行回归步骤与 SDK 26 兼容构建；手记 UI 步骤失败，正在排查。最终 173 构建另行验证。
+9e4434ca 已通过 iPad、iPhone 模拟器的手记导入、标签页、正文搜索，以及手记专属聊天迁移测试。原生 Office 仅真机可测，已明确跳过。完整 App 回归 171 项中 170 项通过，剩余一项过早检查启动日志；最终候选版正在另行验证。
 
 A macOS Qwen diagnostic passed cold load, repeated short prompts and a 5,773-token prompt. It does not establish an iPad crash fix or a device memory pass.
 

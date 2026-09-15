@@ -422,7 +422,7 @@ Python packages can also be managed with `pip`, `pip3` or `python3 -m pip`: inst
 
 The repair candidate's package page lets you edit the selected environment's Python Simple index or npm registry under **Package source**, or restore the official address. Manual, Shell and Agent installs share the setting; npm/pnpm share the Node registry. Use a public HTTPS source without credentials in its URL. Existing dependencies remain installed and the next transaction uses the new source. Private-registry authentication and the Floe language-package mirror remain incomplete.
 
-Repair candidate screenshots: [document assistant, brush controls and PDF body search](evidence/floe-1.7/build172-repair/notes-83cbc383/README.md). These are full-App simulator captures from `83cbc383`, not a new TestFlight availability claim.
+Repair candidate screenshots: [document assistant, brush controls and PDF body search](evidence/floe-1.7/build172-repair/notes-9e4434ca/README.md). These are full-App simulator captures from `9e4434ca`, not a new TestFlight availability claim.
 
 ### Build 173 repair candidate: search, ink and diagnostics
 
