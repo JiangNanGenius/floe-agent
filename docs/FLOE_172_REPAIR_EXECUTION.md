@@ -1,6 +1,6 @@
 # Build 172 feedback repair and delivery ledger
 
-Updated: 2026-09-15. This is an implementation ledger, not a release acceptance claim.
+Updated: 2026-09-16. This is an implementation ledger, not a release acceptance claim.
 
 ## Delivery boundary
 
@@ -9,6 +9,8 @@ Repair and qualify the complete app, then upload a new internal TestFlight build
 The owner's demonstration credential must not enter source, logs, examples, review materials or reviewer access. Generated video is limited to **10 seconds total**, including uncertain charged attempts. Screen recordings are separate. Use only the authorized small amount of image/model generation.
 
 ## Current candidate checkpoint
+
+Build **177**, source `8488c8f27282b97447daf6e52d1a3c9cd1747155`, is now in [complete App CI 34986754638](https://github.com/JiangNanGenius/floe-agent/actions/runs/34986754638). [Pencil component run 34987017095](https://github.com/JiangNanGenius/floe-agent/actions/runs/34987017095) separately covers both SDK/device combinations. Neither run is an upload. See [candidate release notes](RELEASE_NOTES_1.7.0_BUILD_177.md) for the actual fixes and unfinished capabilities. Packaging-only commit `3720f3ee` corrects complete-CI selection when a newer optional run exists; its six isolated selection cases and actionlint pass. It does not change the frozen App source.
 
 The newest work adds a full-screen CodeBlitz IDE, guarded native filesystem bridge, offline resources, existing-editor/terminal entry points and WASI cwd/environment/terminal-input repair. Implementation and evidence boundaries are tracked in [IDE and languages](FLOE_IDE_AND_LANGUAGES.md). Common language execution/compiler payloads remain work in progress; syntax highlighting is not runtime acceptance.
 

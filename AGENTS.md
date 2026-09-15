@@ -52,6 +52,7 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 
 ## Safe cleanup
 
+- Keep new task-owned local files inside this repository: `Local/Private`, `Local/Artifacts`, `Local/Worktrees` and `Local/Scratch` are Git-ignored. Do not create sibling project/output directories on the external disk. After delivery, consolidate existing Floe-owned directories with a relocation record; move Git worktrees with Git and preserve unrelated projects. Public, redacted evidence belongs in `docs/`.
 - Inspect active processes, Git boundaries and exact paths first. Remove only confirmed regenerable scratch/staging/cache owned by this work. Preserve source, delivery packages, logs, screenshots, rollback copies, credentials, virtual environments and uncertain files.
 - Do not broadly delete DerivedData, `.build`, Archives or CoreSimulator. Simulators containing user/test apps are protected even when shut down. Prefer a specific finished build directory; report measured space reclaimed.
 

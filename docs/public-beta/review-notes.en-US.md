@@ -11,7 +11,7 @@ Floe is an iPad-first productivity application with iPhone support. Its primary 
 Suggested walkthrough:
 
 1. Open Notes. Create a blank note or import the attached sample PDF. Open it for full-screen editing, write an annotation, close and reopen it. Switch document tabs and search text from the library.
-2. Tap the current pen or color control to choose a brush and adjust width and opacity. The writing toolbar remains available when the title/header is collapsed. The visible tool-menu button allows testing without Pencil Pro hardware.
+2. Tap the current pen or color control to choose a brush and adjust width and transparency (0% means solid ink). The writing toolbar remains available when the title/header is collapsed. The visible tool-menu button allows testing without Pencil Pro hardware.
 3. Follow the verified on-device model instructions attached to this submission [MODEL, HARDWARE, DOWNLOAD AND SUPPORTED CAPABILITIES TO BE VERIFIED]. Return to New Task and ask a short question. Only demonstrate document/tool actions if the selected local model actually supports them. Cloud-provider connections use user-supplied credentials; configuration instructions and a genuine recording are supplementary evidence, not a claim of live reviewer access.
 4. Open Creative Mode to create and organize a canvas. Access to remote computers, personal accounts and system permissions is optional; review does not require access to a reviewer's private machine or data.
 

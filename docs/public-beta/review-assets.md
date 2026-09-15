@@ -14,7 +14,7 @@ These are unedited build 172 SDK 27 full-App simulator images using synthetic fi
 
 ## Complete walkthrough
 
-The [12-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes delivered build 172 from the build 176 candidate and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
+The [13-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, IDE/CAD review, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes delivered build 172 from the build 177 candidate and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
 
 ## Prepared sample
 

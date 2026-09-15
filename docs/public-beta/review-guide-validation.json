@@ -1,36 +1,34 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (172)",
-  "candidate": "1.7.0 (176), not uploaded",
-  "pages": 12,
-  "sha256": "efd05d5b93b8b198aa3897de90fc433cd789e525c3c42a48fc73b438a94f74f2",
-  "bytes": 2735852,
+  "candidate": "1.7.0 (177), not uploaded",
+  "pages": 13,
+  "sha256": "f4d9e7f12bec821f5f25286cc124c41ad31f2bdeb55368839815768a511713c8",
+  "bytes": 2746729,
   "textExtractionChecked": true,
   "screenshots": "Original baseline 172 and source-labelled 9e4434ca full-App simulator screenshots; rotated only in layout",
   "reviewStatus": "draft, external review not submitted",
   "reviewerCloudCredits": "none authorized; demonstration credentials excluded",
   "localInference": "Mac host qualification is separate from unresolved iPad crash",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
-  "updatedAt": "2026-09-15T09:20:49.201221+00:00",
+  "updatedAt": "2026-09-15T15:21:37.857567+00:00",
   "currentRenderedPagesReviewed": [
-    1,
-    7,
-    11
-  ],
-  "unchangedPageTextComparedToPreviouslyReviewedPDF": [
     1,
     2,
     3,
     4,
     5,
     6,
+    7,
     8,
     9,
     10,
     11,
-    12
+    12,
+    13
   ],
-  "footerChange": "Uses the JSON baseline and candidate fields; current footer visually checked on pages 1 and 11",
+  "unchangedPageTextComparedToPreviouslyReviewedPDF": [],
+  "footerChange": "Candidate 177 on all pages; pages 10 and 12 rerendered and reviewed after evidence corrections",
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator"
 }

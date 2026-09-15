@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (172). Candidate: 1.7.0 (176). review preparation, candidate under qualification, not submitted.
+Baseline: 1.7.0 (172). Candidate: 1.7.0 (177). review preparation, candidate under qualification, not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 172. This internal TestFlight build is available 
 
 基线：1.7.0（172），已交付 Floe QA 内部 TestFlight；尚未提交外部 Beta 审核。
 
-Build 176 is the next candidate under qualification. It has not been uploaded or made available in TestFlight. This draft separates the delivered baseline from candidate evidence.
+Build 177, source 8488c8f2, is under complete App qualification. It has not been uploaded or made available in TestFlight. Build 176 failed qualification and was not delivered. Candidate evidence is separate from the delivered baseline.
 
-176 为正在验证的下一候选版，尚未上传或在 TestFlight 开放。本草稿区分已交付基线和候选代码证据。
+177（源码 8488c8f2）正在进行完整 App 验证，尚未上传或在 TestFlight 开放。176 验证失败，未交付；候选代码证据与已交付基线分开记录。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -250,9 +250,9 @@ TestFlight uses Xcode 26.6 / SDK 26.5. Its device build and signing/upload passe
 
 TestFlight 使用 Xcode 26.6 / SDK 26.5；设备构建与签名上传通过，本次加急明确豁免模拟器验收，该豁免不自动适用于下次公开 Beta。
 
-Screenshots in this guide are original build 172 SDK 27 full-App simulator captures. They are not hardware Pencil evidence or captures of an unbuilt future submission.
+Screenshots in this guide identify their sources: baseline 172 and the labelled earlier candidate. They are original full-App simulator captures, not physical Pencil evidence or captures of an unbuilt submission.
 
-本说明截图来自 172 SDK 27 完整 App 模拟器，保持原图；不代表真实 Pencil 硬件结果，也不冒充未来构建截图。
+截图分别标注来源：172 基线与注明源码的较早候选版；均为原始完整 App 模拟器截图，不代表真机 Pencil 验收，也不是未构建版本的截图。
 
 Before submission, confirm the final build, review contact, feedback email, support/privacy URLs and accepted access arrangement. These real details are not yet completed; this document is a preparation draft.
 
@@ -262,21 +262,47 @@ A changed binary requires a new upload build number. The marketing version may r
 
 修改安装包后再次上传须递增构建号；版本号可继续为 1.7.0。固定最终审核 Build，并使截图与说明一致。
 
-## 10  本轮修复验证状态 / Candidate repair evidence - 15 September 2026
+## 10  IDE 与工程图纸 / IDE and engineering drawings
 
-Build 176 adds document conversation restart and live refresh after committed edits. It uses a full-height iPad assistant column or a phone sheet. New-source UI verification is pending; the screenshot shows the labelled earlier source.
+In the Build 177 candidate, open a workspace file, then use Open in Editor to expand the full-screen IDE. Use the file tree, tabs, code editor and existing document editors. Syntax highlighting does not imply that every programming language can execute locally.
 
-176 增加重新开始当前文档会话及提交编辑后自动刷新；助手使用完整 iPad 右栏或手机面板。新源码界面验证待完成；配图仍为标注的较早版本。
+177 候选版中，打开工作区文件，再通过「在编辑器中打开」进入全屏 IDE，使用文件树、标签、代码及现有文档编辑器。语法高亮不代表所有语言都能在本地执行。
 
-Source 8958d8f1 passed 172/172 full-App regressions and iPhone Notes UI; its iPad case exceeded 180 seconds. Build 176 splits the long flow into three required cases, retaining assertions and timeout. Native Office remains device-only.
+When an Agent changes a file while the user is editing, preserve the user draft, compare the file version and review overlapping changes before overwriting. Independent edits can be merged; conflict copies remain recoverable.
 
-8958d8f1 完整 App 回归 172/172 与 iPhone 手记界面通过；iPad 用例超过 180 秒。176 将长流程拆成三个必须通过的用例，保留断言与时限。原生 Office 仍需真机验证。
+Agent 与用户同时编辑文件时保留用户草稿、比对文件版本，并在覆盖前检查重叠修改；独立修改可以合并，冲突副本可恢复。
+
+Open synthetic DXF or DWG drawings. Basic line, circle and text edits, undo and saving are supported by the candidate. Reopen the exported drawing. Complex entities and full-fidelity DWG round trips are not claimed.
+
+打开示例 DXF 或 DWG；候选版提供直线、圆、文字等基础图元编辑、撤销与保存。导出后重新打开检查，不承诺复杂图元和完整 DWG 无损往返。
+
+STEP, IGES and BREP provide bounded read-only mesh previews. Mesh and supported Gerber/Excellon previews are viewing tools, not full 3D or PCB editors. Native KiCad project support is not yet qualified.
+
+STEP、IGES、BREP 提供有资源上限的只读网格预览；网格及已支持的 Gerber/Excellon 查看器不属于完整 3D 或 PCB 编辑器，原生 KiCad 项目尚未验收。
+
+Ask AI opens a review form containing the actual viewport and bounded drawing metadata. A configured model is required only when sending the question. With no selected chat, sending creates a review task. A text-only model must not be described as having inspected the image.
+
+「询问 AI」打开包含实际视口与有界图纸信息的审图表单，发送问题才需要已配置模型。没有选中聊天时，发送后创建审图任务；纯文本模型不能被描述为已看过图片。
+
+Native RDP connection and certificate checks have separate qualification evidence. RDP host settings, viewer and Agent registration are incomplete and are not offered as usable App features in this candidate. Existing VNC is independent.
+
+原生 RDP 连接与证书检查有独立验证证据，但 App 主机设置、查看器和 Agent 注册尚未完成，本候选版不将 RDP 声明为可用功能；已有 VNC 独立保留。
+
+## 11  本轮修复验证状态 / Candidate repair evidence - 16 September 2026
+
+Build 177 retains document conversation restart and live refresh after committed edits, with a full-height iPad assistant column or phone sheet. It also applies activated Soul/profile changes at the next model request. The screenshot shows the labelled earlier source, not this candidate.
+
+177 保留当前文档助手会话重开、提交编辑后实时刷新、iPad 完整助手栏和手机面板，并让已激活的 Soul／画像在下一次模型请求时生效。配图是已标注的较早源码，不是本候选版。
+
+Source 4eb99f62 passed the accepted-SDK build, Linux build and full-App core regressions but failed UI checks. Build 177 fixes the observed language, IDE control identification and stale keyboard-geometry issues; complete App run 34986754638 is pending. Native Office remains device-only.
+
+4eb99f62 通过发布 SDK 构建、Linux 编译和完整 App 核心回归，但界面检查失败。177 修复对应语言、IDE 控件定位及过期键盘坐标问题；完整 App 流程 34986754638 尚未结束。原生 Office 仍需真机验收。
 
 A macOS Qwen diagnostic passed cold load, repeated short prompts and a 5,773-token prompt. It does not establish an iPad crash fix or a device memory pass.
 
 macOS Qwen 诊断已通过冷加载、重复短问题和 5,773 token 长输入；不等于 iPad 崩溃已修复或真机内存验收通过。
 
-## 11  演示结果与反馈 / Expected results and feedback
+## 12  演示结果与反馈 / Expected results and feedback
 
 Sample page 1: search “lantern garden 472” and “星河手记验证”. Expected location: the sample PDF, page 1. Add ink, close, reopen and compare.
 

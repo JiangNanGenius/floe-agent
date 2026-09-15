@@ -58,6 +58,14 @@
     "generatedVideoSecondsUsed": 0,
     "credentialMayBeSharedWithReviewers": false,
     "credentialIncludedInMaterials": false,
-    "successfulAppRecording": "pending on build 175"
+    "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 177 evidence."
+  },
+  "candidateQualification": {
+    "version": "1.7.0",
+    "build": "177",
+    "sourceCommit": "8488c8f27282b97447daf6e52d1a3c9cd1747155",
+    "fullCIRun": 34986754638,
+    "pencilComponentRun": 34987017095,
+    "status": "in_progress_not_uploaded"
   }
 }
