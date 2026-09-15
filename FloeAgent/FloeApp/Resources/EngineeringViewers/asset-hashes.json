@@ -2,6 +2,8 @@
   "CAD_NOTICES.txt": "38414e9de5245c8753aadd81a4de803c884146f6381df864e4f9c1082d91dbff",
   "CAD_SOURCES.json": "f6ea73544945ef28fc2e7808e1187daa4c2838c6793f480db43ca0ea90f7df3c",
   "MiSans-Regular.ttf": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
+  "OCCT_LGPL_EXCEPTION.txt": "04580a884ea6cea294402649ff7b5cbb167d47462d1340a4ed33e550db10a81b",
+  "OCCT_SOURCES.json": "64f01d0a00483d030b82ad89d3854ec0d9b372d383566bda999dc8ad6728b238",
   "THIRD_PARTY_NOTICES.txt": "354d4591562ee7d854507cd4a79a9a9e37b83c1179213201a0c30f294af9f4cc",
   "cad-editor.js": "480199a8972fc74d8c60f9033925a2d8889efc927ef25cd3231f65c06a151966",
   "cad-worker.js": "bd276890b544e71c8ddeb2abc82dd6b4b7bf1d4501f0a9cc0353d70d19ecec27",
@@ -14,10 +16,15 @@
   "gerber-to-svg.min.js.LICENSE.txt": "a41d4ce5d77ff2e5a5c511d8287e8752530ceb955fd04c1f48855a8d9796708a",
   "gerber-worker.js": "c34ebdcca12d59a0339cbe962d459edb6fbd118ab5e965f30ae3502d1d3c270b",
   "index.html": "05073b9dc3041d346d7ee45843276936fede2e07255f916a4af5e6dba0261e3c",
+  "license.occt-import-js.txt": "7ffe1954587c77dfba1cf8eb9b2ea743671fa6e63f9e7a2f258119d42e14eefe",
+  "license.occt.txt": "090f8eb6ba63e72887c1f89b009fb1656cfda02d83b6e9805b20468520a5d77f",
   "mesh.js": "fe07c0a7c84d394a6c38ec688aea58ac3b0640d0e758a06519f5d759a89ba8f9",
   "mesh.js.LEGAL.txt": "46932ad3a815be80035378068fafa8e515ab6cd6d184e405ff22383f0e6bab93",
+  "occt-import-js.js": "3fb44ce11d00611f9b3f3c5775d520ebab48930c1f08279b7b1316f05f0d3379",
+  "occt-import-js.wasm": "ebf53ff1364f1ad0c82c6efc745fbb94677dd88ecd5588622c37ac3a9ba711da",
+  "occt-worker.js": "d22a4038c70df590947577c1d7d8682d36a84957871bbdff9e8c4acbf56169da",
   "sample-editable.dwg": "67c70f76a8cd634b528be3f8de7160409704f68f2450d03749aa85cc3775bfdb",
   "sample-plate.dxf": "76d7580228e8732bb91decb98668f4ee12499b3483825f35d7fa8d3aef016c7d",
   "viewer.css": "aab523aaf81322980925d9f22c30c98c7cdbe4e47bee4c6678eb1be86deb7934",
-  "viewer.js": "e894d555e29ff9aa37753f23919a6fcd85cbe256b651476c76bbfa309957e479"
+  "viewer.js": "7b7c2b2ed6c5bfe2f62ad5f02a8cbb55c627cf93354ac58c4c4f8d260ff08c98"
 }

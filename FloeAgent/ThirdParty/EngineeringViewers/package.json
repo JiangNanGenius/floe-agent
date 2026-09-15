@@ -6,7 +6,8 @@
   "dependencies": {
     "dxf-viewer": "1.0.48",
     "gerber-to-svg": "4.2.8",
-    "online-3d-viewer": "0.18.0"
+    "online-3d-viewer": "0.18.0",
+    "occt-import-js": "0.0.23"
   },
   "devDependencies": {
     "esbuild": "0.27.1"

@@ -1,0 +1,112 @@
+{
+  "scope": "Desktop browser component, mocked native review bridge; no App or paid model acceptance",
+  "source": {
+    "package": "occt-import-js",
+    "version": "0.0.23",
+    "sourceCommit": "c2148e54b456b571238d35cac037d304053d64b2",
+    "sourceURL": "https://github.com/kovacsv/occt-import-js/tree/c2148e54b456b571238d35cac037d304053d64b2",
+    "occtSource": "https://github.com/Open-Cascade-SAS/OCCT/tree/d2abb6d844231cb8f29be6894440874a4700e4a5",
+    "license": "LGPL-2.1; see bundled license files",
+    "upstreamWASMSHA256": "33391fc9d94ea5c869a6718488bf0a9a464222bac9bdc764dfe1690cef281952",
+    "bundledWASMSHA256": "ebf53ff1364f1ad0c82c6efc745fbb94677dd88ecd5588622c37ac3a9ba711da",
+    "modification": "Only the single WebAssembly memory maximum is reduced from 32768 to 6144 pages (384 MiB). Binding JS otherwise unmodified; npm/tag JS differ only in CRLF. Source and rebuild instructions retain a separately replaceable library."
+  },
+  "cases": [
+    {
+      "name": "cube.stp",
+      "viewport": {
+        "width": 1194,
+        "height": 834
+      },
+      "result": {
+        "ok": true,
+        "details": "\u4e09\u7ef4\u6a21\u578b"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "STP\n\u4e09\u7ef4\u6a21\u578b\n\u590d\u4f4d\nAI \u5ba1\u56fe\n\u5355\u6307\u65cb\u8f6c \u00b7 \u53cc\u6307\u7f29\u653e\u548c\u5e73\u79fb \u00b7 \u53ea\u8bfb\u9884\u89c8"
+    },
+    {
+      "name": "cube.igs",
+      "viewport": {
+        "width": 1194,
+        "height": 834
+      },
+      "result": {
+        "ok": true,
+        "details": "\u4e09\u7ef4\u6a21\u578b"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "IGS\n\u4e09\u7ef4\u6a21\u578b\n\u590d\u4f4d\nAI \u5ba1\u56fe\n\u5355\u6307\u65cb\u8f6c \u00b7 \u53cc\u6307\u7f29\u653e\u548c\u5e73\u79fb \u00b7 \u53ea\u8bfb\u9884\u89c8"
+    },
+    {
+      "name": "assembly.brep",
+      "viewport": {
+        "width": 1194,
+        "height": 834
+      },
+      "result": {
+        "ok": true,
+        "details": "\u4e09\u7ef4\u6a21\u578b"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "BREP\n\u4e09\u7ef4\u6a21\u578b\n\u590d\u4f4d\nAI \u5ba1\u56fe\n\u5355\u6307\u65cb\u8f6c \u00b7 \u53cc\u6307\u7f29\u653e\u548c\u5e73\u79fb \u00b7 \u53ea\u8bfb\u9884\u89c8"
+    },
+    {
+      "name": "cube.stp",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "result": {
+        "ok": true,
+        "details": "\u4e09\u7ef4\u6a21\u578b"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "STP\n\u4e09\u7ef4\u6a21\u578b\n\u590d\u4f4d\nAI \u5ba1\u56fe\n\u5355\u6307\u65cb\u8f6c \u00b7 \u53cc\u6307\u7f29\u653e\u548c\u5e73\u79fb \u00b7 \u53ea\u8bfb\u9884\u89c8"
+    },
+    {
+      "name": "cube.igs",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "result": {
+        "ok": true,
+        "details": "\u4e09\u7ef4\u6a21\u578b"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "IGS\n\u4e09\u7ef4\u6a21\u578b\n\u590d\u4f4d\nAI \u5ba1\u56fe\n\u5355\u6307\u65cb\u8f6c \u00b7 \u53cc\u6307\u7f29\u653e\u548c\u5e73\u79fb \u00b7 \u53ea\u8bfb\u9884\u89c8"
+    },
+    {
+      "name": "assembly.brep",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "result": {
+        "ok": true,
+        "details": "\u4e09\u7ef4\u6a21\u578b"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "BREP\n\u4e09\u7ef4\u6a21\u578b\n\u590d\u4f4d\nAI \u5ba1\u56fe\n\u5355\u6307\u65cb\u8f6c \u00b7 \u53cc\u6307\u7f29\u653e\u548c\u5e73\u79fb \u00b7 \u53ea\u8bfb\u9884\u89c8"
+    }
+  ]
+}

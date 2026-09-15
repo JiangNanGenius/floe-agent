@@ -4,15 +4,16 @@ import Foundation
 /// Read-only renderer routing. Extensions requiring an unbundled decoder are
 /// identified explicitly, rather than handed to Quick Look as a blank success.
 public enum EngineeringPreviewKind: String, Codable, Sendable {
-    case mesh, dxf, dwg, gerber, unsupported
+    case mesh, dxf, dwg, cadSurface, gerber, unsupported
 
     public static func identify(_ path: String) -> Self? {
         switch (path as NSString).pathExtension.lowercased() {
         case "stl", "obj", "ply", "off", "3ds", "dae", "fbx", "3mf", "amf", "gltf", "glb", "wrl", "bim": .mesh
         case "dxf": .dxf
         case "dwg": .dwg
+        case "step", "stp", "iges", "igs", "brep": .cadSurface
         case "gbr", "ger", "gerber", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gm1", "gml", "drl", "xln": .gerber
-        case "dwt", "dgn", "step", "stp", "iges", "igs", "brep", "fcstd", "ifc", "3dm", "kicad_pcb", "kicad_sch": .unsupported
+        case "dwt", "dgn", "fcstd", "ifc", "3dm", "kicad_pcb", "kicad_sch": .unsupported
         default: nil
         }
     }

@@ -77,14 +77,25 @@ async function load(pkg){
   };
   $('hint').textContent=say('双指缩放 · 拖动平移 · 部分标注、线型和布局可能简化','Pinch to zoom · Drag to pan · Some dimensions, line styles and layouts may be simplified');
   ready(viewer.hasMissingChars?say('部分字符缺少字体','Some glyphs are unavailable'):say('二维图纸','2D drawing'));
- }else if(pkg.kind==='mesh'){
+  }else if(pkg.kind==='mesh'||pkg.kind==='cadSurface'){
+  let modelFiles=pkg.files.map(f=>new File([bytes(f)],f.name)),surfaceInfo;
+  if(pkg.kind==='cadSurface'){
+   const worker=new Worker(new URL('occt-worker.js',location.href));destroy=()=>worker.terminate();
+   const converted=await new Promise((resolve,reject)=>{
+    const timeout=setTimeout(()=>{worker.terminate();reject(Error(say('图纸处理超时','CAD processing timed out')));},45000);
+    worker.onerror=()=>{clearTimeout(timeout);worker.terminate();reject(Error(say('图纸处理失败','CAD processing failed')));};
+    worker.onmessage=({data})=>{clearTimeout(timeout);worker.terminate();data.error?reject(Error(data.error)):resolve(data);};
+    worker.postMessage({bytes:bytes(main),extension:pkg.name.split('.').pop().toLowerCase()});
+   });
+   modelFiles=[new File([converted.buffer],'display.stl')];surfaceInfo=converted.info;
+  }
   const OV=await import('./mesh.js');
   const embedded=new OV.EmbeddedViewer(view,{
    backgroundColor:new OV.RGBAColor(...(config.dark?[24,30,40,255]:[245,246,248,255])),
    defaultColor:new OV.RGBColor(120,165,190),
    onModelLoaded:()=>{
     const model=embedded.GetModel();if(!model||model.MeshCount()===0){fail(say('文件没有可显示的网格。','No renderable meshes.'));return;}
-    reviewContext=()=>({type:'mesh',meshCount:model.MeshCount(),vertexCount:model.VertexCount?.(),triangleCount:model.TriangleCount?.(),
+    reviewContext=()=>({type:'mesh',sourceCAD:surfaceInfo,meshCount:model.MeshCount(),vertexCount:model.VertexCount?.(),triangleCount:model.TriangleCount?.(),
      bounds:embedded.GetViewer().GetBoundingSphere(()=>true),missingReferences:pkg.missingReferences,
      limitations:'Rendered meshes only. Dimensions, material properties, tolerances and manufacturing validity are not verified.'});
     ready(missing?say('部分外部资源缺失','Some referenced resources are missing'):say('三维模型','3D model'));
@@ -93,7 +104,7 @@ async function load(pkg){
   const observer=new ResizeObserver(()=>embedded.Resize());observer.observe(view);
   destroy=()=>{observer.disconnect();embedded.Destroy();};
   fit=()=>{const v=embedded.GetViewer();const sphere=v.GetBoundingSphere(()=>true);if(sphere)v.FitSphereToWindow(sphere,false);};
-  embedded.LoadModelFromFileList(pkg.files.map(f=>new File([bytes(f)],f.name)));
+  embedded.LoadModelFromFileList(modelFiles);
   $('hint').textContent=say('单指旋转 · 双指缩放和平移 · 只读预览','Drag to rotate · Two fingers to zoom and pan · Read only');
  }else if(pkg.kind==='gerber'){
   const worker=new Worker(new URL('gerber-worker.js',location.href));destroy=()=>worker.terminate();
