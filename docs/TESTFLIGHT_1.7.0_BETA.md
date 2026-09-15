@@ -15,8 +15,10 @@ Main was fast-forwarded to the delivered integration. Task-owned merged branches
 ## September 15 repair candidate — not yet delivered
 
 Build 176 / `v1.7.0-beta.33` / `b8c1fc0494a08e49af1a092b14df11ee74580554`
-is under [CI qualification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949420611)
+started [initial CI qualification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949420611)
 and [release qualification/build](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949491542).
+The initial test-host compile failed because a new test omitted a module import.
+That test-only correction is in `1d86b285`; [follow-up CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34951710478) is running. The App files are unchanged and beta.33 remains immutable; final delivery waits for qualification.
 It adds live document refresh, dedicated conversation restart and a full-height iPad assistant column.
 Upload and Apple availability remain pending; the installable delivery above remains build 172.
 [Build-specific notes](RELEASE_NOTES_1.7.0_BUILD_176.md) record remaining scope.

@@ -193,8 +193,8 @@
           "chinese": "检查工具名、进度、结果或错误。停止运行后，确认其他任务可继续，取消操作不得显示误导性的成功结果。"
         },
         {
-          "english": "Start with a small task: create a text file containing “Floe review sample”, reopen it, then search for that exact phrase. This is an expected exercise, not a recorded pass for the next build.",
-          "chinese": "先执行小任务：创建含「Floe review sample」的文本文件，重开并搜索原句。此为演示预期，不是下一版已经通过的记录。"
+          "english": "Supplementary recording: floe-real-agent-demo-build175.mp4 shows the actual Build 175 Agent using Ark DeepSeek to create and read back review-demo.md, then completing successfully. The key was configured privately and is not supplied to reviewers. Later-source qualification remains separate.",
+          "chinese": "补充录屏 floe-real-agent-demo-build175.mp4 展示真实 Build 175 Agent 通过火山引擎 DeepSeek 创建、回读 review-demo.md 并成功结束任务。Key 在录屏外配置，不提供给审核人员；后续源码仍单独验收。"
         },
         {
           "english": "Unknown commands and failed operations must report useful errors. Tool availability reflects actual enabled/configured capabilities; unconfigured search providers must not appear as usable choices.",
