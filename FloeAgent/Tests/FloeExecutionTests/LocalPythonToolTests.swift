@@ -6,6 +6,21 @@ import FloeTools
 
 @Suite("FloeExecution.LocalPython")
 struct LocalPythonToolTests {
+    @Test func shellPipPreservesArgumentsAndRejectsTargetOrCodeInjection() throws {
+        if case .install(let specs) = try ManagedPythonPackageSpecParser.parseShell(arguments: ["install", "-U", "httpx==0.28.1", "requests"]) {
+            #expect(specs == ["httpx==0.28.1", "requests"])
+        } else { Issue.record("Install was not routed") }
+        if case .remove(let name) = try ManagedPythonPackageSpecParser.parseShell(arguments: ["uninstall", "-y", "requests"]) { #expect(name == "requests") }
+        else { Issue.record("Uninstall was not routed") }
+        if case .inspect(let command, let args) = try ManagedPythonPackageSpecParser.parseShell(arguments: ["list", "--format=json"]) {
+            #expect(command == "list" && args == ["--format=json"])
+        } else { Issue.record("Inventory was not routed") }
+        for arguments in [["install", "--target", "/tmp", "requests"], ["install", "https://example.com/p.whl"],
+                          ["install", "requests;print(1)"], ["uninstall", "one", "two"], ["show", "os.system('x')"]] {
+            #expect(throws: (any Error).self) { try ManagedPythonPackageSpecParser.parseShell(arguments: arguments) }
+        }
+    }
+
     @Test("descriptor is on-device, bounded, and always approval-sensitive")
     func descriptorContract() {
         #expect(LocalPythonTool.name == "exec.localPython")

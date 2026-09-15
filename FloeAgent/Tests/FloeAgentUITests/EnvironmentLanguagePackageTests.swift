@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 import FloeExecution
+import FloeCore
 import FloeEnvironments
 import FloeTools
 @testable import FloeApp
@@ -60,6 +61,13 @@ struct EnvironmentLanguagePackageTests {
                     pythonContext: ManagedPythonInstallService.executionContext(environment)), cancellation: nil)
                 if case .ok(_, let stdout, _, _, _, _) = outcome { #expect(stdout.contains("0.4.6")) }
                 else { Issue.record("Installed Python dependency could not be imported: \(outcome)") }
+                let inspection = try await manager.pythonFromShell(environment: environment,
+                    operation: ManagedPythonPackageSpecParser.parseShell(arguments: ["show", "colorama"]), cancellation: CancellationToken())
+                #expect(inspection.contains("Version: 0.4.6"))
+                _ = try await manager.pythonFromShell(environment: environment,
+                    operation: ManagedPythonPackageSpecParser.parseShell(arguments: ["uninstall", "-y", "colorama"]), cancellation: CancellationToken())
+                _ = try await manager.pythonFromShell(environment: environment,
+                    operation: ManagedPythonPackageSpecParser.parseShell(arguments: ["install", "colorama==0.4.6"]), cancellation: CancellationToken())
             } else {
                 let outcome = await IOSSystemNodeRuntime.shared.run(.init(entryScript: nil,
                     arguments: ["-e", "console.log(require('is-number')('42'))"], workingDirectory: root,

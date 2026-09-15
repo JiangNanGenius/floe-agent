@@ -106,6 +106,67 @@ public struct ManagedPythonInstallService: Sendable {
         }
     }
 
+    /// Package inspection executes fixed source, never a user-supplied pip
+    /// module/script. Effective versions follow the resolved Python path order.
+    public func inspect(command: String, arguments: [String], environment: ToolEnvironment,
+                        cancellation: CancellationToken?) async -> Outcome {
+        let source = """
+        import importlib.metadata as _metadata, json as _json, re as _re, sys as _sys
+        _command, _arguments = input['command'], input['arguments']
+        def _name(value): return _re.sub(r'[-_.]+', '-', value).lower()
+        _installed = {}
+        for _distribution in _metadata.distributions():
+            _distribution_name = _distribution.metadata.get('Name')
+            if _distribution_name:
+                _installed.setdefault(_name(_distribution_name), _distribution)
+        if _command in ('help', '--help', '-h'):
+            print('pip install NAME[==VERSION] | uninstall NAME | list [--format=json] | show NAME | freeze | check | --version')
+            print('Installations use the current environment. Native extensions require compatible bundled builds.')
+        elif _command in ('--version', '-V'):
+            print('pip ' + _metadata.version('pip') + ' (Floe managed, Python ' + _sys.version.split()[0] + ')')
+        elif _command == 'freeze':
+            for _key, _distribution in sorted(_installed.items()):
+                print(_distribution.metadata['Name'] + '==' + _distribution.version)
+        elif _command == 'list':
+            _rows = [{'name': d.metadata['Name'], 'version': d.version} for _, d in sorted(_installed.items())]
+            if _arguments == ['--format=json']: print(_json.dumps(_rows))
+            else:
+                for _row in _rows: print(_row['name'] + ' ' + _row['version'])
+        elif _command == 'show':
+            for _requested in _arguments:
+                _distribution = _installed.get(_name(_requested))
+                if not _distribution: raise ValueError('Package is not installed: ' + _requested)
+                print('Name: ' + _distribution.metadata['Name'])
+                print('Version: ' + _distribution.version)
+                print('Location: ' + str(_distribution.locate_file('')))
+                print('Requires: ' + ', '.join(_distribution.requires or []))
+        elif _command == 'check':
+            from packaging.requirements import Requirement as _Requirement
+            _errors = []
+            for _distribution in _installed.values():
+                for _text in _distribution.requires or []:
+                    _requirement = _Requirement(_text)
+                    if _requirement.marker and not _requirement.marker.evaluate({'extra': ''}): continue
+                    _dependency = _installed.get(_name(_requirement.name))
+                    if not _dependency or (_requirement.specifier and not _requirement.specifier.contains(_dependency.version, prereleases=True)):
+                        _errors.append(_distribution.metadata['Name'] + ' requires ' + str(_requirement))
+            if _errors: raise ValueError('Dependency conflicts: ' + '; '.join(_errors))
+            print('No broken requirements found.')
+        else: raise ValueError('Unsupported package inspection')
+        """
+        struct Payload: Encodable { let command: String; let arguments: [String] }
+        let payload = try? JSONEncoder().encode(Payload(command: command, arguments: arguments))
+        guard let payload else { return .failed(message: "Invalid inspection arguments") }
+        let result = await python.run(.init(script: source, inputJSON: String(decoding: payload, as: UTF8.self),
+            timeout: 30, maxOutputBytes: 65_536, pythonContext: Self.executionContext(environment)), cancellation: cancellation)
+        switch result {
+        case .ok(_, let stdout, let stderr, _, _, _): return .ok(output: stdout + (stderr.isEmpty ? "" : "\n" + stderr))
+        case .jsException(let message, _): return .failed(message: message)
+        case .timedOut(_, let partial): return .timedOut(partialOutput: partial)
+        case .cancelled: return .cancelled
+        }
+    }
+
     /// Removes an installed distribution by deleting exactly the files its
     /// RECORD lists, then the dist-info directory. Bundled (read-only)
     /// distributions cannot be removed and report a clear failure.

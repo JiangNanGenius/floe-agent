@@ -417,3 +417,5 @@ For environment JavaScript dependencies, choose **Automatic / npm / pnpm** on th
 Office documents inside Notes share one top row for back, document tabs and actions. On compact screens, attachment, drawing and presentation controls move into the document menu. The assistant menu also opens document-linked mind maps.
 
 Shell `npm install` and `pnpm install` use the selected session/project environment and the same rollback path as Settings. Without package arguments, they read the current package.json dependencies and devDependencies. Project manifests/lockfiles are preserved; this environment installation is not a reproduction of a project's frozen lock. Both `require` and ES module imports can locate the resolved environment dependencies.
+
+Python packages can also be managed with `pip`, `pip3` or `python3 -m pip`: install a compatible package, uninstall one environment-owned distribution, or inspect dependencies with list/show/freeze/check. The commands use the same managed installer as Settings. An unavailable native extension requires a compatible App build; installing its pure Python wrapper alone does not make it usable.

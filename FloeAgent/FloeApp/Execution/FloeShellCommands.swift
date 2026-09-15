@@ -333,6 +333,10 @@ enum FloeShellCommands {
             guard let context = registry.context else {
                 FloeShellWrite(stderr, "python3: no workspace is attached\n"); return 2
             }
+            if arguments.count >= 3, arguments[1] == "-m", ["pip", "pip.__main__"].contains(arguments[2]) {
+                guard let handler = registry.handler(for: "pip") else { FloeShellWrite(stderr, "pip: package manager unavailable\n"); return 127 }
+                return await handler(["pip"] + Array(arguments.dropFirst(3)), stdout, stderr)
+            }
             var standardInput: String? = nil
             if let input = FloeShellCommandRegistry.input, !input.isTerminal, !context.interactiveSession {
                 guard let value = await input.readAsync(cancellation: context.cancellation) else {

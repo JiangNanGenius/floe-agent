@@ -152,6 +152,7 @@ final class FloePlatformServices: @unchecked Sendable {
             return result.exitCode ?? 0
         }
 
+        registerPythonPackageCommands(in: commandRegistry)
         registerNodeCommands(in: commandRegistry)
         registerMediaCommands(in: commandRegistry)
         guard let aptEngine, let contextProvider else { return }
@@ -167,6 +168,24 @@ final class FloePlatformServices: @unchecked Sendable {
             }
         }
 
+    }
+
+    private func registerPythonPackageCommands(in registry: FloeShellCommandRegistry) {
+        let manager = lock.withLock { languageManagement }
+        for name in ["pip", "pip3"] {
+            registry.register(name) { arguments, stdout, stderr in
+                do {
+                    guard let manager, let context = FloeShellCommandRegistry.shared.context, let environment = context.environment else {
+                        throw FloeError.invalidConfiguration("当前 Shell 未绑定可安装依赖的环境")
+                    }
+                    let operation = try ManagedPythonPackageSpecParser.parseShell(arguments: Array(arguments.dropFirst()))
+                    let output = try await manager.pythonFromShell(environment: environment, operation: operation, cancellation: context.cancellation)
+                    if !output.isEmpty { FloeShellWrite(stdout, output.hasSuffix("\n") ? output : output + "\n") }
+                    return 0
+                } catch is CancellationError { return 130 }
+                catch { FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n"); return 1 }
+            }
+        }
     }
 
     // MARK: - Node

@@ -420,3 +420,5 @@ floe-service restart JOB_ID
 手记内的 Office 编辑器将返回、文档标签和操作集中在同一顶栏；窄屏下，附件、批注与放映位于文档操作菜单。助手按钮还可打开文档关联的思维导图。
 
 Shell 中的 `npm install`、`pnpm install` 与设置页共用环境安装和失败恢复流程。不带包名时读取当前目录 package.json 中的 dependencies 与 devDependencies；项目清单和锁文件保持不变，因此不等于按项目锁文件精确复现。`require` 和 ES 模块导入均可查找解析后的环境依赖。
+
+Python 包也可通过 `pip`、`pip3` 或 `python3 -m pip` 管理：安装兼容包、逐个卸载本层依赖，或使用 list/show/freeze/check 检查实际依赖。命令与设置页共用安装器。尚不可用的原生扩展需要兼容的 App 构建；只安装纯 Python 包装层并不能补齐原生能力。

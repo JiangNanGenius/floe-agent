@@ -114,12 +114,12 @@ public enum BundledDomainSkills {
             id: "floe-data-code",
             name: "Data & Code Execution",
             description: "On-device JavaScript, the compatibility evaluator, canvas mutations, and generate-tool boundaries.",
-            version: "1.0.2",
+            version: "1.0.3",
             exposed: false,
             markdown: """
             ## Data & code execution (on-device)
             - `exec.javascript` runs bounded JavaScriptCore with pre-installed pure-JS packages (lodash, dayjs, marked, uuid, zod, pdf-lib) — no network, no Node APIs, no timers beyond a microtask shim.
-            - For Node APIs and HTTP(S), use `node` through `exec.shell`; JavaScriptCore's injected libraries are globals, not npm `require` modules. Install compatible dependencies in the current environment through npm/pnpm or Python pip.
+            - For Node APIs and HTTP(S), use `node` through `exec.shell`; JavaScriptCore's injected libraries are globals, not npm `require` modules. Install compatible dependencies in the current environment through `npm install NAME`, `pnpm add NAME`, or `python3 -m pip install NAME==VERSION`. These Shell entries share the settings installer, environment ownership and rollback. `pip list/show/freeze/check` inspect effective Python dependencies. For npm/pnpm, a no-argument install reads the current package.json but does not rewrite or reproduce its project lock. Both require and ESM imports resolve environment dependencies. Unsupported native extensions or installation options fail explicitly. Change: managed Shell pip/npm/pnpm and ESM dependency lookup.
             - Persistent web previews: `floe-service start node server.cjs 8080` or `floe-service start python server.py 8080` in Shell. The script binds `127.0.0.1` using `PORT`. The same lifecycle is available through `jobs.submit` target `exec.localService`. Read its schema before calling. Inspect status/logs, open the returned verified previewURL without opening the sidebar, and stop explicitly when no longer needed. Closing a tab or ending a reply does not stop the service. App termination interrupts it; restart explicitly. Never substitute untracked `&`/daemonization. Change: managed Node/Python services and explicit Node/JavaScriptCore distinction.
             - `exec.compatEvaluator` is Floe's own R/Stata-**compatible** evaluator — it is NOT GNU R, Stata, Octave or MATLAB; for the full runtimes use an approved configured remote host. (Local Python lives in floe-python.)
             - **Canvas**: `canvas.getState` returns canvasID/documentID/revision/node IDs. Reuse the latest exact revision for patches/generation; mutation results return the new revision and a delta — apply it and continue without re-inspecting unless a revision conflict occurs.

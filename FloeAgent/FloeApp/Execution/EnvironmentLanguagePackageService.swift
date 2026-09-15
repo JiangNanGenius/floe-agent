@@ -125,6 +125,27 @@ actor EnvironmentLanguagePackageService {
             remove: change.remove, manager: manager, cancellation: cancellation)
     }
 
+    func pythonFromShell(environment: ToolEnvironment, operation: ManagedPythonPackageSpecParser.ShellOperation,
+                         cancellation: CancellationToken) async throws -> String {
+        guard !busy.contains(environment.id) else { throw FloeError.validationFailed("此环境正在安装或卸载依赖") }
+        guard let python else { throw FloeError.invalidConfiguration("此构建未提供 Python 运行时") }
+        busy.insert(environment.id)
+        defer { busy.remove(environment.id) }
+        let outcome: ManagedPythonInstallService.Outcome
+        switch operation {
+        case .install(let specs): outcome = await python.install(specs: specs, timeout: 180, cancellation: cancellation, environment: environment)
+        case .remove(let name): outcome = await python.uninstall(distribution: name, environment: environment, cancellation: cancellation)
+        case .inspect(let command, let arguments):
+            outcome = await python.inspect(command: command, arguments: arguments, environment: environment, cancellation: cancellation)
+        }
+        switch outcome {
+        case .ok(let output): return output
+        case .failed(let message): throw FloeError.validationFailed(message)
+        case .timedOut(let output): throw FloeError.validationFailed("pip 超时；依赖事务可恢复。\n" + output)
+        case .cancelled: throw CancellationError()
+        }
+    }
+
     struct NodeManagerSelection: Sendable {
         var preference: NodePackageManagerPreference
         var resolved: NodePackageManager?

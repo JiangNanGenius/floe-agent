@@ -48,3 +48,41 @@ public enum ManagedPythonPackageSpecParser {
         }
     }
 }
+
+public extension ManagedPythonPackageSpecParser {
+    enum ShellOperation: Sendable {
+        case install([String]), remove(String), inspect(String, [String])
+    }
+    static func parseShell(arguments: [String]) throws -> ShellOperation {
+        guard let command = arguments.first else { return .inspect("help", []) }
+        var values = Array(arguments.dropFirst())
+        switch command {
+        case "install":
+            // The complete generation is already replaced atomically. These
+            // flags do not grant a different target or permit source builds.
+            values.removeAll { ["-U", "--upgrade", "--no-input", "--disable-pip-version-check"].contains($0) }
+            guard !values.isEmpty, values.count <= 16 else { throw FloeError.validationFailed("pip install 需要 1–16 个包名") }
+            try values.forEach(validate)
+            return .install(values)
+        case "uninstall", "remove":
+            values.removeAll { ["-y", "--yes", "--no-input"].contains($0) }
+            guard values.count == 1, values[0].range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil else {
+                throw FloeError.validationFailed("pip uninstall 每次指定一个本层包名")
+            }
+            return .remove(values[0])
+        case "--version", "-V", "help", "--help", "-h", "freeze", "check":
+            guard values.isEmpty else { throw FloeError.validationFailed("此 pip 命令不接受额外参数") }
+            return .inspect(command, [])
+        case "list":
+            guard values.isEmpty || values == ["--format=json"] else { throw FloeError.validationFailed("pip list 仅支持 --format=json") }
+            return .inspect(command, values)
+        case "show":
+            guard !values.isEmpty, values.count <= 16 else { throw FloeError.validationFailed("请指定 1–16 个包名") }
+            for value in values {
+                guard value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil else { throw FloeError.validationFailed("pip show 只接受包名") }
+            }
+            return .inspect(command, values)
+        default: throw FloeError.validationFailed("支持 pip install、uninstall、list、show、freeze、check 与 --version；原生包需要兼容构建")
+        }
+    }
+}
