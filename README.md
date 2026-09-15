@@ -32,7 +32,7 @@ The [Build 156 feedback repair release](docs/FLOE_156_FEEDBACK_REPAIR.md) adds b
 
 Notes also adds **＋ → From Floe Workspace**: select a document generated in a conversation or project and import an independent copy into Notes. The cover library opens documents in a full-screen editor and searches indexed document contents. See the [import and search guide](docs/USER_GUIDE.md#current-repair-candidate-content-search-and-workspace-imports); the SDK 27 full-App Notes UI case passed on both iPad and iPhone; physical-device acceptance remains with the tester.
 
-The [next repair is under validation](docs/FLOE_172_REPAIR_EXECUTION.md): it removes document-assistant setup chatter, refines the iPad assistant pane, repairs runtime ownership and expands actual package-install checks. No new repair TestFlight build has been uploaded yet.
+The [next repair is under validation](docs/FLOE_172_REPAIR_EXECUTION.md): it removes document-assistant setup chatter, refines the iPad assistant pane, repairs runtime ownership and expands actual package-install checks. The latest completed candidate run passed 169 full-App runtime regressions, while its iPad search UI failed; a compact search-result repair and additional Office UI checks are under qualification for build 173. No new repair TestFlight build has been uploaded yet.
 
 The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
 
@@ -97,7 +97,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Floe Agent **1.7.0 (build 156)** is the latest build recorded as available to the **Floe QA internal TestFlight group**. See the [TestFlight availability record](docs/TESTFLIGHT_1.7.0_BETA.md). The [feedback repair candidate](docs/FLOE_156_FEEDBACK_REPAIR.md) is still under qualification; its code changes and screenshots do not indicate a newer uploaded build. Earlier 1.5.3 evidence is retained in the [historical verification record](docs/RELEASE_VERIFICATION_1.5.3.md).
+Floe Agent **1.7.0 (build 172)** is the latest build recorded as available to the **Floe QA internal TestFlight group**. See the [TestFlight availability record](docs/TESTFLIGHT_1.7.0_BETA.md). The [build 173 repair candidate](docs/FLOE_172_REPAIR_EXECUTION.md) is still under qualification; its code changes and screenshots do not indicate a newer uploaded build. Earlier 1.5.3 evidence is retained in the [historical verification record](docs/RELEASE_VERIFICATION_1.5.3.md).
 
 ### Unsigned IPA
 

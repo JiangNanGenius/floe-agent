@@ -2,7 +2,7 @@
 
 状态：材料草稿已准备，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。目标是 build 172 之后的下一版；版本号、构建号和最终功能范围待该版本冻结后填写。本轮 172 的内部 TestFlight 分发独立进行。
 
-完整的 [11 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf) 已准备，并保留 [Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。以已交付 1.7.0（172）为基线；后续主要是功能强化，但实际送审前仍需对应最终安装包核对。
+完整的 [12 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf) 已准备，并保留 [Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。以已交付 1.7.0（172）为基线，另列 173 候选修复证据；实际送审前仍需对应最终安装包核对。更新草稿也已复制至 iCloud Drive 根目录的「Floe-公开Beta审核演示说明.pdf」，本机文件摘要一致；其他设备是否完成同步尚未观测。
 
 ## 可直接使用的材料
 

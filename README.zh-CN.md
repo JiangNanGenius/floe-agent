@@ -32,6 +32,8 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [反馈修复版](docs/FLOE_156_FEEDBACK_REPAIR.md)的手记新增 **“＋”→“从 Floe 工作区导入”**，可以选择会话或项目中生成的文档，复制到手记独立保存。封面资料列表支持打开文档进入全屏编辑，并搜索已经索引的正文。详见[搜索与导入说明](docs/USER_GUIDE.zh-CN.md#本轮修复候选搜索与工作区导入)；SDK 27 完整 App 的手记 UI 用例已在 iPad/iPhone 通过；build 172 已在 Floe QA TestFlight 可安装；固定源码还通过 1,270 次 Swift 测试执行和 159 项 SDK 27 完整 App 回归，真机验收仍由用户执行。
 
+[本轮修复候选](docs/FLOE_172_REPAIR_EXECUTION.md)移除了文档助手的内部开场消息，调整 iPad 助手面板，修复执行环境归属并扩展真实包安装验证。最近完成的候选测试通过了 169 项完整 App 运行回归，但 iPad 搜索界面验收失败；紧凑搜索结果修复及新增 Office 界面检查正在 173 候选中验证，尚未上传新的 TestFlight。
+
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 
 参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[升级与恢复](docs/FLOE_1_7_MIGRATION.md)、[构建与验收](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)。历次版本记录保留在[文档索引](docs/README.md)。
@@ -90,7 +92,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.0（build 156）** 是目前分发记录中已向 **Floe QA 内部 TestFlight 测试组**开放的最新构建，详见[TestFlight 状态记录](docs/TESTFLIGHT_1.7.0_BETA.md)。[反馈修复候选版](docs/FLOE_156_FEEDBACK_REPAIR.md)仍在验收中；代码修改和测试截图不代表已有更新的构建上传。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
+Floe Agent **1.7.0（build 172）** 是目前分发记录中已向 **Floe QA 内部 TestFlight 测试组**开放的最新构建，详见[TestFlight 状态记录](docs/TESTFLIGHT_1.7.0_BETA.md)。[173 修复候选版](docs/FLOE_172_REPAIR_EXECUTION.md)仍在验收中；代码修改和测试截图不代表已有更新的构建上传。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
 
 ### 未签名 IPA
 

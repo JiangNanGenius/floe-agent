@@ -10,6 +10,7 @@
 
 | 文档 | 阅读目的 |
 |---|---|
+| [172 反馈修复与 173 验证](FLOE_172_REPAIR_EXECUTION.md) | 本次运行环境、手记助手、测试失败与分发状态 |
 | [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 本轮改动与分发前剩余工作 |
 | [本轮继续实施状态](FLOE_1_7_CONTINUATION_STATUS.md) | 手记、Office、Whisper 与剩余验收事实 |
 | [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md) | 已验证路径、固定提交和剩余门槛 |
@@ -81,4 +82,4 @@
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
-当前尚未交付新的 TestFlight；旧版本说明和候选记录保留历史状态。
+173 修复候选尚未交付；已交付版本仍为 172。旧版本说明和候选记录保留历史状态。
