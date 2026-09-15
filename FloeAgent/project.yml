@@ -556,6 +556,10 @@ targets:
           - $(inherited)
           - $(FLOE_OFFICE_HOST_DIR)
         "OTHER_LDFLAGS[sdk=iphoneos*]":
+          # Office exports its own older FPDF API. Resolve every public PDFium
+          # symbol against CPDFium first, so opaque objects never cross engines.
+          - -framework
+          - CPDFium
           - $(inherited)
           - -framework
           - FloeOfficeNative

@@ -536,6 +536,7 @@ jobs:
             build
           STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$STABLE_APP_PATH"
+          python3 scripts/verify_pdfium_linkage.py "$STABLE_APP_PATH" --report "$RUNNER_TEMP/stable-pdfium-linkage.json"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP_PATH/Info.plist")" = org.floeagent.ios
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.prepare-release.outputs.version }}"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.prepare-release.outputs.build }}"

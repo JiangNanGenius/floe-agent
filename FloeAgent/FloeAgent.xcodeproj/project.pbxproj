@@ -2907,6 +2907,8 @@
 				);
 				MARKETING_VERSION = 1.7.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-framework",
+					CPDFium,
 					"$(inherited)",
 					"-framework",
 					FloeOfficeNative,
@@ -3226,6 +3228,8 @@
 				);
 				MARKETING_VERSION = 1.7.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-framework",
+					CPDFium,
 					"$(inherited)",
 					"-framework",
 					FloeOfficeNative,

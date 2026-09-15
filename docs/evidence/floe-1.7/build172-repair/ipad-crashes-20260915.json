@@ -1,0 +1,747 @@
+{
+  "reportDate": "2026-09-15",
+  "deviceClass": "iPad Air 13-inch (M4)",
+  "os": "iPadOS 27.0",
+  "reports": [
+    {
+      "reportTime": "040532",
+      "build": "156",
+      "sha256": "206975afa7d2137f3ebf5d041b1e07a8233e10b747bc43ac4f934b18dc717e64",
+      "exception": "EXC_BREAKPOINT",
+      "signal": "SIGABRT",
+      "frames": [
+        {
+          "symbol": "__pthread_kill",
+          "library": "libsystem_kernel.dylib"
+        },
+        {
+          "symbol": "pthread_kill",
+          "library": "libsystem_pthread.dylib"
+        },
+        {
+          "symbol": "abort",
+          "library": "libsystem_c.dylib"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "(anonymous namespace)::signalHandlerFunction(int, __siginfo*, void*)",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "_sigtramp",
+          "library": "libsystem_platform.dylib"
+        },
+        {
+          "symbol": "_assertionFailure(_:_:file:line:flags:)",
+          "library": "libswiftCore.dylib"
+        },
+        {
+          "symbol": "ErrorHandler.dispatch(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "@objc errorHandlerTrampoline(message:data:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "_mlx_error",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "mlx_async_eval",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "eval(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "withPreparedCache<A>(_:lengths:_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "protocol witness for LanguageModel.prepare(_:cache:windowSize:) in conformance Qwen35Model",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "TokenIterator.prepare(input:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.generatePrepared(container:input:parameters:inputTokens:startedAt:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.completeMeasured(instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LocalModelRuntime.completeMeasured(modelID:instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #2 in closure #1 in LocalProviderAdapter.stream(request:credentials:)",
+          "library": "Floe Agent"
+        }
+      ]
+    },
+    {
+      "reportTime": "040543",
+      "build": "156",
+      "sha256": "ae44b45250d57f13cf911b3d0e9a1cb6bce815ee77ef1f0bb9213a376dee8a82",
+      "exception": "EXC_BREAKPOINT",
+      "signal": "SIGABRT",
+      "frames": [
+        {
+          "symbol": "__pthread_kill",
+          "library": "libsystem_kernel.dylib"
+        },
+        {
+          "symbol": "pthread_kill",
+          "library": "libsystem_pthread.dylib"
+        },
+        {
+          "symbol": "abort",
+          "library": "libsystem_c.dylib"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "(anonymous namespace)::signalHandlerFunction(int, __siginfo*, void*)",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "_sigtramp",
+          "library": "libsystem_platform.dylib"
+        },
+        {
+          "symbol": "_assertionFailure(_:_:file:line:flags:)",
+          "library": "libswiftCore.dylib"
+        },
+        {
+          "symbol": "ErrorHandler.dispatch(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "@objc errorHandlerTrampoline(message:data:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "_mlx_error",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "mlx_async_eval",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "eval(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "withPreparedCache<A>(_:lengths:_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "protocol witness for LanguageModel.prepare(_:cache:windowSize:) in conformance Qwen35Model",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "TokenIterator.prepare(input:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.generatePrepared(container:input:parameters:inputTokens:startedAt:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.completeMeasured(instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LocalModelRuntime.completeMeasured(modelID:instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #2 in closure #1 in LocalProviderAdapter.stream(request:credentials:)",
+          "library": "Floe Agent"
+        }
+      ]
+    },
+    {
+      "reportTime": "040608",
+      "build": "156",
+      "sha256": "1a4dd61944cbb112be7317f390e3e39c1ed1a9d7b4340216568de3216a13e762",
+      "exception": "EXC_BREAKPOINT",
+      "signal": "SIGABRT",
+      "frames": [
+        {
+          "symbol": "__pthread_kill",
+          "library": "libsystem_kernel.dylib"
+        },
+        {
+          "symbol": "pthread_kill",
+          "library": "libsystem_pthread.dylib"
+        },
+        {
+          "symbol": "abort",
+          "library": "libsystem_c.dylib"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "(anonymous namespace)::signalHandlerFunction(int, __siginfo*, void*)",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "_sigtramp",
+          "library": "libsystem_platform.dylib"
+        },
+        {
+          "symbol": "_assertionFailure(_:_:file:line:flags:)",
+          "library": "libswiftCore.dylib"
+        },
+        {
+          "symbol": "ErrorHandler.dispatch(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "@objc errorHandlerTrampoline(message:data:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "_mlx_error",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "mlx_async_eval",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "eval(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "withPreparedCache<A>(_:lengths:_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "protocol witness for LanguageModel.prepare(_:cache:windowSize:) in conformance Qwen35Model",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "TokenIterator.prepare(input:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.generatePrepared(container:input:parameters:inputTokens:startedAt:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.completeMeasured(instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LocalModelRuntime.completeMeasured(modelID:instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #2 in closure #1 in LocalProviderAdapter.stream(request:credentials:)",
+          "library": "Floe Agent"
+        }
+      ]
+    },
+    {
+      "reportTime": "040622",
+      "build": "156",
+      "sha256": "525f6a65204aa28135858c614581652bb1af9cd9ee5f566507d9e76598f56d30",
+      "exception": "EXC_BREAKPOINT",
+      "signal": "SIGABRT",
+      "frames": [
+        {
+          "symbol": "__pthread_kill",
+          "library": "libsystem_kernel.dylib"
+        },
+        {
+          "symbol": "pthread_kill",
+          "library": "libsystem_pthread.dylib"
+        },
+        {
+          "symbol": "abort",
+          "library": "libsystem_c.dylib"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "(anonymous namespace)::signalHandlerFunction(int, __siginfo*, void*)",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "_sigtramp",
+          "library": "libsystem_platform.dylib"
+        },
+        {
+          "symbol": "_assertionFailure(_:_:file:line:flags:)",
+          "library": "libswiftCore.dylib"
+        },
+        {
+          "symbol": "ErrorHandler.dispatch(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "@objc errorHandlerTrampoline(message:data:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "_mlx_error",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "mlx_async_eval",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "eval(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "withPreparedCache<A>(_:lengths:_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "protocol witness for LanguageModel.prepare(_:cache:windowSize:) in conformance Qwen35Model",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "TokenIterator.prepare(input:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.generatePrepared(container:input:parameters:inputTokens:startedAt:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.completeMeasured(instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LocalModelRuntime.completeMeasured(modelID:instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #2 in closure #1 in LocalProviderAdapter.stream(request:credentials:)",
+          "library": "Floe Agent"
+        }
+      ]
+    },
+    {
+      "reportTime": "040734",
+      "build": "172",
+      "sha256": "f0811d738b56b2c6e4ebe1805f936c85a3886789fd466bfb31a716c82fe5400c",
+      "exception": "EXC_BREAKPOINT",
+      "signal": "SIGABRT",
+      "frames": [
+        {
+          "symbol": "__pthread_kill",
+          "library": "libsystem_kernel.dylib"
+        },
+        {
+          "symbol": "pthread_kill",
+          "library": "libsystem_pthread.dylib"
+        },
+        {
+          "symbol": "abort",
+          "library": "libsystem_c.dylib"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "(anonymous namespace)::signalHandlerFunction(int, __siginfo*, void*)",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "_sigtramp",
+          "library": "libsystem_platform.dylib"
+        },
+        {
+          "symbol": "_assertionFailure(_:_:file:line:flags:)",
+          "library": "libswiftCore.dylib"
+        },
+        {
+          "symbol": "ErrorHandler.dispatch(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "@objc errorHandlerTrampoline(message:data:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "_mlx_error",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "mlx_async_eval",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "eval(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "withPreparedCache<A>(_:lengths:_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "protocol witness for LanguageModel.prepare(_:cache:windowSize:) in conformance Qwen35Model",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "TokenIterator.prepare(input:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.generatePrepared(container:input:parameters:inputTokens:startedAt:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.completeMeasured(instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LocalModelRuntime.completeMeasured(modelID:instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #2 in closure #1 in LocalProviderAdapter.stream(request:credentials:)",
+          "library": "Floe Agent"
+        }
+      ]
+    },
+    {
+      "reportTime": "040756",
+      "build": "172",
+      "sha256": "7346fced75393a650488a138d4759f57e73cf80f5ccabf07b599aaa7d6042add",
+      "exception": "EXC_BREAKPOINT",
+      "signal": "SIGABRT",
+      "frames": [
+        {
+          "symbol": "__pthread_kill",
+          "library": "libsystem_kernel.dylib"
+        },
+        {
+          "symbol": "pthread_kill",
+          "library": "libsystem_pthread.dylib"
+        },
+        {
+          "symbol": "abort",
+          "library": "libsystem_c.dylib"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "(anonymous namespace)::signalHandlerFunction(int, __siginfo*, void*)",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "_sigtramp",
+          "library": "libsystem_platform.dylib"
+        },
+        {
+          "symbol": "_assertionFailure(_:_:file:line:flags:)",
+          "library": "libswiftCore.dylib"
+        },
+        {
+          "symbol": "ErrorHandler.dispatch(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "@objc errorHandlerTrampoline(message:data:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "_mlx_error",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "mlx_async_eval",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "eval(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "withPreparedCache<A>(_:lengths:_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LLMModel.prepare(_:cache:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "protocol witness for LanguageModel.prepare(_:cache:windowSize:) in conformance Qwen35Model",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "TokenIterator.prepare(input:windowSize:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "ModelContainer.generate(input:parameters:wiredMemoryTicket:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.generatePrepared(container:input:parameters:inputTokens:startedAt:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "MLXTextEngine.completeMeasured(instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "LocalModelRuntime.completeMeasured(modelID:instructions:prompt:images:tools:maxTokens:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #2 in closure #1 in LocalProviderAdapter.stream(request:credentials:)",
+          "library": "Floe Agent"
+        }
+      ]
+    },
+    {
+      "reportTime": "042435",
+      "build": "172",
+      "sha256": "01f82aa3767288a87bdb1c32138140e5f13e0c9eab89a3ea1d4469e7cad182e6",
+      "exception": "EXC_BREAKPOINT",
+      "signal": "SIGKILL",
+      "frames": [
+        {
+          "symbol": "pthread_exit",
+          "library": "libsystem_pthread.dylib"
+        },
+        {
+          "symbol": "ios_exit",
+          "library": "ios_system"
+        },
+        {
+          "symbol": "crash_handler",
+          "library": "ios_system"
+        },
+        {
+          "symbol": "_sigtramp",
+          "library": "libsystem_platform.dylib"
+        },
+        {
+          "symbol": "CPDF_Reference::CloneNonCyclic(bool, std::__1::set<CPDF_Object const*, std::__1::less<CPDF_Object const*>, std::__1::allocator<CPDF_Object const*>>*) const",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "CPDF_Object::CloneObjectNonCyclic(bool) const",
+          "library": "FloeOfficeNative"
+        },
+        {
+          "symbol": "CPDF_PageOrganizer::CopyInheritable(fxcrt::RetainPtr<CPDF_Dictionary>, fxcrt::RetainPtr<CPDF_Dictionary const>, fxcrt::StringViewTemplate<char>)",
+          "library": "CPDFium"
+        },
+        {
+          "symbol": "CPDF_NPageToOneExporter::MakeXObjectFromPageRaw(fxcrt::RetainPtr<CPDF_Page>)",
+          "library": "CPDFium"
+        },
+        {
+          "symbol": "CPDF_NPageToOneExporter::CreateXObjectContextFromPage(int)",
+          "library": "CPDFium"
+        },
+        {
+          "symbol": "FPDF_NewXObjectFromPage",
+          "library": "CPDFium"
+        },
+        {
+          "symbol": "+[FloePDFiumBridge replaceRegion:page:bounds:overlay:objectType:expectedCount:error:]",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "static PDFDocumentOperations.process(_:operations:images:cancellation:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in closure #1 in closure #1 in static PDFDocumentOperations.run(_:operations:images:cancellation:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in closure #1 in closure #1 in static PDFDocumentOperations.run(_:operations:images:cancellation:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in closure #1 in closure #1 in static PDFDocumentOperations.run(_:operations:images:cancellation:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "specialized closure #1 in withPDFExceptionGuard<A>(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "+[FloePDFExceptionGuard run:]",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "specialized withPDFExceptionGuard<A>(_:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "closure #1 in closure #1 in static PDFDocumentOperations.run(_:operations:images:cancellation:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "partial apply for closure #1 in closure #1 in static PDFDocumentOperations.run(_:operations:images:cancellation:)",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "Floe Agent"
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "library": "Floe Agent"
+        }
+      ]
+    }
+  ],
+  "findings": {
+    "mlx": "Six prefill C callback failures reached the default fatalError handler; no original Metal error text is present. Not evidence of jetsam.",
+    "pdf": "Build 172 device binary imports common FPDF functions from FloeOfficeNative but XObject functions from CPDFium. Device link probe reproduced the split; ordering CPDFium first resolves all probe functions to that engine.",
+    "limits": "Candidate needs App compile, linked device inspection and device runtime acceptance; local model error handling is containment, not proof the underlying Metal graph issue is resolved."
+  }
+}

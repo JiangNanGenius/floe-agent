@@ -28,6 +28,9 @@ if /usr/bin/codesign --verify --deep --strict "$APP_PATH" >/dev/null 2>&1; then
     exit 1
 fi
 
+python3 "$(dirname "$0")/verify_pdfium_linkage.py" "$APP_PATH" \
+    --report "$OUTPUT_DIRECTORY/pdfium-linkage.json"
+
 TEMP_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/floe-ipa.XXXXXX")"
 trap 'rm -rf "$TEMP_DIRECTORY"' EXIT
 mkdir -p "$TEMP_DIRECTORY/Payload" "$OUTPUT_DIRECTORY"

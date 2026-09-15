@@ -171,9 +171,29 @@ public actor MLXTextEngine {
         inputTokens: Int,
         startedAt: Date
     ) async throws -> LocalGenerationResult {
+        // MLX's C error callback calls fatalError when no task-local handler
+        // exists. A Swift do/catch alone cannot catch that callback. Keep the
+        // scope across prefill and the inherited generation task, then check
+        // before consuming each event so an invalid graph cannot report success.
+        try await MLX.withError { errors in
+            try await generateGuarded(container: container, input: input,
+                parameters: parameters, inputTokens: inputTokens,
+                startedAt: startedAt, errors: errors)
+        }
+    }
+
+    private func generateGuarded(
+        container: ModelContainer,
+        input: sending LMInput,
+        parameters: GenerateParameters,
+        inputTokens: Int,
+        startedAt: Date,
+        errors: MLX.ErrorBox
+    ) async throws -> LocalGenerationResult {
         let stream: AsyncStream<Generation>
         do {
             stream = try await container.generate(input: input, parameters: parameters)
+            try errors.check()
         } catch {
             throw LocalInferenceError.decodeFailed
         }
@@ -183,6 +203,7 @@ public actor MLXTextEngine {
         var info: GenerateCompletionInfo?
         for await event in stream {
             try Task.checkCancellation()
+            try errors.check()
             switch event {
             case .chunk(let chunk):
                 if firstTokenAt == nil, !chunk.isEmpty { firstTokenAt = Date() }
@@ -198,6 +219,7 @@ public actor MLXTextEngine {
                 }
             }
         }
+        try errors.check()
         let endedAt = Date()
         let outputTokens = info?.generationTokenCount ?? Self.estimatedTokens(text)
         let generationDurationMs = info.map { max(1, Int($0.generateTime * 1_000)) }

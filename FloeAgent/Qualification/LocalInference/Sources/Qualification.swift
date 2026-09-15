@@ -31,6 +31,21 @@ import Darwin
     }
 
     static func main() async throws {
+        // Exercise the same task-local C callback route that previously
+        // terminated the iPad app in prefill; a Swift catch alone is insufficient.
+        do {
+            try await MLX.withError {
+                let worker = Task {
+                    let invalid = MLXArray(0..<10, [2, 5]) + MLXArray(0..<15, [3, 5])
+                    _ = invalid
+                }
+                await worker.value
+            }
+            throw NSError(domain: "Qualification", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Expected MLX error was not captured"])
+        } catch is MLXError {
+            record("mlx-error-guard-passed")
+        }
         guard CommandLine.arguments.count == 2 else {
             throw NSError(domain: "Qualification", code: 1, userInfo: [NSLocalizedDescriptionKey: "Provide an isolated model-cache directory"])
         }
