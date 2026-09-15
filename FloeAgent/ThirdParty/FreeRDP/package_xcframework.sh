@@ -50,6 +50,6 @@ probe_slice "$device_slice" iphoneos arm64-apple-ios26.0
 probe_slice "$sim_slice" iphonesimulator arm64-apple-ios26.0-simulator
 
 cp "$os64/FreeRDP-LICENSE" "$os64/OpenSSL-LICENSE" "$output/"
-shasum -a 256 $(find "$framework" -name 'libFloeRDPNative.a' | sort) > "$output/SHA256SUMS"
+find "$framework" -name 'libFloeRDPNative.a' -print0 | sort -z | xargs -0 shasum -a 256 > "$output/SHA256SUMS"
 xcrun clang --version > "$output/toolchain.txt"
 printf 'packaged %s\n' "$framework"
