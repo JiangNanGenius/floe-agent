@@ -423,3 +423,11 @@ Python packages can also be managed with `pip`, `pip3` or `python3 -m pip`: inst
 The repair candidate's package page lets you edit the selected environment's Python Simple index or npm registry under **Package source**, or restore the official address. Manual, Shell and Agent installs share the setting; npm/pnpm share the Node registry. Use a public HTTPS source without credentials in its URL. Existing dependencies remain installed and the next transaction uses the new source. Private-registry authentication and the Floe language-package mirror remain incomplete.
 
 Repair candidate screenshots: [document assistant, brush controls and PDF body search](evidence/floe-1.7/build172-repair/notes-83cbc383/README.md). These are full-App simulator captures from `83cbc383`, not a new TestFlight availability claim.
+
+### Build 173 repair candidate: search, ink and diagnostics
+
+Entering a body-search query in Notes shows compact rows with a preview, title and matching excerpt. Press Search to dismiss the keyboard; clearing the query restores the chosen cover/list layout. Full-App iPad/iPhone validation of this layout is in progress.
+
+Brush controls use transparency: **0% is solid; 100% is invisible**. Each brush retains its own value. Existing stored alpha values are preserved rather than inverted; highlighters keep their own transparency. Ink renders for the light paper surface even when the surrounding app uses Dark appearance.
+
+Settings → Diagnostics & About → Logging settings offers Debug, Info, Warning and Error. Info is the default. The threshold applies to newly collected messages at that level or higher; it cannot reconstruct messages that were not collected. The App buffer and server retention are separate: the server's approximately 500-entry retention patch passed local checks, but deployment has not been confirmed. Changing the client level does not upgrade the server.
