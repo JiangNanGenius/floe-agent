@@ -20,14 +20,14 @@ jobs:
         platform: [OS64, SIMULATORARM64]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      NATIVE_SOURCE: 6cdc737d3052970919b7d8be92e70d91d97a8e9e
+      NATIVE_SOURCE: 84c25947a1e5731f3f23c410ec90d9b879ff5fbd
     steps:
       - uses: actions/checkout@v5
       - name: Check immutable native source run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/${{ github.repository }}/actions/runs/34976735993 > "$RUNNER_TEMP/native-run.json"
+          gh api repos/${{ github.repository }}/actions/runs/34989891924 > "$RUNNER_TEMP/native-run.json"
           python3 - "$RUNNER_TEMP/native-run.json" <<'PY'
           import json,sys,os
           run=json.load(open(sys.argv[1]))
@@ -37,7 +37,7 @@ jobs:
           PY
       - uses: actions/download-artifact@v4
         with:
-          run-id: 34976735993
+          run-id: 34989891924
           name: rdp-${{ matrix.platform }}-${{ env.NATIVE_SOURCE }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/native
@@ -71,3 +71,43 @@ jobs:
             ${{ runner.temp }}/bridge.log
             ${{ runner.temp }}/native-run.json
           retention-days: 14
+
+  package:
+    needs: bridge
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - name: Restore both verified platform bridge outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rdp-bridge-*-${{ github.sha }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/bridges
+          merge-multiple: false
+      - name: Check every restored library against its recorded hash
+        run: |
+          set -euo pipefail
+          for platform in OS64 SIMULATORARM64; do
+            dir="$RUNNER_TEMP/bridges/rdp-bridge-$platform-${{ github.sha }}/bridge"
+            test -f "$dir/libFloeRDPNative.a"
+            (cd "$dir" && shasum -a 256 -c SHA256SUMS 2>/dev/null | grep -F 'libFloeRDPNative.a: OK')
+          done
+      - name: Assemble and prove the consumable XCFramework
+        run: |
+          set -o pipefail
+          bash FloeAgent/ThirdParty/FreeRDP/package_xcframework.sh \
+            "$RUNNER_TEMP/bridges/rdp-bridge-OS64-${{ github.sha }}/bridge" \
+            "$RUNNER_TEMP/bridges/rdp-bridge-SIMULATORARM64-${{ github.sha }}/bridge" \
+            "$RUNNER_TEMP/package" 2>&1 | tee "$RUNNER_TEMP/package.log"
+      - name: Retain the packaged framework and original failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-xcframework-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/package
+            ${{ runner.temp }}/package.log
+          retention-days: 30
