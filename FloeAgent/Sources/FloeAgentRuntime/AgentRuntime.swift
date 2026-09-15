@@ -384,6 +384,8 @@ public actor FloeAgentRuntime {
     private let toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)?
 
     private var messages: [ConversationMessage] = []
+    private var ownedSystemContextID: UUID?
+    private let liveSystemContext: (@Sendable () async throws -> String)?
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
     /// Settled (call, result) pairs from every completed tool batch in this
@@ -515,6 +517,7 @@ public actor FloeAgentRuntime {
         discoveryStore: SQLiteConversationDiscoveryStore? = nil,
         contextEngine: (any ContextEngine)? = nil,
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
+        liveSystemContext: (@Sendable () async throws -> String)? = nil,
         sink: (any AgentEventSink)? = nil,
         runID: UUID = UUID()
     ) {
@@ -530,6 +533,7 @@ public actor FloeAgentRuntime {
         self.discoveryStore = discoveryStore
         self.contextEngine = contextEngine
         self.toolCallNormalizer = toolCallNormalizer
+        self.liveSystemContext = liveSystemContext
         self.sink = sink
         self.runID = runID
         self.forceCompactionOnNextTurn = configuration.forceInitialCompaction
@@ -621,7 +625,9 @@ public actor FloeAgentRuntime {
     /// Legal only while idle so the injection stays ahead of the user goal.
     public func injectSystemContext(_ content: String) async {
         guard case .idle = state, !content.isEmpty else { return }
-        messages.insert(ConversationMessage(role: "system", content: content), at: 0)
+        let message = ConversationMessage(role: "system", content: content)
+        ownedSystemContextID = message.id
+        messages.insert(message, at: 0)
     }
 
     /// Seeds prior messages from the same durable task. This is deliberately
@@ -833,6 +839,14 @@ public actor FloeAgentRuntime {
             throw FloeError.validationFailed("Unsupported checkpoint format v\(checkpoint.formatVersion)")
         }
         messages = checkpoint.messages
+        ownedSystemContextID = checkpoint.ownedSystemContextID
+        // Legacy checkpoints lack an explicit owner ID. Recognize only the
+        // app-generated leading contract, never arbitrary system evidence.
+        if ownedSystemContextID == nil, let first = messages.first, first.role == "system",
+           first.content.hasPrefix("# Floe runtime contract\n")
+            || first.content.hasPrefix("# Floe local runtime contract\n") {
+            ownedSystemContextID = first.id
+        }
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
         replayableToolHistory = checkpoint.replayedToolPairs ?? []
@@ -1090,10 +1104,31 @@ public actor FloeAgentRuntime {
         default:
             break
         }
+        if providerRetryRequest == nil, let liveSystemContext {
+            do {
+                let content = try await liveSystemContext()
+                // Replace the owned leading envelope, never append a second
+                // copy or reinterpret personalization as user/tool authority.
+                if let index = messages.firstIndex(where: { $0.id == ownedSystemContextID && $0.role == "system" }) {
+                    messages[index].content = content
+                } else {
+                    let message = ConversationMessage(role: "system", content: content)
+                    ownedSystemContextID = message.id
+                    messages.insert(message, at: 0)
+                }
+            } catch {
+                await failRun(message: "Unable to refresh active personalization before model dispatch", recoverable: true)
+                return
+            }
+            switch state {
+            case .cancelling, .paused, .checkpointed, .completed, .failed: return
+            default: break
+            }
+        }
         if providerRetryRequest == nil, let contextEngine {
             let latestUserID = messages.last(where: { $0.role == "user" })?.id
             let protection = ContextProtection(
-                messageIDs: latestUserID.map { [$0] } ?? []
+                messageIDs: Set([latestUserID, ownedSystemContextID].compactMap { $0 })
             )
             let compressionPolicy = Self.contextCompressionPolicy(
                 configuration: configuration,
@@ -3243,7 +3278,8 @@ public actor FloeAgentRuntime {
             pendingAssistantReasoning: responseReasoning.isEmpty
                 ? (providerRetryRequest?.pendingAssistantReasoning ?? "")
                 : responseReasoning,
-            replayedToolPairs: replayableToolHistory
+            replayedToolPairs: replayableToolHistory,
+            ownedSystemContextID: ownedSystemContextID
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {

@@ -1014,6 +1014,9 @@ final class ConversationCenter: ObservableObject {
                     ? WorkspaceContextBriefing.projectInstructions(rootURL: taskRootLease?.url)
                     : nil
             ),
+            personalizationProvider: { [store = environment.personalizationStore] in
+                try await store.liveSnapshot(workspaceID: canonicalWorkspaceID)
+            },
             resourceAccessCleanup: taskRootLease?.release
         )
     }
@@ -1443,18 +1446,7 @@ final class ConversationCenter: ObservableObject {
         workspaceID: UUID?,
         conversationID: UUID
     ) async -> RuntimePersonalizationContext {
-        async let globalSoul = environment.personalizationStore.activeDocument(
-            kind: .soul, workspaceID: nil
-        )
-        async let workspaceSoul = environment.personalizationStore.activeDocument(
-            kind: .soul, workspaceID: workspaceID
-        )
-        async let globalProfile = environment.personalizationStore.activeDocument(
-            kind: .userProfile, workspaceID: nil
-        )
-        async let workspaceProfile = environment.personalizationStore.activeDocument(
-            kind: .userProfile, workspaceID: workspaceID
-        )
+        async let activeDocuments = environment.personalizationStore.liveSnapshot(workspaceID: workspaceID)
         var entries = (try? await environment.intelligenceStore.memories(
             scope: .userProfile, status: .active
         )) ?? []
@@ -1571,18 +1563,13 @@ final class ConversationCenter: ObservableObject {
                 let origin = $0.origin.map { "; source \($0)" } ?? ""
                 return "- Secure credential card: \($0.label); reference \($0.reference); kind \($0.kind.rawValue)\(hostScope)\(origin). Reuse this reference for the same target; do not ask for the plaintext again."
             }
-        let workspaceSoulValue = try? await workspaceSoul
-        let globalSoulValue = try? await globalSoul
-        let workspaceProfileValue = try? await workspaceProfile
-        let globalProfileValue = try? await globalProfile
-        let soul = workspaceSoulValue ?? globalSoulValue
-        let profile = workspaceProfileValue ?? globalProfileValue
+        let documents = try? await activeDocuments
         return RuntimePersonalizationContext(
             memory: (Array(memoryLines.prefix(8)) + credentialLines).isEmpty
                 ? nil
                 : (Array(memoryLines.prefix(8)) + credentialLines).joined(separator: "\n"),
-            soul: soul?.content,
-            profile: profile?.content
+            soul: documents?.soul,
+            profile: documents?.profile
         )
     }
 

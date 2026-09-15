@@ -6,6 +6,10 @@ This guide covers existing Floe workflows and the 1.7 internal beta (build 172).
 
 This guide includes the build 172 workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
 
+## Live Soul and profile updates (development candidate)
+
+In Settings → Memory and personalization, save, generate or activate a Soul/profile revision. The active revision applies automatically to the next new model request, including a running Agent after its current tool step. You do not need to save again or restart the conversation. An already streaming answer and retries of the same network request keep their original context. Workspace-specific documents take precedence over global ones; automatic drafts marked as awaiting confirmation remain inactive until accepted. Notes and Canvas assistants use the same active preference lookup while keeping their own conversations and document scope. This change is not yet in a newly uploaded TestFlight build.
+
 ## Current repair candidate: content search and workspace imports
 
 Build 172 adds eight native brushes with independent color, width and opacity, plus document tabs and a collapsible header that keeps writing tools visible. Tap the current pen or color dot to adjust its settings.

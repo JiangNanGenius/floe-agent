@@ -1,5 +1,28 @@
 # Build 156 feedback repair — build 172 delivery tracking
 
+## 2026-09-16 — Soul and profile changes apply to active runs
+
+The settings path already saves active revisions, but an active Agent kept the
+Soul/profile strings captured when `ConversationRunService` was constructed.
+The shared run factory now supplies an atomic persisted snapshot before each new
+logical provider request. Workspace overrides still precede global documents;
+inactive automatic drafts remain excluded. A transient request retry preserves
+its exact envelope. The anchored run-start clock remains stable.
+
+The runtime replaces its explicitly owned system message rather than appending
+another profile or overwriting a historical summary. The owner ID survives a
+checkpoint, with conservative recognition of legacy app-generated contracts.
+Context protection retains this message through compaction. Notes and Canvas
+retain their own conversation/document context while using the same lookup.
+
+[Native results](evidence/floe-1.7/live-personalization/result.json): three tests,
+five cases passed using the current runtime and persistence sources. This is a
+focused macOS module harness, not App or device acceptance. The original harness
+setup failures and corrections remain recorded. The App integration call site
+passes parsing; clean App compilation and UI validation remain separate cloud
+steps. No new TestFlight upload is represented by these results.
+
+
 This record tracks the September 14 feedback plan, delivered as internal build 172. Earlier checkpoints retain their original results; this is not a claim of complete device or feature acceptance.
 
 Current delivered beta: **build 172**. The production open arc from `a266c0a` passed [all four SDK/device component paths](evidence/floe-1.7/release-167/above-arc-qualification.json) in [run 34846659384](https://github.com/JiangNanGenius/floe-agent/actions/runs/34846659384), including three anchors, movement without committing, explicit taps, toggling and blank dismissal. Original screenshots are retained privately. The subsequent user-requested changes add persistent above/upper-left/upper-right placement and eight native brushes with independent settings and native stroke previews. Before the build 171 expression-only refactor, brush UI and persistence checks passed across both SDKs and both devices: [12 UI cases](evidence/floe-1.7/release-167/brush-ui-qualification.json) and [20 native unit cases](evidence/floe-1.7/release-167/brush-unit-qualification.json). The refactored arc now passes [32 checks across all four paths plus both device Release compiler checks](evidence/floe-1.7/release-172/brush-qualification.json); original failed attempts are retained. The SDK 27 source run passed 1,270 Swift executions, 159 finalized full-App regressions and the Notes UI case on both devices. Accepted-SDK simulator qualification was waived for the direct upload; device build and signing/upload succeeded. Apple VALID / IN_BETA_TESTING and the existing internal Floe QA group were verified at 2026-09-14 17:52:18 UTC. [Build 172 availability](evidence/floe-1.7/release-172/TESTFLIGHT_AVAILABLE.json).

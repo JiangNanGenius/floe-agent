@@ -272,6 +272,10 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// Optional so checkpoints written before cross-turn replay decode.
     public var replayedToolPairs: [ReplayedToolPair]?
 
+    /// Explicit ownership prevents live context refresh from replacing a
+    /// historical summary. Optional for checkpoints written by older builds.
+    public var ownedSystemContextID: UUID?
+
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.
@@ -302,7 +306,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         providerDispatchEnvelope: ProviderDispatchEnvelope? = nil,
         providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil,
         pendingAssistantReasoning: String? = nil,
-        replayedToolPairs: [ReplayedToolPair]? = nil
+        replayedToolPairs: [ReplayedToolPair]? = nil,
+        ownedSystemContextID: UUID? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -329,6 +334,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.providerDispatchRequest = providerDispatchRequest
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.replayedToolPairs = replayedToolPairs
+        self.ownedSystemContextID = ownedSystemContextID
     }
 
     public func encoded() throws -> Data {

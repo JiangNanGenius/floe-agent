@@ -14,6 +14,29 @@ struct PersonalizationMemoryTests {
         }
     }
 
+    @Test("Live personalization follows active workspace overrides, rollback and removal")
+    func liveSnapshotTracksActiveRevisions() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLitePersonalizationStore(database: database)
+        let workspace = UUID()
+        try await SQLiteWorkspaceStore(database: database).saveWorkspace(.init(id: workspace, name: "Preferences fixture", rootBookmark: Data()))
+        _ = try await store.saveDocument(.init(kind: .soul, revision: 1, content: "global-style", source: .manual))
+        _ = try await store.saveDocument(.init(kind: .userProfile, revision: 1, content: "global-profile", source: .manual))
+        _ = try await store.saveDocument(.init(kind: .soul, workspaceID: workspace, revision: 1, content: "project-style", source: .manual))
+        _ = try await store.saveDocument(.init(kind: .soul, workspaceID: workspace, revision: 1, content: "unreviewed", source: .automatic, isActive: false))
+        #expect(try await store.liveSnapshot(workspaceID: workspace) == .init(soul: "project-style", profile: "global-profile"))
+        #expect(try await store.liveSnapshot(workspaceID: UUID()) == .init(soul: "global-style", profile: "global-profile"))
+        _ = try await store.saveDocument(.init(kind: .userProfile, revision: 1, content: "updated-profile", source: .rollback))
+        #expect(try await store.liveSnapshot(workspaceID: workspace).profile == "updated-profile")
+        try await database.writer { db in
+            try db.execute(sql: "DELETE FROM personalization_documents WHERE workspace_id = ?", arguments: [workspace.uuidString])
+        }
+        #expect(try await store.liveSnapshot(workspaceID: workspace).soul == "global-style")
+        try await database.writer { db in try db.execute(sql: "DELETE FROM personalization_documents") }
+        #expect(try await store.liveSnapshot(workspaceID: workspace) == .init(soul: nil, profile: nil))
+    }
+
     @Test("cosine similarity rejects incompatible spaces")
     func vectorMath() {
         #expect(MemoryVectorMath.cosineSimilarity([1, 0], [1, 0]) == 1)

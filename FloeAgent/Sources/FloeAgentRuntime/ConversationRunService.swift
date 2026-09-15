@@ -256,6 +256,7 @@ public actor ConversationRunService {
         conversationHistory: [ConversationMessage] = [],
         currentUserImages: [ConversationImagePart] = [],
         runContext: RunContext? = nil,
+        personalizationProvider: (@Sendable () async throws -> LivePersonalizationSnapshot)? = nil,
         resourceAccessCleanup: (@Sendable () -> Void)? = nil
     ) {
         self.runID = runID
@@ -279,6 +280,24 @@ public actor ConversationRunService {
         // The sink forwards into the service via closures so callbacks reach
         // the actor without an access-level or retain-cycle problem.
         let forwarder = SinkForwarder()
+        let promptAnchorDate = Date()
+        let promptAnchorZone = TimeZone.current
+        let refreshContext: (@Sendable () async throws -> String)?
+        if let provider = personalizationProvider {
+            refreshContext = {
+                let latest = try await provider()
+                var context = runContext ?? RunContext()
+                context.soulContext = latest.soul
+                context.userProfileContext = latest.profile
+                return Self.buildContextMessage(context, mode: configuration.conversationMode,
+                    toolsAvailable: configuration.toolsEnabled && configuration.model.capabilities.contains(.tools),
+                    compactForLocal: configuration.provider.kind == .local,
+                    hasImageAttachments: !currentUserImages.isEmpty,
+                    currentDate: promptAnchorDate, timeZone: promptAnchorZone)
+            }
+        } else {
+            refreshContext = nil
+        }
         self.runtime = FloeAgentRuntime(
             configuration: configuration,
             adapter: adapter,
@@ -292,6 +311,7 @@ public actor ConversationRunService {
             discoveryStore: discoveryStore,
             contextEngine: contextEngine,
             toolCallNormalizer: toolCallNormalizer,
+            liveSystemContext: refreshContext,
             sink: forwarder,
             runID: runID
         )

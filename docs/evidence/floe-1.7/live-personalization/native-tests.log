@@ -1,0 +1,16 @@
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Live personalization qualification" started.
+◇ Test "Live personalization follows active workspace overrides, rollback and removal" started.
+◇ Test "Resume refreshes only the owned context and preserves historical evidence" started.
+◇ Test "An active Agent refreshes saved Soul and profile without changing retry requests" started.
+◇ Test case passing 1 argument legacy → true to "Resume refreshes only the owned context and preserves historical evidence" started.
+◇ Test case passing 1 argument retryFirst → false to "An active Agent refreshes saved Soul and profile without changing retry requests" started.
+◇ Test case passing 1 argument retryFirst → true to "An active Agent refreshes saved Soul and profile without changing retry requests" started.
+◇ Test case passing 1 argument legacy → false to "Resume refreshes only the owned context and preserves historical evidence" started.
+✔ Test "Resume refreshes only the owned context and preserves historical evidence" with 2 test cases passed after 0.060 seconds.
+✔ Test "Live personalization follows active workspace overrides, rollback and removal" passed after 0.100 seconds.
+✔ Test "An active Agent refreshes saved Soul and profile without changing retry requests" with 2 test cases passed after 0.131 seconds.
+✔ Suite "Live personalization qualification" passed after 0.131 seconds.
+✔ Test run with 3 tests in 1 suite passed after 0.132 seconds.

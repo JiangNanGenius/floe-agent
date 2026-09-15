@@ -3,6 +3,14 @@ import GRDB
 import FloeCore
 import FloePersistence
 
+/// Active documents for the next logical model request. Empty values remove
+/// previous personalization; drafts awaiting review never enter this snapshot.
+public struct LivePersonalizationSnapshot: Sendable, Hashable {
+    public var soul: String?
+    public var profile: String?
+    public init(soul: String?, profile: String?) { self.soul = soul; self.profile = profile }
+}
+
 public enum PersonalizationDocumentKind: String, Sendable, Codable, Hashable, CaseIterable {
     case soul
     case userProfile
@@ -304,6 +312,26 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
                 LIMIT 1
                 """, arguments: [kind.rawValue, workspaceID?.uuidString]) else { return nil }
             return try Self.document(row)
+        }
+    }
+
+    /// Read both active documents in one database snapshot. A workspace
+    /// override shadows the global document; inactive review drafts never do.
+    public func liveSnapshot(workspaceID: UUID?) async throws -> LivePersonalizationSnapshot {
+        try await database.reader { db in
+            let documents = try Row.fetchAll(db, sql: """
+                SELECT * FROM personalization_documents
+                WHERE is_active = 1 AND (workspace_id IS NULL OR workspace_id = ?)
+                ORDER BY revision DESC
+                """, arguments: [workspaceID?.uuidString]).map(Self.document)
+            func content(_ kind: PersonalizationDocumentKind) -> String? {
+                if let workspaceID,
+                   let local = documents.first(where: { $0.kind == kind && $0.workspaceID == workspaceID }) {
+                    return local.content
+                }
+                return documents.first(where: { $0.kind == kind && $0.workspaceID == nil })?.content
+            }
+            return LivePersonalizationSnapshot(soul: content(.soul), profile: content(.userProfile))
         }
     }
 

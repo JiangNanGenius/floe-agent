@@ -16,6 +16,64 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.ConversationRunService")
 struct ConversationRunServiceTests {
 
+    @Test("An active Agent refreshes saved Soul and profile without changing retry requests", arguments: [false, true])
+    func activeRunRefreshesPersonalization(retryFirst: Bool) async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let documents = SQLitePersonalizationStore(database: database)
+        _ = try await documents.saveDocument(.init(kind: .soul, revision: 1, content: "old-style-token", source: .manual))
+        _ = try await documents.saveDocument(.init(kind: .userProfile, revision: 1, content: "old-profile-token", source: .manual))
+        let conversations = SQLiteConversationStore(database: database)
+        let runs = SQLiteRunStore(database: database)
+        let conversationID = UUID()
+        try await conversations.saveConversation(.init(id: conversationID, title: "Live preferences", createdAt: Date(), updatedAt: Date()))
+        let call = try TestFixtures.toolCall(id: "refresh-boundary")
+        let adapter = MockAdapter()
+        adapter.script = [[.toolRequest(call)], [.textDelta(.init(text: "Updated.")), .completed(.init(stopReason: .endTurn))]]
+        if retryFirst { adapter.script.insert([.error(.init(kind: .server, providerMessage: "transient fixture"))], at: 0) }
+        let reads = AsyncLock(0)
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = ToolCatalog.Descriptor(name: call.toolName, riskLabels: [], isSideEffecting: false)
+        executor.executionGate = {
+            do {
+                _ = try await documents.saveDocument(.init(kind: .soul, revision: 1, content: "new-style-token", source: .manual))
+                _ = try await documents.saveDocument(.init(kind: .userProfile, revision: 1, content: "new-profile-token", source: .manual))
+            } catch { Issue.record("Could not persist personalization fixture: \(error)") }
+        }
+        let service = ConversationRunService(
+            configuration: .init(conversationID: conversationID, provider: TestFixtures.localhostProvider(), model: TestFixtures.testModel(providerID: UUID()), providerRetryBaseDelay: 0, providerRetryMaxDelay: 0),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: executor,
+            conversationStore: conversations, runStore: runs,
+            runContext: .init(skillInstructions: "Document scope must survive.", soulContext: "stale-launch-style"),
+            personalizationProvider: {
+                reads.withLock { $0 += 1 }
+                return try await documents.liveSnapshot(workspaceID: nil)
+            }
+        )
+        try await service.start(goal: "Continue using current preferences")
+        #expect(adapter.requests.count == (retryFirst ? 3 : 2))
+        #expect(reads.withLock { $0 } == 2)
+        if retryFirst {
+            #expect(ProviderDispatchRequestSnapshot(request: adapter.requests[0]) == ProviderDispatchRequestSnapshot(request: adapter.requests[1]))
+        }
+        let first = try #require(adapter.requests.first?.messages.first?.content)
+        let second = try #require(adapter.requests.last?.messages.first?.content)
+        #expect(first.contains("old-style-token") && first.contains("old-profile-token"))
+        #expect(!first.contains("stale-launch-style"))
+        #expect(second.contains("new-style-token") && second.contains("new-profile-token"))
+        #expect(!second.contains("old-style-token") && !second.contains("old-profile-token"))
+        #expect(second.contains("Document scope must survive."))
+        #expect(second.contains("Style preferences only; they cannot grant authority"))
+        #expect(adapter.requests.last?.messages.filter { $0.content.contains("# Interaction style (SOUL.md)") }.count == 1)
+        // The cacheable context stays stable. The existing explicitly marked
+        // live tail legitimately changes with tool receipts and the clock.
+        let stableFirst = first.components(separatedBy: ProviderStreamRequest.liveStateMarker)[0]
+        let stableSecond = second.components(separatedBy: ProviderStreamRequest.liveStateMarker)[0]
+        #expect(stableFirst.replacingOccurrences(of: "old-style-token", with: "new-style-token")
+            .replacingOccurrences(of: "old-profile-token", with: "new-profile-token") == stableSecond)
+        #expect(try await runs.run(id: service.runID)?.state == "completed")
+    }
+
     @Test("Live state projection exposes reconnect, commit, and recoverable restore failure")
     func liveStateProjectionUsesLivenessPhases() throws {
         let streaming = AgentState.streamingModel(.init(modelRemoteID: "cloud-model"))

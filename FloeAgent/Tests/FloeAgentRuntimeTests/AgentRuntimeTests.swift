@@ -1007,6 +1007,33 @@ struct AgentRuntimeTests {
         #expect(executor.executedCalls.count == 1)
     }
 
+    @Test("Resume refreshes only the owned context and preserves historical evidence", arguments: [false, true])
+    func resumeRefreshesOwnedPersonalization(legacy: Bool) async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.textDelta(.init(text: "Resumed.")), .completed(.init(stopReason: .endTurn))]]
+        let provider = TestFixtures.localhostProvider()
+        let fresh = ConversationRunService.buildContextMessage(.init(), mode: .chat)
+        let runtime = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: TestFixtures.testModel(providerID: provider.id)),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore(), liveSystemContext: { fresh }
+        )
+        let owned = ConversationMessage(role: "system", content: ConversationRunService.buildContextMessage(.init(soulContext: "obsolete-style", userProfileContext: "obsolete-profile"), mode: .chat))
+        let historical = ConversationMessage(role: "system", content: "Historical summary for this task only. Preserve this evidence.")
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(), conversationID: UUID(), state: .preparing(.init(goal: "resume")),
+            messages: [owned, historical, .init(role: "user", content: "resume")],
+            ownedSystemContextID: legacy ? nil : owned.id
+        )
+        let restored = try AgentCheckpoint.decoded(from: checkpoint.encoded())
+        try await runtime.resume(from: restored)
+        let request = try #require(adapter.requests.first)
+        #expect(request.messages.first?.content.hasPrefix(fresh) == true)
+        #expect(request.messages.contains { $0.content == historical.content })
+        #expect(!request.messages.contains { $0.content.contains("obsolete-style") || $0.content.contains("obsolete-profile") })
+        #expect(request.messages.filter { $0.content.hasPrefix("# Floe runtime contract") }.count == 1)
+    }
+
     @Test("Resume from checkpoint restores messages and continues")
     func resumeFromCheckpoint() async throws {
         let adapter = MockAdapter()

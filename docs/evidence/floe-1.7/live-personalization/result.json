@@ -1,0 +1,37 @@
+{
+  "date": "2026-09-16",
+  "baseCommit": "6cdc737d3052970919b7d8be92e70d91d97a8e9e",
+  "scope": "Native module regression; not full App, simulator UI, physical-device or TestFlight acceptance",
+  "sourceSHA256": {
+    "FloeAgent/Sources/FloeAgentRuntime/Personalization.swift": "666d80cc6c8721f28543cd1a268001b0e41f2693e5d7dfca25f24cfd63467f9c",
+    "FloeAgent/Sources/FloeAgentRuntime/AgentRuntime.swift": "b3879ee4bd48c6dc444f1eeecb10adb97ed44b53e79c49fbc942c80de0764256",
+    "FloeAgent/Sources/FloeAgentRuntime/ConversationRunService.swift": "7667c6640f26f600f6f3dc343f96001194948ccb97432043f3c9fa0ba4ee96be",
+    "FloeAgent/Sources/FloeAgentRuntime/AgentCheckpoint.swift": "e01b17c52bde8756d8410112fc7c18d6309fa619123cf935d20973c09607795b",
+    "FloeAgent/FloeApp/Remote/ConversationCenter.swift": "6c012fcf3d92512977ee86c488bfe540487d576c88691e400c71673a17b835d9",
+    "FloeAgent/Tests/FloeAgentRuntimeTests/PersonalizationMemoryTests.swift": "4f914228595d4b427076266d85c34916369bf0ef5c3e28df070b8a0b2b479ae6",
+    "FloeAgent/Tests/FloeAgentRuntimeTests/AgentRuntimeTests.swift": "13c053646f7fb2ac4e396b6419a7d9deddf661e33b30c1b2c94b62ac4c06290a",
+    "FloeAgent/Tests/FloeAgentRuntimeTests/ConversationRunServiceTests.swift": "d24a38efd9d5f6612d36da9f2a7088405688248c1ad049d55ce12697c12a6ed7"
+  },
+  "toolchain": "Apple Swift 6.4 (swiftlang-6.4.0.30.4 clang-2100.3.30.1), Xcode-beta, macOS SDK 27",
+  "target": "arm64-apple-macos15.0",
+  "result": {
+    "tests": 3,
+    "cases": 5,
+    "failed": 0,
+    "seconds": 0.132
+  },
+  "method": "Recompiled current FloeAgentRuntime and FloePersistence with the Swift 6 and StrictConcurrency, InferSendableFromCaptures, NonisolatedNonsendingByDefault flags from Package.swift. Linked existing local dependency objects. Compiled unchanged selected test bodies and their mocks into a native Swift Testing runner. Commands, selected source and original failures retained privately. Full clean App CI is a separate pending gate.",
+  "cases": [
+    "Active run sends current persisted Soul/profile on next tool boundary without duplicating the owned envelope",
+    "Transient retry preserves exact provider request and performs no extra personalization read",
+    "Explicit-ID checkpoint refresh preserves historical evidence and removes stale personalization",
+    "Legacy checkpoint recognizes only the app-owned leading contract",
+    "Atomic snapshot respects workspace overrides, inactive review drafts, rollback, fallback and clearing"
+  ],
+  "initialFailures": [
+    "Ad-hoc compile lacked Testing macro plugin search path, then linked a stale persistence object; corrected harness setup and rebuilt persistence.",
+    "First ad-hoc runtime compile omitted the manifest nonsending/concurrency flags; active-run harness exited SIGSEGV. Recompiled with matching flags; original logs retained.",
+    "Workspace fixture initially lacked its foreign-key parent; now creates an actual workspace.",
+    "Initial prompt assertion wrongly included the existing volatile runtime suffix; corrected to check the owned prefix and stable cacheable portion separately."
+  ]
+}
