@@ -20,7 +20,15 @@ source=root/('freerdp-'+lock['version'])
 # Floe consumes reviewed static dependencies and supplies its own small bridge.
 p=source/'client/iOS/cmake/ExternalDeps.cmake';s=p.read_text()
 assert s.count('-DBUILD_SHARED_LIBS:BOOL=ON')==1
-p.write_text(s.replace('-DBUILD_SHARED_LIBS:BOOL=ON','-DBUILD_SHARED_LIBS:BOOL=OFF'))
+s=s.replace('-DBUILD_SHARED_LIBS:BOOL=ON','-DBUILD_SHARED_LIBS:BOOL=OFF')
+# Upstream enables IPO/LTO whenever the compiler supports it. Apple Clang then
+# emits LLVM bitcode archive members, which xcodebuild -create-xcframework
+# rejects ("Unknown header: 0xb17c0de"). Propagate a plain Mach-O object build
+# to every ExternalProject sub-build.
+anchor='    -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}\n)\n\nset(IOS_CMAKE_CACHE_ARGS)'
+assert s.count(anchor)==1
+s=s.replace(anchor,'    -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}\n)\nlist(APPEND IOS_CMAKE_ARGS -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF)\n\nset(IOS_CMAKE_CACHE_ARGS)')
+p.write_text(s)
 p=source/'client/iOS/cmake/ExternalOpenSSL.cmake';s=p.read_text()
 assert 'make -j build_sw' in s
 s=s.replace('make -j build_sw','make -j2 build_sw')
@@ -41,6 +49,7 @@ cmake -S "$source_root/client/iOS" -B "$task_root/build" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$source_root/cmake/ios.toolchain.cmake" \
   -DPLATFORM="$platform" -DDEPLOYMENT_TARGET=26.0 -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=OFF -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
   -DWITH_FFMPEG=OFF -DWITH_OPENH264=OFF -DWITH_CJSON=OFF -DWITH_OPUS=OFF \
   -DWITH_PNG=OFF -DWITH_WEBP=OFF -DWITH_JPEG=OFF -DWITH_URIPARSER=OFF
 cmake --build "$task_root/build" --target freerdp --parallel 2
