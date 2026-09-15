@@ -1,6 +1,8 @@
 // swift-tools-version:6.2
 import PackageDescription
-let package = Package(name: "FloePlatformQualification", platforms: [.macOS(.v26)], dependencies: [.package(path: "..")], targets: [
+let package = Package(name: "FloePlatformQualification", platforms: [.macOS(.v26)], dependencies: [.package(path: ".."), .package(path: "../ThirdParty/WasmKit")], targets: [
+    .testTarget(name: "IDEWorkspaceTests", dependencies: [.product(name: "FloeWorkspace", package: "FloeAgent")], path: "Tests/IDEWorkspaceTests"),
+    .testTarget(name: "WasmCommandTests", dependencies: [.product(name: "FloeExecution", package: "FloeAgent"), .product(name: "WAT", package: "WasmKit")], path: "Tests/WasmCommandTests"),
     .testTarget(name: "ConversationSearchQualificationTests", dependencies: [.product(name: "FloeAgentRuntime", package: "FloeAgent"), .product(name: "FloePersistence", package: "FloeAgent")], path: "Tests/SearchTests"),
     .testTarget(name: "SkillHubTests", dependencies: [.product(name: "FloeSkills", package: "FloeAgent")], path: "Tests/SkillHubTests"),
     .testTarget(name: "MediaTests", dependencies: [.product(name: "FloeMedia", package: "FloeAgent"), .product(name: "FloeTools", package: "FloeAgent")], path: "Tests/MediaTests"),
