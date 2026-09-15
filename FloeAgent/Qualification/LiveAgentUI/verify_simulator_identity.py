@@ -3,20 +3,50 @@ import hashlib
 import json
 import pathlib
 import plistlib
-import re
-import subprocess
+import struct
 import sys
 
 
 def simulated_entitlements(binary):
-    result = subprocess.run(['otool', '-X', '-s', '__TEXT', '__entitlements', str(binary)],
-                            check=True, capture_output=True, text=True)
-    words = [word for line in result.stdout.splitlines() for word in line.split()
-             if re.fullmatch(r'[0-9a-fA-F]{8}', word)]
-    # The qualification artifact is arm64; otool prints little-endian 32-bit
-    # words as integers, not byte-order hex strings.
-    data = b''.join(int(word, 16).to_bytes(4, 'little') for word in words).rstrip(b'\0')
-    return plistlib.loads(data) if data else {}
+    # Read the exact section bytes. otool's last partial word can otherwise
+    # truncate XML whose size is not a multiple of four.
+    with pathlib.Path(binary).open('rb') as stream:
+        header = stream.read(32)
+        if len(header) != 32:
+            raise ValueError('Truncated Mach-O header')
+        magic, cpu, _, _, count, commands_size, _, _ = struct.unpack('<8I', header)
+        if magic != 0xFEEDFACF or cpu != 0x0100000C:
+            raise ValueError('Expected the qualified thin arm64 simulator binary')
+        if count > 4096 or commands_size > 16 * 1024 * 1024:
+            raise ValueError('Invalid Mach-O load commands')
+        commands = stream.read(commands_size)
+        offset = 0
+        for _ in range(count):
+            if offset + 8 > len(commands):
+                raise ValueError('Truncated Mach-O load command')
+            command, size = struct.unpack_from('<II', commands, offset)
+            if size < 8 or offset + size > len(commands):
+                raise ValueError('Invalid Mach-O command size')
+            if command == 0x19:  # LC_SEGMENT_64, followed by section_64 records.
+                if size < 72:
+                    raise ValueError('Truncated segment')
+                sections = struct.unpack_from('<I', commands, offset + 64)[0]
+                if 72 + sections * 80 > size:
+                    raise ValueError('Truncated section table')
+                for index in range(sections):
+                    base = offset + 72 + index * 80
+                    name, segment = struct.unpack_from('<16s16s', commands, base)
+                    if name.rstrip(b'\0') == b'__entitlements' and segment.rstrip(b'\0') == b'__TEXT':
+                        length, position = struct.unpack_from('<QI', commands, base + 40)
+                        if length > 1024 * 1024:
+                            raise ValueError('Oversized simulated entitlements')
+                        stream.seek(position)
+                        data = stream.read(length)
+                        if len(data) != length:
+                            raise ValueError('Truncated simulated entitlements')
+                        return plistlib.loads(data.rstrip(b'\0'))
+            offset += size
+    return {}
 
 
 def main():
