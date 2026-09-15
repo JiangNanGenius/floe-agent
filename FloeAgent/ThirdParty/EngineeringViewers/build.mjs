@@ -24,7 +24,7 @@ for(const [folder,meta] of Object.entries(lock.packages)){
  for(const name of await readdir(dir))if(/^(license|licence|copying)(\.|$)/i.test(name))notices+=(await readFile(path.join(dir,name),'utf8'))+'\n\n';
 }
 notices+='## MiSans\n\n'+await readFile(path.resolve(root,'../../FloeApp/Resources/Fonts/Bundled/misans/LICENSE.txt'),'utf8');
-await writeFile(path.join(out,'THIRD_PARTY_NOTICES.txt'),notices);
+await writeFile(path.join(out,'THIRD_PARTY_NOTICES.txt'),notices.replace(/\r\n/g,'\n'));
 const hashes={};
 for(const name of (await readdir(out)).sort())if(name!=='asset-hashes.json')hashes[name]=createHash('sha256').update(await readFile(path.join(out,name))).digest('hex');
 await writeFile(path.join(out,'asset-hashes.json'),JSON.stringify(hashes,null,2)+'\n');
