@@ -85,7 +85,7 @@ import UIKit
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
     }
 
-    func testLiveMarkdownCreationAndReadback() throws {
+    func testLiveMarkdownCreationAndReadback() async throws {
         app.launch()
         let input = app.textFields["composer.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 45))
@@ -95,7 +95,26 @@ import UIKit
         app.buttons["composer.send"].tap()
         capture("live-agent-request-sent")
         let completed = app.descendants(matching: .any).matching(identifier: "thread.run_state.completed").firstMatch
-        XCTAssertTrue(completed.waitForExistence(timeout: 240))
+        let deadline = Date().addingTimeInterval(240)
+        var approved = 0
+        while !completed.exists && Date() < deadline {
+            let card = app.otherElements.matching(NSPredicate(format:
+                "label == 'Approval required' OR label == '需要批准'")).firstMatch
+            if card.exists {
+                let allowedTool = card.staticTexts.matching(NSPredicate(format:
+                    "label == 'workspace.createFile' OR label == 'workspace.readFile'")).firstMatch
+                XCTAssertTrue(allowedTool.exists, "Only the user-authorized demo file operations may be approved")
+                XCTAssertLessThan(approved, 2)
+                let approve = card.buttons.matching(NSPredicate(format: "label == 'Approve' OR label == '批准'")).firstMatch
+                XCTAssertTrue(approve.isHittable)
+                capture("live-agent-file-permission")
+                approve.tap(); approved += 1
+            }
+            let failed = app.descendants(matching: .any).matching(identifier: "thread.run_state.failed").firstMatch
+            XCTAssertFalse(failed.exists, "The real model run failed; preserve evidence without retrying paid requests")
+            try await Task.sleep(for: .seconds(2))
+        }
+        XCTAssertTrue(completed.exists)
         capture("live-agent-completed")
         let file = app.buttons.matching(NSPredicate(format: "label CONTAINS 'review-demo.md'")).firstMatch
         if file.exists && file.isHittable { file.tap(); capture("live-agent-output-preview") }
