@@ -111,6 +111,16 @@ import UIKit
                 approve.tap(); approved += 1
             }
             let failed = app.descendants(matching: .any).matching(identifier: "thread.run_state.failed").firstMatch
+            if failed.exists {
+                // Preserve the terminal error before teardown closes the App.
+                // This run contains only the synthetic Markdown demo; provider
+                // credential setup is a separate test outside the recording.
+                capture("live-agent-failed")
+                let tree = XCTAttachment(string: app.debugDescription)
+                tree.name = "live-agent-failed-ui"
+                tree.lifetime = .keepAlways
+                add(tree)
+            }
             XCTAssertFalse(failed.exists, "The real model run failed; preserve evidence without retrying paid requests")
             try await Task.sleep(for: .seconds(2))
         }
