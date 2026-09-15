@@ -311,7 +311,9 @@ jobs:
 
       - name: Verify Notes workspace import and retain full App screenshots
         if: ${{ !cancelled() }}
-        timeout-minutes: 15
+        # Two devices each have three independently bounded 180-second tests.
+        # The phase must also allow boot, runner teardown and evidence export.
+        timeout-minutes: 25
         run: |
           set -o pipefail
           status=0
@@ -330,7 +332,10 @@ jobs:
             xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-Notes-Recordings/$name.mp4" > "FloeAgent-Notes-Recordings/$name.log" 2>&1 &
             recording_pid=$!
             trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
-            xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
+            python3 scripts/run_test_with_diagnostics.py \
+              --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name" \
+              --timeout 660 --stall-timeout 210 --simulator-id "$test_device" -- \
+              xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
               -destination "platform=iOS Simulator,id=$test_device" \
               -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
               -collect-test-diagnostics never \

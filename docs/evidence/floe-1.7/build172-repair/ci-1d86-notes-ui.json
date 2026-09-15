@@ -1,0 +1,25 @@
+{
+  "source": "1d86b2858e5e450fa7627c3b8ef4dfbf5d239361",
+  "run": 34951710478,
+  "appRegressionProcess": {
+    "exitCode": 0,
+    "reason": "exited",
+    "elapsedSeconds": 689.395,
+    "testsStarted": true
+  },
+  "notesIPad": {
+    "testDocumentTabsAndBodySearch": "passed (127.405s)",
+    "testPencilToolsAndFocusedLayout": "passed (107.225s)",
+    "testWorkspaceImportAndDocumentAssistant": "failed: XCTest AX query timeout at notes.pencil.page; page present in preceding snapshot",
+    "testOfficeHeaderAssistantSaveAndReopen": "explicit simulator skip"
+  },
+  "notesIPhone": "not reached before phase deadline",
+  "acceptedSDKCompatibility": "success",
+  "linux": "success",
+  "spindumpObservation": "App main thread sampled in XCTAccessibilityFramework attributesForElement -> writev; 108.45 MB footprint, 0.050s sampled CPU. Query used descendants(any), while retained element is ScrollView. Not proof of a production document-editing hang.",
+  "artifacts": {
+    "simulatorApp": 10391552534,
+    "diagnostics": 10391896919
+  },
+  "testFlightUploaded": false
+}

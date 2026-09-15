@@ -16,9 +16,9 @@ The pinned grammar bundle recognizes common source languages, including C, C++, 
 
 | Language/package family | Execution route | Current boundary / required evidence |
 | --- | --- | --- |
-| Python | Bundled CPython, environment-bound pip, owned background services | Existing implementation and new native integration tests; pip/native-wheel end-to-end qualification still required |
-| JavaScript / Node | Bundled Node host, npm/pnpm and owned services | Existing implementation; installation, imports, version reporting, HTTP preview and stop/port release must pass in the App |
-| Shell / WASI commands | Floe shell and interpreted WASI | Current patch carries cwd/environment and avoids draining a terminal before command startup; new real-WASI cwd test pending cloud execution |
+| Python | Bundled CPython, environment-bound pip, owned background services | App CI 34951710478 passed real pip install/import/upgrade/uninstall and signed bundled lxml reuse; arbitrary native wheels remain subject to ABI validation |
+| JavaScript / Node | Bundled Node host, npm/pnpm and owned services | App CI 34951710478 passed npm/pnpm package installation and imports; new IDE HTTP preview integration still needs App validation |
+| Shell / WASI commands | Floe shell and interpreted WASI | Current patch carries cwd/environment and avoids draining a terminal before command startup; real-WASI cwd test passed in cloud component qualification 34957110743 |
 | C/C++ | Candidate: clang/LLVM targeting WASI, then interpreted execution | a-Shell and Code App demonstrate the architecture; reviewed current compiler payload, source/hash/license, sysroot, native/device tests and update path still needed |
 | PHP | Candidate: signed iOS PHP framework or maintained WASI PHP | Code App's published framework is historical; version/ABI/source update must be established before shipping. Old PHP 8.2.6 WASI artifacts are not accepted as a current runtime |
 | Swift | Editor support now; local compiler unresolved | Swift's official WASM SDK compiles on its host; it does not establish an on-iPad Swift compiler. Code App documents Swift as server-side |
@@ -39,7 +39,7 @@ Do not reuse `makalin/php2wasm` as a PHP runtime: its inspected implementation w
 
 - The real pinned CodeBlitz workbench rendered, opened multiple tabs, recognized PHP/Markdown, searched the saved document by body text (1 file / 1 result), and saved Chinese text through the BrowserFS adapter to a **synthetic browser fixture**. An incorrect Date-vs-milliseconds adapter was found during actual save and fixed. This is not native iPad storage evidence.
 - Four Node bridge tests pass: delayed save acknowledgment, UTF-8 payload, conflict propagation without false success, stable numeric timestamps, size/append rejection (the latter two share tests).
-- Native workspace tests cover disk saves, unread-file overwrite rejection, concurrent changes, path restrictions, directory operations and session closure. They await cloud execution. Local full SwiftPM testing was stopped when it expanded beyond the intended small check; it is not recorded as a pass.
+- Native workspace tests cover disk saves, unread-file overwrite rejection, concurrent changes, path restrictions, directory operations and session closure. All 3 passed in cloud component qualification 34957110743 on source 24b17c11. These are native filesystem tests on the macOS qualification host, not WKWebView/iPad UI tests. Local full SwiftPM testing was stopped when it expanded beyond the intended small check; it is not recorded as a pass.
 - Swift parsing and pinned-asset validation pass. Heavy App compilation, WebKit loopback initialization, touch/IME, dirty-tab recovery, full-text search, workspace changes, rich-editor return and resource release still need App validation.
 - Existing repair, media/model, package compatibility, Qwen crash, log-server deployment, internal TestFlight, GitHub/Feather, owner-reviewed public Beta and final main merge remain part of the parent task.
 

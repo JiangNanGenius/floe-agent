@@ -151,12 +151,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         if !quickMenu.isHittable { writingTools.swipeRight() }
         let headerToggle = app.buttons["notes.header.toggle"]
         assertTouchTarget(headerToggle)
-        let expandedPageY = app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.frame.minY
+        let expandedPageY = app.scrollViews.matching(identifier: "notes.pencil.page").firstMatch.frame.minY
         headerToggle.tap()
         XCTAssertFalse(back.exists)
         XCTAssertTrue(quickMenu.isHittable)
         XCTAssertTrue(toolbarMarker.isHittable)
-        XCTAssertLessThan(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.frame.minY, expandedPageY)
+        XCTAssertLessThan(app.scrollViews.matching(identifier: "notes.pencil.page").firstMatch.frame.minY, expandedPageY)
         capture("notes-focused-writing")
         headerToggle.tap()
         XCTAssertTrue(back.waitForExistence(timeout: 5))
@@ -261,10 +261,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // Full-screen presentation can expose a control before its transition
         // makes it interactive. Require the foreground control, not a covered
         // library navigation item, and retain the tree for a failing transition.
-        let tree = XCTAttachment(string: app.debugDescription)
-        tree.name = "notes-editor-after-import-tree"
-        tree.lifetime = .keepAlways
-        add(tree)
+        if !editorAppeared {
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "notes-editor-after-import-tree"
+            tree.lifetime = .keepAlways
+            add(tree)
+        }
         XCTAssertTrue(editorAppeared)
         let editorReady = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: back)
         wait(for: [editorReady], timeout: 10)
@@ -273,7 +275,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         assertTouchTarget(back)
         XCTAssertFalse(app.navigationBars["从工作区导入"].exists)
         XCTAssertFalse(app.textFields["notes.search"].isHittable)
-        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.scrollViews.matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
         capture("notes-imported-pdf-fullscreen")
 
         return (app, back, create)
