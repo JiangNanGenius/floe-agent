@@ -62,6 +62,9 @@ on:
 jobs:
   live-agent-demo:
     if: github.event_name == 'workflow_dispatch' && inputs.live_agent_demo
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/live-agent-demo.yml
     with:
       source_run: ${{ inputs.demo_source_run }}
