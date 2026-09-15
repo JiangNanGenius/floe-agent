@@ -164,7 +164,7 @@ public actor MLXTextEngine {
     /// helper returns (or throws), those references are destroyed before the
     /// caller's `Memory.clearCache()` defer runs, so freed pages cannot simply
     /// fall back into MLX's process-wide cache after it was cleared.
-    private func generatePrepared(
+    private nonisolated func generatePrepared(
         container: ModelContainer,
         input: sending LMInput,
         parameters: GenerateParameters,
@@ -182,7 +182,7 @@ public actor MLXTextEngine {
         }
     }
 
-    private func generateGuarded(
+    private nonisolated func generateGuarded(
         container: ModelContainer,
         input: sending LMInput,
         parameters: GenerateParameters,
