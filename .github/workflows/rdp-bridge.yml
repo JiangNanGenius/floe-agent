@@ -91,16 +91,18 @@ jobs:
         run: |
           set -euo pipefail
           for platform in OS64 SIMULATORARM64; do
-            dir="$RUNNER_TEMP/bridges/rdp-bridge-$platform-${{ github.sha }}/bridge"
+            dir="$RUNNER_TEMP/bridges/rdp-bridge-$platform-${{ github.sha }}"
             test -f "$dir/libFloeRDPNative.a"
-            (cd "$dir" && shasum -a 256 -c SHA256SUMS 2>/dev/null | grep -F 'libFloeRDPNative.a: OK')
+            expected="$(grep 'libFloeRDPNative.a$' "$dir/SHA256SUMS" | awk '{print $1}')"
+            actual="$(shasum -a 256 "$dir/libFloeRDPNative.a" | awk '{print $1}')"
+            test -n "$expected" && test "$expected" = "$actual"
           done
       - name: Assemble and prove the consumable XCFramework
         run: |
           set -o pipefail
           bash FloeAgent/ThirdParty/FreeRDP/package_xcframework.sh \
-            "$RUNNER_TEMP/bridges/rdp-bridge-OS64-${{ github.sha }}/bridge" \
-            "$RUNNER_TEMP/bridges/rdp-bridge-SIMULATORARM64-${{ github.sha }}/bridge" \
+            "$RUNNER_TEMP/bridges/rdp-bridge-OS64-${{ github.sha }}" \
+            "$RUNNER_TEMP/bridges/rdp-bridge-SIMULATORARM64-${{ github.sha }}" \
             "$RUNNER_TEMP/package" 2>&1 | tee "$RUNNER_TEMP/package.log"
       - name: Retain the packaged framework and original failure
         if: always()
