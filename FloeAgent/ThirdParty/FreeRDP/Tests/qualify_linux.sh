@@ -21,9 +21,9 @@ cmake -S "$root/freerdp-3.31.1" -B "$root/build" -G Ninja \
   -DWITH_ALSA=OFF -DWITH_PULSE=OFF -DWITH_CUPS=OFF -DWITH_PCSC=OFF -DWITH_LIBUSB=OFF \
   -DWITH_FUSE=OFF -DWITH_KRB5=OFF -DWITH_SWSCALE=OFF -DWITH_X11=OFF -DWITH_WAYLAND=OFF
 cmake --build "$root/build" --target freerdp --parallel 2
-cc -shared -fPIC -std=c11 -Wall -Wextra -Werror -pthread \
-  -I "$script_root/../Bridge/include" -I "$root/freerdp-3.31.1/include" -I "$root/build/include" \
-  -I "$root/freerdp-3.31.1/winpr/include" -I "$root/build/winpr/include" \
+cc -shared -fPIC -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -pthread \
+  -I "$script_root/../Bridge/include" -isystem "$root/freerdp-3.31.1/include" -isystem "$root/build/include" \
+  -isystem "$root/freerdp-3.31.1/winpr/include" -isystem "$root/build/winpr/include" \
   "$script_root/../Bridge/FloeRDP.c" -L "$root/build/libfreerdp" -lfreerdp3 \
   -L "$root/build/winpr/libwinpr" -lwinpr3 -o "$root/libFloeRDP.so"
 export LD_LIBRARY_PATH="$root/build/libfreerdp:$root/build/winpr/libwinpr"
