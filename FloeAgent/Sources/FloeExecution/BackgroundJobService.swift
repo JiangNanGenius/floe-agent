@@ -28,6 +28,7 @@ public actor BackgroundJobService {
     /// Only non-host-scoped, workspace-safe targets are eligible; expanding
     /// this list requires a fresh approval-surface review.
     public static let supportedTargets: Set<String> = [
+        "exec.localService",
         "exec.localPython", "exec.shell", "network.download", "network.http", "web.fetch"
     ]
 
@@ -48,6 +49,7 @@ public actor BackgroundJobService {
 
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private var cancellations: [UUID: CancellationToken] = [:]
+    private var restartingIDs: Set<UUID> = []
 
     public init(
         store: BackgroundJobStore,
@@ -76,12 +78,16 @@ public actor BackgroundJobService {
         scope: ToolScope,
         workspaceRootURL: URL?,
         allowedWorkspacePaths: [String],
-        environmentID: String? = nil
+        environmentID: String? = nil,
+        allowedToolNames: Set<String>? = nil
     ) async throws -> BackgroundJob {
         guard Self.supportedTargets.contains(targetTool) else {
             throw FloeError.validationFailed(
                 "jobs.submit supports \(Self.supportedTargets.sorted().joined(separator: ", ")) for now; call other tools directly"
             )
+        }
+        guard allowedToolNames?.contains(targetTool) != false else {
+            throw FloeError.validationFailed("The current task does not permit this background target")
         }
         guard let runner = registry.runner(named: targetTool) else {
             throw FloeError.validationFailed("Tool '\(targetTool)' is not available in this build")
@@ -129,7 +135,7 @@ public actor BackgroundJobService {
             }
         }
         start(job: persisted, scope: scope, workspaceRootURL: workspaceRootURL,
-              allowedWorkspacePaths: allowedWorkspacePaths)
+              allowedWorkspacePaths: allowedWorkspacePaths, allowedToolNames: allowedToolNames)
         return persisted
     }
 
@@ -137,7 +143,8 @@ public actor BackgroundJobService {
         job: BackgroundJob,
         scope: ToolScope,
         workspaceRootURL: URL?,
-        allowedWorkspacePaths: [String]
+        allowedWorkspacePaths: [String],
+        allowedToolNames: Set<String>?
     ) {
         let token = CancellationToken()
         cancellations[job.id] = token
@@ -157,6 +164,7 @@ public actor BackgroundJobService {
                     runID: job.runID,
                     toolCallID: "jobs.\(job.id.uuidString)",
                     scope: scope,
+                    allowedToolNames: allowedToolNames,
                     workspaceRootURL: workspaceRootURL,
                     allowedWorkspacePaths: allowedWorkspacePaths,
                     cancellation: token,
@@ -203,10 +211,42 @@ public actor BackgroundJobService {
         try await store.job(id: id)
     }
 
+    /// Resolve ownership from the durable run, not a caller-supplied task ID.
+    public func ownedJob(id: UUID, runID: UUID) async throws -> BackgroundJob {
+        guard let owner = try await store.conversationID(runID: runID),
+              let job = try await store.job(id: id), job.conversationID == owner else {
+            throw FloeError.validationFailed("No background job is available to this task with that ID")
+        }
+        return job
+    }
+
+    /// Native UI action; explicit restart creates a fresh durable attempt.
+    /// Tools resubmit with their current approved context instead.
+    public func restartLocalService(id: UUID) async throws -> BackgroundJob {
+        guard restartingIDs.insert(id).inserted else { throw FloeError.validationFailed("Restart is already in progress") }
+        defer { restartingIDs.remove(id) }
+        guard let job = try await store.job(id: id), job.targetTool == "exec.localService",
+              job.state.isTerminal, let path = job.workspaceRootPath, job.environmentID != nil else {
+            throw FloeError.validationFailed("Stop the local service before restarting it")
+        }
+        if let existing = try await store.jobs(conversationID: job.conversationID, limit: 100).first(where: {
+            !$0.state.isTerminal && $0.targetTool == job.targetTool && $0.environmentID == job.environmentID && $0.payloadJSON == job.payloadJSON
+        }) { return existing }
+        return try await submit(runID: job.runID, toolCallID: nil, targetTool: job.targetTool,
+            payloadJSON: job.payloadJSON, scope: .local, workspaceRootURL: URL(fileURLWithPath: path),
+            allowedWorkspacePaths: [], environmentID: job.environmentID)
+    }
+
     public func cancel(id: UUID) async throws -> BackgroundJob {
         guard let job = try await store.job(id: id) else { throw BackgroundJobStoreError.missingJob(id) }
         guard !job.state.isTerminal else { return job }
         cancellations[id]?.cancel()
+        if job.targetTool == "exec.localService", job.state == .running {
+            // The service runner retains its environment lease until native exit.
+            // Cancellation acknowledgement is not a terminal execution result.
+            try await store.requestCancellation(id: id)
+            return try await store.job(id: id) ?? job
+        }
         if job.kind == .download { await downloadCancelHandler?(id) }
         do {
             return try await store.transition(id: id, to: .cancelled) { $0.lastError = "Cancelled by user or agent request" }

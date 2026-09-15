@@ -216,6 +216,61 @@ struct BackgroundJobTests {
         #expect(try await store.activeJobs().isEmpty)
     }
 
+    @Test("Persistent service cancellation stays running until the executor acknowledges exit")
+    func serviceCancellationRetainsRunningState() async throws {
+        let (db, _, run) = try await fixture()
+        let store = BackgroundJobStore(database: db)
+        let registry = ToolRunnerRegistry()
+        let gate = ServiceExitGate()
+        registry.register(AnyAgentTool(descriptor: .init(name: "exec.localService", toolDescription: "test service",
+            parametersJSON: "{}", riskLabels: [], isSideEffecting: true)) { _, context in
+                await gate.enter()
+                while !context.cancellation.isCancelled { try await Task.sleep(for: .milliseconds(10)) }
+                while !(await gate.canExit) { try await Task.sleep(for: .milliseconds(10)) }
+                return ToolExecutionOutput(summary: "stopped", fullOutputSHA256: "stopped")
+            })
+        let service = BackgroundJobService(store: store, registry: registry)
+        let job = try await service.submit(runID: run, toolCallID: "service", targetTool: "exec.localService",
+            payloadJSON: Data("{}".utf8), scope: .local, workspaceRootURL: nil, allowedWorkspacePaths: [], environmentID: "owner")
+        for _ in 0..<200 {
+            if await gate.entered { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await gate.entered)
+        let cancelled = try await service.cancel(id: job.id)
+        #expect(cancelled.state == .running)
+        try await store.updateProgress(id: job.id, data: Data(#"{"state":"stopping"}"#.utf8))
+        #expect(try await store.activeJobs().contains(where: { $0.id == job.id }))
+        await gate.allowExit()
+        #expect(try await waitForTerminal(service, id: job.id).state == .cancelled)
+        try await store.updateProgress(id: job.id, data: Data("late write".utf8))
+        #expect(try await store.job(id: job.id)?.progressJSON == Data(#"{"state":"stopping"}"#.utf8))
+        #expect(try await store.jobs(environmentID: "owner").count == 1)
+        #expect(try await store.jobs(environmentID: "other").isEmpty)
+    }
+
+    @Test("Another task cannot read logs or cancel a background job")
+    func jobOwnership() async throws {
+        let (db, owner, run) = try await fixture()
+        let otherRun = UUID()
+        let now = ISO8601DateFormatter().string(from: Date())
+        try await db.writer { db in
+            let other = UUID().uuidString
+            try db.execute(sql: "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, 'Other', ?, ?)", arguments: [other, now, now])
+            try db.execute(sql: "INSERT INTO runs (id, conversation_id, state, goal, started_at) VALUES (?, ?, 'running', 'Other', ?)", arguments: [otherRun.uuidString, other, now])
+        }
+        let store = BackgroundJobStore(database: db)
+        let job = try await store.save(BackgroundJob(conversationID: owner, runID: run, kind: .tool,
+            targetTool: "exec.localService", payloadJSON: Data("{}".utf8), state: .running))
+        let service = BackgroundJobService(store: store, registry: ToolRunnerRegistry())
+        let context = ToolContext(runID: otherRun, cancellation: CancellationToken())
+        await #expect(throws: (any Error).self) { try await JobsStatusTool(service: service).execute(.init(jobID: job.id.uuidString), context: context) }
+        await #expect(throws: (any Error).self) { try await JobsResultTool(service: service).execute(.init(jobID: job.id.uuidString), context: context) }
+        await #expect(throws: (any Error).self) { try await JobsCancelTool(service: service).execute(.init(jobID: job.id.uuidString), context: context) }
+        #expect(try await service.ownedJob(id: job.id, runID: run).state == .running)
+        #expect(try await store.job(id: job.id)?.state == .running)
+    }
+
     private func extractJobID(_ summary: String) -> UUID? {
         guard let data = summary.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -228,4 +283,11 @@ private actor TerminalJobCollector {
     private var ids: [UUID] = []
     func record(_ id: UUID) { ids.append(id) }
     func contains(_ id: UUID) -> Bool { ids.contains(id) }
+}
+
+private actor ServiceExitGate {
+    private(set) var entered = false
+    private(set) var canExit = false
+    func enter() { entered = true }
+    func allowExit() { canExit = true }
 }

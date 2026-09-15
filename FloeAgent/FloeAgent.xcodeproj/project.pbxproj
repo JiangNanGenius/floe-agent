@@ -134,6 +134,7 @@
 		38B8A13076DD53D0AAE4F448 /* NotesPalettePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82DB29DC9BABBD2FE6410C1C /* NotesPalettePresentation.swift */; };
 		38D12FDA70DBDEB3E3F91853 /* select.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8EEDB221C5E3501DEF3F7015 /* select.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		39115D1FF0C2180535C94DCC /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940DE18872CD21D45A855A30 /* FilesView.swift */; };
+		393897D35D5CD5D902B66450 /* LocalServiceTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 661B0EF976FE62AE65B7537A /* LocalServiceTool.swift */; };
 		3A66AAE493907FEC14A90D2E /* pandas__libs_ops_dispatch.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */; };
 		3AFBC6A59C80A54479D28946 /* pandas__libs_tslibs_tzconversion.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 454525682D752CA18BC08BD3 /* pandas__libs_tslibs_tzconversion.xcframework */; };
 		3B691AA2CEF2D86129EC2585 /* pandas__libs_pandas_parser.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FF649704B99081AF2F7E2480 /* pandas__libs_pandas_parser.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -385,6 +386,7 @@
 		AD61CEFDA09B1A33794EB76D /* resource.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F3B002E69704278C46E0A12 /* resource.xcframework */; };
 		AE62B83850265049A67A47F4 /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A421102C6F73CB0DCC678535 /* FilePreviewView.swift */; };
 		AECD7DC7E8D774BD10F71607 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C112647BD8DF8C99E18D89 /* SampleHandler.swift */; };
+		AFADE063BC378DBFFBD7B6E4 /* LocalServicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1214F31DA36238B1F417DBC /* LocalServicesView.swift */; };
 		B030CB108442D9B3CEA7F61B /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 085605503DC285FC91B0449B /* HostEditorView.swift */; };
 		B122E4C91387683F2EDBC728 /* FileTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */; };
 		B1706C324EE51831A0FE5EE9 /* _decimal.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */; };
@@ -940,6 +942,7 @@
 		63BB8791E564E4D0D1E236D2 /* NotesAssistantPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesAssistantPanel.swift; sourceTree = "<group>"; };
 		63EB5024B1FD6F3B9E73BBBF /* CanvasAgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasAgentTools.swift; sourceTree = "<group>"; };
 		65606508E8DAFCEA8327E106 /* _json.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _json.xcframework; path = Vendor/PythonExtensions/_json.xcframework; sourceTree = "<group>"; };
+		661B0EF976FE62AE65B7537A /* LocalServiceTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServiceTool.swift; sourceTree = "<group>"; };
 		66624FE4F8480041F7602716 /* ConversationListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListViewModel.swift; sourceTree = "<group>"; };
 		6704E2791094659EB11FBB09 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsAboutView.swift; sourceTree = "<group>"; };
@@ -1143,6 +1146,7 @@
 		E0CC49587858D0A876BB4743 /* WorkspaceRootReattacher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRootReattacher.swift; sourceTree = "<group>"; };
 		E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
 		E112A159AE387A7219A69172 /* RunStateLocalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStateLocalizer.swift; sourceTree = "<group>"; };
+		E1214F31DA36238B1F417DBC /* LocalServicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServicesView.swift; sourceTree = "<group>"; };
 		E235AA51EFF99AA0DEA509BD /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };
 		E25201278D78378B37FF1BBD /* binascii.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = binascii.xcframework; path = Vendor/PythonExtensions/binascii.xcframework; sourceTree = "<group>"; };
 		E3643698ECE842C34421E377 /* NotesAgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesAgentTools.swift; sourceTree = "<group>"; };
@@ -1401,6 +1405,7 @@
 				A53D1BCB11C304CA5EA031AF /* FloeTLSConfiguration.m */,
 				302D81B12BD70148923C79D1 /* IOSSystemNodeRuntime.swift */,
 				27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */,
+				661B0EF976FE62AE65B7537A /* LocalServiceTool.swift */,
 				242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */,
 			);
 			path = Execution;
@@ -1648,6 +1653,7 @@
 				6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */,
 				5043AD7DE6FDAD5AD4A95D1A /* GitHubSettingsView.swift */,
 				D3239F632B3D2E2DF7F9BBA8 /* LocalModelsSettingsView.swift */,
+				E1214F31DA36238B1F417DBC /* LocalServicesView.swift */,
 				A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */,
 				B7CA2C01CEE850FC7B6F1D6A /* ProvidersSettingsView.swift */,
 				7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */,
@@ -2595,6 +2601,8 @@
 				355AA35003F049409539C002 /* JobDownloadCoordinator.swift in Sources */,
 				C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */,
 				E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */,
+				393897D35D5CD5D902B66450 /* LocalServiceTool.swift in Sources */,
+				AFADE063BC378DBFFBD7B6E4 /* LocalServicesView.swift in Sources */,
 				C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */,
 				F21AD42E26BA47E7C2A1129D /* LocalTerminalView.swift in Sources */,
 				BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */,

@@ -10,6 +10,20 @@ import FloeCore
 
 @Suite("FloeApp.FloeBrowserProtocol")
 struct BrowserProtocolTests {
+    @Test("Service previews are scoped to the owning task and revoked on shutdown")
+    func servicePreviewOwnership() throws {
+        let service = UUID(), owner = UUID(), other = UUID()
+        let url = URL(string: "http://127.0.0.1:53271/")!
+        BrowserURLPolicy.authorizeService(url, owner: service, conversationID: owner)
+        defer { BrowserURLPolicy.revokeService(owner: service) }
+        #expect(try BrowserURLPolicy.validate(url.absoluteString, conversationID: owner) == url)
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(url.absoluteString, conversationID: other) }
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(url.absoluteString) }
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate("http://127.0.0.1:53272/", conversationID: owner) }
+        BrowserURLPolicy.revokeService(owner: service)
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(url.absoluteString, conversationID: owner) }
+    }
+
     @Test("Browser panels open only through an explicit human-interaction request")
     @MainActor
     func explicitPanelHandoff() async throws {

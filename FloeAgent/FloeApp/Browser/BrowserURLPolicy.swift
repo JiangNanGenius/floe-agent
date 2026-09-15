@@ -7,6 +7,17 @@ enum BrowserURLPolicy {
     private static let previewLock = NSLock()
     nonisolated(unsafe) private static var previewPrefixes: Set<String> = []
 
+    nonisolated(unsafe) private static var serviceOrigins: [UUID: (origin: String, conversationID: UUID)] = [:]
+
+    static func authorizeService(_ url: URL, owner: UUID, conversationID: UUID) {
+        guard url.scheme == "http", url.host == "127.0.0.1", let port = url.port, (1024...65535).contains(port) else { return }
+        previewLock.withLock { serviceOrigins[owner] = ("http://127.0.0.1:\(port)", conversationID) }
+    }
+
+    static func revokeService(owner: UUID) {
+        previewLock.withLock { _ = serviceOrigins.removeValue(forKey: owner) }
+    }
+
     static func authorizePreview(_ url: URL) {
         guard let prefix = previewPrefix(for: url) else { return }
         previewLock.withLock { _ = previewPrefixes.insert(prefix) }
@@ -17,7 +28,7 @@ enum BrowserURLPolicy {
         previewLock.withLock { _ = previewPrefixes.remove(prefix) }
     }
 
-    static func validate(_ value: String) throws -> URL {
+    static func validate(_ value: String, conversationID: UUID? = nil, allowRegisteredServices: Bool = false) throws -> URL {
         guard let url = URL(string: value),
               let scheme = url.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
@@ -25,7 +36,7 @@ enum BrowserURLPolicy {
         else {
             throw BrowserPolicyError.blocked("Only http and https URLs are allowed")
         }
-        guard !isPrivate(host) || isAuthorizedPreview(url) else {
+        guard !isPrivate(host) || isAuthorizedPreview(url, conversationID: conversationID, allowRegisteredServices: allowRegisteredServices) else {
             throw BrowserPolicyError.blocked("Loopback and private-network navigation is blocked")
         }
         guard url.user == nil, url.password == nil else {
@@ -34,7 +45,9 @@ enum BrowserURLPolicy {
         return url
     }
 
-    private static func isAuthorizedPreview(_ url: URL) -> Bool {
+    private static func isAuthorizedPreview(_ url: URL, conversationID: UUID?, allowRegisteredServices: Bool) -> Bool {
+        if url.scheme == "http", url.host == "127.0.0.1", let port = url.port,
+           previewLock.withLock({ serviceOrigins.values.contains(where: { $0.origin == "http://127.0.0.1:\(port)" && (allowRegisteredServices || $0.conversationID == conversationID) }) }) { return true }
         guard let prefix = previewPrefix(for: url) else { return false }
         return previewLock.withLock { previewPrefixes.contains(prefix) }
     }

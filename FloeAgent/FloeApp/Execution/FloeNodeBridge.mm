@@ -68,6 +68,7 @@ struct Host {
     NSMutableDictionary<NSString *, NSDictionary *> *controlReplies = [NSMutableDictionary new];
     NSMutableSet<NSString *> *pendingControls = [NSMutableSet new];
     NSMutableDictionary<NSString *, NSString *> *serviceEnvironments = [NSMutableDictionary new];
+    NSMutableDictionary<NSString *, NSDictionary *> *serviceTerminals = [NSMutableDictionary new];
     NSCondition *condition = [NSCondition new];
     int commands = -1;
     int results = -1;
@@ -133,6 +134,15 @@ void receive() {
                         h.ready = true;
                     }
                     else if ([reply[@"event"] isEqual:@"serviceExited"]) {
+                        NSString *owner = h.serviceEnvironments[reply[@"id"]];
+                        if (owner && ![reply[@"status"] isEqual:@"cancelled"]) {
+                            if (h.serviceTerminals.count >= 8) [h.serviceTerminals removeObjectForKey:h.serviceTerminals.allKeys.firstObject];
+                            NSMutableDictionary *terminal = [reply mutableCopy];
+                            terminal[@"owner"] = owner;
+                            terminal[@"serviceID"] = reply[@"id"];
+                            terminal[@"status"] = [reply[@"code"] intValue] == 0 ? @"completed" : @"failed";
+                            h.serviceTerminals[reply[@"id"]] = terminal;
+                        }
                         [h.serviceEnvironments removeObjectForKey:reply[@"id"]];
                     } else if ([reply[@"id"] isKindOfClass:NSString.class] && [h.pendingControls containsObject:reply[@"id"]]) {
                         h.controlReplies[reply[@"id"]] = reply;
@@ -332,6 +342,12 @@ NSDictionary *FloeNodeServiceCommand(NSDictionary *request, NSString *environmen
     [h.condition lock];
     if ([operation isEqual:@"start"]) h.serviceEnvironments[id] = environmentID;
     else if (![h.serviceEnvironments[serviceID] isEqual:environmentID]) {
+        NSDictionary *terminal = h.serviceTerminals[serviceID];
+        if ([terminal[@"owner"] isEqual:environmentID]) {
+            [h.serviceTerminals removeObjectForKey:serviceID];
+            [h.condition unlock];
+            return [operation isEqual:@"stop"] ? @{@"status": @"stopped", @"serviceID": serviceID} : terminal;
+        }
         [h.condition unlock]; return @{@"status": @"notFound"};
     }
     [h.pendingControls addObject:id];

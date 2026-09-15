@@ -226,7 +226,7 @@ private struct BrowserNavigateTool: AgentTool {
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
     let environment: BrowserToolEnvironment
-    func validate(_ args: Arguments) throws { _ = try BrowserURLPolicy.validate(args.url) }
+    func validate(_ args: Arguments) throws { _ = try BrowserURLPolicy.validate(args.url, allowRegisteredServices: true) }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try await environment.run(action: .navigate(url: args.url), tabID: args.tabID)
     }

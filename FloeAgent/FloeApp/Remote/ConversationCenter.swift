@@ -939,6 +939,13 @@ final class ConversationCenter: ObservableObject {
             ),
             for: runID
         )
+        let notesContext: String?
+        do {
+            notesContext = try await NotesRepository.shared.runtimeContext(conversationID: conversationID)
+        } catch {
+            FloeLogger(category: .persistence).warning("notesContextUnavailable conversation=\(conversationID)")
+            notesContext = "Selected Notes context could not be loaded. Do not guess document contents or permissions; report the unavailable context if the request depends on it."
+        }
         return ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider),
@@ -976,7 +983,7 @@ final class ConversationCenter: ObservableObject {
                 availableToolNames: allowedToolNames,
                 skillInstructions: [
                     skills.instructions,
-                    try await NotesRepository.shared.runtimeContext(conversationID: conversationID),
+                    notesContext,
                     runSurface == .ordinary ? AppleCapabilityPreferences.skillInstructions() : nil
                 ]
                     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }

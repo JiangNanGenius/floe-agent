@@ -4,10 +4,89 @@ import Darwin
 import Testing
 import FloeExecution
 import FloeTools
+import FloePersistence
 @testable import FloeApp
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test(.timeLimit(.minutes(2))) func serviceToolPublishesLivePreviewAndRevokesAfterStop() async throws {
+        for runtime in ["node", "python"] {
+            let database = try DatabaseManager.inMemory()
+            try await database.migrate()
+            let conversation = UUID(), run = UUID(), owner = UUID().uuidString
+            try await database.writer { db in
+                try db.execute(sql: "INSERT INTO conversations (id,title,created_at,updated_at) VALUES (?, 'Service test', ?, ?)", arguments: [conversation.uuidString, Date(), Date()])
+                try db.execute(sql: "INSERT INTO runs (id,conversation_id,state,goal,started_at) VALUES (?,?,'running','Service test',?)", arguments: [run.uuidString, conversation.uuidString, Date()])
+            }
+            let socketFD = socket(AF_INET, SOCK_STREAM, 0)
+            #expect(socketFD >= 0)
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_addr.s_addr = inet_addr("127.0.0.1")
+            let bound = withUnsafePointer(to: &address) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
+            var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let named = withUnsafeMutablePointer(to: &address) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(socketFD, $0, &length) }
+            }
+            close(socketFD)
+            #expect(bound == 0 && named == 0)
+            let port = Int(UInt16(bigEndian: address.sin_port))
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { if !FloeNodeHasActiveTask(owner) && !CPythonLocalRuntime.hasActiveWork(environmentID: owner) { try? FileManager.default.removeItem(at: root) } }
+            let entry = runtime == "node" ? "server.cjs" : "server.py"
+            let script = runtime == "node" ? "require('node:http').createServer((q,r)=>r.end('floe-service')).listen(Number(process.env.PORT),'127.0.0.1'); console.log('service-ready');" : """
+            import os
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            class Handler(BaseHTTPRequestHandler):
+                def do_HEAD(self):
+                    self.send_response(200); self.end_headers()
+                def do_GET(self):
+                    self.send_response(200); self.end_headers(); self.wfile.write(b'floe-service')
+            print('service-ready', flush=True)
+            HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever(poll_interval=0.1)
+            """
+            try Data(script.utf8).write(to: root.appendingPathComponent(entry))
+            let args = LocalServiceTool.Arguments(runtime: runtime, entry: entry, port: port)
+            let store = BackgroundJobStore(database: database)
+            let job = try await store.save(BackgroundJob(conversationID: conversation, runID: run, kind: .tool,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(args), state: .running,
+                workspaceRootPath: root.path, environmentID: owner))
+            let token = CancellationToken()
+            let tool = LocalServiceTool(store: store)
+            try tool.validate(args)
+            let context = ToolContext(runID: run, toolCallID: "jobs." + job.id.uuidString, workspaceRootURL: root,
+                cancellation: token, environmentID: owner, conversationID: conversation,
+                environment: ToolEnvironment(id: owner, writableLayerURL: root, layerURLs: [root], variables: [:]))
+            let task = Task { try await tool.execute(args, context: context) }
+            do {
+                var progress: LocalServiceProgress?
+                for _ in 0..<100 {
+                    if let data = try await store.job(id: job.id)?.progressJSON { progress = try JSONDecoder().decode(LocalServiceProgress.self, from: data) }
+                    if progress?.previewURL != nil { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                let urlText = try #require(progress?.previewURL)
+                let url = try BrowserURLPolicy.validate(urlText, conversationID: conversation)
+                let (data, _) = try await URLSession.shared.data(from: url)
+                #expect(String(decoding: data, as: UTF8.self) == "floe-service")
+                #expect(progress?.stdout.contains("service-ready") == true)
+                token.cancel()
+                #expect(try await task.value.exitStatus == 0)
+                #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(urlText, conversationID: conversation) }
+                #expect(!FloeNodeHasActiveTask(owner))
+                #expect(!CPythonLocalRuntime.hasActiveWork(environmentID: owner))
+            } catch {
+                token.cancel()
+                _ = try? await task.value
+                throw error
+            }
+        }
+    }
+
     @Test(.timeLimit(.minutes(3))) func managedNpmAndPnpmInstallAndExecuteRealPackages() async throws {
         let runtime = IOSSystemNodeRuntime.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

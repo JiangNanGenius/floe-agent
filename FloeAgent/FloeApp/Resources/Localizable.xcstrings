@@ -1,6 +1,278 @@
 {
   "sourceLanguage": "en",
   "strings": {
+  "services.title": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Local services"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "本地服务"
+      }
+    }
+  }
+},
+  "services.description": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Node.js and Python servers stay alive when you close a preview or switch tasks. iOS may suspend them in the background. After restarting Floe, restart the services you still need."
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "关闭预览或切换任务不会停止 Node.js 和 Python 服务。iOS 进入后台后可能暂停执行；重新打开 Floe 后，请重启仍需使用的服务。"
+      }
+    }
+  }
+},
+  "services.empty": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "No local services"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "暂无本地服务"
+      }
+    }
+  }
+},
+  "services.start_hint": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Ask the assistant to start a Node.js or Python preview server in this workspace. Its status and controls appear here."
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "可以让助手在此工作区启动 Node.js 或 Python 网页预览服务，随后在这里查看状态与管理。"
+      }
+    }
+  }
+},
+  "services.preview": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Open preview"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "打开预览"
+      }
+    }
+  }
+},
+  "services.logs": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Output and errors"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "输出与错误"
+      }
+    }
+  }
+},
+  "services.logs_truncated": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Output limit reached. Earlier captured output is retained."
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "已达到输出上限，保留已捕获的内容。"
+      }
+    }
+  }
+},
+  "services.stop": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Stop service"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "停止服务"
+      }
+    }
+  }
+},
+  "services.restart": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Start again"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "重新启动"
+      }
+    }
+  }
+},
+  "services.stopping": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Stopping…"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "正在停止…"
+      }
+    }
+  }
+},
+  "services.starting": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Waiting for HTTP response"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "等待网页响应"
+      }
+    }
+  }
+},
+  "services.state.running": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Running"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "运行中"
+      }
+    }
+  }
+},
+  "services.state.queued": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Queued"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "等待启动"
+      }
+    }
+  }
+},
+  "services.state.completed": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Completed"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "已结束"
+      }
+    }
+  }
+},
+  "services.state.cancelled": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Stopped"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "已停止"
+      }
+    }
+  }
+},
+  "services.state.failed": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Failed"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "失败"
+      }
+    }
+  }
+},
+  "services.state.interrupted": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Interrupted · restart needed"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "已中断 · 需要重启"
+      }
+    }
+  }
+},
   "settings.exec.node_local": {
     "localizations": {
       "en": {

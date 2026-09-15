@@ -29,6 +29,7 @@ private struct JobView: Encodable {
     let hasResult: Bool
     let resultPath: String?
     let lastError: String?
+    let progressJSON: String?
 
     init(_ job: BackgroundJob) {
         jobID = job.id.uuidString
@@ -40,6 +41,7 @@ private struct JobView: Encodable {
         hasResult = job.resultSummary != nil || job.resultPath != nil
         resultPath = job.resultPath
         lastError = job.lastError
+        progressJSON = job.progressJSON.map { String(decoding: $0, as: UTF8.self) }
     }
 }
 
@@ -62,11 +64,11 @@ public struct JobsSubmitTool: AgentTool {
     }
 
     public static let name = "jobs.submit"
-    public static let toolDescription = "Submit a long-running operation as a durable background job and return immediately with a jobID instead of blocking this task. Supported targets: exec.localPython (data pulls/cleaning), network.download (large files, survives app suspension), network.http, web.fetch. arguments is a JSON-encoded object for the target tool. Track progress with jobs.status, collect output with jobs.result, stop it with jobs.cancel; completion is also announced automatically. Never submit a duplicate payload for the same purpose — one job is enough."
-    public static let parametersJSON = #"{"type":"object","properties":{"tool":{"type":"string","description":"Target tool name: exec.localPython, network.download, network.http, or web.fetch"},"arguments":{"type":"string","maxLength":65536,"description":"JSON-encoded arguments object for the target tool"},"purpose":{"type":"string","maxLength":240,"description":"Short human-visible reason for this job"}},"required":["tool","arguments"],"additionalProperties":false}"#
+    public static let toolDescription = "Submit a long-running operation as a durable background job and return immediately with a jobID instead of blocking this task. Supported targets: exec.localService (persistent Node/Python preview servers; inspect its schema first), exec.shell, exec.localPython (data pulls/cleaning), network.download (large files, survives app suspension), network.http, web.fetch. arguments is a JSON-encoded object for the target tool. Track progress with jobs.status, collect output with jobs.result, stop it with jobs.cancel; completion is also announced automatically. Never submit a duplicate payload for the same purpose — one job is enough."
+    public static let parametersJSON = #"{"type":"object","properties":{"tool":{"type":"string","description":"Target tool name: exec.localService, exec.shell, exec.localPython, network.download, network.http, or web.fetch"},"arguments":{"type":"string","maxLength":65536,"description":"JSON-encoded arguments object for the target tool"},"purpose":{"type":"string","maxLength":240,"description":"Short human-visible reason for this job"}},"required":["tool","arguments"],"additionalProperties":false}"#
     // The real risk profile belongs to the named target; the union keeps
     // approval policy conservative because labels are compile-time static.
-    public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesLocalCode, .writesFiles]
+    public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesLocalCode, .readsFiles, .writesFiles, .deletesFiles]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
 
@@ -97,7 +99,8 @@ public struct JobsSubmitTool: AgentTool {
             scope: context.scope,
             workspaceRootURL: context.workspaceRootURL,
             allowedWorkspacePaths: context.allowedWorkspacePaths,
-            environmentID: context.environmentID
+            environmentID: context.environmentID,
+            allowedToolNames: context.allowedToolNames
         )
         struct Response: Encodable {
             let jobID: String
@@ -134,9 +137,7 @@ public struct JobsStatusTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        guard let job = try await service.job(id: parseJobID(args.jobID)) else {
-            throw FloeError.validationFailed("No such background job: \(args.jobID)")
-        }
+        let job = try await service.ownedJob(id: parseJobID(args.jobID), runID: context.runID)
         return try jobsOutput(JobView(job))
     }
 }
@@ -161,9 +162,7 @@ public struct JobsResultTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        guard let job = try await service.job(id: parseJobID(args.jobID)) else {
-            throw FloeError.validationFailed("No such background job: \(args.jobID)")
-        }
+        let job = try await service.ownedJob(id: parseJobID(args.jobID), runID: context.runID)
         struct Response: Encodable {
             let job: JobView
             let resultSummary: String?
@@ -206,7 +205,8 @@ public struct JobsCancelTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let job = try await service.cancel(id: parseJobID(args.jobID))
+        let owned = try await service.ownedJob(id: parseJobID(args.jobID), runID: context.runID)
+        let job = try await service.cancel(id: owned.id)
         return try jobsOutput(JobView(job))
     }
 }

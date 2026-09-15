@@ -16,10 +16,11 @@ import FloeProviders
 import FloeLocalModels
 @testable import FloeApp
 
+extension CrashAndFeedbackRegressionTests {
 @Test("Notes bootstrap migration removes only the selected conversation setup and retains dialogue")
 @MainActor func notesBootstrapMigrationPreservesDialogue() async throws {
     let database = try DatabaseManager.inMemory()
-    try database.migrate()
+    try await database.migrate()
     let store = SQLiteConversationStore(database: database)
     let documentID = UUID()
     let selected = UUID(), other = UUID()
@@ -59,6 +60,8 @@ import FloeLocalModels
     #expect(uploaded.contains("EXC_BAD_ACCESS"))
     #expect(summary.contains("FloeApp"))
     #expect(!summary.contains("unrelated"))
+}
+
 }
 
 @MainActor

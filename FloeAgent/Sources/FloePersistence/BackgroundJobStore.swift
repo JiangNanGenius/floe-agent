@@ -159,15 +159,47 @@ public actor BackgroundJobStore {
         id: UUID, to state: BackgroundJobState,
         mutate: @Sendable (inout BackgroundJob) -> Void = { _ in }
     ) async throws -> BackgroundJob {
-        guard var job = try await job(id: id) else { throw BackgroundJobStoreError.missingJob(id) }
-        guard job.state.canTransition(to: state) else {
-            throw BackgroundJobStoreError.invalidStateTransition(from: job.state, to: state)
+        try await database.writer { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM background_jobs WHERE id=?", arguments: [id.uuidString]) else {
+                throw BackgroundJobStoreError.missingJob(id)
+            }
+            var job = try Self.decode(row)
+            guard job.state.canTransition(to: state) else {
+                throw BackgroundJobStoreError.invalidStateTransition(from: job.state, to: state)
+            }
+            mutate(&job)
+            job.state = state
+            job.updatedAt = Date()
+            if state.isTerminal { job.completedAt = job.completedAt ?? Date() }
+            try db.execute(sql: """
+                UPDATE background_jobs SET state=?,progress_json=?,result_summary=?,result_digest=?,
+                    result_path=?,last_error=?,retry_count=?,updated_at=?,completed_at=? WHERE id=?
+                """, arguments: [job.state.rawValue, job.progressJSON, job.resultSummary, job.resultDigest,
+                    job.resultPath, job.lastError, job.retryCount, job.updatedAt, job.completedAt, id.uuidString])
+            return job
         }
-        mutate(&job)
-        job.state = state
-        job.updatedAt = Date()
-        if state.isTerminal { job.completedAt = job.completedAt ?? Date() }
-        return try await save(job)
+    }
+
+    public func updateProgress(id: UUID, data: Data) async throws {
+        guard data.count <= 65_536 else { throw FloeError.validationFailed("Job progress exceeds 64 KiB") }
+        try await database.writer { db in
+            try db.execute(sql: "UPDATE background_jobs SET progress_json=?,updated_at=? WHERE id=? AND state='running'",
+                           arguments: [data, Date(), id.uuidString])
+        }
+    }
+
+    public func requestCancellation(id: UUID) async throws {
+        try await database.writer { db in
+            try db.execute(sql: "UPDATE background_jobs SET last_error=?,updated_at=? WHERE id=? AND state='running'",
+                           arguments: ["Stop requested; waiting for the executor to exit", Date(), id.uuidString])
+        }
+    }
+
+    public func jobs(environmentID: String, targetTool: String? = nil, limit: Int = 50) async throws -> [BackgroundJob] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM background_jobs WHERE environment_id=? AND (? IS NULL OR target_tool=?) ORDER BY CASE WHEN state IN ('queued','running') THEN 0 ELSE 1 END,created_at DESC LIMIT ?",
+                            arguments: [environmentID, targetTool, targetTool, max(1, min(limit, 100))]).map { try Self.decode($0) }
+        }
     }
 
     public func job(id: UUID) async throws -> BackgroundJob? {

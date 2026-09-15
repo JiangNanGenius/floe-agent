@@ -172,6 +172,13 @@ private struct EnvironmentDetailView: View {
                     }
                 }
             }
+            Section {
+                NavigationLink {
+                    LocalServicesView(environmentID: report.id)
+                } label: {
+                    Label("services.title", systemImage: "server.rack")
+                }
+            }
             Section("语言依赖") {
                 ForEach(EnvironmentLanguagePackageService.Language.allCases) { language in
                     NavigationLink {

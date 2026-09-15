@@ -189,7 +189,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             return
         }
         let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
-        guard let url = try? BrowserURLPolicy.validate(candidate), let activeWebView else { return }
+        guard let url = try? BrowserURLPolicy.validate(candidate, conversationID: conversationID), let activeWebView else { return }
         activeWebView.load(URLRequest(url: url))
     }
 
@@ -308,7 +308,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         do {
             switch command.action {
             case .navigate(let value):
-                let url = try BrowserURLPolicy.validate(value)
+                let url = try BrowserURLPolicy.validate(value, conversationID: conversationID)
                 tab.webView.load(URLRequest(url: url))
             case .back:
                 tab.webView.goBack()
@@ -1195,6 +1195,11 @@ private enum BrowserInteractionError: Error {
 }
 
 extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
+    private func owner(of webView: WKWebView) -> UUID? {
+        if tabs.contains(where: { $0.webView === webView }) { return conversationID }
+        return taskSessions.first(where: { $0.value.tabs.contains(where: { $0.webView === webView }) })?.key
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction
@@ -1207,7 +1212,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
         // local fixtures/previews; all external navigations still pass the
         // normal http/https/private-network policy below.
         if url.absoluteString == "about:blank" { return .allow }
-        guard (try? BrowserURLPolicy.validate(url.absoluteString)) != nil else {
+        guard (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: owner(of: webView))) != nil else {
             return .cancel
         }
         return .allow
@@ -1269,7 +1274,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
         guard let id = createTab(),
               let created = tabs.first(where: { $0.id == id })?.webView else { return nil }
         if let url = navigationAction.request.url,
-           (try? BrowserURLPolicy.validate(url.absoluteString)) != nil {
+           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: owner(of: webView))) != nil {
             created.load(URLRequest(url: url))
         }
         return created

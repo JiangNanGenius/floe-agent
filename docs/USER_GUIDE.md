@@ -395,3 +395,19 @@ Native squeeze and double-tap callbacks follow the system action preference, usi
 <img src="validation/floe-156-feedback/screenshots/full-app-build164-sdk27/iphone/notes-imported-pdf-fullscreen.png" width="300" alt="Full-screen Notes editor on iPhone">
 
 Original build-164 SDK 27 simulator captures: the iPad palette and the iPhone full-screen editor. See the [capture manifest](validation/floe-156-feedback/screenshots/full-app-build164-sdk27/manifest.json) for the fixed source and passing UI results.
+
+### Managed local preview services (repair candidate, App qualification pending)
+
+Use **Settings → Execution environments → selected environment → Local services** to inspect output, open a ready preview, stop a server or start a new attempt. Ask the assistant to start a Node.js or Python service from a workspace script, or use Shell:
+
+```sh
+floe-service start node server.cjs 8080
+floe-service start python server.py 8081
+floe-service list
+floe-service status JOB_ID
+floe-service logs JOB_ID
+floe-service stop JOB_ID
+floe-service restart JOB_ID
+```
+
+Scripts bind `127.0.0.1` and use the supplied `PORT` environment variable. Additional script arguments follow `--`. Start returns a job ID; the preview URL appears only once HTTP responds. Closing previews or switching conversations keeps the service running. iOS may suspend execution in the background; app termination interrupts it and requires explicit restart. Stopping waits for the actual worker to exit. This supports managed Node/Python HTTP scripts, not arbitrary Linux daemon processes.

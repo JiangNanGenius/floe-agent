@@ -398,3 +398,19 @@ PDF 独立于 Office：从文件列表打开后直接阅读，在宽屏右侧预
 Build 172 后续修复版打开文档助手后即可直接聊天。面板顶部保留文档名称，不再把文档编号和工具使用说明显示成开场消息。你可以提问、要求修改文档，或把回答保存为手记内容；原有文档访问范围和编辑权限仍然生效。
 
 宽屏 iPad 使用文档旁边留有间距的助手面板，较窄窗口使用可收起的面板。模型、模式和权限仍可操作。关闭助手可恢复书写空间，不会删除对话。这些调整正在验证，尚未随新的 TestFlight 发布，进度见[修复记录](FLOE_172_REPAIR_EXECUTION.md)。
+
+### 常驻网页预览服务（修复候选，完整 App 验证中）
+
+在**设置 → 执行环境 → 选择环境 → 本地服务**中查看输出、打开已就绪的预览、停止服务或重新启动。可以直接让助手从工作区脚本启动 Node.js / Python 服务，也可以使用 Shell：
+
+```sh
+floe-service start node server.cjs 8080
+floe-service start python server.py 8081
+floe-service list
+floe-service status JOB_ID
+floe-service logs JOB_ID
+floe-service stop JOB_ID
+floe-service restart JOB_ID
+```
+
+脚本监听 `127.0.0.1`，从环境变量 `PORT` 取得指定端口；附加脚本参数写在 `--` 后。启动后先返回任务 ID，确认 HTTP 响应后才提供预览地址。关闭预览、结束一轮对话或切换会话不会停止服务。iOS 在后台可能暂停执行；App 进程退出后，服务会标记中断，需手动重启。停止操作会等待执行器实际退出。当前支持受管理的 Node/Python HTTP 脚本，不把任意 Linux 守护进程列为已支持能力。

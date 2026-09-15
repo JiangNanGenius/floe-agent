@@ -285,8 +285,15 @@ jobs:
           test -n "$xctestrun"
           for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
             case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
+            # Sequential UI runners must not compete with the previous simulator.
+            # Preserve the prior xcresult; establish boot readiness before XCTest.
+            xcrun simctl shutdown all || true
+            test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$device")
+            test -n "$test_device"
+            xcrun simctl boot "$test_device"
+            xcrun simctl bootstatus "$test_device" -b
             xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
-              -destination "platform=iOS Simulator,name=$device" \
+              -destination "platform=iOS Simulator,id=$test_device" \
               -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
               -collect-test-diagnostics never \
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \

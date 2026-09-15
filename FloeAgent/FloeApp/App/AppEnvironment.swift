@@ -664,6 +664,8 @@ final class AppEnvironment: ObservableObject {
             await MediaModelCatalogService.shared.bind(store: mediaModelStore)
             _ = await MediaModelCatalogService.shared.catalog()
         }
+        ToolCatalog.register(LocalServiceTool.self)
+        ToolRunnerRegistry.shared.register(LocalServiceTool(store: BackgroundJobStore(database: database)))
         // Background jobs (jobs.*): long downloads and Python data work run
         // off the run's critical path. Registered after the execution tools so
         // submit-time availability checks see every supported target runner.
@@ -688,6 +690,9 @@ final class AppEnvironment: ObservableObject {
                 await jobDownloads.hasLiveTask(jobID: jobID)
             }
         )
+        if let backgroundJobService {
+            registerLocalServiceCommand(service: backgroundJobService, store: BackgroundJobStore(database: database))
+        }
         // Browser automation.
         registerBrowserTools(center: browserCenter)
         registerMailTools()
