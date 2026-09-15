@@ -194,7 +194,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let closeOriginal = app.buttons[originalID.replacingOccurrences(of: "notes.tab.", with: "notes.tab.close.")]
         XCTAssertTrue(closeOriginal.isHittable)
         closeOriginal.tap()
-        XCTAssertFalse(app.buttons[originalID].exists)
+        // Closing runs through the async session: save guards, then selection
+        // of the remaining tab. Require the tab to actually disappear instead
+        // of sampling the accessibility tree mid-switch.
+        let originalClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons[originalID])
+        wait(for: [originalClosed], timeout: 10)
         XCTAssertTrue(back.waitForExistence(timeout: 10))
         // The same palette is opened by Pencil interactions; physical squeeze
         // delivery is a device check, not simulated by this button test.
