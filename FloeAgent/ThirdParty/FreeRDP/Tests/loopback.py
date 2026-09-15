@@ -42,6 +42,7 @@ def wait(predicate, seconds=20):
 class Session:
     def __init__(self, accept=True):
         self.states, self.frames, self.certificates = [], [], 0
+        self.last = None
         self.guard = threading.Lock()
         @State
         def state(_, value, error):
@@ -55,6 +56,7 @@ class Session:
             # not merely xrdp's login frame or an allocated zeroed framebuffer.
             pixel = payload[(height-10)*stride + 10*4: (height-10)*stride + 10*4+3]
             with self.guard:
+                self.last = (payload, width, height, stride)
                 if len(self.frames) < 200:
                     self.frames.append((hashlib.sha256(payload).hexdigest(), pixel.hex()))
             if pixel == bytes.fromhex('563412') and not (root / 'desktop.ppm').exists():
@@ -87,7 +89,16 @@ class Session:
         self.pointer = None
         elapsed = time.monotonic()-started
         assert elapsed < 5, elapsed
-        records.append({'states':self.states,'frames':len(self.frames),'certificateCallbacks':self.certificates,'shutdownSeconds':round(elapsed,3)})
+        records.append({'states':self.states,'frames':len(self.frames),'samplePixels':[pixel for _,pixel in self.frames[-10:]],'certificateCallbacks':self.certificates,'shutdownSeconds':round(elapsed,3)})
+        if self.last:
+            payload,width,height,stride = self.last
+            rgb = bytearray()
+            for y in range(height):
+                row=payload[y*stride:y*stride+width*4]
+                for x in range(0,len(row),4):rgb.extend(row[x:x+3][::-1])
+            (root/'last-desktop.ppm').write_bytes(f'P6\n{width} {height}\n255\n'.encode()+rgb)
+        (root/'sessions.json').write_text(json.dumps(records,indent=2)+'\n')
+        print(json.dumps(records[-1]))
 
 # Reject an untrusted certificate; no accepted frame or input.
 s = Session(accept=False)

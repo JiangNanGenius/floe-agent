@@ -33,6 +33,8 @@ jobs:
             ${{ runner.temp }}/rdp-loopback.log
             ${{ runner.temp }}/rdp/result.json
             ${{ runner.temp }}/rdp/desktop.ppm
+            ${{ runner.temp }}/rdp/last-desktop.ppm
+            ${{ runner.temp }}/rdp/sessions.json
             ${{ runner.temp }}/rdp/input-events.txt
             ${{ runner.temp }}/rdp/xrdp.log
             ${{ runner.temp }}/rdp/xrdp-console.log
