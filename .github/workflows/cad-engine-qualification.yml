@@ -1,0 +1,51 @@
+name: Qualify local CAD editing engine
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/floe-172-completion']
+    paths: ['FloeAgent/ThirdParty/CADEngine/**', '.github/workflows/cad-engine-qualification.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cad-engine-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  cad:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: FloeAgent/ThirdParty/CADEngine
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install fixed Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+      - name: Resolve initial lock or verify committed lock
+        run: |
+          if [ ! -f Cargo.lock ]; then cargo generate-lockfile; fi
+          cargo metadata --locked --format-version 1 > dependency-metadata.json
+      - name: Native edit and same-format reopen qualification
+        run: |
+          set -o pipefail
+          cargo test --locked --jobs 2 -- --nocapture 2>&1 | tee cad-tests.log
+      - name: Compile bounded-memory WebAssembly
+        env:
+          RUSTFLAGS: '-C link-arg=--max-memory=402653184'
+        run: cargo build --release --locked --target wasm32-unknown-unknown --jobs 2
+      - name: Create Web Worker bindings
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked --jobs 2
+          wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/floe_cad_engine.wasm
+          sha256sum pkg/* Cargo.lock > cad-artifacts.sha256
+      - name: Preserve exact-source engine and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cad-engine-${{ github.sha }}
+          path: |
+            FloeAgent/ThirdParty/CADEngine/pkg
+            FloeAgent/ThirdParty/CADEngine/Cargo.lock
+            FloeAgent/ThirdParty/CADEngine/cad-tests.log
+            FloeAgent/ThirdParty/CADEngine/cad-artifacts.sha256
+            FloeAgent/ThirdParty/CADEngine/dependency-metadata.json
+          retention-days: 14
