@@ -985,7 +985,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 SELECT m.conversation_id,
                     substr(m.content, max(1, instr(lower(m.content), lower(?)) - 45), 180) AS excerpt
                 FROM messages m JOIN conversations c ON c.id=m.conversation_id
-                WHERE c.is_searchable=1 AND m.content LIKE ? ESCAPE '\\'
+                WHERE c.is_searchable=1 AND c.purpose='ordinary' AND m.content LIKE ? ESCAPE '\\'
                 GROUP BY m.conversation_id
                 """, arguments: [value, "%\(escaped)%"])
             var matches: [UUID: String] = [:]
@@ -1011,7 +1011,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             var arguments: StatementArguments = [match]
             if let start = request.startDate { innerFilters.append("m.created_at >= ?"); arguments += [Self.date(start)] }
             if let end = request.endDate { innerFilters.append("m.created_at <= ?"); arguments += [Self.date(end)] }
-            var outerFilters = ["c.is_searchable = 1"]
+            var outerFilters = ["c.is_searchable = 1", "c.purpose = 'ordinary'"]
             if let workspaceID = request.workspaceID {
                 outerFilters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
             }
@@ -1053,10 +1053,10 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         return try await database.reader { db in
             guard try Bool.fetchOne(
                 db,
-                sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)",
+                sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ? AND purpose = 'ordinary')",
                 arguments: [request.conversationID.uuidString]
             ) == true else {
-                throw FloeError.validationFailed("The requested task no longer exists")
+                throw FloeError.validationFailed("The requested task is unavailable to conversation history tools")
             }
             let timeline = """
                 WITH timeline AS (
