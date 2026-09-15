@@ -29,7 +29,7 @@ runs=[dict(x) for x in con.execute('SELECT id,state,started_at,ended_at FROM run
 usage=[dict(x) for x in con.execute('SELECT input_tokens,output_tokens,cache_read_tokens,reasoning_tokens,is_estimated,total_duration_ms FROM run_usage ORDER BY recorded_at')]
 errors=[dict(x) for x in con.execute('SELECT kind,message,http_status,recoverable FROM run_errors ORDER BY recorded_at')]
 files=[x for x in a.container.rglob('review-demo.md') if x.is_file()]
-valid=[x for x in files if 'FLOE-LIVE-173' in x.read_text(errors='replace') and 'Floe Agent Demo' in x.read_text(errors='replace')]
+valid=[x for x in files if 'FLOE-REVIEW-DEMO' in x.read_text(errors='replace') and 'Floe Agent Demo' in x.read_text(errors='replace')]
 summary={'appSourceSHA':a.source_sha,'provider':'Volcengine Ark','remoteModelID':'deepseek-v4-1-flash-260910',
          'mode':'real remote model through ordinary Floe Agent','tools':rows,'matchingOutputs':len(valid),
          'usageCheckpoints':usage,'runErrors':errors,'runs':runs,'lifecycleEvents':events,

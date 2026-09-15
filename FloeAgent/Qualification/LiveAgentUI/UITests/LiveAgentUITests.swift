@@ -91,7 +91,7 @@ import UIKit
         XCTAssertTrue(input.waitForExistence(timeout: 45))
         capture("live-agent-ready")
         input.tap()
-        input.typeText("Please create review-demo.md in this task workspace using workspace.createFile, then use workspace.readFile to read it back. Write a short bilingual Markdown note titled 'Floe Agent Demo' with three checklist items about reading, writing and verifying files. Include the exact marker FLOE-LIVE-173. Only these two file operations are needed; do not browse, install packages, generate images or videos, or call another model. After the readback, briefly confirm the saved file in Chinese and English.")
+        input.typeText("Please create review-demo.md in this task workspace using workspace.createFile, then use workspace.readFile to read it back. Write a short bilingual Markdown note titled 'Floe Agent Demo' with three checklist items about reading, writing and verifying files. Include the exact marker FLOE-REVIEW-DEMO. Only these two file operations are needed; do not browse, install packages, generate images or videos, or call another model. After the readback, briefly confirm the saved file in Chinese and English.")
         app.buttons["composer.send"].tap()
         capture("live-agent-request-sent")
         let completed = app.descendants(matching: .any).matching(identifier: "thread.run_state.completed").firstMatch

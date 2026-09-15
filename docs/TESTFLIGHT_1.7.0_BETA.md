@@ -14,7 +14,10 @@ Main was fast-forwarded to the delivered integration. Task-owned merged branches
 
 ## September 15 repair candidate — not yet delivered
 
-Build 175 is being prepared with a real Ark streaming tool-call identity fix.
+Build 175 / `v1.7.0-beta.32` / `8958d8f1482c3236f73172076b76adc83da86f5f`
+is under [CI qualification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34945321526)
+and [release qualification/build](https://github.com/JiangNanGenius/floe-agent/actions/runs/34945701373)
+with the real Ark streaming tool-call identity fix.
 Its final-source validation, successful App demonstration, upload and Apple availability
 are pending. The installable delivery above remains build 172.
 [Build-specific notes](RELEASE_NOTES_1.7.0_BUILD_175.md) record remaining scope.
