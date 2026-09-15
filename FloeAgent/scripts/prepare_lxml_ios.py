@@ -55,6 +55,13 @@ def prepare(project):
             options += [f"-D{feature}_WITH_{part}=OFF" for part in ("PYTHON", "PROGRAMS", "TESTS", "MODULES")]
             if name == "libxml2":
                 options += ["-DLIBXML2_WITH_ICONV=ON", "-DLIBXML2_WITH_ZLIB=ON", "-DLIBXML2_WITH_LZMA=OFF", "-DLIBXML2_WITH_ICU=OFF"]
+            else:
+                # iOS cross-root lookup does not search an arbitrary install
+                # prefix. Bind the package to this slice's generated config.
+                xml_config = prefix / "lib/cmake/libxml2-2.14.6"
+                if not (xml_config / "libxml2-config.cmake").is_file():
+                    raise ValueError("Target libxml2 CMake configuration is missing")
+                options += [f"-DLibXml2_DIR={xml_config}"]
             run("cmake", "-S", str(source), "-B", str(build), "-G", "Ninja", *options)
             run("cmake", "--build", str(build), "--parallel", "3")
             run("cmake", "--install", str(build))
