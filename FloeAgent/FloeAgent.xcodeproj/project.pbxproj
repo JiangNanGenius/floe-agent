@@ -212,6 +212,7 @@
 		5BB820EF2110E8C73542D2C2 /* FloeWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = 88998EEAC884C7033D8C41A8 /* FloeWorkspace */; };
 		5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */; };
 		5C43AAAD15BA2B49F67B71D4 /* CPythonLocalRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37342E477B47F8A9B76D15B6 /* CPythonLocalRuntime.swift */; };
+		5C4A838AE13AC04B698EFC90 /* TextConflictReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15142C2A5CB70D6C7B86AB76 /* TextConflictReviewView.swift */; };
 		5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = EB5D488C40B3370A6968FC2A /* LICENSE */; };
 		5CAEB9CA0E2CAD0ED3CF5C2A /* BroadcastPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C474665A34C09CEF3EA600B /* BroadcastPickerView.swift */; };
 		5CD15BCACCCC188F7AADDB8D /* pandas__libs_tslibs_ccalendar.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -821,6 +822,7 @@
 		13C9AD3FD971F1CDA6F5EBF4 /* FileSpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSpeechTranscriber.swift; sourceTree = "<group>"; };
 		1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_dtypes.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_dtypes.xcframework; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
+		15142C2A5CB70D6C7B86AB76 /* TextConflictReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextConflictReviewView.swift; sourceTree = "<group>"; };
 		156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesWorkspaceImportUITests.swift; sourceTree = "<group>"; };
 		15BCD6B2D8B8AB9B011DA0AB /* CreativeMediaModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeMediaModelsTests.swift; sourceTree = "<group>"; };
 		15E0F87236F1C98AAE263465 /* PythonServiceBootstrap.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = PythonServiceBootstrap.py; sourceTree = "<group>"; };
@@ -1570,6 +1572,7 @@
 				4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */,
 				FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */,
 				1BED50B2B524010095D18E24 /* SourceControlView.swift */,
+				15142C2A5CB70D6C7B86AB76 /* TextConflictReviewView.swift */,
 				A9882EA32564305D017F2566 /* TextFileEditorView.swift */,
 				C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */,
 				DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */,
@@ -2750,6 +2753,7 @@
 				34485AB274BA660CE72C46D6 /* TaskScheduleSheet.swift in Sources */,
 				49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */,
 				F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */,
+				5C4A838AE13AC04B698EFC90 /* TextConflictReviewView.swift in Sources */,
 				7BB5CA51824E786287F252A8 /* TextFileEditorView.swift in Sources */,
 				E848083DD6CD8D1D0C33B8EE /* ThreadComposerView.swift in Sources */,
 				144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */,

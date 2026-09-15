@@ -328,6 +328,8 @@ private struct OfficeArchive {
             guard total <= maximumTotalBytes else { throw OfficeDocumentError.packageTooLarge }
             try output.addFloeEntry(path: entry.path, data: bytes)
         }
+        let mutationLock = ManagedFileMutationLock.shared
+        mutationLock.lock(); defer { mutationLock.unlock() }
         try verify(temporary)
         if manager.fileExists(atPath: destination.path) {
             _ = try manager.replaceItemAt(destination, withItemAt: temporary)

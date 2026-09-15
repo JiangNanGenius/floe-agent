@@ -3,9 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Plain-text editing with conflict-safe saving: the editor snapshots
-// mtime+sha256 at load and passes them to WorkspaceCenter.saveFile, which
-// refuses to overwrite externally modified files and surfaces a conflict
-// alert (same UX contract as FilesCenter's FileConflict).
+// mtime+sha256 and the original text at load. Saves use the captured workspace
+// service and present a three-way review if the disk version changed.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -32,6 +31,8 @@ struct TextFileEditorView: View {
 
     @State private var text = ""
     @State private var originalText = ""
+    @State private var editService: WorkspaceFileService?
+    @State private var editConflict: WorkspaceEditConflict?
     @State private var baseMtime: Double?
     @State private var baseSHA256: String?
     @State private var loadError: String?
@@ -197,14 +198,10 @@ struct TextFileEditorView: View {
         .onChange(of: isDirty) { _, dirty in
             onDirtyChange(dirty)
         }
-        .alert(item: $center.conflict) { conflict in
-            Alert(
-                title: Text("inspector.conflict.title"),
-                message: Text(conflict.relativePath + "\n" + conflict.detail),
-                dismissButton: .default(Text("action.done")) {
-                    center.conflict = nil
-                }
-            )
+        .sheet(item: $editConflict) { review in
+            TextConflictReviewView(conflict: review, onResolve: { merged in
+                await resolve(review, content: merged)
+            }, onCancel: { editConflict = nil }).id(review.id)
         }
         .alert(
             Text("inspector.editor.save_failed"),
@@ -431,12 +428,12 @@ struct TextFileEditorView: View {
             return
         }
         do {
-            let content = try service.readFileForEditing(relativePath)
-            let metadata = try service.metadata(relativePath)
-            text = content.text
-            originalText = content.text
-            baseMtime = metadata.mtime
-            baseSHA256 = metadata.sha256
+            let snapshot = try service.editConflict(path: relativePath, base: nil, draft: "")
+            editService = service
+            text = snapshot.current
+            originalText = snapshot.current
+            baseMtime = snapshot.currentMtime
+            baseSHA256 = snapshot.currentSHA256
             loadError = nil
             onDirtyChange(false)
         } catch {
@@ -444,13 +441,31 @@ struct TextFileEditorView: View {
         }
     }
 
+    private func resolve(_ review: WorkspaceEditConflict, content: String) async {
+        guard let editService else { return }
+        text = content // Retain the selected resolution even if a later save fails.
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            let outcome = try editService.resolveConflict(review, content: content)
+            originalText = content; baseMtime = outcome.mtime; baseSHA256 = outcome.sha256
+            editConflict = nil; saveError = nil
+            onDirtyChange(false); onSaved()
+        } catch let error as WorkspaceToolError {
+            if case .conflict = error {
+                do { editConflict = try editService.editConflict(path: relativePath, base: review.current, draft: content, preserveDraft: true) }
+                catch { saveError = error.localizedDescription }
+            } else { saveError = error.localizedDescription }
+        } catch { saveError = error.localizedDescription }
+    }
+
     private func save() async {
         isSaving = true
         defer { isSaving = false }
         do {
-            let outcome = try await center.saveFile(
-                relativePath: relativePath,
-                content: text,
+            guard let editService else { throw CocoaError(.fileWriteNoPermission) }
+            let outcome = try editService.writeFile(
+                relativePath, content: text,
                 expectedMtime: baseMtime,
                 expectedSHA256: baseSHA256
             )
@@ -465,7 +480,8 @@ struct TextFileEditorView: View {
             }
         } catch let error as WorkspaceToolError {
             if case .conflict = error {
-                // The center already surfaced the conflict alert.
+                do { editConflict = try editService?.editConflict(path: relativePath, base: originalText, draft: text, preserveDraft: true) }
+                catch { saveError = error.localizedDescription }
             } else {
                 saveError = error.errorDescription ?? error.localizedDescription
             }

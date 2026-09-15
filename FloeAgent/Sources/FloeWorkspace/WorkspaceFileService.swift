@@ -435,6 +435,9 @@ public struct WorkspaceFileService: Sendable {
         overwrite: Bool = false,
         cancellation: CancellationToken? = nil
     ) throws -> WriteOutcome {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
         var isDirectory: ObjCBool = false
@@ -454,6 +457,9 @@ public struct WorkspaceFileService: Sendable {
         _ path: String,
         cancellation: CancellationToken? = nil
     ) throws {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
         var isDirectory: ObjCBool = false
@@ -481,6 +487,9 @@ public struct WorkspaceFileService: Sendable {
         expectedSHA256: String? = nil,
         cancellation: CancellationToken? = nil
     ) throws -> WriteOutcome {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
         let exists = fileManager.fileExists(atPath: url.path)
@@ -488,7 +497,7 @@ public struct WorkspaceFileService: Sendable {
             if expectedMtime != nil || expectedSHA256 != nil {
                 let actualMtime = (try? fileManager.attributesOfItem(atPath: url.path)[.modificationDate] as? Date)?
                     .timeIntervalSince1970 ?? 0
-                let actualSHA = Self.sha256Hex(of: (try? Data(contentsOf: url)) ?? Data())
+                let actualSHA = Self.sha256Hex(of: try Data(contentsOf: url))
                 if let expectedMtime, abs(actualMtime - expectedMtime) > 1.0 {
                     throw WorkspaceToolError.conflict(
                         expected: "mtime \(expectedMtime)", actual: "mtime \(actualMtime)"
@@ -519,6 +528,9 @@ public struct WorkspaceFileService: Sendable {
         patch: String,
         cancellation: CancellationToken? = nil
     ) throws -> PatchOutcome {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
         var isDirectory: ObjCBool = false
@@ -587,6 +599,9 @@ public struct WorkspaceFileService: Sendable {
         to: String,
         cancellation: CancellationToken? = nil
     ) throws {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
         try cancellation?.throwIfCancelled()
         let source = try guardResolver.resolve(from)
         try rejectWorkspaceRootMutation(source, operation: "move")
@@ -609,6 +624,9 @@ public struct WorkspaceFileService: Sendable {
         to: String,
         cancellation: CancellationToken? = nil
     ) throws {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
         try cancellation?.throwIfCancelled()
         let source = try guardResolver.resolve(from)
         try rejectWorkspaceRootMutation(source, operation: "copy")
@@ -633,6 +651,9 @@ public struct WorkspaceFileService: Sendable {
         recursive: Bool = false,
         cancellation: CancellationToken? = nil
     ) throws {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
         try rejectWorkspaceRootMutation(url, operation: "delete")
@@ -696,7 +717,7 @@ public struct WorkspaceFileService: Sendable {
         if isDirectory.boolValue {
             sha = ""
         } else {
-            sha = Self.sha256Hex(of: (try? Data(contentsOf: url)) ?? Data())
+            sha = Self.sha256Hex(of: try Data(contentsOf: url))
         }
         return WorkspaceFileMetadata(
             relativePath: Self.normalizedRelativePath(path),

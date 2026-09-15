@@ -123,6 +123,8 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         var coordinationError: NSError?
         var replacementError: Error?
         NSFileCoordinator().coordinate(writingItemAt: session.originalURL, options: .forReplacing, error: &coordinationError) { destination in
+            let mutationLock = ManagedFileMutationLock.shared
+            mutationLock.lock(); defer { mutationLock.unlock() }
             let staging = destination.deletingLastPathComponent().appendingPathComponent(".floe-save-\(UUID().uuidString)")
             defer { try? fileManager.removeItem(at: staging) }
             do {

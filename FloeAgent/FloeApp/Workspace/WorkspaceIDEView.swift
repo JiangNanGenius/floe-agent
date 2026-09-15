@@ -65,6 +65,12 @@ struct WorkspaceIDEView: View {
         }
         .interactiveDismissDisabled(state.dirty || state.saving)
         .sheet(item: $terminalOwner) { LocalTerminalView(owner: $0) }
+        .sheet(item: $state.conflict) { review in
+            TextConflictReviewView(conflict: review, onResolve: { content in
+                await state.resolve(review, content: content)
+                if state.conflict == nil && !state.dirty { onSaved() }
+            }, onCancel: { state.conflict = nil }).id(review.id)
+        }
         .fullScreenCover(item: $preview) { item in
             NavigationStack {
                 FilePreviewView(relativePath: item.id, center: center, allowsIDEExpansion: false)

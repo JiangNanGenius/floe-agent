@@ -8,11 +8,29 @@ import FloeWorkspace
     @Published var dirty = false
     @Published var ready = false
     @Published var saving = false
+    @Published var conflict: WorkspaceEditConflict?
     @Published var error: String?
     @Published var activePath: String?
     weak var web: WKWebView?
     let files: IDEWorkspaceSession?
     init(files: WorkspaceFileService?) { self.files = files.map { IDEWorkspaceSession(files: $0) } }
+    func resolve(_ review: WorkspaceEditConflict, content: String) async {
+        guard let web, let files, ready else { return }
+        do {
+            let applied = try await web.callAsyncJavaScript(
+                "return await window.floeIDE.applyResolution(path, draft, content)",
+                arguments: ["path": "/" + review.path, "draft": review.draft, "content": content], in: nil, contentWorld: .page)
+            guard applied as? Bool == true else { error = String(localized: "edit.conflict.draftChanged"); return }
+            dirty = true
+            do { try await files.rebase(review) }
+            catch {
+                conflict = try await files.conflict(path: "/" + review.path, draft: content, base: review.current)
+                return
+            }
+            conflict = nil
+            _ = await saveAll()
+        } catch { self.error = error.localizedDescription }
+    }
     func refreshDirty() async {
         guard let web, ready else { return }
         do {
@@ -80,7 +98,7 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
         var startup: Task<Void, Never>?
         init(state: IDEWorkbenchState) { self.state = state }
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
-                                   replyHandler: @escaping (Any?, String?) -> Void) {
+                                   replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
             guard message.frameInfo.isMainFrame,
                   message.frameInfo.request.url == page,
                   let body = message.body as? [String: Any], let operation = body["operation"] as? String else {
@@ -122,13 +140,20 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
                         } else if (error as NSError).code == NSFileNoSuchFileError || (error as NSError).code == NSFileReadNoSuchFileError {
                             code = "ENOENT"
                         } else { code = "EIO" }
+                        if code == "EBUSY", request.operation == "write",
+                           let bytes = request.contentBase64.flatMap({ Data(base64Encoded: $0) }),
+                           let draft = String(data: bytes, encoding: .utf8), let files = state.files {
+                            do {
+                                state.conflict = try await files.conflict(path: request.path, draft: draft)
+                            } catch { state.error = error.localizedDescription }
+                        }
                         replyHandler(["error": ["code": code, "message": error.localizedDescription]], nil)
                     }
                 }
             }
         }
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             decisionHandler(navigationAction.request.url == page ? .allow : .cancel)
         }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

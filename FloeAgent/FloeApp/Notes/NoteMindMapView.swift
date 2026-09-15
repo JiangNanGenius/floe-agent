@@ -105,7 +105,7 @@ struct NoteMindMapView: UIViewRepresentable {
                 }
             } catch { parent.onError(error.localizedDescription); render(force: true) }
         }
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url,
                ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil {
                 // A user-opened link leaves the local editor in place. Documents

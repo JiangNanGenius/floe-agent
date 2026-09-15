@@ -30,10 +30,37 @@ public actor IDEWorkspaceSession {
     private let files: WorkspaceFileService
     private var baselines: [String: Baseline] = [:]
     private var closed = false
+    private var originals: [String: String] = [:]
+    private var originalBytes = 0
+    private let maximumOriginalBytes = 16 * 1024 * 1024
     public static let maximumFileBytes = 4 * 1024 * 1024
 
     public init(files: WorkspaceFileService) { self.files = files }
-    public func close() { closed = true; baselines.removeAll() }
+    public func close() { closed = true; baselines.removeAll(); originals.removeAll(); originalBytes = 0 }
+
+    public func conflict(path: String, draft: String, base: String? = nil) throws -> WorkspaceEditConflict {
+        guard !closed else { throw WorkspaceToolError.invalidArguments("IDE workspace is closed") }
+        let relative = try Self.relativePath(path)
+        return try files.editConflict(path: relative, base: base ?? originals[relative], draft: draft, preserveDraft: true)
+    }
+
+    public func rebase(_ conflict: WorkspaceEditConflict) throws {
+        guard !closed else { throw WorkspaceToolError.invalidArguments("IDE workspace is closed") }
+        let current = try files.metadata(conflict.path)
+        guard current.sha256 == conflict.currentSHA256 else {
+            throw WorkspaceToolError.conflict(expected: conflict.currentSHA256, actual: current.sha256)
+        }
+        baselines[conflict.path] = Baseline(sha256: conflict.currentSHA256, mtime: conflict.currentMtime)
+        retainOriginal(conflict.current, path: conflict.path)
+    }
+
+    private func retainOriginal(_ text: String, path: String) {
+        if let old = originals.removeValue(forKey: path) { originalBytes -= old.utf8.count }
+        // Search may read thousands of files. A missing retained base falls
+        // back to an explicit whole-file conflict, never guessed merging.
+        let count = text.utf8.count
+        if originalBytes + count <= maximumOriginalBytes { originals[path] = text; originalBytes += count }
+    }
 
     public func handle(_ request: Request) throws -> Response {
         guard !closed else { throw WorkspaceToolError.invalidArguments("IDE workspace is closed") }
@@ -66,6 +93,7 @@ public actor IDEWorkspaceSession {
             // an open dirty editor. A conflict requires an explicit reopen.
             if baselines[path] == nil {
                 baselines[path] = Baseline(sha256: FloeDigest.sha256Hex(data), mtime: metadata.mtime)
+                if let text = String(data: data, encoding: .utf8) { retainOriginal(text, path: path) }
             }
             return Response(contentBase64: data.base64EncodedString())
         case "write":
@@ -83,6 +111,7 @@ public actor IDEWorkspaceSession {
                 outcome = try files.createFile(path, content: text, overwrite: false)
             }
             baselines[path] = Baseline(sha256: outcome.sha256, mtime: outcome.mtime)
+            retainOriginal(text, path: path)
             return Response(size: Int64(outcome.bytesWritten), modified: outcome.mtime * 1000)
         case "mkdir":
             guard path != "." else { return Response() }
@@ -98,11 +127,15 @@ public actor IDEWorkspaceSession {
             for key in Array(baselines.keys) where key == path || key.hasPrefix(path + "/") {
                 baselines[destination + String(key.dropFirst(path.count))] = baselines.removeValue(forKey: key)
             }
+            for key in Array(originals.keys) where key == path || key.hasPrefix(path + "/") {
+                originals[destination + String(key.dropFirst(path.count))] = originals.removeValue(forKey: key)
+            }
             return Response()
         case "delete":
             guard path != "." else { throw WorkspaceToolError.invalidArguments("Cannot delete workspace root") }
             try files.delete(path, recursive: false)
             baselines.removeValue(forKey: path)
+            if let old = originals.removeValue(forKey: path) { originalBytes -= old.utf8.count }
             return Response()
         default:
             throw WorkspaceToolError.invalidArguments("Unsupported IDE filesystem operation")

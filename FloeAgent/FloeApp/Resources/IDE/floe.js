@@ -70,6 +70,13 @@
     editor.onActiveResourceChange(active); active(editor.currentResource);
     window.floeIDE = {
       hasDirty: () => editor.hasDirty(),
+      applyResolution: async (path, expectedDraft, result) => {
+        const documents = await editor.getAllOpenedDocuments();
+        const document = documents.find(item => pathKey(item.uri.path.toString()) === pathKey(path));
+        if (!document || document.getText() !== expectedDraft) return false;
+        document.updateContent(result);
+        return true;
+      },
       saveAll: async () => {
         await editor.saveAll();
         // Use the workbench's actual open documents: a closed/discarded tab
