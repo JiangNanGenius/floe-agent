@@ -13,7 +13,7 @@ name: CI
 # Superseded branch checks may stop; release uploads have a separate,
 # non-cancelling concurrency group.
 concurrency:
-  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 on:

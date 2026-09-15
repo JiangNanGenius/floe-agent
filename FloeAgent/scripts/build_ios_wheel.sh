@@ -68,7 +68,7 @@ try:
     text = open(path, encoding="utf-8").read()
 except OSError:
     raise SystemExit(0)
-pattern = re.compile(r"(?ms)^\[tool\.cibuildwheel[^\]]*\].*?(?=^\[|\Z)")
+pattern = re.compile(r"(?ms)^\[\[?tool\.cibuildwheel[^\]]*\]\]?.*?(?=^\[|\Z)")
 stripped = pattern.sub("", text)
 if stripped != text:
     print("stripped sdist-native [tool.cibuildwheel] config")
@@ -92,6 +92,16 @@ cp "$repo_root/ios-wheelhouse/$FLOE_WHEEL_SMOKE" "$source_dir/floe_wheel_smoke.p
 export CIBW_BUILD='cp313-ios_arm64_iphoneos cp313-ios_arm64_iphonesimulator'
 export CIBW_XBUILD_TOOLS_IOS='ninja cmake'
 export CIBW_ENVIRONMENT_IOS="$FLOE_WHEEL_ENV"
+if [ "$FLOE_WHEEL_NAME" = "lxml" ]; then
+    python3 "$repo_root/FloeAgent/scripts/prepare_lxml_ios.py" "$source_dir"
+    for kind in xml2 xslt; do
+        cp "$repo_root/FloeAgent/scripts/lxml_ios_config.py" "$source_dir/floe-$kind-config"
+        chmod +x "$source_dir/floe-$kind-config"
+    done
+    export CIBW_ENVIRONMENT_IOS="$CIBW_ENVIRONMENT_IOS XML2_CONFIG=$source_dir/floe-xml2-config XSLT_CONFIG=$source_dir/floe-xslt-config LDFLAGS=-liconv"
+    export CIBW_TEST_REQUIRES='python-docx==1.2.0 python-pptx==1.0.2 Pillow==11.0.0'
+    cp "$source_dir/floe-native/sources.json" "$out_dir/native-sources.json"
+fi
 # Upstream sdists may carry their own [tool.cibuildwheel] config written for a
 # newer cibuildwheel than our pin (e.g. zstandard's cpython-freethreading
 # enable group). Our build fixes the exact target set via CIBW_BUILD; override

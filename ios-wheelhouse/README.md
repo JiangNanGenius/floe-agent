@@ -35,3 +35,9 @@ wheel 构建成功只证明该产线的测试范围；接入 1.7 还要验证当
 - **不做运行时下载原生代码**（Apple 2.5.2）：所有原生 wheel 构建期内置，`.so` 全部转签名 XCFramework。
 - scipy / scikit-learn / statsmodels：iOS 无 Fortran/LAPACK 工具链，**不可行**，继续走 Pyodide(WASM) 或 SSH 远端。
 - Rust 包（orjson / pydantic-core）：maturin 交叉链路为实验项，先在 CI 验证再 pin。
+
+## lxml 候选产线（2026-09-15）
+
+`lxml` 配方固定 6.1.3 sdist，并使用 `prepare_lxml_ios.py` 分别交叉构建静态 libxml2 2.14.6 和 libxslt 1.1.45，三个源码均校验 SHA-256。编译配置拒绝 macOS 或未知架构，禁止误用 Homebrew 库；依赖版权声明随 wheel 包含。测试床执行中文 XML、XPath、XSLT，以及 python-docx 1.2.0 / python-pptx 1.0.2 的生成、保存和重读。
+
+这仍是候选产线，未发布到可安装目录或加入 App。双 wheel、测试床结果、静态依赖归属检查和完整 App 导入通过后才更新发布 pin。wheel 构建可以与 App CI 独立运行，不互相覆盖或取消。
