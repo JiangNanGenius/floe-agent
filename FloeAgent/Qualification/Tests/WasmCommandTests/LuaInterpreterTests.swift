@@ -35,7 +35,7 @@ struct LuaInterpreterTests {
             io.write(("Floe Lua"):upper(), "\\n")
             os.exit(0)
             """
-        let outcome = await WasmKitCommandRuntime().run(moduleURL: lua, arguments: ["lua", "-e", script],
+        let outcome = await WasmKitCommandRuntime().run(moduleURL: lua, arguments: ["-e", script],
             stdin: nil, environment: [:], rootURL: root, workingDirectory: ".", timeout: 30, maxOutputBytes: 64 * 1024)
         guard case .exited(let code, let stdout, _, _, _, _) = outcome else {
             Issue.record("Unexpected outcome: \(outcome)"); return
@@ -52,7 +52,7 @@ struct LuaInterpreterTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let outcome = await WasmKitCommandRuntime().run(moduleURL: lua, arguments: ["lua", "-e", "error('boom')"],
+        let outcome = await WasmKitCommandRuntime().run(moduleURL: lua, arguments: ["-e", "error('boom')"],
             stdin: nil, environment: [:], rootURL: root, timeout: 30, maxOutputBytes: 64 * 1024)
         guard case .exited(let code, _, let stderr, _, _, _) = outcome else {
             Issue.record("Unexpected outcome: \(outcome)"); return
@@ -67,7 +67,7 @@ struct LuaInterpreterTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let outcome = await WasmKitCommandRuntime().run(moduleURL: lua,
-            arguments: ["lua", "-e", "io.write('echo:', io.read('l'), '\\n')"],
+            arguments: ["-e", "io.write('echo:', io.read('l'), '\\n')"],
             stdin: "来自 stdin 的行", environment: [:], rootURL: root, timeout: 30, maxOutputBytes: 64 * 1024)
         guard case .exited(let code, let stdout, _, _, _, _) = outcome else {
             Issue.record("Unexpected outcome: \(outcome)"); return
