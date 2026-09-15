@@ -47,6 +47,22 @@ received by the remote application. It retains desktop pixels and session eviden
 This is a Linux bridge qualification with system OpenSSL and an xrdp VNC backend;
 it does not establish Windows NLA interoperability or iPad App acceptance.
 
+## 2026-09-16 consumable XCFramework
+
+The first packaging attempt failed: upstream FreeRDP enables IPO/LTO wherever
+supported, and Apple Clang then stores LLVM bitcode members (magic `0x0B17C0DE`)
+inside the static archives, which `xcodebuild -create-xcframework` rejects with
+"Unknown header: 0xb17c0de". `build_ios.sh` now propagates
+`CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF` through the iOS superbuild into every
+ExternalProject sub-build. Runtime run
+[34989891924](https://github.com/JiangNanGenius/floe-agent/actions/runs/34989891924)
+rebuilt both Apple targets; all fourteen restored archives pass `lipo -info`.
+Bridge and packaging run
+[34994043830](https://github.com/JiangNanGenius/floe-agent/actions/runs/34994043830)
+re-linked the bridge and assembled `FloeRDPNative.xcframework` (ios-arm64 and
+ios-arm64-simulator), verified per-slice with `lipo` and a real SDK link probe.
+The packaged result remains a build input, not a shipped feature.
+
 The Swift facade and certificate/tool routing code passed targeted Swift 6.4 type
 checking against the native C module. The facade owns its worker independently of
 views and joins before freeing callbacks. Input failure closes only that session;
