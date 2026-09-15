@@ -7,6 +7,24 @@ import Testing
 
 @Suite("Conversation full-text search")
 struct ConversationSearchTests {
+    @Test("Notes assistant conversations are absent from ordinary history tools")
+    func dedicatedNotesHistory() async throws {
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database)
+        let store = SQLiteIntelligenceStore(database: database)
+        let ordinary = UUID(), notes = UUID(), now = Date()
+        for id in [ordinary, notes] {
+            try await conversations.saveConversation(.init(id: id, title: "Identical title", createdAt: now, updatedAt: now,
+                purpose: id == notes ? .notes : .ordinary))
+            try await conversations.appendMessage(.init(id: UUID(), conversationID: id, role: "user", content: "uniquehistoryword", createdAt: now))
+        }
+        #expect(try await store.matchingConversationSnippets("uniquehistoryword").keys.sorted { $0.uuidString < $1.uuidString } == [ordinary])
+        #expect(try await store.search(.init(query: "uniquehistoryword", includeAllWorkspaces: true)).map(\.conversationID) == [ordinary])
+        await #expect(throws: (any Error).self) { try await store.read(.init(conversationID: notes)) }
+        #expect(try await conversations.messages(conversationID: notes).count == 1)
+        #expect(try await conversations.conversation(id: notes)?.purpose == .notes)
+    }
+
     @Test("Library search includes CJK message substrings, literal wildcard characters and old conversations")
     func libraryContentsSearch() async throws {
         let database = try DatabaseManager.inMemory(); try await database.migrate()
