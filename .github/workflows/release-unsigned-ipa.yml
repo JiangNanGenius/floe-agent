@@ -157,10 +157,25 @@ jobs:
         id: verified_ci
         run: |
           SOURCE_SHA="$(git rev-parse HEAD)"
-          CI_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=success&per_page=10" --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")][0].id // empty')"
+          # The newest successful dispatch may be only a palette, inference
+          # or dependency check. Search all returned candidates for a complete
+          # exact-source qualification; never replace required jobs with skips.
+          CI_RUN_ID=""
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=success&per_page=100" \
+            --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch") | .id' > "$RUNNER_TEMP/ci-candidates.txt"
+          while IFS= read -r candidate; do
+            test -n "$candidate" || continue
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$candidate/jobs?per_page=100" > "$RUNNER_TEMP/ci-jobs.json"
+            if jq -e '
+              [.jobs[] | select(.name == "build-test" or .name == "appstore-sdk-compatibility" or .name == "spm-linux-build")]
+              | (map(.name) | sort) == ["appstore-sdk-compatibility", "build-test", "spm-linux-build"]
+              and all(.[]; .conclusion == "success")
+            ' "$RUNNER_TEMP/ci-jobs.json" >/dev/null; then
+              CI_RUN_ID="$candidate"
+              break
+            fi
+          done < "$RUNNER_TEMP/ci-candidates.txt"
           if [ -n "$CI_RUN_ID" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/ci-jobs.json"
-            if jq -e '[.jobs[] | select(.name == "build-test" or .name == "appstore-sdk-compatibility" or .name == "spm-linux-build") | select(.conclusion == "success")] | length == 3' "$RUNNER_TEMP/ci-jobs.json" >/dev/null; then
               gh run download "$CI_RUN_ID" --repo "$GITHUB_REPOSITORY" --name ci-artifacts --dir "$RUNNER_TEMP/ReusedCI"
               # Artifact upload paths can retain the checkout's common ancestor.
               # Select exactly one result bundle and normalize its location.
@@ -188,7 +203,6 @@ jobs:
               printf '%s\n' "$CI_RUN_ID" > "$RUNNER_TEMP/FloeSDK27-Notes/SOURCE-CI-RUN.txt"
               echo "run_id=$CI_RUN_ID" >> "$GITHUB_OUTPUT"
               echo "Reusing exact-SHA CI $CI_RUN_ID; stable-SDK tests and binary checks still run."
-            fi
           fi
 
       - name: Resolve and verify pinned dependencies
