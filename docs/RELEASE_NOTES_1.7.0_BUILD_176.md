@@ -25,3 +25,7 @@ Targeted source parsing and whitespace checks passed locally; new full-App tests
 Native Office binary edits are outside `notes.edit`; its existing editor and save/recovery path remain separate. Simulator builds do not include the native Office engine. Qwen iPad recovery, complete native npm/WASI and APT publication, full media-model qualification and official log-service deployment remain incomplete. No provider credential is included in public Beta reviewer access. Public Beta submission awaits the owner's review.
 
 The previous immutable source `8958d8f1` passed 172/172 full-App regressions and the iPhone Notes case. Its iPad Notes case exceeded the 180-second allowance after progressing to tab closure. Build 176 splits all existing assertions into three independent cases, with the same timeout; the gate requires every case. [Original evidence](evidence/floe-1.7/build172-repair/app-build175.json).
+
+## Engineering viewer candidate addition
+
+Adds local DXF, mesh and Gerber/drill preview routing, guarded reference loading and a full-screen viewer inside workspace files/IDE. Wide/compact desktop browser samples passed after fixing a real zero-height DXF surface. App/UI qualification is pending; DWG/STEP/KiCad decoders and full compatibility are not yet shipped. See [viewer matrix and evidence](FLOE_ENGINEERING_VIEWERS.md).

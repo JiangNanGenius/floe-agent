@@ -1,0 +1,150 @@
+{
+  "date": "2026-09-15",
+  "baseSource": "08ecacbf4f2b84238d0a36fa1447dc288f9a5c77",
+  "patch": "Engineering preview working-tree change; immutable commit recorded in delivery follow-up",
+  "environment": "Playwright 1.62.1 using installed Microsoft Edge 153, headless desktop Chromium; Browser plugin not available. Not iPad/iPhone WebKit or full-App acceptance.",
+  "url": "http://127.0.0.1:8769/index.html",
+  "checks": [
+    {
+      "name": "plate.dxf",
+      "viewport": {
+        "width": 1194,
+        "height": 834
+      },
+      "result": {
+        "ok": true,
+        "details": "二维图纸"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": {
+        "layers": 3,
+        "unchecked": true
+      },
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "DXF\n二维图纸\n复位\n图层\nOutline\nHoles\nLabels\n双指缩放 · 拖动平移 · 部分标注、线型和布局可能简化"
+    },
+    {
+      "name": "tetrahedron.stl",
+      "viewport": {
+        "width": 1194,
+        "height": 834
+      },
+      "result": {
+        "ok": true,
+        "details": "三维模型"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "STL\n三维模型\n复位\n单指旋转 · 双指缩放和平移 · 只读预览"
+    },
+    {
+      "name": "copper.gbr",
+      "viewport": {
+        "width": 1194,
+        "height": 834
+      },
+      "result": {
+        "ok": true,
+        "details": "板层预览"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "GBR\n板层预览\n复位\n单层 Gerber／钻孔 · 双指缩放 · 拖动平移"
+    },
+    {
+      "name": "holes.drl",
+      "viewport": {
+        "width": 1194,
+        "height": 834
+      },
+      "result": {
+        "ok": true,
+        "details": "板层预览"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "DRL\n板层预览\n复位\n单层 Gerber／钻孔 · 双指缩放 · 拖动平移"
+    },
+    {
+      "name": "plate.dxf",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "result": {
+        "ok": true,
+        "details": "二维图纸"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": {
+        "layers": 3,
+        "unchecked": true
+      },
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "DXF\n二维图纸\n复位\n图层\nOutline\nHoles\nLabels\n双指缩放 · 拖动平移 · 部分标注、线型和布局可能简化"
+    },
+    {
+      "name": "tetrahedron.stl",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "result": {
+        "ok": true,
+        "details": "三维模型"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "STL\n三维模型\n复位\n单指旋转 · 双指缩放和平移 · 只读预览"
+    },
+    {
+      "name": "copper.gbr",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "result": {
+        "ok": true,
+        "details": "板层预览"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "GBR\n板层预览\n复位\n单层 Gerber／钻孔 · 双指缩放 · 拖动平移"
+    },
+    {
+      "name": "holes.drl",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "result": {
+        "ok": true,
+        "details": "板层预览"
+      },
+      "errors": [],
+      "external": [],
+      "interaction": "fit",
+      "url": "http://127.0.0.1:8769/index.html",
+      "text": "DRL\n板层预览\n复位\n单层 Gerber／钻孔 · 双指缩放 · 拖动平移"
+    }
+  ],
+  "earlierFailures": [
+    "Playwright-managed Chromium absent; installed Edge used without downloading a browser.",
+    "DXF layerless fixture produced an empty layer menu; hidden when no layers.",
+    "Upstream DXF autoResize changed viewport to relative positioning, collapsing its height. Fixed with nested sized surface; before screenshots retained privately.",
+    "Direct Swift Testing typecheck initially lacked TestingMacros plugin; corrected with the installed Xcode plugin path."
+  ],
+  "swift": "Swift 6.4 / Xcode 27: preview package and three test bodies typechecked against existing local compiled FloeWorkspace module. Test execution and new App compilation are pending cloud CI."
+}

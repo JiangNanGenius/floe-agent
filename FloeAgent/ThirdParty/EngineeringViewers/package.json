@@ -1,0 +1,14 @@
+{
+  "name": "floe-engineering-viewers",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "dxf-viewer": "1.0.48",
+    "gerber-to-svg": "4.2.8",
+    "online-3d-viewer": "0.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.1"
+  }
+}

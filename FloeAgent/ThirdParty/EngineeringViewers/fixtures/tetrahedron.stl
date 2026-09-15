@@ -1,0 +1,30 @@
+solid Floe
+facet normal 0 0 1
+outer loop
+vertex 0 0 0
+vertex 60 0 0
+vertex 0 60 0
+endloop
+endfacet
+facet normal 0 0 1
+outer loop
+vertex 0 0 0
+vertex 0 0 60
+vertex 60 0 0
+endloop
+endfacet
+facet normal 0 0 1
+outer loop
+vertex 0 0 0
+vertex 0 60 0
+vertex 0 0 60
+endloop
+endfacet
+facet normal 0 0 1
+outer loop
+vertex 60 0 0
+vertex 0 0 60
+vertex 0 60 0
+endloop
+endfacet
+endsolid Floe

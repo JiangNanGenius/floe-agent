@@ -1,0 +1,1 @@
+Synthetic geometry authored for Floe; MPL-2.0. No customer engineering data. plate.dxf has four outline edges, two circular holes and Latin/Chinese text on three layers. tetrahedron.stl has four triangular faces. copper.gbr and holes.drl are independent manufacturing-layer fixtures, not a fabricated board qualification.

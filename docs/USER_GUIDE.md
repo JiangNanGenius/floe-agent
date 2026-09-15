@@ -439,3 +439,7 @@ Build 176 candidate: the document assistant uses a full-height column on wide iP
 ## Editing alongside the assistant (development candidate)
 
 Both editors remain available. If a text file changes before saving, review the combined independent edits, choose overlapping regions and optionally edit the result. Recovery drafts stay in `Recovered Edits`; another change triggers another version check. Office offers separate version previews and exports. Notes preserves conflicting changes in a separate recovery document, allowing you to keep both versions or apply the reviewed edits. Exporting a copy does not mean the original was saved. See [concurrent editing](FLOE_CONCURRENT_EDITING.md) for limits and pending qualification.
+
+### Engineering file previews (development candidate)
+
+Workspace files and the IDE now route DXF, mesh and Gerber/drill files to a local read-only viewer, with full-screen expansion. DXF supports layer visibility; models support rotate, zoom and pan. Format-specific limits and the distinction between browser checks and App acceptance are recorded in [Engineering viewers](FLOE_ENGINEERING_VIEWERS.md). DWG, STEP and KiCad decoders are still pending; this is not an all-format CAD editor.

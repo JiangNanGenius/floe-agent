@@ -1,0 +1,16 @@
+{
+  "MiSans-Regular.ttf": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
+  "THIRD_PARTY_NOTICES.txt": "8c495e29f0202a36d699e885dbf2bfd37ecf9f70aaa5556db7cd4d563b19031b",
+  "dxf-worker.js": "eafd29924ac974ff307ae47ef95e827521b90c25d80d6e10f6cd276e59e7bbce",
+  "dxf.js": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
+  "dxf.js.LEGAL.txt": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
+  "gerber-to-svg.min.js": "8f16104893ab462f0bc1513ac2c6508fce59fcb10fab648848dddcfa7aafb76c",
+  "gerber-to-svg.min.js.LICENSE.txt": "a41d4ce5d77ff2e5a5c511d8287e8752530ceb955fd04c1f48855a8d9796708a",
+  "gerber-worker.js": "c34ebdcca12d59a0339cbe962d459edb6fbd118ab5e965f30ae3502d1d3c270b",
+  "index.html": "2c15b9918516e3c7de9d82111d1c535a9668ae9935a9fcf415178c1d40532fed",
+  "mesh.js": "fe07c0a7c84d394a6c38ec688aea58ac3b0640d0e758a06519f5d759a89ba8f9",
+  "mesh.js.LEGAL.txt": "46932ad3a815be80035378068fafa8e515ab6cd6d184e405ff22383f0e6bab93",
+  "sample-plate.dxf": "76d7580228e8732bb91decb98668f4ee12499b3483825f35d7fa8d3aef016c7d",
+  "viewer.css": "f2e9ddc2afec0ac4b2ecd53c3b646ac8f39c7bd615ad150434bd7092690dd262",
+  "viewer.js": "8d888a9ed4bc1dcd567f9785b13a65951fa04bc49480866e9b89cd5c76ca2837"
+}

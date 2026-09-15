@@ -445,6 +445,7 @@
 		C05674B6B497CF027A4FCBEF /* GitHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5043AD7DE6FDAD5AD4A95D1A /* GitHubSettingsView.swift */; };
 		C0644D9C266B374CE223488D /* VNCSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */; };
 		C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3239F632B3D2E2DF7F9BBA8 /* LocalModelsSettingsView.swift */; };
+		C23ED7DE082CCBE6EA658278 /* EngineeringFilePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A11E744F665711124AF4AE /* EngineeringFilePreview.swift */; };
 		C274EA9CDC12ED51AAA7181E /* _struct_ufunc_tests.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4591C06F1D70A373B8D8BD05 /* _struct_ufunc_tests.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C289286498042D0530D1590B /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
 		C2A979185D804135CE278ADA /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
@@ -524,6 +525,7 @@
 		E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219CD6341FB443743691F92D /* LocalPreviewServer.swift */; };
 		E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */; };
 		E40E39F14DBED467D850E91A /* FloeProviders in Frameworks */ = {isa = PBXBuildFile; productRef = B6555425212C5867CBB75D36 /* FloeProviders */; };
+		E546FAE50818B47C07A64191 /* EngineeringViewers in Resources */ = {isa = PBXBuildFile; fileRef = 06853BE10BFB38CC6601C0AE /* EngineeringViewers */; };
 		E55BBC7A2FFF367270840B61 /* FloeGit in Frameworks */ = {isa = PBXBuildFile; productRef = E6A81719803BDDE4E13451F3 /* FloeGit */; };
 		E58278A541E8E87A31634F6D /* FeedbackTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */; };
 		E58BE479508ABA2C732D3E25 /* _rational_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D080FF4A569CE32CE9D399DC /* _rational_tests.xcframework */; };
@@ -797,6 +799,7 @@
 		053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_ccalendar.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_ccalendar.xcframework; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
 		0666A055F3421665937B663C /* CredentialManageTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialManageTool.swift; sourceTree = "<group>"; };
+		06853BE10BFB38CC6601C0AE /* EngineeringViewers */ = {isa = PBXFileReference; lastKnownFileType = folder; name = EngineeringViewers; path = FloeApp/Resources/EngineeringViewers; sourceTree = SOURCE_ROOT; };
 		071FC3AA22AFB29B2D3A03C6 /* EnvironmentLanguagePackagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentLanguagePackagesView.swift; sourceTree = "<group>"; };
 		0759DE46F499DE82B08079EC /* pandas__libs_ops.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_ops.xcframework; path = Vendor/PythonExtensions/pandas__libs_ops.xcframework; sourceTree = "<group>"; };
 		078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _multiarray_tests.xcframework; path = Vendor/PythonExtensions/_multiarray_tests.xcframework; sourceTree = "<group>"; };
@@ -1183,6 +1186,7 @@
 		E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
 		E112A159AE387A7219A69172 /* RunStateLocalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStateLocalizer.swift; sourceTree = "<group>"; };
 		E1214F31DA36238B1F417DBC /* LocalServicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServicesView.swift; sourceTree = "<group>"; };
+		E1A11E744F665711124AF4AE /* EngineeringFilePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineeringFilePreview.swift; sourceTree = "<group>"; };
 		E235AA51EFF99AA0DEA509BD /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };
 		E25201278D78378B37FF1BBD /* binascii.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = binascii.xcframework; path = Vendor/PythonExtensions/binascii.xcframework; sourceTree = "<group>"; };
 		E3643698ECE842C34421E377 /* NotesAgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesAgentTools.swift; sourceTree = "<group>"; };
@@ -1564,6 +1568,7 @@
 				8E8EBFAB4ED3E3A0AC4E178A /* CanvasSavedImageBatchCommitPlanner.swift */,
 				D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */,
 				05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */,
+				E1A11E744F665711124AF4AE /* EngineeringFilePreview.swift */,
 				B411EDF873B55072F23B97F0 /* FileInspectorView.swift */,
 				A421102C6F73CB0DCC678535 /* FilePreviewView.swift */,
 				42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */,
@@ -2191,6 +2196,7 @@
 				37BB930D0175C1FF7EE714EE /* Assets.xcassets */,
 				35310CD2A0EE3E66298E8709 /* Capabilities */,
 				C06D262BD6B80363EE7587F7 /* DocumentConversion */,
+				06853BE10BFB38CC6601C0AE /* EngineeringViewers */,
 				D62745AAF4EE79DC8BCFECDE /* IDE */,
 				916ACA33CDE6532714E49272 /* Info.plist */,
 				2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */,
@@ -2495,6 +2501,7 @@
 				BEFDD6EB71B069F44842E36A /* Bundled in Resources */,
 				2A2BD3D420AE0BDD0039FA1F /* Capabilities in Resources */,
 				6429C2AE431431EA55322D1E /* DocumentConversion in Resources */,
+				E546FAE50818B47C07A64191 /* EngineeringViewers in Resources */,
 				E7E7CF056D40EA4B26A4961E /* IDE in Resources */,
 				F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */,
 				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
@@ -2614,6 +2621,7 @@
 				53B27391A46184754D48D72B /* DocumentRecoveryListView.swift in Sources */,
 				640A6E1C865CD29BBC93B547 /* DomainSkillLibrary.swift in Sources */,
 				C7F85CE15D1A3A53A80ED1CF /* DraftTaskPermissionsSheet.swift in Sources */,
+				C23ED7DE082CCBE6EA658278 /* EngineeringFilePreview.swift in Sources */,
 				05825834C3827B7ED11B314B /* EnvironmentLanguagePackageService.swift in Sources */,
 				F09FD775B840D59E2B42E1E7 /* EnvironmentLanguagePackagesView.swift in Sources */,
 				16803A444C43C3B228DB9373 /* EnvironmentManagerView.swift in Sources */,

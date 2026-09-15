@@ -1,6 +1,134 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "engineering.unsupported.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Decoder not available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此格式的查看器尚未接入"
+          }
+        }
+      }
+    },
+    "engineering.unsupported.description": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export 2D drawings to DXF or PDF, or 3D models to GLB or STL. The original file remains unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "二维图纸可先导出为 DXF 或 PDF，三维模型可导出为 GLB 或 STL。原文件保持不变。"
+          }
+        }
+      }
+    },
+    "engineering.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法预览"
+          }
+        }
+      }
+    },
+    "engineering.retry": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "engineering.timeout": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file exceeded the preview time limit. Try a smaller or simplified model."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件处理超时，请使用较小或简化后的模型重试。"
+          }
+        }
+      }
+    },
+    "engineering.processStopped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The viewer stopped. Close other previews or use a smaller file, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看器已停止。请关闭其他预览，或使用较小文件后重试。"
+          }
+        }
+      }
+    },
+    "engineering.done": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
+      }
+    },
+    "engineering.fullscreen": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full-screen preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全屏预览"
+          }
+        }
+      }
+    },
     "edit.conflict.notesReviewUpdated": {
       "localizations": {
         "en": {

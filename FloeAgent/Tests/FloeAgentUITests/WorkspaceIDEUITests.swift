@@ -40,7 +40,31 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(app.buttons["workspace.openIDE"].waitForExistence(timeout: 10))
     }
 
-    private func openWorkbench(_ app: XCUIApplication, ipad: Bool, expectedSavedText: String? = nil) throws {
+    func testEngineeringDrawingInlineAndFullScreen() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
+        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-engineering-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launch()
+        defer { app.terminate() }
+        try openFile(app, ipad: ipad, name: "工程图验收.dxf")
+        let rendered = app.webViews.staticTexts.matching(NSPredicate(format: "label == %@", "二维图纸")).firstMatch
+        XCTAssertTrue(rendered.waitForExistence(timeout: 60))
+        capture("engineering-dxf-inline")
+        let full = app.buttons["file.preview.engineering.fullscreen"]
+        XCTAssertTrue(full.waitForExistence(timeout: 10)); full.tap()
+        XCTAssertTrue(rendered.waitForExistence(timeout: 60))
+        let layers = app.webViews.buttons["图层"]
+        XCTAssertTrue(layers.waitForExistence(timeout: 10)); layers.tap()
+        XCTAssertTrue(app.webViews.staticTexts["Outline"].waitForExistence(timeout: 10))
+        capture("engineering-dxf-fullscreen-layers")
+        app.buttons["engineering.done"].tap()
+        XCTAssertTrue(full.waitForExistence(timeout: 10))
+    }
+
+    private func openFile(_ app: XCUIApplication, ipad: Bool, name: String) throws {
         if !ipad {
             let sidebar = app.buttons["phone.sidebar.open"]
             XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
@@ -53,8 +77,12 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()
         let workspace = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "批量选择测试")).firstMatch
         XCTAssertTrue(workspace.waitForExistence(timeout: 10)); workspace.tap()
-        let file = app.staticTexts["IDE验收.txt"].firstMatch
+        let file = app.staticTexts[name].firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 10)); file.tap()
+    }
+
+    private func openWorkbench(_ app: XCUIApplication, ipad: Bool, expectedSavedText: String? = nil) throws {
+        try openFile(app, ipad: ipad, name: "IDE验收.txt")
         if let expectedSavedText {
             // Read through Floe's independent native preview after a cold
             // launch; Monaco's textarea exposes only its current input range.

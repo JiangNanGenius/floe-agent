@@ -53,6 +53,7 @@ targets:
           - Resources/Fonts/Bundled
           - Resources/NodeTools
           - Resources/IDE
+          - Resources/EngineeringViewers
           - Resources/MindElixir
           - Resources/Whisper
       - path: FloeApp/Resources/Capabilities
@@ -79,6 +80,9 @@ targets:
         buildPhase: resources
         optional: true
       - path: FloeApp/Resources/Whisper
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/EngineeringViewers
         type: folder
         buildPhase: resources
       - path: FloeApp/Resources/IDE

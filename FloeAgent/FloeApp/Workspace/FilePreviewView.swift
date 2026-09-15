@@ -40,6 +40,8 @@ struct FilePreviewView: View {
     @State private var quickLookURL: URL?
     @State private var previewError: String?
     @State private var mediaEditorSource: URL?
+    @State private var engineeringPackage: EngineeringPreviewPackage?
+    @State private var isEngineeringFullScreen = false
 
     var body: some View {
         Group {
@@ -48,6 +50,12 @@ struct FilePreviewView: View {
                     Label("inspector.preview.error", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(loadError)
+                }
+            } else if let engineeringPackage {
+                if isEngineeringFullScreen {
+                    Color.clear
+                } else {
+                    EngineeringFilePreview(package: engineeringPackage)
                 }
             } else if nativeOfficeURL != nil {
                 if isOfficeEditorPresented {
@@ -86,6 +94,21 @@ struct FilePreviewView: View {
                 center: center
             ) {
                 Task { await load() }
+            }
+        }
+        .fullScreenCover(isPresented: $isEngineeringFullScreen) {
+            if let engineeringPackage {
+                NavigationStack {
+                    EngineeringFilePreview(package: engineeringPackage)
+                        .navigationTitle(fileName)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button("engineering.done") { isEngineeringFullScreen = false }
+                                    .accessibilityIdentifier("engineering.done")
+                            }
+                        }
+                }
             }
         }
         .fullScreenCover(item: $mediaEditorSource, onDismiss: { Task { await load() } }) { url in
@@ -150,6 +173,12 @@ struct FilePreviewView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            if engineeringPackage != nil {
+                Button { isEngineeringFullScreen = true } label: {
+                    Label("engineering.fullscreen", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .accessibilityIdentifier("file.preview.engineering.fullscreen")
+            }
             if ["mov", "mp4", "m4v"].contains(WorkspaceFileType.pathExtension(for: relativePath)),
                !center.isCloudWorkspacePath(relativePath), !center.isNetworkWorkspacePath(relativePath) {
                 Button {
@@ -281,6 +310,7 @@ struct FilePreviewView: View {
         pdfURL = nil
         binaryPreviewURL = nil
         nativeOfficeURL = nil
+        engineeringPackage = nil
         remotePreview.clear()
         if center.fileService == nil, let conversationID {
             do {
@@ -292,6 +322,25 @@ struct FilePreviewView: View {
         }
         guard center.fileService != nil else {
             loadError = String(localized: "inspector.no_workspace")
+            return
+        }
+        if EngineeringPreviewKind.identify(relativePath) != nil, let service = center.fileService {
+            do {
+                let package: EngineeringPreviewPackage
+                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    package = try EngineeringPreviewPackage.single(name: fileName, bytes: bytes)
+                } else {
+                    let path = relativePath
+                    let work = Task.detached(priority: .userInitiated) {
+                        try EngineeringPreviewPackage.load(path: path, service: service)
+                    }
+                    package = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+                }
+                try Task.checkCancellation()
+                engineeringPackage = package
+                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            } catch is CancellationError {} catch { loadError = error.localizedDescription }
             return
         }
         if isOfficeDocument, OfficeFileSession.available, let service = center.fileService {

@@ -1032,6 +1032,19 @@ final class AppEnvironment: ObservableObject {
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-engineering-fixture") {
+                let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
+                let record = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(
+                    conversationID: fixtureID, title: "批量选择测试"
+                )
+                let lease = try await workspaceCenter.acquireTaskRoot(record, conversationID: fixtureID)
+                defer { lease.release() }
+                guard let sample = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil)?.appendingPathComponent("sample-plate.dxf") else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                try Data(contentsOf: sample).write(to: lease.url.appendingPathComponent("工程图验收.dxf"), options: .atomic)
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-pdf-fixture") {
                 let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
                 let record = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(

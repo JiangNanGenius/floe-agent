@@ -8,14 +8,19 @@ from verify_app_regression_xcresult import nodes, xcresult_json
 
 def verify(summary, tree):
     cases = [n for n in nodes(tree) if n.get("nodeType") == "Test Case"]
-    expected = "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen"
-    if (summary.get("result") != "Passed" or summary.get("totalTestCount") != 1
-            or summary.get("passedTests") != 1 or summary.get("failedTests") != 0
+    expected = {
+        "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen",
+        "WorkspaceIDEUITests/testEngineeringDrawingInlineAndFullScreen",
+    }
+    found = {str(case.get("nodeIdentifier", "")).removesuffix("()") for case in cases}
+    if (summary.get("result") != "Passed" or summary.get("totalTestCount") != len(expected)
+            or summary.get("passedTests") != len(expected) or summary.get("failedTests") != 0
             or summary.get("skippedTests") != 0 or summary.get("expectedFailures") != 0
-            or len(cases) != 1 or cases[0].get("result") != "Passed"
-            or str(cases[0].get("nodeIdentifier", "")).removesuffix("()") != expected):
-        raise ValueError("Native IDE save and cold reopen did not pass")
-    return {"test": expected, "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen"}
+            or len(cases) != len(expected) or found != expected
+            or any(case.get("result") != "Passed" for case in cases)):
+        raise ValueError("Native IDE save/reopen and engineering preview did not both pass")
+    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-and-engineering-preview"}
+
 
 
 if __name__ == "__main__":

@@ -232,3 +232,5 @@ Before a large or security-sensitive change, read [CONTRIBUTING.md](CONTRIBUTING
 Original Floe Agent code is licensed under the [Mozilla Public License 2.0](LICENSE). Third-party components retain their own licenses and notices.
 
 The 1.7 UI continuation adds General → Automatic/Light/Dark appearance, project/conversation container management, and foldable reasoning/tool batches. Availability and beta qualification are tracked in the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md).
+
+Engineering viewers are being added to workspace files and the IDE: [format matrix and current verification status](docs/FLOE_ENGINEERING_VIEWERS.md). DXF/STL/Gerber/drill browser samples are verified; new App acceptance and DWG/STEP/KiCad integrations remain pending.
