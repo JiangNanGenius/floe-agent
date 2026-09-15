@@ -93,6 +93,7 @@ final class ProviderEditorViewModel: ObservableObject {
             self.allowsPlainHTTP = existing.allowsPlainHTTP
             self.toolNameCompatibility = existing.toolNameCompatibility
             self.enabled = existing.isEnabled
+            self.syncEnabled = existing.secretRef?.synchronizable ?? true
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
         } else {
             self.providerID = UUID()
@@ -155,7 +156,11 @@ final class ProviderEditorViewModel: ObservableObject {
             return
         }
         secretStatus = await secretStore.status(for: providerID, hasConfiguration: true)
-        syncEnabled = await secretStore.isSyncEnabled(for: providerID)
+        let syncAvailable = await secretStore.isSyncEnabled(for: providerID)
+        // A restored profile can arrive before device-local opt-out defaults.
+        // Never turn its explicit local-only credential into a synced one just
+        // because the user reopens and saves the provider editor.
+        syncEnabled = (existing?.secretRef?.synchronizable ?? true) && syncAvailable
         let existingModels = center.configuredModelsByProvider[providerID] ?? []
         candidateModels = existingModels.filter { model in
             switch serviceRole {

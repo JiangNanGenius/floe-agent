@@ -17,6 +17,19 @@ import FloeLocalModels
 @testable import FloeApp
 
 extension CrashAndFeedbackRegressionTests {
+@Test("Reopening a restored provider preserves its local-only credential policy")
+@MainActor func restoredProviderKeepsCredentialLocal() async throws {
+    let environment = AppEnvironment.preview()
+    let profile = ProviderProfile(kind: .custom, wireProtocol: .openAIResponses,
+        baseURL: URL(string: "https://api.example.com")!,
+        secretRef: .init(keychainAccount: "qualification.\(UUID().uuidString)", synchronizable: false))
+    let editor = ProviderEditorViewModel(center: environment.conversationCenter, existing: profile)
+    #expect(!editor.syncEnabled)
+    await editor.load()
+    #expect(!editor.syncEnabled)
+    #expect(try editor.buildProfile().secretRef?.synchronizable == false)
+}
+
 @Test("Notes bootstrap migration removes only the selected conversation setup and retains dialogue")
 @MainActor func notesBootstrapMigrationPreservesDialogue() async throws {
     let database = try DatabaseManager.inMemory()
