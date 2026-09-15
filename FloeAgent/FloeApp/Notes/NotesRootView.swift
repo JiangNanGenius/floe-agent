@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 import PencilKit
 
 struct NotesRootView: View {
+    @FocusState private var searchFocused: Bool
     @State private var session = NotesSession(tabDefaults: .standard)
     @State private var query = ""
     @AppStorage("notes.library.grid") private var grid = true
@@ -153,11 +154,20 @@ struct NotesRootView: View {
     }
 
     private var library: some View {
+        // Body-search results keep title and excerpt beside the preview, even
+        // with the landscape iPad keyboard taking most of the vertical space.
+        let showsCovers = grid && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return libraryContent(showsCovers: showsCovers)
+    }
+
+    private func libraryContent(showsCovers: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("搜索所有文档的名称与内容", text: $query)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
+                    .focused($searchFocused)
+                    .onSubmit { searchFocused = false }
                     .accessibilityIdentifier("notes.search")
             }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12)).padding()
             HStack {
@@ -185,13 +195,13 @@ struct NotesRootView: View {
                 if incomplete > 0 { Text("\(incomplete) 份文档尚未完整索引，搜索结果可能不完整。").font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
             }
             ScrollView {
-              LazyVGrid(columns: grid ? [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 20)] : [GridItem(.flexible())], spacing: 24) {
+              LazyVGrid(columns: showsCovers ? [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 20)] : [GridItem(.flexible())], spacing: 24) {
                 if selectedBook == nil && section != .trash && query.isEmpty {
                     ForEach(session.notebooks) { book in
                         Button { selectedBook = book.id } label: {
                             VStack(alignment: .leading, spacing: 12) {
                                 Image(systemName: "folder.fill").font(.system(size: 42)).foregroundStyle(.tint)
-                                    .frame(maxWidth: .infinity, minHeight: grid ? 130 : 44, alignment: .leading)
+                                    .frame(maxWidth: .infinity, minHeight: showsCovers ? 130 : 44, alignment: .leading)
                                 Text(book.title).font(.headline).foregroundStyle(.primary)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(.plain)
@@ -209,10 +219,10 @@ struct NotesRootView: View {
                             }
                         }
                     } label: {
-                        let layout = grid ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+                        let layout = showsCovers ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
                         layout {
                             NotesCoverPreview(document: document, store: session.store)
-                                .frame(width: grid ? nil : 64, height: grid ? 190 : 80)
+                                .frame(width: showsCovers ? nil : 64, height: showsCovers ? 190 : 80)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(document.title).font(.headline).foregroundStyle(.primary)
@@ -267,6 +277,7 @@ struct NotesRootView: View {
                 }
               }.padding(20)
             }
+                .scrollDismissesKeyboard(.interactively)
                 .overlay {
                     if session.store == nil { ProgressView("正在打开手记…") }
                     else if filtered.isEmpty {

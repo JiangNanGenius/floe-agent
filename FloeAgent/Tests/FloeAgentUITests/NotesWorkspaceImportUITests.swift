@@ -230,8 +230,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let search = app.textFields["notes.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 10))
         search.tap()
-        search.typeText("Inline reading") // Text inside the PDF, absent from its filename.
+        search.typeText("Inline reading\n") // Submit body text; the keyboard must yield to the results.
         capture("notes-search-query-entered")
+        let keyboardDismissed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)
+        wait(for: [keyboardDismissed], timeout: 5)
         XCTAssertTrue(app.staticTexts["预览验收"].firstMatch.waitForExistence(timeout: 10))
         // The title already existed before typing. Require the actual body-match
         // snippet so an unchanged library cannot pass as a working search.
