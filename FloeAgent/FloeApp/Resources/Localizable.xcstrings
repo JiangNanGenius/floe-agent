@@ -1,6 +1,214 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "edit.conflict.notesCopyChanged": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The recovery copy has been edited again. Keep both versions and continue in that copy; the older reviewed changes were not applied."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复副本已有新的编辑。请保留两个版本，在副本中继续；本次没有将旧的审阅结果应用到原件。"
+          }
+        }
+      }
+    },
+    "edit.conflict.notesCopy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovered edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑恢复副本"
+          }
+        }
+      }
+    },
+    "edit.conflict.notesPreserved": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This content changed during editing. Your changes are preserved in a separate, reopenable Notes document. Review both versions before applying your changes to the original."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑期间内容发生了变化。你的修改已保存在可重新打开的独立手记副本中。请对照两个版本，再决定是否将修改应用到原件。"
+          }
+        }
+      }
+    },
+    "edit.conflict.notesReview": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review conflicting edits"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看编辑冲突"
+          }
+        }
+      }
+    },
+    "edit.conflict.notesApplyHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These excerpts show text only. Open each version to check handwriting, images and layout. Applying your changes affects the original edited objects; unrelated content is retained. The recovery copy stays available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这里只显示文字摘要；请打开版本检查笔迹、图片和布局。应用修改会替换本次编辑涉及的内容，其余内容保留。恢复副本仍然保留。"
+          }
+        }
+      }
+    },
+    "edit.conflict.keepBoth": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep both versions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留两个版本"
+          }
+        }
+      }
+    },
+    "edit.conflict.applyMine": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apply my changes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用我的修改"
+          }
+        }
+      }
+    },
+    "edit.conflict.compareVersions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compare document versions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "比较文档版本"
+          }
+        }
+      }
+    },
+    "edit.conflict.officeExplanation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document changed while you were editing. Open either version to compare it, or export both. Office formatting, images and document structure are retained; versions are not automatically combined."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑期间原文档已被修改。可分别打开两个版本对照，或导出保留。Office 的格式、图片及文档结构都会保留，不自动拼合两个文档。"
+          }
+        }
+      }
+    },
+    "edit.conflict.officeRetained": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The original and your recoverable draft stay intact. Exporting a version does not resolve or overwrite the original."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原文件和你的编辑草稿均保留。导出版本不会覆盖原文件，也不会将冲突标为已解决。"
+          }
+        }
+      }
+    },
+    "edit.conflict.loadingVersions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing version snapshots…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备版本快照…"
+          }
+        }
+      }
+    },
+    "edit.conflict.openVersion": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open this version"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开此版本"
+          }
+        }
+      }
+    },
+    "edit.conflict.exportVersion": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export this version"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出此版本"
+          }
+        }
+      }
+    },
     "edit.conflict.explanation": {
       "extractionState": "manual",
       "localizations": {

@@ -44,6 +44,23 @@ struct DocumentExportTests {
         await workspace.close(session)
     }
 
+    @Test("current comparison snapshot stays immutable and cannot rebase editor")
+    func currentVersionComparison() async throws {
+        let (root, workspace, session) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("human draft".utf8).write(to: session.workingURL)
+        try Data("agent revision".utf8).write(to: session.originalURL)
+        let current = try await workspace.prepareCurrentExport(session)
+        try Data("newer agent revision".utf8).write(to: session.originalURL, options: .atomic)
+        #expect(try Data(contentsOf: current.fileURL) == Data("agent revision".utf8))
+        #expect(try Data(contentsOf: session.workingURL) == Data("human draft".utf8))
+        await #expect(throws: (any Error).self) { try await workspace.save(session) }
+        #expect(try Data(contentsOf: session.originalURL) == Data("newer agent revision".utf8))
+        await workspace.finishExport(current)
+        #expect(!FileManager.default.fileExists(atPath: current.fileURL.path))
+        await workspace.close(session)
+    }
+
     @Test("normal close retains a snapshot until the picker finishes reading it")
     func closeDuringExport() async throws {
         let (root, workspace, session) = try await fixture()

@@ -40,6 +40,7 @@ struct NotesRootView: View {
     var body: some View {
         NavigationStack {
             library
+            .modifier(NotesConflictAccess(session: session))
             .fullScreenCover(isPresented: Binding(
                 get: { session.document != nil },
                 set: { if !$0 { Task { await session.select(nil) } } }
@@ -52,6 +53,7 @@ struct NotesRootView: View {
                             .toolbar(.hidden, for: .navigationBar)
                     }
                 }
+                .modifier(NotesConflictAccess(session: session))
                 .interactiveDismissDisabled()
             }
             .navigationTitle("手记")

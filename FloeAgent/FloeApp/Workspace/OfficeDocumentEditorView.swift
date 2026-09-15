@@ -17,6 +17,7 @@ final class OfficeFileSession: ObservableObject {
     @Published private(set) var readOnly = true
     @Published private(set) var hasUncommittedChanges = false
     @Published var error: String?
+    @Published private(set) var hasSaveConflict = false
     @Published private(set) var drawingMode = false
     private var workspace: SecurityScopedDocumentWorkspace?
     private var session: DocumentSession?
@@ -258,6 +259,7 @@ final class OfficeFileSession: ObservableObject {
         defer { finishOperation() }
         phase = .saving
         error = nil
+        hasSaveConflict = false
         do {
             #if canImport(FloeOfficeNative)
             guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.fileWriteUnknown) }
@@ -269,6 +271,7 @@ final class OfficeFileSession: ObservableObject {
                 }
             }
             try await workspace.save(session)
+            hasSaveConflict = false
             hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
             if returnToPreview {
                 try await closeController()
@@ -282,6 +285,9 @@ final class OfficeFileSession: ObservableObject {
             throw CocoaError(.featureUnsupported)
             #endif
         } catch {
+            if let officeError = error as? OfficeDocumentError, case .revisionConflict = officeError {
+                hasSaveConflict = true
+            }
             self.error = error.localizedDescription
             phase = runtimeFailed || controller == nil ? .failed : .ready
             return false
@@ -331,6 +337,19 @@ final class OfficeFileSession: ObservableObject {
             self.error = error.localizedDescription
             phase = runtimeFailed || controller == nil ? .failed : .ready
             return nil
+        }
+    }
+
+    func conflictCopies() async throws -> OfficeConflictCopies {
+        guard canAct, let workspace, let session else { throw CocoaError(.fileReadUnknown) }
+        // The failed save already settled and preserved the native draft.
+        let mine = try await workspace.prepareExport(session)
+        do {
+            let current = try await workspace.prepareCurrentExport(session)
+            return OfficeConflictCopies(mine: mine, current: current, owner: workspace)
+        } catch {
+            await workspace.finishExport(mine)
+            throw error
         }
     }
 
@@ -565,6 +584,7 @@ struct OfficeDocumentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var confirmingDiscard = false
+    @State private var comparingVersions = false
     @State private var convertedExport: OfficeConvertedExport?
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
@@ -602,6 +622,7 @@ struct OfficeDocumentEditorView: View {
             .interactiveDismissDisabled()
             .task { await session.enterEditing() }
             .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
+            .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }
             .sheet(isPresented: $choosingWorkspaceAttachment) {
                 OfficeWorkspaceAttachmentPicker(environment: environment) { url in
                     try await session.insertAttachment(url)
@@ -644,6 +665,9 @@ struct OfficeDocumentEditorView: View {
                 get: { session.error != nil && session.phase == .ready },
                 set: { if !$0 { session.error = nil } })) {
                     Button("继续编辑", role: .cancel) { session.error = nil }
+                    if session.hasSaveConflict {
+                        Button("edit.conflict.compareVersions") { session.error = nil; comparingVersions = true }
+                    }
                     Button("另存副本…") {
                         session.error = nil
                         Task { export = await session.prepareSaveCopy() }

@@ -30,6 +30,15 @@
     });
     BrowserFS.addFileSystemType('FloeNative', NativeFilesystem);
     window.MonacoEnvironment = { getWorkerUrl: () => new URL("vendor/editor.worker.js", location.href).href };
+    // CodeBlitz 2.4.6 merges extension arrays additively. Its default icon
+    // contribution points at a CDN even with useCdnIcon=false. Remove only
+    // that contribution from the shared pinned metadata; use bundled Codicons.
+    for (const metadata of Alex.getDefaultAppConfig().extensionMetadata || []) {
+      if (metadata.extension?.name === 'vsicons-slim') {
+        metadata.packageJSON.contributes.iconThemes = [];
+      }
+    }
+    document.body.classList.add('default-file-icons', 'show-file-icons');
     const app = Alex.createApp({
       appConfig: {
         workspaceDir: 'Floe', defaultPanels: { left: innerWidth >= 650 ? '@opensumi/ide-explorer' : '' }, useCdnIcon: false, extWorkerHost: '',

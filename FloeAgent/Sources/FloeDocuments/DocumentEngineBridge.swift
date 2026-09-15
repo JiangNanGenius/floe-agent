@@ -131,7 +131,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
                 // Compare while holding the coordinated write. Metadata alone
                 // misses same-size or timestamp-preserving external changes.
                 guard try Self.digest(destination) == expectedDigest else {
-                    throw FloeError.validationFailed("Document changed outside this editor; keep the edited copy and resolve the conflict before saving")
+                    throw OfficeDocumentError.revisionConflict
                 }
                 // Use the verified recovery snapshot. A later engine autosave
                 // may replace workingURL while coordinated writeback waits.
@@ -172,6 +172,43 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
                 throw FloeError.validationFailed("Editor is still writing; finish the edit before exporting")
             }
             try OfficeNativeSaveValidation.validate(copy)
+            let snapshot = DocumentExportSnapshot(id: id, fileURL: copy)
+            exports[id] = snapshot
+            return snapshot
+        } catch {
+            try? fileManager.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    /// Snapshot the *current original* for comparison without rebasing the
+    /// editor or replacing its recoverable working copy.
+    public func prepareCurrentExport(_ session: DocumentSession) throws -> DocumentExportSnapshot {
+        guard sessions[session.id] == session else {
+            throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
+        }
+        let id = UUID()
+        let directory = session.workingURL.deletingLastPathComponent()
+            .appendingPathComponent("exports", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+        let copy = directory.appendingPathComponent(session.originalURL.lastPathComponent)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            var coordinationError: NSError?
+            var copyError: Error?
+            NSFileCoordinator().coordinate(readingItemAt: session.originalURL, options: [], error: &coordinationError) { source in
+                let lock = ManagedFileMutationLock.shared
+                lock.lock(); defer { lock.unlock() }
+                do {
+                    try requireRegularCopy(source)
+                    let digest = try Self.digest(source)
+                    try fileManager.copyItem(at: source, to: copy)
+                    guard try Self.digest(copy) == digest, try Self.digest(source) == digest else {
+                        throw OfficeDocumentError.revisionConflict
+                    }
+                } catch { copyError = error }
+            }
+            if let coordinationError { throw coordinationError }
+            if let copyError { throw copyError }
             let snapshot = DocumentExportSnapshot(id: id, fileURL: copy)
             exports[id] = snapshot
             return snapshot

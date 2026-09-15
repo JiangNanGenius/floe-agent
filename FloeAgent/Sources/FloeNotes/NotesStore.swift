@@ -181,7 +181,7 @@ public actor NotesStore {
         return map
     }
 
-    @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil) throws -> NoteDocument {
+    @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil, reviewedRecovery: (id: UUID, revision: Int)? = nil) throws -> NoteDocument {
         defer { publishChange() }
         guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else { throw NoteError.invalidOperation("编辑批次为空或过大。") }
         return try database.write { db in
@@ -197,6 +197,12 @@ public actor NotesStore {
                 let id: String = receipt["document_id"]
                 guard id == batch.documentID.uuidString else { throw NoteError.conflict }
                 return try decoder.decode(NoteDocument.self, from: receipt["body"])
+            }
+            if let reviewedRecovery {
+                let copy = try read(reviewedRecovery.id, db: db)
+                guard copy.revision == reviewedRecovery.revision, copy.deletedAt == nil else {
+                    throw NoteError.invalidOperation("恢复副本已有新的修改；请保留两个版本，在副本中继续。")
+                }
             }
             let before = try read(batch.documentID, db: db)
             guard before.deletedAt == nil else { throw NoteError.invalidOperation("请先从回收站恢复内容。") }
@@ -222,6 +228,23 @@ public actor NotesStore {
                 try db.execute(sql: "INSERT INTO edit_receipts VALUES(?,?,?)", arguments: [request, after.id.uuidString, try encoder.encode(after)])
             }
             return after
+        }
+    }
+
+    /// Bounded lookup for an editor's genuine baseline. Never substitute the
+    /// newest document when the requested revision has aged out of history.
+    public func editingSnapshot(_ id: UUID, revision: Int) throws -> NoteDocument? {
+        try database.read { db in
+            let current = try read(id, db: db)
+            if current.revision == revision { return current }
+            let rows = try Row.fetchCursor(db, sql: "SELECT before,after FROM history WHERE document_id=? ORDER BY position DESC LIMIT 32", arguments: [id.uuidString])
+            while let row = try rows.next() {
+                for key in ["after", "before"] {
+                    let value = try decoder.decode(NoteDocument.self, from: row[key])
+                    if value.id == id, value.revision == revision { return value }
+                }
+            }
+            return nil
         }
     }
 

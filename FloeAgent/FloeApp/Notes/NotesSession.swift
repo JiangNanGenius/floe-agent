@@ -49,6 +49,7 @@ final class NotesSession {
     private(set) var canRedo = false
     var requestedPageID: UUID?
     var errorMessage: String?
+    var editConflicts: [NoteEditConflict] = []
     private(set) var unsavedDocumentIDs: Set<UUID> = []
     private(set) var recoverableInkDocumentIDs: Set<UUID> = []
     private struct InkKey: Hashable { let documentID: UUID; let pageID: UUID }
@@ -295,11 +296,52 @@ final class NotesSession {
     }
 
     func apply(_ edits: [NoteEdit], title: String, documentID: UUID) {
+        let baseline = documents.first { $0.id == documentID }
         enqueue { [self] in
-            guard let store, let value = documents.first(where: { $0.id == documentID }) else { throw NoteError.notFound }
-            _ = try await store.apply(.init(documentID: documentID, expectedRevision: value.revision, title: title, edits: edits))
+            guard let baseline else { throw NoteError.notFound }
+            _ = try await commitPreservingConflict(.init(documentID: documentID, expectedRevision: baseline.revision, title: title, edits: edits), base: baseline)
             try await reload()
         }
+    }
+
+    private func commitPreservingConflict(_ batch: NoteEditBatch, base: NoteDocument) async throws -> NoteDocument {
+        guard let store else { throw NoteError.resourceUnavailable }
+        do { return try await store.applyRebased(batch, base: base) }
+        catch NoteError.conflict {
+            // The copy is a real Notes document: its resource references remain
+            // live, it is searchable/reopenable, and no chat lifecycle owns it.
+            var draft = base
+            for edit in batch.edits { try edit.apply(to: &draft) }
+            draft.id = UUID()
+            draft.title += " · " + String(localized: "edit.conflict.notesCopy")
+            let copy = try await store.create(draft)
+            let current = try await store.document(base.id)
+            editConflicts.append(NoteEditConflict(current: current, copy: copy, edits: batch.edits, title: batch.title))
+            try await reload()
+            throw NoteError.invalidOperation(String(localized: "edit.conflict.notesPreserved"))
+        }
+    }
+
+    func resolveEditConflict(_ review: NoteEditConflict, useMine: Bool) async {
+        guard let store else { return }
+        do {
+            if useMine {
+                guard try await store.document(review.copy.id).revision == review.copy.revision else {
+                    throw NoteError.invalidOperation(String(localized: "edit.conflict.notesCopyChanged"))
+                }
+                _ = try await store.apply(.init(documentID: review.current.id, expectedRevision: review.current.revision,
+                                               title: review.title, edits: review.edits), reviewedRecovery: (id: review.copy.id, revision: review.copy.revision))
+            }
+            editConflicts.removeAll { $0.id == review.id }
+            try await reload()
+        } catch NoteError.conflict {
+            do {
+                let latest = try await store.document(review.current.id)
+                if let index = editConflicts.firstIndex(where: { $0.id == review.id }) {
+                    editConflicts[index] = NoteEditConflict(current: latest, copy: review.copy, edits: review.edits, title: review.title)
+                }
+            } catch { errorMessage = error.localizedDescription }
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func saveDrawing(_ data: Data, pageID: UUID, documentID: UUID) {
@@ -370,7 +412,8 @@ final class NotesSession {
         guard pendingWrites == 0, let store else { throw NoteError.conflict }
         pendingWrites += 1
         defer { finishWrite() }
-        let result = try await store.apply(.init(documentID: documentID, expectedRevision: expectedRevision, title: "编辑内容", edits: edits))
+        guard let base = try await store.editingSnapshot(documentID, revision: expectedRevision) else { throw NoteError.conflict }
+        let result = try await commitPreservingConflict(.init(documentID: documentID, expectedRevision: expectedRevision, title: "编辑内容", edits: edits), base: base)
         try await reload()
         return result
     }

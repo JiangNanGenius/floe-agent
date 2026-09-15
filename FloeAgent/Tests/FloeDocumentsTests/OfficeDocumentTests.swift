@@ -124,6 +124,8 @@ struct OfficeDocumentTests {
         let savedBytes = try Data(contentsOf: root.appendingPathComponent("docs/report.docx"))
         let stale = try await update.execute(.init(path: "docs/report.docx", updates: [fieldID: "Old model state"], expectedSHA256: revision), context: context)
         #expect(stale.exitStatus == 2)
+        let unversioned = try await update.execute(.init(path: "docs/report.docx", updates: [fieldID: "Blind overwrite"]), context: context)
+        #expect(unversioned.exitStatus == 2)
         #expect(try Data(contentsOf: root.appendingPathComponent("docs/report.docx")) == savedBytes)
         #expect(try OfficeDocumentService.inspect(url: root.appendingPathComponent("docs/report.docx"))
             .fields.map(\.text).contains("Updated report"))

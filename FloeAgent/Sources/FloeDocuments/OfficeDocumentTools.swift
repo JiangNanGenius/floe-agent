@@ -96,13 +96,17 @@ public struct OfficeUpdateTextTool: AgentTool {
     public static let name = "document.office.updateText"
     public static let toolDescription =
         "Update exact fields in an existing workspace Office file after document.office.inspect. Pass expectedSHA256 from inspect to reject stale edits. Unknown field IDs fail closed. Floe preserves unchanged themes, layouts, images and relationships, writes atomically, then reopens the package to verify it."
-    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative .docx, .pptx or .xlsx path"},"expectedSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$","description":"sha256 returned by inspect; prevents overwriting a newer revision"},"updates":{"type":"object","description":"Map exact inspect field IDs to replacement text or formulas beginning with =","maxProperties":500,"additionalProperties":{"type":"string","maxLength":100000}}},"required":["path","updates"],"additionalProperties":false}"#
+    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative .docx, .pptx or .xlsx path"},"expectedSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$","description":"sha256 returned by inspect; prevents overwriting a newer revision"},"updates":{"type":"object","description":"Map exact inspect field IDs to replacement text or formulas beginning with =","maxProperties":500,"additionalProperties":{"type":"string","maxLength":100000}}},"required":["path","updates","expectedSHA256"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
     private let rootProvider: @Sendable () -> URL?
     public init(rootProvider: @escaping @Sendable () -> URL?) { self.rootProvider = rootProvider }
     public func validate(_ args: Arguments) throws {
         try OfficeToolSupport.validatePath(args.path)
+        guard let digest = args.expectedSHA256, digest.count == 64,
+              digest.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
+            throw FloeError.validationFailed("Read document.office.inspect and supply its expectedSHA256 before editing an existing Office file")
+        }
         guard !args.updates.isEmpty, args.updates.count <= 500,
               args.updates.values.allSatisfy({ $0.utf8.count <= 100_000 }) else {
             throw FloeError.validationFailed("updates must contain 1...500 bounded fields")
@@ -111,6 +115,7 @@ public struct OfficeUpdateTextTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         do {
+            try validate(args)
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: true)
             let result = try OfficeDocumentService.update(sourceURL: url, updates: args.updates, expectedSHA256: args.expectedSHA256)
             guard let digest = result.sha256 else {

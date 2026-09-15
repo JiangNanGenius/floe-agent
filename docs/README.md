@@ -83,3 +83,5 @@
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
 176 修复候选尚未交付；已交付版本仍为 172。旧版本说明和候选记录保留历史状态。
+
+- [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。

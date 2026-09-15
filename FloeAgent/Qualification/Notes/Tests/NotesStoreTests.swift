@@ -10,6 +10,64 @@ struct NotesStoreTests {
         return url
     }
 
+    @Test func concurrentIndependentElementsMergeAndOverlapRequiresReview() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var value = NoteDocument(title: "Shared page")
+        let a = NoteElement(text: "first"), b = NoteElement(text: "second")
+        value.pages[0].elements = [a, b]
+        let base = try await store.create(value)
+        let page = base.pages[0].id
+        var agent = b; agent.text = "Agent changed second"
+        let agentResult = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Agent", edits: [.upsertElement(pageID: page, element: agent)]))
+        var human = a; human.text = "Human changed first"
+        let merged = try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Human", edits: [.upsertElement(pageID: page, element: human)]), base: base)
+        #expect(merged.pages[0].elements.map(\.text) == [human.text, agent.text])
+        #expect(merged.revision > agentResult.revision)
+        var conflicting = b; conflicting.text = "Human changed second"
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+                title: "Overlap", edits: [.upsertElement(pageID: page, element: conflicting)]), base: base)
+        }
+        #expect(try await store.document(base.id) == merged)
+        #expect(try await store.editingSnapshot(base.id, revision: base.revision) == base)
+        #expect(try await store.editingSnapshot(base.id, revision: 900_000) == nil)
+    }
+
+    @Test func deletedPageAndBroadPageReplacementNeverRebaseSilently() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var value = NoteDocument(title: "Pages")
+        value.pages.append(NotePage())
+        let base = try await store.create(value)
+        let changed = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Delete", edits: [.deletePage(base.pages[0].id)]))
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision, title: "Stale", edits: [
+                .upsertElement(pageID: base.pages[0].id, element: NoteElement(text: "draft"))]), base: base)
+        }
+        #expect(try await store.document(base.id) == changed)
+        var current = base
+        current.pages[0].elements.append(NoteElement(text: "new element"))
+        #expect(!NoteEdit.updatePage(base.pages[0]).canRebase(from: base, onto: current))
+    }
+
+    @Test func reviewedRecoveryMustStillMatchWhenOriginalCommits() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let original = try await store.create(NoteDocument(title: "Original"))
+        let copy = try await store.create(NoteDocument(title: "Recovery"))
+        _ = try await store.apply(.init(documentID: copy.id, expectedRevision: copy.revision, title: "Continue draft", edits: [.rename("New draft")]))
+        await #expect(throws: NoteError.self) {
+            try await store.apply(.init(documentID: original.id, expectedRevision: original.revision,
+                title: "Resolve", edits: [.rename("Old reviewed draft")]), reviewedRecovery: (id: copy.id, revision: copy.revision))
+        }
+        #expect(try await store.document(original.id) == original)
+        #expect(try await store.document(copy.id).title == "New draft")
+    }
+
     @Test func dedicatedThreadInventoryExcludesOrdinaryKnowledgeGrants() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)
