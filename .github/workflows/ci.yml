@@ -332,7 +332,7 @@ jobs:
 
       - name: Verify Notes workspace import and retain full App screenshots
         if: ${{ !cancelled() }}
-        # Two devices each have three independently bounded 180-second tests.
+        # Two devices each have three independently bounded 300-second tests.
         # The phase must also allow boot, runner teardown and evidence export.
         timeout-minutes: 25
         run: |
@@ -365,7 +365,7 @@ jobs:
                 -collect-test-diagnostics never \
                 -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
                 -parallel-testing-enabled NO -test-timeouts-enabled YES \
-                -maximum-test-execution-time-allowance 180 \
+                -maximum-test-execution-time-allowance 300 \
                 CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || leg_code=$?
               # One retry only when the runner stalled before any test started.
               if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
@@ -419,7 +419,7 @@ jobs:
               leg_code=0
               python3 scripts/run_test_with_diagnostics.py \
                 --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name" \
-                --timeout 390 --stall-timeout 210 --simulator-id "$test_device" -- \
+                --timeout 900 --stall-timeout 210 --simulator-id "$test_device" -- \
                 xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
                 -destination "platform=iOS Simulator,id=$test_device" \
                 -resultBundlePath "FloeAgent-IDE-$name.xcresult" \

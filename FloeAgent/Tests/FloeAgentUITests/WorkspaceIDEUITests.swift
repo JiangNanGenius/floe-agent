@@ -17,8 +17,23 @@ final class WorkspaceIDEUITests: XCTestCase {
         let editor = app.webViews.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 20))
         editor.tap()
+        // Monaco only accepts text once its hidden textarea owns the keyboard;
+        // a tap that lands before the WebKit focus handshake types into the void.
+        let keyboard = app.keyboards.firstMatch
+        if !keyboard.waitForExistence(timeout: 5) {
+            editor.tap()
+            _ = keyboard.waitForExistence(timeout: 5)
+        }
         let marker = "saved-" + UUID().uuidString.prefix(8)
         editor.typeText(String(marker))
+        // Synthetic keystrokes can silently miss WKWebView text input. Prove the
+        // marker reached the Monaco buffer before saving; retry the focus once.
+        if !((editor.value as? String) ?? "").contains(marker) {
+            editor.tap()
+            _ = keyboard.waitForExistence(timeout: 5)
+            editor.typeText(String(marker))
+        }
+        XCTAssertTrue(((editor.value as? String) ?? "").contains(marker), "typed marker must reach the Monaco buffer")
         let save = app.buttons["workspace.ide.save"]
         XCTAssertTrue(save.isEnabled)
         save.tap()
