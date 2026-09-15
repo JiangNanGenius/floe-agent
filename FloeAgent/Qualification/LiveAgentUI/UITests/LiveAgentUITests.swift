@@ -73,7 +73,11 @@ import UIKit
         XCTAssertEqual(fillResult, .completed)
         app.buttons["action.save"].tap()
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: field)
-        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 20), .completed)
+        let saveResult = XCTWaiter.wait(for: [dismissed], timeout: 20)
+        if saveResult != .completed {
+            print(app.debugDescription.replacingOccurrences(of: key, with: "[redacted]"))
+        }
+        XCTAssertEqual(saveResult, .completed)
         XCTAssertTrue(provider.waitForExistence(timeout: 15))
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             !provider.label.contains("Waiting for secret") && !provider.label.contains("等待密钥")

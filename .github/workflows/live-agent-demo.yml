@@ -59,6 +59,8 @@ jobs:
           PY
           gh run download "$SOURCE_RUN" -n "simulator-app-$SOURCE_SHA" -D "$RUNNER_TEMP/live-app"
           ditto -x -k "$RUNNER_TEMP/live-app/FloeAgent-Simulator.zip" "$RUNNER_TEMP/live-app/extracted"
+      - name: Give the simulator copy its own Keychain identity
+        run: python3 FloeAgent/Qualification/LiveAgentUI/sign_simulator.py "$RUNNER_TEMP/live-app/extracted/Floe Agent.app" LiveAgentEvidence
       - name: Build only the tiny UI driver
         run: |
           command -v xcodegen || brew install xcodegen
