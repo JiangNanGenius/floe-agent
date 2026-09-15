@@ -114,6 +114,17 @@ actor EnvironmentLanguagePackageService {
         } onCancel: { token.cancel() }
     }
 
+    /// Shell already owns the execution lease. Acquiring a management lease
+    /// here would wait on itself; serialize with UI transactions using busy.
+    func changeNodeFromShell(environment: ToolEnvironment, change: NodePackageManagerPolicy.Change,
+                             manager: NodePackageManager, cancellation: CancellationToken) async throws -> String {
+        guard !busy.contains(environment.id) else { throw FloeError.validationFailed("此环境正在安装或卸载依赖") }
+        busy.insert(environment.id)
+        defer { busy.remove(environment.id) }
+        return try await nodeInstaller().change(environment, specifications: change.specifications,
+            remove: change.remove, manager: manager, cancellation: cancellation)
+    }
+
     struct NodeManagerSelection: Sendable {
         var preference: NodePackageManagerPreference
         var resolved: NodePackageManager?

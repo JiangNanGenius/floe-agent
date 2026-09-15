@@ -73,9 +73,13 @@ public struct ManagedNodeInstallService: Sendable {
     }
 
     public func change(_ environment: ToolEnvironment, specification: String, remove: Bool, manager: NodePackageManager = .npm, cancellation: CancellationToken) async throws -> String {
-        // Package names and registry versions only; no paths, Git URLs or shell argument parsing.
-        let pattern = remove ? #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*$"# : #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*(?:@[A-Za-z0-9.*~^+_-][A-Za-z0-9.*~^+_-]*)?$"#
-        guard specification.range(of: pattern, options: .regularExpression) != nil else { throw FloeError.validationFailed("请输入 npm 包名，可附加 @版本；不接受路径或 Git URL") }
+        try await change(environment, specifications: [specification], remove: remove, manager: manager, cancellation: cancellation)
+    }
+
+    public func change(_ environment: ToolEnvironment, specifications: [String], remove: Bool, manager: NodePackageManager = .npm, cancellation: CancellationToken) async throws -> String {
+        // Validate every argument before touching a prior dependency generation.
+        guard specifications.count <= 256 else { throw FloeError.validationFailed("一次最多更新 256 个依赖") }
+        for specification in specifications { try NodePackageManagerPolicy.validateSpecification(specification, remove: remove) }
         let managerEntry: String
         switch manager {
         case .npm: managerEntry = npm
@@ -119,20 +123,20 @@ public struct ManagedNodeInstallService: Sendable {
                     }
                 }
             }
-            if remove {
-                guard dependencies.removeValue(forKey: specification) != nil else {
-                    throw FloeError.validationFailed("此包不是本层直接安装的依赖；请先检查依赖它的软件包")
+            for specification in specifications {
+                if remove {
+                    guard dependencies.removeValue(forKey: specification) != nil else {
+                        throw FloeError.validationFailed("此包不是本层直接安装的依赖；请先检查依赖它的软件包")
+                    }
+                } else {
+                    let split = specification.dropFirst().lastIndex(of: "@")
+                    let name = split.map { String(specification[..<$0]) } ?? specification
+                    let version = split.map { String(specification[specification.index(after: $0)...]) } ?? "latest"
+                    dependencies[name] = version
                 }
-            } else {
-                let split = specification.dropFirst().lastIndex(of: "@")
-                let name = split.map { String(specification[..<$0]) } ?? specification
-                let version = split.map { String(specification[specification.index(after: $0)...]) } ?? "latest"
-                dependencies[name] = version
             }
             for (name, version) in dependencies {
-                guard (name + "@" + version).range(of: #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*@[A-Za-z0-9.*~^+_-][A-Za-z0-9.*~^+_-]*$"#, options: .regularExpression) != nil else {
-                    throw FloeError.validationFailed("依赖清单包含不支持的名称或版本")
-                }
+                try NodePackageManagerPolicy.validateSpecification(name + "@" + version, remove: false)
             }
             let manifest: [String: Any] = ["name": "floe-managed-environment", "version": "1.0.0", "private": true, "dependencies": dependencies]
             try JSONSerialization.data(withJSONObject: manifest, options: .sortedKeys).write(to: prefix.appendingPathComponent("package.json"))

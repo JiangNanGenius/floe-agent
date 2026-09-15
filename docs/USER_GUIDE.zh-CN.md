@@ -418,3 +418,5 @@ floe-service restart JOB_ID
 环境中的 JavaScript 依赖支持在软件包页面选择**自动 / npm / pnpm**。自动读取所属项目的 `packageManager` 和唯一锁文件；提示冲突时，可明确选择管理器或先整理项目。此设置使用 App 内置版本执行环境安装，不修改项目清单、锁文件或其中声明的管理器版本。切换管理器会先生成并校验暂存依赖，再替换当前安装；失败时保留原依赖。Shell 中的 `npm`、`pnpm` 命令仍按你明确输入的管理器执行项目操作。
 
 手记内的 Office 编辑器将返回、文档标签和操作集中在同一顶栏；窄屏下，附件、批注与放映位于文档操作菜单。助手按钮还可打开文档关联的思维导图。
+
+Shell 中的 `npm install`、`pnpm install` 与设置页共用环境安装和失败恢复流程。不带包名时读取当前目录 package.json 中的 dependencies 与 devDependencies；项目清单和锁文件保持不变，因此不等于按项目锁文件精确复现。`require` 和 ES 模块导入均可查找解析后的环境依赖。

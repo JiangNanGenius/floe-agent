@@ -46,3 +46,68 @@ public enum NodePackageManagerPolicy {
         return manager
     }
 }
+
+public extension NodePackageManagerPolicy {
+    struct Change: Sendable {
+        public let specifications: [String]
+        public let remove: Bool
+    }
+
+    static func validateSpecification(_ value: String, remove: Bool = false) throws {
+        let pattern = remove
+            ? #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*$"#
+            : #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*(?:@[A-Za-z0-9.*~^+_><=-][A-Za-z0-9.*~^+_><=| -]*)?$"#
+        guard value.utf8.count <= 512, value.range(of: pattern, options: .regularExpression) != nil else {
+            throw FloeError.validationFailed("请输入 npm 包名，可附加 @版本范围；不接受路径或 Git URL")
+        }
+    }
+
+    /// Mutating Shell commands use the same environment transaction as settings.
+    /// package.json is read, never rewritten; a project install adds its declared
+    /// dependencies to this environment rather than changing the workspace files.
+    static func shellChange(arguments: [String], directory: URL, workspace: URL) throws -> Change? {
+        var args = arguments
+        while args.first == "-g" || args.first == "--global" { args.removeFirst() }
+        guard let command = args.first else { return nil }
+        let installing = ["install", "i", "add"].contains(command)
+        let removing = ["uninstall", "un", "remove", "rm"].contains(command)
+        if ["ci", "update", "up", "dedupe", "rebuild", "link", "unlink"].contains(command) {
+            throw FloeError.validationFailed("受管理环境请使用 npm/pnpm install 或 remove；项目锁文件不会在这里改写")
+        }
+        guard installing || removing else {
+            if command.hasPrefix("-"), args.contains(where: { ["install", "i", "add", "remove", "rm", "uninstall"].contains($0) }) {
+                throw FloeError.validationFailed("请将 install/remove 放在管理器名称后；安装位置由当前环境决定")
+            }
+            return nil
+        }
+        args.removeFirst()
+        args.removeAll { ["-g", "--global", "--save", "--save-dev", "-D", "--save-prod", "-P", "--ignore-scripts", "--no-audit", "--no-fund"].contains($0) }
+        guard !args.contains(where: { $0.hasPrefix("-") }) else {
+            throw FloeError.validationFailed("安装位置和安装脚本由环境管理；不支持此命令选项")
+        }
+        if args.isEmpty && !removing {
+            let root = workspace.resolvingSymlinksInPath().standardizedFileURL
+            let manifest = directory.appendingPathComponent("package.json").resolvingSymlinksInPath().standardizedFileURL
+            guard manifest.path.hasPrefix(root.path + "/") else { throw FloeError.validationFailed("项目清单越出当前工作区") }
+            let values = try manifest.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 2 * 1024 * 1024,
+                  let json = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any] else {
+                throw FloeError.validationFailed("项目 package.json 不可读取或过大")
+            }
+            var dependencies: [String: String] = [:]
+            for key in ["dependencies", "devDependencies"] {
+                if let value = json[key] {
+                    guard let entries = value as? [String: String] else { throw FloeError.validationFailed("项目依赖清单无效") }
+                    for (name, version) in entries {
+                        if let existing = dependencies[name], existing != version { throw FloeError.validationFailed("项目依赖存在冲突：" + name) }
+                        dependencies[name] = version
+                    }
+                }
+            }
+            args = dependencies.sorted { $0.key < $1.key }.map { $0.key + "@" + $0.value }
+        } else if args.isEmpty { throw FloeError.validationFailed("请指定要卸载的包名") }
+        guard args.count <= 256 else { throw FloeError.validationFailed("一次最多更新 256 个依赖") }
+        for spec in args { try validateSpecification(spec, remove: removing) }
+        return Change(specifications: args, remove: removing)
+    }
+}

@@ -67,7 +67,7 @@ function start(job, service = false) {
   }
   worker.stdout.on('data', chunk => capture('stdout', chunk));
   worker.stderr.on('data', chunk => capture('stderr', chunk));
-  worker.on('error', error => capture('stderr', String(error)));
+  worker.on('error', error => capture('stderr', `${error.code ? error.code + ': ' : ''}${String(error)}`));
   const timer = service ? null : setTimeout(() => { void stop('timedOut', state); }, job.timeoutMs);
   worker.on('exit', code => {
     clearTimeout(timer);

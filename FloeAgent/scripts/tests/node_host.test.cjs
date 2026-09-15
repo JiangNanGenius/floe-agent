@@ -226,3 +226,36 @@ test('pinned npm and pnpm install over HTTPS and modules execute on the shared h
     }
   } finally { h.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('CommonJS and ESM use task dependency layers and preserve conditional exports', { timeout: 15000 }, async () => {
+  const h = host(); await h.started;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'floe-node-modules-'));
+  try {
+    const cwd = path.join(root, 'workspace'); fs.mkdirSync(cwd);
+    const layers = ['session', 'project'].map(name => path.join(root, name, 'node_modules'));
+    for (const [index, modules] of layers.entries()) {
+      const pkg = path.join(modules, 'layer-test'); fs.mkdirSync(pkg, { recursive: true });
+      fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'layer-test', type: 'module',
+        exports: { '.': { import: './import.js', require: './require.cjs' } } }));
+      fs.writeFileSync(path.join(pkg, 'import.js'), `export default 'esm-${index}';`);
+      fs.writeFileSync(path.join(pkg, 'require.cjs'), `module.exports = 'cjs-${index}';`);
+    }
+    const entry = path.join(cwd, 'index.mjs');
+    fs.writeFileSync(entry, "import value from 'layer-test'; import {createRequire} from 'node:module'; console.log(value, createRequire(import.meta.url)('layer-test'));");
+    for (const [index, selected] of [layers, layers.slice(1)].entries()) {
+      const result = await h.send(request('esm-layer-' + index, '', { entry, args: [], cwd, env: { NODE_PATH: selected.join(path.delimiter) } }));
+      assert.equal(result.code, 0, Buffer.from(result.stderr ?? '', 'base64').toString());
+      assert.equal(stdout(result), `esm-${index} cjs-${index}\n`);
+    }
+    const evalResult = await h.send(request('eval-import', "import('layer-test').then(m => console.log(m.default));", { cwd, env: { NODE_PATH: layers[0] } }));
+    assert.equal(evalResult.code, 0, Buffer.from(evalResult.stderr ?? '', 'base64').toString());
+    assert.equal(stdout(evalResult), 'esm-0\n');
+    fs.writeFileSync(entry, "import 'layer-test/hidden';");
+    const denied = await h.send(request('esm-export-denied', '', { entry, args: [], cwd, env: { NODE_PATH: layers.join(path.delimiter) } }));
+    assert.notEqual(denied.code, 0);
+    assert.match(Buffer.from(denied.stderr, 'base64').toString(), /ERR_PACKAGE_PATH_NOT_EXPORTED/);
+    const clean = await h.send(request('esm-isolated', '', { entry, args: [], cwd }));
+    assert.notEqual(clean.code, 0);
+    assert.match(Buffer.from(clean.stderr, 'base64').toString(), /ERR_MODULE_NOT_FOUND/);
+  } finally { h.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});

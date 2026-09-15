@@ -120,6 +120,12 @@ struct LocalShellRuntimeTests {
         let managedPnpm = await runtime.run(.init(entryScript: nil, arguments: ["-e", "console.log(require('is-number')(42))"], workingDirectory: root, environment: variables), cancellation: nil)
         guard case .exited(let managedCode, let managedOutput, let managedErrors, _, _) = managedPnpm else { Issue.record("Managed pnpm import failed: \(managedPnpm)"); return }
         #expect(managedCode == 0 && managedOutput == "true\n", "\(managedErrors)")
+        let esmEntry = root.appendingPathComponent("environment-import.mjs")
+        try Data("import isNumber from 'is-number'; console.log(isNumber(42));".utf8).write(to: esmEntry)
+        let esm = await runtime.run(.init(entryScript: esmEntry.path, arguments: [], workingDirectory: root,
+                                         environment: variables), cancellation: nil)
+        guard case .exited(let esmCode, let esmOutput, let esmErrors, _, _) = esm else { Issue.record("ESM import failed: \(esm)"); return }
+        #expect(esmCode == 0 && esmOutput == "true\n", "\(esmErrors)")
         _ = try await installer.change(env, specification: "is-number", remove: true, manager: .pnpm, cancellation: CancellationToken())
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("usr/lib/node_modules/is-number").path))
 

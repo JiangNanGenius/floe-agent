@@ -173,6 +173,7 @@ final class FloePlatformServices: @unchecked Sendable {
 
     private func registerNodeCommands(in commandRegistry: FloeShellCommandRegistry) {
         let nodeRuntime = IOSSystemNodeRuntime.shared
+        let languageManagement = lock.withLock { self.languageManagement }
         for name in ["node", "npm", "npx", "pnpm", "pnpx", "yarn"] {
             commandRegistry.register(name) { arguments, stdout, stderr in
                 guard let context = FloeShellCommandRegistry.shared.context else {
@@ -180,6 +181,21 @@ final class FloePlatformServices: @unchecked Sendable {
                     return 2
                 }
                 let userArguments = Array(arguments.dropFirst())
+                if let manager = NodePackageManager(rawValue: name) {
+                    do {
+                        if let change = try NodePackageManagerPolicy.shellChange(arguments: userArguments,
+                            directory: context.workingDirectory, workspace: context.rootURL) {
+                            guard let languageManagement, let environment = context.environment else {
+                                throw FloeError.invalidConfiguration("当前 Shell 未绑定可安装依赖的环境")
+                            }
+                            let output = try await languageManagement.changeNodeFromShell(environment: environment,
+                                change: change, manager: manager, cancellation: context.cancellation)
+                            if !output.isEmpty { FloeShellWrite(stdout, output + "\n") }
+                            return 0
+                        }
+                    } catch is CancellationError { return 130 }
+                    catch { FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n"); return 1 }
+                }
                 let entry: String?
                 if name == "node" {
                     // The persistent host parses Node's CLI options. Passing
