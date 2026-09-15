@@ -167,7 +167,7 @@ impl CadSession {
     pub fn edit(&mut self, request: &str) -> Result<(), String> {
         if request.len() > 32_768 { return Err("CAD edit request limit".into()); }
         if !self.document.notifications.is_empty() || self.document.notifications.omitted_count() > 0 {
-            return Err("This drawing has unresolved read diagnostics; editing is disabled".into());
+            return Err(format!("This drawing has unresolved read diagnostics; editing is disabled: {:?}", diagnostics(&self.document)));
         }
         let edit: Edit = serde_json::from_str(request).map_err(|e| e.to_string())?;
         let mut next = self.document.clone();
@@ -270,6 +270,7 @@ mod tests {
             for format in ["dxf","dwg"] {
                 let input = encode(&fixture(version),format).unwrap();
                 let mut session = CadSession::new(&input,format).unwrap();
+                eprintln!("Input {format} {version:?}: {:?}", diagnostics(&session.document));
                 let line = session.document.entities().find(|e|matches!(e,EntityType::Line(_))).unwrap().common().handle;
                 session.edit(&json!({"operation":"move","handle":format!("{line:X}"),"delta":[5,7,0]}).to_string()).unwrap();
                 session.edit(r#"{"operation":"addCircle","center":[80,20,0],"radius":3,"layer":"Dimensions"}"#).unwrap();

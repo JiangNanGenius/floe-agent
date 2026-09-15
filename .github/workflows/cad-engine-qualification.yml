@@ -29,10 +29,12 @@ jobs:
           set -o pipefail
           cargo test --locked --jobs 2 -- --nocapture 2>&1 | tee cad-tests.log
       - name: Compile bounded-memory WebAssembly
+        if: ${{ !cancelled() }}
         env:
           RUSTFLAGS: '-C link-arg=--max-memory=402653184'
         run: cargo build --release --locked --target wasm32-unknown-unknown --jobs 2
       - name: Create Web Worker bindings
+        if: ${{ !cancelled() }}
         run: |
           cargo install wasm-bindgen-cli --version 0.2.126 --locked --jobs 2
           wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/floe_cad_engine.wasm
