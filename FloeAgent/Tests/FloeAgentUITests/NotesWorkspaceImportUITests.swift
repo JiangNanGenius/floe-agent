@@ -4,6 +4,61 @@ import UIKit
 
 @MainActor
 final class NotesWorkspaceImportUITests: XCTestCase {
+    func testOfficeHeaderAssistantSaveAndReopen() throws {
+        continueAfterFailure = false
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
+        let app = XCUIApplication()
+        app.terminate()
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        app.launch()
+        defer { app.terminate() }
+        if !ipad {
+            let sidebar = app.buttons["phone.sidebar.open"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
+        }
+        let notes = app.descendants(matching: .any).matching(identifier: "sidebar.notes").firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
+        let create = app.buttons["notes.create"]
+        XCTAssertTrue(create.waitForExistence(timeout: 15))
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)], timeout: 10)
+        create.tap(); app.buttons["Office"].tap(); app.buttons["notes.create.word"].tap()
+        let title = app.textFields["notes.create.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.tap(); title.typeText("Office toolbar check")
+        app.buttons["创建"].tap()
+        let back = app.buttons["office.editor.back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 45))
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true AND hittable == true"), evaluatedWith: back)], timeout: 60)
+        XCTAssertEqual(app.buttons.matching(identifier: "office.editor.back").count, 1)
+        assertTouchTarget(back)
+        let header = app.descendants(matching: .any).matching(identifier: "office.editor.header").firstMatch
+        XCTAssertTrue(header.exists)
+        XCTAssertLessThan(header.frame.height, 75)
+        XCTAssertFalse(app.buttons["notes.header.toggle"].exists)
+        capture("notes-office-single-header")
+        let assistant = app.buttons["notes.office.assistant"]
+        XCTAssertTrue(assistant.isHittable); assistant.tap()
+        app.buttons["Floe 助手"].tap()
+        let close = app.buttons["notes.assistant.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已选择手记文档")).count, 0)
+        capture("notes-office-document-assistant")
+        close.tap()
+        wait(for: [expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: back)], timeout: 10)
+        back.tap() // Native save followed by the Notes resource-revision commit.
+        XCTAssertTrue(create.waitForExistence(timeout: 30))
+        XCTAssertFalse(back.exists)
+        let document = app.buttons.containing(.staticText, identifier: "Office toolbar check").firstMatch
+        XCTAssertTrue(document.waitForExistence(timeout: 10)); document.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 30))
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true AND hittable == true"), evaluatedWith: back)], timeout: 45)
+        capture("notes-office-reopened")
+        back.tap()
+        XCTAssertTrue(create.waitForExistence(timeout: 30))
+    }
+
     func testWorkspaceImportTabsFocusAndBodySearch() throws {
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad

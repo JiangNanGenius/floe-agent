@@ -581,83 +581,14 @@ enum FloeShellCommands {
         }
     }
 
-    // MARK: - apt / pkg / dpkg (catalog queries; install flows through the apt tool)
-
+    // Safe unconfigured fallback; the platform's environment-bound PackagesCLI
+    // replaces all of these during normal App initialization.
     private static func registerPackages(_ registry: FloeShellCommandRegistry) {
-        for name in ["apt", "apt-get", "pkg"] {
-            registry.register(name) { arguments, stdout, stderr in
-                if arguments.dropFirst().contains("--help") || arguments.dropFirst().contains("-h") {
-                    FloeShellWrite(stdout, "usage: \(name) search TERM | list; installation runs through the apt tool\n")
-                    return 0
-                }
-                let subcommand = arguments.dropFirst().first { !$0.hasPrefix("-") } ?? "list"
-                switch subcommand {
-                case "search":
-                    guard let query = arguments.dropFirst(2).first else {
-                        FloeShellWrite(stderr, "usage: \(name) search TERM\n")
-                        return 2
-                    }
-                    return await listCatalog(registry, query: query, stdout: stdout, stderr: stderr)
-                case "list":
-                    return await listCatalog(registry, query: nil, stdout: stdout, stderr: stderr)
-                case "install", "remove", "download":
-                    FloeShellWrite(stderr, "\(name): use the apt agent tool with action=\(subcommand) so the package review runs first\n")
-                    return 1
-                default:
-                    FloeShellWrite(stderr, "\(name): unsupported command '\(subcommand)'; use search or list, or the environment package manager\n")
-                    return 2
-                }
+        for name in ["apt", "apt-get", "pkg", "apt-cache", "apt-mark", "dpkg", "dpkg-deb"] {
+            registry.register(name) { _, _, stderr in
+                FloeShellWrite(stderr, "\(name): environment package service is not configured\n")
+                return 100
             }
         }
-        registry.register("dpkg") { arguments, stdout, stderr in
-            let flag = arguments.dropFirst().first ?? "-l"
-            if flag == "-x" || flag == "--extract" {
-                guard arguments.count == 4, let python = registry.python, let context = registry.context else {
-                    FloeShellWrite(stderr, "usage: dpkg -x ARCHIVE.deb NEW_DIRECTORY\n"); return 2
-                }
-                do {
-                    let root = context.rootURL.resolvingSymlinksInPath()
-                    let paths = try arguments.suffix(2).map { path -> URL in
-                        try ShellInputValidation.validate(command: "", cwd: path, environment: [:])
-                        let url = root.appendingPathComponent(path).resolvingSymlinksInPath()
-                        guard url.path.hasPrefix(root.path + "/") else { throw FloeError.validationFailed("Path escapes workspace") }
-                        return url
-                    }
-                    let result = try await DebDataInstaller(python: python).extract(debURL: paths[0], destinationDirectory: paths[1], cancellation: context.cancellation)
-                    FloeShellWrite(stdout, "Extracted \(result.fileCount) data files\n"); return 0
-                } catch { FloeShellWrite(stderr, "dpkg: \(error)\n"); return 1 }
-            }
-            guard flag == "-l" || flag == "--list" else {
-                FloeShellWrite(stderr, "dpkg: use -l to list or -x ARCHIVE.deb NEW_DIRECTORY for data-only extraction\n")
-                return 1
-            }
-            guard let installer = FloeShellCommandRegistry.shared.installer else {
-                FloeShellWrite(stderr, "dpkg: the capability catalog is unavailable\n")
-                return 1
-            }
-            let installed = await installer.installedIDs(environment: FloeShellCommandRegistry.shared.context?.environment)
-            FloeShellWrite(stdout, "Desired=Unknown/Install/Remove/Purge/Hold\n")
-            for id in installed { FloeShellWrite(stdout, "ii  \(id)\n") }
-            return 0
-        }
-    }
-
-    private static func listCatalog(
-        _ registry: FloeShellCommandRegistry,
-        query: String?,
-        stdout: UnsafeMutablePointer<FILE>?,
-        stderr: UnsafeMutablePointer<FILE>?
-    ) async -> Int32 {
-        guard let installer = registry.installer else {
-            FloeShellWrite(stderr, "apt: the capability catalog is unavailable\n")
-            return 1
-        }
-        let entries: [CapabilityCatalog.Entry]
-        if let query { entries = await installer.search(query) }
-        else { entries = await installer.allEntries() }
-        for entry in entries {
-            FloeShellWrite(stdout, "\(entry.id) - \(entry.summary) (\(entry.tier.rawValue))\n")
-        }
-        return 0
     }
 }

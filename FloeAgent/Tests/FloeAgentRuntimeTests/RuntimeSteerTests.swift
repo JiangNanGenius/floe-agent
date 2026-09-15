@@ -76,7 +76,9 @@ struct RuntimeSteerTests {
         adapter.finishFirst()
         try await task.value
         #expect(adapter.requests.count == 1)
-        #expect(adapter.requests.allSatisfy { !$0.messages.contains { $0.id == id } })
+        // Provider messages carry role/content, not the UI queue's identity.
+        // Verify the withdrawn payload itself never reaches the provider.
+        #expect(adapter.requests.allSatisfy { !$0.messages.contains { $0.content.contains("withdraw me") } })
     }
 
     @Test("guidance waits for completion boundary and continues the same run")

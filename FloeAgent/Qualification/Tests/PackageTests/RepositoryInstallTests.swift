@@ -70,4 +70,43 @@ struct RepositoryInstallTests {
         #expect(DpkgDatabase.readStatus(at: root).isEmpty)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("usr/share/floe-fixture/value.txt").path))
     }
+
+    @Test func shellArgumentsInstallFilterAndRemoveThroughTheSameEngine() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = try engine(), container = try await update(engine, root: root)
+        let cli = PackagesCLI(engine: engine) {
+            .init(container: container, sources: [], layerURL: root, installed: DpkgDatabase.readStatus(at: root))
+        }
+        let installed = await cli.run(command: "apt-get", arguments: ["apt-get", "-y", "install", "floe-fixture=1.0"])
+        #expect(installed.exitCode == 0, "\(installed.output)")
+        let path = root.appendingPathComponent("usr/share/floe-fixture/value.txt")
+        #expect(try String(contentsOf: path, encoding: .utf8) == "one")
+        let listing = await cli.run(command: "apt", arguments: ["apt", "list", "--installed"])
+        #expect(listing.output.contains("floe-fixture/"))
+        #expect(!listing.output.contains("floe-dependent/"))
+        for args in [["apt", "-s", "install", "floe-fixture=2.0"], ["apt", "install", "--reinstall", "floe-fixture"], ["apt", "install"], ["apt", "update", "unexpected"]] {
+            let rejected = await cli.run(command: "apt", arguments: args)
+            #expect(rejected.exitCode != 0)
+            #expect(try String(contentsOf: path, encoding: .utf8) == "one")
+        }
+        let removed = await cli.run(command: "apt", arguments: ["apt", "remove", "-y", "floe-fixture"])
+        #expect(removed.exitCode == 0, "\(removed.output)")
+        #expect(!FileManager.default.fileExists(atPath: path.path))
+    }
+
+    @Test func shellCacheCleanupCannotFollowAnotherDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let layer = root.appendingPathComponent("environment"), other = root.appendingPathComponent("other/archives")
+        try FileManager.default.createDirectory(at: layer.appendingPathComponent("var"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try Data("preserve".utf8).write(to: other.appendingPathComponent("keep.txt"))
+        try FileManager.default.createSymbolicLink(at: layer.appendingPathComponent("var/cache"), withDestinationURL: other.deletingLastPathComponent())
+        let container = AptEngine.Container(id: "cleanup", rootURL: root, layerURL: layer, layerKind: .project, baseRevision: "one")
+        let cli = PackagesCLI(engine: try engine()) { .init(container: container, sources: [], layerURL: layer, installed: []) }
+        let result = await cli.run(command: "apt", arguments: ["apt", "clean"])
+        #expect(result.exitCode != 0)
+        #expect(try Data(contentsOf: other.appendingPathComponent("keep.txt")) == Data("preserve".utf8))
+    }
 }

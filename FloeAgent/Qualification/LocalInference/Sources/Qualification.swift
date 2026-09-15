@@ -2,13 +2,27 @@ import Foundation
 import FloeLocalModels
 import FloeLocalModelCatalog
 import MLX
+import Darwin
 
 @main struct Qualification {
+    static func processFootprint() -> UInt64? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let capacity = Int(count)
+        let status = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: capacity) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return status == KERN_SUCCESS ? info.phys_footprint : nil
+    }
+
     static func record(_ event: String, _ fields: [String: Any] = [:]) {
         let values: [String: Any] = fields.merging([
             "event": event, "platform": "macOS-host-not-iPad",
             "mlxActiveBytes": Memory.activeMemory, "mlxPeakBytes": Memory.peakMemory,
-            "mlxCacheBytes": Memory.cacheMemory
+            "mlxCacheBytes": Memory.cacheMemory,
+            "processFootprintBytes": processFootprint().map { $0 as Any } ?? NSNull()
         ]) { _, new in new }
         if let data = try? JSONSerialization.data(withJSONObject: values, options: .sortedKeys) {
             FileHandle.standardOutput.write(data)

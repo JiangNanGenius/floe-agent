@@ -58,11 +58,39 @@ public struct PackagesCLI: Sendable {
     // MARK: - apt
 
     private func runApt(_ arguments: [String]) async -> Result {
+        if arguments.dropFirst().contains("--help") || arguments.dropFirst().contains("-h") {
+            return Result(output: "Floe APT-compatible package manager\napt [--yes] update | list [--installed] | search QUERY | show PACKAGE | install PACKAGE[=VERSION] | remove PACKAGE | upgrade\nSources and trust are configured in the environment package settings. Unsupported flags fail before making changes.")
+        }
+        var positional: [String] = []
+        var installedOnly = false
+        var literal = false
+        for argument in arguments.dropFirst() {
+            if literal { positional.append(argument); continue }
+            switch argument {
+            case "--": literal = true
+            case "-y", "--yes", "--assume-yes", "-q", "-qq", "--quiet": break
+            case "--installed": installedOnly = true
+            default:
+                guard !argument.hasPrefix("-") else {
+                    return Result(output: "E: Unsupported option \(argument); no changes made", exitCode: 100)
+                }
+                positional.append(argument)
+            }
+        }
+        let subcommand = positional.first ?? "list"
+        let operands = Array(positional.dropFirst())
+        guard !installedOnly || subcommand == "list" else {
+            return Result(output: "E: --installed is only supported with list", exitCode: 100)
+        }
+        if ["install", "remove", "purge", "search", "show", "policy"].contains(subcommand), operands.isEmpty {
+            return Result(output: "E: \(subcommand) requires a package or query", exitCode: 100)
+        }
+        if ["update", "upgrade", "full-upgrade", "autoremove", "clean", "autoclean"].contains(subcommand), !operands.isEmpty {
+            return Result(output: "E: \(subcommand) does not accept package operands", exitCode: 100)
+        }
         guard let context = await contextProvider() else {
             return Result(output: "apt: no active container", exitCode: 100)
         }
-        let subcommand = arguments.dropFirst().first { !$0.hasPrefix("-") } ?? "list"
-        let operands = arguments.dropFirst().drop { $0 == subcommand }.filter { !$0.hasPrefix("-") }
         switch subcommand {
         case "update":
             let report = await engine.update(container: context.container, sources: context.sources)
@@ -75,12 +103,13 @@ public struct PackagesCLI: Sendable {
             let installedNames = Set(context.installed.map(\.name))
             var lines = ["Listing... Done"]
             for package in packages where operands.isEmpty || operands.contains(where: { package.name.contains($0) }) {
+                if installedOnly && !installedNames.contains(package.name) { continue }
                 let state = installedNames.contains(package.name) ? "[installed]" : "[available]"
                 lines.append("\(package.name)/\(package.component) \(package.version) \(context.container.architecture) \(state)")
             }
             return Result(output: lines.joined(separator: "\n"))
         case "search":
-            let results = await engine.search(operands.first ?? "", container: context.container)
+            let results = await engine.search(operands.joined(separator: " "), container: context.container)
             return Result(output: results.map { "\($0.name) - \($0.description?.split(separator: "\n").first ?? "")" }.joined(separator: "\n"))
         case "show":
             var lines: [String] = []
@@ -149,10 +178,12 @@ public struct PackagesCLI: Sendable {
                 return Result(output: "E: \(error.localizedDescription)", exitCode: 100)
             }
         case "clean", "autoclean":
-            let cache = context.layerURL.appendingPathComponent("var/cache/apt/archives", isDirectory: true)
-            try? FileManager.default.removeItem(at: cache)
-            try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-            return Result(output: "")
+            do {
+                let cache = try PackageTransaction.location("var/cache/apt/archives", root: context.layerURL)
+                if FileManager.default.fileExists(atPath: cache.path) { try FileManager.default.removeItem(at: cache) }
+                try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+                return Result(output: "")
+            } catch { return Result(output: "E: \(error.localizedDescription)", exitCode: 100) }
         default:
             return Result(output: "E: Invalid operation \(subcommand)", exitCode: 100)
         }

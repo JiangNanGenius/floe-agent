@@ -62,7 +62,7 @@ struct NotesRootView: View {
                         Button("思维导图", systemImage: "point.3.connected.trianglepath.dotted") { creation = .map }
                         Button("笔记本", systemImage: "folder.badge.plus") { creation = .notebook }
                         Menu("Office", systemImage: "doc.richtext") {
-                            Button("Word 文档") { creation = .word }
+                            Button("Word 文档") { creation = .word }.accessibilityIdentifier("notes.create.word")
                             Button("Excel 表格") { creation = .sheet }
                             Button("PowerPoint 演示文稿") { creation = .slides }
                         }

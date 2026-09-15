@@ -6,6 +6,22 @@ import FloeTools
 
 @Suite("Local shell boundaries")
 struct LocalShellValidationTests {
+    @Test func retiredAptRemainsCallableButIsNotAdvertised() async throws {
+        let backend = RecordingShellBackend(), registry = ToolRunnerRegistry()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = CapabilityInstaller(catalog: .init(entries: []), pythonInstaller: nil,
+            http: HTTPRequestService(), packagesRoot: root)
+        registerShellTools(registry: registry,
+            shell: LocalShellService(backend: backend, rootProvider: { root }),
+            sessions: ShellSessionCenter(backend: backend), capabilityInstaller: installer)
+        #expect(registry.runner(named: "apt") != nil)
+        #expect(ToolCatalog.descriptor(named: "apt") != nil)
+        #expect(!registry.allDescriptors.contains { $0.name == "apt" })
+        #expect(!ToolCatalog.allDescriptors.contains { $0.name == "apt" })
+        #expect(registry.allDescriptors.contains { $0.name == "exec.shell" })
+    }
+
     @Test func unavailableCommandNamesInsideDataDoNotBlockScripts() {
         let policy = ShellCommandPolicy()
         #expect(!policy.evaluate("python3 -c 'print(\"sudo is unavailable\")'").stopped)

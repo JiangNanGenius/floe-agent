@@ -75,7 +75,7 @@ public enum BundledDomainSkills {
             id: "floe-python",
             name: "Local Python Runtime",
             description: "The bundled CPython substrate: usage rules, bundled libraries, and the contract every script-carrying skill executes under.",
-            version: "1.2.0",
+            version: "1.3.0",
             exposed: false,
             markdown: """
             ## Local Python (exec.localPython)
@@ -83,7 +83,7 @@ public enum BundledDomainSkills {
             - The appended runtime probe is authoritative for this build's Python and native library versions. Standard-library extensions include asyncio, json, csv, sqlite3, zipfile, tarfile, gzip, bz2, lzma, hashlib, hmac, secrets, xml.etree, mmap, zoneinfo and statistics. Desktop shell modules (curses, readline, grp, pwd, syslog, multiprocessing) do not exist on iOS.
             - numpy, Pillow (import as PIL), and pandas are bundled natively in supported builds. Use the runtime probe to confirm availability; do not infer installed versions from old memory or route working native libraries to WebAssembly. Native pandas supports CSV/JSON, filtering, grouping, joins, missing values and timezone processing offline; optional file-format dependencies must still be checked separately.
             - For scipy and matplotlib, consult the runtime probe: if a package is not bundled in this build, use the explicitly identified **Pyodide WebAssembly** route (workspace HTML + public-HTTPS Pyodide, JSON in/out) or an authorized remote host. Never claim a native install when code ran in WebAssembly; a build pipeline or downloaded wheel is not proof of runtime availability.
-            - Extra pure-Python packages install through the managed review path (`packages`/`pipCommand` + `packagePurpose`, exact `name==version`, py3-none-any wheels only). Never invoke pip/ensurepip/subprocess inside `script`.
+            - Extra compatible pure-Python packages use the active environment: run `python3 -m pip install PACKAGE` / `pip install PACKAGE` in `exec.shell`, or use `packages`/`pipCommand` + `packagePurpose` in `exec.localPython`. Both use the managed installer and applicable review. Installed native libraries can satisfy dependencies; unsupported native versions require an App update. Never import pip/ensurepip or launch subprocess inside the Python `script`.
             ### The substrate contract for script-carrying skills
             Skills may ship `scripts/*.py` executed through this runtime. The contract:
             - Manifest: `scriptRuntime: .localPython` + capability `python.local` + tool `exec.localPython`; scripts are static-audited at install (no subprocess, pip, ctypes, os.system; ≤192 KiB).
@@ -172,8 +172,8 @@ public enum BundledDomainSkills {
         Definition(
             id: "floe-shell",
             name: "Local Shell & Packages",
-            description: "The on-device POSIX shell: exec, background jobs, interactive sessions, Linux-compatibility boundaries and the apt/pkg capability catalog.",
-            version: "1.0.0",
+            description: "On-device POSIX commands, environment package managers, interactive sessions and owned preview services.",
+            version: "1.1.0",
             exposed: false,
             markdown: """
             ## Local shell substrate
@@ -182,11 +182,12 @@ public enum BundledDomainSkills {
             - One-shot command: `exec.shell` with a single `command` (pipelines, redirections, globs, variables, `&&`/`||`).
             - Long command: `jobs.submit` targeting `exec.shell` (up to 600s, survives turn boundaries, results via `jobs.result`).
             - Interactive program or prompt-driven script: `shell.open` → `shell.exchange` (send input, read output, `\\u0003` for Ctrl-C) → `shell.close`; `shell.signal` sends INT/TERM/KILL. At most 4 sessions, 30 idle minutes.
-            - Packages: `apt` (search/list/show/install/remove/download) and `pkg`/`apt-get`/`dpkg -l` inside the shell. Installation always runs through the reviewed apt tool; the shell commands only query. Bundled pure-Python capabilities are installed already; managed ones return after review.
+            - Packages: run `apt update`, `apt search TERM`, `apt install PACKAGE` and `apt remove PACKAGE` directly in `exec.shell`; `apt-get` and `pkg` share the same environment service as Settings. Python uses `pip` / `python3 -m pip`, JavaScript uses `npm` or `pnpm`; these are separate dependency ecosystems. Use the environment's configured source and manager selection. Do not call the retired apt Agent tool or try to install ordinary Linux ELF payloads.
+            - Preview services: use `exec.localService` or `floe-service` for an owned Node/Python HTTP service that outlives a foreground command. Retain its service ID, inspect status/logs and stop it when no longer needed. A one-shot command or a trailing `&` is not the managed service lifecycle.
             ### Linux fidelity and honest limits
             - The shell is POSIX `sh`. Command output and exit codes follow shell conventions; `sudo`, native ELF binaries and daemons are unavailable on iOS (no fork/exec, no root).
-            - Most file/text tools come from the BSD userland: `sed -i` requires a backup suffix, `ls`/`grep`/`date` flags may differ from GNU. Prefer the agent's workspace tools when exact GNU behavior matters, or run Python for precise text handling.
-            - `python3` runs the bundled CPython (no pip inside the shell; use apt). Network diagnostics (`ping`, `traceroute`, `dig`, `nc`, `sha256sum`) are device-backed Floe commands and never use a remote host.
+            - Use shell commands and pipelines for ordinary file/text work. Most utilities use BSD conventions: `sed -i` requires a backup suffix; `ls`/`grep`/`date` flags may differ from GNU. Check command help, use portable flags or Python for exact text handling. Workspace tools remain useful for structured edits.
+            - `python3` runs bundled CPython; `node` runs bundled Node, while `exec.javascript` is a separate JavaScriptCore sandbox. `curl` and Python/Node HTTPS clients can interact with ordinary web APIs without opening a browser. Use browser tools when page rendering/session interaction is required. Network diagnostics (`ping`, `traceroute`, `dig`, `nc`, `sha256sum`) are device-backed Floe commands and never use a remote host.
             - WASM command packages installed from the signed catalog run sandboxed with no sockets. Data-only `.deb` payloads extract with `dpkg -x` after native contents are rejected.
             ### File rules
             All paths are workspace-relative; the shell is confined to the current task workspace. Never write outside it and never treat shell output as verified until a follow-up read confirms it.

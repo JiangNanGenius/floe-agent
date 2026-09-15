@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require the real Notes workspace import UI case, with no skips or failures."""
+"""Require real Notes import and native Office flows, with no skips or failures."""
 import argparse
 import json
 from pathlib import Path
@@ -10,14 +10,16 @@ def verify(summary, tree):
     counts = {key: required_count(summary, key) for key in
               ("totalTestCount", "passedTests", "failedTests", "skippedTests", "expectedFailures")}
     cases = [node for node in nodes(tree) if node.get("nodeType") == "Test Case"]
-    expected = "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch"
-    identity = str(cases[0].get("nodeIdentifier", "")).removesuffix("()") if len(cases) == 1 else ""
-    if (summary.get("result") != "Passed" or counts["totalTestCount"] != 1
-            or counts["passedTests"] != 1 or any(counts[key] for key in
+    expected = {"NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch",
+                "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen"}
+    identities = [str(case.get("nodeIdentifier", "")).removesuffix("()") for case in cases]
+    if (summary.get("result") != "Passed" or counts["totalTestCount"] != len(expected)
+            or counts["passedTests"] != len(expected) or any(counts[key] for key in
                 ("failedTests", "skippedTests", "expectedFailures"))
-            or identity != expected or cases[0].get("result") != "Passed"):
-        raise ValueError("Notes workspace import UI did not execute and pass exactly once")
-    return counts | {"test": identity, "result": "Passed"}
+            or len(identities) != len(expected) or set(identities) != expected
+            or any(case.get("result") != "Passed" for case in cases)):
+        raise ValueError("Notes import and Office UI must each execute and pass exactly once")
+    return counts | {"tests": sorted(identities), "result": "Passed"}
 
 
 def main():

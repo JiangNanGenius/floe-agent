@@ -157,9 +157,9 @@ final class FloePlatformServices: @unchecked Sendable {
         registerMediaCommands(in: commandRegistry)
         guard let aptEngine, let contextProvider else { return }
         let cli = PackagesCLI(engine: aptEngine, contextProvider: contextProvider)
-        for name in ["apt", "apt-get", "apt-cache", "apt-mark", "dpkg", "dpkg-deb"] {
+        for name in ["apt", "apt-get", "pkg", "apt-cache", "apt-mark", "dpkg", "dpkg-deb"] {
             commandRegistry.register(name) { arguments, stdout, stderr in
-                let result = await cli.run(command: name, arguments: arguments)
+                let result = await cli.run(command: name == "pkg" ? "apt" : name, arguments: arguments)
                 if !result.output.isEmpty {
                     let newline = result.output.hasSuffix("\n") ? "" : "\n"
                     FloeShellWrite(result.exitCode == 0 ? stdout : stderr, result.output + newline)
