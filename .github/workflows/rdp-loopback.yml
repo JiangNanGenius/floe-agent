@@ -1,0 +1,41 @@
+name: Qualify real RDP bridge connection
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/floe-172-completion']
+    paths:
+      - 'FloeAgent/ThirdParty/FreeRDP/Tests/**'
+      - 'FloeAgent/ThirdParty/FreeRDP/Bridge/**'
+      - '.github/workflows/rdp-loopback.yml'
+permissions:
+  contents: read
+jobs:
+  loopback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install isolated fixture dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build libssl-dev zlib1g-dev libxkbcommon-dev libicu-dev xrdp x11vnc xvfb x11-utils python3-tk
+          sudo systemctl stop xrdp xrdp-sesman || true
+      - name: Build pinned runtime and exercise real TLS connection
+        run: |
+          set -o pipefail
+          bash FloeAgent/ThirdParty/FreeRDP/Tests/qualify_linux.sh "$RUNNER_TEMP/rdp" 2>&1 | tee "$RUNNER_TEMP/rdp-loopback.log"
+      - name: Retain bounded evidence, never private key or passwords
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-loopback-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rdp-loopback.log
+            ${{ runner.temp }}/rdp/result.json
+            ${{ runner.temp }}/rdp/desktop.ppm
+            ${{ runner.temp }}/rdp/input-events.txt
+            ${{ runner.temp }}/rdp/xrdp.log
+            ${{ runner.temp }}/rdp/xrdp-console.log
+            ${{ runner.temp }}/rdp/desktop.log
+            ${{ runner.temp }}/rdp/xvfb.log
+          retention-days: 14
