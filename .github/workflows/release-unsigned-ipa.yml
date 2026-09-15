@@ -957,7 +957,7 @@ jobs:
           path: release-assets
       - name: Publish the transport-accepted paired release
         run: |
-          NOTES_PATH="docs/RELEASE_NOTES_$VERSION.md"
+          NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
           test -s "$NOTES_PATH"
           grep -q '^### 简体中文' "$NOTES_PATH"
           grep -q '^### English' "$NOTES_PATH"
