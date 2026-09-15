@@ -13,12 +13,16 @@ name: CI
 # Superseded branch checks may stop; release uploads have a separate,
 # non-cancelling concurrency group.
 concurrency:
-  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 on:
   workflow_dispatch:
     inputs:
+      local_inference:
+        description: 'Run only the pinned Qwen cold-load diagnostic on a macOS host (not iPad acceptance)'
+        type: boolean
+        default: false
       feedback_ui:
         description: 'Run only the iPad and iPhone feedback component UI checks and capture screenshots'
         type: boolean
@@ -44,6 +48,9 @@ on:
   pull_request:
 
 jobs:
+  local-inference:
+    if: github.event_name == 'workflow_dispatch' && inputs.local_inference
+    uses: ./.github/workflows/local-inference-qualification.yml
   feedback-ui:
     if: github.event_name == 'workflow_dispatch' && inputs.feedback_ui
     uses: ./.github/workflows/feedback-ui.yml
@@ -135,7 +142,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    if: ${{ !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     # Foundation Models is guarded by Swift 6.4. Building on the generic
     # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
     runs-on: xcode-27
@@ -414,7 +421,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    if: ${{ !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
     # the explicit unsupported-Foundation-Models path and the rest of Floe's
@@ -471,7 +478,7 @@ jobs:
             build
 
   spm-linux-build:
-    if: ${{ !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    if: ${{ !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     runs-on: ubuntu-latest
     # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
     # below do not link MLX. Resolution must therefore use a 6.3 toolchain.
