@@ -4,7 +4,7 @@ Build 177 is being qualified. It has **not** been uploaded or made installable i
 TestFlight. Build 172 remains the latest confirmed internal delivery. This record
 will be updated with the immutable source, upload and Apple availability evidence.
 
-## 简体中文
+### 简体中文
 
 - 保留前一候选版的运行环境、包管理、手记助手隔离与实时刷新修复。
 - Soul 与用户画像更新后，正在运行的任务在下一次模型请求时读取已激活的新内容；草稿不自动进入上下文，重试保持原请求。
@@ -13,7 +13,7 @@ will be updated with the immutable source, upload and Apple availability evidenc
 - 文件管理器中的图纸可以直接发起 AI 审图，不要求预先选中聊天；只有用户填写问题并发送后才创建审图任务。输入包括实际视口截图和有界图纸信息。
 - 修复 IDE 入口测试标识，统一界面测试语言；手记正文搜索通过打开真实匹配文档验证，而非依赖 iPad 隐藏键盘的过期坐标。
 
-## English
+### English
 
 - Retains the preceding runtime, package, dedicated Notes assistant and live document refresh fixes.
 - Active Soul/profile changes are read at the next model request. Drafts stay out of context and retries retain the original request.

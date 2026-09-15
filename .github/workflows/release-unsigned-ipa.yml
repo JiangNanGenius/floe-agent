@@ -973,8 +973,10 @@ jobs:
         run: |
           NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
           test -s "$NOTES_PATH"
-          grep -q '^### 简体中文' "$NOTES_PATH"
-          grep -q '^### English' "$NOTES_PATH"
+          # Build 177's immutable candidate notes use h2 section headings;
+          # later notes use h3. Accept either, but always require both languages.
+          grep -qE '^##+ 简体中文' "$NOTES_PATH"
+          grep -qE '^##+ English' "$NOTES_PATH"
           cp "$NOTES_PATH" release-notes.md
           cat <<'EOF' >> release-notes.md
 
