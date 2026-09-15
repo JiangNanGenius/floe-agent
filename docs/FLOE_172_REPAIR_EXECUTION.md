@@ -207,3 +207,9 @@ The iPad screenshot shows the matching PDF preview but the landscape keyboard co
 Qwen diagnostic `34927501424` (`a35b884f`) passed again with per-stage process footprint: cold load 7.493 seconds / 2,503,711,296 bytes; first short response 6.847 seconds / 2,510,117,696 bytes; second 0.469 seconds / 2,510,363,456 bytes; 5,773-token request 43.834 seconds / 2,483,215,168 bytes. These are samples after each stage, not within-stage maxima. Whole-process peak footprint was 4,904,835,840 bytes; inference MLX peak was 2,780,603,888 bytes. Do not infer iPad crash resolution or assign the transient process peak to a stage from these endpoint samples.
 
 The review PDF now has 12 visually checked pages, including separately labelled repair evidence and original candidate imagery. No developer key is included or authorized for reviewers. A real iPad screen-recording draft is available privately; final-source AI demonstration, physical-device evidence, internal TestFlight upload and public Beta submission are not completed.
+
+## Successful ordinary Agent demonstration and test-host correction
+
+[Run 34949317123](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949317123) passed on immutable App source `8958d8f1`: Ark DeepSeek created and read back a 538-byte bilingual Markdown document, then completed with no run errors. [Video and proof](public-beta/agent-demo-build175/README.md). Credential entry was outside recording, and the temporary secret was deleted and verified absent. Paid image/video generation remains zero.
+
+Build 176 CI `34949420611` found a missing `FloeModels` import in the new App regression test while compiling the test host. The application changes are retained; the test import is corrected and the live-refresh test now waits for its undo-state read as well as the document revision. These new tests have not yet run successfully. `v1.7.0-beta.33` remains immutable and is not a delivered release.

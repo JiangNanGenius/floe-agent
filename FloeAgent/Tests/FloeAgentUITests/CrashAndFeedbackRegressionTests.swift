@@ -16,6 +16,7 @@ import FloeNotes
 import FloeProviders
 import FloeLocalModels
 import FloeSecurity
+import FloeModels
 @testable import FloeApp
 
 extension CrashAndFeedbackRegressionTests {
@@ -175,7 +176,7 @@ struct CrashAndFeedbackRegressionTests {
         let updated = try await store.apply(.init(documentID: saved.id, expectedRevision: saved.revision,
             title: "Assistant edit", edits: [.upsertElement(pageID: page.id, element: note)]), authorizedConversationID: owner)
         // No manual reload: exercise the store notification consumed by the real editor session.
-        for _ in 0..<200 where session.document?.revision != updated.revision {
+        for _ in 0..<200 where session.document?.revision != updated.revision || !session.canUndo {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(session.document?.pages.first?.elements == [note])

@@ -1,0 +1,294 @@
+{
+  "appSourceSHA": "8958d8f1482c3236f73172076b76adc83da86f5f",
+  "provider": "Volcengine Ark",
+  "remoteModelID": "deepseek-v4-1-flash-260910",
+  "mode": "real remote model through ordinary Floe Agent",
+  "tools": [
+    {
+      "tool_name": "workspace.createFile",
+      "status": "ok",
+      "output_summary": "resource artifacts: artifactID=0504E80C-F906-42D0-BD6F-CB62BE1F9593 path=ChangeArtifacts/36540CA4-FE69-4B2F-AFE1-6C28F98F00C9/2ba5bd127e82a6877938ad58ce160a63936d2c502dfae4750bf4905eb45dfb8f.diff mime=text/x-diff sha256=2ba5bd127e82a6877938ad58ce160a63936d2c502dfae4750bf4905eb45dfb8f\ncreated=review-demo.md bytes=538 sha256=42b75d3126cdae2c0023f0eb2803790ad7dee0850b1dcc6851554437afb7947c mtime=1789463231.7310872",
+      "callID": "call_30eedcc03d924e6e9e08f833"
+    },
+    {
+      "tool_name": "workspace.readFile",
+      "status": "ok",
+      "output_summary": "path=review-demo.md offset=0 truncated=false totalLines=15\n# Floe Agent Demo\n\n**FLOE-REVIEW-DEMO**\n\n## Checklist / 检查清单\n\n- [ ] Read files from the task workspace — 从任务工作区读取文件\n- [ ] Write and save file content — 写入并保存文件内容\n- [ ] Verify the saved file by reading it back — 通过回读验证已保存的文件\n\n## Notes / 说明\n\nThis short bilingual note demonstrates the read → write → verify loop of the Floe\nworkspace file tools. 这份简短的双语笔记演示了 Floe 工作区文件工具的\n「读取 → 写入 → 验证」流程。",
+      "callID": "call_0a66802c437d48dcb4a69fa4"
+    }
+  ],
+  "matchingOutputs": 1,
+  "usageCheckpoints": [
+    {
+      "input_tokens": 7266,
+      "output_tokens": 331,
+      "cache_read_tokens": 0,
+      "reasoning_tokens": 130,
+      "is_estimated": 0,
+      "total_duration_ms": 4739
+    },
+    {
+      "input_tokens": 7266,
+      "output_tokens": 331,
+      "cache_read_tokens": 0,
+      "reasoning_tokens": 130,
+      "is_estimated": 0,
+      "total_duration_ms": 4741
+    },
+    {
+      "input_tokens": 3671,
+      "output_tokens": 47,
+      "cache_read_tokens": 6144,
+      "reasoning_tokens": 4,
+      "is_estimated": 0,
+      "total_duration_ms": 2983
+    },
+    {
+      "input_tokens": 3671,
+      "output_tokens": 47,
+      "cache_read_tokens": 6144,
+      "reasoning_tokens": 4,
+      "is_estimated": 0,
+      "total_duration_ms": 2987
+    },
+    {
+      "input_tokens": 1764,
+      "output_tokens": 262,
+      "cache_read_tokens": 8192,
+      "reasoning_tokens": 0,
+      "is_estimated": 0,
+      "total_duration_ms": 3507
+    },
+    {
+      "input_tokens": 1764,
+      "output_tokens": 262,
+      "cache_read_tokens": 8192,
+      "reasoning_tokens": 0,
+      "is_estimated": 0,
+      "total_duration_ms": 3509
+    }
+  ],
+  "runErrors": [],
+  "runs": [
+    {
+      "id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "state": "completed",
+      "started_at": "2026-09-15T09:06:43.243Z",
+      "ended_at": "2026-09-15T09:07:18.444Z"
+    }
+  ],
+  "lifecycleEvents": [
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 1,
+      "kind": "status",
+      "payload": {
+        "state": "preparing"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 2,
+      "kind": "status",
+      "payload": {
+        "kind": "providerAttempt",
+        "lastProgressAt": "2026-09-15T09:07:01Z",
+        "startedAt": "2026-09-15T09:07:01Z",
+        "reason": "Provider request dispatched",
+        "attempt": "1",
+        "status": "started",
+        "maxAttempts": "6"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 3,
+      "kind": "status",
+      "payload": {
+        "status": "firstEvent",
+        "reason": "Provider delivered its first event",
+        "lastProgressAt": "2026-09-15T09:07:04Z",
+        "kind": "providerAttempt",
+        "maxAttempts": "6",
+        "attempt": "1",
+        "startedAt": "2026-09-15T09:07:01Z"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 6,
+      "kind": "toolRequest",
+      "payload": {
+        "tool": "workspace.createFile",
+        "id": "call_30eedcc03d924e6e9e08f833",
+        "status": "pending"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 7,
+      "kind": "status",
+      "payload": {
+        "maxAttempts": "6",
+        "status": "completed",
+        "reason": "Provider completed with a tool batch",
+        "lastProgressAt": "2026-09-15T09:07:06Z",
+        "startedAt": "2026-09-15T09:07:01Z",
+        "kind": "providerAttempt",
+        "attempt": "1"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 8,
+      "kind": "status",
+      "payload": {
+        "kind": "providerAttempt",
+        "lastProgressAt": "2026-09-15T09:07:06Z",
+        "reason": "Provider completed with a settled tool batch",
+        "status": "completed",
+        "maxAttempts": "6",
+        "startedAt": "2026-09-15T09:07:01Z",
+        "attempt": "1"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 10,
+      "kind": "toolResult",
+      "payload": {
+        "durationMs": "196",
+        "artifactRefsJSON": "[{\"sha256\":\"2ba5bd127e82a6877938ad58ce160a63936d2c502dfae4750bf4905eb45dfb8f\",\"byteCount\":613,\"id\":\"0504E80C-F906-42D0-BD6F-CB62BE1F9593\",\"relativePath\":\"ChangeArtifacts\\/36540CA4-FE69-4B2F-AFE1-6C28F98F00C9\\/2ba5bd127e82a6877938ad58ce160a63936d2c502dfae4750bf4905eb45dfb8f.diff\",\"mimeType\":\"text\\/x-diff\"}]",
+        "outputDigest": "2acd616e9894503a045539812622c552110405c27a0ea95657937ee992e38c63",
+        "status": "ok",
+        "id": "call_30eedcc03d924e6e9e08f833",
+        "tool": "workspace.createFile",
+        "summary": "resource artifacts: artifactID=0504E80C-F906-42D0-BD6F-CB62BE1F9593 path=ChangeArtifacts/36540CA4-FE69-4B2F-AFE1-6C28F98F00C9/2ba5bd127e82a6877938ad58ce160a63936d2c502dfae4750bf4905eb45dfb8f.diff mime=text/x-diff sha256=2ba5bd127e82a6877938ad58ce160a63936d2c502dfae4750bf4905eb45dfb8f\ncreated=review-demo.md bytes=538 sha256=42b75d3126cdae2c0023f0eb2803790ad7dee0850b1dcc6851554437afb7947c mtime=1789463231.7310872"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 11,
+      "kind": "status",
+      "payload": {
+        "reason": "Provider request dispatched",
+        "startedAt": "2026-09-15T09:07:11Z",
+        "lastProgressAt": "2026-09-15T09:07:11Z",
+        "maxAttempts": "6",
+        "attempt": "1",
+        "status": "started",
+        "kind": "providerAttempt"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 12,
+      "kind": "status",
+      "payload": {
+        "status": "firstEvent",
+        "startedAt": "2026-09-15T09:07:11Z",
+        "reason": "Provider delivered its first event",
+        "lastProgressAt": "2026-09-15T09:07:14Z",
+        "kind": "providerAttempt",
+        "maxAttempts": "6",
+        "attempt": "1"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 14,
+      "kind": "toolRequest",
+      "payload": {
+        "tool": "workspace.readFile",
+        "id": "call_0a66802c437d48dcb4a69fa4",
+        "status": "pending"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 15,
+      "kind": "status",
+      "payload": {
+        "attempt": "1",
+        "kind": "providerAttempt",
+        "lastProgressAt": "2026-09-15T09:07:14Z",
+        "startedAt": "2026-09-15T09:07:11Z",
+        "reason": "Provider completed with a tool batch",
+        "status": "completed",
+        "maxAttempts": "6"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 16,
+      "kind": "status",
+      "payload": {
+        "status": "completed",
+        "kind": "providerAttempt",
+        "startedAt": "2026-09-15T09:07:11Z",
+        "attempt": "1",
+        "maxAttempts": "6",
+        "reason": "Provider completed with a settled tool batch",
+        "lastProgressAt": "2026-09-15T09:07:14Z"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 17,
+      "kind": "toolResult",
+      "payload": {
+        "tool": "workspace.readFile",
+        "summary": "path=review-demo.md offset=0 truncated=false totalLines=15\n# Floe Agent Demo\n\n**FLOE-REVIEW-DEMO**\n\n## Checklist / 检查清单\n\n- [ ] Read files from the task workspace — 从任务工作区读取文件\n- [ ] Write and save file content — 写入并保存文件内容\n- [ ] Verify the saved file by reading it back — 通过回读验证已保存的文件\n\n## Notes / 说明\n\nThis short bilingual note demonstrates the read → write → verify loop of the Floe\nworkspace file tools. 这份简短的双语笔记演示了 Floe 工作区文件工具的\n「读取 → 写入 → 验证」流程。",
+        "id": "call_0a66802c437d48dcb4a69fa4",
+        "outputDigest": "f3c6da34d797211d8bdb288ce3c69d5a32af1e125dca2de9a3f3d57eca43c339",
+        "durationMs": "31",
+        "status": "ok"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 18,
+      "kind": "status",
+      "payload": {
+        "lastProgressAt": "2026-09-15T09:07:14Z",
+        "status": "started",
+        "kind": "providerAttempt",
+        "maxAttempts": "6",
+        "reason": "Provider request dispatched",
+        "startedAt": "2026-09-15T09:07:14Z",
+        "attempt": "1"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 19,
+      "kind": "status",
+      "payload": {
+        "attempt": "1",
+        "startedAt": "2026-09-15T09:07:14Z",
+        "kind": "providerAttempt",
+        "lastProgressAt": "2026-09-15T09:07:18Z",
+        "reason": "Provider delivered its first event",
+        "maxAttempts": "6",
+        "status": "firstEvent"
+      }
+    },
+    {
+      "run_id": "36540CA4-FE69-4B2F-AFE1-6C28F98F00C9",
+      "sequence": 20,
+      "kind": "status",
+      "payload": {
+        "kind": "providerAttempt",
+        "reason": "Provider completed the model turn",
+        "startedAt": "2026-09-15T09:07:14Z",
+        "lastProgressAt": "2026-09-15T09:07:18Z",
+        "maxAttempts": "6",
+        "status": "completed",
+        "attempt": "1"
+      }
+    }
+  ],
+  "notPhysicalDeviceAcceptance": true,
+  "generatedVideoSeconds": 0,
+  "markdownSHA256": "42b75d3126cdae2c0023f0eb2803790ad7dee0850b1dcc6851554437afb7947c"
+}

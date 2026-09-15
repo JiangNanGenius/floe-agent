@@ -1,0 +1,40 @@
+{
+  "appBuild": "1.7.0 (175)",
+  "appSourceSHA": "8958d8f1482c3236f73172076b76adc83da86f5f",
+  "workflowRun": "34949317123",
+  "artifactID": "10389162152",
+  "remoteModelID": "deepseek-v4-1-flash-260910",
+  "actualToolResults": [
+    {
+      "name": "workspace.createFile",
+      "status": "ok"
+    },
+    {
+      "name": "workspace.readFile",
+      "status": "ok"
+    }
+  ],
+  "runState": "completed",
+  "markdownSHA256": "42b75d3126cdae2c0023f0eb2803790ad7dee0850b1dcc6851554437afb7947c",
+  "generatedVideoSeconds": 0,
+  "generatedImages": 0,
+  "temporaryCredentialDeletedAndAbsenceVerified": true,
+  "clip": {
+    "file": "floe-real-agent-demo-build175.mp4",
+    "sha256": "5c6a354a8c172f2f1967d7593f455b6b982ab332498d8ca1720529d597becbc5",
+    "bytes": 733006,
+    "durationSeconds": 52,
+    "dimensions": [
+      1280,
+      840
+    ],
+    "fullDecode": "passed",
+    "editing": "Removed the initial simulator launch wait and trailing test-runner app termination; held the actual completion frame for four seconds. Model/tool output is not substituted. Original 94.878333-second recording retained privately."
+  },
+  "limitations": [
+    "iPad Simulator, not physical-device acceptance",
+    "Build 175 ordinary Agent demonstration; not evidence of the later Build 176 Notes interface",
+    "The generated document preview is also retained as a same-run screenshot",
+    "Demonstration key is not provided to Apple or reviewers"
+  ]
+}
