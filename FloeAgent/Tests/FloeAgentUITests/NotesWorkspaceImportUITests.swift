@@ -67,80 +67,34 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         #endif
     }
 
-    func testWorkspaceImportTabsFocusAndBodySearch() throws {
-        continueAfterFailure = false
-        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        let app = XCUIApplication()
-        // A preceding runtime suite can leave its host process alive. Setting
-        // orientation first waits for that unrelated event loop to become idle.
-        app.terminate()
-        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
-        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-pdf-fixture"]
-        if ipad { app.launchArguments.append("-ui-testing-ipad") }
-        app.launch()
-        if ipad {
-            XCUIDevice.shared.orientation = .landscapeLeft
-            let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
-            wait(for: [landscape], timeout: 10)
-        }
+    func testWorkspaceImportAndDocumentAssistant() throws {
+        let (app, _, _) = try openImportedDocument()
         defer { app.terminate() }
-        if !ipad {
-            let sidebar = app.buttons["phone.sidebar.open"]
-            XCTAssertTrue(sidebar.waitForExistence(timeout: 15))
-            sidebar.tap()
-        }
-        let notes = app.descendants(matching: .any).matching(identifier: "sidebar.notes").firstMatch
-        XCTAssertTrue(notes.waitForExistence(timeout: 15))
-        notes.tap()
-        let create = app.buttons["notes.create"]
-        XCTAssertTrue(create.waitForExistence(timeout: 15))
-        let ready = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)
-        wait(for: [ready], timeout: 10)
-        capture("notes-library")
-        create.tap()
-        app.buttons["notes.import.workspace"].tap()
-        // The phone's offscreen sidebar retains a conversation with this same
-        // title. Select the import row's own identity, not a global text match.
-        let workspace = app.descendants(matching: .any).matching(NSPredicate(
-            format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
-            "workspace.import.source.", "批量选择测试"
-        )).firstMatch
-        XCTAssertTrue(workspace.waitForExistence(timeout: 10))
-        workspace.tap()
-        let file = app.buttons["office.attachment.workspace.file.预览验收.pdf"]
-        XCTAssertTrue(file.waitForExistence(timeout: 10))
-        capture("notes-workspace-import")
-        file.tap()
-        let back = app.buttons["notes.back"]
-        let editorAppeared = back.waitForExistence(timeout: 20)
-        // Full-screen presentation can expose a control before its transition
-        // makes it interactive. Require the foreground control, not a covered
-        // library navigation item, and retain the tree for a failing transition.
-        let tree = XCTAttachment(string: app.debugDescription)
-        tree.name = "notes-editor-after-import-tree"
-        tree.lifetime = .keepAlways
-        add(tree)
-        XCTAssertTrue(editorAppeared)
-        let editorReady = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: back)
-        wait(for: [editorReady], timeout: 10)
-        XCTAssertEqual(app.buttons.matching(identifier: "notes.back").count, 1)
-        XCTAssertTrue(back.isHittable)
-        assertTouchTarget(back)
-        XCTAssertFalse(app.navigationBars["从工作区导入"].exists)
-        XCTAssertFalse(app.textFields["notes.search"].isHittable)
-        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
-        capture("notes-imported-pdf-fullscreen")
-
         let assistant = app.buttons["notes.assistant"]
         XCTAssertTrue(assistant.isHittable)
         assistant.tap()
         let closeAssistant = app.buttons["notes.assistant.close"]
         XCTAssertTrue(closeAssistant.waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已选择手记文档")).count, 0)
+        let restartAssistant = app.buttons["notes.assistant.restart"]
+        XCTAssertTrue(restartAssistant.waitForExistence(timeout: 10))
+        let restartReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: restartAssistant)
+        wait(for: [restartReady], timeout: 10)
+        assertTouchTarget(restartAssistant)
         capture("notes-document-assistant")
+        restartAssistant.tap()
+        let restartCompleted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: restartAssistant)
+        wait(for: [restartCompleted], timeout: 10)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已选择手记文档")).count, 0)
+        capture("notes-document-assistant-restarted")
         closeAssistant.tap()
         XCTAssertTrue(assistant.waitForExistence(timeout: 5))
 
+    }
+
+    func testPencilToolsAndFocusedLayout() throws {
+        let (app, back, _) = try openImportedDocument()
+        defer { app.terminate() }
         // Navigation and document actions share one row; no empty navigation
         // strip above the editor. This also catches phone header wrapping.
         let tools = app.scrollViews["notes.writing.tools"].firstMatch
@@ -207,6 +161,16 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         headerToggle.tap()
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         XCTAssertTrue(back.isHittable)
+    }
+
+    func testDocumentTabsAndBodySearch() throws {
+        let (app, back, create) = try openImportedDocument()
+        defer { app.terminate() }
+        let toolbarMarker = app.buttons["notes.tool.highlighter"]
+        XCTAssertTrue(toolbarMarker.waitForExistence(timeout: 10))
+        XCTAssertTrue(toolbarMarker.isHittable)
+        toolbarMarker.tap()
+        XCTAssertTrue(toolbarMarker.isSelected)
         // Create a second document, then switch back through retained tabs.
         let tabs = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND NOT identifier BEGINSWITH %@", "notes.tab.", "notes.tab.close.")).allElementsBoundByIndex
         let originalTab = try XCTUnwrap(tabs.first { $0.isSelected })
@@ -247,7 +211,72 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // snippet so an unchanged library cannot pass as a working search.
         let snippet = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Inline reading")).firstMatch
         XCTAssertTrue(snippet.waitForExistence(timeout: 10))
-        capture("notes-document-body-search")
+        capture("notes-document-body-search")    }
+
+    private func openImportedDocument() throws -> (XCUIApplication, XCUIElement, XCUIElement) {
+        continueAfterFailure = false
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
+        let app = XCUIApplication()
+        // A preceding runtime suite can leave its host process alive. Setting
+        // orientation first waits for that unrelated event loop to become idle.
+        app.terminate()
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-pdf-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        app.launch()
+        if ipad {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
+            wait(for: [landscape], timeout: 10)
+        }
+        if !ipad {
+            let sidebar = app.buttons["phone.sidebar.open"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 15))
+            sidebar.tap()
+        }
+        let notes = app.descendants(matching: .any).matching(identifier: "sidebar.notes").firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 15))
+        notes.tap()
+        let create = app.buttons["notes.create"]
+        XCTAssertTrue(create.waitForExistence(timeout: 15))
+        let ready = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)
+        wait(for: [ready], timeout: 10)
+        capture("notes-library")
+        create.tap()
+        app.buttons["notes.import.workspace"].tap()
+        // The phone's offscreen sidebar retains a conversation with this same
+        // title. Select the import row's own identity, not a global text match.
+        let workspace = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
+            "workspace.import.source.", "批量选择测试"
+        )).firstMatch
+        XCTAssertTrue(workspace.waitForExistence(timeout: 10))
+        workspace.tap()
+        let file = app.buttons["office.attachment.workspace.file.预览验收.pdf"]
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        capture("notes-workspace-import")
+        file.tap()
+        let back = app.buttons["notes.back"]
+        let editorAppeared = back.waitForExistence(timeout: 20)
+        // Full-screen presentation can expose a control before its transition
+        // makes it interactive. Require the foreground control, not a covered
+        // library navigation item, and retain the tree for a failing transition.
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "notes-editor-after-import-tree"
+        tree.lifetime = .keepAlways
+        add(tree)
+        XCTAssertTrue(editorAppeared)
+        let editorReady = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: back)
+        wait(for: [editorReady], timeout: 10)
+        XCTAssertEqual(app.buttons.matching(identifier: "notes.back").count, 1)
+        XCTAssertTrue(back.isHittable)
+        assertTouchTarget(back)
+        XCTAssertFalse(app.navigationBars["从工作区导入"].exists)
+        XCTAssertFalse(app.textFields["notes.search"].isHittable)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "notes.pencil.page").firstMatch.waitForExistence(timeout: 10))
+        capture("notes-imported-pdf-fullscreen")
+
+        return (app, back, create)
     }
 
     private func capture(_ name: String) {

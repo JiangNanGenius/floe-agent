@@ -57,6 +57,8 @@ final class NotesSession {
     @ObservationIgnored private var tail: Task<Void, Never>?
     @ObservationIgnored private var observation: Task<Void, Never>?
     @ObservationIgnored private var indexing: Task<Void, Never>?
+    @ObservationIgnored private var refresh: Task<Void, Never>?
+    @ObservationIgnored private var needsStoreRefresh = false
     private(set) var indexingDocumentID: UUID?
 
     func open(using existingStore: NotesStore? = nil) async {
@@ -64,26 +66,51 @@ final class NotesSession {
         do {
             if let existingStore { store = existingStore }
             else { store = try await NotesRepository.shared.store() }
-            try await reload()
             if let store {
+                // Subscribe before the first read so a tool commit during opening is not lost.
+                let changes = await store.changes()
+                observation = Task { [weak self] in
+                    for await _ in changes {
+                        guard !Task.isCancelled else { break }
+                        guard let self else { break }
+                        self.needsStoreRefresh = true
+                        self.refreshFromStoreIfIdle()
+                    }
+                }
+                try await reload()
                 // Deferred collection failures remain retryable on next open;
                 // readable documents have already loaded independently.
                 do { _ = try await store.collectDeletedResources() }
                 catch { errorMessage = "未能回收已删除附件，可重新打开手记重试：" + error.localizedDescription }
-                observation = Task { [weak self] in
-                    for await _ in await store.changes() {
-                        guard !Task.isCancelled else { break }
-                        guard let self else { break }
-                        if self.pendingWrites == 0 {
-                            do { try await self.reload() } catch { self.errorMessage = error.localizedDescription }
-                        }
-                    }
-                }
             }
         } catch { errorMessage = error.localizedDescription }
     }
 
-    deinit { observation?.cancel(); indexing?.cancel() }
+    deinit { observation?.cancel(); indexing?.cancel(); refresh?.cancel() }
+
+    /// Tool commits are independent of the editor write queue. Coalesce notifications,
+    /// but retain one while local ink is saving instead of dropping the update.
+    private func refreshFromStoreIfIdle() {
+        guard pendingWrites == 0, needsStoreRefresh, refresh == nil else { return }
+        refresh = Task { [weak self] in
+            guard let self else { return }
+            defer { self.refresh = nil }
+            while self.needsStoreRefresh && self.pendingWrites == 0 && !Task.isCancelled {
+                self.needsStoreRefresh = false
+                do { try await self.reload() }
+                catch { self.errorMessage = error.localizedDescription }
+            }
+        }
+    }
+
+    private func finishWrite() {
+        pendingWrites -= 1
+        refreshFromStoreIfIdle()
+    }
+
+    func hasPendingInk(documentID: UUID, pageID: UUID) -> Bool {
+        pendingInk[InkKey(documentID: documentID, pageID: pageID)] != nil
+    }
 
     func reload() async throws {
         guard let store else { return }
@@ -342,7 +369,7 @@ final class NotesSession {
     func commit(_ edits: [NoteEdit], documentID: UUID, expectedRevision: Int) async throws -> NoteDocument {
         guard pendingWrites == 0, let store else { throw NoteError.conflict }
         pendingWrites += 1
-        defer { pendingWrites -= 1 }
+        defer { finishWrite() }
         let result = try await store.apply(.init(documentID: documentID, expectedRevision: expectedRevision, title: "编辑内容", edits: edits))
         try await reload()
         return result
@@ -410,7 +437,7 @@ final class NotesSession {
         pendingWrites += 1
         tail = Task { [self] in
             await previous?.value
-            defer { pendingWrites -= 1 }
+            defer { finishWrite() }
             do { try await operation() } catch { errorMessage = error.localizedDescription }
         }
     }

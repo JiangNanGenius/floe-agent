@@ -10,7 +10,9 @@ def verify(summary, tree, *, simulator_without_office=False):
     counts = {key: required_count(summary, key) for key in
               ("totalTestCount", "passedTests", "failedTests", "skippedTests", "expectedFailures")}
     cases = [node for node in nodes(tree) if node.get("nodeType") == "Test Case"]
-    expected = {"NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch",
+    expected = {"NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant",
+                "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout",
+                "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch",
                 "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen"}
     identities = [str(case.get("nodeIdentifier", "")).removesuffix("()") for case in cases]
     office = "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen"

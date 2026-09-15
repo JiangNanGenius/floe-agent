@@ -96,22 +96,17 @@ struct NotesDocumentEditor: View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 editorContent
-                if showAssistant, geometry.size.width >= 850, let store = session.store {
+                if showAssistant, usesAssistantColumn(width: geometry.size.width), let store = session.store {
+                    Divider()
                     NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
                         .frame(width: min(440, max(360, geometry.size.width * 0.36)))
                         .background(FloeTheme.readingSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
-                        }
-                        .padding(12)
                         .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: showAssistant)
             .background(FloeTheme.groupedSurface)
-            .sheet(isPresented: Binding(get: { showAssistant && geometry.size.width < 850 }, set: { if !$0 { showAssistant = false } })) {
+            .sheet(isPresented: Binding(get: { showAssistant && !usesAssistantColumn(width: geometry.size.width) }, set: { if !$0 { showAssistant = false } })) {
                 if let store = session.store {
                     NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
                         .presentationDetents([.large])
@@ -119,6 +114,10 @@ struct NotesDocumentEditor: View {
                 }
             }
         }
+    }
+
+    private func usesAssistantColumn(width: CGFloat) -> Bool {
+        UIDevice.current.userInterfaceIdiom == .pad && width >= 850
     }
 
     private var editorContent: some View {
@@ -231,7 +230,12 @@ struct NotesDocumentEditor: View {
                 let image = try await NoteFileImporter.background(page: page, store: store)
                 let images = try await NoteFileImporter.elementImages(page: page, store: store)
                 try Task.checkCancellation()
-                drawing = ink; background = image; elementImages = images; loadedPageID = page.id
+                // A newer stroke may have arrived while rendering the background. Never
+                // apply the old resource over an unsaved or failed-to-save local drawing.
+                if !session.hasPendingInk(documentID: document.id, pageID: page.id) {
+                    drawing = ink
+                }
+                background = image; elementImages = images; loadedPageID = page.id
             } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
         }
         .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in

@@ -1022,6 +1022,10 @@ final class ConversationCenter: ObservableObject {
         for taskPolicy: TaskPolicy,
         primaryModel: ModelProfile
     ) async -> any ApprovalPolicy {
+        if (try? await environment.conversationStore.conversation(id: taskPolicy.conversationID))?.purpose == .notes,
+           let store = try? await NotesRepository.shared.store() {
+            return NotesDocumentApprovalPolicy(conversationID: taskPolicy.conversationID, store: store)
+        }
         let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID
             ?? generalAuxiliaryProviderAndModel()?.1.id)
         let localBackend = await localApprovalBackend(primaryModel: primaryModel)
@@ -2751,6 +2755,24 @@ final class ConversationCenter: ObservableObject {
         if let service = runServices[runID] {
             await service.cancel()
         }
+    }
+
+    /// A Notes restart retains every message and run, but stops the old owner before
+    /// its document grant is replaced. The launch fence also covers preprocessing.
+    func stopNotesAssistant(conversationID: UUID) async throws {
+        guard try await environment.conversationStore.conversation(id: conversationID)?.purpose == .notes else {
+            throw FloeError.validationFailed("Not a document assistant conversation")
+        }
+        guard deletingConversationIDs.insert(conversationID).inserted else {
+            throw FloeError.validationFailed("Conversation is already stopping")
+        }
+        launchFence.invalidate(scope: conversationID)
+        defer { deletingConversationIDs.remove(conversationID) }
+        await waitForLaunches()
+        let runs = try await environment.runStore.runs(conversationID: conversationID)
+        let tasks = runs.compactMap { runTasks[$0.id] }
+        for run in runs { await cancel(runID: run.id) }
+        for task in tasks { _ = await task.value }
     }
 
     /// The only conversation deletion path used by the UI. It closes the

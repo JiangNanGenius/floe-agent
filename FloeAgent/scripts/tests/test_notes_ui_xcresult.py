@@ -9,20 +9,22 @@ from verify_notes_ui_xcresult import verify
 
 class NotesUIGateTests(unittest.TestCase):
     def fixture(self):
-        return ({"result": "Passed", "totalTestCount": 2, "passedTests": 2,
+        return ({"result": "Passed", "totalTestCount": 4, "passedTests": 4,
                  "failedTests": 0, "skippedTests": 0, "expectedFailures": 0},
                 {"children": [{"nodeType": "Test Case", "result": "Passed", "nodeIdentifier":
-                 "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch()"},
+                 "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant()"},
                  {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier":
-                 "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen()"}]})
+                 "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen()"},
+                 {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier": "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout()"},
+                 {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()"}]})
 
     def test_actual_case_passes(self):
         summary, tree = self.fixture()
-        self.assertEqual(verify(summary, tree)["passedTests"], 2)
+        self.assertEqual(verify(summary, tree)["passedTests"], 4)
 
     def test_explicit_simulator_scope_never_claims_native_office_passed(self):
         summary, tree = self.fixture()
-        summary.update(passedTests=1, skippedTests=1)
+        summary.update(passedTests=3, skippedTests=1)
         tree['children'][1]['result'] = 'Skipped'
         with self.assertRaises(ValueError):
             verify(summary, tree)

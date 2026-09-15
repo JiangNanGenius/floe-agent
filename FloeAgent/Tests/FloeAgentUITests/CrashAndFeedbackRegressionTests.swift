@@ -5,6 +5,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import PencilKit
 import AVFoundation
 import BackgroundTasks
 import Testing
@@ -154,6 +155,86 @@ private actor ContinuedProcessingExpirationTestGate {
 
 @Suite("FloeApp crash and feedback regressions")
 struct CrashAndFeedbackRegressionTests {
+    @Test("Assistant commits refresh the open document without changing its page or viewport") @MainActor
+    func notesAssistantCommitRefreshesOpenEditor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-live-refresh-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let saved = try await store.create(NoteDocument(title: "Course"))
+        let page = try #require(saved.pages.first)
+        let owner = UUID()
+        try await store.bindAssistant(conversationID: owner, documentID: saved.id, canEdit: true)
+        let session = NotesSession()
+        await session.open(using: store)
+        #expect(await session.select(saved))
+        var state = NoteWorkspaceTabs.EditorState()
+        state.pageID = page.id
+        state.viewports[page.id] = .init(x: 30, y: 210, zoom: 1.4)
+        session.rememberEditor(state, for: saved.id)
+        let note = NoteElement(text: "Saved assistant explanation", isAIGenerated: true)
+        let updated = try await store.apply(.init(documentID: saved.id, expectedRevision: saved.revision,
+            title: "Assistant edit", edits: [.upsertElement(pageID: page.id, element: note)]), authorizedConversationID: owner)
+        // No manual reload: exercise the store notification consumed by the real editor session.
+        for _ in 0..<200 where session.document?.revision != updated.revision {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.document?.pages.first?.elements == [note])
+        #expect(session.document?.revision == updated.revision)
+        #expect(session.editorState(for: saved.id) == state)
+        #expect(session.tabs.selectedID == saved.id)
+        #expect(session.canUndo)
+    }
+
+    @Test("A failed local ink save does not suppress a later assistant update or discard recovery") @MainActor
+    func notesRefreshPreservesFailedLocalInk() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-refresh-ink-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let saved = try await store.create(NoteDocument(title: "Before"))
+        let recovery = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true).appendingPathComponent("FloeAgent/Notes/InkRecovery/\(saved.id.uuidString)")
+        defer { try? FileManager.default.removeItem(at: recovery) }
+        let session = NotesSession()
+        await session.open(using: store)
+        #expect(await session.select(saved))
+        let missingPage = UUID()
+        session.saveDrawing(PKDrawing().dataRepresentation(), pageID: missingPage, documentID: saved.id)
+        #expect(session.pendingWrites > 0)
+        let updated = try await store.apply(.init(documentID: saved.id, expectedRevision: saved.revision,
+            title: "Assistant edit", edits: [.rename("After")]))
+        for _ in 0..<200 where session.pendingWrites > 0 || session.document?.revision != updated.revision {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.pendingWrites == 0)
+        #expect(session.document?.title == "After")
+        #expect(session.hasPendingInk(documentID: saved.id, pageID: missingPage))
+        #expect(session.unsavedDocumentIDs.contains(saved.id))
+        #expect(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("\(missingPage.uuidString).drawing").path))
+    }
+
+    @Test("Document assistant permissions stay bound to its native document and stop on restart") @MainActor
+    func notesAssistantPolicyCannotBroadenItsDocument() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-policy-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let document = try await store.create(NoteDocument(title: "Document"))
+        let other = try await store.create(NoteDocument(title: "Other"))
+        let owner = UUID(), replacement = UUID()
+        try await store.bindAssistant(conversationID: owner, documentID: document.id, canEdit: true)
+        let policy = NotesDocumentApprovalPolicy(conversationID: owner, store: store)
+        func action(_ id: UUID, tool: String = "notes.edit") throws -> ProposedAction {
+            let call = try ToolCall(id: UUID().uuidString, toolName: tool,
+                argumentsJSON: JSONEncoder().encode(["documentID": id.uuidString]), scope: .local)
+            return .init(toolCall: call, riskLabels: [], userGoal: "Edit this document", hostAndPathScope: .local)
+        }
+        #expect(try await policy.decide(action(document.id)).permitsExecution)
+        #expect(!(try await policy.decide(action(other.id)).permitsExecution))
+        #expect(!(try await policy.decide(action(document.id, tool: "shell.run")).permitsExecution))
+        try await store.bindAssistant(conversationID: replacement, documentID: document.id, canEdit: true)
+        #expect(!(try await policy.decide(action(document.id)).permitsExecution))
+        #expect(try await store.document(document.id) == document)
+    }
+
     @Test @MainActor
     func notesTabCloseWaitsForEditorSaveAndPreservesFailedEditor() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-tabs-save-\(UUID())")

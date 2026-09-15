@@ -1,0 +1,38 @@
+{
+  "sourceSHA": "8958d8f1482c3236f73172076b76adc83da86f5f",
+  "ciRun": "34945321526",
+  "fullApp": {
+    "totalTestCount": 172,
+    "passedTests": 172,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "testFailures": []
+  },
+  "ipadUI": {
+    "totalTestCount": 2,
+    "passedTests": 0,
+    "failedTests": 1,
+    "skippedTests": 1,
+    "testFailures": [
+      {
+        "failureText": "Test exceeded execution time allowance of 3 minutes",
+        "targetName": "FloeAgentUITests",
+        "testIdentifier": 2,
+        "testIdentifierString": "NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch()",
+        "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testWorkspaceImportTabsFocusAndBodySearch",
+        "testName": "testWorkspaceImportTabsFocusAndBodySearch()"
+      }
+    ]
+  },
+  "iphoneUI": {
+    "passedTests": 1,
+    "skippedTests": 1,
+    "failedTests": 0,
+    "nativeOfficeAccepted": false
+  },
+  "releaseRun": "34945701373",
+  "releaseStatus": "cancelled before upload for additional document assistant work",
+  "preservedDeviceArtifact": "10388835194",
+  "deviceArtifactName": "accepted-sdk-device-recovery-1.7.0-build175",
+  "notes": "iPad monolithic test exceeded the unchanged 180-second allowance; later source splits coverage into independently required cases. This is not a passing iPad UI result."
+}

@@ -23,6 +23,22 @@ struct NotesStoreTests {
         #expect(try await reopened.assistantConversationIDs() == [dedicated])
     }
 
+    @Test func restartingAssistantRevokesOldOwnerWithoutChangingDocument() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let document = try await store.create(NoteDocument(title: "Retained"))
+        let old = UUID(), next = UUID(), ordinary = UUID()
+        try await store.bindAssistant(conversationID: old, documentID: document.id, canEdit: true)
+        try await store.grantAccess(conversationID: ordinary, documentID: document.id, canEdit: false)
+        try await store.bindAssistant(conversationID: next, documentID: document.id, canEdit: true)
+        #expect(try await store.assistantConversation(documentID: document.id) == next)
+        #expect(try await store.accessGrants(conversationID: old).isEmpty)
+        #expect(try await store.accessGrants(conversationID: ordinary)[document.id] == false)
+        #expect(try await store.accessGrants(conversationID: next)[document.id] == true)
+        #expect(try await store.document(document.id) == document)
+        #expect(try await store.historyState(document.id).canUndo == false)
+    }
+
     @Test func assistantContextTracksLiveGrantsWithoutCopyingDocumentInstructions() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

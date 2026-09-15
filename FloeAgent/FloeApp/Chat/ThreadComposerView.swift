@@ -158,6 +158,7 @@ struct ThreadComposerView: View {
     /// An unsent Home draft may select Notes without mounting a task workspace.
     var notesDraftID: UUID? = nil
     var embedded: Bool = false
+    var documentAssistant: Bool = false
 
     @State private var isPickerPresented = false
     @State private var isNotesPickerPresented = false
@@ -198,14 +199,16 @@ struct ThreadComposerView: View {
             inputRow
             contextRow
         }
-        .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : 22, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
+            if !documentAssistant {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .shadow(color: .black.opacity(0.08), radius: 14, y: 5)
+        .padding(.horizontal, documentAssistant ? 0 : 12)
+        .padding(.vertical, documentAssistant ? 0 : 8)
+        .shadow(color: .black.opacity(documentAssistant ? 0 : 0.08), radius: 14, y: 5)
         .sheet(isPresented: $isPickerPresented) {
             DocumentPickerView { url in
                 Task { await registerPicked(url) }
@@ -724,8 +727,8 @@ struct ThreadComposerView: View {
                     projectPicker
                     targetPicker
                 }
-                modePicker
-                if isRunning, let runningInputMode {
+                if !documentAssistant { modePicker }
+                if !documentAssistant, isRunning, let runningInputMode {
                     Menu {
                         Button {
                             runningInputMode.wrappedValue = .queue
@@ -748,15 +751,12 @@ struct ThreadComposerView: View {
                     }
                     .accessibilityLabel("运行中发送方式")
                 }
-                Button {
-                    onPermissions()
-                } label: {
-                    composerChip(
-                        title: approvalModeTitle,
-                        systemImage: "lock.shield"
-                    )
+                if !documentAssistant {
+                    Button { onPermissions() } label: {
+                        composerChip(title: approvalModeTitle, systemImage: "lock.shield")
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)

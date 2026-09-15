@@ -51,11 +51,13 @@ struct ThreadDetailView: View {
     private let composerInput: ThreadComposerInput?
     private let onSaveToNotes: ((String) -> Void)?
     private let embedded: Bool
+    private let documentAssistant: Bool
     private let onInputConsumed: (UUID) -> Void
 
-    init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, onSaveToNotes: ((String) -> Void)? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
+    init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, documentAssistant: Bool = false, onSaveToNotes: ((String) -> Void)? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
         self.composerInput = composerInput
         self.embedded = embedded
+        self.documentAssistant = documentAssistant
         self.onSaveToNotes = onSaveToNotes
         self.onInputConsumed = onInputConsumed
         _viewModel = StateObject(
@@ -748,7 +750,8 @@ struct ThreadDetailView: View {
                     onPermissions: { showingPermissionsSheet = true },
                     approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
                     contextID: viewModel.conversationID,
-                    embedded: embedded
+                    embedded: embedded,
+                    documentAssistant: documentAssistant
                 )
             }
         }

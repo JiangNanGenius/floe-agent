@@ -5,6 +5,7 @@ import FloeCore
 import FloeTools
 import FloeNotes
 import FloeWorkspace
+import FloeSecurity
 
 enum NotesToolRegistration {
     static func register() {
@@ -317,6 +318,30 @@ struct NotesAttachFileTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         let result = try await store.apply(.init(documentID: document.id, expectedRevision: args.expectedRevision, title: "Agent 添加附件", edits: [.upsertNode(node)], requestID: receiptID), authorizedConversationID: context.conversationID)
         return try NotesReadTool.output(["documentID": result.id.uuidString, "revision": String(result.revision), "attachmentID": attachment.id.uuidString, "status": "saved"])
+    }
+}
+/// Opening the dedicated document assistant grants undoable edits to that document.
+/// Other tools retain normal approval; document text cannot broaden the native grant.
+struct NotesDocumentApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
+    let conversationID: UUID
+    let store: NotesStore
+    let policyName = "document-assistant"
+
+    func requiresModelReview(_ action: ProposedAction) -> Bool { false }
+
+    func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        guard action.toolCall.toolName == NotesEditTool.name,
+              case .local = action.toolCall.scope else {
+            return try await HumanApprovalPolicy().decide(action)
+        }
+        struct Target: Decodable { let documentID: UUID }
+        guard let target = try? JSONDecoder().decode(Target.self, from: action.toolCall.argumentsJSON),
+              try await store.assistantConversation(documentID: target.documentID) == conversationID else {
+            return .deny(reason: "The document is not owned by this assistant session")
+        }
+        do { try await store.authorize(conversationID: conversationID, documentID: target.documentID, editing: true) }
+        catch { return .deny(reason: "Document editing access is no longer available") }
+        return .allow(scope: .init(toolName: NotesEditTool.name, singleUse: true), expiresAt: nil)
     }
 }
 #endif

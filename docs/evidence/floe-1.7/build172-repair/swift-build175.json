@@ -1,0 +1,44 @@
+{
+  "sourceSHA": "8958d8f1482c3236f73172076b76adc83da86f5f",
+  "build": 175,
+  "runURL": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34945701373",
+  "target": "macOS module tests with Xcode 27; not App or physical-device acceptance",
+  "suites": [
+    {
+      "suite": "full",
+      "executions": 1179,
+      "groups": 18,
+      "sha256": "e7d5ba0c495a48db07d1b3f8996f33e07223e7c3ff74383a3bf56fe6d85e6d91"
+    },
+    {
+      "suite": "javascript-engine",
+      "executions": 12,
+      "groups": 1,
+      "sha256": "9b3534a28aa795ad12b8058c763b913028ebbc0393b7c14ce812cd2619604d3b"
+    },
+    {
+      "suite": "javascript-tool",
+      "executions": 12,
+      "groups": 1,
+      "sha256": "7c96f0c1a897a97bb94e5989832ca797c63f8aeb72cadb43fa8c3e2e39e1daee"
+    },
+    {
+      "suite": "notes",
+      "executions": 23,
+      "groups": 1,
+      "sha256": "c0bec24b6bfb0494043ee6b9d8f4522ca724a1da4d536b1620932970869929f1"
+    },
+    {
+      "suite": "platform",
+      "executions": 66,
+      "groups": 6,
+      "sha256": "92ba33e448b6194e7258619f924d3aceac8b24e321869f622c94d32c4df71c70"
+    }
+  ],
+  "newRegressionsPassed": [
+    "Chat continuation placeholders preserve each tool identity and arguments",
+    "Missing and duplicate provider IDs remain available for runtime rejection"
+  ],
+  "fullAppQualification": "pending",
+  "testFlightUpload": "pending"
+}

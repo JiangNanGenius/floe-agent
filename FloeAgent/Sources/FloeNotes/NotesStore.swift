@@ -470,6 +470,11 @@ public actor NotesStore {
         try database.write { db in
             let value = try read(documentID, db: db)
             guard value.deletedAt == nil else { throw NoteError.notFound }
+            // Rebinding is atomic with revoking the previous owner's document scope.
+            // Messages and run history live independently and are retained.
+            if let previous = try String.fetchOne(db, sql: "SELECT conversation_id FROM assistant_threads WHERE document_id=?", arguments: [documentID.uuidString]), previous != conversationID.uuidString {
+                try db.execute(sql: "DELETE FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [previous, documentID.uuidString])
+            }
             try db.execute(sql: "INSERT OR REPLACE INTO assistant_threads VALUES(?,?)", arguments: [documentID.uuidString, conversationID.uuidString])
             try db.execute(sql: "INSERT OR REPLACE INTO assistant_scopes VALUES(?,?,?)", arguments: [conversationID.uuidString, documentID.uuidString, canEdit])
         }

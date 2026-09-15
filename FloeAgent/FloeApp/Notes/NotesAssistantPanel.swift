@@ -15,6 +15,7 @@ struct NotesAssistantPanel: View {
     @State private var conversationID: UUID?
     @State private var failure: String?
     @State private var attempt = 0
+    @State private var restarting = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,7 +25,15 @@ struct NotesAssistantPanel: View {
                     Label(document.title, systemImage: "doc.text")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Spacer()
+                Spacer(minLength: 0)
+                Button("notes.assistant.restart", systemImage: "arrow.counterclockwise") {
+                    Task { await restart() }
+                }
+                .labelStyle(.iconOnly)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .disabled(conversationID == nil || restarting)
+                .accessibilityIdentifier("notes.assistant.restart")
                 Button("关闭助手", systemImage: "xmark") { close() }
                     .labelStyle(.iconOnly)
                     .font(.body.weight(.medium))
@@ -38,8 +47,13 @@ struct NotesAssistantPanel: View {
             .padding(.vertical, 8)
             .background(FloeTheme.chromeMaterial)
             Divider()
+            if let failure, conversationID != nil {
+                Text(failure).font(.callout).foregroundStyle(.red).padding(12)
+            }
             if let conversationID {
-                ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter, composerInput: composerInput, embedded: true, onSaveToNotes: onSaveAnswer, onInputConsumed: onInputConsumed)
+                ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter, composerInput: composerInput, embedded: true, documentAssistant: true, onSaveToNotes: onSaveAnswer, onInputConsumed: onInputConsumed)
+                    .id(conversationID)
+                    .disabled(restarting)
             } else if let failure {
                 ContentUnavailableView {
                     Label("助手无法打开", systemImage: "exclamationmark.bubble")
@@ -59,11 +73,27 @@ struct NotesAssistantPanel: View {
                 }
                 let conversation = try await environment.conversationCenter.createConversation(title: "手记 · \(document.title)", purpose: .notes)
                 // The grant is created by this explicit native document selection. Tool arguments
-                // and source text cannot broaden it. Existing approval policy still gates writes.
+                // and source text cannot broaden it. The dedicated policy permits bounded undoable document edits.
                 try await store.bindAssistant(conversationID: conversation.id, documentID: document.id, canEdit: true)
                 conversationID = conversation.id
             } catch { failure = error.localizedDescription }
         }
+    }
+
+    private func restart() async {
+        guard let previous = conversationID, !restarting else { return }
+        restarting = true
+        defer { restarting = false }
+        do {
+            environment.voiceInput.stop()
+            try await environment.conversationCenter.stopNotesAssistant(conversationID: previous)
+            let next = try await environment.conversationCenter.createConversation(
+                title: "手记 · \(document.title)", purpose: .notes)
+            try await store.bindAssistant(conversationID: next.id, documentID: document.id, canEdit: true)
+            if let composerInput { onInputConsumed(composerInput.id) }
+            conversationID = next.id
+            failure = nil
+        } catch { failure = error.localizedDescription }
     }
 
     static func removeLegacyBootstrap(documentID: UUID, conversationID: UUID, database: DatabaseManager) async throws {
