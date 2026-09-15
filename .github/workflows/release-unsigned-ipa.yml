@@ -266,7 +266,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
             -only-testing:FloeAppTests \
             -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
-            ENABLE_TESTABILITY=YES ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build-for-testing
+            ENABLE_TESTABILITY=YES ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
 
       - name: Verify Canvas, PiP, and timeline app regression contracts
         id: app_regression
@@ -568,7 +568,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
             -only-testing:FloeAppTests \
             -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
-            ENABLE_TESTABILITY=YES ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build-for-testing
+            ENABLE_TESTABILITY=YES ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
 
       - name: Verify focused app regressions with the accepted App Store SDK
         id: stable_app_regression

@@ -15,7 +15,7 @@ class SharedReleaseHostTests(unittest.TestCase):
     def test_both_sdks_build_once_and_execute_their_own_tests(self):
         source, sdk27, stable, upload = self.jobs()
         for job, derived in ((sdk27, 'FloeAppRegressionDerivedData'), (stable, 'FloeStableDeviceDerivedData')):
-            self.assertEqual(job.count('CODE_SIGNING_ALLOWED=NO build-for-testing'), 1)
+            self.assertEqual(job.count('CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing'), 1)
             self.assertIn('ENABLE_TESTABILITY=YES', job)
             self.assertIn("-configuration Debug -destination 'generic/platform=iOS Simulator'", job)
             self.assertIn('-configuration Release', job)
