@@ -303,6 +303,40 @@ struct WireTranslatorTests {
         #expect(events.contains(.completed(AgentEvent.CompletionInfo(stopReason: .toolUse))))
     }
 
+    @Test("Chat continuation placeholders preserve each tool identity and arguments")
+    func chatToolIdentityPlaceholders() throws {
+        var aggregator = ToolCallAggregator()
+        let chunks = [
+            #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"workspace.readFile","arguments":"{\"path\":"}},{"index":1,"id":"call_other","function":{"name":"test.echo","arguments":"{"}}]}}]}"#,
+            #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"","function":{"name":"","arguments":"\"text\":\"hi\"}"}},{"index":0,"id":"","function":{"name":" ","arguments":"\"review-demo.md\"}"}}]}}]}"#,
+            #"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#
+        ]
+        var calls: [ToolCall] = []
+        for json in chunks {
+            let chunk = try JSONDecoder().decode(ChatChunk.self, from: Data(json.utf8))
+            for event in WireTranslator.translate(chunk, aggregator: &aggregator) {
+                if case .toolRequest(let call) = event { calls.append(call) }
+            }
+        }
+        #expect(calls.map(\.id) == ["call_read", "call_other"])
+        #expect(calls.map(\.toolName) == ["workspace.readFile", "test.echo"])
+        #expect(calls.map { String(decoding: $0.argumentsJSON, as: UTF8.self) }
+                == [#"{"path":"review-demo.md"}"#, #"{"text":"hi"}"#])
+        #expect(!aggregator.hasCalls)
+    }
+
+    @Test("Missing and duplicate provider IDs remain available for runtime rejection")
+    func chatInvalidToolIdentitiesAreNotInvented() {
+        var aggregator = ToolCallAggregator()
+        aggregator.consume(.init(index: 0, id: "", function: .init(name: "test.echo", arguments: "{}")))
+        aggregator.consume(.init(index: 1, id: "same", function: .init(name: "test.echo", arguments: "{}")))
+        aggregator.consume(.init(index: 2, id: "same", function: .init(name: "test.echo", arguments: "{}")))
+        #expect(aggregator.aggregatedCalls().map(\.id) == ["", "same", "same"])
+        aggregator.reset()
+        aggregator.consume(.init(index: 0, function: .init(name: "test.echo", arguments: "{}")))
+        #expect(aggregator.aggregatedCalls().map(\.id) == [""])
+    }
+
     @Test("Anthropic tool_use aggregates input_json_delta across block")
     func anthropicToolUseAggregation() {
         var aggregator = WireTranslator.AnthropicAggregator()

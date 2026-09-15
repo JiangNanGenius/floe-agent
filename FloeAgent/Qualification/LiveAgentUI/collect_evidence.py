@@ -15,10 +15,12 @@ con.row_factory=sqlite3.Row
 assert con.execute("SELECT secret_ref_synchronizable FROM providers WHERE id='D1730000-0000-4000-8000-000000000001'").fetchone()[0] == 0, 'Demo credential must not sync'
 # The current runtime persists tool lifecycle in its append-only event stream;
 # tool_calls is a legacy table and can be empty after a successful real call.
-events=[dict(x) for x in con.execute("SELECT run_id,sequence,kind,payload_json FROM run_events WHERE kind IN ('toolResult','status','error') ORDER BY run_id,sequence")]
+events=[dict(x) for x in con.execute("SELECT run_id,sequence,kind,payload_json FROM run_events WHERE kind IN ('toolRequest','toolResult','status','error') ORDER BY run_id,sequence")]
 rows=[]
 for event in events:
     payload=json.loads(event.pop('payload_json'))
+    if event['kind']=='toolRequest':
+        payload={key:payload.get(key) for key in ('tool','id','status')}
     event['payload']=payload
     if event['kind']=='toolResult':
         rows.append({'tool_name':payload.get('tool'), 'status':payload.get('status'),

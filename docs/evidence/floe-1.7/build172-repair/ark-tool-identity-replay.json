@@ -1,0 +1,38 @@
+{
+  "purpose": "bounded stream identity diagnostic; not App validation",
+  "chunks": [
+    {
+      "index": 0,
+      "id": "call_example",
+      "name": "workspace_readFile",
+      "arguments": ""
+    },
+    {
+      "index": 0,
+      "id": "",
+      "name": null,
+      "arguments": ""
+    },
+    {
+      "index": 0,
+      "id": null,
+      "name": null,
+      "arguments": "{"
+    },
+    {
+      "index": 0,
+      "id": null,
+      "name": null,
+      "arguments": "\"path\": \"review-demo.md\"}"
+    }
+  ],
+  "provider": "Volcengine Ark",
+  "model": "deepseek-v4-1-flash-260910",
+  "date": "2026-09-15",
+  "redaction": "Nonempty call ID replaced with call_example; no credentials or user data retained",
+  "originalPrivateEvidenceSHA256": "b827135d9afc8b9fe3ac65db5cb5164496b4c88649fc45a745695d877a813c4b",
+  "previousAggregatorReplay": "FAIL: real Ark stream loses tool identity",
+  "fixedAggregatorReplay": "PASS: real Ark stream preserves identity and parses read arguments",
+  "appDemoPassed": false,
+  "paidGeneratedVideoSeconds": 0
+}

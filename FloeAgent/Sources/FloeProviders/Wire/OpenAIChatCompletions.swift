@@ -392,8 +392,15 @@ public struct ToolCallAggregator: Sendable {
 
     public mutating func consume(_ delta: ToolCallDelta) {
         var partial = partials[delta.index] ?? Partial()
-        if let id = delta.id { partial.id = id }
-        if let name = delta.function?.name { partial.name = name }
+        // Compatible providers may repeat empty identity fields while streaming
+        // arguments. Those placeholders must not erase the first real identity.
+        // A call that never supplied an ID still reaches runtime validation empty.
+        if let id = delta.id, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            partial.id = id
+        }
+        if let name = delta.function?.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            partial.name = name
+        }
         if let arguments = delta.function?.arguments { partial.arguments += arguments }
         partials[delta.index] = partial
     }
