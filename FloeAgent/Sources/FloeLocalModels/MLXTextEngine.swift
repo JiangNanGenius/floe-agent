@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import MLX
 import MLXLMCommon
 import MLXLLM
@@ -175,8 +176,14 @@ public actor MLXTextEngine {
         // exists. A Swift do/catch alone cannot catch that callback. Keep the
         // scope across prefill and the inherited generation task, then check
         // before consuming each event so an invalid graph cannot report success.
-        try await MLX.withError { errors in
-            try await generateGuarded(container: container, input: input,
+        let transfer = Mutex<LMInput?>(input)
+        return try await MLX.withError { errors in
+            let prepared = transfer.withLock { value in
+                let result = value!
+                value = nil
+                return result
+            }
+            return try await generateGuarded(container: container, input: prepared,
                 parameters: parameters, inputTokens: inputTokens,
                 startedAt: startedAt, errors: errors)
         }
