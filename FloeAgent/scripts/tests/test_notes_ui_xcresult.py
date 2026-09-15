@@ -20,6 +20,19 @@ class NotesUIGateTests(unittest.TestCase):
         summary, tree = self.fixture()
         self.assertEqual(verify(summary, tree)["passedTests"], 2)
 
+    def test_explicit_simulator_scope_never_claims_native_office_passed(self):
+        summary, tree = self.fixture()
+        summary.update(passedTests=1, skippedTests=1)
+        tree['children'][1]['result'] = 'Skipped'
+        with self.assertRaises(ValueError):
+            verify(summary, tree)
+        result = verify(summary, tree, simulator_without_office=True)
+        self.assertFalse(result['nativeOfficeAccepted'])
+        self.assertEqual(result['coverage'], 'simulator-notes-only')
+        tree['children'][0]['result'] = 'Skipped'
+        with self.assertRaises(ValueError):
+            verify(summary, tree, simulator_without_office=True)
+
     def test_empty_skipped_and_expected_failures_do_not_pass(self):
         for change in ({"totalTestCount": 0, "passedTests": 0}, {"skippedTests": 1}, {"expectedFailures": 1}):
             summary, tree = self.fixture()

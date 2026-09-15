@@ -5,6 +5,9 @@ import UIKit
 @MainActor
 final class NotesWorkspaceImportUITests: XCTestCase {
     func testOfficeHeaderAssistantSaveAndReopen() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("FloeOfficeNative is linked only into iphoneos builds; native Office requires device acceptance.")
+        #else
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
         let app = XCUIApplication()
@@ -61,6 +64,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         capture("notes-office-reopened")
         back.tap()
         XCTAssertTrue(create.waitForExistence(timeout: 30))
+        #endif
     }
 
     func testWorkspaceImportTabsFocusAndBodySearch() throws {

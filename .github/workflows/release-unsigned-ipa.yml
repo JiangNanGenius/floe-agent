@@ -178,7 +178,7 @@ jobs:
                 test "$(printf '%s\n' "$notes_result" | grep -c .)" = 1
                 test -d "$notes_result"
                 ditto "$notes_result" "$RUNNER_TEMP/FloeSDK27-Notes/$name.xcresult"
-                python3 scripts/verify_notes_ui_xcresult.py \
+                python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office \
                   --result-bundle "$RUNNER_TEMP/FloeSDK27-Notes/$name.xcresult" \
                   --summary-output "$RUNNER_TEMP/FloeSDK27-Notes/$name-summary.json"
                 mkdir -p "$RUNNER_TEMP/FloeSDK27-Notes/screenshots/$name"
@@ -339,7 +339,7 @@ jobs:
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 360 \
               CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$qualification/$name.log" || notes_result=1
-            python3 scripts/verify_notes_ui_xcresult.py --result-bundle "$qualification/$name.xcresult" \
+            python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office --result-bundle "$qualification/$name.xcresult" \
               --summary-output "$qualification/$name-summary.json" || notes_result=1
             if test -d "$qualification/$name.xcresult"; then
               mkdir -p "$qualification/screenshots/$name"
@@ -635,7 +635,7 @@ jobs:
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 360 \
               CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$qualification/$name.log" || notes_result=1
-            python3 scripts/verify_notes_ui_xcresult.py --result-bundle "$qualification/$name.xcresult" \
+            python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office --result-bundle "$qualification/$name.xcresult" \
               --summary-output "$qualification/$name-summary.json" || notes_result=1
             if test -d "$qualification/$name.xcresult"; then
               mkdir -p "$qualification/screenshots/$name"

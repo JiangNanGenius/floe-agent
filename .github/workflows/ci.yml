@@ -340,7 +340,7 @@ jobs:
             kill -INT "$recording_pid" 2>/dev/null || true
             wait "$recording_pid" || true
             trap - EXIT
-            python3 scripts/verify_notes_ui_xcresult.py --result-bundle "FloeAgent-Notes-$name.xcresult" \
+            python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office --result-bundle "FloeAgent-Notes-$name.xcresult" \
               --summary-output "FloeAgent-Notes-$name-summary.json" || status=1
             if test -d "FloeAgent-Notes-$name.xcresult"; then
               mkdir -p "FloeAgent-Notes-Screenshots/$name"
