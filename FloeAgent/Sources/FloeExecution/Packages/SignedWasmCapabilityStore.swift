@@ -106,7 +106,7 @@ public actor SignedWasmCapabilityStore {
         if FileManager.default.fileExists(atPath: moduleURL(entry).path) { try FileManager.default.removeItem(at: moduleURL(entry)) }
     }
 
-    public func run(command: String, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, timeout: TimeInterval = 30, maxOutputBytes: Int = 256 * 1024, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
+    public func run(command: String, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String = ".", timeout: TimeInterval = 30, maxOutputBytes: Int = 256 * 1024, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
         guard let entry = catalog.packages.first(where: { $0.command == command }), installedIDs().contains(entry.id) else {
             return .failed(message: "WASM command is not installed; install its signed capability with apt")
         }
@@ -121,7 +121,7 @@ public actor SignedWasmCapabilityStore {
         guard (try? FloeDigest.sha256Hex(ofFileAt: moduleURL(entry))) == entry.sha256 else {
             return .failed(message: "Installed WASM package failed integrity verification")
         }
-        return await runtime.run(moduleURL: moduleURL(entry), arguments: arguments, stdin: stdin, environment: environment, rootURL: rootURL, timeout: timeout, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
+        return await runtime.run(moduleURL: moduleURL(entry), arguments: arguments, stdin: stdin, environment: environment, rootURL: rootURL, workingDirectory: workingDirectory, timeout: timeout, maxOutputBytes: maxOutputBytes, cancellation: cancellation)
     }
 
     private func moduleURL(_ entry: SignedWasmCatalog.Entry) -> URL { root.appendingPathComponent(entry.command + "-" + entry.version + ".wasm") }

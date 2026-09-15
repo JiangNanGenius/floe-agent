@@ -9,7 +9,7 @@ import FloeTools
 public struct WasmKitCommandRuntime: WasmCommandRuntime {
     public init() {}
 
-    public func run(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
+    public func run(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String = ".", timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
         let taskCancellation = CancellationToken()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -18,7 +18,7 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
                 // until this worker actually leaves the interpreter.
                 DispatchQueue(label: "org.floe.wasi.worker.\(UUID().uuidString)", qos: .userInitiated).async {
                     continuation.resume(returning: Self.execute(moduleURL: moduleURL, arguments: arguments,
-                        stdin: stdin, environment: environment, rootURL: rootURL, timeout: timeout,
+                        stdin: stdin, environment: environment, rootURL: rootURL, workingDirectory: workingDirectory, timeout: timeout,
                         maxOutputBytes: maxOutputBytes, cancellation: cancellation, taskCancellation: taskCancellation))
                 }
             }
@@ -27,7 +27,7 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
         }
     }
 
-    private static func execute(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken?, taskCancellation: CancellationToken) -> ShellRunOutcome {
+    private static func execute(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String, timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken?, taskCancellation: CancellationToken) -> ShellRunOutcome {
         let started = DispatchTime.now().uptimeNanoseconds
         let seconds = timeout.isFinite ? max(0.01, min(timeout, 120)) : 10
         let budget = Budget(deadline: started + UInt64(seconds * 1_000_000_000), cancellations: [cancellation, taskCancellation].compactMap { $0 })
@@ -47,7 +47,7 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
             guard ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 4 * 1024 * 1024 else {
                 throw FloeError.validationFailed("WASM module exceeds 4 MiB")
             }
-            _ = try ShellInputValidation.directory(cwd: ".", root: rootURL)
+            let directory = try ShellInputValidation.directory(cwd: workingDirectory, root: rootURL)
             try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
             let inputURL = temporary.appendingPathComponent("stdin")
             try Data((stdin ?? "").utf8).write(to: inputURL)
@@ -60,7 +60,7 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
             let wasi = try WASIBridgeToHost(
                 args: [moduleURL.lastPathComponent] + arguments,
                 environment: environment,
-                preopens: ["/workspace": rootURL.resolvingSymlinksInPath().path, "/tmp": temporary.path],
+                preopens: ["/workspace": rootURL.resolvingSymlinksInPath().path, ".": directory.path, "/tmp": temporary.path],
                 borrowStandardStreams: true,
                 stdin: FileDescriptor(rawValue: input.fileDescriptor),
                 stdout: FileDescriptor(rawValue: output.pipe.fileHandleForWriting.fileDescriptor),

@@ -14,6 +14,7 @@ public protocol WasmCommandRuntime: Sendable {
         stdin: String?,
         environment: [String: String],
         rootURL: URL,
+        workingDirectory: String,
         timeout: TimeInterval,
         maxOutputBytes: Int,
         cancellation: CancellationToken?
@@ -33,6 +34,7 @@ public struct UnavailableWasmRuntime: WasmCommandRuntime {
         stdin: String?,
         environment: [String: String],
         rootURL: URL,
+        workingDirectory: String = ".",
         timeout: TimeInterval,
         maxOutputBytes: Int,
         cancellation: CancellationToken? = nil

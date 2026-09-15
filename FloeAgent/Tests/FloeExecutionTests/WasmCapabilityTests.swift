@@ -24,6 +24,36 @@ struct WasmCapabilityTests {
         #expect(code == 0)
     }
 
+    @Test func relativeFilesUseTheInvocationsWorkingDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let subdirectory = root.appendingPathComponent("src")
+        try FileManager.default.createDirectory(at: subdirectory, withIntermediateDirectories: true)
+        try Data("only in src".utf8).write(to: subdirectory.appendingPathComponent("marker"))
+        let url = try module("""
+        (module
+          (import "wasi_snapshot_preview1" "fd_prestat_get" (func $prestat (param i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "path_open" (func $open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 64) "marker")
+          (func (export "_start") (local $fd i32)
+            (local.set $fd (i32.const 3))
+            (block $found (loop $scan
+              (if (i32.ne (call $prestat (local.get $fd) (i32.const 0)) (i32.const 0)) (then unreachable))
+              (br_if $found (i32.eq (i32.load (i32.const 4)) (i32.const 1)))
+              (local.set $fd (i32.add (local.get $fd) (i32.const 1))) (br $scan)))
+            (if (i32.ne (call $open (local.get $fd) (i32.const 1) (i32.const 64) (i32.const 6) (i32.const 0) (i64.const 2) (i64.const 0) (i32.const 0) (i32.const 32)) (i32.const 0))
+              (then unreachable))))
+        """, root: root)
+        let result = await WasmKitCommandRuntime().run(moduleURL: url, arguments: [], stdin: nil,
+            environment: [:], rootURL: root, workingDirectory: "src", timeout: 2, maxOutputBytes: 1024)
+        guard case .exited(let code, _, _, _, _, _) = result else { Issue.record("Wrong working directory: \(result)"); return }
+        #expect(code == 0)
+        let escaped = await WasmKitCommandRuntime().run(moduleURL: url, arguments: [], stdin: nil,
+            environment: [:], rootURL: root, workingDirectory: "../outside", timeout: 2, maxOutputBytes: 1024)
+        guard case .failed = escaped else { Issue.record("Escaping working directory accepted"); return }
+    }
+
     @Test func pureInfiniteLoopTimesOut() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -130,10 +160,12 @@ struct WasmCapabilityTests {
               (memory (export "memory") 1)
               (data (i32.const 64) "\(path)")
               (func (export "_start") (local $fd i32)
-                (drop (call $prestat (i32.const 3) (i32.const 0)))
-                (if (i32.eq (i32.load (i32.const 4)) (i32.const 10))
-                  (then (local.set $fd (i32.const 3)))
-                  (else (local.set $fd (i32.const 4))))
+                (local.set $fd (i32.const 3))
+                (block $found (loop $scan
+                  (if (i32.ne (call $prestat (local.get $fd) (i32.const 0)) (i32.const 0)) (then unreachable))
+                  (br_if $found (i32.eq (i32.load (i32.const 4)) (i32.const 10)))
+                  (local.set $fd (i32.add (local.get $fd) (i32.const 1)))
+                  (br $scan)))
                 (if (i32.eqz (call $open (local.get $fd) (i32.const 1) (i32.const 64) (i32.const \(path.utf8.count)) (i32.const 0) (i64.const 2) (i64.const 0) (i32.const 0) (i32.const 32)))
                   (then unreachable))))
             """, root: root)

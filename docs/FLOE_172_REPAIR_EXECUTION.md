@@ -10,30 +10,15 @@ The owner's demonstration credential must not enter source, logs, examples, revi
 
 ## Current candidate checkpoint
 
-Build 176 / `b8c1fc0494a08e49af1a092b14df11ee74580554` / `v1.7.0-beta.33`
-adds deferred live refresh after document commits, unsaved ink protection,
-restarting the current document conversation, native document-scoped editing
-permissions and a true iPad assistant column. iPhones use a sheet. The UI suite
-now requires separate import/assistant, Pencil/layout and tabs/body-search cases
-without extending the 180-second per-case timeout.
+The newest work adds a full-screen CodeBlitz IDE, guarded native filesystem bridge, offline resources, existing-editor/terminal entry points and WASI cwd/environment/terminal-input repair. Implementation and evidence boundaries are tracked in [IDE and languages](FLOE_IDE_AND_LANGUAGES.md). Common language execution/compiler payloads remain work in progress; syntax highlighting is not runtime acceptance.
 
-[CI 34949420611](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949420611)
-and [release 34949491542](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949491542)
-are running. Build 175 passed 172/172 App regressions and iPhone Notes UI; its
-iPad monolithic case timed out after tab switching. Its accepted-SDK device
-artifact was preserved before cancellation for the additional requirements.
-[Original result](evidence/floe-1.7/build172-repair/app-build175.json).
+Build 176 / `b8c1fc04` / immutable `v1.7.0-beta.33` implemented deferred Notes refresh, unsaved ink protection, document-conversation restart, native document-scoped permissions and a full iPad assistant column. Its release run **34949491542 failed** because the test host lacked `FloeModels`; both SDK paths report the same `ToolCall` error. Device recovery artifact **10388984903**, `accepted-sdk-device-recovery-1.7.0-build176`, was preserved before qualification failed. It is not an uploaded or installable build. The tag must not move.
 
-A real paid text App demo created Markdown and then failed with an empty/duplicate
-tool identity. The provider sends an empty ID continuation after its real ID;
-the prior parser overwrote the valid value. The same retained real fragments
-fail against old source and pass against the fix. No invented IDs or relaxed
-runtime identity checks are used. [Replay](evidence/floe-1.7/build172-repair/ark-tool-identity-replay.json).
-Full-source cloud tests and a successful real App video remain pending. No paid
-video generation has been used; the owner's key is excluded from review access.
+Fix `1d86b285` is under [CI 34951710478](https://github.com/JiangNanGenius/floe-agent/actions/runs/34951710478). As checked on 2026-09-15, the accepted SDK compatibility build and Linux job passed; the App job reached Notes UI qualification. This older CI does not include the subsequent IDE/WASI patch. Its final result remains to be recorded.
 
-The table below is the initial implementation checkpoint; later dated findings
-and the current evidence above supersede its pending test labels.
+The **real Ark DeepSeek App demonstration succeeded** on Build 175 / `8958d8f1`, run 34949317123: actual tool calls created and reread Markdown. The [review video and output](public-beta/agent-demo-build175/README.md) are retained; the temporary GitHub credential was deleted and absence verified. It is ordinary-Agent evidence from Build 175, not later Notes/IDE or physical-device qualification. Paid image and generated-video use are both zero. The credential is excluded from reviewer access.
+
+Earlier table entries below are historical checkpoints; later dated results supersede their pending labels. No new internal TestFlight was uploaded for this repair. Final release needs a fresh immutable build containing the completed changes, full requested validation, and actual test-group availability.
 
 ## Work in progress
 

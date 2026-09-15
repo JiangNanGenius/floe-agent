@@ -92,8 +92,9 @@ final class LocalPreviewServer: @unchecked Sendable {
             [weak self, weak connection] data, _, _, _ in
             guard let self, let connection else { return }
             let response = self.response(for: data ?? Data())
-            connection.send(content: response, completion: .contentProcessed { _ in
+            connection.send(content: response, completion: .contentProcessed { [weak self] _ in
                 connection.cancel()
+                self?.lock.withLock { self?.connections.removeAll { $0 === connection } }
             })
         }
     }
@@ -198,6 +199,8 @@ final class LocalPreviewServer: @unchecked Sendable {
         case "webp": "image/webp"
         case "woff": "font/woff"
         case "woff2": "font/woff2"
+        case "ttf": "font/ttf"
+        case "wasm": "application/wasm"
         default: "application/octet-stream"
         }
     }

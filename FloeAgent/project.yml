@@ -52,6 +52,7 @@ targets:
           - Resources/DocumentConversion
           - Resources/Fonts/Bundled
           - Resources/NodeTools
+          - Resources/IDE
           - Resources/MindElixir
           - Resources/Whisper
       - path: FloeApp/Resources/Capabilities
@@ -78,6 +79,9 @@ targets:
         buildPhase: resources
         optional: true
       - path: FloeApp/Resources/Whisper
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/IDE
         type: folder
         buildPhase: resources
       - path: FloeApp/Resources/MindElixir

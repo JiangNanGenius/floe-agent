@@ -29,6 +29,7 @@ struct FileInspectorView: View {
     @State private var showImportPicker = false
     @State private var showCloudWorkspaceLink = false
     @State private var showNetworkMount = false
+    @State private var showsIDE = false
     @State private var canvasWorkspace: WorkspaceRecord?
     @State private var exportURL: URL?
     @State private var inspectorMode: InspectorMode = .files
@@ -88,6 +89,11 @@ struct FileInspectorView: View {
         .sheet(isPresented: $showNetworkMount) {
             NetworkWorkspaceMountSheet(center: center)
         }
+        .fullScreenCover(isPresented: $showsIDE) {
+            WorkspaceIDEView(initialRelativePath: previewPath, center: center) {
+                Task { await treeModel.loadRoot() }
+            }
+        }
         .fullScreenCover(item: $canvasWorkspace) { workspace in
             WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
         }
@@ -117,6 +123,7 @@ struct FileInspectorView: View {
                         .font(FloeTheme.Typography.section)
                         .lineLimit(1)
                     Spacer(minLength: 0)
+                    openIDEButton
                     Button {
                         router.hideInspector()
                     } label: {
@@ -170,6 +177,7 @@ struct FileInspectorView: View {
             }
             .navigationTitle("inspector.files")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { openIDEButton }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         do {
@@ -211,6 +219,15 @@ struct FileInspectorView: View {
                 }
             }
         }
+    }
+
+    private var openIDEButton: some View {
+        Button { showsIDE = true } label: {
+            Label("ide.open", systemImage: "arrow.up.left.and.arrow.down.right")
+        }
+        .frame(minWidth: 44, minHeight: 44)
+        .disabled(center.fileService == nil)
+        .accessibilityIdentifier("workspace.openIDE")
     }
 
     private var workspaceActions: some View {

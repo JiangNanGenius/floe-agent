@@ -301,11 +301,29 @@ enum FloeShellCommands {
         for entry in store.catalog.packages {
             registry.register(entry.command) { arguments, stdout, stderr in
                 guard let context = registry.context else { return 2 }
-                guard let input = await FloeShellCommandRegistry.input?.readAsync(cancellation: context.cancellation) else {
-                    if context.cancellation.isCancelled { return 130 }
-                    FloeShellWrite(stderr, "WASM stdin exceeds 256 KiB or could not be read\n"); return 2
+                var standardInput: String?
+                // A terminal is not EOF-terminated piped input. Reading it to
+                // completion here prevents even `--version` from starting.
+                if let input = FloeShellCommandRegistry.input, !input.isTerminal {
+                    guard let value = await input.readAsync(cancellation: context.cancellation) else {
+                        if context.cancellation.isCancelled { return 130 }
+                        FloeShellWrite(stderr, "WASM stdin exceeds 256 KiB or could not be read\n"); return 2
+                    }
+                    standardInput = value
                 }
-                let outcome = await store.run(command: entry.command, arguments: Array(arguments.dropFirst()), stdin: input, environment: [:], rootURL: context.rootURL, cancellation: context.cancellation)
+                let root = context.rootURL.resolvingSymlinksInPath()
+                let directory = context.workingDirectory.resolvingSymlinksInPath()
+                guard directory == root || directory.path.hasPrefix(root.path + "/") else {
+                    FloeShellWrite(stderr, "WASM working directory is outside this workspace\n"); return 2
+                }
+                let relative = directory == root ? "." : String(directory.path.dropFirst(root.path.count + 1))
+                var variables = context.shellVariables
+                variables["PWD"] = relative == "." ? "/workspace" : "/workspace/" + relative
+                variables["HOME"] = "/workspace"
+                variables["TMPDIR"] = "/tmp"
+                let outcome = await store.run(command: entry.command, arguments: Array(arguments.dropFirst()),
+                    stdin: standardInput, environment: variables, rootURL: root, workingDirectory: relative,
+                    cancellation: context.cancellation)
                 switch outcome {
                 case .exited(let code, let out, let err, _, _, _):
                     FloeShellWrite(stdout, out); FloeShellWrite(stderr, err); return code
