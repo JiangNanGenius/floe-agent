@@ -270,7 +270,7 @@ jobs:
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
             -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             build-for-testing
 
       - name: Run Canvas, PiP, timeline and execution regressions

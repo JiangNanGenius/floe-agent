@@ -81,6 +81,16 @@ struct LocalShellRuntimeTests {
                 let url = try BrowserURLPolicy.validate(urlText, conversationID: conversation)
                 let (data, _) = try await URLSession.shared.data(from: url)
                 #expect(String(decoding: data, as: UTF8.self) == "floe-service")
+                // HTTP readiness and the worker's stdout arrive independently.
+                // The snapshot preceding the successful probe may not contain
+                // console output yet. Still require that output to reach the
+                // durable job while the service remains alive.
+                for _ in 0..<50 where progress?.stdout.contains("service-ready") != true {
+                    try await Task.sleep(for: .milliseconds(100))
+                    if let data = try await store.job(id: job.id)?.progressJSON {
+                        progress = try JSONDecoder().decode(LocalServiceProgress.self, from: data)
+                    }
+                }
                 #expect(progress?.stdout.contains("service-ready") == true)
                 token.cancel()
                 #expect(try await task.value.exitStatus == 0)

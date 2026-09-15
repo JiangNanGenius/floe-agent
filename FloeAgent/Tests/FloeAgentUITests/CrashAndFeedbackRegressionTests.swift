@@ -14,9 +14,22 @@ import FloeCore
 import FloeNotes
 import FloeProviders
 import FloeLocalModels
+import FloeSecurity
 @testable import FloeApp
 
 extension CrashAndFeedbackRegressionTests {
+@Test("The actual App can save, restore and remove a local provider credential")
+func localProviderKeychainRoundTrip() throws {
+    let store = KeychainStore(service: "org.floeagent.qualification.providers", synchronizable: false)
+    let account = UUID().uuidString
+    let synthetic = Data("qualification-only-not-an-api-key".utf8)
+    defer { try? store.delete(account: account) }
+    try store.store(account: account, secret: synthetic)
+    #expect(try store.read(account: account) == synthetic)
+    try store.delete(account: account)
+    #expect(throws: KeychainStoreError.itemNotFound) { try store.read(account: account) }
+}
+
 @Test("Reopening a restored provider preserves its local-only credential policy")
 @MainActor func restoredProviderKeepsCredentialLocal() async throws {
     let environment = AppEnvironment.preview()
