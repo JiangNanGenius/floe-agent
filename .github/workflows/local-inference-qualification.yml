@@ -28,7 +28,7 @@ jobs:
           git rev-parse HEAD > "$RUNNER_TEMP/LocalInferenceEvidence/SOURCE-SHA.txt"
           swift build --package-path Qualification/LocalInference --scratch-path .build --force-resolved-versions --jobs 4 \
             2>&1 | tee "$RUNNER_TEMP/LocalInferenceEvidence/build.log"
-      - name: Exercise pinned Qwen cold load and two generations
+      - name: Exercise pinned Qwen cold load, repeat generation and long prefill
         timeout-minutes: 15
         run: |
           set -o pipefail

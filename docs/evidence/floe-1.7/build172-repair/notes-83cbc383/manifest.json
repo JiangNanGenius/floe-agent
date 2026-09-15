@@ -1,0 +1,44 @@
+{
+  "sourceCommit": "83cbc383",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34922624182",
+  "artifactID": 10380211205,
+  "kind": "full-App simulator UI",
+  "result": "Notes UI passed on iPad and iPhone; App runtime regression suite failed two separate tests",
+  "limitations": [
+    "No real Pencil squeeze or physical-device inference evidence",
+    "Candidate UI before b4c65da6 Notes card and later composer width fixes",
+    "iPad PNGs retain original eXIf orientation 8; dimensions are not display orientation"
+  ],
+  "screenshots": [
+    {
+      "path": "ipad-document-assistant.png",
+      "device": "ipad",
+      "originalAttachment": "BA801E6A-3D3F-4A09-93A6-7532B3109A98.png",
+      "sha256": "6324ebe461866e42ea0a295391be23e2a4951f049e89972924d34a2b95b4eb6f"
+    },
+    {
+      "path": "ipad-native-brushes.png",
+      "device": "ipad",
+      "originalAttachment": "BE0ECFB6-C437-432F-AB5C-8FB3BA4B2BA9.png",
+      "sha256": "e9f497f6c10614ce93bc0e51b5c0fa9050b18dc9d9db3804adfab345fffb03b4"
+    },
+    {
+      "path": "ipad-document-body-search.png",
+      "device": "ipad",
+      "originalAttachment": "F1D031BF-035F-4310-BFB9-DF0A7EF8C573.png",
+      "sha256": "b3800d000f44440c01e501aca43e795dab0e48e6163bcc052ef251c883e6bbe4"
+    },
+    {
+      "path": "iphone-document-assistant.png",
+      "device": "iphone",
+      "originalAttachment": "CCC1CC58-9F49-4213-AD33-6C77DD98A666.png",
+      "sha256": "0ab5e6699aa954f9e2ab964c4f34050e5dbb16392351e825b681feb44ae626cf"
+    },
+    {
+      "path": "iphone-document-body-search.png",
+      "device": "iphone",
+      "originalAttachment": "0D7E8194-C1DA-4290-BD3A-FB6A4F986E6A.png",
+      "sha256": "05c30718e859ebcbda556d094b2f9c57e4803017948d82e93ac64361b69d2f5c"
+    }
+  ]
+}

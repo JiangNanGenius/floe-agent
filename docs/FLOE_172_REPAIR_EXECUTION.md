@@ -144,3 +144,12 @@ Release CI reuse now accepts successful manual full-CI runs as well as pushes, a
 
 
 An independent manual cloud diagnostic now exercises production `MLXTextEngine` and the pinned Qwen3.8 snapshot through cold load, two short generations and shutdown with the constrained resource profile. It records MLX memory and host process peak RSS. This macOS diagnostic can provide a reproducible engine failure; it cannot establish the original iPad crash cause or device acceptance. No paid provider API or local multi-GB download is used.
+
+
+## Completed follow-up evidence on 2026-09-15
+
+Full-App run `34922624182` at `83cbc383` passed both Notes UI flows: iPad mini A17 Pro landscape (114.382 seconds) and iPhone 17 Pro portrait (95.865 seconds), one test each, no failures or skips. It exercised workspace import, full-screen PDF editing controls, the assistant without a bootstrap bubble, brush selection, focus mode, tabs and a real PDF-body search snippet. [Original screenshots and provenance](evidence/floe-1.7/build172-repair/notes-83cbc383/README.md) are retained. Real simulator recordings (141 seconds iPad, 180 seconds iPhone) are saved privately. The iPad review cut removes launch overhead and rotates the stored frames; it is a candidate demonstration, not final release evidence or paid model output.
+
+This same full-App run still failed two runtime cases: pytest required `isatty()` and npm required its environment temp directory. HTTPS requests/HTTPX and native Node/Python owned-service lifecycle passed. `f5b6d3bd` contains both fixes plus native lxml/Office integration and managed pip dependency reuse; follow-up `34924942672` has passed environment/package/media/job/Notes module qualification and Linux compilation, with full App checks still running. A screenshot-driven later change limits long composer labels so the assistant's other controls remain reachable; visual requalification is pending.
+
+Independent Qwen diagnostic `34925666700`, source `59197330`, passed pinned download, production MLX load (7.343 seconds), two short answers and shutdown. MLX peak was 2,523,781,237 bytes; host process peak footprint was 2,695,814,080 bytes. Shutdown left 4,000 active MLX bytes and zero cache bytes. The original iPad crash remains unresolved: this is a macOS host with short inputs, not iPad memory-limit evidence. The next diagnostic adds a document-style prompt of at least 4,000 tokens and total request timing. No paid provider calls were made.

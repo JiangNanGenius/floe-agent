@@ -424,3 +424,5 @@ Shell 中的 `npm install`、`pnpm install` 与设置页共用环境安装和失
 Python 包也可通过 `pip`、`pip3` 或 `python3 -m pip` 管理：安装兼容包、逐个卸载本层依赖，或使用 list/show/freeze/check 检查实际依赖。命令与设置页共用安装器。尚不可用的原生扩展需要兼容的 App 构建；只安装纯 Python 包装层并不能补齐原生能力。
 
 修复候选版的软件包页面可点“软件源”修改当前环境的 Python Simple 索引或 npm 仓库，也可恢复官方地址。设置用于手动、Shell 和 Agent 安装；npm/pnpm 共用 Node 源。仅填写公开 HTTPS 源，不在网址中保存密钥。修改源会保留当前安装，下一次安装时生效；私有源认证及 Floe 语言包镜像尚未完成。
+
+修复候选版截图：[文档助手、画笔设置与 PDF 正文搜索](evidence/floe-1.7/build172-repair/notes-83cbc383/README.md)。来自 `83cbc383` 的完整 App 模拟器操作，不代表新版 TestFlight 已可安装。

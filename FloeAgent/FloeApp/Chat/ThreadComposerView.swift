@@ -1116,6 +1116,11 @@ struct ThreadComposerView: View {
             .font(FloeTheme.Typography.metadata)
             .foregroundStyle(.secondary)
             .lineLimit(1)
+            .truncationMode(.tail)
+            // A model may include an availability explanation. Keep the other
+            // controls reachable in narrow document/Canvas assistant panes.
+            .frame(maxWidth: embedded ? 200 : 280, alignment: .leading)
+            .accessibilityLabel(title)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(FloeTheme.groupedSurface, in: Capsule())
