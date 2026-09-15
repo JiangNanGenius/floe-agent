@@ -1328,4 +1328,30 @@ extension CrashAndFeedbackRegressionTests {
         #expect(try await restarted.conflictReviews().first?.copy.id == copy.id)
     }
 }
+extension CrashAndFeedbackRegressionTests {
+    @Test("A dialog draft uses its opened version even after the session refreshes")
+    @MainActor func notesDialogDraftCannotAdoptAgentRevision() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-dialog-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var value = NoteDocument(title: "Element")
+        let element = NoteElement(text: "Opened text")
+        value.pages[0].elements = [element]
+        let base = try await store.create(value)
+        let session = NotesSession()
+        await session.open(using: store)
+        var changed = element; changed.text = "Agent update"
+        let agent = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Agent", edits: [.upsertElement(pageID: base.pages[0].id, element: changed)]))
+        try await session.reload()
+        var mine = element; mine.text = "Human draft"
+        session.apply([.upsertElement(pageID: base.pages[0].id, element: mine)], title: "Dialog", base: base)
+        let deadline = Date().addingTimeInterval(5)
+        while session.pendingWrites > 0 && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(session.pendingWrites == 0)
+        #expect(try await store.document(base.id) == agent)
+        let review = try #require(try await store.conflictReviews().first)
+        #expect(review.copy.pages[0].elements.first?.text == "Human draft")
+    }
+}
 #endif

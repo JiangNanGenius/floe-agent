@@ -22,6 +22,11 @@ struct NotesDocumentEditor: View {
     @State private var mapImageTargetID: UUID?
     @State private var importingImage = false
     @State private var inspectingElement: NoteElement?
+    @State private var inspectionBase: NoteDocument?
+    @State private var textBase: NoteDocument?
+    @State private var textPageID: UUID?
+    @State private var savingText = false
+    @State private var textSaveError: String?
     @State private var loadedPageID: UUID?
     @State private var tool: InkTool = .pen
     @State private var previousTool: InkTool = .pen
@@ -260,7 +265,7 @@ struct NotesDocumentEditor: View {
                         let width = min(page.width * 0.6, image.width)
                         let height = min(page.height * 0.6, width * image.height / image.width)
                         let element = NoteElement(kind: .image, frame: .init(x: 40, y: 60, width: width, height: height), resourceID: resource)
-                        session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入图片", documentID: document.id)
+                        session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入图片", base: document)
                     }
                 } catch { session.errorMessage = error.localizedDescription }
             }
@@ -269,12 +274,12 @@ struct NotesDocumentEditor: View {
             MindMapTopicInspector(session: session, document: document, node: node)
         }
         .sheet(item: $inspectingElement) { element in
-            if let page {
+            if let base = inspectionBase, let page = base.pages.first(where: { $0.elements.contains(where: { $0.id == element.id }) }) {
                 NoteElementInspector(element: element, page: page, save: { updated in
-                    session.apply([.upsertElement(pageID: page.id, element: updated)], title: "编辑页面内容", documentID: document.id)
+                    _ = try await session.commit([.upsertElement(pageID: page.id, element: updated)], documentID: base.id, expectedRevision: base.revision)
                     inspectingElement = nil
                 }, delete: {
-                    session.apply([.deleteElements(pageID: page.id, ids: [element.id])], title: "删除页面内容", documentID: document.id)
+                    _ = try await session.commit([.deleteElements(pageID: page.id, ids: [element.id])], documentID: base.id, expectedRevision: base.revision)
                     inspectingElement = nil
                 }, openSource: { source in
                     inspectingElement = nil
@@ -304,14 +309,14 @@ struct NotesDocumentEditor: View {
                         }
                         .swipeActions {
                             Button(role: .destructive) {
-                                session.apply([.deletePage(value.id)], title: "删除页面", documentID: document.id)
+                                session.apply([.deletePage(value.id)], title: "删除页面", base: document)
                             } label: { Label("删除", systemImage: "trash") }.disabled(document.pages.count <= 1)
                         }
                     }
                     .onMove { indices, destination in
                         guard let from = indices.first else { return }
                         let target = destination > from ? destination - 1 : destination
-                        session.apply([.movePage(document.pages[from].id, to: target)], title: "移动页面", documentID: document.id)
+                        session.apply([.movePage(document.pages[from].id, to: target)], title: "移动页面", base: document)
                     }
                 }.navigationTitle("页面")
                     .toolbar {
@@ -327,15 +332,26 @@ struct NotesDocumentEditor: View {
                         ToolbarItem(placement: .cancellationAction) { Button("取消") { showText = false } }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("完成") {
-                                guard let page else { return }
+                                guard let base = textBase, let page = base.pages.first(where: { $0.id == textPageID }) else { return }
                                 var element = editedElement ?? NoteElement(frame: .init(x: 40, y: 60 + Double(page.elements.count) * 140, width: max(120, page.width - 80), height: 120))
                                 element.text = textDraft
-                                session.apply([.upsertElement(pageID: page.id, element: element)], title: "编辑文字", documentID: document.id)
-                                showText = false
+                                savingText = true
+                                let edit = NoteEdit.upsertElement(pageID: page.id, element: element)
+                                Task {
+                                    defer { savingText = false }
+                                    do {
+                                        _ = try await session.commit([edit], documentID: base.id, expectedRevision: base.revision)
+                                        showText = false
+                                    } catch { textSaveError = error.localizedDescription }
+                                }
                             }.disabled(textDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
-            }.presentationDetents([.medium, .large])
+                    .disabled(savingText)
+                    .alert("手记", isPresented: Binding(get: { textSaveError != nil }, set: { if !$0 { textSaveError = nil } })) {
+                        Button("好") { textSaveError = nil }
+                    } message: { Text(textSaveError ?? "") }
+            }.presentationDetents([.medium, .large]).interactiveDismissDisabled(savingText)
         }
     }
 
@@ -370,11 +386,11 @@ struct NotesDocumentEditor: View {
             var edits: [NoteEdit] = [.upsertElement(pageID: page.id, element: first)]
             let index = document.pages.firstIndex(where: { $0.id == page.id }) ?? 0
             for (offset, additional) in pages.dropFirst().enumerated() { edits.append(.insertPage(additional, at: index + offset + 1)) }
-            session.apply(edits, title: "保存 AI 回答", documentID: document.id)
+            session.apply(edits, title: "保存 AI 回答", base: document)
         } else if insert, document.kind == .mindMap, let root = document.nodes.first(where: { $0.parentID == nil }) {
             var node = MindMapNode(parentID: root.id, title: "AI 整理", note: text, order: document.nodes.filter { $0.parentID == root.id }.count, source: source)
             node.isAIGenerated = true
-            session.apply([.upsertNode(node)], title: "保存 AI 回答", documentID: document.id)
+            session.apply([.upsertNode(node)], title: "保存 AI 回答", base: document)
         } else {
             var value = NoteDocument(notebookID: document.notebookID, title: "\(document.title) · 整理")
             value.pages = NotesTextLayout.pages(text: text, source: source)
@@ -559,14 +575,14 @@ struct NotesDocumentEditor: View {
                     }.frame(minHeight: 44)
                         .accessibilityIdentifier("notes.selection.delete")
                 }
-                Button("文字", systemImage: "textformat") { editedElement = nil; textDraft = ""; showText = true }.labelStyle(.iconOnly).frame(width: 44, height: 44)
+                Button("文字", systemImage: "textformat") { editedElement = nil; textDraft = ""; textBase = document; textPageID = page?.id; showText = true }.labelStyle(.iconOnly).frame(width: 44, height: 44)
                 Menu {
                     Button("图片", systemImage: "photo") { importingImage = true }
                     ForEach([NoteElement.Kind.rectangle, .ellipse, .line, .arrow], id: \.self) { kind in
                         Button(kind == .rectangle ? "矩形" : kind == .ellipse ? "椭圆" : kind == .line ? "直线" : "箭头") {
                             guard let page else { return }
                             let element = NoteElement(kind: kind, frame: .init(x: 60, y: 80, width: min(240, page.width * 0.5), height: 120))
-                            session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入形状", documentID: document.id)
+                            session.apply([.upsertElement(pageID: page.id, element: element)], title: "插入形状", base: document)
                         }
                     }
                 } label: { Label("插入", systemImage: "plus.square").labelStyle(.iconOnly).frame(width: 44, height: 44) }
@@ -580,7 +596,7 @@ struct NotesDocumentEditor: View {
                     if let page {
                         Picker("纸张", selection: Binding(get: { page.paper }, set: { paper in
                             var updated = page; updated.paper = paper
-                            session.apply([.updatePage(updated)], title: "纸张", documentID: document.id)
+                            session.apply([.updatePage(updated)], title: "纸张", base: document)
                         })) {
                             Text("空白").tag(NotePage.Paper.plain)
                             Text("横线").tag(NotePage.Paper.ruled)
@@ -588,14 +604,14 @@ struct NotesDocumentEditor: View {
                         }
                         Button(page.isBookmarked ? "取消书签" : "添加书签") {
                             var updated = page; updated.isBookmarked.toggle()
-                            session.apply([.updatePage(updated)], title: "书签", documentID: document.id)
+                            session.apply([.updatePage(updated)], title: "书签", base: document)
                         }
                         ForEach(Array(page.elements.enumerated()), id: \.element.id) { index, element in
-                            Button("\(index + 1). \(element.kind == .text ? String(element.text.prefix(20)) : element.kind.rawValue)") { inspectingElement = element }
+                            Button("\(index + 1). \(element.kind == .text ? String(element.text.prefix(20)) : element.kind.rawValue)") { inspectionBase = document; inspectingElement = element }
                         }
                     }
                     Button("新增页面", systemImage: "doc.badge.plus") {
-                        session.apply([.insertPage(NotePage(), at: document.pages.count)], title: "新增页面", documentID: document.id)
+                        session.apply([.insertPage(NotePage(), at: document.pages.count)], title: "新增页面", base: document)
                     }
                 } label: { Label("更多", systemImage: "ellipsis").labelStyle(.iconOnly).frame(width: 44, height: 44) }
             }.buttonStyle(NotesToolbarButtonStyle()).foregroundStyle(.primary).padding(.horizontal, 8).padding(.vertical, 4)
@@ -643,6 +659,7 @@ private struct MindMapOutlineView: View {
     let session: NotesSession
     let document: NoteDocument
     @State private var editing: MindMapNode?
+    @State private var editingBase: NoteDocument?
     @State private var title = ""
     var body: some View {
         List {
@@ -651,12 +668,12 @@ private struct MindMapOutlineView: View {
                     Text(node.title).padding(.leading, CGFloat(min(depth, 12)) * 16)
                     Spacer()
                     Menu {
-                        Button("编辑") { title = node.title; editing = node }
+                        Button("编辑") { title = node.title; editingBase = document; editing = node }
                         Button("添加子主题") {
-                            session.apply([.upsertNode(.init(parentID: node.id, title: "新主题", order: document.nodes.filter { $0.parentID == node.id }.count))], title: "新增主题", documentID: document.id)
+                            session.apply([.upsertNode(.init(parentID: node.id, title: "新主题", order: document.nodes.filter { $0.parentID == node.id }.count))], title: "新增主题", base: document)
                         }
                         if node.parentID != nil {
-                            Button("删除分支", role: .destructive) { session.apply([.deleteBranch(node.id)], title: "删除分支", documentID: document.id) }
+                            Button("删除分支", role: .destructive) { session.apply([.deleteBranch(node.id)], title: "删除分支", base: document) }
                         }
                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                 }
@@ -666,9 +683,9 @@ private struct MindMapOutlineView: View {
             TextField("主题", text: $title)
             Button("取消", role: .cancel) { editing = nil }
             Button("保存") {
-                if var node = editing {
+                if var node = editing, let base = editingBase {
                     node.title = title
-                    session.apply([.upsertNode(node)], title: "编辑主题", documentID: document.id)
+                    session.apply([.upsertNode(node)], title: "编辑主题", base: base)
                 }
                 editing = nil
             }

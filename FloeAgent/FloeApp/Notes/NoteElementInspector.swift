@@ -5,13 +5,15 @@ import FloeNotes
 
 struct NoteElementInspector: View {
     @State private var draft: NoteElement
+    @State private var saving = false
+    @State private var error: String?
     let page: NotePage
-    let save: (NoteElement) -> Void
-    let delete: () -> Void
+    let save: (NoteElement) async throws -> Void
+    let delete: () async throws -> Void
     let openSource: ((NoteSourceReference) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
-    init(element: NoteElement, page: NotePage, save: @escaping (NoteElement) -> Void, delete: @escaping () -> Void, openSource: ((NoteSourceReference) -> Void)? = nil) {
+    init(element: NoteElement, page: NotePage, save: @escaping (NoteElement) async throws -> Void, delete: @escaping () async throws -> Void, openSource: ((NoteSourceReference) -> Void)? = nil) {
         _draft = State(initialValue: element); self.page = page; self.save = save; self.delete = delete
         self.openSource = openSource
     }
@@ -58,18 +60,31 @@ struct NoteElementInspector: View {
                     }
                 }
                 Section {
-                    Button("删除此内容", role: .destructive, action: delete)
+                    Button("删除此内容", role: .destructive) { perform { try await delete() } }
                 } footer: { Text("修改和删除均可通过手记的撤销按钮恢复。") }
             }
             .navigationTitle("页面内容")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { save(draft) }
+                    Button("完成") { perform { try await save(draft) } }
                         .disabled(!draft.frame.isValid || (draft.kind == .text && draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }
-        }.presentationDetents([.large])
+            .disabled(saving)
+            .alert("手记", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("好") { error = nil }
+            } message: { Text(error ?? "") }
+        }.presentationDetents([.large]).interactiveDismissDisabled(saving)
+    }
+
+    private func perform(_ action: @escaping @MainActor () async throws -> Void) {
+        saving = true
+        Task {
+            defer { saving = false }
+            do { try await action(); dismiss() }
+            catch { self.error = error.localizedDescription }
+        }
     }
 
     private func dimension(_ title: String, value: Binding<Double>, minimum: Double = 0, maximum: Double) -> some View {

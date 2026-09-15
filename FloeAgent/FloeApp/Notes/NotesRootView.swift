@@ -30,6 +30,7 @@ struct NotesRootView: View {
         let id: UUID
         let title: String
         let notebook: Bool
+        var document: NoteDocument? = nil
     }
     private enum Creation: String, Identifiable {
         case note = "新建手记", map = "新建思维导图", notebook = "新建笔记本"
@@ -80,8 +81,13 @@ struct NotesRootView: View {
             }
             .sheet(item: $renaming) { target in
                 NotesRenameSheet(title: target.title) { name in
-                    if target.notebook { session.renameNotebook(target.id, title: name) }
-                    else { session.apply([.rename(name)], title: "重命名", documentID: target.id) }
+                    if target.notebook {
+                        guard let store = session.store else { throw NoteError.resourceUnavailable }
+                        try await store.renameNotebook(target.id, title: name)
+                        try await session.reload()
+                    } else if let base = target.document {
+                        _ = try await session.commit([.rename(name)], documentID: base.id, expectedRevision: base.revision)
+                    }
                     renaming = nil
                 }
             }
@@ -256,14 +262,14 @@ struct NotesRootView: View {
                             Button("永久删除", systemImage: "trash", role: .destructive) { deleting = document }
                         } else {
                             Button("重新索引正文", systemImage: "text.magnifyingglass") { session.rebuildSearchIndex(documentID: document.id) }
-                            Button("重命名", systemImage: "pencil") { renaming = .init(id: document.id, title: document.title, notebook: false) }
+                            Button("重命名", systemImage: "pencil") { renaming = .init(id: document.id, title: document.title, notebook: false, document: document) }
                             Button(document.isFavorite ? "取消收藏" : "收藏", systemImage: "star") {
-                                session.apply([.favorite(!document.isFavorite)], title: "收藏", documentID: document.id)
+                                session.apply([.favorite(!document.isFavorite)], title: "收藏", base: document)
                             }
                             Menu("移到笔记本") {
-                                Button("未分类") { session.apply([.moveToNotebook(nil)], title: "移动", documentID: document.id) }
+                                Button("未分类") { session.apply([.moveToNotebook(nil)], title: "移动", base: document) }
                                 ForEach(session.notebooks) { book in
-                                    Button(book.title) { session.apply([.moveToNotebook(book.id)], title: "移动", documentID: document.id) }
+                                    Button(book.title) { session.apply([.moveToNotebook(book.id)], title: "移动", base: document) }
                                 }
                             }
                             Button("移到回收站", role: .destructive) { session.trash(document) }
@@ -324,9 +330,11 @@ struct NotesRootView: View {
 }
 private struct NotesRenameSheet: View {
     @State private var name: String
-    let save: (String) -> Void
+    let save: (String) async throws -> Void
+    @State private var saving = false
+    @State private var error: String?
     @Environment(\.dismiss) private var dismiss
-    init(title: String, save: @escaping (String) -> Void) { _name = State(initialValue: title); self.save = save }
+    init(title: String, save: @escaping (String) async throws -> Void) { _name = State(initialValue: title); self.save = save }
     var body: some View {
         NavigationStack {
             Form { TextField("名称", text: $name) }
@@ -334,11 +342,22 @@ private struct NotesRenameSheet: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("保存") { save(name.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        Button("保存") {
+                            saving = true
+                            Task {
+                                defer { saving = false }
+                                do { try await save(name.trimmingCharacters(in: .whitespacesAndNewlines)); dismiss() }
+                                catch { self.error = error.localizedDescription }
+                            }
+                        }
                             .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-        }.presentationDetents([.medium])
+                .disabled(saving)
+                .alert("手记", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                    Button("好") { error = nil }
+                } message: { Text(error ?? "") }
+        }.presentationDetents([.medium]).interactiveDismissDisabled(saving)
     }
 }
 @MainActor private struct NotesCoverPreview: View {

@@ -12,6 +12,7 @@ struct MindMapTopicInspector: View {
     var onOpenSource: ((NoteSourceReference) async -> Bool)? = nil
     @State private var pendingSource: NoteSourceReference?
     @State private var savedRevision: Int?
+    @State private var openedRevision: Int
     @State private var savedNode: MindMapNode?
     @State private var importing = false
     @State private var replacing: UUID?
@@ -22,6 +23,14 @@ struct MindMapTopicInspector: View {
     private struct Preview: Identifiable {
         let id = UUID()
         let url: URL
+    }
+
+    init(session: NotesSession, document: NoteDocument, node: MindMapNode,
+         onOpenSource: ((NoteSourceReference) async -> Bool)? = nil) {
+        self.session = session; self.document = document
+        self._node = State(initialValue: node)
+        self._openedRevision = State(initialValue: document.revision)
+        self.onOpenSource = onOpenSource
     }
 
     var body: some View {
@@ -123,7 +132,7 @@ struct MindMapTopicInspector: View {
             defer { busy = false }
             do {
                 if saveChanges {
-                    let saved = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: savedRevision ?? document.revision)
+                    let saved = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: savedRevision ?? openedRevision)
                     savedRevision = saved.revision; savedNode = node
                 }
                 let opened: Bool
@@ -140,7 +149,7 @@ struct MindMapTopicInspector: View {
         Task {
             defer { busy = false }
             do {
-                _ = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: savedRevision ?? document.revision)
+                _ = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: savedRevision ?? openedRevision)
                 dismiss()
             } catch { self.error = error.localizedDescription }
         }

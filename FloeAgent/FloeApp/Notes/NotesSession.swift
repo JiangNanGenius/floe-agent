@@ -296,11 +296,9 @@ final class NotesSession {
         }
     }
 
-    func apply(_ edits: [NoteEdit], title: String, documentID: UUID) {
-        let baseline = documents.first { $0.id == documentID }
+    func apply(_ edits: [NoteEdit], title: String, base: NoteDocument) {
         enqueue { [self] in
-            guard let baseline else { throw NoteError.notFound }
-            _ = try await commitPreservingConflict(.init(documentID: documentID, expectedRevision: baseline.revision, title: title, edits: edits), base: baseline)
+            _ = try await commitPreservingConflict(.init(documentID: base.id, expectedRevision: base.revision, title: title, edits: edits), base: base)
             try await reload()
         }
     }
