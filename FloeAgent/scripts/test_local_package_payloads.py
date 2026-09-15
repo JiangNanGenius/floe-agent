@@ -3,6 +3,7 @@ import importlib.util
 import os
 import runpy
 import io
+import json
 from pathlib import Path
 import tarfile
 import tempfile
@@ -189,12 +190,66 @@ class PayloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def fake_pip(args):
+                if '--report' in args:
+                    Path(args[args.index('--report') + 1]).write_text(json.dumps({'version': '1', 'install': [
+                        {'download_info': {'url': 'https://example.org/bad-1-py3-none-any.whl',
+                                           'archive_info': {'hashes': {'sha256': 'a' * 64}}}}]}))
+                    return 0
                 incoming = Path(args[args.index('--target') + 1]); incoming.mkdir()
                 (incoming / 'bad.so').write_bytes(b'bad')
                 return 0
             with self.assertRaises(ValueError): install.install(['bad'], root / 'site-packages', fake_pip)
             self.assertFalse((root / '.floe-python-transaction').exists())
             self.assertFalse((root / 'site-packages').exists())
+
+    def test_relocated_console_script_has_contained_uninstall_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            incoming = Path(directory)
+            (incoming / 'bin').mkdir(); (incoming / 'bin/vba_extract.py').write_text('pass')
+            self.make_distribution(incoming, 'xlsxwriter', ['../../bin/vba_extract.py'])
+            install.normalize_staged_script_records(incoming)
+            self.assertIn('bin/vba_extract.py', install.records(install.distributions(incoming)['xlsxwriter'], incoming))
+            remove.remove_distribution(incoming, 'xlsxwriter')
+            self.assertFalse((incoming / 'bin/vba_extract.py').exists())
+
+    def test_console_script_relocation_does_not_admit_arbitrary_traversal(self):
+        for relative in ['../../bin/missing.py', '../../other/file.py', '../../bin/../escape.py']:
+            with tempfile.TemporaryDirectory() as directory:
+                incoming = Path(directory)
+                self.make_distribution(incoming, 'pkg', [relative])
+                with self.assertRaises(ValueError): install.normalize_staged_script_records(incoming)
+
+    def test_resolver_reuses_installed_dependencies_without_mutating_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'site-packages'
+            target.mkdir(); (target / 'kept.py').write_text('original')
+            calls = []
+            def resolved(args):
+                calls.append(args)
+                self.assertNotIn('--target', args)
+                self.assertNotIn('--ignore-installed', args)
+                Path(args[args.index('--report') + 1]).write_text(json.dumps({'version': '1', 'install': []}))
+                return 0
+            install.install(['already-installed'], target, resolved)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual((target / 'kept.py').read_text(), 'original')
+            self.assertFalse((root / '.floe-python-transaction').exists())
+
+    def test_resolution_digest_and_pure_wheel_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'resolution.json'
+            for url, digest in [('https://example.org/a-cp313-ios.whl', 'a' * 64),
+                                ('http://example.org/a-py3-none-any.whl', 'a' * 64),
+                                ('https://user:secret@example.org/a-py3-none-any.whl', 'a' * 64),
+                                ('https://example.org/a-py3-none-any.whl', '')]:
+                report.write_text(json.dumps({'version': '1', 'install': [
+                    {'download_info': {'url': url, 'archive_info': {'hashes': {'sha256': digest}}}}]}))
+                with self.assertRaises(ValueError): install.resolved_wheels(report)
+            url = 'https://example.org/a-py3-none-any.whl'
+            report.write_text(json.dumps({'version': '1', 'install': [
+                {'download_info': {'url': url, 'archive_info': {'hashes': {'sha256': 'a' * 64}}}}]}))
+            self.assertEqual(install.resolved_wheels(report), [url + '#sha256=' + 'a' * 64])
 
     def test_selected_python_index_reaches_installer_and_failure_retains_files(self):
         with tempfile.TemporaryDirectory() as directory:

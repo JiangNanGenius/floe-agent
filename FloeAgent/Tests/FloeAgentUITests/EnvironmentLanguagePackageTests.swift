@@ -68,6 +68,27 @@ struct EnvironmentLanguagePackageTests {
                     operation: ManagedPythonPackageSpecParser.parseShell(arguments: ["uninstall", "-y", "colorama"]), cancellation: CancellationToken())
                 _ = try await manager.pythonFromShell(environment: environment,
                     operation: ManagedPythonPackageSpecParser.parseShell(arguments: ["install", "colorama==0.4.6"]), cancellation: CancellationToken())
+                // A pure wrapper must reuse the signed bundled lxml dependency.
+                // Install a distinct wrapper version into this layer, then remove
+                // it and prove the original bundle version becomes visible again.
+                _ = try await manager.pythonFromShell(environment: environment,
+                    operation: ManagedPythonPackageSpecParser.parseShell(arguments: ["install", "python-docx==1.1.2"]), cancellation: CancellationToken())
+                let office = await python.run(.init(script: """
+                    import io, docx, lxml.etree
+                    assert docx.__version__ == '1.1.2'
+                    document = docx.Document(); document.add_paragraph('环境 中文 Office')
+                    data = io.BytesIO(); document.save(data); data.seek(0)
+                    assert docx.Document(data).paragraphs[0].text == '环境 中文 Office'
+                    print('managed-office-native-dependency-passed')
+                    """, timeout: 20, pythonContext: ManagedPythonInstallService.executionContext(environment)), cancellation: nil)
+                if case .ok(_, let stdout, _, _, _, _) = office { #expect(stdout.contains("managed-office-native-dependency-passed")) }
+                else { Issue.record("Managed Office/native dependency reuse failed: \(office)") }
+                _ = try await manager.pythonFromShell(environment: environment,
+                    operation: ManagedPythonPackageSpecParser.parseShell(arguments: ["uninstall", "-y", "python-docx"]), cancellation: CancellationToken())
+                let restored = await python.run(.init(script: "import docx; print(docx.__version__)", timeout: 10,
+                    pythonContext: ManagedPythonInstallService.executionContext(environment)), cancellation: nil)
+                if case .ok(_, let stdout, _, _, _, _) = restored { #expect(stdout.contains("1.2.0")) }
+                else { Issue.record("Bundled Office version was not restored: \(restored)") }
             } else {
                 let outcome = await IOSSystemNodeRuntime.shared.run(.init(entryScript: nil,
                     arguments: ["-e", "console.log(require('is-number')('42'))"], workingDirectory: root,

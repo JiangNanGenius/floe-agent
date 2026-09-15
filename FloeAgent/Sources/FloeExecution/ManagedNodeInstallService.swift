@@ -15,8 +15,11 @@ public struct ManagedNodeInstallService: Sendable {
     }
     private func contained(_ relative: String, in root: URL) throws -> URL {
         let base = root.resolvingSymlinksInPath().standardizedFileURL
-        let candidate = base.appendingPathComponent(relative).resolvingSymlinksInPath().standardizedFileURL
-        guard candidate.path.hasPrefix(base.path + "/") else { throw FloeError.validationFailed("依赖路径越出环境") }
+        var candidate = base
+        for component in relative.split(separator: "/") {
+            candidate = candidate.appendingPathComponent(String(component)).resolvingSymlinksInPath().standardizedFileURL
+            guard candidate.path.hasPrefix(base.path + "/") else { throw FloeError.validationFailed("依赖路径越出环境") }
+        }
         return candidate
     }
     private func boundedData(_ url: URL) throws -> Data {
@@ -151,6 +154,14 @@ public struct ManagedNodeInstallService: Sendable {
             }
             var variables = environmentDefaults(environment, prefix)
                 .merging(environment.variables) { _, resolved in resolved }
+            // npm/pnpm may realpath HOME/TMPDIR before creating cache files.
+            // A restored or directly-created environment must be usable too.
+            for (key, relative) in [("HOME", "home"), ("TMPDIR", "tmp"),
+                                    ("npm_config_cache", "var/npm"), ("npm_config_store_dir", "opt/pnpm-store")] {
+                let directory = try contained(relative, in: environment.writableLayerURL)
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+                variables[key] = directory.path
+            }
             variables["CI"] = "1"
             variables["npm_config_prefix"] = prefix.path
             variables["npm_config_global"] = "false"

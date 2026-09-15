@@ -65,6 +65,8 @@ struct NodePackageManagerTests {
         let modules = root.appendingPathComponent("usr/lib/node_modules")
         for manager in NodePackageManager.allCases {
             _ = try await service.change(environment, specifications: ["is-number@7.0.0", "is-odd@3.0.1"], remove: false, manager: manager, cancellation: CancellationToken())
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("tmp").path))
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("home").path))
             let outcome = await runtime.run(.init(entryScript: nil, arguments: ["-e", "console.log(require('is-number')(42) && require('is-odd')(3))"],
                 workingDirectory: root, environment: ["NODE_PATH": modules.path]), cancellation: nil)
             guard case .exited(let code, let stdout, let stderr, _, _) = outcome else { Issue.record("No Node result"); return }

@@ -35,6 +35,11 @@ class EmbeddedOutputTests(unittest.TestCase):
         self.assertEqual(next_result['stderr'], '')
         self.assertEqual(next_result['stdout'], 'next-job\n')
 
+    def test_output_has_a_non_terminal_text_stream_interface(self):
+        _, result = self.run_script("import sys, io; assert isinstance(sys.stdout, io.TextIOBase); assert sys.stdout.writable(); assert not sys.stdout.isatty(); assert not sys.stdout.seekable(); assert sys.stdout.encoding == 'utf-8'; sys.stdout.writelines(['ok', '\\n'])")
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['stdout'], 'ok\n')
+
     def test_repeated_output_does_not_retain_empty_chunks_after_limit(self):
         state, result = self.run_script("for _ in range(20000): print('x')")
         self.assertEqual(result["status"], "ok")
