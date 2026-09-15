@@ -152,7 +152,7 @@ jobs:
             device: iPhone 17 Pro
             device_key: iphone
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
       PALETTE_DEVICE: ${{ matrix.device }}
@@ -179,19 +179,36 @@ jobs:
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build-for-testing 2>&1 | tee build.log
       - name: Prepare and diagnose the exact SDK simulator before XCTest
-        timeout-minutes: 5
+        timeout-minutes: 12
         run: |
           set -euo pipefail
           major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
           xcrun simctl list devices available -j > simulator-inventory.json
           device="$(python3 ../../scripts/select_test_simulator.py --sdk-major "$major" --name "$PALETTE_DEVICE" < simulator-inventory.json)"
           echo "PALETTE_SIMULATOR_ID=$device" >> "$GITHUB_ENV"
+          # Guard each simctl call: a wedged installd or first-boot data
+          # migration previously hung this step until the job timeout with
+          # no retained log. Fail fast instead and keep diagnostics.
+          simctl_guard() {
+            local seconds="$1"; shift
+            "$@" & local pid=$!
+            for _ in $(seq "$seconds"); do
+              if ! kill -0 "$pid" 2>/dev/null; then wait "$pid"; return; fi
+              sleep 1
+            done
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" || true
+            echo "simctl guard: command exceeded ${seconds}s: $*" >&2
+            return 124
+          }
           # Cold SpringBoard startup previously consumed the launch assertion
-          # window. Finish it explicitly and retain failures before UI tests.
-          xcrun simctl boot "$device" > simulator-boot.log 2>&1 || true
-          xcrun simctl bootstatus "$device" -b 2>&1 | tee -a simulator-boot.log
-          xcrun simctl install "$device" build/Build/Products/Debug-iphonesimulator/FloePencilPaletteQualification.app
-          xcrun simctl launch "$device" org.floeagent.pencil.palette.qualification 2>&1 | tee simulator-prewarm.log
+          # window. Restart from a clean shutdown, finish boot explicitly and
+          # retain failures before UI tests.
+          xcrun simctl shutdown "$device" > simulator-boot.log 2>&1 || true
+          simctl_guard 120 xcrun simctl boot "$device" >> simulator-boot.log 2>&1 || true
+          simctl_guard 480 xcrun simctl bootstatus "$device" -b 2>&1 | tee -a simulator-boot.log
+          simctl_guard 180 xcrun simctl install "$device" build/Build/Products/Debug-iphonesimulator/FloePencilPaletteQualification.app
+          simctl_guard 120 xcrun simctl launch "$device" org.floeagent.pencil.palette.qualification 2>&1 | tee simulator-prewarm.log
           xcrun simctl terminate "$device" org.floeagent.pencil.palette.qualification
       - name: Qualify arc positions, brush rendering and settings on this device
         timeout-minutes: 12
