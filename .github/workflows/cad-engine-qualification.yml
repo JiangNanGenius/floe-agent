@@ -38,6 +38,7 @@ jobs:
         run: |
           cargo install wasm-bindgen-cli --version 0.2.126 --locked --jobs 2
           wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/floe_cad_engine.wasm
+          python3 collect_licenses.py
           sha256sum pkg/* Cargo.lock > cad-artifacts.sha256
       - name: Preserve exact-source engine and failures
         if: always()
