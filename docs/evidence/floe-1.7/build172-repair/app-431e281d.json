@@ -1,0 +1,37 @@
+{
+  "sourceSHA": "431e281dc0aa27c9f861df500301bb4a5877476f",
+  "runURL": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34938487683",
+  "target": "Full App on iOS 27 Simulator",
+  "appRegression": {
+    "passed": 172,
+    "failed": 0,
+    "skipped": 0,
+    "originalLogSHA256": "ff9d173000c88ffbd4d72d79c56ac8d6120330f8f61c7aab3e82b2849dc25036"
+  },
+  "verifiedChanges": [
+    "Dedicated Notes conversation ownership and legacy reconciliation",
+    "Local provider Keychain round trip",
+    "Owned preview service HTTP readback, bounded stdout wait, stop and revoked access"
+  ],
+  "notesUI": {
+    "iphone": {
+      "passed": 1,
+      "skipped": 1,
+      "failed": 0
+    },
+    "ipad": {
+      "passed": 0,
+      "skipped": 1,
+      "failed": 1,
+      "failure": "XCTest timed out while querying the Notes page frame after closing brush settings. Original video and host stackshot retained privately."
+    }
+  },
+  "nativeOfficeAccepted": false,
+  "physicalDeviceAccepted": false,
+  "entireCIPassed": false,
+  "limitations": [
+    "iPad UI timeout remains unresolved; this is not dual-device acceptance.",
+    "A preceding candidate passed both Notes simulator cases; it does not override this failure.",
+    "This simulator evidence does not establish TestFlight upload or model inference."
+  ]
+}
