@@ -133,16 +133,32 @@ import PencilKit
                 shot.name = "native-brush-picker"; shot.lifetime = .keepAlways; add(shot)
             }
             button.tap()
+            // Prove the selection actually reached the fixture before dismissing
+            // the panel. A tap absorbed during the popover animation otherwise
+            // surfaces later as a misleading canvas timeout. The marker keeps
+            // the previous pen kind, so check its tool label instead.
+            if name == "marker" {
+                let markerTool = expectation(for: NSPredicate(format: "label == %@", "marker"),
+                                             evaluatedWith: app.staticTexts["palette.selectedTool"])
+                wait(for: [markerTool], timeout: 5)
+            } else {
+                let picked = expectation(for: NSPredicate(format: "label == %@", name),
+                                         evaluatedWith: app.staticTexts["palette.selectedPen"])
+                wait(for: [picked], timeout: 5)
+            }
             app.buttons["palette.brushes.done"].tap()
             let closed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: button)
             wait(for: [closed], timeout: 10)
             let canvas = app.descendants(matching: .any).matching(identifier: "palette.canvas").firstMatch
             XCTAssertTrue(canvas.waitForExistence(timeout: 5))
             let applied = expectation(for: NSPredicate(format: "value == %@", inkType.rawValue), evaluatedWith: canvas)
-            wait(for: [applied], timeout: 5)
+            wait(for: [applied], timeout: 10)
         }
         app.buttons["palette.brushes"].tap()
         app.buttons["notes.ink.brush.fountainPen"].tap()
+        let remembered = expectation(for: NSPredicate(format: "label == %@", "fountainPen"),
+                                     evaluatedWith: app.staticTexts["palette.selectedPen"])
+        wait(for: [remembered], timeout: 5)
         app.buttons["palette.brushes.done"].tap()
         app.terminate()
         app.launch()

@@ -34,6 +34,8 @@ private struct PaletteFixture: View {
             // The fixture keeps the production setting and actual drawing viewport.
             HStack {
                 Text(tool.rawValue).accessibilityIdentifier("palette.selectedTool")
+                Text(inkPreferences.selectedPen.rawValue)
+                    .accessibilityIdentifier("palette.selectedPen")
                 Button("画笔") { showingBrushes.toggle() }
                     .accessibilityIdentifier("palette.brushes")
                     .popover(isPresented: $showingBrushes) {
