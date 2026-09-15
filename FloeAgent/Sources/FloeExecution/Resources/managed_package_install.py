@@ -176,6 +176,7 @@ def install(specs, target, pip_runner=None):
             from pip._internal.cli.main import main as pip_runner
         cache = target.parent / 'PythonPackageCache'
         code = pip_runner(['install', '--disable-pip-version-check', '--no-input', '--no-compile',
+                           '--index-url', os.environ.get('FLOE_PYTHON_INDEX_URL', 'https://pypi.org/simple/'),
                            '--only-binary=:all:', '--platform=any', '--implementation=py', '--abi=none',
                            '--cache-dir', str(cache), '--target', str(incoming)] + specs)
         if code:

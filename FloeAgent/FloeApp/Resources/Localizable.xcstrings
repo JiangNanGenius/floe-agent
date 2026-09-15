@@ -1,6 +1,54 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "packages.registry.source": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Package source"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "软件源"
+      }
+    }
+  }
+},
+    "packages.registry.restore": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Restore official source"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "恢复官方源"
+      }
+    }
+  }
+},
+    "packages.registry.policy": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "This source applies to this environment for manual, Shell and Agent installations. Use a public HTTPS registry or Python Simple index. Keep credentials out of the URL. Changing the source keeps installed files and applies to the next transaction."
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "此源用于当前环境的手动、Shell 和 Agent 安装。请填写公开的 HTTPS 仓库或 Python Simple 索引地址，勿在网址中放入凭据。修改不会删除现有依赖，下次安装时生效。"
+      }
+    }
+  }
+},
     "Floe 助手与思维导图": {
   "localizations": {
     "en": {

@@ -152,6 +152,20 @@ actor EnvironmentLanguagePackageService {
         var issue: String?
     }
 
+    func sources(environmentID: String, set value: LanguagePackageSources? = nil) async throws -> LanguagePackageSources {
+        guard !busy.contains(environmentID) else { throw FloeError.validationFailed("依赖事务尚未结束") }
+        busy.insert(environmentID)
+        defer { busy.remove(environmentID) }
+        let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: CancellationToken())
+        do {
+            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
+            if let value { try value.save(in: environment.writableLayerURL) }
+            let result = try LanguagePackageSources.load(in: environment.writableLayerURL)
+            await lease.finish()
+            return result
+        } catch { await lease.finish(); throw error }
+    }
+
     func nodeManagerSelection(environmentID: String, set preference: NodePackageManagerPreference? = nil) async throws -> NodeManagerSelection {
         guard !busy.contains(environmentID) else { throw FloeError.validationFailed("依赖事务尚未结束") }
         busy.insert(environmentID)

@@ -7,6 +7,9 @@ struct EnvironmentLanguagePackagesView: View {
     let environmentID: String
     let language: EnvironmentLanguagePackageService.Language
     @State private var nodeSelection: EnvironmentLanguagePackageService.NodeManagerSelection?
+    @State private var sources = LanguagePackageSources()
+    @State private var editingSource = false
+    @State private var sourceDraft = ""
     @State private var packages: [EnvironmentLanguagePackageService.Package] = []
     @State private var specification = ""
     @State private var query = ""
@@ -19,7 +22,18 @@ struct EnvironmentLanguagePackagesView: View {
     var body: some View {
         List {
             Section {
-                Label(language == .python ? "PyPI 官方索引" : "npm 官方仓库", systemImage: "network")
+                Button {
+                    sourceDraft = language == .python ? sources.pythonIndex : sources.nodeRegistry
+                    editingSource = true
+                } label: {
+                    HStack {
+                        Label("packages.registry.source", systemImage: "network")
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                }.disabled(running || loading)
+                Text(language == .python ? sources.pythonIndex : sources.nodeRegistry)
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Text(language == .python ? "安装纯 Python 软件包及兼容的依赖。需要原生扩展的包须使用已验证的预构建版本。" : "安装 JavaScript 模块及其依赖。安装脚本、原生二进制和符号链接暂不支持；检测失败会保留原有依赖。")
                     .font(.subheadline).foregroundStyle(.secondary)
                 Text("这里只展示环境中安装的依赖；App 自带运行时不在此卸载。").font(.caption).foregroundStyle(.secondary)
@@ -72,6 +86,29 @@ struct EnvironmentLanguagePackagesView: View {
         .task { await reload() }
         .refreshable { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }
+        .sheet(isPresented: $editingSource) {
+            NavigationStack {
+                Form {
+                    Section("packages.registry.source") {
+                        TextField("https://", text: $sourceDraft).textInputAutocapitalization(.never)
+                            .autocorrectionDisabled().keyboardType(.URL)
+                        Button("packages.registry.restore") {
+                            let defaults = LanguagePackageSources()
+                            sourceDraft = language == .python ? defaults.pythonIndex : defaults.nodeRegistry
+                        }
+                    }
+                    Text("packages.registry.policy").font(.caption).foregroundStyle(.secondary)
+                    if let error { Text(error).foregroundStyle(FloeTheme.destructive) }
+                }
+                .navigationTitle("packages.registry.source")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("取消") { editingSource = false } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") { Task { await saveSource() } }.disabled(loading || sourceDraft.isEmpty)
+                    }
+                }
+            }
+        }
         .confirmationDialog("卸载本层依赖？", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })) {
             if let package = pendingRemoval {
                 Button("卸载 \(package.name)", role: .destructive) { change(package.name, remove: true); pendingRemoval = nil }
@@ -120,12 +157,24 @@ struct EnvironmentLanguagePackagesView: View {
             error = nil
         } catch { self.error = error.localizedDescription }
     }
+    @MainActor private func saveSource() async {
+        guard !loading, !running else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            var next = sources
+            if language == .python { next.pythonIndex = sourceDraft } else { next.nodeRegistry = sourceDraft }
+            sources = try await FloePlatformServices.shared.languagePackageService().sources(environmentID: environmentID, set: next)
+            error = nil; editingSource = false
+        } catch { self.error = error.localizedDescription }
+    }
     @MainActor private func reload() async {
         guard !loading, !running else { return }
         loading = true
         defer { loading = false }
         do {
             let service = try FloePlatformServices.shared.languagePackageService()
+            sources = try await service.sources(environmentID: environmentID)
             if language == .node { nodeSelection = try await service.nodeManagerSelection(environmentID: environmentID) }
             packages = try await service.packages(environmentID: environmentID, language: language)
             error = nil

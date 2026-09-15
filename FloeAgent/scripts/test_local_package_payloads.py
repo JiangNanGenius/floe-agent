@@ -196,6 +196,20 @@ class PayloadTests(unittest.TestCase):
             self.assertFalse((root / '.floe-python-transaction').exists())
             self.assertFalse((root / 'site-packages').exists())
 
+    def test_selected_python_index_reaches_installer_and_failure_retains_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'site-packages'
+            target.mkdir(); (target / 'kept.py').write_text('original')
+            def rejected_download(args):
+                self.assertEqual(args[args.index('--index-url') + 1], 'https://packages.example.org/simple/')
+                self.assertNotIn('--trusted-host', args)
+                return 1
+            with patch.dict(os.environ, {'FLOE_PYTHON_INDEX_URL': 'https://packages.example.org/simple/'}):
+                with self.assertRaises(RuntimeError): install.install(['example'], target, rejected_download)
+            self.assertEqual((target / 'kept.py').read_text(), 'original')
+            self.assertFalse((root / '.floe-python-transaction').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

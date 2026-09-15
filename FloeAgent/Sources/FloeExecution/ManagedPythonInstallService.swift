@@ -84,13 +84,22 @@ public struct ManagedPythonInstallService: Sendable {
         guard let script = Self.installerScript(packageJSON: encoded) else {
             return .failed(message: "Managed Python installer resource is unavailable")
         }
+        var pythonContext = Self.executionContext(environment)
+        do {
+            let sources = try environment.map { try LanguagePackageSources.load(in: $0.writableLayerURL) } ?? LanguagePackageSources()
+            if pythonContext == nil { pythonContext = .init() }
+            pythonContext?.environment["FLOE_PYTHON_INDEX_URL"] = sources.pythonIndex
+            pythonContext?.environment["PIP_CONFIG_FILE"] = "/dev/null"
+            pythonContext?.environment["PIP_EXTRA_INDEX_URL"] = ""
+            pythonContext?.environment["PIP_TRUSTED_HOST"] = ""
+        } catch { return .failed(message: error.localizedDescription) }
         let request = ScriptExecutionRequest(
             script: script,
             inputJSON: nil,
             timeout: timeout,
             maxOutputBytes: maxOutputBytes,
             allowsManagedPackageInstaller: true,
-            pythonContext: Self.executionContext(environment)
+            pythonContext: pythonContext
         )
         let outcome = await python.run(request, cancellation: cancellation)
         switch outcome {

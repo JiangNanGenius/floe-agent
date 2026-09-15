@@ -80,6 +80,7 @@ public struct ManagedNodeInstallService: Sendable {
         // Validate every argument before touching a prior dependency generation.
         guard specifications.count <= 256 else { throw FloeError.validationFailed("一次最多更新 256 个依赖") }
         for specification in specifications { try NodePackageManagerPolicy.validateSpecification(specification, remove: remove) }
+        let registry = try LanguagePackageSources.load(in: environment.writableLayerURL).nodeRegistry
         let managerEntry: String
         switch manager {
         case .npm: managerEntry = npm
@@ -142,7 +143,10 @@ public struct ManagedNodeInstallService: Sendable {
             try JSONSerialization.data(withJSONObject: manifest, options: .sortedKeys).write(to: prefix.appendingPathComponent("package.json"))
             let lockName = manager == .npm ? "package-lock.json" : "pnpm-lock.yaml"
             let oldLock = previousMetadata.appendingPathComponent(lockName)
-            if fm.fileExists(atPath: oldLock.path) {
+            let previousRegistryFile = previousMetadata.appendingPathComponent("registry")
+            let previousRegistry = fm.fileExists(atPath: previousRegistryFile.path)
+                ? String(decoding: try boundedData(previousRegistryFile), as: UTF8.self) : LanguagePackageSources().nodeRegistry
+            if previousRegistry == registry && fm.fileExists(atPath: oldLock.path) {
                 try boundedData(oldLock).write(to: prefix.appendingPathComponent(lockName))
             }
             var variables = environmentDefaults(environment, prefix)
@@ -153,7 +157,7 @@ public struct ManagedNodeInstallService: Sendable {
             variables["npm_config_userconfig"] = transaction.appendingPathComponent("empty.npmrc").path
             variables["npm_config_globalconfig"] = transaction.appendingPathComponent("empty-global.npmrc").path
             variables["npm_config_manage_package_manager_versions"] = "false"
-            let common = ["install", "--ignore-scripts", "--registry=https://registry.npmjs.org/"]
+            let common = ["install", "--ignore-scripts", "--registry=" + registry]
             let options = manager == .npm ? ["--bin-links=false", "--no-audit", "--no-fund"] :
                 ["--config.node-linker=hoisted", "--package-import-method=copy", "--no-frozen-lockfile", "--config.bin-links=false", "--config.verify-deps-before-run=never"]
             let request = NodeRunRequest(entryScript: managerEntry, arguments: common + options,
@@ -177,6 +181,7 @@ public struct ManagedNodeInstallService: Sendable {
             let newLock = prefix.appendingPathComponent(lockName)
             if fm.fileExists(atPath: newLock.path) { try boundedData(newLock).write(to: metadata.appendingPathComponent(lockName)) }
             try Data(manager.rawValue.utf8).write(to: metadata.appendingPathComponent("manager"))
+            try Data(registry.utf8).write(to: metadata.appendingPathComponent("registry"))
             journal.phase = "committing"
             try JSONEncoder().encode(journal).write(to: journalURL, options: .atomic)
             try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)

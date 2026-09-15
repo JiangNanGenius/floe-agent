@@ -108,3 +108,11 @@ Cloud run `34919306177`, source `ec7d135a`, compiled with SDK 27 and passed the 
 - iPhone Notes import, editing controls, assistant, tabs and body search passed. iPad reached body search but exceeded the test deadline while resolving accessibility elements; it is a failed UI qualification, not a passed retry. Original logs, xcresults and screenshots are retained privately. The later explicit landscape assertion and Office header remain unqualified.
 
 The superseded `ffbec996` CI run was cancelled during setup to avoid building a source already missing these known repairs. No new archive, TestFlight upload or public Beta submission has occurred.
+
+## Per-environment language package sources
+
+Python and Node package pages expose an editable source address and restore-official action. One validated public HTTPS source is saved per ecosystem in the selected environment; UI, managed Shell and Agent installations read the same setting. Python uses an explicit Simple index and clears inherited extra-index/trusted-host configuration. npm and pnpm pass the selected registry explicitly. Changing the registry does not remove installed files; the next staged Node generation discards the old registry's lock and records the new source on commit.
+
+Three Swift checks pass for source persistence across two environments, rejecting URL credentials/malformed or escaping configuration, and passing the registry to both managers with recovery after failure. Fourteen Python payload/recovery checks pass, including explicit index forwarding. This does not yet provide authenticated private registries, scoped source bindings or a published Floe language mirror; those remain outstanding. Full-App UI and non-default source end-to-end qualification are pending.
+
+Native lxml candidate build `34923069149` compiled libxml2 for iOS, then failed to locate its CMake config while cross-compiling libxslt. Follow-up `34923284307` binds that config to the explicit target slice. Original failure retained; no lxml wheel or Office Python capability is reported ready yet.
