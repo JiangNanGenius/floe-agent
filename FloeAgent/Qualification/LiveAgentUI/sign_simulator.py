@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='floe-demo-sign-') as temp:
     path = pathlib.Path(temp) / 'entitlements.plist'
     path.write_bytes(plistlib.dumps(entitlements))
     subprocess.run(['codesign', '--force', '--sign', '-', '--timestamp=none', '--entitlements', str(path), str(app)], check=True)
-    actual = subprocess.check_output(['codesign', '-d', '--entitlements', '-', str(app)], stderr=subprocess.DEVNULL)
+    actual = subprocess.check_output(['codesign', '-d', '--entitlements', '-', '--xml', str(app)], stderr=subprocess.DEVNULL)
     signed = plistlib.loads(actual)
     assert signed['application-identifier'] == identity
     assert signed['keychain-access-groups'] == [identity]
