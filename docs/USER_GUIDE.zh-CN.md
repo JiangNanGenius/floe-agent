@@ -210,9 +210,9 @@ Floe 会向快捷指令公开**立即运行 Floe 任务**和**安排 Floe 任务
 
 ## 12. 本机 Python、受管包和代码编辑
 
-Floe 内置 Python 3.13，可处理日常脚本、文件、JSON、SQLite、压缩包和基础数据工作。模型可以为用户当前任务申请安装兼容的软件包；下载前，Floe 会审核用途是否与任务一致，下载后还会检查内容。来自任意地址的安装命令、系统程序、后台进程和可能逃离 App 范围的内容不会运行。
+Floe 内置 Python 3.13。修复候选版中的 `pip install`、`pip3` 和 `python3 -m pip` 与设置页面共用当前环境的安装服务：先解析兼容依赖，再校验、暂存和提交；失败保留原来的安装。已有原生库可满足依赖，但不支持下载任意原生扩展或启动普通 Linux 系统程序。调用工具所要求的任务权限和软件包审核仍然适用。
 
-NumPy、Pillow 和 pandas 在支持的构建中原生提供，以当前运行时检查为准；更多锁定包（regex、PyYAML、MarkupSafe、orjson、pydantic-core）随 ios-wheelhouse 产线验收后内置。SciPy、scikit-learn、Matplotlib 因 iOS 没有 Fortran 工具链或过重原生栈无法内置，继续使用明确标注的浏览器 Pyodide 路径或已配置的可信 SSH 主机。模型必须区分本机、浏览器和远端的实际执行结果。
+NumPy、Pillow、pandas 及已验收的 wheelhouse 包以当前运行时检查为准。下一修复版新增锁定的 lxml 6.1.3、python-docx 1.2.0 和 python-pptx 1.0.2；iOS 测试床已完成 Office 保存重读，完整 App 集成仍在验证。SciPy、scikit-learn、Matplotlib 尚未通过当前内置原生产线验收，只能使用另行验证的浏览器或可信远端路径；这属于当前构建限制，不代表 iOS 原生编译永久不可行。
 
 耗时 Python 工作（批量下载、数据清洗）不应阻塞对话：`jobs.submit` 可把 `exec.localPython`、`network.download`、`network.http`、`web.fetch` 提交为持久后台任务并立即返回 jobID，Python 协作时限放宽到 600 秒。用 `jobs.status` 查进度、`jobs.result` 取结果、`jobs.cancel` 取消；完成后结果自动回注对话并发送本地通知。后台下载在 App 挂起后继续，网络中断后透明续传（上限 2 GB）。
 
@@ -229,7 +229,7 @@ NumPy、Pillow 和 pandas 在支持的构建中原生提供，以当前运行时
 
 Agent 可通过 `document.createWord`、`document.createWorkbook` 和 `presentation.createDeck` 创建原生 DOCX、XLSX 与 PPTX；通过 `document.office.inspect` 读取语义字段，并使用 `document.office.updateText` 修改受限的文字、单元格、公式和幻灯片备注。这些操作在当前工作区内完成时属于本机低风险操作，不等待审批模型。
 
-需要手工修改时，从工作区打开文件。Floe 先显示普通文档预览；点击**编辑 Office 文档**进入基础编辑器并保存。DOCX 显示文字字段，XLSX 显示工作表单元格与公式，PPTX 显示幻灯片文字及演讲者备注。保存会原子更新文件并保留未触碰的 OOXML 包内容。高级排版、图表、宏、修订、动画和桌面 Office 像素级兼容仍应使用 Microsoft Office、LibreOffice 等完整编辑器。
+从工作区或手记打开文档，进入全屏 Office 编辑器。带有内嵌 Office 引擎的构建提供 Word、表格和演示文稿的版面与编辑控件，文档菜单按类型提供画笔批注和放映等操作；手记保留文档标签页及助手入口。修复候选版将外层操作合并为一行，窄屏的更多操作收入菜单。保存会检查原文件版本，冲突或失败时保留可恢复草稿；高级宏、动画和桌面 Office 格式完全保真不作保证。
 
 PDF 独立于 Office：从文件列表打开后直接阅读，在宽屏右侧预览，再按需全屏。阅读会话保留页码和缩放；本地文件变化会刷新。远端预览是下载后的只读快照。Office 保存会检查文件版本，冲突或保存失败时保留当前草稿。
 

@@ -21,7 +21,7 @@ The owner's demonstration credential must not enter source, logs, examples, revi
 | Notes ink | Paper canvas uses light appearance; transparency slider maps 0% to solid, 100% to invisible without inverting stored alpha | Pencil drawing, persistence and both device layouts pending |
 | Guidance queue | Withdraw pending guidance from runtime before editing/removing its durable row | Runtime race test added; execution and UI qualification pending |
 | Logging | Persisted debug/info/warning/error collection threshold, default info | Module compilation passed; settings/relaunch/filtering and full app checks pending |
-| Report retention | Private server patch retains up to 500 events and evicts whole old reports | Store tests pass; server API/docs alignment and deployment pending |
+| Report retention | Private server patch retains up to 500 events and evicts whole old reports | Store tests and API/docs alignment pass; deployment entry point remains to be confirmed |
 | APT trust | Explicit unsigned-source choice; only missing signature files may use that choice; signature/network failures do not downgrade | Seven package integrity tests pass; detached signature, third-party source and install UI qualification pending |
 
 ## Persistent local services — Node, Python and Shell
@@ -135,3 +135,6 @@ Run `34922624182` (`83cbc383`) passed the managed environment install/import/rem
 Managed pip now resolves with `--dry-run --report` before staging, allowing already installed environment/bundled native libraries to satisfy dependencies. Only missing pure wheels from HTTPS URLs with SHA-256 hashes enter the staged install; resolution failure retains the original generation. A real desktop CPython 3.13 run installed python-docx/python-pptx/XlsxWriter while reusing lxml/Pillow, saved/reopened Chinese Office files, and repeated installation as an already-satisfied operation. No native module was copied to the managed layer. This is host proof, not App proof.
 
 That run also found pip's `../../bin/vba_extract.py` RECORD relocation. Normalization now accepts only the exact relocated script whose real file is inside the staged `bin` directory, writes portable ownership, and keeps arbitrary traversal rejected. Eighteen payload/recovery tests pass, including uninstall of the relocated script. Full-App qualification now covers a layer-specific python-docx version and restoring the original bundled version after uninstall.
+
+
+Full-App follow-up [34924942672](https://github.com/JiangNanGenius/floe-agent/actions/runs/34924942672) is fixed to `f5b6d3bd`, including the source UI, Notes card changes, lxml/Office integration, pip resolver, output-stream interface and Node directory repairs. It was queued behind the prior evidence run at dispatch. A local Node Swift qualification attempt was interrupted when Command Line Tools invalidated the shared build cache and began recompiling dependencies; it is not a test pass. No local App build was started.
