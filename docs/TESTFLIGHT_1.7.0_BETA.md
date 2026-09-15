@@ -12,6 +12,23 @@ SDK 27 source qualification passed 1,270 Swift executions, 159 full-App regressi
 
 Main was fast-forwarded to the delivered integration. Task-owned merged branches were removed; the independent Office and occupied shell branches remain. [Branch cleanup](evidence/floe-1.7/release-172/branch-cleanup.json). The public [Feather feed check](evidence/floe-1.7/release-172/feather-published.json) returned HTTP 200 for the source, icon and IPA.
 
+## September 15 repair candidate — not yet delivered
+
+Build 174 uses immutable `v1.7.0-beta.31` / `aa8e42708157a54aa9cbc083a484c00a882a10b3`.
+[Cloud qualification and packaging](https://github.com/JiangNanGenius/floe-agent/actions/runs/34941785251)
+must complete before any new upload or availability claim. The current installable
+delivery above remains build 172. [Build-specific candidate notes](RELEASE_NOTES_1.7.0_BUILD_174.md)
+record scope and outstanding device/package/model work.
+
+Build 173 / `v1.7.0-beta.30` / `316251adcba91c94bd96ab9accf9cba72da59f95`
+was not uploaded. Its SDK 27 localization suite rejected the bare key
+`Floe 助手与思维导图`; the accepted-SDK build was then cancelled to avoid
+finishing an obsolete candidate. Build 174 gives the same bilingual label the
+namespaced key `notes.office.assistantAndMindMaps`, with no weakened assertion.
+The original [failed run](https://github.com/JiangNanGenius/floe-agent/actions/runs/34939310493)
+and immutable tag remain available. Local checks passed all 903 bilingual keys
+and six release version/test-host contracts; final cloud validation is separate.
+
 ## Earlier checkpoints (historical states)
 
 
