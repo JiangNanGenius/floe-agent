@@ -71,6 +71,21 @@ jobs:
       - name: Initialize a disposable real App
         run: |
           sim=$(xcrun simctl list devices available -j | python3 FloeAgent/scripts/select_test_simulator.py --sdk-major 27 --name 'iPad mini (A17 Pro)')
+          echo "FLOE_DEMO_SIM=$sim" >> "$GITHUB_ENV"
+          # This stage has no credential. Preserve launch diagnostics even when
+          # the disposable simulator never reaches App database initialization.
+          startup_diagnostics() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              mkdir -p LiveAgentEvidence/startup
+              xcrun simctl spawn "$sim" log show --last 5m --style compact \
+                --predicate 'process == "Floe Agent" OR process == "amfid" OR process == "runningboardd"' \
+                > LiveAgentEvidence/startup/simulator.log 2>&1 || true
+              xcrun simctl io "$sim" screenshot LiveAgentEvidence/startup/screen.png || true
+            fi
+            return "$status"
+          }
+          trap startup_diagnostics EXIT
           xcrun simctl shutdown all || true
           xcrun simctl boot "$sim"
           xcrun simctl bootstatus "$sim" -b
@@ -91,8 +106,8 @@ jobs:
           PY
           xcrun simctl terminate "$sim" org.floeagent.ios
           python3 FloeAgent/Qualification/LiveAgentUI/seed_configuration.py "$container"
-          echo "FLOE_DEMO_SIM=$sim" >> "$GITHUB_ENV"
           echo "FLOE_DEMO_CONTAINER=$container" >> "$GITHUB_ENV"
+          trap - EXIT
       - name: Configure authorized credential outside the recording
         env:
           TEST_RUNNER_FLOE_LIVE_AGENT_KEY: ${{ secrets.FLOE_LIVE_DEMO_ARK_KEY }}
