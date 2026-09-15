@@ -107,6 +107,15 @@ fn verify(document: &CadDocument, reopened: &CadDocument) -> Result<(), String> 
     let mut after = serde_json::to_value(&reopened.layers).map_err(|e| e.to_string())?;
     strip_table_handles(&mut before); strip_table_handles(&mut after);
     if !equivalent(&before, &after) { return Err("CAD round-trip changed layers".into()); }
+    // Preserve nongraphical content too: annotations may rely on styles,
+    // named dictionaries, layouts, reactors and custom application data.
+    let auxiliary = |d: &CadDocument| json!({"objects":d.objects,"lineTypes":d.line_types,
+        "textStyles":d.text_styles,"dimensionStyles":d.dim_styles,"views":d.views,
+        "viewports":d.vports,"coordinateSystems":d.ucss,"applications":d.app_ids,"classes":d.classes});
+    if !equivalent(&auxiliary(document), &auxiliary(reopened)) {
+        #[cfg(test)] eprintln!("Auxiliary before: {}\nAuxiliary after: {}", auxiliary(document), auxiliary(reopened));
+        return Err("CAD round-trip changed styles, objects or layout data; original preserved".into());
+    }
     Ok(())
 }
 
