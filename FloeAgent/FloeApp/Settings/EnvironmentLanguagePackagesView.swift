@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeExecution
 
 struct EnvironmentLanguagePackagesView: View {
     let environmentID: String
     let language: EnvironmentLanguagePackageService.Language
+    @State private var nodeSelection: EnvironmentLanguagePackageService.NodeManagerSelection?
     @State private var packages: [EnvironmentLanguagePackageService.Package] = []
     @State private var specification = ""
     @State private var query = ""
@@ -22,12 +24,27 @@ struct EnvironmentLanguagePackagesView: View {
                     .font(.subheadline).foregroundStyle(.secondary)
                 Text("这里只展示环境中安装的依赖；App 自带运行时不在此卸载。").font(.caption).foregroundStyle(.secondary)
             }
+            if language == .node {
+                Section("packages.node.manager") {
+                    Picker("packages.node.manager", selection: Binding(
+                        get: { nodeSelection?.preference ?? .automatic },
+                        set: { value in Task { await setNodeManager(value) } }
+                    )) {
+                        Text("packages.node.auto").tag(NodePackageManagerPreference.automatic)
+                        Text("npm").tag(NodePackageManagerPreference.npm)
+                        Text("pnpm").tag(NodePackageManagerPreference.pnpm)
+                    }.disabled(running || loading)
+                    if let selected = nodeSelection?.resolved { LabeledContent("packages.node.effective", value: selected.rawValue) }
+                    if let issue = nodeSelection?.issue { Label(issue, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(FloeTheme.destructive) }
+                    Text("packages.node.policy").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("安装依赖") {
                 TextField(language == .python ? "例如 beautifulsoup4 或 requests==2.32.5" : "例如 marked 或 marked@15.0.12", text: $specification)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.go)
                     .onSubmit { install() }
                 Button("安装", systemImage: "arrow.down.circle") { install() }
-                    .disabled(running || loading || specification.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(running || loading || (language == .node && nodeSelection?.resolved == nil) || specification.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Text("安装只写入当前选择的环境。离开此页面后任务会继续。").font(.caption).foregroundStyle(.secondary)
             }
             if let message = jobs.messages[environmentID] {
@@ -94,12 +111,22 @@ struct EnvironmentLanguagePackagesView: View {
             return try await service.change(environmentID: id, language: selectedLanguage, specification: value, remove: remove)
         }
     }
+    @MainActor private func setNodeManager(_ value: NodePackageManagerPreference) async {
+        guard !loading, !running else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            nodeSelection = try await FloePlatformServices.shared.languagePackageService().nodeManagerSelection(environmentID: environmentID, set: value)
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
     @MainActor private func reload() async {
         guard !loading, !running else { return }
         loading = true
         defer { loading = false }
         do {
             let service = try FloePlatformServices.shared.languagePackageService()
+            if language == .node { nodeSelection = try await service.nodeManagerSelection(environmentID: environmentID) }
             packages = try await service.packages(environmentID: environmentID, language: language)
             error = nil
         } catch { self.error = error.localizedDescription }

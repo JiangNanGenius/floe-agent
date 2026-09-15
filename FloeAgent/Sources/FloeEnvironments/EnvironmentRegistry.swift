@@ -425,6 +425,21 @@ public actor EnvironmentRegistry {
         try fileManager.copyItem(at: source, to: destination)
     }
 
+    /// Resolve this exact container's project, never an arbitrary first project.
+    public func workspaceRoot(for containerID: String) throws -> URL? {
+        try prepare()
+        guard let record = records[containerID] else { return nil }
+        let project = record.kind == .session ? record.parentID.flatMap { records[$0] } : record
+        guard let project, project.kind == .project, let owner = project.ownerID else { return nil }
+        let mappingURL = roots.rootURL.appendingPathComponent("workspace-containers.json")
+        guard fileManager.fileExists(atPath: mappingURL.path) else { return nil }
+        let mapping = try JSONDecoder().decode([String: [String: String]].self, from: Data(contentsOf: mappingURL))
+        guard let entry = mapping[owner], entry["containerID"] == project.id, let path = entry["path"] else { return nil }
+        let root = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        guard FloeDigest.sha256Hex(Data(root.path.utf8)) == owner else { return nil }
+        return root
+    }
+
     private func rememberWorkspaceRoot(workspaceID: String, path: String, containerID: String) {
         let url = roots.rootURL.appendingPathComponent("workspace-containers.json")
         var mapping: [String: [String: String]] = [:]

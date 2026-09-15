@@ -114,7 +114,7 @@ private struct LocalServicePreview: View {
             browser.addressText = url
             browser.navigateFromAddressBar()
         }
-        .onDisappear { browser.bind(to: nil) }
+        .onDisappear { browser.discard(conversationID: job.conversationID) }
     }
 }
 #endif

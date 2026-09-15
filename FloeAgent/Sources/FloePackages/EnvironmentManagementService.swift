@@ -119,7 +119,7 @@ public actor EnvironmentManagementService {
             return enabled ? "已启用软件源；请刷新索引" : "已停用软件源"
         case .refresh:
             let sources = AptSources.read(inContainerAt: container.layerURL).filter { $0.enabled }
-            guard !sources.isEmpty else { throw FloeError.validationFailed("此环境尚未配置已签名的软件源") }
+            guard !sources.isEmpty else { throw FloeError.validationFailed("此环境尚未配置软件源，请先添加软件源") }
             let result = await engine.update(container: container, sources: sources)
             try Task.checkCancellation()
             guard result.failures.isEmpty else { throw FloeError.validationFailed(result.failures.joined(separator: "\n")) }

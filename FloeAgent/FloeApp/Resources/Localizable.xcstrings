@@ -1,6 +1,70 @@
 {
   "sourceLanguage": "en",
   "strings": {
+  "packages.node.manager": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Package manager"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "包管理器"
+      }
+    }
+  }
+},
+  "packages.node.auto": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Automatic"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "自动"
+      }
+    }
+  }
+},
+  "packages.node.effective": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Used for this environment"
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "当前环境使用"
+      }
+    }
+  }
+},
+  "packages.node.policy": {
+  "localizations": {
+    "en": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "Automatic follows the owning project’s packageManager and lockfile; conflicts are shown before installation. An explicit choice applies to this environment. Uses the bundled CLI version and preserves project files."
+      }
+    },
+    "zh-Hans": {
+      "stringUnit": {
+        "state": "translated",
+        "value": "自动遵循所属项目的 packageManager 和锁文件，冲突时会先提示。手动选择只应用于本环境。使用 App 内置的管理器版本，保留项目文件。"
+      }
+    }
+  }
+},
   "services.title": {
   "localizations": {
     "en": {

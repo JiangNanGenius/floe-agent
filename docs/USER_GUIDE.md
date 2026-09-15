@@ -411,3 +411,5 @@ floe-service restart JOB_ID
 ```
 
 Scripts bind `127.0.0.1` and use the supplied `PORT` environment variable. Additional script arguments follow `--`. Start returns a job ID; the preview URL appears only once HTTP responds. Closing previews or switching conversations keeps the service running. iOS may suspend execution in the background; app termination interrupts it and requires explicit restart. Stopping waits for the actual worker to exit. This supports managed Node/Python HTTP scripts, not arbitrary Linux daemon processes.
+
+For environment JavaScript dependencies, choose **Automatic / npm / pnpm** on the package page. Automatic follows the owning project's `packageManager` and single lockfile; conflicting hints need an explicit choice or project cleanup. This selects the bundled manager for the environment installation; it does not change the project's manifests, lockfiles or requested CLI version. Switching managers creates and validates a staged tree before replacing the installed generation. Failed installs keep the previous dependencies. Shell `npm` and `pnpm` remain explicit commands for project work.

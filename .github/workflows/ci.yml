@@ -292,6 +292,10 @@ jobs:
             test -n "$test_device"
             xcrun simctl boot "$test_device"
             xcrun simctl bootstatus "$test_device" -b
+            mkdir -p FloeAgent-Notes-Recordings
+            xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-Notes-Recordings/$name.mp4" > "FloeAgent-Notes-Recordings/$name.log" 2>&1 &
+            recording_pid=$!
+            trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
             xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
               -destination "platform=iOS Simulator,id=$test_device" \
               -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
@@ -300,6 +304,9 @@ jobs:
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 180 \
               CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || status=1
+            kill -INT "$recording_pid" 2>/dev/null || true
+            wait "$recording_pid" || true
+            trap - EXIT
             python3 scripts/verify_notes_ui_xcresult.py --result-bundle "FloeAgent-Notes-$name.xcresult" \
               --summary-output "FloeAgent-Notes-$name-summary.json" || status=1
             if test -d "FloeAgent-Notes-$name.xcresult"; then
@@ -398,6 +405,7 @@ jobs:
             FloeAgent/FloeAgent-Notes-*.log
             FloeAgent/FloeAgent-Notes-*-summary.json
             FloeAgent/FloeAgent-Notes-Screenshots
+            FloeAgent/FloeAgent-Notes-Recordings
             ${{ runner.temp }}/SwiftTestDiagnostics
           if-no-files-found: ignore
 

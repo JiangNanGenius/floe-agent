@@ -13,6 +13,16 @@ struct LocalServiceProgress: Codable, Sendable {
     var stdout: String
     var stderr: String
     var truncated: Bool
+
+    mutating func boundAndRedact() {
+        stdout = SecretRedactor.redact(stdout)
+        stderr = SecretRedactor.redact(stderr)
+        if stdout.utf8.count > 4_096 || stderr.utf8.count > 4_096 { truncated = true }
+        // JSON escapes can expand each byte up to sixfold; retain margin under
+        // the durable progress limit even for a huge exception/control stream.
+        stdout = String(decoding: stdout.utf8.prefix(4_096), as: UTF8.self)
+        stderr = String(decoding: stderr.utf8.prefix(4_096), as: UTF8.self)
+    }
 }
 
 /// Shell is a first-class caller of the same managed lifecycle, not `command &`
@@ -198,8 +208,7 @@ struct LocalServiceTool: AgentTool {
             } else {
                 snapshot.previewURL = nil; BrowserURLPolicy.revokeService(owner: jobID)
             }
-            snapshot.stdout = SecretRedactor.redact(snapshot.stdout)
-            snapshot.stderr = SecretRedactor.redact(snapshot.stderr)
+            snapshot.boundAndRedact()
             do { try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot)) }
             catch { stopRequested = true } // Persistence failure must not orphan a worker.
             // Cancellation belongs to the explicit token. Never throw out of
@@ -207,8 +216,7 @@ struct LocalServiceTool: AgentTool {
             try? await Task.sleep(for: .seconds(2))
         }
         snapshot.previewURL = nil
-        snapshot.stdout = SecretRedactor.redact(snapshot.stdout)
-        snapshot.stderr = SecretRedactor.redact(snapshot.stderr)
+        snapshot.boundAndRedact()
         try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot))
         return ToolExecutionOutput(digesting: String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self),
             exitStatus: stopRequested || snapshot.state == "completed" ? 0 : 1)

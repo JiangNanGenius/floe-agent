@@ -6,7 +6,7 @@ import UIKit
 final class NotesWorkspaceImportUITests: XCTestCase {
     func testWorkspaceImportTabsFocusAndBodySearch() throws {
         continueAfterFailure = false
-        let ipad = UIDevice.current.userInterfaceIdiom == .pad
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
         let app = XCUIApplication()
         // A preceding runtime suite can leave its host process alive. Setting
         // orientation first waits for that unrelated event loop to become idle.
@@ -15,6 +15,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-pdf-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
+        if ipad {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
+            wait(for: [landscape], timeout: 10)
+        }
         defer { app.terminate() }
         if !ipad {
             let sidebar = app.buttons["phone.sidebar.open"]

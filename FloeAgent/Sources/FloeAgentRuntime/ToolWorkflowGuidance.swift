@@ -37,6 +37,9 @@ enum ToolWorkflowGuidance {
         if names.contains("font.list") && names.contains("font.remove") {
             lines.append("Font workflow: font.list returns the digest id required by font.remove; never derive it from a filename.")
         }
+        if names.contains("checklist.updatePlan") {
+            lines.append("For multi-step work, maintain the task checklist proactively: create a concise plan before substantive work, mark the active item, and update completion or blockers after each meaningful milestone. Reflect changed scope promptly. A completed tool call alone does not prove an item passed; keep unverified acceptance work visible. Avoid rewriting the plan after every trivial tool call.")
+        }
         if names.contains("jobs.submit") {
             lines.append("Background job workflow: for large downloads or long Python data work, jobs.submit returns a durable jobID immediately — continue other work or finish the reply instead of blocking. Check jobs.status with the jobID, fetch output with jobs.result once completed, and never resubmit an unchanged payload while the job is alive; completion is announced automatically. For a Node/Python web server use jobs.submit target exec.localService, with an existing entry script and loopback port; inspect that schema first. A one-shot exec.shell or exec.localPython call times out and cannot own a persistent server. Read readiness/previewURL and live logs with jobs.status. Keep serving across replies/tab changes; explicitly cancel when no longer needed. After a terminal state, submit a fresh job to restart.")
         }

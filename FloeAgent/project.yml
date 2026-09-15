@@ -713,6 +713,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
         TEST_TARGET_NAME: FloeAgent
+        TARGETED_DEVICE_FAMILY: "1,2"
 
   FloeAppTests:
     type: bundle.unit-test

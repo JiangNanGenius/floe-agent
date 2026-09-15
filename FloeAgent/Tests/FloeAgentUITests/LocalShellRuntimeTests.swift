@@ -9,6 +9,14 @@ import FloePersistence
 
 @Suite("FloeApp.LocalShell", .serialized)
 struct LocalShellRuntimeTests {
+    @Test func serviceProgressStaysBoundedAfterJSONEscaping() throws {
+        var progress = LocalServiceProgress(state: "running", runtime: "python", stdout: String(repeating: "\0", count: 30_000), stderr: String(repeating: "错误", count: 30_000), truncated: false)
+        progress.boundAndRedact()
+        let encoded = try JSONEncoder().encode(progress)
+        #expect(encoded.count < 65_536)
+        #expect(progress.truncated)
+        #expect(try JSONDecoder().decode(LocalServiceProgress.self, from: encoded).state == "running")
+    }
     @Test(.timeLimit(.minutes(2))) func serviceToolPublishesLivePreviewAndRevokesAfterStop() async throws {
         for runtime in ["node", "python"] {
             let database = try DatabaseManager.inMemory()
@@ -95,7 +103,7 @@ struct LocalShellRuntimeTests {
         defer { if !FloeNodeHasActiveTask(owner) { try? FileManager.default.removeItem(at: root) } }
         let npm = try #require(FloeNodeBundledToolPath("npm"))
         let env = ToolEnvironment(id: owner, writableLayerURL: root, layerURLs: [root], variables: ["FLOE_ENVIRONMENT_ID": owner])
-        let installer = ManagedNodeInstallService(runtime: runtime, npmEntry: npm) { environment, directory in
+        let installer = ManagedNodeInstallService(runtime: runtime, npmEntry: npm, pnpmEntry: FloeNodeBundledToolPath("pnpm")) { environment, directory in
             IOSSystemNodeRuntime.defaultEnvironment(containerRoot: environment.writableLayerURL, workspaceRoot: directory)
         }
         _ = try await installer.change(env, specification: "is-number@7.0.0", remove: false, cancellation: CancellationToken())
@@ -106,6 +114,13 @@ struct LocalShellRuntimeTests {
         guard case .exited(let code, let output, let errors, _, _) = imported else { Issue.record("Managed npm import failed: \(imported)"); return }
         #expect(code == 0 && output == "true\n", "\(errors)")
         _ = try await installer.change(env, specification: "is-number", remove: true, cancellation: CancellationToken())
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("usr/lib/node_modules/is-number").path))
+
+        _ = try await installer.change(env, specification: "is-number@7.0.0", remove: false, manager: .pnpm, cancellation: CancellationToken())
+        let managedPnpm = await runtime.run(.init(entryScript: nil, arguments: ["-e", "console.log(require('is-number')(42))"], workingDirectory: root, environment: variables), cancellation: nil)
+        guard case .exited(let managedCode, let managedOutput, let managedErrors, _, _) = managedPnpm else { Issue.record("Managed pnpm import failed: \(managedPnpm)"); return }
+        #expect(managedCode == 0 && managedOutput == "true\n", "\(managedErrors)")
+        _ = try await installer.change(env, specification: "is-number", remove: true, manager: .pnpm, cancellation: CancellationToken())
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("usr/lib/node_modules/is-number").path))
 
         let project = root.appendingPathComponent("pnpm-project")

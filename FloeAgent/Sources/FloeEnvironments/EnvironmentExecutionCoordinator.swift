@@ -52,7 +52,7 @@ public actor EnvironmentExecutionCoordinator {
         guard let record = await registry.record(id: environmentID) else {
             throw FloeError.notFound("Execution environment \(environmentID)")
         }
-        let context = ToolContext(runID: UUID(), cancellation: cancellation, environmentID: environmentID)
+        let context = ToolContext(runID: UUID(), workspaceRootURL: try await registry.workspaceRoot(for: environmentID), cancellation: cancellation, environmentID: environmentID)
         return try await lease(context, record: record)
     }
 

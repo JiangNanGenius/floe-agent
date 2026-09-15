@@ -7,10 +7,11 @@ import FloeTools
 public struct ManagedNodeInstallService: Sendable {
     private let runtime: any NodeRuntime
     private let npm: String
+    private let pnpm: String?
     private let environmentDefaults: @Sendable (ToolEnvironment, URL) -> [String: String]
-    public init(runtime: any NodeRuntime, npmEntry: String,
+    public init(runtime: any NodeRuntime, npmEntry: String, pnpmEntry: String? = nil,
                 environmentDefaults: @escaping @Sendable (ToolEnvironment, URL) -> [String: String] = { _, _ in [:] }) {
-        self.runtime = runtime; self.npm = npmEntry; self.environmentDefaults = environmentDefaults
+        self.runtime = runtime; self.npm = npmEntry; self.pnpm = pnpmEntry; self.environmentDefaults = environmentDefaults
     }
     private func contained(_ relative: String, in root: URL) throws -> URL {
         let base = root.resolvingSymlinksInPath().standardizedFileURL
@@ -71,36 +72,87 @@ public struct ManagedNodeInstallService: Sendable {
         }
     }
 
-    public func change(_ environment: ToolEnvironment, specification: String, remove: Bool, cancellation: CancellationToken) async throws -> String {
+    public func change(_ environment: ToolEnvironment, specification: String, remove: Bool, manager: NodePackageManager = .npm, cancellation: CancellationToken) async throws -> String {
         // Package names and registry versions only; no paths, Git URLs or shell argument parsing.
         let pattern = remove ? #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*$"# : #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*(?:@[A-Za-z0-9.*~^+_-][A-Za-z0-9.*~^+_-]*)?$"#
         guard specification.range(of: pattern, options: .regularExpression) != nil else { throw FloeError.validationFailed("请输入 npm 包名，可附加 @版本；不接受路径或 Git URL") }
+        let managerEntry: String
+        switch manager {
+        case .npm: managerEntry = npm
+        case .pnpm:
+            guard let pnpm else { throw FloeError.validationFailed("此构建没有可用的 pnpm") }
+            managerEntry = pnpm
+        }
         try recover(environment)
         let fm = FileManager.default, transaction = try transactionRoot(environment)
         let destination = try contained("usr/lib/node_modules", in: environment.writableLayerURL)
         let prefix = transaction.appendingPathComponent("stage")
-        let staged = prefix.appendingPathComponent("lib/node_modules")
+        let staged = prefix.appendingPathComponent("node_modules")
         let backup = transaction.appendingPathComponent("backup")
         var journal = NodeJournal(phase: "prepared", hadOriginal: fm.fileExists(atPath: destination.path))
         try fm.createDirectory(at: transaction, withIntermediateDirectories: true)
         let journalURL = transaction.appendingPathComponent("journal.json")
         try JSONEncoder().encode(journal).write(to: journalURL, options: .atomic)
         do {
-            try fm.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.createDirectory(at: prefix, withIntermediateDirectories: true)
+            var dependencies: [String: String] = [:]
+            let metadataName = ".floe-install"
+            let previousMetadata = destination.appendingPathComponent(metadataName)
             if journal.hadOriginal {
                 try validateNodeTree(destination)
-                try fm.copyItem(at: destination, to: staged)
-            } else { try fm.createDirectory(at: staged, withIntermediateDirectories: true) }
-            if remove, !fm.fileExists(atPath: staged.appendingPathComponent(specification).path) {
-                throw FloeError.validationFailed("所选包未安装在本层；继承依赖应在其所属环境中卸载")
+                if fm.fileExists(atPath: previousMetadata.appendingPathComponent("dependencies.json").path) {
+                    dependencies = try JSONDecoder().decode([String: String].self, from: boundedData(previousMetadata.appendingPathComponent("dependencies.json")))
+                } else {
+                    // Legacy global installs: each top-level package was explicitly
+                    // installed. Preserve it as a direct dependency during migration.
+                    var entries = try fm.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
+                    for scope in entries.filter({ $0.lastPathComponent.hasPrefix("@") }) {
+                        entries += try fm.contentsOfDirectory(at: scope, includingPropertiesForKeys: nil)
+                    }
+                    for directory in entries where !directory.lastPathComponent.hasPrefix(".") && !directory.lastPathComponent.hasPrefix("@") {
+                        let manifest = directory.appendingPathComponent("package.json")
+                        guard let json = try JSONSerialization.jsonObject(with: boundedData(manifest)) as? [String: Any],
+                              let name = json["name"] as? String, let version = json["version"] as? String else {
+                            throw FloeError.validationFailed("现有依赖缺少有效清单")
+                        }
+                        dependencies[name] = version
+                    }
+                }
+            }
+            if remove {
+                guard dependencies.removeValue(forKey: specification) != nil else {
+                    throw FloeError.validationFailed("此包不是本层直接安装的依赖；请先检查依赖它的软件包")
+                }
+            } else {
+                let split = specification.dropFirst().lastIndex(of: "@")
+                let name = split.map { String(specification[..<$0]) } ?? specification
+                let version = split.map { String(specification[specification.index(after: $0)...]) } ?? "latest"
+                dependencies[name] = version
+            }
+            for (name, version) in dependencies {
+                guard (name + "@" + version).range(of: #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*@[A-Za-z0-9.*~^+_-][A-Za-z0-9.*~^+_-]*$"#, options: .regularExpression) != nil else {
+                    throw FloeError.validationFailed("依赖清单包含不支持的名称或版本")
+                }
+            }
+            let manifest: [String: Any] = ["name": "floe-managed-environment", "version": "1.0.0", "private": true, "dependencies": dependencies]
+            try JSONSerialization.data(withJSONObject: manifest, options: .sortedKeys).write(to: prefix.appendingPathComponent("package.json"))
+            let lockName = manager == .npm ? "package-lock.json" : "pnpm-lock.yaml"
+            let oldLock = previousMetadata.appendingPathComponent(lockName)
+            if fm.fileExists(atPath: oldLock.path) {
+                try boundedData(oldLock).write(to: prefix.appendingPathComponent(lockName))
             }
             var variables = environmentDefaults(environment, prefix)
                 .merging(environment.variables) { _, resolved in resolved }
+            variables["CI"] = "1"
+            variables["npm_config_prefix"] = prefix.path
+            variables["npm_config_global"] = "false"
             variables["npm_config_userconfig"] = transaction.appendingPathComponent("empty.npmrc").path
             variables["npm_config_globalconfig"] = transaction.appendingPathComponent("empty-global.npmrc").path
-            let request = NodeRunRequest(entryScript: npm,
-                arguments: [remove ? "uninstall" : "install", "--global", "--prefix", prefix.path,
-                    "--ignore-scripts", "--bin-links=false", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/", specification],
+            variables["npm_config_manage_package_manager_versions"] = "false"
+            let common = ["install", "--ignore-scripts", "--registry=https://registry.npmjs.org/"]
+            let options = manager == .npm ? ["--bin-links=false", "--no-audit", "--no-fund"] :
+                ["--config.node-linker=hoisted", "--package-import-method=copy", "--no-frozen-lockfile", "--config.bin-links=false", "--config.verify-deps-before-run=never"]
+            let request = NodeRunRequest(entryScript: managerEntry, arguments: common + options,
                 workingDirectory: prefix, environment: variables, timeout: 180)
             let result = await runtime.run(request, cancellation: cancellation)
             let output: String
@@ -113,7 +165,14 @@ public struct ManagedNodeInstallService: Sendable {
             case .cancelled: throw CancellationError()
             }
             try cancellation.throwIfCancelled()
+            if dependencies.isEmpty && !fm.fileExists(atPath: staged.path) { try fm.createDirectory(at: staged, withIntermediateDirectories: true) }
             try validateNodeTree(staged)
+            let metadata = staged.appendingPathComponent(metadataName)
+            try fm.createDirectory(at: metadata, withIntermediateDirectories: true)
+            try JSONEncoder().encode(dependencies).write(to: metadata.appendingPathComponent("dependencies.json"))
+            let newLock = prefix.appendingPathComponent(lockName)
+            if fm.fileExists(atPath: newLock.path) { try boundedData(newLock).write(to: metadata.appendingPathComponent(lockName)) }
+            try Data(manager.rawValue.utf8).write(to: metadata.appendingPathComponent("manager"))
             journal.phase = "committing"
             try JSONEncoder().encode(journal).write(to: journalURL, options: .atomic)
             try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)

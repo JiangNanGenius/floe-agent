@@ -10,7 +10,7 @@ actor EnvironmentLanguagePackageService {
     enum Language: String, CaseIterable, Identifiable, Sendable {
         case python, node
         var id: String { rawValue }
-        var title: String { self == .python ? "Python · PyPI" : "Node.js · npm" }
+        var title: String { self == .python ? "Python · PyPI" : "Node.js · npm / pnpm" }
     }
     struct Package: Identifiable, Sendable {
         var id: String { layerID + ":" + name }
@@ -103,11 +103,48 @@ actor EnvironmentLanguagePackageService {
                     case .timedOut(let partial): throw FloeError.validationFailed("安装超时，重新读取依赖后可重试。\n" + partial)
                     case .cancelled: throw CancellationError()
                     }
-                } else { output = try await nodeInstaller().change(environment, specification: specification, remove: remove, cancellation: token) }
+                } else {
+                    let preference = try readNodePreference(environment)
+                    let manager = try NodePackageManagerPolicy.resolve(preference: preference, workspace: lease.context.workspaceRootURL)
+                    output = try await nodeInstaller().change(environment, specification: specification, remove: remove, manager: manager, cancellation: token)
+                }
                 await lease.finish()
                 return output.isEmpty ? "依赖已更新" : output
             } catch { await lease.finish(); throw error }
         } onCancel: { token.cancel() }
+    }
+
+    struct NodeManagerSelection: Sendable {
+        var preference: NodePackageManagerPreference
+        var resolved: NodePackageManager?
+        var issue: String?
+    }
+
+    func nodeManagerSelection(environmentID: String, set preference: NodePackageManagerPreference? = nil) async throws -> NodeManagerSelection {
+        guard !busy.contains(environmentID) else { throw FloeError.validationFailed("依赖事务尚未结束") }
+        busy.insert(environmentID)
+        defer { busy.remove(environmentID) }
+        let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: CancellationToken())
+        do {
+            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
+            if let preference {
+                let file = try contained("var/node-package-manager.json", in: environment.writableLayerURL)
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(preference).write(to: file, options: .atomic)
+            }
+            let selected = try readNodePreference(environment)
+            let result: NodeManagerSelection
+            do { result = .init(preference: selected, resolved: try NodePackageManagerPolicy.resolve(preference: selected, workspace: lease.context.workspaceRootURL)) }
+            catch { result = .init(preference: selected, issue: error.localizedDescription) }
+            await lease.finish()
+            return result
+        } catch { await lease.finish(); throw error }
+    }
+
+    private func readNodePreference(_ environment: ToolEnvironment) throws -> NodePackageManagerPreference {
+        let file = try contained("var/node-package-manager.json", in: environment.writableLayerURL)
+        guard FileManager.default.fileExists(atPath: file.path) else { return .automatic }
+        return try JSONDecoder().decode(NodePackageManagerPreference.self, from: boundedData(file))
     }
 
     private func contained(_ relative: String, in root: URL) throws -> URL {
@@ -128,7 +165,7 @@ actor EnvironmentLanguagePackageService {
         guard let npm = FloeNodeBundledToolPath("npm"), IOSSystemNodeRuntime.shared.isAvailable else {
             throw FloeError.invalidConfiguration("npm 运行时尚未就绪")
         }
-        return ManagedNodeInstallService(runtime: IOSSystemNodeRuntime.shared, npmEntry: npm) { environment, directory in
+        return ManagedNodeInstallService(runtime: IOSSystemNodeRuntime.shared, npmEntry: npm, pnpmEntry: FloeNodeBundledToolPath("pnpm")) { environment, directory in
             IOSSystemNodeRuntime.defaultEnvironment(containerRoot: environment.writableLayerURL, workspaceRoot: directory)
         }
     }

@@ -25,7 +25,7 @@ import FloePackages
         tasks[id] = Task {
             do { messages[id] = try await operation() }
             catch is CancellationError { messages[id] = "任务已取消；重新读取依赖以确认当前状态" }
-            catch { messages[id] = String(describing: error); failures.insert(id) }
+            catch { messages[id] = error.localizedDescription; failures.insert(id) }
             running.remove(id)
             tasks[id] = nil
             revision += 1
@@ -228,7 +228,7 @@ private struct EnvironmentDetailView: View {
                         }
                     }
                     DisclosureGroup("软件源（\(packages.sources.count)）") {
-                        if packages.sources.isEmpty { Text("尚未配置已签名的软件源") }
+                        if packages.sources.isEmpty { Text("尚未配置软件源") }
                         ForEach(packages.sources) { source in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(source.uri).textSelection(.enabled)
