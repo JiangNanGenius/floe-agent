@@ -13,12 +13,24 @@ name: CI
 # Superseded branch checks may stop; release uploads have a separate,
 # non-cancelling concurrency group.
 concurrency:
-  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 on:
   workflow_dispatch:
     inputs:
+      live_agent_demo:
+        description: 'Only record one explicitly authorized paid text Agent demo'
+        type: boolean
+        default: false
+      demo_source_run:
+        description: 'Completed CI source run for the immutable simulator App'
+        type: string
+        default: ''
+      demo_source_sha:
+        description: 'Exact source SHA matching the simulator artifact'
+        type: string
+        default: ''
       local_inference:
         description: 'Run only the pinned Qwen cold-load diagnostic on a macOS host (not iPad acceptance)'
         type: boolean
@@ -48,17 +60,26 @@ on:
   pull_request:
 
 jobs:
+  live-agent-demo:
+    if: github.event_name == 'workflow_dispatch' && inputs.live_agent_demo
+    uses: ./.github/workflows/live-agent-demo.yml
+    with:
+      source_run: ${{ inputs.demo_source_run }}
+      source_sha: ${{ inputs.demo_source_sha }}
+      authorize_text_calls: ${{ inputs.live_agent_demo }}
+    secrets:
+      FLOE_LIVE_DEMO_ARK_KEY: ${{ secrets.FLOE_LIVE_DEMO_ARK_KEY }}
   local-inference:
-    if: github.event_name == 'workflow_dispatch' && inputs.local_inference
+    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.local_inference }}
     uses: ./.github/workflows/local-inference-qualification.yml
   feedback-ui:
-    if: github.event_name == 'workflow_dispatch' && inputs.feedback_ui
+    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.feedback_ui }}
     uses: ./.github/workflows/feedback-ui.yml
     with:
       palette_only: ${{ inputs.palette_only }}
       palette_unit_only: ${{ inputs.palette_unit_only }}
   build-native-wheels:
-    if: github.event_name == 'workflow_dispatch' && inputs.native_wheels_package != ''
+    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.native_wheels_package != '' }}
     # CPython's upstream testbed still uses UIApplicationDelegate rather than
     # UIScene. Build/test this dependency with the compatible stable SDK;
     # the shipping Floe app and its native smoke tests still use Xcode 27.
@@ -92,7 +113,7 @@ jobs:
           path: ios-wheelhouse/out/
           if-no-files-found: error
   publish-skill-hub:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub
+    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub }}
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -142,7 +163,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     # Foundation Models is guarded by Swift 6.4. Building on the generic
     # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
     runs-on: xcode-27
@@ -421,7 +442,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
     # the explicit unsupported-Foundation-Models path and the rest of Floe's
@@ -478,7 +499,7 @@ jobs:
             build
 
   spm-linux-build:
-    if: ${{ !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
     runs-on: ubuntu-latest
     # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
     # below do not link MLX. Resolution must therefore use a 6.3 toolchain.

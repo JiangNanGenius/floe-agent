@@ -1,0 +1,154 @@
+name: Record authorized live Agent demo
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: 'Completed CI run containing the immutable simulator App'
+        type: string
+        required: true
+      source_sha:
+        description: 'Full App source commit matching the artifact'
+        type: string
+        required: true
+      authorize_text_calls:
+        description: 'Explicit user authorization exists for this bounded paid text demo'
+        type: boolean
+        required: true
+        default: false
+  workflow_call:
+    inputs:
+      source_run:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
+      authorize_text_calls:
+        type: boolean
+        required: true
+    secrets:
+      FLOE_LIVE_DEMO_ARK_KEY:
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: floe-live-agent-demo
+  cancel-in-progress: false
+jobs:
+  record:
+    if: ${{ inputs.authorize_text_calls && github.run_attempt == 1 }}
+    runs-on: macos-26
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate and download exact App artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python3 - <<'PY'
+          import json,os,re,subprocess
+          run=os.environ['SOURCE_RUN']; sha=os.environ['SOURCE_SHA']
+          assert re.fullmatch(r'\d+',run) and re.fullmatch(r'[0-9a-f]{40}',sha)
+          info=json.loads(subprocess.check_output(['gh','run','view',run,'--json','headSha,status,workflowName']))
+          assert info['headSha']==sha and info['status']=='completed' and info['workflowName']=='CI'
+          PY
+          gh run download "$SOURCE_RUN" -n "simulator-app-$SOURCE_SHA" -D "$RUNNER_TEMP/live-app"
+          ditto -x -k "$RUNNER_TEMP/live-app/FloeAgent-Simulator.zip" "$RUNNER_TEMP/live-app/extracted"
+      - name: Build only the tiny UI driver
+        run: |
+          command -v xcodegen || brew install xcodegen
+          xcodegen generate --spec FloeAgent/Qualification/LiveAgentUI/project.yml
+          xcodebuild -project FloeAgent/Qualification/LiveAgentUI/FloeLiveAgentUI.xcodeproj \
+            -scheme FloeLiveAgentUI -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/live-driver" CODE_SIGNING_ALLOWED=NO build-for-testing
+      - name: Initialize a disposable real App
+        run: |
+          sim=$(xcrun simctl list devices available -j | python3 FloeAgent/scripts/select_test_simulator.py --sdk-major 27 --name 'iPad mini (A17 Pro)')
+          xcrun simctl shutdown all || true
+          xcrun simctl boot "$sim"
+          xcrun simctl bootstatus "$sim" -b
+          xcrun simctl install "$sim" "$RUNNER_TEMP/live-app/extracted/Floe Agent.app"
+          xcrun simctl launch "$sim" org.floeagent.ios
+          container=$(xcrun simctl get_app_container "$sim" org.floeagent.ios data)
+          export FLOE_DEMO_CONTAINER="$container"
+          python3 - <<'PY'
+          import os,pathlib,sqlite3,time
+          db=pathlib.Path(os.environ['FLOE_DEMO_CONTAINER'])/'Library/Application Support/FloeAgent/floe.sqlite'
+          for _ in range(90):
+              try:
+                  with sqlite3.connect(db) as c:
+                      if c.execute("SELECT count(*) FROM model_preferences WHERE id='default'").fetchone()[0]: break
+              except sqlite3.Error: pass
+              time.sleep(1)
+          else: raise SystemExit('Real App initialization failed')
+          PY
+          xcrun simctl terminate "$sim" org.floeagent.ios
+          python3 FloeAgent/Qualification/LiveAgentUI/seed_configuration.py "$container"
+          echo "FLOE_DEMO_SIM=$sim" >> "$GITHUB_ENV"
+          echo "FLOE_DEMO_CONTAINER=$container" >> "$GITHUB_ENV"
+      - name: Configure authorized credential outside the recording
+        env:
+          TEST_RUNNER_FLOE_LIVE_AGENT_KEY: ${{ secrets.FLOE_LIVE_DEMO_ARK_KEY }}
+        run: |
+          test -n "$TEST_RUNNER_FLOE_LIVE_AGENT_KEY"
+          xctestrun=$(find "$RUNNER_TEMP/live-driver/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
+          xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,id=$FLOE_DEMO_SIM" \
+            -only-testing:LiveAgentUITests/LiveAgentUITests/testConfigureAuthorizedCredential \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 180 -collect-test-diagnostics never \
+            CODE_SIGNING_ALLOWED=NO test-without-building
+      - name: Record real model and workspace tool calls
+        run: |
+          mkdir -p LiveAgentEvidence
+          xctestrun=$(find "$RUNNER_TEMP/live-driver/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
+          xcrun simctl io "$FLOE_DEMO_SIM" recordVideo --codec=h264 --force LiveAgentEvidence/live-agent-ipad.mp4 > "$RUNNER_TEMP/recording.log" 2>&1 &
+          recording_pid=$!
+          trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
+          set +e
+          xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,id=$FLOE_DEMO_SIM" \
+            -only-testing:LiveAgentUITests/LiveAgentUITests/testLiveMarkdownCreationAndReadback \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 300 -collect-test-diagnostics never \
+            -resultBundlePath "$RUNNER_TEMP/live-result.xcresult" CODE_SIGNING_ALLOWED=NO test-without-building
+          status=$?
+          kill -INT "$recording_pid" 2>/dev/null || true
+          wait "$recording_pid" || true
+          trap - EXIT
+          xcrun xcresulttool export attachments --path "$RUNNER_TEMP/live-result.xcresult" --output-path LiveAgentEvidence/screenshots
+          exit "$status"
+      - name: Verify actual tool results and generated file
+        if: ${{ !cancelled() && env.FLOE_DEMO_CONTAINER != '' }}
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: python3 FloeAgent/Qualification/LiveAgentUI/collect_evidence.py "$FLOE_DEMO_CONTAINER" LiveAgentEvidence --source-sha "$SOURCE_SHA"
+      - name: Check evidence for credential exposure
+        id: scan
+        if: ${{ !cancelled() }}
+        env:
+          DEMO_SECRET: ${{ secrets.FLOE_LIVE_DEMO_ARK_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os,pathlib
+          key=os.environ.get('DEMO_SECRET','').encode()
+          assert key
+          for p in pathlib.Path('LiveAgentEvidence').rglob('*'):
+              if p.is_file():
+                  assert key not in p.read_bytes(), 'Credential found in proposed evidence; upload blocked'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.scan.conclusion == 'success' }}
+        with:
+          if-no-files-found: warn
+          name: live-agent-demo-${{ inputs.source_sha }}
+          path: LiveAgentEvidence
+          retention-days: 14
+      - name: Remove disposable runtime credential with the test device
+        if: ${{ always() && env.FLOE_DEMO_SIM != '' }}
+        run: |
+          xcrun simctl shutdown "$FLOE_DEMO_SIM" || true
+          xcrun simctl erase "$FLOE_DEMO_SIM" || true

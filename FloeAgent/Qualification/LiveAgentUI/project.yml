@@ -1,0 +1,37 @@
+name: FloeLiveAgentUI
+options:
+  deploymentTarget:
+    iOS: '26.0'
+settings:
+  base:
+    ARCHS: arm64
+    CODE_SIGNING_ALLOWED: NO
+    SWIFT_VERSION: '6.0'
+    GENERATE_INFOPLIST_FILE: YES
+    TARGETED_DEVICE_FAMILY: '1,2'
+targets:
+  LiveAgentHarness:
+    type: application
+    platform: iOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.qualification.liveharness
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  LiveAgentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: LiveAgentHarness
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.qualification.liveuitests
+schemes:
+  FloeLiveAgentUI:
+    build:
+      targets:
+        LiveAgentHarness: all
+        LiveAgentUITests: [test]
+    test:
+      targets: [LiveAgentUITests]
