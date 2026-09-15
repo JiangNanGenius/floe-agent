@@ -238,7 +238,7 @@ jobs:
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
             -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
-            CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO \
             build-for-testing
 
       - name: Run Canvas, PiP, timeline and execution regressions
@@ -467,7 +467,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/FloeXcode26DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO \
             build
 
   spm-linux-build:

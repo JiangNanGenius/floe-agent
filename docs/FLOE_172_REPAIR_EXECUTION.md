@@ -116,3 +116,7 @@ Python and Node package pages expose an editable source address and restore-offi
 Three Swift checks pass for source persistence across two environments, rejecting URL credentials/malformed or escaping configuration, and passing the registry to both managers with recovery after failure. Fourteen Python payload/recovery checks pass, including explicit index forwarding. This does not yet provide authenticated private registries, scoped source bindings or a published Floe language mirror; those remain outstanding. Full-App UI and non-default source end-to-end qualification are pending.
 
 Native lxml candidate build `34923069149` compiled libxml2 for iOS, then failed to locate its CMake config while cross-compiling libxslt. Follow-up `34923284307` binds that config to the explicit target slice. Original failure retained; no lxml wheel or Office Python capability is reported ready yet.
+
+## Simulator build scope
+
+The SDK 27 cloud log showed unused x86_64 MLX/NIO compilations alongside arm64 on the Apple Silicon runner. CI and release simulator build commands now select `ARCHS=arm64 ONLY_ACTIVE_ARCH=YES`; iPad/iPhone runs and SDK 26/27 checks remain. Device archive settings are unchanged. Both workflow files pass actionlint; elapsed-time improvement is not claimed before a new run.
