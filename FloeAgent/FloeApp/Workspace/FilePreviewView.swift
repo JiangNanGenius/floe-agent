@@ -121,16 +121,12 @@ struct FilePreviewView: View {
                     Button("engineering.cad.keepEditing", role: .cancel) {}
                 }
                 .sheet(item: $engineeringReview) { capture in
-                    if let id = conversationID ?? router.selectedConversationID {
-                        EngineeringReviewSheet(capture: capture, conversationID: id, center: center)
-                    }
+                    EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID, center: center)
                 }
             }
         }
         .sheet(item: Binding(get: { isEngineeringFullScreen ? nil : engineeringReview }, set: { engineeringReview = $0 })) { capture in
-            if let id = conversationID ?? router.selectedConversationID {
-                EngineeringReviewSheet(capture: capture, conversationID: id, center: center)
-            }
+            EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID, center: center)
         }
         .fullScreenCover(item: $mediaEditorSource, onDismiss: { Task { await load() } }) { url in
             if let root = center.currentRootURL {
@@ -159,8 +155,14 @@ struct FilePreviewView: View {
         }
     }
 
+    private var engineeringConversationID: UUID? {
+        guard let id = conversationID ?? router.selectedConversationID,
+              center.workspaceID(for: id) == center.currentWorkspace?.id else { return nil }
+        return id
+    }
+
     private func engineeringView(_ package: EngineeringPreviewPackage, editing: Bool = false) -> some View {
-        EngineeringFilePreview(package: package, onReview: (conversationID ?? router.selectedConversationID) == nil ? nil : { capture in
+        EngineeringFilePreview(package: package, onReview: { capture in
             engineeringReview = EngineeringReviewCapture(context: "Workspace path: \(relativePath)\n" + capture.context, image: capture.image)
         }, onSave: editing && engineeringRoot != nil && (package.kind == .dxf || package.kind == .dwg) ? { data, baseline in
             guard let service = center.fileService, service.guardResolver.rootURL == engineeringRoot else {
@@ -255,6 +257,7 @@ struct FilePreviewView: View {
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("在编辑器中打开")
+                .accessibilityIdentifier("file.preview.openIDE")
             }
             if !isTextual, nativeOfficeURL == nil, quickLookAvailable {
                 Button {

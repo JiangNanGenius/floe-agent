@@ -97,7 +97,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Floe Agent **1.7.0 (build 172)** is the latest build recorded as available to the **Floe QA internal TestFlight group**. See the [TestFlight availability record](docs/TESTFLIGHT_1.7.0_BETA.md). The [build 176 repair candidate](docs/FLOE_172_REPAIR_EXECUTION.md) is still under qualification; its code changes and screenshots do not indicate a newer uploaded build. Earlier 1.5.3 evidence is retained in the [historical verification record](docs/RELEASE_VERIFICATION_1.5.3.md).
+Floe Agent **1.7.0 (build 172)** is the latest build recorded as available to the **Floe QA internal TestFlight group**. See the [TestFlight availability record](docs/TESTFLIGHT_1.7.0_BETA.md). The [build 177 repair candidate](docs/RELEASE_NOTES_1.7.0_BUILD_177.md) is still under qualification; its code changes and screenshots do not indicate a newer uploaded build. Earlier 1.5.3 evidence is retained in the [historical verification record](docs/RELEASE_VERIFICATION_1.5.3.md).
 
 ### Unsigned IPA
 

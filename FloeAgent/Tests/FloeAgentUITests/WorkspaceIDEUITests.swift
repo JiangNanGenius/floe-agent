@@ -8,7 +8,7 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
@@ -25,7 +25,7 @@ final class WorkspaceIDEUITests: XCTestCase {
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: save)], timeout: 20)
         capture("ide-native-text-saved")
         app.buttons["workspace.ide.close"].tap()
-        XCTAssertTrue(app.buttons["workspace.openIDE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
 
         // A cold App + new nonpersistent WebKit session must read from disk.
         app.terminate()
@@ -37,14 +37,14 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(app.buttons["workspace.ide.terminal"].isEnabled)
         capture("ide-native-cold-reopen")
         app.buttons["workspace.ide.close"].tap()
-        XCTAssertTrue(app.buttons["workspace.openIDE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
 
     func testEngineeringDrawingInlineAndFullScreen() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-engineering-fixture"]
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-engineering-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
@@ -68,7 +68,7 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        app.launchArguments = ["-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-engineering-fixture"]
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-engineering-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
@@ -141,7 +141,7 @@ final class WorkspaceIDEUITests: XCTestCase {
             XCTAssertTrue(savedText.waitForExistence(timeout: 10))
             capture("ide-native-disk-readback")
         }
-        let expand = app.buttons["workspace.openIDE"]
+        let expand = app.buttons["file.preview.openIDE"]
         XCTAssertTrue(expand.waitForExistence(timeout: 10)); expand.tap()
         let save = app.buttons["workspace.ide.save"]
         XCTAssertTrue(save.waitForExistence(timeout: 20))

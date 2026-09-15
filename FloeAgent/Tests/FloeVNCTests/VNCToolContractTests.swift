@@ -272,3 +272,30 @@ struct VNCToolContractTests {
         }
     }
 }
+
+@Suite("Remote desktop protocol routing")
+struct RDPToolContractTests {
+    @Test("RDP prerequisites and failure guidance never reconnect a VNC endpoint")
+    func protocolRouting() async throws {
+        #expect(RDPTool<VNCObserveTool>.name == "rdp.observe")
+        #expect(RDPTool<VNCObserveTool>.prerequisites.first?.state == "rdp.connected")
+        #expect(RDPTool<VNCObserveTool>.prerequisites.first?.resolverToolName == "rdp.connect")
+        let tool = RDPTool(VNCObserveTool(sessionProvider: { nil }))
+        do {
+            _ = try await tool.execute(.init(), context: ToolContext(runID: UUID(), cancellation: CancellationToken()))
+            Issue.record("An unavailable RDP endpoint must fail")
+        } catch FloeError.validationFailed(let message) {
+            #expect(message.contains("RDP endpoint"))
+            #expect(!message.contains("VNC"))
+        }
+        // Task-local selection must not contaminate another protocol's tools.
+        #expect(VNCToolSupport.protocolName == "vnc")
+        #expect(VNCToolSupport.partialObservationFields(cancelled: false)["nextAction"] as? String ==
+            "Input may already have executed. Do not replay it; obtain fresh vnc.observe evidence when the session is available.")
+        let partial = VNCToolSupport.$protocolName.withValue("rdp") {
+            VNCToolSupport.partialObservationFields(cancelled: false)
+        }
+        #expect((partial["nextAction"] as? String)?.contains("rdp.observe") == true)
+        #expect(partial["retryInput"] as? Bool == false)
+    }
+}

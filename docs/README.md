@@ -87,3 +87,6 @@
 - [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。
 
 - [Engineering viewers: format matrix, offline architecture and qualification](FLOE_ENGINEERING_VIEWERS.md)
+
+- [Build 177 candidate](RELEASE_NOTES_1.7.0_BUILD_177.md): live personalization, drawing review entry, CAD/IDE and UI qualification fixes; upload pending.
+- [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.

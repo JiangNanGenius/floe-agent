@@ -49,6 +49,7 @@ private struct EngineeringWebView: UIViewRepresentable {
     var onSave: ((Data, String) async throws -> String)?
     var onDirty: ((Bool) -> Void)?
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.locale) private var locale
 
     func makeCoordinator() -> Coordinator { Coordinator(package: package, error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty) }
     func makeUIView(context: Context) -> WKWebView {
@@ -56,7 +57,7 @@ private struct EngineeringWebView: UIViewRepresentable {
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "floeEngineering")
-        let options: [String: Any] = ["dark": colorScheme == .dark, "language": Locale.preferredLanguages.first ?? "en", "canReview": onReview != nil, "canEdit": onSave != nil]
+        let options: [String: Any] = ["dark": colorScheme == .dark, "language": locale.identifier, "canReview": onReview != nil, "canEdit": onSave != nil]
         if let bytes = try? JSONSerialization.data(withJSONObject: options), let json = String(data: bytes, encoding: .utf8) {
             config.userContentController.addUserScript(WKUserScript(source: "window.floeEngineeringConfiguration = \(json);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }

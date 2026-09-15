@@ -1,0 +1,138 @@
+{
+  "source": "760566f8d2ed468daf8e599f3391066cf37299c1",
+  "runtime": "3.31.1",
+  "coverage": "Linux real TLS RDP bridge, xrdp VNC backend; not Apple App or Windows NLA acceptance",
+  "passed": [
+    "certificate rejection",
+    "three connect/frame/input/close cycles",
+    "atomic oversized batch rejection",
+    "connecting cancellation"
+  ],
+  "sessions": [
+    {
+      "states": [
+        [
+          1,
+          0
+        ],
+        [
+          3,
+          131080
+        ]
+      ],
+      "frames": 0,
+      "samplePixels": [],
+      "certificateCallbacks": 1,
+      "shutdownSeconds": 0.0
+    },
+    {
+      "states": [
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "frames": 200,
+      "samplePixels": [
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "563412",
+        "563412",
+        "563412",
+        "563412",
+        "563412",
+        "563412"
+      ],
+      "certificateCallbacks": 1,
+      "shutdownSeconds": 0.001
+    },
+    {
+      "states": [
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "frames": 200,
+      "samplePixels": [
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "563412",
+        "563412",
+        "563412"
+      ],
+      "certificateCallbacks": 1,
+      "shutdownSeconds": 0.001
+    },
+    {
+      "states": [
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "frames": 200,
+      "samplePixels": [
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "000000",
+        "563412",
+        "563412",
+        "563412",
+        "563412"
+      ],
+      "certificateCallbacks": 1,
+      "shutdownSeconds": 0.001
+    },
+    {
+      "states": [
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "frames": 0,
+      "samplePixels": [],
+      "certificateCallbacks": 0,
+      "shutdownSeconds": 0.0
+    }
+  ]
+}

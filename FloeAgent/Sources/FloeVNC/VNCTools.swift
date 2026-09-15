@@ -13,9 +13,9 @@ import FloeTools
 
 public struct VNCSessionHandle: @unchecked Sendable {
     public let id: UUID
-    public let session: VNCSession
+    public let session: any RemoteDesktopSession
 
-    public init(id: UUID, session: VNCSession) {
+    public init(id: UUID, session: any RemoteDesktopSession) {
         self.id = id
         self.session = session
     }
@@ -78,6 +78,12 @@ private struct VNCCapturedArtifact {
 }
 
 enum VNCToolSupport {
+    @TaskLocal static var protocolName = "vnc"
+    static func message(_ template: String) -> String {
+        template.replacingOccurrences(of: "vnc.", with: protocolName + ".")
+            .replacingOccurrences(of: "VNC", with: protocolName.uppercased())
+    }
+
     static func statusOutput(_ status: VNCToolConnectionStatus) throws -> ToolExecutionOutput {
         var payload: [String: Any] = [
             "status": "ok",
@@ -110,7 +116,7 @@ enum VNCToolSupport {
         }
         guard let handle else {
             throw FloeError.validationFailed(
-                #"{"category":"configurationMissing","reason":"No VNC endpoint is available to the agent.","retryable":false,"stage":"configuration","status":"connectionFailed"}"#
+                message(#"{"category":"configurationMissing","reason":"No VNC endpoint is available to the agent.","retryable":false,"stage":"configuration","status":"connectionFailed"}"#)
             )
         }
         guard handle.session.isConnected else {
@@ -118,7 +124,7 @@ enum VNCToolSupport {
                 throw FloeError.validationFailed(failure.toolSummary)
             }
             throw FloeError.validationFailed(
-                #"{"category":"handshakeFailed","reason":"The VNC session exists but is not connected.","retryable":true,"stage":"handshake","status":"connectionFailed"}"#
+                message(#"{"category":"handshakeFailed","reason":"The VNC session exists but is not connected.","retryable":true,"stage":"handshake","status":"connectionFailed"}"#)
             )
         }
         return handle
@@ -134,7 +140,7 @@ enum VNCToolSupport {
         )) ?? FileManager.default.temporaryDirectory
         let directory = support
             .appendingPathComponent("FloeAgent", isDirectory: true)
-            .appendingPathComponent("VNCArtifacts", isDirectory: true)
+            .appendingPathComponent(protocolName.uppercased() + "Artifacts", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         cleanup(directory: directory)
         let id = UUID()
@@ -142,7 +148,7 @@ enum VNCToolSupport {
         try capture.data.write(to: directory.appendingPathComponent(filename), options: .atomic)
         let reference = ToolArtifactReference(
             id: id,
-            relativePath: "VNCArtifacts/\(filename)",
+            relativePath: "\(protocolName.uppercased())Artifacts/\(filename)",
             mimeType: "image/jpeg",
             byteCount: capture.data.count,
             sha256: capture.sha256
@@ -180,22 +186,22 @@ enum VNCToolSupport {
         x: Int,
         y: Int,
         screenshotSHA256: String,
-        session: VNCSession
+        session: any RemoteDesktopSession
     ) throws -> VNCVisualEvidence {
         guard screenshotSHA256.count == 64,
               screenshotSHA256.allSatisfy(\.isHexDigit),
               let evidence = session.currentVisualEvidence,
               evidence.sha256.caseInsensitiveCompare(screenshotSHA256) == .orderedSame else {
             throw FloeError.validationFailed(
-                "Call vnc.observe first and pass its fresh screenshotSHA256"
+                VNCToolSupport.message("Call vnc.observe first and pass its fresh screenshotSHA256")
             )
         }
         guard Date().timeIntervalSince(evidence.capturedAt) <= 15 else {
-            throw FloeError.validationFailed("VNC screenshot evidence expired; call vnc.observe again")
+            throw FloeError.validationFailed(VNCToolSupport.message("VNC screenshot evidence expired; call vnc.observe again"))
         }
         guard evidence.revision == session.currentFrameRevision else {
             throw FloeError.validationFailed(
-                "The remote screen changed after the screenshot; call vnc.observe again"
+                VNCToolSupport.message("The remote screen changed after the screenshot; call vnc.observe again")
             )
         }
         guard x >= 0, y >= 0, x < evidence.pixelWidth, y < evidence.pixelHeight else {
@@ -256,7 +262,7 @@ enum VNCToolSupport {
             fields["postRevision"] = post.artifact.capture.revision
             fields["nextAction"] = observation["evidenceStatus"] as? String == "current"
                 ? "Use this result's screenshotSHA256 and elements directly; observe again only if evidence is stale or no new frame arrived."
-                : "The screen changed during observation. Do not replay the input; obtain fresh vnc.observe evidence before another coordinate action."
+                : VNCToolSupport.message("The screen changed during observation. Do not replay the input; obtain fresh vnc.observe evidence before another coordinate action.")
             return try output(fields, artifacts: [post.artifact.reference])
         } catch {
             fields.merge(partialObservationFields(cancelled: error is CancellationError)) { _, new in new }
@@ -267,7 +273,7 @@ enum VNCToolSupport {
     static func partialObservationFields(cancelled: Bool) -> [String: Any] {
         ["status": "partialSuccess", "observationStatus": cancelled ? "cancelled" : "unavailable",
          "retryInput": false,
-         "nextAction": "Input may already have executed. Do not replay it; obtain fresh vnc.observe evidence when the session is available."]
+         "nextAction": VNCToolSupport.message("Input may already have executed. Do not replay it; obtain fresh vnc.observe evidence when the session is available.")]
     }
 
     static func clickOutput(
@@ -281,15 +287,13 @@ enum VNCToolSupport {
         do {
             for index in 0..<count {
                 try context.cancellation.throwIfCancelled()
-                handle.session.mouseMove(x: UInt16(x), y: UInt16(y))
-                handle.session.mouseDown(x: UInt16(x), y: UInt16(y))
-                handle.session.mouseUp(x: UInt16(x), y: UInt16(y))
+                try handle.session.click(x: UInt16(x), y: UInt16(y))
                 queued += 1
                 if index + 1 < count { try await Task.sleep(for: .milliseconds(100)) }
             }
         } catch {
             guard queued > 0 else { throw error }
-            var fields = partialObservationFields(cancelled: true)
+            var fields = partialObservationFields(cancelled: error is CancellationError)
             fields["sessionID"] = handle.id.uuidString
             fields["inputDispatched"] = true
             fields["inputStatus"] = "partiallyQueued"
@@ -531,7 +535,7 @@ public struct VNCClickElementTool: AgentTool {
               Date().timeIntervalSince(structure.capturedAt) <= 15,
               let element = structure.elements.first(where: { $0.reference == args.reference }) else {
             throw FloeError.validationFailed(
-                "Structured VNC evidence is missing, changed, or expired; call vnc.observe again"
+                VNCToolSupport.message("Structured VNC evidence is missing, changed, or expired; call vnc.observe again")
             )
         }
         let evidence = try VNCToolSupport.validatePoint(
@@ -625,8 +629,7 @@ public struct VNCTypeTextTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
         let before = handle.session.currentVisualEvidence
-        handle.session.send(text: args.text)
-        if args.submit == true { handle.session.send(.return) }
+        try handle.session.send(text: args.text, submit: args.submit == true)
         return try await VNCToolSupport.postActionOutput(handle, before: before, details: [
             "characterCount": args.text.count,
             "submitted": args.submit == true
@@ -687,8 +690,7 @@ public struct VNCTypeCredentialTool: AgentTool {
             throw FloeError.validationFailed("Saved credential is empty, too large, or not UTF-8 text")
         }
         let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
-        handle.session.send(text: text)
-        if args.submit == true { handle.session.send(.return) }
+        try handle.session.send(text: text, submit: args.submit == true)
         // Credential text may be visible in an arbitrary focus target. Do not
         // automatically persist or expose an unredacted post-input screenshot.
         return try VNCToolSupport.output([
@@ -734,7 +736,7 @@ public struct VNCScrollTool: AgentTool {
             screenshotSHA256: args.screenshotSHA256,
             session: handle.session
         )
-        handle.session.scroll(
+        try handle.session.scroll(
             up: args.deltaY > 0,
             x: UInt16(args.x),
             y: UInt16(args.y),
@@ -811,26 +813,29 @@ public struct VNCDragTool: AgentTool {
         )
         let steps = 12
         let duration = args.durationMilliseconds ?? 500
-        handle.session.mouseMove(x: UInt16(args.fromX), y: UInt16(args.fromY))
-        handle.session.mouseDown(x: UInt16(args.fromX), y: UInt16(args.fromY))
+        try handle.session.mouseMove(x: UInt16(args.fromX), y: UInt16(args.fromY))
+        try handle.session.mouseDown(x: UInt16(args.fromX), y: UInt16(args.fromY))
         var lastX = UInt16(args.fromX)
         var lastY = UInt16(args.fromY)
         do {
-            defer { handle.session.mouseUp(x: lastX, y: lastY) }
             for step in 1...steps {
                 try context.cancellation.throwIfCancelled()
                 let progress = Double(step) / Double(steps)
                 lastX = UInt16((Double(args.fromX) + Double(args.toX - args.fromX) * progress).rounded())
                 lastY = UInt16((Double(args.fromY) + Double(args.toY - args.fromY) * progress).rounded())
-                handle.session.mouseMove(x: lastX, y: lastY)
+                try handle.session.mouseMove(x: lastX, y: lastY)
                 try await Task.sleep(for: .milliseconds(duration / steps))
             }
+            try handle.session.mouseUp(x: lastX, y: lastY)
         } catch {
-            var fields = VNCToolSupport.partialObservationFields(cancelled: true)
+            let releaseQueued: Bool
+            do { try handle.session.mouseUp(x: lastX, y: lastY); releaseQueued = true }
+            catch { releaseQueued = false }
+            var fields = VNCToolSupport.partialObservationFields(cancelled: error is CancellationError)
             fields["sessionID"] = handle.id.uuidString
             fields["inputDispatched"] = true
             fields["inputStatus"] = "partiallyQueued"
-            fields["releaseQueued"] = true
+            fields["releaseQueued"] = releaseQueued
             return try VNCToolSupport.output(fields)
         }
         return try await VNCToolSupport.postActionOutput(handle, before: evidence, details: [
@@ -861,7 +866,7 @@ public struct VNCKeyPressTool: AgentTool {
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
     public func validate(_ args: Arguments) throws {
         guard Self.supportedKeys.contains(args.key.lowercased()) else {
-            throw FloeError.validationFailed("Unsupported VNC key: \(args.key)")
+            throw FloeError.validationFailed("Unsupported \(VNCToolSupport.protocolName.uppercased()) key: \(args.key)")
         }
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {

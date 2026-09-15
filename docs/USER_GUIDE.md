@@ -449,3 +449,13 @@ Both editors remain available. If a text file changes before saving, review the 
 Open DXF/DWG, mesh or Gerber/drill files from workspace files or the IDE, then expand the preview. DXF/DWG offer Edit for lines, circles and text, numeric moves, undo/redo and same-format Save. Previous versions and conflicting drafts stay in `Recovered Edits`; a conflicting save never silently replaces someone else's revision. Remote CAD and other 3D/PCB formats remain read only.
 
 Choose **Ask AI** to attach the current viewport and parsed drawing information, inspect the evidence, add a question and send with your configured model. Missing references and sampled geometry are identified. This helps review visible content; it does not establish complete engineering approval. See [the format and evidence matrix](FLOE_ENGINEERING_VIEWERS.md) for verified versions and pending App and KiCad work.
+
+### Build 177 candidate: drawing review from files
+
+Open a supported drawing from workspace files and choose **Ask AI**. Review the
+captured viewport and extracted information, enter a question, then send it. If no
+chat belongs to that workspace, Floe creates a review task when you send. Opening
+the review panel alone does not create a task or call a model. CAD review needs a
+configured model; visual limits and missing drawing references remain visible.
+Embedded IDE and drawing controls follow the app language. These candidate changes
+are still awaiting final-source TestFlight qualification.

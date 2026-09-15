@@ -56,12 +56,13 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
     @ObservedObject var state: IDEWorkbenchState
     var initialPath: String?
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.locale) private var locale
     func makeCoordinator() -> Coordinator { Coordinator(state: state) }
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "floeIDE")
-        let options: [String: Any] = ["initialPath": initialPath ?? "", "dark": colorScheme == .dark, "language": Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "zh-CN" : "en-US"]
+        let options: [String: Any] = ["initialPath": initialPath ?? "", "dark": colorScheme == .dark, "language": locale.identifier.hasPrefix("zh") ? "zh-CN" : "en-US"]
         if let json = try? JSONSerialization.data(withJSONObject: options), let source = String(data: json, encoding: .utf8) {
             config.userContentController.addUserScript(WKUserScript(source: "window.floeIDEConfiguration = \(source);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
