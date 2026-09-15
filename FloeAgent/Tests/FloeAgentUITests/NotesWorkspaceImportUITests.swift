@@ -176,6 +176,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(search.waitForExistence(timeout: 10))
         search.tap()
         search.typeText("Inline reading") // Text inside the PDF, absent from its filename.
+        capture("notes-search-query-entered")
         XCTAssertTrue(app.staticTexts["预览验收"].firstMatch.waitForExistence(timeout: 10))
         // The title already existed before typing. Require the actual body-match
         // snippet so an unchanged library cannot pass as a working search.

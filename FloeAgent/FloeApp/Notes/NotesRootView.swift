@@ -157,6 +157,7 @@ struct NotesRootView: View {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("搜索所有文档的名称与内容", text: $query)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
                     .accessibilityIdentifier("notes.search")
             }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12)).padding()
             HStack {
@@ -234,6 +235,8 @@ struct NotesRootView: View {
                             if document.isFavorite { Image(systemName: "star.fill").foregroundStyle(.yellow) }
                         }.padding(.vertical, 6)
                     }
+                    .buttonStyle(.plain)
+                    .multilineTextAlignment(.leading)
                     .disabled(document.deletedAt != nil)
                     .contextMenu {
                         if document.deletedAt != nil {

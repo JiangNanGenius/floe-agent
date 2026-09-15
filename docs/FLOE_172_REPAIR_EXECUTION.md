@@ -81,7 +81,7 @@ Both managed installers resolve a fresh staged dependency tree, retain direct-de
 Two macOS tests passed: read-only selection/conflict handling; real pinned npm and pnpm CLI install, import, manager switch, bad-version rollback and removal. This exercises production Swift staging/recovery with desktop Node, not the iOS Worker bridge. Full-App managed pnpm and saved-choice checks were added for the next immutable-source CI run.
 
 - Combined targeted qualification now passes **10 tests** (eight background-job lifecycle/ownership tests and two package-manager tests, including real HTTPS installs). Environment module compilation also passes. The current cloud run [34919306177](https://github.com/JiangNanGenius/floe-agent/actions/runs/34919306177) is fixed to `ec7d135a`; the later manager and orientation changes require a separate immutable-source run.
-- Inspection of the prior iPad screenshot attachments showed portrait output despite the intended landscape test. The next test explicitly detects the simulator model, sets landscape after launch and asserts actual App dimensions. Cloud UI runs will retain real simulator recordings alongside screenshots; no recording or demo is claimed complete before those runs finish.
+- Correction after inspecting PNG eXIf metadata: prior iPad attachments have portrait storage dimensions but orientation 8, so their displayed content is landscape. Dimensions alone were insufficient evidence of an orientation failure. The next test still explicitly asserts App frame orientation. Cloud UI runs retain real simulator recordings alongside screenshots; no recording or demo is claimed complete before those runs finish.
 
 ## Office chrome repair candidate
 
