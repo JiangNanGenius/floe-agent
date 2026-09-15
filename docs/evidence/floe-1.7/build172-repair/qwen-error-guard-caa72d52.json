@@ -1,0 +1,130 @@
+{
+  "sourceSHA": "caa72d52596f140413c89930e4e0c4369545daa0",
+  "runURL": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34934175018",
+  "target": "macOS diagnostic host using actual Floe MLX engine",
+  "result": "passed",
+  "deviceAcceptance": false,
+  "limitation": "Exercises error containment and pinned Qwen inference on cloud Mac; does not establish that iPad Metal prefill succeeds.",
+  "events": [
+    {
+      "event": "mlx-error-guard-passed",
+      "mlxActiveBytes": 0,
+      "mlxCacheBytes": 100,
+      "mlxPeakBytes": 100,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 5097088
+    },
+    {
+      "event": "download-start",
+      "mlxActiveBytes": 0,
+      "mlxCacheBytes": 100,
+      "mlxPeakBytes": 100,
+      "model": "qwen3.8-4b-heretic-mlx4",
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 5211904,
+      "revision": "f47bef776bcd49b552219c14c4da949c8b49e336"
+    },
+    {
+      "event": "download-complete",
+      "mlxActiveBytes": 0,
+      "mlxCacheBytes": 100,
+      "mlxPeakBytes": 100,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 24283136
+    },
+    {
+      "event": "load-start",
+      "mlxActiveBytes": 0,
+      "mlxCacheBytes": 100,
+      "mlxPeakBytes": 100,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 24283136
+    },
+    {
+      "elapsedSeconds": 8.00392997264862,
+      "event": "load-complete",
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 1284,
+      "mlxPeakBytes": 2367530912,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2522405760
+    },
+    {
+      "event": "generation-start",
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 1284,
+      "mlxPeakBytes": 2367530912,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2522438528,
+      "turn": 1
+    },
+    {
+      "elapsedSeconds": 7.719437956809998,
+      "event": "generation-complete",
+      "generationDurationMs": 361,
+      "inputTokens": 31,
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 0,
+      "mlxPeakBytes": 2466622791,
+      "outputTokens": 7,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2528746688,
+      "text": "你好吗？How are you?",
+      "turn": 1
+    },
+    {
+      "event": "generation-start",
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 0,
+      "mlxPeakBytes": 2466622791,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2528746688,
+      "turn": 2
+    },
+    {
+      "elapsedSeconds": 0.8429019451141357,
+      "event": "generation-complete",
+      "generationDurationMs": 441,
+      "inputTokens": 31,
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 2548484,
+      "mlxPeakBytes": 2523781233,
+      "outputTokens": 8,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2531810496,
+      "text": "2 plus 3 equals 5.",
+      "turn": 2
+    },
+    {
+      "event": "generation-start",
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 2548484,
+      "mlxPeakBytes": 2523781233,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2531810496,
+      "turn": 3
+    },
+    {
+      "elapsedSeconds": 44.62161898612976,
+      "event": "generation-complete",
+      "generationDurationMs": 73,
+      "inputTokens": 5773,
+      "mlxActiveBytes": 2367530912,
+      "mlxCacheBytes": 0,
+      "mlxPeakBytes": 2780554736,
+      "outputTokens": 1,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 2494160064,
+      "text": "blue",
+      "turn": 3
+    },
+    {
+      "event": "shutdown-complete",
+      "mlxActiveBytes": 4000,
+      "mlxCacheBytes": 0,
+      "mlxPeakBytes": 2780554736,
+      "platform": "macOS-host-not-iPad",
+      "processFootprintBytes": 121998144
+    }
+  ]
+}
