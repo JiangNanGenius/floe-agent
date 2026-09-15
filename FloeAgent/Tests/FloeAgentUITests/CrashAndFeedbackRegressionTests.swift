@@ -199,7 +199,7 @@ struct CrashAndFeedbackRegressionTests {
         await session.open(using: store)
         #expect(await session.select(saved))
         let missingPage = UUID()
-        session.saveDrawing(PKDrawing().dataRepresentation(), pageID: missingPage, documentID: saved.id)
+        session.saveDrawing(PKDrawing().dataRepresentation(), pageID: missingPage, base: saved)
         #expect(session.pendingWrites > 0)
         let updated = try await store.apply(.init(documentID: saved.id, expectedRevision: saved.revision,
             title: "Assistant edit", edits: [.rename("After")]))
@@ -210,7 +210,7 @@ struct CrashAndFeedbackRegressionTests {
         #expect(session.document?.title == "After")
         #expect(session.hasPendingInk(documentID: saved.id, pageID: missingPage))
         #expect(session.unsavedDocumentIDs.contains(saved.id))
-        #expect(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("\(missingPage.uuidString).drawing").path))
+        #expect(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("\(missingPage.uuidString).inkdraft").path))
     }
 
     @Test("Document assistant permissions stay bound to its native document and stop on restart") @MainActor
@@ -1268,6 +1268,64 @@ struct CrashAndFeedbackRegressionTests {
         ]
 
         #expect(MemoryCenter.automaticDeleteIDs(in: suggestions) == [stale, expired])
+    }
+}
+extension CrashAndFeedbackRegressionTests {
+    @Test("An Agent update during a Pencil gesture cannot replace the gesture baseline")
+    @MainActor func pencilGestureRetainsOpenedRevision() throws {
+        let base = NoteDocument(title: "Stroke baseline")
+        var changed = base; changed.revision += 1
+        let data = PKDrawing().dataRepresentation()
+        var received: NoteDocument?
+        let view = NotePencilView(page: base.pages[0], drawing: nil, background: nil, fingerDrawing: false,
+            tool: PKInkingTool(.pen, color: .black, width: 3), onDrawing: { _ in }, drawingBaseline: base,
+            onVersionedDrawing: { _, snapshot in received = snapshot })
+        let coordinator = view.makeCoordinator()
+        coordinator.loadedBaseline = base
+        let canvas = PKCanvasView()
+        coordinator.canvasViewDidBeginUsingTool(canvas)
+        var updated = view; updated.drawingBaseline = changed
+        coordinator.parent = updated
+        coordinator.pendingDrawing = data
+        coordinator.canvasViewDidEndUsingTool(canvas)
+        #expect(received == base)
+    }
+
+    @Test("Concurrent ink saves preserve the Agent page and a durable human copy")
+    @MainActor func concurrentInkCreatesReviewInsteadOfOverwriting() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-concurrency-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Shared ink"))
+        let recovery = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true).appendingPathComponent("FloeAgent/Notes/InkRecovery/\(base.id.uuidString)")
+        defer { try? FileManager.default.removeItem(at: recovery) }
+        let session = NotesSession()
+        await session.open(using: store)
+        let points = [CGPoint(x: 10, y: 10), CGPoint(x: 40, y: 40)].enumerated().map { index, point in
+            PKStrokePoint(location: point, timeOffset: Double(index), size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+        }
+        let agentBytes = PKDrawing(strokes: [PKStroke(ink: PKInk(.pen, color: .black), path: PKStrokePath(controlPoints: points, creationDate: Date()))]).dataRepresentation()
+        let resourceFile = root.appendingPathComponent("agent.drawing")
+        try agentBytes.write(to: resourceFile)
+        let resource = try await store.importResource(from: resourceFile, mediaType: "application/vnd.apple.pencilkit")
+        let agent = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Agent", edits: [.drawing(pageID: base.pages[0].id, resourceID: resource)]))
+        let human = PKDrawing().dataRepresentation()
+        session.saveDrawing(human, pageID: base.pages[0].id, base: base)
+        let deadline = Date().addingTimeInterval(5)
+        while session.pendingWrites > 0 && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(session.pendingWrites == 0)
+        #expect(try await store.document(base.id) == agent)
+        let review = try #require(try await store.conflictReviews().first)
+        #expect(review.current.id == base.id)
+        let copy = try await store.document(review.copy.id)
+        let inkID = try #require(copy.pages[0].drawingResourceID)
+        let url = try await store.resourceURL(inkID)
+        #expect(try Data(contentsOf: url) == human)
+        #expect(!session.hasPendingInk(documentID: base.id, pageID: base.pages[0].id))
+        let restarted = try NotesStore(root: root)
+        #expect(try await restarted.conflictReviews().first?.copy.id == copy.id)
     }
 }
 #endif

@@ -11,6 +11,8 @@ struct NotePencilView: UIViewRepresentable {
     let fingerDrawing: Bool
     let tool: PKTool
     let onDrawing: (Data) -> Void
+    var drawingBaseline: NoteDocument? = nil
+    var onVersionedDrawing: ((Data, NoteDocument) -> Void)? = nil
     var deleteSelectionRequest: UUID? = nil
     var onSelectionCount: (Int) -> Void = { _ in }
     var captureSelectionRequest: UUID? = nil
@@ -111,6 +113,9 @@ struct NotePencilView: UIViewRepresentable {
             coordinator.loadedDrawing = drawing
             coordinator.isApplying = false
         }
+        if !coordinator.isUsingTool, coordinator.loadedDrawing == drawing {
+            coordinator.loadedBaseline = drawingBaseline
+        }
         if coordinator.loadedBackground != background || coordinator.elements != page.elements || coordinator.paper != page.paper || coordinator.loadedImages != elementImages {
             coordinator.loadedImages = elementImages
             coordinator.loadedBackground = background; coordinator.elements = page.elements; coordinator.paper = page.paper
@@ -140,6 +145,8 @@ struct NotePencilView: UIViewRepresentable {
         var parent: NotePencilView
         weak var backdrop: UIImageView?
         var loadedDrawing: Data?
+        var loadedBaseline: NoteDocument?
+        var gestureBaseline: NoteDocument?
         var loadedBackground: Data?
         var loadedImages: [UUID: Data] = [:]
         var elements: [NoteElement] = []
@@ -186,10 +193,18 @@ struct NotePencilView: UIViewRepresentable {
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             (scrollView as? NotesPKCanvasView)?.alignPageBackdrop()
         }
-        func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) { isUsingTool = true }
+        func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+            gestureBaseline = loadedBaseline
+            isUsingTool = true
+        }
+        private func reportDrawing(_ data: Data, baseline: NoteDocument?) {
+            if let baseline, let callback = parent.onVersionedDrawing { callback(data, baseline) }
+            else { parent.onDrawing(data) }
+        }
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
             isUsingTool = false
-            if let data = pendingDrawing { pendingDrawing = nil; parent.onDrawing(data) }
+            if let data = pendingDrawing { pendingDrawing = nil; reportDrawing(data, baseline: gestureBaseline) }
+            gestureBaseline = nil
         }
         func canvasViewSelectionDidChange(_ canvasView: PKCanvasView) {
             #if compiler(>=6.4)
@@ -206,7 +221,7 @@ struct NotePencilView: UIViewRepresentable {
             guard data != loadedDrawing else { return }
             loadedDrawing = data
             if isUsingTool { pendingDrawing = data }
-            else { parent.onDrawing(data) }
+            else { reportDrawing(data, baseline: loadedBaseline) }
         }
     }
 }

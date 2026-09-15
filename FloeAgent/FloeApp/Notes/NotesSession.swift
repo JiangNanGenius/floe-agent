@@ -53,7 +53,7 @@ final class NotesSession {
     private(set) var unsavedDocumentIDs: Set<UUID> = []
     private(set) var recoverableInkDocumentIDs: Set<UUID> = []
     private struct InkKey: Hashable { let documentID: UUID; let pageID: UUID }
-    @ObservationIgnored private var pendingInk: [InkKey: Data] = [:]
+    @ObservationIgnored private var pendingInk: [InkKey: NoteInkDraft] = [:]
     @ObservationIgnored private var scheduledInk: Set<InkKey> = []
     @ObservationIgnored private var tail: Task<Void, Never>?
     @ObservationIgnored private var observation: Task<Void, Never>?
@@ -125,7 +125,7 @@ final class NotesSession {
         recoverableInkDocumentIDs = Set(folders.compactMap { folder in
             guard let id = UUID(uuidString: folder.lastPathComponent),
                   let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil),
-                  files.contains(where: { $0.pathExtension == "drawing" }) else { return nil }
+                  files.contains(where: { ["drawing", "inkdraft"].contains($0.pathExtension) }) else { return nil }
             return id
         })
         if let id = document?.id { document = documents.first { $0.id == id && $0.deletedAt == nil } }
@@ -309,18 +309,22 @@ final class NotesSession {
         guard let store else { throw NoteError.resourceUnavailable }
         do { return try await store.applyRebased(batch, base: base) }
         catch NoteError.conflict {
-            // The copy is a real Notes document: its resource references remain
-            // live, it is searchable/reopenable, and no chat lifecycle owns it.
-            var draft = base
-            for edit in batch.edits { try edit.apply(to: &draft) }
-            draft.id = UUID()
-            draft.title += " · " + String(localized: "edit.conflict.notesCopy")
-            let copy = try await store.create(draft)
-            let current = try await store.document(base.id)
-            try await store.saveConflictReview(NoteEditConflict(current: current, copy: copy, edits: batch.edits, title: batch.title))
-            try await reload()
+            try await preserveEditConflict(batch, base: base)
             throw NoteError.invalidOperation(String(localized: "edit.conflict.notesPreserved"))
         }
+    }
+
+    private func preserveEditConflict(_ batch: NoteEditBatch, base: NoteDocument) async throws {
+        guard let store else { throw NoteError.resourceUnavailable }
+        // The copy owns durable resources independently of the original and chat.
+        var draft = base
+        for edit in batch.edits { try edit.apply(to: &draft) }
+        draft.id = UUID()
+        draft.title += " · " + String(localized: "edit.conflict.notesCopy")
+        let copy = try await store.create(draft)
+        let current = try await store.document(base.id)
+        try await store.saveConflictReview(NoteEditConflict(current: current, copy: copy, edits: batch.edits, title: batch.title))
+        try await reload()
     }
 
     func resolveEditConflict(_ review: NoteEditConflict, useMine: Bool) async {
@@ -347,10 +351,12 @@ final class NotesSession {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func saveDrawing(_ data: Data, pageID: UUID, documentID: UUID) {
-        let key = InkKey(documentID: documentID, pageID: pageID)
-        pendingInk[key] = data
-        unsavedDocumentIDs.insert(documentID)
+    func saveDrawing(_ data: Data, pageID: UUID, base: NoteDocument) {
+        let key = InkKey(documentID: base.id, pageID: pageID)
+        // Coalesced strokes still derive from the first uncommitted canvas.
+        let baseline = pendingInk[key]?.base ?? base
+        pendingInk[key] = NoteInkDraft(base: baseline, pageID: pageID, drawing: data)
+        unsavedDocumentIDs.insert(base.id)
         scheduleInk(key)
     }
 
@@ -360,17 +366,36 @@ final class NotesSession {
     }
 
     func recoverInk(documentID: UUID) {
-        guard let document = documents.first(where: { $0.id == documentID && $0.deletedAt == nil }) else { return }
-        do {
+        enqueue { [self] in
+            guard let store else { throw NoteError.resourceUnavailable }
             let folder = try inkRecoveryRoot().appendingPathComponent(documentID.uuidString, isDirectory: true)
-            for page in document.pages {
-                let url = folder.appendingPathComponent("\(page.id.uuidString).drawing")
-                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            for url in files where url.pathExtension == "inkdraft" {
+                let draft = try JSONDecoder().decode(NoteInkDraft.self, from: Data(contentsOf: url))
+                guard draft.base.id == documentID, draft.base.pages.contains(where: { $0.id == draft.pageID }) else { throw NoteError.conflict }
+                _ = try PKDrawing(data: draft.drawing)
+                guard !hasPendingInk(documentID: documentID, pageID: draft.pageID) else { continue }
+                saveDrawing(draft.drawing, pageID: draft.pageID, base: draft.base)
+            }
+            // Older recovery files have no baseline. Preserve as a separate
+            // reviewable document; never assign today's revision to old ink.
+            for url in files where url.pathExtension == "drawing" {
+                guard let pageID = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
                 let data = try Data(contentsOf: url)
                 _ = try PKDrawing(data: data)
-                saveDrawing(data, pageID: page.id, documentID: documentID)
+                var base = try await store.document(documentID)
+                if !base.pages.contains(where: { $0.id == pageID }) {
+                    var restoredPage = NotePage(); restoredPage.id = pageID
+                    base.pages.append(restoredPage)
+                }
+                let resource = try await store.importResource(from: url, mediaType: "application/vnd.apple.pencilkit")
+                try await preserveEditConflict(.init(documentID: documentID, expectedRevision: base.revision,
+                    title: "恢复笔迹", edits: [.drawing(pageID: pageID, resourceID: resource)]), base: base)
+                try FileManager.default.removeItem(at: url)
+                errorMessage = String(localized: "edit.conflict.notesPreserved")
             }
-        } catch { errorMessage = error.localizedDescription }
+            try await reload()
+        }
     }
 
     func retrySaving() {
@@ -382,19 +407,28 @@ final class NotesSession {
         enqueue { [self] in
             defer { scheduledInk.remove(key) }
             guard let store else { throw NoteError.resourceUnavailable }
-            while let data = pendingInk[key] {
-                let value = try await store.document(key.documentID)
-                let folder = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                                         appropriateFor: nil, create: true)
-                    .appendingPathComponent("FloeAgent/Notes/InkRecovery/\(key.documentID.uuidString)", isDirectory: true)
+            while let draft = pendingInk[key] {
+                let folder = try inkRecoveryRoot().appendingPathComponent(key.documentID.uuidString, isDirectory: true)
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let recovery = folder.appendingPathComponent("\(key.pageID.uuidString).drawing")
-                // Keep a durable recovery copy until the document transaction succeeds.
-                try data.write(to: recovery, options: .atomic)
-                let resource = try await store.importResource(from: recovery, mediaType: "application/vnd.apple.pencilkit")
-                _ = try await store.apply(.init(documentID: key.documentID, expectedRevision: value.revision,
-                                               title: "书写", edits: [.drawing(pageID: key.pageID, resourceID: resource)]))
-                if pendingInk[key] == data { pendingInk.removeValue(forKey: key) }
+                let recovery = folder.appendingPathComponent("\(key.pageID.uuidString).inkdraft")
+                // One atomic envelope retains both bytes and their true baseline.
+                try JSONEncoder().encode(draft).write(to: recovery, options: .atomic)
+                let staging = folder.appendingPathComponent("\(UUID().uuidString).ink-staging")
+                try draft.drawing.write(to: staging, options: .atomic)
+                defer { try? FileManager.default.removeItem(at: staging) }
+                let resource = try await store.importResource(from: staging, mediaType: "application/vnd.apple.pencilkit")
+                let batch = NoteEditBatch(documentID: key.documentID, expectedRevision: draft.base.revision,
+                    title: "书写", edits: [.drawing(pageID: key.pageID, resourceID: resource)])
+                do {
+                    let saved = try await store.applyRebased(batch, base: draft.base)
+                    // Newer queued strokes include this accepted local drawing.
+                    // Only advance to our own acknowledged commit, never a new disk read.
+                    if pendingInk[key]?.drawing != draft.drawing { pendingInk[key]?.base = saved }
+                } catch NoteError.conflict {
+                    try await preserveEditConflict(batch, base: draft.base)
+                    errorMessage = String(localized: "edit.conflict.notesPreserved")
+                }
+                if pendingInk[key]?.drawing == draft.drawing { pendingInk.removeValue(forKey: key) }
                 if pendingInk[key] == nil { try? FileManager.default.removeItem(at: recovery) }
             }
             if !pendingInk.keys.contains(where: { $0.documentID == key.documentID }) { unsavedDocumentIDs.remove(key.documentID) }

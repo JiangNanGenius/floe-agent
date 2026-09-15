@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 
+/// Atomic on-disk recovery envelope. The baseline is the page actually shown
+/// when drawing began, never a fresh read at save or recovery time.
+public struct NoteInkDraft: Codable, Sendable {
+    public var base: NoteDocument
+    public let pageID: UUID
+    public let drawing: Data
+    public init(base: NoteDocument, pageID: UUID, drawing: Data) {
+        self.base = base; self.pageID = pageID; self.drawing = drawing
+    }
+}
+
 public struct NoteEditConflict: Identifiable, Codable, Sendable {
     public let id: UUID
     public let current: NoteDocument

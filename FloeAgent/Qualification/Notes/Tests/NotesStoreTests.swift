@@ -10,6 +10,19 @@ struct NotesStoreTests {
         return url
     }
 
+    @Test func inkRecoveryEnvelopeRetainsOriginalBaselineAndBytes() throws {
+        let base = NoteDocument(title: "Opened page")
+        let bytes = Data([0, 1, 2, 255])
+        let draft = NoteInkDraft(base: base, pageID: base.pages[0].id, drawing: bytes)
+        let recovered = try JSONDecoder().decode(NoteInkDraft.self, from: JSONEncoder().encode(draft))
+        #expect(recovered.base == base && recovered.drawing == bytes)
+        var current = base
+        current.pages[0].drawingResourceID = UUID()
+        #expect(!NoteEdit.drawing(pageID: draft.pageID, resourceID: UUID()).canRebase(from: recovered.base, onto: current))
+        current = base; current.title = "Unrelated metadata"
+        #expect(NoteEdit.drawing(pageID: draft.pageID, resourceID: UUID()).canRebase(from: recovered.base, onto: current))
+    }
+
     @Test func concurrentIndependentElementsMergeAndOverlapRequiresReview() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

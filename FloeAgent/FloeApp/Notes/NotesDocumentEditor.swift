@@ -14,6 +14,7 @@ struct NotesDocumentEditor: View {
     @State private var headerHeight: CGFloat = 64
     @State private var pageID: UUID?
     @State private var drawing: Data?
+    @State private var drawingBaseline: NoteDocument?
     @State private var background: Data?
     @State private var elementImages: [UUID: Data] = [:]
     @State private var mapImages: [UUID: Data] = [:]
@@ -151,7 +152,12 @@ struct NotesDocumentEditor: View {
                                    fingerDrawing: fingerDrawing, tool: pencilTool,
                                    onDrawing: { data in
                         drawing = data
-                        session.saveDrawing(data, pageID: page.id, documentID: document.id)
+                        // A missing loaded baseline must never become an unchecked save.
+                        if let drawingBaseline { session.saveDrawing(data, pageID: page.id, base: drawingBaseline) }
+                    }, drawingBaseline: drawingBaseline, onVersionedDrawing: { data, base in
+                        drawingBaseline = base
+                        drawing = data
+                        session.saveDrawing(data, pageID: page.id, base: base)
                     }, deleteSelectionRequest: deleteSelectionRequest,
                                    onSelectionCount: { selectedStrokeCount = $0 },
                                    captureSelectionRequest: captureSelectionRequest, regionSelection: tool == .region,
@@ -234,6 +240,7 @@ struct NotesDocumentEditor: View {
                 // apply the old resource over an unsaved or failed-to-save local drawing.
                 if !session.hasPendingInk(documentID: document.id, pageID: page.id) {
                     drawing = ink
+                    drawingBaseline = document
                 }
                 background = image; elementImages = images; loadedPageID = page.id
             } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
