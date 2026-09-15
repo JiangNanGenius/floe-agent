@@ -1,0 +1,40 @@
+{
+  "sourceSHA": "0fd21a32c3e06c75bc58a84f15b31ea92ffafc0e",
+  "runID": 34960853663,
+  "artifactID": 10395480754,
+  "appCompilation": "passed",
+  "appStoreSDKCompilation": "passed",
+  "appRegressions": "passed",
+  "notesUI": {
+    "ipad": {
+      "pencilTools": "passed",
+      "workspaceImportAndAssistant": "passed",
+      "tabsAndBodySearch": "failed: broad sidebar AX query timed out"
+    },
+    "iphone": {
+      "pencilTools": "passed",
+      "workspaceImportAndAssistant": "passed",
+      "tabsAndBodySearch": "failed: dismissed keyboard AX node still exists; retained screenshot has body result and no visible keyboard"
+    },
+    "office": "explicit simulator skip; no device acceptance"
+  },
+  "ideUI": {
+    "ipad": "failed: generic workspace selector picked document assistant workspace; owner missing from ordinary conversation inventory",
+    "iphone": "failed: parent drawer accessibility identifier replaced child settings identifier"
+  },
+  "repairsAwaitingRerun": [
+    "typed sidebar query",
+    "keyboard visibility assertion retains coverage; no longer requires node destruction",
+    "exact synthetic IDE workspace selector",
+    "resolve private workspace via canonical owner mapping",
+    "contain drawer accessibility children"
+  ],
+  "screenshots": "Full App Simulator, synthetic fixtures, before concurrent Notes dialog/ink changes; not all tests passed",
+  "notesStorage": {
+    "sourceSHA": "d205f9c2ac3632ad0280511c6658942747fb1832",
+    "runID": 34963260040,
+    "artifactID": 10394872508,
+    "passed": 28,
+    "laterStages": "cancelled after retained platform evidence to qualify newer source containing known UI fixes"
+  }
+}

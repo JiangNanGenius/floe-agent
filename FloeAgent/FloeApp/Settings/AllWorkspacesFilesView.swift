@@ -21,6 +21,14 @@ struct AllWorkspacesFilesView: View {
         }
     }
 
+    private func privateOwner(_ workspace: WorkspaceRecord) -> UUID? {
+        // Document assistants are absent from the ordinary chat inventory but
+        // still own valid workspaces. Resolve access from canonical ownership.
+        guard workspace.kind == .privateTask else { return nil }
+        let ids = center.conversationWorkspaceIDs.filter { $0.value == workspace.id }.map(\.key)
+        return ids.count == 1 ? ids.first : nil
+    }
+
     private func isArchived(_ workspace: WorkspaceRecord) -> Bool {
         let tasks = owners(workspace)
         return workspace.kind == .privateTask && !tasks.isEmpty && tasks.allSatisfy { $0.archivedAt != nil }
@@ -67,7 +75,7 @@ struct AllWorkspacesFilesView: View {
             ForEach(visible) { workspace in
                 NavigationLink {
                     ManagedWorkspaceFilesView(center: center, workspace: workspace,
-                        conversationID: owners(workspace).first?.id)
+                        conversationID: privateOwner(workspace))
                 } label: {
                     Label {
                         VStack(alignment: .leading, spacing: 4) {

@@ -21,7 +21,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             let sidebar = app.buttons["phone.sidebar.open"]
             XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
         }
-        let notes = app.descendants(matching: .any).matching(identifier: "sidebar.notes").firstMatch
+        let notes = app.staticTexts["sidebar.notes"].firstMatch
         XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
         let create = app.buttons["notes.create"]
         XCTAssertTrue(create.waitForExistence(timeout: 15))
@@ -204,7 +204,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         search.tap()
         search.typeText("Inline reading\n") // Submit body text; the keyboard must yield to the results.
         capture("notes-search-query-entered")
-        let keyboardDismissed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)
+        // UIKit can retain a keyboard AX node below the screen after dismissal.
+        // Assert it no longer covers the results, not that its object was destroyed.
+        let keyboardDismissed = expectation(for: NSPredicate { _, _ in
+            let keyboard = app.keyboards.firstMatch
+            return !keyboard.exists || keyboard.frame.isEmpty || !keyboard.frame.intersects(app.frame)
+        }, evaluatedWith: app)
         wait(for: [keyboardDismissed], timeout: 5)
         XCTAssertTrue(app.staticTexts["预览验收"].firstMatch.waitForExistence(timeout: 10))
         // The title already existed before typing. Require the actual body-match
@@ -234,7 +239,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             XCTAssertTrue(sidebar.waitForExistence(timeout: 15))
             sidebar.tap()
         }
-        let notes = app.descendants(matching: .any).matching(identifier: "sidebar.notes").firstMatch
+        let notes = app.staticTexts["sidebar.notes"].firstMatch
         XCTAssertTrue(notes.waitForExistence(timeout: 15))
         notes.tap()
         let create = app.buttons["notes.create"]

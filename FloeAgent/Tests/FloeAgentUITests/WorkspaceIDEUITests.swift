@@ -47,11 +47,11 @@ final class WorkspaceIDEUITests: XCTestCase {
         }
         let settings = app.buttons["sidebar.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15)); settings.tap()
-        let files = app.descendants(matching: .any).matching(identifier: "settings.section.files").firstMatch
+        let files = app.staticTexts["settings.section.files"].firstMatch
         XCTAssertTrue(files.waitForExistence(timeout: 10)); files.tap()
         let manage = app.buttons["settings.files.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()
-        let workspace = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "聊天工作区")).firstMatch
+        let workspace = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "批量选择测试")).firstMatch
         XCTAssertTrue(workspace.waitForExistence(timeout: 10)); workspace.tap()
         let file = app.staticTexts["IDE验收.txt"].firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 10)); file.tap()

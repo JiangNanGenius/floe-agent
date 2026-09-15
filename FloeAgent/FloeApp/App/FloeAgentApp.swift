@@ -503,6 +503,7 @@ struct RootView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     .offset(x: interactiveOffset)
                     .shadow(color: .black.opacity(0.18 * drawerProgress), radius: 24, x: 8)
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("phone.sidebar.drawer")
 
                 if let route = router.inspectorRoute {
