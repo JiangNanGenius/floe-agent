@@ -30,7 +30,7 @@ import Darwin
         }
     }
 
-    static func main() async throws {
+    private nonisolated static func verifyMLXErrorGuard() async throws {
         // Exercise the same task-local C callback route that previously
         // terminated the iPad app in prefill; a Swift catch alone is insufficient.
         do {
@@ -46,6 +46,10 @@ import Darwin
         } catch is MLXError {
             record("mlx-error-guard-passed")
         }
+    }
+
+    static func main() async throws {
+        try await verifyMLXErrorGuard()
         guard CommandLine.arguments.count == 2 else {
             throw NSError(domain: "Qualification", code: 1, userInfo: [NSLocalizedDescriptionKey: "Provide an isolated model-cache directory"])
         }
