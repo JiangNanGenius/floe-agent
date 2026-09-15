@@ -1,0 +1,712 @@
+{
+  "sourceCommit": "f5b6d3bdf31c057df26a93c931252096aab344bc",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34924942672",
+  "overallResult": "failed",
+  "fullAppRegression": {
+    "total": 169,
+    "passed": 169,
+    "failed": 0,
+    "skipped": 0,
+    "expectedFailures": 0,
+    "tests": [
+      {
+        "name": "\"Service previews are scoped to the owning task and revoked on shutdown\"",
+        "elapsedSeconds": 0.021
+      },
+      {
+        "name": "\"Browser panels open only through an explicit human-interaction request\"",
+        "elapsedSeconds": 2.627
+      },
+      {
+        "name": "\"Static preview navigation remains in the background\"",
+        "elapsedSeconds": 0.836
+      },
+      {
+        "name": "\"Tab management is callable through the same registry advertised to models\"",
+        "elapsedSeconds": 0.748
+      },
+      {
+        "name": "\"Static preview serves only its tokenized workspace files\"",
+        "elapsedSeconds": 0.037
+      },
+      {
+        "name": "\"Only an explicitly authorized tokenized loopback preview is allowed\"",
+        "elapsedSeconds": 0.012
+      },
+      {
+        "name": "\"DOM snapshots keep stable refs and emit mutation/input events\"",
+        "elapsedSeconds": 0.874
+      },
+      {
+        "name": "\"Coordinate fallback requires fresh visual evidence and yields to structured refs\"",
+        "elapsedSeconds": 5.707
+      },
+      {
+        "name": "\"CDP-shaped dispatch is allowlisted and reports protocol version\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"App bootstrap exposes only paired native descriptors and executable runners\"",
+        "elapsedSeconds": 0.039
+      },
+      {
+        "name": "\"canvas.generate schema matches exact source replacement semantics\"",
+        "elapsedSeconds": 0.029
+      },
+      {
+        "name": "\"Process-wide file CAS allows only one same-revision writer\"",
+        "elapsedSeconds": 0.042
+      },
+      {
+        "name": "\"A stale visible-canvas write cannot erase a four-result agent commit\"",
+        "elapsedSeconds": 0.019
+      },
+      {
+        "name": "\"Canvas inspection serializes typed connection semantics\"",
+        "elapsedSeconds": 0.002
+      },
+      {
+        "name": "\"File round trip and canvas inspection preserve one source plus four result edges\"",
+        "elapsedSeconds": 0.114
+      },
+      {
+        "name": "\"canvas.applyOperations source disconnect atomically updates generation fallback\"",
+        "elapsedSeconds": 0.134
+      },
+      {
+        "name": "\"Generated image assets settle only after an active canvas commit\"",
+        "elapsedSeconds": 0.171
+      },
+      {
+        "name": "\"Pinch zoom keeps the content under the gesture centroid fixed\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Repeated pinch updates clamp without shifting the anchor\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Two-finger pan applies incremental translation\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A live connector drag suppresses node movement\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Generation input wiring respects the selected model reference limit\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Reservation stays active while durable begin is suspended\"",
+        "elapsedSeconds": 0.011
+      },
+      {
+        "name": "\"Provider image count is exact before persistence\"",
+        "elapsedSeconds": 0.011
+      },
+      {
+        "name": "\"Repeated image bytes reuse the canonical asset row id\"",
+        "elapsedSeconds": 0.002
+      },
+      {
+        "name": "\"Material library resolves database identity from stored path first\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Interleaved requests cannot delete another request's provisional asset\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Four saved images publish through one complete canvas patch\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Generation source connection commands keep metadata canonical and never revive deletions\"",
+        "elapsedSeconds": 0.044
+      },
+      {
+        "name": "\"Failure and cancellation update the whole graph in one operation list\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Reservation recovery finalizes only a complete exact Canvas commit\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Notes bootstrap migration removes only the selected conversation setup and retains dialogue\"",
+        "elapsedSeconds": 0.085
+      },
+      {
+        "name": "\"MetricKit summary retains termination metadata and attributed frames before upload truncation\"",
+        "elapsedSeconds": 0.005
+      },
+      {
+        "name": "notesTabCloseWaitsForEditorSaveAndPreservesFailedEditor()",
+        "elapsedSeconds": 0.038
+      },
+      {
+        "name": "notesTabRestorationKeepsLibraryAsInitialScreen()",
+        "elapsedSeconds": 0.027
+      },
+      {
+        "name": "\"Settings renders in a separate regular-width host without an inherited environment object\"",
+        "elapsedSeconds": 0.759
+      },
+      {
+        "name": "\"Auxiliary local LLMs use the device adapter, never a cloud HTTP adapter\"",
+        "elapsedSeconds": 0.085
+      },
+      {
+        "name": "\"Window scene phases aggregate by stable per-scene identity\"",
+        "elapsedSeconds": 0.036
+      },
+      {
+        "name": "\"Face ID access has a packaged privacy explanation\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Continued processing submits a concrete registered identifier\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Continued processing coalesces duplicate outstanding submissions\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Continued processing retains multiple identifiers and de-duplicates handles\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Continued processing expiration drains every accepted sibling\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Continued expiration completes siblings before persistence can suspend\"",
+        "elapsedSeconds": 0.013
+      },
+      {
+        "name": "\"Empty audio buffers are rejected before Speech Analyzer\"",
+        "elapsedSeconds": 0.017
+      },
+      {
+        "name": "\"Feedback request includes the problem and redacts diagnostics\"",
+        "elapsedSeconds": 0.005
+      },
+      {
+        "name": "\"Large diagnostics preserve configuration header and latest failure\"",
+        "elapsedSeconds": 0.005
+      },
+      {
+        "name": "\"Feedback images are bounded multipart attachments\"",
+        "elapsedSeconds": 0.002
+      },
+      {
+        "name": "\"Feedback rejects more than three images\"",
+        "elapsedSeconds": 0.009
+      },
+      {
+        "name": "\"Feedback requires a user-written problem\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Feedback success requires a server-issued report ID\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Feedback honors the server retry window after HTTP 429\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"PiP starts and retries only from actionable stable states\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"PiP host detach keeps controllers across inactive and background transitions\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"PiP records a background transition missed before media readiness\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A ready PiP source stays armed for the system-managed background transition\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"PiP retracts an automatic start that completes after foreground return\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"PiP manual retry prepares first and starts only from a prepared tap\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A failed or timed-out manual PiP request cannot classify a late callback as manual\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Only standard mode requests a continued-processing Live Activity\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Continued processing requires explicit user origin and aggregate foreground\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Eligibility keeps first run origin and drains when explicit work ends\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Continued-processing requests fail instead of queueing stale Live Activities\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Media generation never creates continued processing for any origin\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Run recovery mode is immutable and legacy evidence fails closed\"",
+        "elapsedSeconds": 0.041
+      },
+      {
+        "name": "\"Live background mode changes reconcile surfaces without requesting consent\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Ordinary conversation retains its PiP source while checkpointed\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"The scene PiP source mounts without any conditional toolbar button\"",
+        "elapsedSeconds": 0.06
+      },
+      {
+        "name": "\"Explicit SSH to VNC route excludes unrelated execution runtimes\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Agent memory tools require current-turn memory intent\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Memory dream compares new facts with prior versions\"",
+        "elapsedSeconds": 0.006
+      },
+      {
+        "name": "\"Semantic organizer never duplicates deterministic review suggestions\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Model-managed semantic decisions can upgrade the same bounded suggestion\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Model-managed memory only applies bounded safe deletion suggestions\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "inventoryToleratesEmptyLegacyUninstallButRejectsLinkedMetadata()",
+        "elapsedSeconds": 0.049
+      },
+      {
+        "name": "installImportAndRemoveInSelectedEnvironment()",
+        "elapsedSeconds": 17.623
+      },
+      {
+        "name": "\"A new scene starts on a clean task draft with inspector collapsed\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Home and history entry points share one conversation selection\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Popping a task returns the workbench to a fresh private draft\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Home quick actions deep-link to one concrete More destination\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Browser tool presentation and dismissal preserve the user's sidebar choice\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Deleted conversation selection reconciles to a fresh draft\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"The task starter is invoked exactly once per successful send\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A failed start surfaces the error and creates no thread id\"",
+        "elapsedSeconds": 0.002
+      },
+      {
+        "name": "\"A managed Python HTTP service survives foreground runs and stops only for its owner\"",
+        "elapsedSeconds": 0.608
+      },
+      {
+        "name": "\"Cancelled Python keeps its environment lease and expired queued scripts never run\"",
+        "elapsedSeconds": 2.063
+      },
+      {
+        "name": "\"Python execution restores cwd, imports, environment and stdin between projects\"",
+        "elapsedSeconds": 0.169
+      },
+      {
+        "name": "\"pandas runs natively inside the actual Floe CPython runtime offline\"",
+        "elapsedSeconds": 2.418
+      },
+      {
+        "name": "\"bundled XML and Office Python libraries save and reopen Chinese documents\"",
+        "elapsedSeconds": 0.084
+      },
+      {
+        "name": "\"wheelhouse packages import inside the bundled runtime\"",
+        "elapsedSeconds": 0.024
+      },
+      {
+        "name": "\"bundled networking packages verify HTTPS and pytest executes a real test\"",
+        "elapsedSeconds": 1.526
+      },
+      {
+        "name": "\"the packaged CPython runtime imports the zipped stdlib and executes\"",
+        "elapsedSeconds": 0.008
+      },
+      {
+        "name": "serviceProgressStaysBoundedAfterJSONEscaping()",
+        "elapsedSeconds": 0.013
+      },
+      {
+        "name": "serviceToolPublishesLivePreviewAndRevokesAfterStop()",
+        "elapsedSeconds": 9.25
+      },
+      {
+        "name": "managedNpmAndPnpmInstallAndExecuteRealPackages()",
+        "elapsedSeconds": 5.245
+      },
+      {
+        "name": "nodeServiceSurvivesForegroundCommandsAndStopsOnlyItsOwner()",
+        "elapsedSeconds": 1.233
+      },
+      {
+        "name": "unsupportedPackageCommandsCannotReportSuccess()",
+        "elapsedSeconds": 0.115
+      },
+      {
+        "name": "pipelineTimeoutDrainsAndNextCommandRuns()",
+        "elapsedSeconds": 0.341
+      },
+      {
+        "name": "httpsThroughCurlPythonAndNode()",
+        "elapsedSeconds": 0.777
+      },
+      {
+        "name": "nativeNodeLiveInputAndCancellation()",
+        "elapsedSeconds": 0.559
+      },
+      {
+        "name": "batchWorkflowUsesShellPythonAndNodeRepeatedly()",
+        "elapsedSeconds": 2.422
+      },
+      {
+        "name": "nodeReceivesPipedInputAndShellRecoversFromMissingCommand()",
+        "elapsedSeconds": 0.645
+      },
+      {
+        "name": "timeoutRetainsWorkerUntilItStopsAndNextRunCanProceed()",
+        "elapsedSeconds": 0.5
+      },
+      {
+        "name": "posixLoopAndPipe()",
+        "elapsedSeconds": 1.401
+      },
+      {
+        "name": "environmentDoesNotLeakAcrossRuns()",
+        "elapsedSeconds": 0.832
+      },
+      {
+        "name": "inputOutputAndExitStatus()",
+        "elapsedSeconds": 0.134
+      },
+      {
+        "name": "cancellationReturnsAndNextCommandRuns()",
+        "elapsedSeconds": 0.345
+      },
+      {
+        "name": "loopTimeoutReturnsWithoutTerminatingCaller()",
+        "elapsedSeconds": 0.238
+      },
+      {
+        "name": "registrationsMatchEffectsAndSchemas()",
+        "elapsedSeconds": 0.003
+      },
+      {
+        "name": "credentialsAreNotInSettingsAndChangedHostRequiresNewPassword()",
+        "elapsedSeconds": 0.029
+      },
+      {
+        "name": "corruptSettingsAreNotOverwritten()",
+        "elapsedSeconds": 0.003
+      },
+      {
+        "name": "sendWithoutApprovalFailsBeforeAccountOrNetworkAccess()",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "errorKeysResolveAndDoNotEchoSecrets()",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Long PDF conversion preserves pagination, final content and distinct Unicode aliases\"",
+        "elapsedSeconds": 6.898
+      },
+      {
+        "name": "\"Offline document conversions preserve Chinese, formatting, tables and source bytes\"",
+        "elapsedSeconds": 21.157
+      },
+      {
+        "name": "\"Conversion embeds local images and refuses missing, remote or escaping assets\"",
+        "elapsedSeconds": 21.251
+      },
+      {
+        "name": "\"Task deletion retains failed cleanup and replays without touching a symlink target\"",
+        "elapsedSeconds": 0.766
+      },
+      {
+        "name": "\"Workspace manager keeps the task root unchanged and reports batch failures\"",
+        "elapsedSeconds": 0.163
+      },
+      {
+        "name": "\"Inline PDF session reloads modified documents and surfaces corrupt content\"",
+        "elapsedSeconds": 0.031
+      },
+      {
+        "name": "\"PDF export preserves real text and PNG output without overwriting\"",
+        "elapsedSeconds": 0.011
+      },
+      {
+        "name": "\"PDF render caps output at 20 pages and rejects degenerate page boxes\"",
+        "elapsedSeconds": 0.057
+      },
+      {
+        "name": "\"PDF merge retains sources through serialization and verifies output\"",
+        "elapsedSeconds": 0.012
+      },
+      {
+        "name": "\"Encrypted PDF unlock uses approved credential references and preserves its source\"",
+        "elapsedSeconds": 0.035
+      },
+      {
+        "name": "\"Native PDF annotation, form, metadata and page workflows round-trip\"",
+        "elapsedSeconds": 0.144
+      },
+      {
+        "name": "\"Raster redaction requires consent and removes original text and annotations\"",
+        "elapsedSeconds": 0.027
+      },
+      {
+        "name": "\"Region replacement reflows searchable text without retaining covered text\"",
+        "elapsedSeconds": 0.052
+      },
+      {
+        "name": "\"On-device OCR adds searchable text to a raster-only PDF\"",
+        "elapsedSeconds": 0.79
+      },
+      {
+        "name": "\"Native PDF image insert, replacement and removal form a complete workflow\"",
+        "elapsedSeconds": 0.04
+      },
+      {
+        "name": "\"PDF edit enforces revision and new-output boundaries\"",
+        "elapsedSeconds": 0.035
+      },
+      {
+        "name": "\"Native RAR5 extraction verifies bytes and never overwrites output\"",
+        "elapsedSeconds": 0.008
+      },
+      {
+        "name": "\"RAR compressed payloads round-trip; links, encryption and incomplete volumes fail atomically\"",
+        "elapsedSeconds": 0.027
+      },
+      {
+        "name": "\"Native PDF text replacement removes the old text instead of covering it\"",
+        "elapsedSeconds": 0.005
+      },
+      {
+        "name": "interruptedUpgradeRestoresFilesBeforeServingSkills(phase:) with 2 test cases",
+        "elapsedSeconds": 0.688
+      },
+      {
+        "name": "reviewedUpgradeRollbackAndRunningVersionPin()",
+        "elapsedSeconds": 0.706
+      },
+      {
+        "name": "createReadUpdateDisableRemovePreservesPackageAndConflicts()",
+        "elapsedSeconds": 0.409
+      },
+      {
+        "name": "\"Application upgrade replaces an older bundled plugin while retaining disabled state\"",
+        "elapsedSeconds": 0.482
+      },
+      {
+        "name": "\"Removing an official plugin survives reseeding and can be explicitly reinstalled\"",
+        "elapsedSeconds": 0.662
+      },
+      {
+        "name": "firstReadSeedsGuidesAndKeepsPythonIndependent()",
+        "elapsedSeconds": 0.406
+      },
+      {
+        "name": "\"Folded reasoning keeps its height across short and wrapped streaming fragments\"",
+        "elapsedSeconds": 0.094
+      },
+      {
+        "name": "\"An image model directory retains complete parameter JSON\"",
+        "elapsedSeconds": 0.004
+      },
+      {
+        "name": "\"Reopening a long timeline retains history and pages through reconnect gaps\"",
+        "elapsedSeconds": 1.313
+      },
+      {
+        "name": "\"A live argument stream outlasts watchdog deadlines; a silent stream still fails\"",
+        "elapsedSeconds": 0.875
+      },
+      {
+        "name": "\"Short SSE events are delivered before more bytes or EOF arrive\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Long text writes retain complete arguments while other tools keep their limit\"",
+        "elapsedSeconds": 0.03
+      },
+      {
+        "name": "\"Responses argument fragments are activity, not executable tool calls\"",
+        "elapsedSeconds": 0.003
+      },
+      {
+        "name": "\"Long reasoning retains all Unicode and bounds each layout fragment\"",
+        "elapsedSeconds": 0.011
+      },
+      {
+        "name": "\"Long reasoning layout coalesces bursts and survives collapse/reopen\"",
+        "elapsedSeconds": 0.461
+      },
+      {
+        "name": "\"A visible session recovers a durable change without a navigation refresh\"",
+        "elapsedSeconds": 2.181
+      },
+      {
+        "name": "\"Sidebar attention states never masquerade as running or completed\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Latest and live tool groups are visible without an extra tap\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"The final assistant reply always precedes the terminal row\"",
+        "elapsedSeconds": 0.002
+      },
+      {
+        "name": "\"A confirmed final-answer review never renders trailing reasoning below the answer\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Reasoning after assistant text stays visible when it leads to a tool\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A persisted terminal suppresses stale live animation tails\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A final reply stays below the tool group that produced it\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Completed tool keeps its request so the card can show exact input and output\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Harness-suppressed duplicate protocol pairs stay out of the timeline\"",
+        "elapsedSeconds": 0.005
+      },
+      {
+        "name": "\"Reasoning after a tool result starts the next step group\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Legacy runs without assistantText fall back to the persisted message before terminal\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Reloading a thread never duplicates the final reply\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A completed run with no final text surfaces an explicit missing-reply row\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Timeline item IDs are stable across rebuilds\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Events order by sequence, never by timestamp\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Preparing status disappears as soon as generation starts\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Terminal transition status is hidden so completion appears only after the reply\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Legacy fallback never borrows an assistant reply from another run\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Historical tool chains stay collapsed while their older-page entry remains available\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"A suspended run keeps its pending approval card actionable\"",
+        "elapsedSeconds": 0.001
+      },
+      {
+        "name": "\"Guidance consumed by an active run remains visible in conversation history\"",
+        "elapsedSeconds": 0.001
+      }
+    ]
+  },
+  "sdk26Compatibility": "passed",
+  "linuxCompilation": "passed",
+  "notesUI": {
+    "ipad": {
+      "result": "failed",
+      "reason": "180-second test allowance exceeded querying result title after body search; keyboard obscured cover metadata",
+      "subsequentFix": "d23a3ffd; new qualification required"
+    },
+    "iphone": {
+      "result": "passed",
+      "total": 1,
+      "elapsedSeconds": 97.096
+    }
+  },
+  "logSHA256": "16fefccafeffc326514f05a06d654302810e49d1d2684e0190605539bd256b1a",
+  "artifactID": 10381190298,
+  "limitations": [
+    "Simulator App is not a device IPA",
+    "Not build 173 acceptance",
+    "No TestFlight upload",
+    "No physical Pencil or iPad Qwen crash qualification"
+  ]
+}
