@@ -14,13 +14,19 @@ Main was fast-forwarded to the delivered integration. Task-owned merged branches
 
 ## September 15 repair candidate — not yet delivered
 
+Build 176 / `v1.7.0-beta.33` / `b8c1fc0494a08e49af1a092b14df11ee74580554`
+is under [CI qualification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949420611)
+and [release qualification/build](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949491542).
+It adds live document refresh, dedicated conversation restart and a full-height iPad assistant column.
+Upload and Apple availability remain pending; the installable delivery above remains build 172.
+[Build-specific notes](RELEASE_NOTES_1.7.0_BUILD_176.md) record remaining scope.
+
 Build 175 / `v1.7.0-beta.32` / `8958d8f1482c3236f73172076b76adc83da86f5f`
-is under [CI qualification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34945321526)
-and [release qualification/build](https://github.com/JiangNanGenius/floe-agent/actions/runs/34945701373)
-with the real Ark streaming tool-call identity fix.
-Its final-source validation, successful App demonstration, upload and Apple availability
-are pending. The installable delivery above remains build 172.
-[Build-specific notes](RELEASE_NOTES_1.7.0_BUILD_175.md) record remaining scope.
+passed 172/172 App regressions and its iPhone Notes case. The iPad case exceeded
+its 180-second allowance. The release was cancelled before upload to include
+the owner's additional document-assistant requirements. The accepted-SDK device
+artifact `10388835194` remains in [run 34945701373](https://github.com/JiangNanGenius/floe-agent/actions/runs/34945701373).
+[Original results](evidence/floe-1.7/build172-repair/app-build175.json).
 
 Build 174 / `v1.7.0-beta.31` / `aa8e42708157a54aa9cbc083a484c00a882a10b3`
 was deliberately stopped before upload after the real Agent demonstration exposed

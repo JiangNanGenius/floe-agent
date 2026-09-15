@@ -1,17 +1,17 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (172)",
-  "candidate": "1.7.0 (175), not uploaded",
+  "candidate": "1.7.0 (176), not uploaded",
   "pages": 12,
-  "sha256": "8a743cacc8a1393dd0519c1f98a9a4ace1644f7d9343165acf102d6349425b4f",
-  "bytes": 2733339,
+  "sha256": "273fddc6e4203585d3330daebb8783b66c87327d8c7721dfe23a84834d98e381",
+  "bytes": 2734596,
   "textExtractionChecked": true,
   "screenshots": "Original baseline 172 and source-labelled 9e4434ca full-App simulator screenshots; rotated only in layout",
   "reviewStatus": "draft, external review not submitted",
   "reviewerCloudCredits": "none authorized; demonstration credentials excluded",
   "localInference": "Mac host qualification is separate from unresolved iPad crash",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
-  "updatedAt": "2026-09-15T08:11:20.021535+00:00",
+  "updatedAt": "2026-09-15T08:58:07.918052+00:00",
   "currentRenderedPagesReviewed": [
     1,
     11

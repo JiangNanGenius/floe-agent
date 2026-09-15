@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (172). Candidate: 1.7.0 (175). review preparation, candidate under qualification, not submitted.
+Baseline: 1.7.0 (172). Candidate: 1.7.0 (176). review preparation, candidate under qualification, not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 172. This internal TestFlight build is available 
 
 基线：1.7.0（172），已交付 Floe QA 内部 TestFlight；尚未提交外部 Beta 审核。
 
-Build 175 is the next candidate under qualification. It has not been uploaded or made available in TestFlight. This draft separates the delivered baseline from candidate evidence.
+Build 176 is the next candidate under qualification. It has not been uploaded or made available in TestFlight. This draft separates the delivered baseline from candidate evidence.
 
-175 为正在验证的下一候选版，尚未上传或在 TestFlight 开放。本草稿区分已交付基线和候选代码证据。
+176 为正在验证的下一候选版，尚未上传或在 TestFlight 开放。本草稿区分已交付基线和候选代码证据。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -264,13 +264,13 @@ A changed binary requires a new upload build number. The marketing version may r
 
 ## 10  本轮修复验证状态 / Candidate repair evidence - 15 September 2026
 
-The document assistant no longer starts with a visible internal instruction message. The captured UI uses synthetic documents; no cloud model response is demonstrated.
+Build 176 adds document conversation restart and live refresh after committed edits. It uses a full-height iPad assistant column or a phone sheet. New-source UI verification is pending; the screenshot shows the labelled earlier source.
 
-文档助手不再用可见的内部指令消息开场。截图使用合成文档，不代表已经演示云端模型回答。
+176 增加重新开始当前文档会话及提交编辑后自动刷新；助手使用完整 iPad 右栏或手机面板。新源码界面验证待完成；配图仍为标注的较早版本。
 
-Dedicated Notes conversations and legacy migration passed in the 172/172 App regression suite on source 431e281d. That source passed iPhone Notes UI, but iPad UI timed out. Earlier source 9e4434ca passed both devices. Native Office is device-only and explicitly skipped; final-source validation remains separate.
+Source 8958d8f1 passed 172/172 full-App regressions and iPhone Notes UI; its iPad case exceeded 180 seconds. Build 176 splits the long flow into three required cases, retaining assertions and timeout. Native Office remains device-only.
 
-431e281d 的完整 App 回归 172/172 通过，覆盖手记专属聊天及旧数据迁移；该版 iPhone 手记界面通过，iPad 超时。更早的 9e4434ca 双端通过。原生 Office 仅真机可测，已明确跳过；最终代码仍单独验收。
+8958d8f1 完整 App 回归 172/172 与 iPhone 手记界面通过；iPad 用例超过 180 秒。176 将长流程拆成三个必须通过的用例，保留断言与时限。原生 Office 仍需真机验证。
 
 A macOS Qwen diagnostic passed cold load, repeated short prompts and a 5,773-token prompt. It does not establish an iPad crash fix or a device memory pass.
 

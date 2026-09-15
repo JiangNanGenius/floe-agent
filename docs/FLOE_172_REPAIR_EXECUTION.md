@@ -10,11 +10,19 @@ The owner's demonstration credential must not enter source, logs, examples, revi
 
 ## Current candidate checkpoint
 
-Build 175 / `8958d8f1482c3236f73172076b76adc83da86f5f` / `v1.7.0-beta.32`
-adds durable Notes conversation isolation and the Ark stream identity repair.
-The latest preceding App suite passed 172/172, including Notes migration,
-Keychain CRUD and owned preview service HTTP/log/stop/revocation. Its iPad UI
-case timed out; iPhone passed. [Original result](evidence/floe-1.7/build172-repair/app-431e281d.json).
+Build 176 / `b8c1fc0494a08e49af1a092b14df11ee74580554` / `v1.7.0-beta.33`
+adds deferred live refresh after document commits, unsaved ink protection,
+restarting the current document conversation, native document-scoped editing
+permissions and a true iPad assistant column. iPhones use a sheet. The UI suite
+now requires separate import/assistant, Pencil/layout and tabs/body-search cases
+without extending the 180-second per-case timeout.
+
+[CI 34949420611](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949420611)
+and [release 34949491542](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949491542)
+are running. Build 175 passed 172/172 App regressions and iPhone Notes UI; its
+iPad monolithic case timed out after tab switching. Its accepted-SDK device
+artifact was preserved before cancellation for the additional requirements.
+[Original result](evidence/floe-1.7/build172-repair/app-build175.json).
 
 A real paid text App demo created Markdown and then failed with an empty/duplicate
 tool identity. The provider sends an empty ID continuation after its real ID;

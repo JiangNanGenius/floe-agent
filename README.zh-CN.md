@@ -32,7 +32,7 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [反馈修复版](docs/FLOE_156_FEEDBACK_REPAIR.md)的手记新增 **“＋”→“从 Floe 工作区导入”**，可以选择会话或项目中生成的文档，复制到手记独立保存。封面资料列表支持打开文档进入全屏编辑，并搜索已经索引的正文。详见[搜索与导入说明](docs/USER_GUIDE.zh-CN.md#本轮修复候选搜索与工作区导入)；SDK 27 完整 App 的手记 UI 用例已在 iPad/iPhone 通过；build 172 已在 Floe QA TestFlight 可安装；固定源码还通过 1,270 次 Swift 测试执行和 159 项 SDK 27 完整 App 回归，真机验收仍由用户执行。
 
-[175 修复候选](docs/FLOE_172_REPAIR_EXECUTION.md)正在验证：手记助手已有独立的持久归属，普通聊天列表和搜索不再混入其记录。431e281d 通过 172/172 项完整 App 回归，但 iPad 手记界面发生超时。175 还修复了真实火山引擎 DeepSeek 流片段中的空工具 ID 覆盖问题。[原始证据](docs/evidence/floe-1.7/build172-repair/app-431e281d.json)与失败记录均保留；尚未上传新的修复版 TestFlight。
+[176 修复候选](docs/FLOE_172_REPAIR_EXECUTION.md)正在验证：手记助手使用完整 iPad 右栏，支持重新开始当前文档会话，并在提交修改后自动刷新；专属记录与普通聊天保持隔离。上一源码 8958d8f1 完整 App 回归 172/172 通过，但较长的 iPad 界面用例超时；新候选将覆盖拆为独立且必须通过的用例。[原始证据](docs/evidence/floe-1.7/build172-repair/app-build175.json)保留。本轮新 TestFlight 尚未上传。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 
