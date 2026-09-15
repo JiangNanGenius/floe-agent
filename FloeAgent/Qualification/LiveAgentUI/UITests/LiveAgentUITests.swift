@@ -36,8 +36,13 @@ import UIKit
             "label == 'Sync via iCloud Keychain' OR label == '通过 iCloud 钥匙串同步'")).firstMatch
         for _ in 0..<4 where !sync.isHittable { app.swipeUp() }
         XCTAssertTrue(sync.isHittable)
-        if sync.value as? String == "1" { sync.tap() }
-        XCTAssertTrue(sync.value as? String == "0")
+        if sync.value as? String == "1" {
+            // SwiftUI exposes the full form row as a Switch. Its midpoint can
+            // hit the label rather than the thumb on iPad; target the control.
+            sync.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        }
+        let syncOff = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '0'"), object: sync)
+        XCTAssertEqual(XCTWaiter.wait(for: [syncOff], timeout: 5), .completed)
         let field = app.secureTextFields["providers.api_key"]
         XCTAssertTrue(field.waitForExistence(timeout: 15))
         for _ in 0..<4 where !field.isHittable { app.swipeDown() }
