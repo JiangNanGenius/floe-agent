@@ -15,7 +15,7 @@ Preparation draft. This candidate has not been uploaded to TestFlight or publish
 
 测试重点：iPad 横屏正文搜索、Office 保存重开、黑笔／荧光笔参数、pip/npm/pnpm 安装后实际使用、HTTPS、循环／管道／stdin、重复执行与取消、两个项目中的预览服务和删除归属。请使用文档副本。
 
-已完成候选的完整 App 运行回归为 169/169；最终 173 的双端界面与完整验证另行记录。Qwen 的 Mac 冷加载与长输入诊断通过，但尚未复现并解释报告中的 iPad 首次调用闪退。官方 APT 发布、完整原生 npm／WASI 包及全部媒体模型仍有未完成项，不列为已交付能力。公开 Beta 材料由用户审核后另行提交，演示用密钥不提供给审核人员。
+已完成候选的完整 App 运行回归为 169/169；最终 173 的双端界面与完整验证另行记录。Qwen 的 Mac 冷加载与长输入诊断通过。9 月 15 日取得的 iPad 报告确认 MLX 在预处理阶段进入默认致命错误回调；候选已增加专用错误捕获，底层图计算故障及真机恢复仍待验证。同批 PDF 闪退已定位为真机包混用两套 PDF 引擎；候选修正连接顺序，并在 IPA 打包时校验实际函数绑定。官方 APT 发布、完整原生 npm／WASI 包及全部媒体模型仍有未完成项，不列为已交付能力。公开 Beta 材料由用户审核后另行提交，演示用密钥不提供给审核人员。
 
 ### English
 
@@ -25,4 +25,4 @@ Node and Python preview servers have an explicit owned lifetime, status, logs, p
 
 The document assistant starts without internal setup chatter and uses a refined iPad panel. Office removes duplicate header chrome. Notes body-search results use compact rows and dismiss the keyboard on Search. Brush transparency uses 0% for solid ink while preserving stored alpha. Pending guidance can be withdrawn or edited before insertion; checklist/progress instructions and diagnostic controls are improved.
 
-Use backed-up documents to check iPad landscape search, Office save/reopen, pen/highlighter settings, actual pip/npm/pnpm use, HTTPS, Shell loops/pipelines/stdin, repeat execution, cancellation and preview-server ownership across projects. A preceding candidate passed 169/169 native App regressions; final build 173 qualification is recorded separately. The macOS Qwen diagnostic does not resolve the reported iPad crash. Complete native npm/WASI packages, the official APT publication and full media-model delivery remain incomplete. Public Beta submission is separate and awaits the owner's review; demonstration credentials are excluded from reviewer access.
+Use backed-up documents to check iPad landscape search, Office save/reopen, pen/highlighter settings, actual pip/npm/pnpm use, HTTPS, Shell loops/pipelines/stdin, repeat execution, cancellation and preview-server ownership across projects. A preceding candidate passed 169/169 native App regressions; final build 173 qualification is recorded separately. The September 15 iPad reports show MLX prefill errors reaching a fatal callback. Scoped error handling is added; the underlying graph error and device recovery remain unverified. A separate PDF crash was traced to mixed Office/PDFium bindings in the device binary; the candidate corrects linker order and verifies actual bindings during IPA packaging. Complete native npm/WASI packages, the official APT publication and full media-model delivery remain incomplete. Public Beta submission is separate and awaits the owner's review; demonstration credentials are excluded from reviewer access.

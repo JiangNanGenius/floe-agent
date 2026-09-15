@@ -210,6 +210,7 @@ jobs:
           node --test scripts/tests/node_host.test.cjs scripts/tests/pnpm_unicode.test.cjs scripts/tests/notes_bridge.test.cjs
           python3 scripts/tests/test_python_package_inspection.py
           python3 -m unittest discover -s scripts/tests -p test_cpython_output.py
+          python3 -m unittest discover -s scripts/tests -p test_pdfium_linkage.py
           python3 scripts/test_http_workflow.py
           python3 scripts/test_local_package_payloads.py
           bash scripts/pin_node_tools.sh --check
