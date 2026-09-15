@@ -1,0 +1,12 @@
+{
+  "version": "3.31.1",
+  "source": "https://github.com/FreeRDP/FreeRDP/releases/download/3.31.1/freerdp-3.31.1.tar.gz",
+  "sha256": "4a2629026896cb4e26fb8ed2d6ca6aa4ab89ca95528dfbae2550c2f6bc866991",
+  "license": "Apache-2.0",
+  "openssl": {
+    "version": "4.0.1",
+    "sha256": "2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09"
+  },
+  "minimumOS": "26.0",
+  "qualification": "not yet built or connected"
+}

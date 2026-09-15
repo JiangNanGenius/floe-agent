@@ -1,0 +1,41 @@
+name: Qualify native RDP runtime
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/floe-172-completion']
+    paths: ['FloeAgent/ThirdParty/FreeRDP/**', '.github/workflows/rdp-runtime.yml']
+permissions:
+  contents: read
+concurrency:
+  group: rdp-runtime-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [OS64, SIMULATORARM64]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build exact native libraries
+        run: |
+          set -o pipefail
+          bash FloeAgent/ThirdParty/FreeRDP/build_ios.sh '${{ matrix.platform }}' "$RUNNER_TEMP/floe-rdp" 2>&1 | tee "$RUNNER_TEMP/rdp-build.log"
+      - name: Preserve dependency artifact and original failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-${{ matrix.platform }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rdp-build.log
+            ${{ runner.temp }}/floe-rdp/evidence
+            ${{ runner.temp }}/floe-rdp/build/deps
+            ${{ runner.temp }}/floe-rdp/build/CMakeCache.txt
+          retention-days: 14
