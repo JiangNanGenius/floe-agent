@@ -104,10 +104,18 @@ def prepare(build_id, bundle, version, number, notes, call=api):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--notes', type=Path, help='Explicit beta notes JSON; defaults to the current build-specific document')
+    args = parser.parse_args()
     project = Path('FloeAgent/project.yml').read_text()
     def setting(name):
         return re.search(r'^\s*' + name + r':\s*"?([^"\s]+)', project, re.M).group(1)
+    version, number = setting('MARKETING_VERSION'), setting('CURRENT_PROJECT_VERSION')
+    series = '.'.join(version.split('.')[:2])
+    notes_path = args.notes or Path(f'docs/TESTFLIGHT_{series}_WHATS_NEW_BUILD_{number}.json')
+    # Never silently attach a previous build's testing instructions.
+    notes = json.loads(notes_path.read_text())
     result = prepare(os.environ['BUILD_ID'], setting('PRODUCT_BUNDLE_IDENTIFIER'),
-                     setting('MARKETING_VERSION'), setting('CURRENT_PROJECT_VERSION'),
-                     json.loads(Path('docs/TESTFLIGHT_1.7_WHATS_NEW.json').read_text()))
+                     version, number, notes)
     print(json.dumps(result))
