@@ -7,17 +7,30 @@ import FloeWorkspace
 @MainActor final class IDEWorkbenchState: ObservableObject {
     @Published var dirty = false
     @Published var ready = false
+    @Published var saving = false
     @Published var error: String?
     @Published var activePath: String?
     weak var web: WKWebView?
     let files: IDEWorkspaceSession?
     init(files: WorkspaceFileService?) { self.files = files.map { IDEWorkspaceSession(files: $0) } }
-    func saveAll() async {
+    func refreshDirty() async {
         guard let web, ready else { return }
         do {
+            let result = try await web.callAsyncJavaScript("return window.floeIDE.hasDirty()", arguments: [:], in: nil, contentWorld: .page)
+            dirty = result as? Bool ?? true
+        } catch { dirty = true; self.error = error.localizedDescription }
+    }
+    @discardableResult func saveAll() async -> Bool {
+        guard let web, ready, !saving else { return false }
+        saving = true
+        defer { saving = false }
+        do {
             let saved = try await web.callAsyncJavaScript("return await window.floeIDE.saveAll()", arguments: [:], in: nil, contentWorld: .page)
-            if saved as? Bool != true { error = String(localized: "ide.save.failed") }
-        } catch { self.error = error.localizedDescription }
+            guard saved as? Bool == true else { error = String(localized: "ide.save.failed"); return false }
+            dirty = false
+            error = nil
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
 }
 
@@ -79,7 +92,7 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
             case "active":
                 if let path = body["path"] as? String, let relative = try? IDEWorkspaceSession.relativePath(path) {
                     state.activePath = relative
-                }
+                } else { state.activePath = nil }
                 replyHandler([:], nil)
             case "saved": replyHandler([:], nil)
             case "failed": state.error = body["message"] as? String; replyHandler([:], nil)

@@ -40,28 +40,30 @@ struct WorkspaceIDEView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { if state.dirty { showsCloseConfirmation = true } else { close() } } label: {
+                    Button { Task { await state.refreshDirty(); if state.dirty { showsCloseConfirmation = true } else { close() } } } label: {
                         Label("ide.close", systemImage: "chevron.down")
-                    }.frame(minWidth: 44, minHeight: 44)
+                    }.frame(minWidth: 44, minHeight: 44).disabled(state.saving)
+                    .accessibilityIdentifier("workspace.ide.close")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { Task { await state.saveAll(); if !state.dirty { onSaved() } } } label: {
+                    Button { Task { if await state.saveAll() { onSaved() } } } label: {
                         Label("ide.save.all", systemImage: "square.and.arrow.down")
-                    }.disabled(!state.ready).keyboardShortcut("s", modifiers: .command)
+                    }.disabled(!state.ready || state.saving).accessibilityIdentifier("workspace.ide.save").keyboardShortcut("s", modifiers: .command)
                     Button {
                         if let path = state.activePath { preview = Preview(id: path) }
                     } label: { Label("ide.open.editor", systemImage: "doc.richtext") }
                     .disabled(state.activePath == nil || center.currentWorkspace?.id != workspaceID)
+                    .accessibilityIdentifier("workspace.ide.richEditor")
                     Button {
                         if let workspaceID, let root {
                             terminalOwner = center.environment.localTerminals.owner(workspaceID: workspaceID, root: root)
                         }
                     } label: { Label("ide.terminal", systemImage: "terminal") }
-                    .disabled(root == nil)
+                    .disabled(root == nil).accessibilityIdentifier("workspace.ide.terminal")
                 }
             }
         }
-        .interactiveDismissDisabled(state.dirty)
+        .interactiveDismissDisabled(state.dirty || state.saving)
         .sheet(item: $terminalOwner) { LocalTerminalView(owner: $0) }
         .fullScreenCover(item: $preview) { item in
             NavigationStack {
@@ -70,7 +72,7 @@ struct WorkspaceIDEView: View {
             }
         }
         .confirmationDialog("ide.unsaved", isPresented: $showsCloseConfirmation, titleVisibility: .visible) {
-            Button("ide.save.close") { Task { await state.saveAll(); if !state.dirty { close() } } }
+            Button("ide.save.close") { Task { if await state.saveAll() { close() } } }
             Button("ide.discard.close", role: .destructive) { close() }
             Button("ide.continue", role: .cancel) {}
         }

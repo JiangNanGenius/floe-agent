@@ -356,6 +356,41 @@ jobs:
           done
           exit "$status"
 
+      - name: Verify IDE native saves and retain workbench screenshots
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          status=0
+          xctestrun=$(find FloeAgent-AppRegressionBuild/Build/Products -maxdepth 1 -name '*.xctestrun' -print -quit)
+          test -n "$xctestrun"
+          for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
+            case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
+            xcrun simctl shutdown all || true
+            test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$device")
+            test -n "$test_device"
+            xcrun simctl boot "$test_device"
+            xcrun simctl bootstatus "$test_device" -b
+            python3 scripts/run_test_with_diagnostics.py \
+              --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name" \
+              --timeout 390 --stall-timeout 210 --simulator-id "$test_device" -- \
+              xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
+              -destination "platform=iOS Simulator,id=$test_device" \
+              -resultBundlePath "FloeAgent-IDE-$name.xcresult" \
+              -collect-test-diagnostics never -only-testing:FloeAgentUITests/WorkspaceIDEUITests \
+              -parallel-testing-enabled NO -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 300 \
+              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name.log" || status=1
+            python3 scripts/verify_ide_ui_xcresult.py --result-bundle "FloeAgent-IDE-$name.xcresult" \
+              --summary-output "FloeAgent-IDE-$name-summary.json" || status=1
+            if test -d "FloeAgent-IDE-$name.xcresult"; then
+              mkdir -p "FloeAgent-IDE-Screenshots/$name"
+              xcrun xcresulttool export attachments --path "FloeAgent-IDE-$name.xcresult" \
+                --output-path "FloeAgent-IDE-Screenshots/$name" || true
+            fi
+          done
+          exit "$status"
+
       - name: Preserve simulator app for iPad and iPhone UI qualification
         if: always()
         run: |
@@ -442,6 +477,10 @@ jobs:
             FloeAgent/FloeAgent-AppRegressionTests.xcresult
             FloeAgent/FloeAgent-Notes-*.xcresult
             FloeAgent/FloeAgent-Notes-*.log
+            FloeAgent/FloeAgent-IDE-*.log
+            FloeAgent/FloeAgent-IDE-*.json
+            FloeAgent/FloeAgent-IDE-*.xcresult
+            FloeAgent/FloeAgent-IDE-Screenshots
             FloeAgent/FloeAgent-Notes-*-summary.json
             FloeAgent/FloeAgent-Notes-Screenshots
             FloeAgent/FloeAgent-Notes-Recordings

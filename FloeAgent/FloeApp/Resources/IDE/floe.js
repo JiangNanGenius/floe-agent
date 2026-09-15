@@ -65,11 +65,19 @@
     const editor = app.injector.get(WorkbenchEditorService);
     const active = resource => {
       const path = resource?.uri?.path?.toString();
-      if (path?.startsWith('/workspace/Floe/')) notify('active', { path: pathKey(path) });
+      notify('active', { path: path?.startsWith('/workspace/Floe/') ? pathKey(path) : null });
     };
     editor.onActiveResourceChange(active); active(editor.currentResource);
     window.floeIDE = {
-      saveAll: async () => { await editor.saveAll(); return dirty.size === 0; },
+      hasDirty: () => editor.hasDirty(),
+      saveAll: async () => {
+        await editor.saveAll();
+        // Use the workbench's actual open documents: a closed/discarded tab
+        // must not remain dirty just because our content callback saw it once.
+        const unsaved = editor.hasDirty();
+        await notify('dirty', { dirty: unsaved });
+        return !unsaved;
+      },
       destroy: () => app.destroy()
     };
     await notify('ready');

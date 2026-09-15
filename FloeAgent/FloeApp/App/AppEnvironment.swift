@@ -1017,6 +1017,21 @@ final class AppEnvironment: ObservableObject {
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-ide-fixture") {
+                let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
+                let record = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(
+                    conversationID: fixtureID, title: "批量选择测试"
+                )
+                let lease = try await workspaceCenter.acquireTaskRoot(record, conversationID: fixtureID)
+                defer { lease.release() }
+                // Seed only once: a second App launch must read the real saved
+                // file, never replace it with a fixture that hides a lost save.
+                let file = lease.url.appendingPathComponent("IDE验收.txt")
+                if !FileManager.default.fileExists(atPath: file.path) {
+                    try Data("Floe IDE durable workspace\n".utf8).write(to: file, options: .atomic)
+                }
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-pdf-fixture") {
                 let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
                 let record = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(
