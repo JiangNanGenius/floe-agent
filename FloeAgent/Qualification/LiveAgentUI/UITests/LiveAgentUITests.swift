@@ -50,14 +50,27 @@ import UIKit
         let emptyValue = field.value as? String
         field.tap()
         field.press(forDuration: 1.1)
-        let paste = app.buttons.matching(NSPredicate(format: "label == 'Paste' OR label == '粘贴'")).firstMatch
+        let paste = app.buttons.matching(NSPredicate(format:
+            "(label == 'Paste' OR label == '粘贴') AND identifier != 'assistantPaste:forEvent:'")).firstMatch
         let menuPaste = app.menuItems.matching(NSPredicate(format: "label == 'Paste' OR label == '粘贴'")).firstMatch
-        if paste.waitForExistence(timeout: 3) { paste.tap() }
-        else { XCTAssertTrue(menuPaste.waitForExistence(timeout: 3)); menuPaste.tap() }
+        if menuPaste.waitForExistence(timeout: 2) { menuPaste.tap() }
+        else {
+            if !paste.waitForExistence(timeout: 3) {
+                print(app.debugDescription.replacingOccurrences(of: key, with: "[redacted]"))
+            }
+            XCTAssertTrue(paste.exists); paste.tap()
+        }
         let allowPaste = app.buttons.matching(NSPredicate(format: "label == 'Allow Paste' OR label == '允许粘贴'")).firstMatch
         if allowPaste.waitForExistence(timeout: 2) { allowPaste.tap() }
         // Assert presence only, without interpolating any field value into logs.
-        XCTAssertTrue((field.value as? String)?.isEmpty == false && field.value as? String != emptyValue)
+        let filled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (field.value as? String)?.isEmpty == false && field.value as? String != emptyValue
+        }, object: field)
+        let fillResult = XCTWaiter.wait(for: [filled], timeout: 5)
+        if fillResult != .completed {
+            print(app.debugDescription.replacingOccurrences(of: key, with: "[redacted]"))
+        }
+        XCTAssertEqual(fillResult, .completed)
         app.buttons["action.save"].tap()
         XCTAssertTrue(provider.waitForExistence(timeout: 15))
     }
