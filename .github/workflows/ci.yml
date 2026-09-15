@@ -281,32 +281,52 @@ jobs:
           xctestrun=$(find FloeAgent-AppRegressionBuild/Build/Products -maxdepth 1 -name '*.xctestrun' -print -quit)
           test -n "$xctestrun"
           test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "iPad mini (A17 Pro)")
-          python3 scripts/run_test_with_diagnostics.py \
-            --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/app-regressions" \
-            --timeout 1020 --stall-timeout 420 --simulator-id "$test_device" -- xcodebuild \
-            -xctestrun "$xctestrun" \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            -destination "platform=iOS Simulator,id=$test_device" \
-            -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
-            -collect-test-diagnostics never \
-            -only-testing:FloeAppTests/CanvasTouchInteractionTests \
-            -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
-            -only-testing:FloeAppTests/CanvasAgentToolContractTests \
-            -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
-            -only-testing:FloeAppTests/ThreadTimelineTests \
-            -only-testing:FloeAppTests/BrowserProtocolTests \
-            -only-testing:FloeAppTests/HomeChatSeparationTests \
-            -only-testing:FloeAppTests/HomeTaskCreationTests \
-            -only-testing:FloeAppTests/MailConnectorTests \
-            -only-testing:FloeAppTests/SkillLifecycleTests \
-            -only-testing:FloeAppTests/LocalPythonRuntimeTests \
-            -only-testing:FloeAppTests/LocalShellRuntimeTests \
-            -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
-            -test-timeouts-enabled YES \
-            -maximum-test-execution-time-allowance 300 \
-            CODE_SIGNING_ALLOWED=NO \
-            test-without-building
+          # The first test phase of the job boots the simulator from scratch;
+          # finish boot and services before XCTest starts its own clock.
+          xcrun simctl boot "$test_device" || true
+          xcrun simctl bootstatus "$test_device" -b
+          attempt=1
+          while true; do
+            code=0
+            python3 scripts/run_test_with_diagnostics.py \
+              --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/app-regressions" \
+              --timeout 1020 --stall-timeout 420 --simulator-id "$test_device" -- xcodebuild \
+              -xctestrun "$xctestrun" \
+              -skipPackagePluginValidation \
+              -skipMacroValidation \
+              -destination "platform=iOS Simulator,id=$test_device" \
+              -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
+              -collect-test-diagnostics never \
+              -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+              -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
+              -only-testing:FloeAppTests/CanvasAgentToolContractTests \
+              -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
+              -only-testing:FloeAppTests/ThreadTimelineTests \
+              -only-testing:FloeAppTests/BrowserProtocolTests \
+              -only-testing:FloeAppTests/HomeChatSeparationTests \
+              -only-testing:FloeAppTests/HomeTaskCreationTests \
+              -only-testing:FloeAppTests/MailConnectorTests \
+              -only-testing:FloeAppTests/SkillLifecycleTests \
+              -only-testing:FloeAppTests/LocalPythonRuntimeTests \
+              -only-testing:FloeAppTests/LocalShellRuntimeTests \
+              -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+              -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 300 \
+              CODE_SIGNING_ALLOWED=NO \
+              test-without-building || code=$?
+            # Retry exactly once when the runner stalled before any test ran;
+            # a retry can never mask an executed test's real failure.
+            if [ "$code" -eq 124 ] && [ "$attempt" -eq 1 ] && \
+               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
+                 "$RUNNER_TEMP/SwiftTestDiagnostics/app-regressions/summary.json"; then
+              attempt=2
+              xcrun simctl shutdown "$test_device" || true
+              xcrun simctl boot "$test_device" || true
+              xcrun simctl bootstatus "$test_device" -b
+              continue
+            fi
+            exit "$code"
+          done
           python3 scripts/verify_app_regression_xcresult.py \
             --result-bundle FloeAgent-AppRegressionTests.xcresult
 
@@ -333,17 +353,37 @@ jobs:
             xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-Notes-Recordings/$name.mp4" > "FloeAgent-Notes-Recordings/$name.log" 2>&1 &
             recording_pid=$!
             trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
-            python3 scripts/run_test_with_diagnostics.py \
-              --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name" \
-              --timeout 660 --stall-timeout 210 --simulator-id "$test_device" -- \
-              xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
-              -destination "platform=iOS Simulator,id=$test_device" \
-              -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
-              -collect-test-diagnostics never \
-              -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
-              -parallel-testing-enabled NO -test-timeouts-enabled YES \
-              -maximum-test-execution-time-allowance 180 \
-              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || status=1
+            leg_attempt=1
+            while true; do
+              leg_code=0
+              python3 scripts/run_test_with_diagnostics.py \
+                --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name" \
+                --timeout 660 --stall-timeout 210 --simulator-id "$test_device" -- \
+                xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
+                -destination "platform=iOS Simulator,id=$test_device" \
+                -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
+                -collect-test-diagnostics never \
+                -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
+                -parallel-testing-enabled NO -test-timeouts-enabled YES \
+                -maximum-test-execution-time-allowance 180 \
+                CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || leg_code=$?
+              # One retry only when the runner stalled before any test started.
+              if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
+                 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
+                   "$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name/summary.json"; then
+                leg_attempt=2
+                kill -INT "$recording_pid" 2>/dev/null || true
+                wait "$recording_pid" || true
+                xcrun simctl shutdown "$test_device" || true
+                xcrun simctl boot "$test_device"
+                xcrun simctl bootstatus "$test_device" -b
+                xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-Notes-Recordings/$name.mp4" >> "FloeAgent-Notes-Recordings/$name.log" 2>&1 &
+                recording_pid=$!
+                continue
+              fi
+              [ "$leg_code" -ne 0 ] && status=1
+              break
+            done
             kill -INT "$recording_pid" 2>/dev/null || true
             wait "$recording_pid" || true
             trap - EXIT
@@ -372,16 +412,32 @@ jobs:
             test -n "$test_device"
             xcrun simctl boot "$test_device"
             xcrun simctl bootstatus "$test_device" -b
-            python3 scripts/run_test_with_diagnostics.py \
-              --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name" \
-              --timeout 390 --stall-timeout 210 --simulator-id "$test_device" -- \
-              xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
-              -destination "platform=iOS Simulator,id=$test_device" \
-              -resultBundlePath "FloeAgent-IDE-$name.xcresult" \
-              -collect-test-diagnostics never -only-testing:FloeAgentUITests/WorkspaceIDEUITests \
-              -parallel-testing-enabled NO -test-timeouts-enabled YES \
-              -maximum-test-execution-time-allowance 300 \
-              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name.log" || status=1
+            leg_attempt=1
+            while true; do
+              leg_code=0
+              python3 scripts/run_test_with_diagnostics.py \
+                --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name" \
+                --timeout 390 --stall-timeout 210 --simulator-id "$test_device" -- \
+                xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
+                -destination "platform=iOS Simulator,id=$test_device" \
+                -resultBundlePath "FloeAgent-IDE-$name.xcresult" \
+                -collect-test-diagnostics never -only-testing:FloeAgentUITests/WorkspaceIDEUITests \
+                -parallel-testing-enabled NO -test-timeouts-enabled YES \
+                -maximum-test-execution-time-allowance 300 \
+                CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name.log" || leg_code=$?
+              # One retry only when the runner stalled before any test started.
+              if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
+                 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
+                   "$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name/summary.json"; then
+                leg_attempt=2
+                xcrun simctl shutdown "$test_device" || true
+                xcrun simctl boot "$test_device"
+                xcrun simctl bootstatus "$test_device" -b
+                continue
+              fi
+              [ "$leg_code" -ne 0 ] && status=1
+              break
+            done
             python3 scripts/verify_ide_ui_xcresult.py --result-bundle "FloeAgent-IDE-$name.xcresult" \
               --summary-output "FloeAgent-IDE-$name-summary.json" || status=1
             if test -d "FloeAgent-IDE-$name.xcresult"; then
