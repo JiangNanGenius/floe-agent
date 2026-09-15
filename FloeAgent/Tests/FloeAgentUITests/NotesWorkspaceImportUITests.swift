@@ -259,11 +259,13 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         app.buttons["notes.import.workspace"].tap()
         // The phone's offscreen sidebar retains a conversation with this same
         // title. Select the import row's own identity, not a global text match.
-        let workspace = app.descendants(matching: .any).matching(NSPredicate(
+        // NavigationLink rows are buttons: an any-type descendant predicate scan
+        // stalls AX snapshots on loaded runners.
+        let workspace = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
             "workspace.import.source.", "批量选择测试"
         )).firstMatch
-        XCTAssertTrue(workspace.waitForExistence(timeout: 10))
+        XCTAssertTrue(workspace.waitForExistence(timeout: 30))
         workspace.tap()
         let file = app.buttons["office.attachment.workspace.file.预览验收.pdf"]
         XCTAssertTrue(file.waitForExistence(timeout: 10))

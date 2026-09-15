@@ -123,11 +123,11 @@ final class WorkspaceIDEUITests: XCTestCase {
                 sections.swipeUp()
             }
         }
-        XCTAssertTrue(files.waitForExistence(timeout: 10)); files.tap()
+        XCTAssertTrue(files.waitForExistence(timeout: 30)); files.tap()
         let manage = app.buttons["settings.files.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()
         let workspace = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "批量选择测试")).firstMatch
-        XCTAssertTrue(workspace.waitForExistence(timeout: 10)); workspace.tap()
+        XCTAssertTrue(workspace.waitForExistence(timeout: 30)); workspace.tap()
         // Retain the actual listing state before the file query: on loaded
         // runners AX snapshots of a restored heavy editor can stall answers.
         capture("ide-files-before-open")
