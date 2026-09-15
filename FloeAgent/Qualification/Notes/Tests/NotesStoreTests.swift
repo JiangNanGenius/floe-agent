@@ -10,6 +10,19 @@ struct NotesStoreTests {
         return url
     }
 
+    @Test func dedicatedThreadInventoryExcludesOrdinaryKnowledgeGrants() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let document = try await store.create(NoteDocument(title: "Document"))
+        let dedicated = UUID(), ordinary = UUID()
+        try await store.bindAssistant(conversationID: dedicated, documentID: document.id, canEdit: true)
+        try await store.grantAccess(conversationID: ordinary, documentID: document.id, canEdit: false)
+        #expect(try await store.assistantConversationIDs() == [dedicated])
+        _ = try await store.setTrashed(document.id, expectedRevision: document.revision, trashed: true)
+        let reopened = try NotesStore(root: root)
+        #expect(try await reopened.assistantConversationIDs() == [dedicated])
+    }
+
     @Test func assistantContextTracksLiveGrantsWithoutCopyingDocumentInstructions() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

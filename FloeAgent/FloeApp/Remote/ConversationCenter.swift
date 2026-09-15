@@ -463,6 +463,7 @@ final class ConversationCenter: ObservableObject {
         // Local model discovery can initialize a runtime. Publish persisted
         // history first so that work is immediately navigable while it runs.
         do {
+            try await NotesRepository.shared.reconcileAssistantOwnership(database: environment.database)
             conversations = try await environment.conversationStore.conversations()
                 .sorted { $0.updatedAt > $1.updatedAt }
         } catch {
@@ -643,6 +644,10 @@ final class ConversationCenter: ObservableObject {
     /// sorted list (or insert when new). Cheap counterpart to full reload().
     private func refreshConversationInList(_ conversationID: UUID) async {
         guard let fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
+        guard fresh.purpose == .ordinary else {
+            conversations.removeAll { $0.id == conversationID }
+            return
+        }
         if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
             guard conversations[index].updatedAt != fresh.updatedAt || conversations[index].title != fresh.title else { return }
             conversations[index] = fresh
@@ -723,12 +728,13 @@ final class ConversationCenter: ObservableObject {
 
     /// Creates a conversation with an optional title and refreshes the list.
     @discardableResult
-    func createConversation(title: String?) async throws -> ConversationRecord {
+    func createConversation(title: String?, purpose: ConversationPurpose = .ordinary) async throws -> ConversationRecord {
         let record = ConversationRecord(
             id: UUID(),
             title: title ?? "",
             createdAt: Date(),
-            updatedAt: Date()
+            updatedAt: Date(),
+            purpose: purpose
         )
         try await environment.conversationStore.saveConversation(record)
         await reload()

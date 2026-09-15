@@ -6,6 +6,11 @@ import GRDB
 import FloeCore
 import FloeModels
 
+/// Durable product ownership; document assistants never enter ordinary chat projections.
+public enum ConversationPurpose: String, Sendable, Hashable {
+    case ordinary, notes
+}
+
 /// A conversation row with its plain-text projection. Structured multimodal
 /// parts are loaded separately via `parts(messageID:)`.
 public struct ConversationRecord: Sendable, Hashable, Identifiable {
@@ -15,6 +20,7 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
     public var updatedAt: Date
     public var titleOrigin: ConversationTitleOrigin
     public var archivedAt: Date?
+    public var purpose: ConversationPurpose
 
     public init(
         id: UUID,
@@ -22,7 +28,8 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         createdAt: Date,
         updatedAt: Date,
         titleOrigin: ConversationTitleOrigin = .autoPending,
-        archivedAt: Date? = nil
+        archivedAt: Date? = nil,
+        purpose: ConversationPurpose = .ordinary
     ) {
         self.id = id
         self.title = title
@@ -30,6 +37,7 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         self.updatedAt = updatedAt
         self.titleOrigin = titleOrigin
         self.archivedAt = archivedAt
+        self.purpose = purpose
     }
 }
 
@@ -179,8 +187,8 @@ public actor SQLiteConversationStore: ConversationStore {
         try await database.writer { db in
             try db.execute(
                 sql: """
-                    INSERT INTO conversations (id, title, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO conversations (id, title, created_at, updated_at, purpose)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         updated_at = excluded.updated_at
@@ -189,7 +197,8 @@ public actor SQLiteConversationStore: ConversationStore {
                     conversation.id.uuidString,
                     conversation.title,
                     PersistenceCodec.encode(conversation.createdAt),
-                    PersistenceCodec.encode(conversation.updatedAt)
+                    PersistenceCodec.encode(conversation.updatedAt),
+                    conversation.purpose.rawValue
                 ]
             )
         }
@@ -204,8 +213,8 @@ public actor SQLiteConversationStore: ConversationStore {
             try Row.fetchAll(
                 db,
                 sql: includeArchived
-                    ? "SELECT * FROM conversations ORDER BY updated_at DESC, id"
-                    : "SELECT * FROM conversations WHERE archived_at IS NULL ORDER BY updated_at DESC, id"
+                    ? "SELECT * FROM conversations WHERE purpose = 'ordinary' ORDER BY updated_at DESC, id"
+                    : "SELECT * FROM conversations WHERE purpose = 'ordinary' AND archived_at IS NULL ORDER BY updated_at DESC, id"
             ).map(Self.conversation(from:))
         }
     }
@@ -484,7 +493,8 @@ public actor SQLiteConversationStore: ConversationStore {
             updatedAt: try PersistenceCodec.decodeDate(row["updated_at"]),
             titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
                 ?? .autoPending,
-            archivedAt: (row["archived_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) }
+            archivedAt: (row["archived_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) },
+            purpose: ConversationPurpose(rawValue: row["purpose"]) ?? .ordinary
         )
     }
 

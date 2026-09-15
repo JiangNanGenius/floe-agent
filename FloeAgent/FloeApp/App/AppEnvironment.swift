@@ -960,6 +960,7 @@ final class AppEnvironment: ObservableObject {
     func bootstrap() async {
         do {
             try await database.migrate()
+            try await NotesRepository.shared.reconcileAssistantOwnership(database: database)
             try await runningInputStore.recoverTransientInputs()
             // In-process jobs from the previous process can never resume;
             // mark them interrupted so the model can resubmit honestly.

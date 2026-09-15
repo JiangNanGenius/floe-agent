@@ -501,7 +501,8 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
             updatedAt: try PersistenceCodec.decodeDate(row["updated_at"]),
             titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
-                ?? .autoPending
+                ?? .autoPending,
+            purpose: ConversationPurpose(rawValue: row["purpose"]) ?? .ordinary
         )
     }
 

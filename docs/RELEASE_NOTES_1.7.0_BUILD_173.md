@@ -6,6 +6,8 @@ Preparation draft. This candidate has not been uploaded to TestFlight or publish
 
 本轮重点修复执行环境、包安装和手记交互。
 
+- 手记助手使用独立的持久会话归属，不再出现在普通聊天、搜索和归档列表中。按旧文档绑定修复已有记录，保留消息；普通对话仅引用手记资料不会被改为专属会话。
+
 - Shell、Python 与真正的 Node.js 使用明确的会话／项目环境。补齐 Python 输出流接口和 Node 安装所需目录，pip 复用已内置的原生依赖，避免将它们误判为必须重新安装的桌面二进制。
 - 内置经过 iOS 构建的 lxml，并接通 python-docx、python-pptx 等常用文档包。npm/pnpm 可按环境选择，安装失败保留上一个依赖版本；两个管理器共享该环境的软件源设置。
 - Node 与 Python 可启动持续的本地预览服务。服务不跟着设置页或浏览器预览关闭；提供状态、日志、预览、停止和重新启动，并在任务／环境删除时等待所属服务结束。
@@ -26,3 +28,7 @@ Node and Python preview servers have an explicit owned lifetime, status, logs, p
 The document assistant starts without internal setup chatter and uses a refined iPad panel. Office removes duplicate header chrome. Notes body-search results use compact rows and dismiss the keyboard on Search. Brush transparency uses 0% for solid ink while preserving stored alpha. Pending guidance can be withdrawn or edited before insertion; checklist/progress instructions and diagnostic controls are improved.
 
 Use backed-up documents to check iPad landscape search, Office save/reopen, pen/highlighter settings, actual pip/npm/pnpm use, HTTPS, Shell loops/pipelines/stdin, repeat execution, cancellation and preview-server ownership across projects. A preceding candidate passed 169/169 native App regressions; final build 173 qualification is recorded separately. The September 15 iPad reports show MLX prefill errors reaching a fatal callback. Scoped error handling is added; the underlying graph error and device recovery remain unverified. A separate PDF crash was traced to mixed Office/PDFium bindings in the device binary; the candidate corrects linker order and verifies actual bindings during IPA packaging. Complete native npm/WASI packages, the official APT publication and full media-model delivery remain incomplete. Public Beta submission is separate and awaits the owner's review; demonstration credentials are excluded from reviewer access.
+
+### Qualification scope correction
+
+Native Office is linked only in iphoneos builds. Simulator Notes qualification now explicitly skips the native Office case, requires the remaining PDF/import/search case to pass, and emits `nativeOfficeAccepted: false`. The native Office test remains enabled on device. This is a recorded coverage gap, not an Office pass; Build 173 native Office acceptance remains pending. Notes assistant ownership is now durable, with idempotent legacy binding reconciliation and protection against streaming updates reinserting dedicated sessions into ordinary chat lists.

@@ -30,6 +30,34 @@ extension CrashAndFeedbackRegressionTests {
     #expect(try editor.buildProfile().secretRef?.synchronizable == false)
 }
 
+@Test("Notes ownership survives rename, legacy repair, archives and ordinary chat deletion")
+@MainActor func notesAssistantHistoryStaysDedicated() async throws {
+    let database = try DatabaseManager.inMemory()
+    try await database.migrate()
+    let store = SQLiteConversationStore(database: database)
+    let now = Date(), ordinary = UUID(), legacy = UUID(), dedicated = UUID()
+    for id in [ordinary, legacy, dedicated] {
+        try await store.saveConversation(.init(id: id, title: "手记 · Same title", createdAt: now, updatedAt: now,
+            purpose: id == dedicated ? .notes : .ordinary))
+        try await store.appendMessage(.init(id: UUID(), conversationID: id, role: "user", content: "retained", createdAt: now))
+    }
+    try await NotesRepository.markAssistantOwnership([legacy, UUID()], database: database)
+    try await NotesRepository.markAssistantOwnership([legacy], database: database)
+    try await store.renameConversation(id: legacy, title: "Renamed")
+    try await store.setArchived(id: dedicated, archived: true)
+    // A stale ordinary record must never overwrite persisted product ownership.
+    try await store.saveConversation(.init(id: legacy, title: "Again", createdAt: now, updatedAt: now))
+    #expect(try await store.conversations().map(\.id) == [ordinary])
+    #expect(try await store.conversations(includeArchived: true).map(\.id) == [ordinary])
+    for record in try await store.conversations(includeArchived: true) {
+        try await store.deleteConversation(id: record.id)
+    }
+    #expect(try await store.conversation(id: legacy)?.purpose == .notes)
+    #expect(try await store.conversation(id: dedicated)?.purpose == .notes)
+    #expect(try await store.messages(conversationID: legacy).map(\.content) == ["retained"])
+    #expect(try await store.messages(conversationID: dedicated).map(\.content) == ["retained"])
+}
+
 @Test("Notes bootstrap migration removes only the selected conversation setup and retains dialogue")
 @MainActor func notesBootstrapMigrationPreservesDialogue() async throws {
     let database = try DatabaseManager.inMemory()

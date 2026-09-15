@@ -52,11 +52,12 @@ struct NotesAssistantPanel: View {
                 conversationID = nil
                 if let existing = try await store.assistantConversation(documentID: document.id),
                    try await environment.conversationStore.conversation(id: existing) != nil {
+                    try await NotesRepository.markAssistantOwnership([existing], database: environment.database)
                     try await Self.removeLegacyBootstrap(documentID: document.id, conversationID: existing, database: environment.database)
                     conversationID = existing
                     return
                 }
-                let conversation = try await environment.conversationCenter.createConversation(title: "手记 · \(document.title)")
+                let conversation = try await environment.conversationCenter.createConversation(title: "手记 · \(document.title)", purpose: .notes)
                 // The grant is created by this explicit native document selection. Tool arguments
                 // and source text cannot broaden it. Existing approval policy still gates writes.
                 try await store.bindAssistant(conversationID: conversation.id, documentID: document.id, canEdit: true)
