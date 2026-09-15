@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "edit.conflict.notesReviewUpdated": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The original changed again. The review has been refreshed; compare the latest version before applying your changes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原件又有新的修改。审阅内容已刷新，请对照最新版本后再应用。"
+          }
+        }
+      }
+    },
     "edit.conflict.notesCopyChanged": {
       "localizations": {
         "en": {

@@ -68,6 +68,35 @@ struct NotesStoreTests {
         #expect(try await store.document(copy.id).title == "New draft")
     }
 
+    @Test func conflictQueueSurvivesRestartAndResolvesAtomically() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let original = try await store.create(NoteDocument(title: "Original"))
+        let copy = try await store.create(NoteDocument(title: "Recovery"))
+        let edits: [NoteEdit] = [.rename("Human title")]
+        let review = NoteEditConflict(current: original, copy: copy, edits: edits, title: "Review")
+        try await store.saveConflictReview(review)
+        let restarted = try NotesStore(root: root)
+        #expect(try await restarted.conflictReviews().map(\.id) == [review.id])
+        let changed = try await restarted.apply(.init(documentID: original.id, expectedRevision: original.revision, title: "Agent", edits: [.rename("Agent title")]))
+        await #expect(throws: NoteError.self) {
+            try await restarted.apply(.init(documentID: original.id, expectedRevision: original.revision, title: "Review", edits: edits),
+                reviewedRecovery: (id: copy.id, revision: copy.revision), resolvingConflictID: review.id)
+        }
+        #expect(try await restarted.conflictReviews().count == 1)
+        let refreshed = NoteEditConflict(id: review.id, current: changed, copy: copy, edits: edits, title: "Review")
+        try await restarted.saveConflictReview(refreshed)
+        _ = try await restarted.apply(.init(documentID: original.id, expectedRevision: changed.revision, title: "Review", edits: edits),
+            reviewedRecovery: (id: copy.id, revision: copy.revision), resolvingConflictID: review.id)
+        #expect(try await restarted.conflictReviews().isEmpty)
+        #expect(try await restarted.document(original.id).title == "Human title")
+        #expect(try await restarted.document(copy.id) == copy)
+        try await restarted.saveConflictReview(NoteEditConflict(current: changed, copy: copy, edits: edits, title: "Keep both"))
+        let retained = try #require(try await restarted.conflictReviews().first)
+        try await restarted.keepBothConflictVersions(retained.id)
+        #expect(try await restarted.document(copy.id) == copy)
+    }
+
     @Test func dedicatedThreadInventoryExcludesOrdinaryKnowledgeGrants() async throws {
         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)

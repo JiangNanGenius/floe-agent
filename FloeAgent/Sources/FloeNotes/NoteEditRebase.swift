@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 
+public struct NoteEditConflict: Identifiable, Codable, Sendable {
+    public let id: UUID
+    public let current: NoteDocument
+    public let copy: NoteDocument
+    public let edits: [NoteEdit]
+    public let title: String
+    public init(id: UUID = UUID(), current: NoteDocument, copy: NoteDocument, edits: [NoteEdit], title: String) {
+        self.id = id; self.current = current; self.copy = copy; self.edits = edits; self.title = title
+    }
+}
+
 extension NoteEdit {
     /// Reapply only when the objects read by this operation have not changed.
     /// Unrelated pages/elements can progress independently. Broad structural

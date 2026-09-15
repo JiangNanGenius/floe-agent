@@ -50,6 +50,14 @@ public actor NotesStore {
         migrator.registerMigration("notes.v4.collection") { db in
             try db.execute(sql: "CREATE TABLE resource_collection(resource_id TEXT PRIMARY KEY NOT NULL)")
         }
+        migrator.registerMigration("notes.v5.edit-conflicts") { db in
+            try db.execute(sql: """
+                CREATE TABLE local_edit_conflicts(id TEXT PRIMARY KEY NOT NULL,
+                    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    copy_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    body BLOB NOT NULL);
+                """)
+        }
         try migrator.migrate(database)
     }
 
@@ -181,7 +189,7 @@ public actor NotesStore {
         return map
     }
 
-    @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil, reviewedRecovery: (id: UUID, revision: Int)? = nil) throws -> NoteDocument {
+    @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil, reviewedRecovery: (id: UUID, revision: Int)? = nil, resolvingConflictID: UUID? = nil) throws -> NoteDocument {
         defer { publishChange() }
         guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else { throw NoteError.invalidOperation("编辑批次为空或过大。") }
         return try database.write { db in
@@ -197,6 +205,13 @@ public actor NotesStore {
                 let id: String = receipt["document_id"]
                 guard id == batch.documentID.uuidString else { throw NoteError.conflict }
                 return try decoder.decode(NoteDocument.self, from: receipt["body"])
+            }
+            if let resolvingConflictID {
+                guard let body = try Data.fetchOne(db, sql: "SELECT body FROM local_edit_conflicts WHERE id=?", arguments: [resolvingConflictID.uuidString]) else { throw NoteError.conflict }
+                let review = try decoder.decode(NoteEditConflict.self, from: body)
+                guard review.current.id == batch.documentID, review.current.revision == batch.expectedRevision,
+                      review.edits == batch.edits, review.copy.id == reviewedRecovery?.id,
+                      review.copy.revision == reviewedRecovery?.revision else { throw NoteError.conflict }
             }
             if let reviewedRecovery {
                 let copy = try read(reviewedRecovery.id, db: db)
@@ -227,8 +242,36 @@ public actor NotesStore {
             if let request = batch.requestID {
                 try db.execute(sql: "INSERT INTO edit_receipts VALUES(?,?,?)", arguments: [request, after.id.uuidString, try encoder.encode(after)])
             }
+            if let resolvingConflictID {
+                try db.execute(sql: "DELETE FROM local_edit_conflicts WHERE id=?", arguments: [resolvingConflictID.uuidString])
+            }
             return after
         }
+    }
+
+    public func conflictReviews() throws -> [NoteEditConflict] {
+        try database.read { db in
+            try Data.fetchAll(db, sql: "SELECT body FROM local_edit_conflicts ORDER BY rowid")
+                .map { try decoder.decode(NoteEditConflict.self, from: $0) }
+        }
+    }
+
+    public func saveConflictReview(_ review: NoteEditConflict) throws {
+        guard review.current.id != review.copy.id else { throw NoteError.conflict }
+        try database.write { db in
+            _ = try read(review.current.id, db: db)
+            _ = try read(review.copy.id, db: db)
+            try db.execute(sql: "INSERT INTO local_edit_conflicts(id,document_id,copy_id,body) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body",
+                           arguments: [review.id.uuidString, review.current.id.uuidString, review.copy.id.uuidString, try encoder.encode(review)])
+        }
+        publishChange()
+    }
+
+    public func keepBothConflictVersions(_ id: UUID) throws {
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM local_edit_conflicts WHERE id=?", arguments: [id.uuidString])
+        }
+        publishChange()
     }
 
     /// Bounded lookup for an editor's genuine baseline. Never substitute the

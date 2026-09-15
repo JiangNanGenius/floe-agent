@@ -3,14 +3,6 @@
 import SwiftUI
 import FloeNotes
 
-struct NoteEditConflict: Identifiable {
-    let id = UUID()
-    let current: NoteDocument
-    let copy: NoteDocument
-    let edits: [NoteEdit]
-    let title: String
-}
-
 struct NotesConflictAccess: ViewModifier {
     let session: NotesSession
     @State private var reviewing = false
@@ -36,6 +28,7 @@ private struct NotesConflictReviewView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     Text("edit.conflict.notesPreserved").foregroundStyle(.secondary)
+                    if let error = session.errorMessage { Text(error).foregroundStyle(.red) }
                     ForEach(session.editConflicts) { review in
                         VStack(alignment: .leading, spacing: 16) {
                             Text(review.title).font(.headline)

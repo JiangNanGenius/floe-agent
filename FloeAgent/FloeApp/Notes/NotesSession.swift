@@ -116,6 +116,7 @@ final class NotesSession {
     func reload() async throws {
         guard let store else { return }
         documents = try await store.documents(includeTrash: true)
+        editConflicts = try await store.conflictReviews()
         notebooks = try await store.notebooks()
         recentDocumentIDs = try await store.recentDocuments().map(\.id)
         startOfficeIndexing()
@@ -316,7 +317,7 @@ final class NotesSession {
             draft.title += " · " + String(localized: "edit.conflict.notesCopy")
             let copy = try await store.create(draft)
             let current = try await store.document(base.id)
-            editConflicts.append(NoteEditConflict(current: current, copy: copy, edits: batch.edits, title: batch.title))
+            try await store.saveConflictReview(NoteEditConflict(current: current, copy: copy, edits: batch.edits, title: batch.title))
             try await reload()
             throw NoteError.invalidOperation(String(localized: "edit.conflict.notesPreserved"))
         }
@@ -324,22 +325,24 @@ final class NotesSession {
 
     func resolveEditConflict(_ review: NoteEditConflict, useMine: Bool) async {
         guard let store else { return }
+        errorMessage = nil
         do {
             if useMine {
                 guard try await store.document(review.copy.id).revision == review.copy.revision else {
                     throw NoteError.invalidOperation(String(localized: "edit.conflict.notesCopyChanged"))
                 }
                 _ = try await store.apply(.init(documentID: review.current.id, expectedRevision: review.current.revision,
-                                               title: review.title, edits: review.edits), reviewedRecovery: (id: review.copy.id, revision: review.copy.revision))
+                                               title: review.title, edits: review.edits), reviewedRecovery: (id: review.copy.id, revision: review.copy.revision), resolvingConflictID: review.id)
+            } else {
+                try await store.keepBothConflictVersions(review.id)
             }
-            editConflicts.removeAll { $0.id == review.id }
             try await reload()
         } catch NoteError.conflict {
             do {
                 let latest = try await store.document(review.current.id)
-                if let index = editConflicts.firstIndex(where: { $0.id == review.id }) {
-                    editConflicts[index] = NoteEditConflict(current: latest, copy: review.copy, edits: review.edits, title: review.title)
-                }
+                try await store.saveConflictReview(NoteEditConflict(id: review.id, current: latest, copy: review.copy, edits: review.edits, title: review.title))
+                try await reload()
+                errorMessage = String(localized: "edit.conflict.notesReviewUpdated")
             } catch { errorMessage = error.localizedDescription }
         } catch { errorMessage = error.localizedDescription }
     }
