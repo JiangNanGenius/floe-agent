@@ -213,7 +213,7 @@ struct LocalPythonRuntimeTests {
             pathlib.Path('test_bundled_preset.py').write_text('def test_real_execution():\\n    assert sum([20, 22]) == 42\\n')
             assert pytest.main(['-q', '--capture=sys', '-p', 'no:cacheprovider', '-p', 'no:faulthandler', 'test_bundled_preset.py']) == 0
             print('bundled-network-and-pytest-passed')
-            """, timeout: 50, maxOutputBytes: 4096, pythonContext: .init(
+            """, timeout: 50, maxOutputBytes: 16_384, pythonContext: .init(
                 workingDirectory: root.path, environment: ["PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"])), cancellation: nil)
         guard case .ok(_, let stdout, _, false, _, _) = outcome else {
             Issue.record("Bundled networking/test presets failed: \(outcome)")

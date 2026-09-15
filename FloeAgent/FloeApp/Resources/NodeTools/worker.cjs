@@ -4,6 +4,7 @@ require('./worker-preload.cjs');
 if (workerData.sourceFromStdin) workerData.source = require('node:fs').readFileSync(0, 'utf8');
 const path = require('node:path');
 const Module = require('node:module');
+require('./pnpm-compatibility.cjs').install(Module);
 const { pathToFileURL } = require('node:url');
 const roots = [...Module._nodeModulePaths(workerData.cwd), ...(process.env.NODE_PATH ?? '').split(path.delimiter).filter(Boolean)];
 Module.register('./environment-loader.mjs', pathToFileURL(__filename), { data: { roots } });

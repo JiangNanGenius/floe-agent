@@ -22,6 +22,19 @@ class EmbeddedOutputTests(unittest.TestCase):
         exec(compile(runner, "embedded-runner", "exec"), state)
         return state, json.loads(state["_floe_result"])
 
+    def test_job_logging_does_not_leak_handlers_or_levels_to_next_execution(self):
+        import logging
+        root = logging.getLogger()
+        before = (list(root.handlers), root.level, root.disabled, root.propagate, logging.Logger.manager.disable)
+        _, result = self.run_script("import logging; logging.basicConfig(level=logging.DEBUG, force=True); logging.getLogger('floe-test-new').addHandler(logging.StreamHandler()); logging.disable(logging.ERROR)")
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual((list(root.handlers), root.level, root.disabled, root.propagate, logging.Logger.manager.disable), before)
+        self.assertEqual(logging.getLogger('floe-test-new').handlers, [])
+        _, next_result = self.run_script("import logging; logging.getLogger('httpx').info('no installer handler'); print('next-job')")
+        self.assertEqual(next_result['status'], 'ok')
+        self.assertEqual(next_result['stderr'], '')
+        self.assertEqual(next_result['stdout'], 'next-job\n')
+
     def test_repeated_output_does_not_retain_empty_chunks_after_limit(self):
         state, result = self.run_script("for _ in range(20000): print('x')")
         self.assertEqual(result["status"], "ok")
