@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: ['codex/floe-172-completion']
-    paths: ['FloeAgent/ThirdParty/FreeRDP/**', '.github/workflows/rdp-runtime.yml']
+    paths: ['FloeAgent/ThirdParty/FreeRDP/build_ios.sh', 'FloeAgent/ThirdParty/FreeRDP/runtime.lock.json', '.github/workflows/rdp-runtime.yml']
 permissions:
   contents: read
 concurrency:

@@ -1,0 +1,73 @@
+name: Qualify RDP bridge and native archive
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/floe-172-completion']
+    paths:
+      - 'FloeAgent/ThirdParty/FreeRDP/Bridge/**'
+      - 'FloeAgent/ThirdParty/FreeRDP/qualify_bridge.sh'
+      - '.github/workflows/rdp-bridge.yml'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  bridge:
+    runs-on: macos-26
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [OS64, SIMULATORARM64]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      NATIVE_SOURCE: 6cdc737d3052970919b7d8be92e70d91d97a8e9e
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check immutable native source run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/actions/runs/34976735993 > "$RUNNER_TEMP/native-run.json"
+          python3 - "$RUNNER_TEMP/native-run.json" <<'PY'
+          import json,sys,os
+          run=json.load(open(sys.argv[1]))
+          assert run['head_sha']==os.environ['NATIVE_SOURCE']
+          assert run['conclusion']=='success'
+          assert run['path']=='.github/workflows/rdp-runtime.yml'
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 34976735993
+          name: rdp-${{ matrix.platform }}-${{ env.NATIVE_SOURCE }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/native
+      - name: Check lock and every restored library
+        run: |
+          python3 - "$RUNNER_TEMP/native/floe-rdp" <<'PY'
+          import json,hashlib,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          expected=json.loads(Path('FloeAgent/ThirdParty/FreeRDP/runtime.lock.json').read_text())
+          assert json.loads((root/'evidence/runtime.lock.json').read_text())==expected
+          for line in (root/'evidence/library-hashes.txt').read_text().splitlines():
+              digest,original=line.split(None,1)
+              file=root/original.strip().split('/floe-rdp/',1)[1]
+              assert hashlib.sha256(file.read_bytes()).hexdigest()==digest, file.name
+          PY
+      - name: Compile and link real native bridge
+        run: |
+          set -o pipefail
+          bash FloeAgent/ThirdParty/FreeRDP/qualify_bridge.sh '${{ matrix.platform }}' \
+            "$RUNNER_TEMP/native/floe-rdp/build/deps" "$RUNNER_TEMP/bridge" 2>&1 | tee "$RUNNER_TEMP/bridge.log"
+          cp "$RUNNER_TEMP/native/floe-rdp/evidence/FreeRDP-LICENSE" "$RUNNER_TEMP/bridge/"
+          cp "$RUNNER_TEMP/native/floe-rdp/evidence/OpenSSL-LICENSE" "$RUNNER_TEMP/bridge/"
+      - name: Retain source, libraries, link validation and failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-bridge-${{ matrix.platform }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/bridge
+            ${{ runner.temp }}/bridge.log
+            ${{ runner.temp }}/native-run.json
+          retention-days: 14
