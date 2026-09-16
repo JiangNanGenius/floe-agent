@@ -107,6 +107,11 @@
         }
         return true;
       },
+      getText: async (path) => {
+        const documents = await editor.getAllOpenedDocuments();
+        const document = documents.find(item => pathKey(item.uri.path.toString()) === pathKey(path));
+        return document ? document.getText() : null;
+      },
       destroy: () => app.destroy()
     };
     await notify('ready');

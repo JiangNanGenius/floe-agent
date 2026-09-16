@@ -61,9 +61,13 @@ import FloeWorkspace
             let inserted = try await web.callAsyncJavaScript(
                 "return await window.floeIDE.insertText(path, text)",
                 arguments: ["path": "/" + path, "text": text], in: nil, contentWorld: .page)
-            let ok = inserted as? Bool ?? false
-            lastInsertResult = ok ? "inserted" : "rejected"
-            return ok
+            guard inserted as? Bool == true else { lastInsertResult = "rejected"; return false }
+            let current = try await web.callAsyncJavaScript(
+                "return await window.floeIDE.getText(path)",
+                arguments: ["path": "/" + path], in: nil, contentWorld: .page)
+            let found = (current as? String)?.contains(text) ?? false
+            lastInsertResult = found ? "inserted" : "missing-after-insert"
+            return found
         } catch { self.error = error.localizedDescription; lastInsertResult = "error"; return false }
     }
 }
