@@ -11,6 +11,7 @@ if ! command -v gitleaks >/dev/null 2>&1; then
 fi
 
 gitleaks git . \
+    --config .gitleaks.toml \
     --gitleaks-ignore-path ../.gitleaksignore \
     --redact \
     --report-path .gitleaks-report.json \

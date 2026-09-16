@@ -1,0 +1,12 @@
+# gitleaks configuration for Floe Agent.
+# Vendored offline bundles are hash-pinned upstream artifacts; embedded
+# grammar commit SHAs and gitHead strings are public source references,
+# not credentials. Keep real credential rules active everywhere else.
+title = "Floe Agent gitleaks configuration"
+
+[allowlist]
+description = "Hash-pinned vendored bundles embedding upstream git SHAs"
+paths = [
+  '''FloeAgent/FloeApp/Resources/IDE/vendor/codeblitz\.global-with-react\.min\.js''',
+  '''FloeAgent/FloeApp/Resources/EngineeringViewers/mesh\.js''',
+]
