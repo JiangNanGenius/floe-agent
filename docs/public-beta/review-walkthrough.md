@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (172). Candidate: 1.7.0 (177). review preparation, candidate under qualification, not submitted.
+Baseline: 1.7.0 (172). Candidate: 1.7.0 (178). review preparation, candidate 1.7.0 (178) delivered to internal Floe QA, external review not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 172. This internal TestFlight build is available 
 
 基线：1.7.0（172），已交付 Floe QA 内部 TestFlight；尚未提交外部 Beta 审核。
 
-Build 177, source 8488c8f2, is under complete App qualification. It has not been uploaded or made available in TestFlight. Build 176 failed qualification and was not delivered. Candidate evidence is separate from the delivered baseline.
+Build 178, source 32acddd4, passed the complete release verification and is uploaded to TestFlight: Apple VALID, unexpired, in the existing internal Floe QA group and IN_BETA_TESTING. Builds 173–177 did not complete upload; their findings are recorded separately from this delivered baseline.
 
-177（源码 8488c8f2）正在进行完整 App 验证，尚未上传或在 TestFlight 开放。176 验证失败，未交付；候选代码证据与已交付基线分开记录。
+178（源码 32acddd4）已通过完整发布验证并上传 TestFlight：Apple VALID、未过期，在既有 Floe QA 内部组且处于 IN_BETA_TESTING 可安装状态。173–177 各候选未上传，相应发现与本次已交付基线分开记录。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -264,9 +264,9 @@ A changed binary requires a new upload build number. The marketing version may r
 
 ## 10  IDE 与工程图纸 / IDE and engineering drawings
 
-In the Build 177 candidate, open a workspace file, then use Open in Editor to expand the full-screen IDE. Use the file tree, tabs, code editor and existing document editors. Syntax highlighting does not imply that every programming language can execute locally.
+In the Build 178 candidate, open a workspace file, then use Open in Editor to expand the full-screen IDE. Use the file tree, tabs, code editor and existing document editors. Syntax highlighting does not imply that every programming language can execute locally.
 
-177 候选版中，打开工作区文件，再通过「在编辑器中打开」进入全屏 IDE，使用文件树、标签、代码及现有文档编辑器。语法高亮不代表所有语言都能在本地执行。
+178 候选版中，打开工作区文件，再通过「在编辑器中打开」进入全屏 IDE，使用文件树、标签、代码及现有文档编辑器。语法高亮不代表所有语言都能在本地执行。
 
 When an Agent changes a file while the user is editing, preserve the user draft, compare the file version and review overlapping changes before overwriting. Independent edits can be merged; conflict copies remain recoverable.
 
@@ -290,13 +290,13 @@ Native RDP connection and certificate checks have separate qualification evidenc
 
 ## 11  本轮修复验证状态 / Candidate repair evidence - 16 September 2026
 
-Build 177 retains document conversation restart and live refresh after committed edits, with a full-height iPad assistant column or phone sheet. It also applies activated Soul/profile changes at the next model request. The screenshot shows the labelled earlier source, not this candidate.
+Build 178 retains document conversation restart and live refresh after committed edits, with a full-height iPad assistant column or phone sheet. It also applies activated Soul/profile changes at the next model request. The screenshot shows the labelled earlier source, not this candidate.
 
-177 保留当前文档助手会话重开、提交编辑后实时刷新、iPad 完整助手栏和手机面板，并让已激活的 Soul／画像在下一次模型请求时生效。配图是已标注的较早源码，不是本候选版。
+178 保留当前文档助手会话重开、提交编辑后实时刷新、iPad 完整助手栏和手机面板，并让已激活的 Soul／画像在下一次模型请求时生效。配图是已标注的较早源码，不是本候选版。
 
 Source 4eb99f62 passed the accepted-SDK build, Linux build and full-App core regressions but failed UI checks. Build 177 fixes the observed language, IDE control identification and stale keyboard-geometry issues; complete App run 34986754638 is pending. Native Office remains device-only.
 
-4eb99f62 通过发布 SDK 构建、Linux 编译和完整 App 核心回归，但界面检查失败。177 修复对应语言、IDE 控件定位及过期键盘坐标问题；完整 App 流程 34986754638 尚未结束。原生 Office 仍需真机验收。
+4eb99f62 通过发布 SDK 构建、Linux 编译和完整 App 核心回归，但界面检查失败。178 修复对应语言、IDE 控件定位及过期键盘坐标问题；完整 App 流程 34986754638 尚未结束。原生 Office 仍需真机验收。
 
 A macOS Qwen diagnostic passed cold load, repeated short prompts and a 5,773-token prompt. It does not establish an iPad crash fix or a device memory pass.
 

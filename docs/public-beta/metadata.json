@@ -1,71 +1,73 @@
 {
-  "status": "draft_not_submitted",
-  "target": {
-    "bundleIdentifier": "org.floeagent.ios",
-    "version": null,
-    "build": null,
-    "sourceCommit": null,
-    "afterBuild": "172"
+ "status": "draft_not_submitted",
+ "target": {
+  "bundleIdentifier": "org.floeagent.ios",
+  "version": null,
+  "build": null,
+  "sourceCommit": null,
+  "afterBuild": "178"
+ },
+ "websiteCandidate": "https://www.floe-agent.com/",
+ "supportURL": null,
+ "privacyPolicyURL": null,
+ "feedbackEmail": null,
+ "reviewContact": {
+  "firstName": null,
+  "lastName": null,
+  "email": null,
+  "phone": null
+ },
+ "reviewAccess": {
+  "confirmed": false,
+  "instructions": "Validate the existing on-device model path on the submitted build and document its real capabilities. Cloud integrations are BYOK. No funded API key or cloud credit is authorized; if Apple requires additional access, obtain an accepted review arrangement before proceeding."
+ },
+ "externalGroup": {
+  "id": null,
+  "name": null,
+  "publicLinkEnabled": false,
+  "testerLimit": null,
+  "criteria": null
+ },
+ "localizations": {
+  "zh-Hans": {
+   "betaAppDescription": "Floe Agent 是以 iPad 为优先、同时支持 iPhone 的 AI 工作空间。你可以持续处理 AI 任务、查看工具执行记录，在独立的手记工作区阅读 PDF、书写批注、整理文档，并通过创意画布组织想法与内容。支持连接你选择的模型服务；云端 AI 功能需要配置相应服务，可能产生第三方费用。本次公开测试重点关注手记编辑与保存、文档搜索、模型配置和任务执行的可靠性。部分高级媒体、软件包和模型能力仍在完善，具体范围以该测试版说明为准。",
+   "whatToTest": "请先使用可备份的测试资料。重点测试：1. 在 iPad 和 iPhone 导入 PDF，进入全屏编辑，修改后关闭并重新打开。2. 切换文档标签、收起顶部抬头、搜索文档正文并打开命中页面。3. 使用笔、荧光笔、橡皮和套索，调整粗细、颜色与透明度（0% 为实心）；有 Pencil Pro 时测试捏压工具弧。4. 配置模型，开始多轮任务，查看工具进度并停止执行；重启后核对设置仍有效。5. 下载 Whisper 后离开设置页，完成下载再测试普通话和英语混合语音。6. 在画布中搜索、移动与删除内容，检查重启后的结果。请通过 TestFlight 反馈设备、系统、构建号、复现步骤和预期／实际结果，截图前遮去密钥与私人内容。"
   },
-  "websiteCandidate": "https://www.floe-agent.com/",
-  "supportURL": null,
-  "privacyPolicyURL": null,
-  "feedbackEmail": null,
-  "reviewContact": {
-    "firstName": null,
-    "lastName": null,
-    "email": null,
-    "phone": null
-  },
-  "reviewAccess": {
-    "confirmed": false,
-    "instructions": "Validate the existing on-device model path on the submitted build and document its real capabilities. Cloud integrations are BYOK. No funded API key or cloud credit is authorized; if Apple requires additional access, obtain an accepted review arrangement before proceeding."
-  },
-  "externalGroup": {
-    "id": null,
-    "name": null,
-    "publicLinkEnabled": false,
-    "testerLimit": null,
-    "criteria": null
-  },
-  "localizations": {
-    "zh-Hans": {
-      "betaAppDescription": "Floe Agent 是以 iPad 为优先、同时支持 iPhone 的 AI 工作空间。你可以持续处理 AI 任务、查看工具执行记录，在独立的手记工作区阅读 PDF、书写批注、整理文档，并通过创意画布组织想法与内容。支持连接你选择的模型服务；云端 AI 功能需要配置相应服务，可能产生第三方费用。本次公开测试重点关注手记编辑与保存、文档搜索、模型配置和任务执行的可靠性。部分高级媒体、软件包和模型能力仍在完善，具体范围以该测试版说明为准。",
-      "whatToTest": "请先使用可备份的测试资料。重点测试：1. 在 iPad 和 iPhone 导入 PDF，进入全屏编辑，修改后关闭并重新打开。2. 切换文档标签、收起顶部抬头、搜索文档正文并打开命中页面。3. 使用笔、荧光笔、橡皮和套索，调整粗细、颜色与透明度（0% 为实心）；有 Pencil Pro 时测试捏压工具弧。4. 配置模型，开始多轮任务，查看工具进度并停止执行；重启后核对设置仍有效。5. 下载 Whisper 后离开设置页，完成下载再测试普通话和英语混合语音。6. 在画布中搜索、移动与删除内容，检查重启后的结果。请通过 TestFlight 反馈设备、系统、构建号、复现步骤和预期／实际结果，截图前遮去密钥与私人内容。"
-    },
-    "en-US": {
-      "betaAppDescription": "Floe Agent is an iPad-first AI workspace with iPhone support. Continue AI tasks with visible tool activity, read and annotate PDFs in a separate Notes workspace, organize documents, and develop ideas in a creative canvas. Connect your chosen model providers; cloud AI requires a configured service and may incur third-party charges. This public beta focuses on reliable editing and saving, document search, model configuration, and task execution. Some advanced media, package, and model capabilities remain in development; consult the build-specific testing notes for their current scope.",
-      "whatToTest": "Use backed-up test documents. Check PDF import, full-screen editing, save and reopen on iPad and iPhone. Switch document tabs, collapse the header, search document text and open results. Try pen, highlighter, eraser and lasso; change width, color and transparency (0% is solid), and test the tip tool arc with Pencil Pro if available. Configure a model, run a multi-turn task, inspect tool progress, stop execution and confirm settings survive relaunch. Start the Whisper download, leave Settings, then test mixed English and Mandarin after installation. Check Canvas search, organization and deletion after relaunch. Send feedback through TestFlight with device, OS, build number, steps and expected versus actual results. Redact credentials and personal content from screenshots."
-    }
-  },
-  "reviewAccessConstraints": {
-    "imageGenerationCredentialAuthorized": false,
-    "imageGenerationSpendingAuthorized": false,
-    "proposedCoreDemo": "Notes and documents plus genuine on-device inference where verified",
-    "generalModelCredentialStatus": "not authorized or required from owner by this draft",
-    "optionalImageGeneration": "user-configured; disclose honestly; respond to any reviewer access request separately",
-    "anyCloudCredentialAuthorized": false,
-    "anyCloudSpendingAuthorized": false,
-    "localInferenceQualification": "pending; verify supported hardware, model download, response and any advertised tool/vision capability",
-    "ownerReportedLocalAI": "Usable with limited functionality; specific build/model/device not recorded"
-  },
-  "developerDemonstrationOnly": {
-    "provider": "Volcengine Ark",
-    "textModel": "deepseek-v4-1-flash-260910",
-    "boundedTextCallsAuthorized": true,
-    "imageGeneration": "small amount authorized for demonstration only",
-    "generatedVideoSecondsLimit": 10,
-    "generatedVideoSecondsUsed": 0,
-    "credentialMayBeSharedWithReviewers": false,
-    "credentialIncludedInMaterials": false,
-    "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 177 evidence."
-  },
-  "candidateQualification": {
-    "version": "1.7.0",
-    "build": "177",
-    "sourceCommit": "8488c8f27282b97447daf6e52d1a3c9cd1747155",
-    "fullCIRun": 34986754638,
-    "pencilComponentRun": 34987017095,
-    "status": "in_progress_not_uploaded"
+  "en-US": {
+   "betaAppDescription": "Floe Agent is an iPad-first AI workspace with iPhone support. Continue AI tasks with visible tool activity, read and annotate PDFs in a separate Notes workspace, organize documents, and develop ideas in a creative canvas. Connect your chosen model providers; cloud AI requires a configured service and may incur third-party charges. This public beta focuses on reliable editing and saving, document search, model configuration, and task execution. Some advanced media, package, and model capabilities remain in development; consult the build-specific testing notes for their current scope.",
+   "whatToTest": "Use backed-up test documents. Check PDF import, full-screen editing, save and reopen on iPad and iPhone. Switch document tabs, collapse the header, search document text and open results. Try pen, highlighter, eraser and lasso; change width, color and transparency (0% is solid), and test the tip tool arc with Pencil Pro if available. Configure a model, run a multi-turn task, inspect tool progress, stop execution and confirm settings survive relaunch. Start the Whisper download, leave Settings, then test mixed English and Mandarin after installation. Check Canvas search, organization and deletion after relaunch. Send feedback through TestFlight with device, OS, build number, steps and expected versus actual results. Redact credentials and personal content from screenshots."
   }
+ },
+ "reviewAccessConstraints": {
+  "imageGenerationCredentialAuthorized": false,
+  "imageGenerationSpendingAuthorized": false,
+  "proposedCoreDemo": "Notes and documents plus genuine on-device inference where verified",
+  "generalModelCredentialStatus": "not authorized or required from owner by this draft",
+  "optionalImageGeneration": "user-configured; disclose honestly; respond to any reviewer access request separately",
+  "anyCloudCredentialAuthorized": false,
+  "anyCloudSpendingAuthorized": false,
+  "localInferenceQualification": "pending; verify supported hardware, model download, response and any advertised tool/vision capability",
+  "ownerReportedLocalAI": "Usable with limited functionality; specific build/model/device not recorded"
+ },
+ "developerDemonstrationOnly": {
+  "provider": "Volcengine Ark",
+  "textModel": "deepseek-v4-1-flash-260910",
+  "boundedTextCallsAuthorized": true,
+  "imageGeneration": "small amount authorized for demonstration only",
+  "generatedVideoSecondsLimit": 10,
+  "generatedVideoSecondsUsed": 0,
+  "credentialMayBeSharedWithReviewers": false,
+  "credentialIncludedInMaterials": false,
+  "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 178 evidence."
+ },
+ "candidateQualification": {
+  "version": "1.7.0",
+  "build": "178",
+  "sourceCommit": "32acddd41f0f5735ac7f1cec2eb14feb1da28623",
+  "releaseRun": 35106710878,
+  "fullCIRun": 35083821490,
+  "testflightBuildID": "6e8cd002-e620-438a-ad10-c87c2bf33f27",
+  "availabilityRun": 35121747998,
+  "status": "uploaded_valid_internal_floe_qa_in_beta_testing"
+ }
 }

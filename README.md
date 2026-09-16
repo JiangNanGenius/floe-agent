@@ -26,13 +26,13 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Floe 1.7 internal beta
 
-Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified speech, image/video workbenches and project/session environments. **Version 1.7.0 (172) is available in the internal Floe QA TestFlight group, verified as VALID / IN_BETA_TESTING.** Production release remains separate. See the [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md).
+Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified speech, image/video workbenches and project/session environments. **Version 1.7.0 (178) is available in the internal Floe QA TestFlight group, verified as VALID / IN_BETA_TESTING.** Production release remains separate. See the [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md).
 
 The [Build 156 feedback repair release](docs/FLOE_156_FEEDBACK_REPAIR.md) adds background-only browser operations with explicit human handoff, direct HTTP/API workflows, shared HTTPS certificate configuration, configured-only search discovery, and shell/Python/Node reliability repairs. Build 172 is now available in TestFlight; the SDK 27 source passed 1,270 Swift test executions and 159 full-App regressions. Physical-device acceptance remains with the tester.
 
 Notes also adds **＋ → From Floe Workspace**: select a document generated in a conversation or project and import an independent copy into Notes. The cover library opens documents in a full-screen editor and searches indexed document contents. See the [import and search guide](docs/USER_GUIDE.md#current-repair-candidate-content-search-and-workspace-imports); the SDK 27 full-App Notes UI case passed on both iPad and iPhone; physical-device acceptance remains with the tester.
 
-The [build 176 repair is under validation](docs/FLOE_172_REPAIR_EXECUTION.md): dedicated Notes assistants gain a full-height iPad column, conversation restart and automatic refresh after committed edits. Their history stays separate from ordinary chats. The preceding source `8958d8f1` passed 172/172 full-App regressions, but its long iPad UI case timed out; the new candidate splits that coverage into independently required cases. [Original evidence](docs/evidence/floe-1.7/build172-repair/app-build175.json) remains recorded. No new repair TestFlight build has been uploaded yet.
+The [build 172 feedback repair is delivered as build 178](docs/FLOE_172_REPAIR_EXECUTION.md): dedicated Notes assistants gain a full-height iPad column, conversation restart and automatic refresh after committed edits, Soul/profile changes apply at the next model request, and the full-screen IDE adds conflict-aware saving with DXF/DWG editing and AI review. Build 178 passed 178/178 focused regressions and iPad/iPhone Notes UI on both SDKs before signed upload.
 
 The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
 
@@ -97,7 +97,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Floe Agent **1.7.0 (build 172)** is the latest build recorded as available to the **Floe QA internal TestFlight group**. See the [TestFlight availability record](docs/TESTFLIGHT_1.7.0_BETA.md). The [build 177 repair candidate](docs/RELEASE_NOTES_1.7.0_BUILD_177.md) is still under qualification; its code changes and screenshots do not indicate a newer uploaded build. Earlier 1.5.3 evidence is retained in the [historical verification record](docs/RELEASE_VERIFICATION_1.5.3.md).
+Floe Agent **1.7.0 (build 178)** is the latest build recorded as available to the **Floe QA internal TestFlight group**. See the [TestFlight availability record](docs/TESTFLIGHT_1.7.0_BETA.md) and the [build 178 release notes](docs/RELEASE_NOTES_1.7.0_BUILD_178.md). Earlier 1.5.3 evidence is retained in the [historical verification record](docs/RELEASE_VERIFICATION_1.5.3.md).
 
 ### Unsigned IPA
 

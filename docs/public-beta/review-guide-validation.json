@@ -1,17 +1,17 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (172)",
-  "candidate": "1.7.0 (177), not uploaded",
+  "candidate": "1.7.0 (178), delivered to internal Floe QA (VALID, IN_BETA_TESTING)",
   "pages": 13,
-  "sha256": "f4d9e7f12bec821f5f25286cc124c41ad31f2bdeb55368839815768a511713c8",
-  "bytes": 2746729,
+  "sha256": "fc90906105b7c02292bfa50ef0eef7eac6431801c22c8e73d9f663487d711d78",
+  "bytes": 2747645,
   "textExtractionChecked": true,
   "screenshots": "Original baseline 172 and source-labelled 9e4434ca full-App simulator screenshots; rotated only in layout",
   "reviewStatus": "draft, external review not submitted",
   "reviewerCloudCredits": "none authorized; demonstration credentials excluded",
   "localInference": "Mac host qualification is separate from unresolved iPad crash",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
-  "updatedAt": "2026-09-15T15:21:37.857567+00:00",
+  "updatedAt": "2026-09-16T16:40:00+00:00",
   "currentRenderedPagesReviewed": [
     1,
     2,
@@ -28,7 +28,7 @@
     13
   ],
   "unchangedPageTextComparedToPreviouslyReviewedPDF": [],
-  "footerChange": "Candidate 177 on all pages; pages 10 and 12 rerendered and reviewed after evidence corrections",
+  "footerChange": "Candidate 178 on all pages after the internal TestFlight delivery; page 1 records VALID and group availability; pages 10 and 12 rerendered and reviewed after evidence corrections",
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator"
 }

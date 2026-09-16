@@ -2,6 +2,24 @@
 
 Updated: 2026-09-16. This is an implementation ledger, not a release acceptance claim.
 
+## 2026-09-16 delivery recorded
+
+**Delivered: 1.7.0 (178), internal Floe QA TestFlight.** ASC build
+`6e8cd002-e620-438a-ad10-c87c2bf33f27` is `VALID`, unexpired, in exactly the
+existing private internal group and `IN_BETA_TESTING` (verified by
+[35121747998](https://github.com/JiangNanGenius/floe-agent/actions/runs/35121747998)).
+Immutable source `32acddd41f0f5735ac7f1cec2eb14feb1da28623`, tag
+`v1.7.0-beta.35`. [Release 35106710878](https://github.com/JiangNanGenius/floe-agent/actions/runs/35106710878):
+both SDK builds, 178/178 focused regressions, iPad/iPhone Notes UI, signed
+upload. Complete CI for the same app source:
+[35083821490](https://github.com/JiangNanGenius/floe-agent/actions/runs/35083821490).
+GitHub prerelease `v1.7.0-beta.35` and the digest-verified Feather source
+([35120804344](https://github.com/JiangNanGenius/floe-agent/actions/runs/35120804344))
+are published. The September 15–16 repair series below is what this build closes;
+remaining open items (RDP App integration, full package catalog, Qwen iPad,
+log-service deployment, media-model acceptance) stay open and are listed in the
+[candidate notes](RELEASE_NOTES_1.7.0_BUILD_178.md).
+
 ## Delivery boundary
 
 Repair and qualify the complete app, then upload a new internal TestFlight build. Prepare public Beta review materials for the owner's review; do not submit public Beta yet. GitHub prerelease, Feather, documentation, main merge and task-owned branch cleanup are separate deliverables. No build for this repair has been uploaded yet.

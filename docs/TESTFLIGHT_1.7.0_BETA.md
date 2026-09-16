@@ -1,6 +1,14 @@
 # Floe 1.7 TestFlight delivery
 
-## Current delivery: 1.7.0 (172)
+## Current delivery: 1.7.0 (178)
+
+**Available in the existing internal Floe QA group.** Apple `VALID`, unexpired, exactly one private internal group (`Floe QA`, feedback enabled, no public link) and `IN_BETA_TESTING` were verified at 2026-09-16 16:25 UTC by [run 35121747998](https://github.com/JiangNanGenius/floe-agent/actions/runs/35121747998). ASC build ID `6e8cd002-e620-438a-ad10-c87c2bf33f27`.
+
+Source: `32acddd41f0f5735ac7f1cec2eb14feb1da28623` / `v1.7.0-beta.35` (build 178). [Release run 35106710878](https://github.com/JiangNanGenius/floe-agent/actions/runs/35106710878) rebuilt the immutable tag on the SDK 27 and the App Store accepted SDK, passed 178/178 focused App regressions plus iPad and iPhone Notes UI on both SDKs, then signed, validated and uploaded the same source. [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.35) carries the separately qualified unsigned IPA and evidence; the [Feather source](FEATHER_SOURCE.md) was republished with digest-verified provenance in [run 35120804344](https://github.com/JiangNanGenius/floe-agent/actions/runs/35120804344).
+
+The same app source also passed complete CI [35083821490](https://github.com/JiangNanGenius/floe-agent/actions/runs/35083821490). Native Office remains device-only; RDP App integration, Qwen iPad acceptance, the full native npm/WASI/APT catalog, media-model acceptance and log-service deployment remain open. Physical-device checks belong to the user. No public App Store review or production release is part of this delivery.
+
+## Previous delivery: 1.7.0 (172)
 
 **Available in the existing internal Floe QA group.** Apple `VALID`, unexpired, one private internal group and `IN_BETA_TESTING` were verified at 2026-09-14 17:52:18 UTC. English and Simplified Chinese notes were written and read back. [Availability evidence](evidence/floe-1.7/release-172/TESTFLIGHT_AVAILABLE.json).
 
@@ -12,16 +20,14 @@ SDK 27 source qualification passed 1,270 Swift executions, 159 full-App regressi
 
 Main was fast-forwarded to the delivered integration. Task-owned merged branches were removed; the independent Office and occupied shell branches remain. [Branch cleanup](evidence/floe-1.7/release-172/branch-cleanup.json). The public [Feather feed check](evidence/floe-1.7/release-172/feather-published.json) returned HTTP 200 for the source, icon and IPA.
 
-## September 15 repair candidate — not yet delivered
+## September 15 repair candidates — superseded by build 178
 
-Build 176 / `v1.7.0-beta.33` / `b8c1fc0494a08e49af1a092b14df11ee74580554`
-started [initial CI qualification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949420611)
-and [release qualification/build](https://github.com/JiangNanGenius/floe-agent/actions/runs/34949491542).
-The initial test-host compile failed because a new test omitted a module import.
-That test-only correction is in `1d86b285`; [follow-up CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34951710478) is running. The App files are unchanged and beta.33 remains immutable; final delivery waits for qualification.
-It adds live document refresh, dedicated conversation restart and a full-height iPad assistant column.
-Upload and Apple availability remain pending; the installable delivery above remains build 172.
-[Build-specific notes](RELEASE_NOTES_1.7.0_BUILD_176.md) record remaining scope.
+Builds 173–177 / tags beta.30–beta.34 did not complete upload; each stopped at a
+real qualification finding rather than bypassing it. Their original results and
+immutable tags remain. Build 178 above delivers the repair series: dedicated
+Notes assistant isolation and live refresh, Soul/profile next-request
+activation, full-screen IDE with conflict-aware saving, DXF/DWG editing and AI
+review, and the loaded-runner UI qualification repairs.
 
 Build 175 / `v1.7.0-beta.32` / `8958d8f1482c3236f73172076b76adc83da86f5f`
 passed 172/172 App regressions and its iPhone Notes case. The iPad case exceeded
