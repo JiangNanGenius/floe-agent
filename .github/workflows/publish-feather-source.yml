@@ -59,8 +59,7 @@ jobs:
           (folder / 'ipa-path.txt').write_text(str(ipa))
           PY
           gh attestation verify "$(cat "$RUNNER_TEMP/FeatherInput/ipa-path.txt")" \
-            --repo "$GH_REPO" --source-ref "refs/tags/$RELEASE_TAG" \
-            --source-digest "$(cat "$RUNNER_TEMP/feather-source-sha.txt")" \
+            --repo "$GH_REPO" --source-digest "$(cat "$RUNNER_TEMP/feather-source-sha.txt")" \
             --signer-workflow "$GH_REPO/.github/workflows/release-unsigned-ipa.yml"
       - name: Generate source from verified binary metadata
         run: |
