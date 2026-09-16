@@ -16,6 +16,11 @@ final class WorkspaceIDEUITests: XCTestCase {
         try openWorkbench(app, ipad: ipad)
         let editor = app.webViews.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 20))
+        // The workbench chrome and tab bar can appear long before Monaco paints
+        // the document on a loaded runner. Every later step needs the rendered
+        // buffer, so require the fixture's own line first.
+        let fixtureLine = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Floe IDE durable workspace")).firstMatch
+        XCTAssertTrue(fixtureLine.waitForExistence(timeout: 60), "Monaco must paint the fixture document before editing")
         // XCTest keystrokes never reach Monaco's hidden textarea and the editor
         // suppresses the system edit menu, so deliver the marker through the
         // workbench's own document pipeline; saving still uses the real button.
@@ -25,7 +30,7 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(insert.waitForExistence(timeout: 10))
         insert.tap()
         let insertedLine = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", String(marker))).firstMatch
-        XCTAssertTrue(insertedLine.waitForExistence(timeout: 15), "inserted marker must render in the Monaco buffer")
+        XCTAssertTrue(insertedLine.waitForExistence(timeout: 60), "inserted marker must render in the Monaco buffer")
         let save = app.buttons["workspace.ide.save"]
         XCTAssertTrue(save.isEnabled)
         save.tap()
