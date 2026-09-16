@@ -16,18 +16,20 @@ final class WorkspaceIDEUITests: XCTestCase {
         try openWorkbench(app, ipad: ipad)
         let editor = app.webViews.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 20))
-        // XCTest keystrokes never reach Monaco's hidden textarea and the editor
-        // suppresses the system edit menu. The insert action is gated on the
-        // workbench's own ready signal, and the bridge reports the result —
-        // Monaco's painted pixels are not an accessibility contract.
-        let marker = "saved-" + UUID().uuidString.prefix(8)
-        UIPasteboard.general.string = String(marker)
+        // XCTest keystrokes never reach Monaco's hidden textarea, the editor
+        // suppresses the system edit menu, and the simulator pasteboard is not
+        // shared with the test runner. The action generates and publishes the
+        // marker it inserted; the readback below requires exactly that string.
         let insert = app.buttons["workspace.ide.insertTestText"]
         XCTAssertTrue(insert.waitForExistence(timeout: 10))
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: insert)], timeout: 60)
         insert.tap()
-        let inserted = expectation(for: NSPredicate(format: "value == %@", "inserted"), evaluatedWith: insert)
+        let inserted = expectation(for: NSPredicate(format: "value BEGINSWITH %@", "inserted:"), evaluatedWith: insert)
         wait(for: [inserted], timeout: 30)
+        guard let published = insert.value as? String, published.hasPrefix("inserted:") else {
+            XCTFail("insert action did not publish its marker"); return
+        }
+        let marker = String(published.dropFirst("inserted:".count))
         let save = app.buttons["workspace.ide.save"]
         XCTAssertTrue(save.isEnabled)
         save.tap()

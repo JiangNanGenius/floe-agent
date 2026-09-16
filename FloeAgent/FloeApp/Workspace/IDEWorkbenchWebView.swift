@@ -51,22 +51,23 @@ import FloeWorkspace
         } catch { self.error = error.localizedDescription; return false }
     }
     /// Native UI-test text entry: XCTest keystrokes never reach Monaco's hidden
-    /// textarea, and Monaco suppresses the system edit menu used for paste.
-    /// The result is published for the ui-testing toolbar action; Monaco's
-    /// painted pixels are intentionally not part of the accessibility contract.
+    /// textarea, Monaco suppresses the system edit menu, and the simulator
+    /// pasteboard is not shared with the test runner. The action generates and
+    /// publishes the marker it inserted so the test can verify cold readback.
     @Published var lastInsertResult: String?
     @discardableResult func insertTextForTesting(path: String, text: String) async -> Bool {
         guard let web, ready else { lastInsertResult = "not-ready"; return false }
+        let payload = text.isEmpty ? "saved-" + UUID().uuidString.prefix(8) : text
         do {
             let inserted = try await web.callAsyncJavaScript(
                 "return await window.floeIDE.insertText(path, text)",
-                arguments: ["path": "/" + path, "text": text], in: nil, contentWorld: .page)
+                arguments: ["path": "/" + path, "text": payload], in: nil, contentWorld: .page)
             guard inserted as? Bool == true else { lastInsertResult = "rejected"; return false }
             let current = try await web.callAsyncJavaScript(
                 "return await window.floeIDE.getText(path)",
                 arguments: ["path": "/" + path], in: nil, contentWorld: .page)
-            let found = (current as? String)?.contains(text) ?? false
-            lastInsertResult = found ? "inserted" : "missing-after-insert"
+            let found = (current as? String)?.contains(payload) ?? false
+            lastInsertResult = found ? "inserted:\(payload)" : "missing-after-insert"
             return found
         } catch { self.error = error.localizedDescription; lastInsertResult = "error"; return false }
     }

@@ -53,7 +53,7 @@ struct WorkspaceIDEView: View {
                         Button("IDE-INSERT") {
                             Task {
                                 guard let path = state.activePath else { return }
-                                _ = await state.insertTextForTesting(path: path, text: UIPasteboard.general.string ?? "")
+                                _ = await state.insertTextForTesting(path: path, text: "")
                             }
                         }.disabled(!state.ready)
                         .accessibilityIdentifier("workspace.ide.insertTestText")
