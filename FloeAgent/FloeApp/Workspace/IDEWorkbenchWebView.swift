@@ -50,6 +50,17 @@ import FloeWorkspace
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
+    /// Native UI-test text entry: XCTest keystrokes never reach Monaco's hidden
+    /// textarea, and Monaco suppresses the system edit menu used for paste.
+    @discardableResult func insertTextForTesting(path: String, text: String) async -> Bool {
+        guard let web, ready else { return false }
+        do {
+            let inserted = try await web.callAsyncJavaScript(
+                "return await window.floeIDE.insertText(path, text)",
+                arguments: ["path": "/" + path, "text": text], in: nil, contentWorld: .page)
+            return inserted as? Bool ?? false
+        } catch { self.error = error.localizedDescription; return false }
+    }
 }
 
 struct IDEWorkbenchWebView: UIViewRepresentable {

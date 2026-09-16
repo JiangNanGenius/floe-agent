@@ -49,6 +49,14 @@ struct WorkspaceIDEView: View {
                     Button { Task { if await state.saveAll() { onSaved() } } } label: {
                         Label("ide.save.all", systemImage: "square.and.arrow.down")
                     }.disabled(!state.ready || state.saving).accessibilityIdentifier("workspace.ide.save").keyboardShortcut("s", modifiers: .command)
+                    if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                        Button("IDE-INSERT") {
+                            Task {
+                                guard let path = state.activePath else { return }
+                                _ = await state.insertTextForTesting(path: path, text: UIPasteboard.general.string ?? "")
+                            }
+                        }.accessibilityIdentifier("workspace.ide.insertTestText")
+                    }
                     Button {
                         if let path = state.activePath { preview = Preview(id: path) }
                     } label: { Label("ide.open.editor", systemImage: "doc.richtext") }

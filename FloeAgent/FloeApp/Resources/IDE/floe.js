@@ -94,6 +94,15 @@
         await notify('dirty', { dirty: unsaved });
         return !unsaved;
       },
+      // Programmatic text insertion for native automation; keyboard
+      // synthesis cannot reach Monaco's hidden textarea from XCTest.
+      insertText: async (path, text) => {
+        const documents = await editor.getAllOpenedDocuments();
+        const document = documents.find(item => pathKey(item.uri.path.toString()) === pathKey(path));
+        if (!document) return false;
+        document.updateContent(document.getText() + text);
+        return true;
+      },
       destroy: () => app.destroy()
     };
     await notify('ready');

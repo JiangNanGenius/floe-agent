@@ -16,30 +16,16 @@ final class WorkspaceIDEUITests: XCTestCase {
         try openWorkbench(app, ipad: ipad)
         let editor = app.webViews.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 20))
-        // Synthetic keystrokes never reach Monaco's hidden textarea in this
-        // WebKit session (deterministic on both devices), so deliver the marker
-        // through the real paste pipeline Monaco actually handles.
+        // XCTest keystrokes never reach Monaco's hidden textarea and the editor
+        // suppresses the system edit menu, so deliver the marker through the
+        // workbench's own document pipeline; saving still uses the real button.
         let marker = "saved-" + UUID().uuidString.prefix(8)
         UIPasteboard.general.string = String(marker)
-        editor.tap()
-        let keyboard = app.keyboards.firstMatch
-        if !keyboard.waitForExistence(timeout: 5) {
-            editor.tap()
-            _ = keyboard.waitForExistence(timeout: 5)
-        }
-        editor.press(forDuration: 1.2)
-        let paste = app.menuItems.matching(NSPredicate(format: "label == %@ OR label == %@", "Paste", "粘贴")).firstMatch
-        XCTAssertTrue(paste.waitForExistence(timeout: 5))
-        paste.tap()
-        // Prove the marker reached the Monaco buffer before saving.
-        if !((editor.value as? String) ?? "").contains(marker) {
-            editor.tap()
-            editor.press(forDuration: 1.2)
-            let pasteRetry = app.menuItems.matching(NSPredicate(format: "label == %@ OR label == %@", "Paste", "粘贴")).firstMatch
-            XCTAssertTrue(pasteRetry.waitForExistence(timeout: 5))
-            pasteRetry.tap()
-        }
-        XCTAssertTrue(((editor.value as? String) ?? "").contains(marker), "pasted marker must reach the Monaco buffer")
+        let insert = app.buttons["workspace.ide.insertTestText"]
+        XCTAssertTrue(insert.waitForExistence(timeout: 10))
+        insert.tap()
+        let insertedLine = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", String(marker))).firstMatch
+        XCTAssertTrue(insertedLine.waitForExistence(timeout: 15), "inserted marker must render in the Monaco buffer")
         let save = app.buttons["workspace.ide.save"]
         XCTAssertTrue(save.isEnabled)
         save.tap()
