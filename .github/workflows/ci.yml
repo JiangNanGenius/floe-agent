@@ -312,7 +312,7 @@ jobs:
               -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
               -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 300 \
-              -retry-tests-on-failure -maximum-test-executions 2 \
+              -retry-tests-on-failure -test-iterations 2 \
               CODE_SIGNING_ALLOWED=NO \
               test-without-building || code=$?
             # Retry exactly once when the runner stalled before any test ran;
@@ -367,7 +367,7 @@ jobs:
                 -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
                 -parallel-testing-enabled NO -test-timeouts-enabled YES \
                 -maximum-test-execution-time-allowance 300 \
-                -retry-tests-on-failure -maximum-test-executions 2 \
+                -retry-tests-on-failure -test-iterations 2 \
                 CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || leg_code=$?
               # One retry only when the runner stalled before any test started.
               if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
@@ -428,7 +428,7 @@ jobs:
                 -collect-test-diagnostics never -only-testing:FloeAgentUITests/WorkspaceIDEUITests \
                 -parallel-testing-enabled NO -test-timeouts-enabled YES \
                 -maximum-test-execution-time-allowance 300 \
-                -retry-tests-on-failure -maximum-test-executions 2 \
+                -retry-tests-on-failure -test-iterations 2 \
                 CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name.log" || leg_code=$?
               # One retry only when the runner stalled before any test started.
               if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
