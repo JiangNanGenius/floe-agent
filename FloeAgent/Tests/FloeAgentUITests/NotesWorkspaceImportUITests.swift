@@ -219,6 +219,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         capture("notes-document-body-search")
         let result = app.buttons.containing(.staticText, identifier: "预览验收").firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 10))
+        // Landscape iPad fits only a few rows above the keyboard; reveal the
+        // match with a real scroll instead of assuming its initial position.
+        if !result.isHittable { app.scrollViews.firstMatch.swipeUp() }
         XCTAssertTrue(result.isHittable)
         result.tap()
         XCTAssertTrue(back.waitForExistence(timeout: 10))

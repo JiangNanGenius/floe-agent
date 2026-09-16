@@ -98,9 +98,13 @@
       // synthesis cannot reach Monaco's hidden textarea from XCTest.
       insertText: async (path, text) => {
         const documents = await editor.getAllOpenedDocuments();
-        const document = documents.find(item => pathKey(item.uri.path.toString()) === pathKey(path));
-        if (!document) return false;
-        document.updateContent(document.getText() + text);
+        // The same file can be open in more than one tab; update every
+        // matching document so the visible buffer and the save agree.
+        const matches = documents.filter(item => pathKey(item.uri.path.toString()) === pathKey(path));
+        if (matches.length === 0) return false;
+        for (const document of matches) {
+          document.updateContent(document.getText() + text);
+        }
         return true;
       },
       destroy: () => app.destroy()
