@@ -5,8 +5,8 @@
 title = "Floe Agent gitleaks configuration"
 
 [allowlist]
-description = "Hash-pinned vendored bundles embedding upstream git SHAs"
+description = "Hash-pinned vendored bundles embedding upstream git SHAs, in the repo and inside the built app"
 paths = [
-  '''FloeAgent/FloeApp/Resources/IDE/vendor/codeblitz\.global-with-react\.min\.js''',
-  '''FloeAgent/FloeApp/Resources/EngineeringViewers/mesh\.js''',
+  '''codeblitz\.global-with-react\.min\.js''',
+  '''(^|/)mesh\.js''',
 ]

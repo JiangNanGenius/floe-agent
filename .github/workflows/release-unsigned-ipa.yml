@@ -417,7 +417,19 @@ jobs:
           test "${{ steps.package.outputs.build }}" = "${{ steps.release.outputs.build }}"
           APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
+          # Packaging policy: the immutable tag's allowlist predates the app
+          # scan; the vendored bundles embed public upstream SHAs, so the
+          # release writes its own allowlist instead of editing the tag.
+          printf '%s\n' \
+            'title = "Floe release app scan allowlist"' \
+            '[allowlist]' \
+            'description = "Hash-pinned vendored bundles embedding upstream git SHAs"' \
+            'paths = [' \
+            "  '''codeblitz\\.global-with-react\\.min\\.js'''," \
+            "  '''(^|/)mesh\\.js'''," \
+            ']' > "$RUNNER_TEMP/app-gitleaks.toml"
           gitleaks dir "$APP_PATH" \
+            --config "$RUNNER_TEMP/app-gitleaks.toml" \
             --redact \
             --report-path release-assets/app-gitleaks-report.json
           cp sbom.spdx.json release-assets/
