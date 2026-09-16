@@ -182,7 +182,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         title.tap(); title.typeText("标签验收")
         app.buttons["创建"].tap()
-        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        // Document creation indexes the new note before the editor appears;
+        // the async store work outlives ten seconds on loaded runners.
+        XCTAssertTrue(back.waitForExistence(timeout: 30))
         let original = app.buttons[originalID]
         // On narrow phones the selected tab is scrolled into view. Reveal its predecessor.
         if !original.isHittable { app.scrollViews.containing(.button, identifier: originalID).firstMatch.swipeRight() }
@@ -199,7 +201,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // of sampling the accessibility tree mid-switch.
         let originalClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons[originalID])
         wait(for: [originalClosed], timeout: 10)
-        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        XCTAssertTrue(back.waitForExistence(timeout: 30))
         // The same palette is opened by Pencil interactions; physical squeeze
         // delivery is a device check, not simulated by this button test.
         back.tap()

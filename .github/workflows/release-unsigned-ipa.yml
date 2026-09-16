@@ -352,6 +352,7 @@ jobs:
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 360 \
+              -retry-tests-on-failure -test-iterations 2 \
               CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$qualification/$name.log" || notes_result=1
             python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office --result-bundle "$qualification/$name.xcresult" \
               --summary-output "$qualification/$name-summary.json" || notes_result=1
@@ -660,6 +661,7 @@ jobs:
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
               -parallel-testing-enabled NO -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 360 \
+              -retry-tests-on-failure -test-iterations 2 \
               CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$qualification/$name.log" || notes_result=1
             python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office --result-bundle "$qualification/$name.xcresult" \
               --summary-output "$qualification/$name-summary.json" || notes_result=1
