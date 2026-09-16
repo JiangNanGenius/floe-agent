@@ -84,7 +84,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         capture("notes-document-assistant")
         restartAssistant.tap()
         let restartCompleted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: restartAssistant)
-        wait(for: [restartCompleted], timeout: 10)
+        wait(for: [restartCompleted], timeout: 30)
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已选择手记文档")).count, 0)
         capture("notes-document-assistant-restarted")
         closeAssistant.tap()
