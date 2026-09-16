@@ -55,7 +55,9 @@ struct WorkspaceIDEView: View {
                                 guard let path = state.activePath else { return }
                                 _ = await state.insertTextForTesting(path: path, text: UIPasteboard.general.string ?? "")
                             }
-                        }.accessibilityIdentifier("workspace.ide.insertTestText")
+                        }.disabled(!state.ready)
+                        .accessibilityIdentifier("workspace.ide.insertTestText")
+                        .accessibilityValue(state.lastInsertResult ?? "")
                     }
                     Button {
                         if let path = state.activePath { preview = Preview(id: path) }

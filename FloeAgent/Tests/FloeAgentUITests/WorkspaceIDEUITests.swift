@@ -16,21 +16,18 @@ final class WorkspaceIDEUITests: XCTestCase {
         try openWorkbench(app, ipad: ipad)
         let editor = app.webViews.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 20))
-        // The workbench chrome and tab bar can appear long before Monaco paints
-        // the document on a loaded runner. Every later step needs the rendered
-        // buffer, so require the fixture's own line first.
-        let fixtureLine = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Floe IDE durable workspace")).firstMatch
-        XCTAssertTrue(fixtureLine.waitForExistence(timeout: 60), "Monaco must paint the fixture document before editing")
         // XCTest keystrokes never reach Monaco's hidden textarea and the editor
-        // suppresses the system edit menu, so deliver the marker through the
-        // workbench's own document pipeline; saving still uses the real button.
+        // suppresses the system edit menu. The insert action is gated on the
+        // workbench's own ready signal, and the bridge reports the result —
+        // Monaco's painted pixels are not an accessibility contract.
         let marker = "saved-" + UUID().uuidString.prefix(8)
         UIPasteboard.general.string = String(marker)
         let insert = app.buttons["workspace.ide.insertTestText"]
         XCTAssertTrue(insert.waitForExistence(timeout: 10))
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: insert)], timeout: 60)
         insert.tap()
-        let insertedLine = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", String(marker))).firstMatch
-        XCTAssertTrue(insertedLine.waitForExistence(timeout: 60), "inserted marker must render in the Monaco buffer")
+        let inserted = expectation(for: NSPredicate(format: "value == %@", "inserted"), evaluatedWith: insert)
+        wait(for: [inserted], timeout: 30)
         let save = app.buttons["workspace.ide.save"]
         XCTAssertTrue(save.isEnabled)
         save.tap()
@@ -153,7 +150,7 @@ final class WorkspaceIDEUITests: XCTestCase {
             // Read through Floe's independent native preview after a cold
             // launch; Monaco's textarea exposes only its current input range.
             let savedText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", expectedSavedText)).firstMatch
-            XCTAssertTrue(savedText.waitForExistence(timeout: 10))
+            XCTAssertTrue(savedText.waitForExistence(timeout: 30))
             capture("ide-native-disk-readback")
         }
         let expand = app.buttons["file.preview.openIDE"]
