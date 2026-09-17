@@ -444,6 +444,14 @@ Build 176 candidate: the document assistant uses a full-height column on wide iP
 
 Both editors remain available. If a text file changes before saving, review the combined independent edits, choose overlapping regions and optionally edit the result. Recovery drafts stay in `Recovered Edits`; another change triggers another version check. Office offers separate version previews and exports. Notes preserves conflicting changes in a separate recovery document, allowing you to keep both versions or apply the reviewed edits. Exporting a copy does not mean the original was saved. See [concurrent editing](FLOE_CONCURRENT_EDITING.md) for limits and pending qualification.
 
+### Run the current file (development candidate)
+
+In the full-screen IDE, open a code file and choose **Run**. The run panel shows the selected runtime or SSH host and the command before execution. Floe saves the editor first; unresolved conflicts or a failed save prevent running an older revision. Installed Python, Node, Shell and Lua use the local runtime. Rust, Swift, C/C++, PHP, Ruby, Go, Java and Kotlin need a configured host with the corresponding executable.
+
+Remote Run transfers and verifies only the current file, up to 1 MiB; it requires the Floe remote agent and does not copy project dependencies. Stop can cancel preparation or request cancellation of a running program. Remote process exit and cleanup are shown as unconfirmed when they cannot be observed. Closing the IDE stops its owned local run. These additions have focused code tests; full-App and real-host qualification are still pending.
+
+The Office editor also adds **Annotate** settings for color, width and transparency. **0% transparency is solid**. Settings are saved per document; deselect an existing drawing object before changing pen defaults. A pending-confirmation message means the engine has not confirmed the settings yet. Native drawing, export and save/reopen acceptance remain pending.
+
 ### Engineering file previews (development candidate)
 
 Open DXF/DWG, mesh or Gerber/drill files from workspace files or the IDE, then expand the preview. DXF/DWG offer Edit for lines, circles and text, numeric moves, undo/redo and same-format Save. Previous versions and conflicting drafts stay in `Recovered Edits`; a conflicting save never silently replaces someone else's revision. Remote CAD and other 3D/PCB formats remain read only.

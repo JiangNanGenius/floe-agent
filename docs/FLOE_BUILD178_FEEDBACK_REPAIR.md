@@ -370,6 +370,14 @@ Observed on this checkout unless a line says otherwise:
   compilation, actual SSH execution and native interaction remain pending.
   The two new Swift Testing suites are included in FloeAppTests and the cloud
   regression selection; their execution is separate from the harness result.
+- A separate PHP prototype review rejected the cached npm `php-wasm@0.1.0`
+  artifact as a shipping candidate. Its runtime reports PHP 8.4.1; the exact
+  PHP tag uses PHP License 3.01, correcting an earlier private report that read
+  the current master license. The primary-operated browser test failed during
+  module-Worker initialization with `ReferenceError: document is not defined`.
+  The passing Node-host suite does not qualify this browser path. The artifact
+  is not bundled, and browser cancellation/recovery remain unpassed. Dedicated
+  Worker compatibility and a current-patch build remain separate open work.
 - Two approved cleanup batches removed obsolete extracted applications, finished
   build caches and an unused iPhone debugging-symbol cache. The second batch
   measured 15,206,846,464 allocated bytes in selected targets and increased volume
