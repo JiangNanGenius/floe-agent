@@ -40,6 +40,7 @@ import Foundation
 import SwiftUI
 import FloeCore
 import FloeExecution
+import FloeGit
 import FloeSSH
 import FloeTools
 import FloeWorkspace
@@ -277,12 +278,17 @@ final class IDELanguageRunController: ObservableObject {
     }
 
     private func rebuildGitHubActionsPreview() {
-        guard let root, let path = state?.activePath, !path.isEmpty else {
+        // The file service is created only while a workspace root is open, so
+        // its absence is the same "no preview yet" state as a missing root.
+        guard let root,
+              center.currentWorkspace?.id == workspaceID, center.currentRootURL == root,
+              let path = state?.activePath, !path.isEmpty,
+              let fileService = center.fileService else {
             gitHubActionsPreview = nil
             return
         }
         gitHubActionsPreview = gitHubActions.buildSnapshotPreview(
-            root: root, activePath: path, fileService: center.fileService
+            root: root, activePath: path, fileService: fileService
         )
     }
 
@@ -568,7 +574,11 @@ final class IDELanguageRunController: ObservableObject {
         _ plan: IDEGitHubActionsRunPlan,
         attempt: IDELanguageRunAttempt
     ) async {
-        guard let root, let state else { status = .workspaceChanged; return }
+        guard let root, let state,
+              center.currentWorkspace?.id == workspaceID, center.currentRootURL == root else {
+            status = .workspaceChanged
+            return
+        }
         guard isCurrent(attempt), !isStopRequested(attempt) else { return }
         guard let workflowPath = plan.workflowPath, !workflowPath.isEmpty else {
             // The template must be installed on the default branch (or an
@@ -582,8 +592,17 @@ final class IDELanguageRunController: ObservableObject {
             return
         }
         status = .gitHubActionsPreparing
+        guard let fileService = center.fileService else {
+            status = .gitHubActionsFailed(
+                IDELanguageRunText.t(
+                    "当前工作区文件服务不可用，无法发布云端快照。",
+                    "The workspace file service is unavailable, so the cloud snapshot cannot be published."
+                )
+            )
+            return
+        }
         let preview = gitHubActions.buildSnapshotPreview(
-            root: root, activePath: state.activePath ?? "", fileService: center.fileService
+            root: root, activePath: state.activePath ?? "", fileService: fileService
         )
         gitHubActionsPreview = preview
         guard let preview else {
@@ -597,7 +616,9 @@ final class IDELanguageRunController: ObservableObject {
         let record = await gitHubActions.dispatch(
             plan: plan, manifest: preview.manifest,
             workspaceRoot: root, workspaceID: workspaceID,
-            environmentID: center.currentWorkspace?.environmentID,
+            // GitHub owns execution; workspaceID/root retain local ownership
+            // without creating or guessing a local runtime environment.
+            environmentID: nil,
             requestID: requestID
         )
         guard isCurrent(attempt) else { return }

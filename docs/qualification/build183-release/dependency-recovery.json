@@ -1,0 +1,24 @@
+{
+  "policyCommit": "fa1c0537",
+  "checks": {
+    "releaseScriptRegression": {
+      "tests": 186,
+      "failed": 0,
+      "includesNewHelperTests": 38
+    },
+    "bashSyntax": "passed",
+    "shellcheck": "passed",
+    "actionlint": "passed",
+    "realCommittedLockFixture": "Equivalent metadata/schema accepted; revision drift refused; fake Xcode transport"
+  },
+  "sourceFileSHA256": {
+    "FloeAgent/scripts/resolve_xcode_dependencies.sh": "a43f50c0cb13699ad94a56a35440a622f529df931718551dd0277d0614115230",
+    "FloeAgent/scripts/tests/test_resolve_xcode_dependencies.py": "01e73eab1f51ffff4d313e02bb963d6f56ccd5602dcf2c78d94d5b04b1667763",
+    ".github/workflows/release-unsigned-ipa.yml": "c55b287de3ce0b2e11eac39991fc460b8fe179a10f5c76043ebf0c3a9f4dbbd9"
+  },
+  "limitations": [
+    "No real local Xcode package resolution or App build.",
+    "Real SDK26/27 resolution and App gates require the cloud run.",
+    "Pinned versions do not imply fully offline operation."
+  ]
+}

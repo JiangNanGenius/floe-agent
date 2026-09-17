@@ -1,0 +1,19 @@
+{
+  "candidate": "1.7.0 (183)",
+  "checks": {
+    "FloeGitActionsImport": "Swift 6, SDK 27, iOS26 simulator: real Actions module positive probe exit 0",
+    "IDEFilesParse": "IDEWorkbenchState.swift and IDELanguageRunView.swift parse exit 0",
+    "workspaceOwnership": "Reviewed pinned context before/after async save; added explicit workspace ID/root guards at preview and GitHub dispatch entry",
+    "unchangedActionsSources": "All four source hashes match build182 verified harness sources"
+  },
+  "workerReview": "job-81275ffb652e4e01 reached tool-step limit after read-only review; primary completed positive probe and final guards",
+  "sourceFileSHA256": {
+    "FloeAgent/FloeApp/Workspace/IDEWorkbenchState.swift": "5fbac0989f0c5692e7e6fa483b5ac192c38cd1083f55de5b0d781eb8892e0cf5",
+    "FloeAgent/FloeApp/Workspace/IDELanguageRunView.swift": "4bdb4d90812dfbad411b07b3cdd96bef9f321263be5075980e9935aac3dab6e1"
+  },
+  "limitations": [
+    "No full App typecheck or build performed locally. AppEnvironment dependency closure is not represented by stubs.",
+    "Positive probe compiles real GitHub Actions sources, not the full libgit2-backed FloeGit module.",
+    "New tag cloud compilation and App UI validation remain required."
+  ]
+}
