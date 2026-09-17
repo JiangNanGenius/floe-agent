@@ -9,12 +9,20 @@ on:
           - current
           - gpu-fix-candidate
         default: current
+      disable_compile:
+        description: Diagnostic only — disable MLX compiled traces to isolate retained weights
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       dependency_profile:
         description: Dependency pin profile (current pins or isolated GPU-fix candidate)
         type: string
         default: current
+      disable_compile:
+        description: Diagnostic only — disable MLX compiled traces to isolate retained weights
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -27,6 +35,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_27_beta_6.app/Contents/Developer
       DEPENDENCY_PROFILE: ${{ inputs.dependency_profile || 'current' }}
+      DISABLE_COMPILE: ${{ inputs.disable_compile && 'true' || 'false' }}
     defaults:
       run:
         working-directory: FloeAgent
@@ -39,6 +48,7 @@ jobs:
           mkdir -p "$EVIDENCE"
           git rev-parse HEAD > "$EVIDENCE/SOURCE-SHA.txt"
           printf '%s\n' "$DEPENDENCY_PROFILE" > "$EVIDENCE/dependency-profile.txt"
+          printf '%s\n' "$DISABLE_COMPILE" > "$EVIDENCE/disable-compile.txt"
           # Capture the immutable inputs before the candidate step may patch the
           # working copy, so failure recovery keeps the original lock and manifest.
           cp Package.swift "$EVIDENCE/FloeAgent-Package.swift.original"
@@ -112,6 +122,13 @@ jobs:
           test -n "$llama"
           DYLD_FRAMEWORK_PATH="$(dirname "$llama")"
           export DYLD_FRAMEWORK_PATH
+          # Isolate one runtime variable; never mutate the production model or
+          # loosen the existing generation/shutdown assertions for this probe.
+          if [ "$DISABLE_COMPILE" = true ]; then
+            export MLX_DISABLE_COMPILE=1
+          else
+            unset MLX_DISABLE_COMPILE
+          fi
           # One LocalModelStore root, one snapshot download, reused by both
           # profiles inside a single host process. Weights are never uploaded as
           # an artifact and the existing single-download behavior is preserved.
@@ -127,6 +144,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: local-inference-diagnostic-${{ inputs.dependency_profile || 'current' }}-${{ github.sha }}
+          name: local-inference-diagnostic-${{ inputs.dependency_profile || 'current' }}-${{ inputs.disable_compile && 'no-compile' || 'default' }}-${{ github.sha }}
           path: ${{ runner.temp }}/LocalInferenceEvidence/
           if-no-files-found: ignore
