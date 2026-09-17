@@ -629,6 +629,128 @@ struct IDEGitHubActionsTests {
         await h.engine.pausePolling()
     }
 
+    // MARK: - Recovered error-state clearing
+
+    /// The exact production failure: a run that was persisted
+    /// `associationPending` with the "no run carrying snapshot…" diagnostic,
+    /// then recovered by a fresh engine. The real remote now reports the run
+    /// terminal/success, so the stale association error must be cleared and the
+    /// clear must be durable.
+    @Test func freshEngineRecoveryClearsStaleAssociationErrorDurably() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-gha-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let writerStore = GitHubActionsJobStore(directory: directory)
+        var record = draft(requestID: "req-stale-error")
+        record.workflowID = 7
+        record.dispatchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        record.snapshotCommitSHA = "commit-stale"
+        record.snapshotTreeSHA = "tree-stale"
+        record.runID = 707
+        record.remoteStatus = "queued"
+        record.state = .associationPending
+        record.lastError = "The workflow was dispatched, but no run carrying snapshot commit-stale was found within the wait bound."
+        try await writerStore.save(record)
+        let recordID = record.id
+
+        let recoveredStore = GitHubActionsJobStore(directory: directory)
+        let h = makeDiskHarness(store: recoveredStore)
+        h.remote.queryRunHandler = { _, _, id, _ in
+            GitHubActionsRemoteRun(id: id, status: "completed", conclusion: "success", htmlURL: nil)
+        }
+        h.remote.triggerHandler = { _, _, _, _, _, _ in
+            throw GitHubActionsEngineError.transport("recovery must not dispatch")
+        }
+
+        await h.engine.sceneDidActivate(id: "window")
+        let cleared = await waitUntil {
+            h.published.current.contains {
+                $0.id == recordID && $0.state == .completed && $0.lastError == nil
+            }
+        }
+        #expect(cleared, "recovery published a completed record with the stale error cleared")
+        let stored = try await h.store.record(id: recordID)
+        #expect(stored?.state == .completed)
+        #expect(stored?.remoteConclusion == "success")
+        #expect(stored?.lastError == nil, "the cleared diagnostic is durable, not just in memory")
+        #expect(h.remote.triggerCount.count == 0, "recovery never re-dispatches")
+        #expect(h.errors.current.isEmpty)
+        await h.engine.pausePolling()
+    }
+
+    /// A successful non-terminal observation with no pending cancel also clears
+    /// a recovered diagnostic. The clear is a one-time change: it is saved and
+    /// published once, and the next identical poll is idle, so it cannot reset
+    /// the polling backoff forever.
+    @Test func lastErrorOnlyClearIsSavedOnceAndThenIdle() async {
+        let h = makeHarness()
+        var record = draft(requestID: "req-error-only")
+        record.runID = 333
+        record.state = .running
+        record.remoteStatus = "in_progress"
+        record.lastError = "GitHub Actions network error: connection reset"
+        h.store.seed(record)
+        h.remote.queryRunHandler = { _, _, id, _ in
+            GitHubActionsRemoteRun(id: id, status: "in_progress", conclusion: nil, htmlURL: nil)
+        }
+
+        let first = await h.engine.refreshOne(id: record.id, reason: .automatic)
+        #expect(first == .progressed, "a clear-only change is a real persisted change")
+        #expect(h.store.snapshot(id: record.id)?.lastError == nil)
+        #expect(h.published.current.last?.lastError == nil, "the cleared record was published")
+
+        let second = await h.engine.refreshOne(id: record.id, reason: .automatic)
+        #expect(second == .idle, "an unchanged follow-up poll is idle, so backoff is not reset forever")
+    }
+
+    /// A failed query must not clear an existing record diagnostic, so a real
+    /// new failure is never hidden by the success-clearing rule.
+    @Test func failedQueryDoesNotSwallowTheExistingRecordError() async {
+        let h = makeHarness()
+        var record = draft(requestID: "req-failed-query")
+        record.runID = 333
+        record.state = .running
+        record.remoteStatus = "in_progress"
+        record.lastError = "previous real failure"
+        h.store.seed(record)
+        h.remote.queryRunHandler = { _, _, _, _ in
+            throw GitHubActionsEngineError.transport("boom")
+        }
+
+        let outcome = await h.engine.refreshOne(id: record.id, reason: .automatic)
+        #expect(outcome == .failed)
+        #expect(h.store.snapshot(id: record.id)?.lastError == "previous real failure")
+        #expect(h.errors.current.contains { $0.contains("boom") }, "the new failure is surfaced")
+    }
+
+    /// A cancel pending on a non-terminal run keeps the existing semantics: the
+    /// state stays `.cancelling` (never silently flips back to `running`) and
+    /// the cancel path keeps ownership of its in-flight status note.
+    @Test func pendingCancelOnNonTerminalRunKeepsCancellingState() async {
+        let h = makeHarness()
+        var record = draft(requestID: "req-cancel-nonterminal")
+        record.runID = 444
+        record.state = .cancelling
+        record.remoteStatus = "in_progress"
+        record.cancelRequestedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        record.cancelLastAttemptAt = Date(timeIntervalSince1970: 1_700_000_000)
+        record.lastError = "Cancel requested; GitHub finalizes the run asynchronously."
+        h.store.seed(record)
+        h.remote.queryRunHandler = { _, _, id, _ in
+            GitHubActionsRemoteRun(id: id, status: "in_progress", conclusion: nil, htmlURL: nil)
+        }
+
+        let outcome = await h.engine.refreshOne(id: record.id, reason: .automatic)
+        #expect(outcome == .idle)
+        #expect(h.store.snapshot(id: record.id)?.state == .cancelling)
+        #expect(
+            h.store.snapshot(id: record.id)?.lastError
+                == "Cancel requested; GitHub finalizes the run asynchronously."
+        )
+        #expect(h.remote.cancelCount.count == 0, "the retry interval has not elapsed")
+    }
+
     // MARK: - Backoff
 
     @Test func idleBackoffGrowsAndCapsForUnchangedRun() async {

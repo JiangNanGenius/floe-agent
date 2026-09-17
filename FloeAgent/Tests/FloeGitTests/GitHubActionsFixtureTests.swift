@@ -218,6 +218,185 @@ struct GitHubActionsFixtureTests {
         #expect(match.id == 9)
     }
 
+    // MARK: - Direct returned-run association (regression for indexed list gap)
+    //
+    // GitHub's dispatch response names the run id, but the `workflow_runs`
+    // list can lag the dispatch (read-replica indexing) and omit it. These
+    // tests pin that a known returned run id is read directly, that only a
+    // legacy no-id acknowledgement falls back to the list, that the direct
+    // object is still held to the full receipt identity, and that a 404 is
+    // retried within the bound without ever dispatching again.
+
+    private func runJSON(
+        id: Int64, workflowID: Int64 = 7, sha: String = "snapshot",
+        branch: String = "floe-ide/x", event: String = "workflow_dispatch",
+        created: String = "2026-01-01T00:00:00Z",
+        status: String = "queued", conclusion: String? = nil
+    ) -> [String: Any] {
+        var value: [String: Any] = [
+            "id": id, "workflow_id": workflowID, "run_number": Int(id), "event": event,
+            "status": status, "head_sha": sha, "head_branch": branch,
+            "html_url": "https://github.com/octo/demo/actions/runs/\(id)",
+            "created_at": created
+        ]
+        if let conclusion { value["conclusion"] = conclusion }
+        return value
+    }
+
+    private func recordedPaths() -> [String] {
+        FixtureURLProtocol.requests().map { $0.url?.path ?? "" }
+    }
+
+    @Test func knownReturnedRunIDIsReadDirectlyWithoutTheList() async throws {
+        FixtureURLProtocol.prepare { request in
+            let path = request.url?.path ?? ""
+            if path == "/repos/octo/demo/actions/runs/9" {
+                return FixtureURLProtocol.Response(
+                    status: 200, headers: ["Content-Type": "application/json"],
+                    body: json(runJSON(id: 9))
+                )
+            }
+            Issue.record("unexpected request path: \(path)")
+            return FixtureURLProtocol.Response(status: 500, headers: [:], body: Data())
+        }
+        let matched = try await makeClient().associateRun(
+            receipt(baseline: [], returned: 9), token: "t", maxAttempts: 3, pollInterval: 0
+        )
+        #expect(matched.id == 9)
+        // The direct run read is the only request; the branch/event list was
+        // never needed, so an indexing gap in that list cannot fail association.
+        #expect(recordedPaths() == ["/repos/octo/demo/actions/runs/9"])
+    }
+
+    @Test func legacy204WithoutRunIDAssociatesBySnapshotList() async throws {
+        FixtureURLProtocol.prepare { request in
+            let path = request.url?.path ?? ""
+            if path == "/repos/octo/demo/actions/workflows/7/runs" {
+                return FixtureURLProtocol.Response(
+                    status: 200, headers: ["Content-Type": "application/json"],
+                    body: json(["workflow_runs": [runJSON(id: 5)]])
+                )
+            }
+            Issue.record("unexpected request path: \(path)")
+            return FixtureURLProtocol.Response(status: 500, headers: [:], body: Data())
+        }
+        let matched = try await makeClient().associateRun(
+            receipt(baseline: [], returned: nil), token: "t", maxAttempts: 1, pollInterval: 0
+        )
+        #expect(matched.id == 5)
+        #expect(recordedPaths() == ["/repos/octo/demo/actions/workflows/7/runs"])
+    }
+
+    @Test func legacy204WithEmptyListFailsClosedAfterBoundedRetries() async {
+        FixtureURLProtocol.prepare { _ in
+            FixtureURLProtocol.Response(
+                status: 200, headers: ["Content-Type": "application/json"],
+                body: json(["workflow_runs": []])
+            )
+        }
+        do {
+            _ = try await makeClient().associateRun(
+                receipt(baseline: [], returned: nil), token: "t", maxAttempts: 2, pollInterval: 0
+            )
+            Issue.record("expected associationUnresolved for an empty list")
+        } catch GitHubActionsError.associationUnresolved(let detail) {
+            #expect(detail.contains("no run carrying snapshot"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+        // Exactly the bounded number of list reads and no direct run request.
+        #expect(recordedPaths() == [
+            "/repos/octo/demo/actions/workflows/7/runs",
+            "/repos/octo/demo/actions/workflows/7/runs"
+        ])
+    }
+
+    @Test func returnedRunWithWrongIdentityIsRefusedAndNeverGuessed() async {
+        FixtureURLProtocol.prepare { request in
+            let path = request.url?.path ?? ""
+            if path == "/repos/octo/demo/actions/runs/9" {
+                // Reachable object, but somebody else's snapshot.
+                return FixtureURLProtocol.Response(
+                    status: 200, headers: ["Content-Type": "application/json"],
+                    body: json(runJSON(id: 9, sha: "another-snapshot"))
+                )
+            }
+            Issue.record("unexpected request path: \(path)")
+            return FixtureURLProtocol.Response(status: 500, headers: [:], body: Data())
+        }
+        do {
+            _ = try await makeClient().associateRun(
+                receipt(baseline: [], returned: 9), token: "t", maxAttempts: 3, pollInterval: 0
+            )
+            Issue.record("expected associationUnresolved for a mismatched returned run")
+        } catch GitHubActionsError.associationUnresolved(let detail) {
+            #expect(detail.contains("did not adopt"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+        // A deterministic identity mismatch is not retried and never lists.
+        #expect(recordedPaths() == ["/repos/octo/demo/actions/runs/9"])
+    }
+
+    @Test func returnedRun404IsBoundedRetriedAndNeverLists() async {
+        FixtureURLProtocol.prepare { request in
+            let path = request.url?.path ?? ""
+            if path == "/repos/octo/demo/actions/runs/9" {
+                return FixtureURLProtocol.Response(
+                    status: 404, headers: ["Content-Type": "application/json"],
+                    body: json(["message": "Not Found"])
+                )
+            }
+            Issue.record("unexpected request path: \(path)")
+            return FixtureURLProtocol.Response(status: 500, headers: [:], body: Data())
+        }
+        do {
+            _ = try await makeClient().associateRun(
+                receipt(baseline: [], returned: 9), token: "t", maxAttempts: 3, pollInterval: 0
+            )
+            Issue.record("expected associationUnresolved after bounded 404 retries")
+        } catch GitHubActionsError.associationUnresolved { /* expected */
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+        #expect(recordedPaths() == [
+            "/repos/octo/demo/actions/runs/9",
+            "/repos/octo/demo/actions/runs/9",
+            "/repos/octo/demo/actions/runs/9"
+        ])
+    }
+
+    @Test func returnedRunIsRefusedForEveryIdentityMismatch() async {
+        // Each case is a reachable object (correct id) that must not be adopted.
+        let cases: [(name: String, body: [String: Any], baseline: Set<Int64>)] = [
+            ("snapshot", runJSON(id: 9, sha: "other"), []),
+            ("workflow", runJSON(id: 9, workflowID: 8), []),
+            ("ref", runJSON(id: 9, branch: "main"), []),
+            ("event", runJSON(id: 9, event: "push"), []),
+            ("baseline", runJSON(id: 9), [9]),
+            ("window", runJSON(id: 9, created: "2020-01-01T00:00:00Z"), [])
+        ]
+        for testCase in cases {
+            let body = json(testCase.body)
+            FixtureURLProtocol.prepare { _ in
+                FixtureURLProtocol.Response(
+                    status: 200, headers: ["Content-Type": "application/json"], body: body
+                )
+            }
+            do {
+                _ = try await makeClient().associateRun(
+                    receipt(baseline: testCase.baseline, returned: 9),
+                    token: "t", maxAttempts: 1, pollInterval: 0
+                )
+                Issue.record("expected refusal for \(testCase.name) mismatch")
+            } catch GitHubActionsError.associationUnresolved(let detail) {
+                #expect(detail.contains("did not adopt"), "\(testCase.name): \(detail)")
+            } catch {
+                Issue.record("unexpected error for \(testCase.name): \(error)")
+            }
+        }
+    }
+
     // MARK: - Pagination
 
     @Test func paginationParsesNextAndRefusesCrossHost() {

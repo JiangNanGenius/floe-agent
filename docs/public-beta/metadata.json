@@ -58,7 +58,7 @@
     "generatedVideoSecondsUsed": 0,
     "credentialMayBeSharedWithReviewers": false,
     "credentialIncludedInMaterials": false,
-    "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 181 evidence."
+    "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 182 evidence."
   },
   "deliveredQualification": {
     "version": "1.7.0",
@@ -72,15 +72,15 @@
   },
   "candidateQualification": {
     "version": "1.7.0",
-    "build": "181",
-    "appSourceCommit": "69bb48df398afe520943356b061d2cff80139306",
-    "tag": "v1.7.0-beta.38",
-    "releaseRun": 35247156362,
-    "status": "cloud_qualification_in_progress_not_uploaded",
+    "build": "182",
+    "appSourceCommit": null,
+    "tag": "v1.7.0-beta.39",
+    "releaseRun": null,
+    "status": "source_repair_and_real_network_retest_in_progress_not_uploaded",
     "focusedEvidence": [
       "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
       "real disk store and engine recovery across two processes without redispatch",
-      "19 formal engine test cases Swift 6 typechecked; actual-source harness passed"
+      "23 formal engine test cases Swift 6 typechecked; actual-source harness passed"
     ],
     "limitations": [
       "Full-App compilation and both simulator SDK gates pending.",

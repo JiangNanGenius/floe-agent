@@ -527,10 +527,19 @@ actor GitHubActionsJobEngine {
 
     /// Applies a run observation and reports whether anything materially
     /// changed. An unchanged observation must not reset the poll backoff.
+    ///
+    /// A successful remote observation is proof the run is reachable, so a
+    /// recovered association/network diagnostic is cleared instead of being
+    /// left to look current. `lastError` is part of the compared observation so
+    /// a clear-only change is persisted; it becomes a no-op on the next poll,
+    /// which is what keeps a stale-diagnostic clear from resetting backoff
+    /// forever. While a cancel is pending on a non-terminal run the cancel path
+    /// owns the in-flight status note, and that branch is left untouched.
     private func apply(_ run: GitHubActionsRemoteRun, to record: inout GitHubActionsJobRecord) -> Bool {
         let before = Observation(
             runID: record.runID, status: record.remoteStatus,
-            conclusion: record.remoteConclusion, state: record.state, html: record.remoteHTMLURL
+            conclusion: record.remoteConclusion, state: record.state, html: record.remoteHTMLURL,
+            lastError: record.lastError
         )
         record.runID = run.id
         record.remoteStatus = run.status
@@ -538,18 +547,22 @@ actor GitHubActionsJobEngine {
         record.remoteHTMLURL = run.htmlURL
         if run.isTerminal {
             record.state = run.terminalState
-            if run.conclusion == "cancelled" { record.lastError = nil }
+            record.lastError = nil
         } else if record.cancelRequestedAt != nil {
-            // Keep the honest `.cancelling` state until GitHub finalizes.
+            // Keep the honest `.cancelling` state until GitHub finalizes. The
+            // cancel path owns the in-flight status message, so leave it alone.
             record.state = .cancelling
         } else if run.status == "in_progress" {
             record.state = .running
+            record.lastError = nil
         } else {
             record.state = .queued
+            record.lastError = nil
         }
         let after = Observation(
             runID: record.runID, status: record.remoteStatus,
-            conclusion: record.remoteConclusion, state: record.state, html: record.remoteHTMLURL
+            conclusion: record.remoteConclusion, state: record.state, html: record.remoteHTMLURL,
+            lastError: record.lastError
         )
         return before != after
     }
@@ -560,6 +573,7 @@ actor GitHubActionsJobEngine {
         let conclusion: String?
         let state: GitHubActionsJobState
         let html: String?
+        let lastError: String?
     }
 
     // MARK: Cancellation

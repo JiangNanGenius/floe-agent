@@ -26,7 +26,7 @@ SUITE_MINIMUMS = {
     "LocalShellRuntimeTests": 3,
     "LocalServiceLifecycleTests": 2,
     "LuaShellInstallTests": 1,
-    "IDEGitHubActionsTests": 19,
+    "IDEGitHubActionsTests": 23,
     "EnvironmentLanguagePackageTests": 1,
 }
 

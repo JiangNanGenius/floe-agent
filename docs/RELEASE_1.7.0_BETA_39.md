@@ -1,16 +1,12 @@
-# Floe Agent 1.7.0 (181) — beta.38 candidate
+# Floe Agent 1.7.0 (182) — beta.39 candidate
 
-**Cancelled before upload while real-network recovery findings are corrected.**
+**Preparing the corrected candidate; not uploaded.**
 
-Immutable source: `69bb48df398afe520943356b061d2cff80139306` /
-`v1.7.0-beta.38`. [Release run 35247156362](https://github.com/JiangNanGenius/floe-agent/actions/runs/35247156362)
-was cancelled before signing/upload. A genuine single-dispatch recovery check
-recovered a completed run but retained a stale association error; a known run ID
-also depended on the workflow list, whose tag filter returned no match.
-The original evidence remains; build 182 will correct these paths. Build 180 was
-cancelled before upload after real GitHub API validation found malformed query
-URLs. This candidate preserves absolute API URLs and adds regressions that
-reject the invalid relative requests previously accepted by the fixture.
+Release tag: `v1.7.0-beta.39` (source fixed when tagged). Builds 180 and 181
+were cancelled before upload after actual GitHub network checks exposed URL
+construction and recovery-status defects. Their immutable tags and original
+failures remain. This candidate includes direct, identity-checked lookup of a
+returned run ID and clears obsolete run errors after a successful observation.
 
 ## 简体中文
 
@@ -35,11 +31,14 @@ hashes, workflow lint, Notes Swift semantic checks, and the GitHub job engine/
 transport harnesses. The corrected production GitHub client also passed real
 read-only API requests, pagination and a digest-matched artifact download
 ([evidence](qualification/build181-release/github-actions/live-api.json)). The new App source has **not**
-passed cloud compilation, simulator UI tests or upload validation yet. Component
+passed cloud compilation, simulator UI tests or upload validation yet.
+The final source also passed 28 focused repair assertions, 23 engine and 25
+service formal test typechecks, plus read-only replay/recovery of a genuinely
+dispatched GitHub run ([evidence](qualification/build182-release/github-actions/verification.json)). Component
 or source checks do not establish full-App or physical-device acceptance.
 
 Build 179 / beta.36 remains immutable at `a510ea6d`; its retained unsigned IPA
-must not be relabelled as build 181. Build 178 remains the last confirmed internal
+must not be relabelled as build 182. Build 178 remains the last confirmed internal
 TestFlight release. No public Beta review has been submitted by this change.
 
 Remaining physical checks include the reported iPad local-model ordinary-chat

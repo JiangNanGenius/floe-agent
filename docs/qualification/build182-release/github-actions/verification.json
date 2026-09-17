@@ -1,0 +1,23 @@
+{
+  "candidate": "1.7.0 (182)",
+  "sourceFileSHA256": {
+    "FloeAgent/Sources/FloeGit/GitHubActionsModels.swift": "595463416c2012149ce040069f69d53662ae08719f6c03882ae08736f87a61d8",
+    "FloeAgent/Sources/FloeGit/GitHubActionsService.swift": "54557cb341111658131022167702efd561aaf650acc2635acb1a235c444ec3e6",
+    "FloeAgent/FloeApp/Workspace/GitHubActionsJobEngine.swift": "7b62a28a1db831cb780597df07d0b1c3354d1bc9a476b7aa0d8b5f3518f9e1b5",
+    "FloeAgent/FloeApp/Workspace/GitHubActionsJobStore.swift": "5b6869ea01b939c03870a6fd2b204c7d2c04e9c7cf0710564bf3d0d1f5037d8d"
+  },
+  "liveRun": 35247779223,
+  "liveRunSourceSHA": "69bb48df398afe520943356b061d2cff80139306",
+  "dispatches": 1,
+  "recoveryDispatches": 0,
+  "replay": "production client/engine/store; real network; reused immutable existing run; no new snapshot upload in this check",
+  "focusedAssertionsPassed": 28,
+  "formalEngineTests": 23,
+  "formalServiceTests": 25,
+  "formalTestsStatus": "Swift 6 semantic checks passed; full-App/cloud execution pending",
+  "limitations": [
+    "No App UI relaunch observed locally.",
+    "Immutable original build181 failure evidence retained.",
+    "No TestFlight upload from builds180/181."
+  ]
+}

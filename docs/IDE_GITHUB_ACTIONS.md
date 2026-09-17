@@ -1,6 +1,6 @@
 # IDE cloud builds / IDE 云端构建
 
-Build 181 candidate. Source and focused checks are under review; full-App cloud
+Build 182 candidate. Source and focused checks are under review; full-App cloud
 qualification and a live account dispatch are still required. This page describes
 the implemented flow, not a TestFlight availability claim.
 
@@ -58,7 +58,7 @@ cancel-before-association, retry/backoff, terminal-state preservation during an
 artifact refresh, redirect authorization handling, digest mismatch, and an
 actual GitHub run continued across App relaunch. The local state-machine and
 transport fixtures provide focused evidence; they do not replace full-App UI or
-real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_38.md)
+real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_39.md)
 for current delivery status.
 
 Observed before the build-180 tag: the production center/engine/store/policy and
@@ -87,3 +87,21 @@ store, then a separate process reconstructs the production engine and verifies
 foreground reconciliation, preserved cancellation intent, terminal persistence,
 and zero dispatch calls. The remote responses in that check are controlled
 fixtures; the separate live API check above covers real network transport.
+
+### Build 182 recovery corrections
+
+The actual client/engine/store dispatched one existing read-only workflow,
+exited, then a new process recovered run `35247779223` to success without a
+second dispatch. This exposed a list-filter delay for a known run ID and a stale
+association error still displayed after success. Build 181 was cancelled before
+upload to correct both. Build 182 queries a returned run ID directly and checks
+its workflow, commit, ref, event, baseline and creation window; 404 is retried
+within a bound. A successful run observation clears obsolete run diagnostics
+and persists that change without resetting backoff on every unchanged poll.
+
+Read-only replay of that same run returned the correct identity immediately;
+recovery of the original pending record reached success with `lastError=nil`
+and no dispatch. The focused repair harness passed 28 assertions. The formal
+App engine suite now contains 23 cases, and the service fixture suite 25;
+Swift 6 semantic checks pass. This remains production-source CLI evidence,
+not rendered App UI or TestFlight acceptance.

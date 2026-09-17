@@ -1,10 +1,10 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (178)",
-  "candidate": "1.7.0 (181), not uploaded; full release qualification pending",
+  "candidate": "1.7.0 (182), not uploaded; full release qualification pending",
   "pages": 14,
-  "sha256": "d1b533d05c408117932b9939e377252d9407785846c9f03fc8ec59bd16b8aa8e",
-  "bytes": 2761093,
+  "sha256": "b63dd0806b44fb2e6cc1c0694ac7c4dc0fd44df94d8836717facf8897dce358e",
+  "bytes": 2760019,
   "textExtractionChecked": true,
   "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout",
   "reviewStatus": "draft, external review not submitted",
@@ -33,5 +33,5 @@
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
   "latestEvidence": "IDE CI35223435570: three cases passed per device on first attempt; no build179 upload",
-  "visualReview": "All 14 rendered pages visually inspected after the candidate update; no clipping or overlap."
+  "visualReview": "14-page contact sheet checked for layout; changed pages 1, 10, 12, 13 individually inspected. No clipping or overlap. Previous full-page review retained for unchanged content."
 }

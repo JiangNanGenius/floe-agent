@@ -1,10 +1,15 @@
 # Floe 1.7 TestFlight delivery
 
-## Candidate: 1.7.0 (181)
+## Candidate: 1.7.0 (182)
+
+Preparing `v1.7.0-beta.39`; not uploaded. See [candidate record](RELEASE_1.7.0_BETA_39.md).
+
+## Cancelled candidate: 1.7.0 (181)
 
 Tagged `v1.7.0-beta.38`, source `69bb48df398afe520943356b061d2cff80139306`.
 [Run 35247156362](https://github.com/JiangNanGenius/floe-agent/actions/runs/35247156362)
-is in cloud qualification; not uploaded. See [candidate record](RELEASE_1.7.0_BETA_38.md).
+was cancelled before upload to correct stale recovery diagnostics and direct
+association of a known GitHub run. See [candidate record](RELEASE_1.7.0_BETA_38.md).
 Build 180 / `v1.7.0-beta.37`, source `5e7a609e8c289572679507cd52a49fd4a21efc9e`,
 was cancelled in [run 35244918975](https://github.com/JiangNanGenius/floe-agent/actions/runs/35244918975)
 after real-network checks found query URLs lost their domain. No signing or

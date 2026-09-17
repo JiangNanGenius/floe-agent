@@ -376,8 +376,18 @@ public struct GitHubActionsClient: Sendable {
     }
 
     /// Polls for the unique run created by `receipt`. Returns the associated
-    /// run or throws `associationUnresolved`. `maxAttempts`/`pollInterval`
-    /// keep the wait bounded; a reused run id can never be adopted.
+    /// run or throws `associationUnresolved`.
+    ///
+    /// When GitHub's dispatch response returned an explicit run id, that id is
+    /// read directly (`GET /actions/runs/{id}`) and validated against the full
+    /// receipt identity; the id is authoritative for *which* object, but a run
+    /// with the wrong workflow/snapshot/ref/event/baseline is refused. A `404`
+    /// is treated as "not visible yet" (read-replica lag) and retried within
+    /// the same bound. The workflow list endpoint is consulted only when no run
+    /// id is known (a legacy `204` acknowledgement), where the snapshot
+    /// identity selects the unique run. `maxAttempts`/`pollInterval` keep the
+    /// wait bounded; a reused run id can never be adopted, and a lost run id
+    /// never causes a second dispatch.
     public func associateRun(
         _ receipt: GitHubActionsDispatchReceipt, token: String,
         maxAttempts: Int = 10, pollInterval: TimeInterval = 3
@@ -389,14 +399,38 @@ public struct GitHubActionsClient: Sendable {
                 try await Task.sleep(for: .milliseconds(Int(max(pollInterval, 0) * 1000)))
             }
             attempt += 1
-            let candidates = try await workflowRuns(
-                owner: receipt.owner, repository: receipt.repository,
-                workflowID: receipt.workflowID, token: token,
-                branch: receipt.ref, event: "workflow_dispatch", maxPages: 1
-            )
-            switch GitHubActionsRunAssociation.select(candidates: candidates, receipt: receipt) {
-            case .success(let run): return run
-            case .failure(let failure): lastFailure = failure
+            if let returnedRunID = receipt.returnedRunID {
+                switch try await fetchReturnedRunIfVisible(
+                    receipt: receipt, runID: returnedRunID, token: token
+                ) {
+                case .visible(let run):
+                    // GitHub's returned id selects the object. The existing
+                    // selector still proves the full snapshot identity (its
+                    // returned-id branch is bypassed), so a reachable object
+                    // with the wrong identity is refused rather than adopted.
+                    guard let validated = validatedReturnedRun(run, receipt: receipt) else {
+                        throw GitHubActionsError.associationUnresolved(
+                            "GitHub returned run \(returnedRunID), but it does not carry "
+                            + "snapshot \(String(receipt.headSHA.prefix(12))) on "
+                            + "\(receipt.ref) for workflow \(receipt.workflowID); Floe did not adopt it."
+                        )
+                    }
+                    return validated
+                case .notVisible:
+                    // The run id is known but the object is briefly 404 while
+                    // GitHub catches up; retry within the bound.
+                    lastFailure = .notFound
+                }
+            } else {
+                let candidates = try await workflowRuns(
+                    owner: receipt.owner, repository: receipt.repository,
+                    workflowID: receipt.workflowID, token: token,
+                    branch: receipt.ref, event: "workflow_dispatch", maxPages: 1
+                )
+                switch GitHubActionsRunAssociation.select(candidates: candidates, receipt: receipt) {
+                case .success(let run): return run
+                case .failure(let failure): lastFailure = failure
+                }
             }
         }
         switch lastFailure {
@@ -408,6 +442,54 @@ public struct GitHubActionsClient: Sendable {
             throw GitHubActionsError.associationUnresolved(
                 "The workflow was dispatched, but no run carrying snapshot \(String(receipt.headSHA.prefix(12))) was found within the wait bound."
             )
+        }
+    }
+
+    /// Whether a directly requested run id is already readable.
+    private enum ReturnedRunVisibility {
+        case visible(GitHubActionsRun)
+        /// A `404`: the run may simply not have propagated to the read replica.
+        case notVisible
+    }
+
+    /// Reads the run GitHub named in the dispatch response. Only a `404` is
+    /// softened to `notVisible`; every other failure (auth, transport, decode)
+    /// propagates so a real problem is never mistaken for indexing lag.
+    private func fetchReturnedRunIfVisible(
+        receipt: GitHubActionsDispatchReceipt, runID: Int64, token: String
+    ) async throws -> ReturnedRunVisibility {
+        do {
+            let run = try await self.run(
+                owner: receipt.owner, repository: receipt.repository,
+                runID: runID, token: token
+            )
+            return .visible(run)
+        } catch GitHubActionsError.http(let status, _) where status == 404 {
+            return .notVisible
+        }
+    }
+
+    /// Confirms a run read directly by the id GitHub returned. The id is
+    /// authoritative for *which* object, but the run is only adopted when it
+    /// also matches this dispatch on workflow, snapshot, ref, the
+    /// `workflow_dispatch` event, the pre-dispatch baseline and the creation
+    /// window. The snapshot checks reuse the existing
+    /// `GitHubActionsRunAssociation.select` by passing the same run as the only
+    /// candidate with the returned-id branch disabled; no second dispatch and
+    /// no shared-decision API change are needed.
+    private func validatedReturnedRun(
+        _ run: GitHubActionsRun, receipt: GitHubActionsDispatchReceipt
+    ) -> GitHubActionsRun? {
+        guard run.id == receipt.returnedRunID, run.event == "workflow_dispatch" else { return nil }
+        let snapshotReceipt = GitHubActionsDispatchReceipt(
+            owner: receipt.owner, repository: receipt.repository,
+            workflowID: receipt.workflowID, ref: receipt.ref, headSHA: receipt.headSHA,
+            dispatchedAt: receipt.dispatchedAt, baselineRunIDs: receipt.baselineRunIDs,
+            returnedRunID: nil
+        )
+        switch GitHubActionsRunAssociation.select(candidates: [run], receipt: snapshotReceipt) {
+        case .success(let match): return match
+        case .failure: return nil
         }
     }
 
