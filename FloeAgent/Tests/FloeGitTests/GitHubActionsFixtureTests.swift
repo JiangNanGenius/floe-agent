@@ -562,9 +562,12 @@ struct GitHubActionsFixtureTests {
             ]))
         }
         _ = try await makeClient().run(owner: "octo", repository: "demo", runID: 11, token: "t")
-        let url = try #require(FixtureURLProtocol.requests().last?.url)
+        let request = try #require(FixtureURLProtocol.requests().last)
+        let url = try #require(request.url)
         #expect(expectGitHubOrigin(url, path: "/repos/octo/demo/actions/runs/11"))
         #expect(url.query == nil)
+        #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(request.value(forHTTPHeaderField: "Cache-Control") == "no-cache")
     }
 
     @Test func jobsQueryKeepsAPIGitHubOriginAndQuery() async throws {

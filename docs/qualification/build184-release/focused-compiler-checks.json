@@ -1,0 +1,26 @@
+{
+  "candidate": "1.7.0 (184)",
+  "toolchain": "Xcode beta, SDK 27, arm64 iOS 26 simulator, Swift 6 strict concurrency complete",
+  "checks": {
+    "CADBridgeBefore": "typecheck passed but mandatory SIL reproduced both Build 183 transfer errors",
+    "CADBridgeAfter": "actual renderer with narrow Workspace/preview dependency shims passes SIL and object emission",
+    "ActionsSourcesAndTests": "real Actions sources, engine/store/policy subset, 25 fixture tests and 23 IDE tests pass SIL and object emission; tests compiled, not executed in this check",
+    "requestFreshness": "current production request and fixture assertion include reloadIgnoringLocalCacheData and Cache-Control: no-cache"
+  },
+  "sourceFileSHA256": {
+    "FloeAgent/FloeApp/Notes/NotesEngineeringCoverRenderer.swift": "cce3cdae545015ef2771cfac909b3e8e85e9f15d744bd809f063f53bf179f7a3",
+    "FloeAgent/Sources/FloeGit/GitHubActionsService.swift": "2df32ea3ef4ce2daebce0544a7d8b0598bd197aa57bc1595c68970f7b5b02fb2",
+    "FloeAgent/Tests/FloeGitTests/GitHubActionsFixtureTests.swift": "24131acb671dbf590856aabe4adbf149c3ab8ad668d83f8ca0bc6aeed46ea63c",
+    "FloeAgent/FloeApp/Workspace/GitHubActionsJobEngine.swift": "7b62a28a1db831cb780597df07d0b1c3354d1bc9a476b7aa0d8b5f3518f9e1b5",
+    "FloeAgent/Tests/FloeAgentUITests/IDEGitHubActionsTests.swift": "5d4702d25a529aca8660d9bceae19ac8350fb396e8e8c45206c23dd8b9419718"
+  },
+  "workerJobs": [
+    "job-bb6de56ae87f4903",
+    "job-2aa549fab66f4308"
+  ],
+  "limitations": [
+    "No full App build or native UI acceptance locally.",
+    "LocalServiceLifecycleTests and LuaShellInstallTests could not import stale App module because GRDBSQLite dependency closure is missing; current cloud App host required.",
+    "App runtime, real content thumbnails, TestFlight upload and availability remain cloud delivery gates."
+  ]
+}

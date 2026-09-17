@@ -349,11 +349,22 @@ final class NotesEngineeringCoverRenderer: NSObject {
 
     // MARK: - Read-only JS bridge
 
+    /// Sendable snapshot of the read-only JS bridge reply. The viewer returns
+    /// `{ok, dataURL?, error?}`. `callAsyncJavaScript` hands back a decoded
+    /// Foundation object (`Any`) on the main actor; copying the fields the
+    /// renderer actually consumes into a value type here keeps non-Sendable
+    /// `Any` from being sent across the checked-continuation/Task boundary.
+    private struct BridgePayload: Sendable {
+        var ok: Bool
+        var dataURL: String?
+        var error: String?
+    }
+
     private static func runBridge(on web: WKWebView, packageJSON: String, size: CGSize,
-                                  timeout: Duration) async throws -> Any? {
+                                  timeout: Duration) async throws -> BridgePayload {
         let state = BridgeState()
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<BridgePayload, Error>) in
                 // Attach before starting the JS: if cancellation already won,
                 // `attach` resumes immediately and no request is started.
                 guard state.attach(continuation) else { return }
@@ -363,9 +374,11 @@ final class NotesEngineeringCoverRenderer: NSObject {
                     in: nil,
                     in: .page
                 ) { result in
-                    // The completion handler is already main-actor isolated.
+                    // The completion handler is already main-actor isolated, so
+                    // the raw `Any` never leaves this actor: it is normalized to
+                    // a Sendable payload before reaching `BridgeState`.
                     switch result {
-                    case .success(let value): state.finish(.success(value))
+                    case .success(let value): state.finish(.success(Self.payload(from: value)))
                     case .failure(let error): state.finish(.failure(error))
                     }
                 }
@@ -382,14 +395,24 @@ final class NotesEngineeringCoverRenderer: NSObject {
         }
     }
 
-    private static func decode(_ result: Any?) throws -> Outcome {
-        guard let dictionary = result as? [String: Any],
-              (dictionary["ok"] as? Bool) == true,
-              let dataURL = dictionary["dataURL"] as? String,
+    /// Normalizes the JS reply into the precise Sendable shape the renderer
+    /// consumes. A reply that is not the expected object becomes `ok == false`,
+    /// which `decode` rejects with the same diagnosis as before.
+    private static func payload(from value: Any?) -> BridgePayload {
+        guard let dictionary = value as? [String: Any] else {
+            return BridgePayload(ok: false, dataURL: nil, error: nil)
+        }
+        return BridgePayload(ok: (dictionary["ok"] as? Bool) ?? false,
+                             dataURL: dictionary["dataURL"] as? String,
+                             error: dictionary["error"] as? String)
+    }
+
+    private static func decode(_ payload: BridgePayload) throws -> Outcome {
+        guard payload.ok,
+              let dataURL = payload.dataURL,
               dataURL.hasPrefix("data:image/png;base64,"),
               dataURL.utf8.count <= 16 * 1024 * 1024 else {
-            let reason = (result as? [String: Any])?["error"] as? String
-            throw CoverError.bridgeRejected(reason ?? "unusable render result")
+            throw CoverError.bridgeRejected(payload.error ?? "unusable render result")
         }
         let base64 = String(dataURL.dropFirst("data:image/png;base64,".count))
         guard let data = Data(base64Encoded: base64), let image = UIImage(data: data),
@@ -467,12 +490,12 @@ final class NotesEngineeringCoverRenderer: NSObject {
     /// timeout task is always cancelled once the bridge settles.
     @MainActor
     private final class BridgeState {
-        private var continuation: CheckedContinuation<Any?, Error>?
-        private var pending: Result<Any?, Error>?
+        private var continuation: CheckedContinuation<BridgePayload, Error>?
+        private var pending: Result<BridgePayload, Error>?
         private var finished = false
         var timeoutTask: Task<Void, Never>?
 
-        func attach(_ continuation: CheckedContinuation<Any?, Error>) -> Bool {
+        func attach(_ continuation: CheckedContinuation<BridgePayload, Error>) -> Bool {
             guard !finished else {
                 continuation.resume(with: pending ?? .failure(CoverError.timedOut))
                 return false
@@ -481,7 +504,7 @@ final class NotesEngineeringCoverRenderer: NSObject {
             return true
         }
 
-        func finish(_ result: Result<Any?, Error>) {
+        func finish(_ result: Result<BridgePayload, Error>) {
             guard !finished else { return }
             finished = true
             pending = result

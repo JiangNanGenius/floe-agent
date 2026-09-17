@@ -40,6 +40,7 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 - `FloeAgent/project.yml` is the source of truth. After changing targets, resources, schemes, build settings or versions, regenerate with `bash FloeAgent/scripts/gen_project.sh` and commit the matching Xcode project. Verify all app/extension build numbers before starting an expensive release run.
 - Preserve pinned revisions and hashes. `--check` commands must be read-only; do not rewrite a lock to make verification pass. Run SwiftPM commands sharing a scratch directory sequentially.
 - Select checks from [the engineering guide](FloeAgent/README.md), [build and acceptance](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md), or the relevant qualification host README. Do not run the entire test matrix for a documentation change. Do not silently weaken a failing assertion or treat an unchanged retry as proof the original failure was harmless.
+- Swift 6 concurrency fixes need mandatory SIL/object compilation or the cloud App build; `-typecheck` alone can miss transfer diagnostics.
 - Record source SHA, toolchain, target, command, actual result and limitations. Retain original failures and suitable screenshots. Label simulator, component-host and full-App evidence accurately; use synthetic/redacted fixtures in public docs. Physical-device acceptance belongs to the user when so assigned.
 
 ## Release and recovery

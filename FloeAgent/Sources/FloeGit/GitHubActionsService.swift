@@ -72,7 +72,10 @@ public struct GitHubActionsClient: Sendable {
         _ url: URL, method: String, token: String, body: Data?, accept: String,
         apiVersion: String
     ) -> URLRequest {
-        var request = URLRequest(url: url)
+        // Foreground recovery must revalidate the remote run instead of
+        // replaying URLSession's shared response cache.
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.httpMethod = method
         request.httpBody = body
         request.timeoutInterval = 30
