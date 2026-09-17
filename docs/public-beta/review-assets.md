@@ -12,9 +12,11 @@ These assets are prepared as references, not evidence that the next build has pa
 
 These are unedited build 172 SDK 27 full-App simulator images using synthetic fixtures. They must not be labeled as the next submitted build or physical Pencil Pro evidence. Retake changed screens after the next build is frozen. UI test success is separate from physical-device acceptance.
 
+The latest available [full-App Notes captures](../qualification/build178-feedback/full-app-955e346a/README.md) are from source `955e346a` on iPad and iPhone simulators. [CAD layout captures and DWG readback](../qualification/build178-feedback/cad-layout/README.md) use source `3eecf735` in a browser qualification host, not the native App. Both retain their exact source and limitations.
+
 ## Complete walkthrough
 
-The [13-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, IDE/CAD review, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes delivered build 172 from the build 177 candidate and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
+The [13-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, IDE/CAD review, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes the delivered build 178 baseline from the build 179 candidate and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
 
 ## Prepared sample
 
@@ -33,6 +35,6 @@ Invitation screenshots in TestFlight may be drawn from the app's latest approved
 
 [Original candidate screenshots and source hashes](../evidence/floe-1.7/build172-repair/notes-83cbc383/README.md) show the document assistant without an internal opening message. An approximately 79-second iPad screen-recording cut with selectable Chinese subtitles is retained privately. It demonstrates actual import, assistant opening, brush controls, tabs and search from source `83cbc383`; it contains no generated AI answers and is not the final candidate review video. No paid provider call was used.
 
-The real Ark DeepSeek App recording on source `431e281d` created Markdown but failed before reading it back. It remains private failure evidence. A bounded stream diagnostic reproduced the empty-ID overwrite; [old/new replay evidence](../evidence/floe-1.7/build172-repair/ark-tool-identity-replay.json) supports the build 175 repair. A successful final-source App recording is still required.
+The real Ark DeepSeek App recording on source `431e281d` created Markdown but failed before reading it back. It remains private failure evidence. A bounded stream diagnostic reproduced the empty-ID overwrite; [old/new replay evidence](../evidence/floe-1.7/build172-repair/ark-tool-identity-replay.json) supports the build 175 repair. The successful build 175 recording below closes that earlier tool-call demonstration; it does not establish the next submitted build's qualification.
 
 A successful [Build 175 real Agent video and evidence](agent-demo-build175/README.md) now records actual Ark DeepSeek file creation and readback. This is explicitly earlier-source ordinary Agent evidence; the later Notes UI and final release qualification remain separate. The temporary credential was deleted after recording.

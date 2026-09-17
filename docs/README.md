@@ -6,11 +6,13 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-1.7.0（172）已交付 Floe QA 内部 TestFlight，处理与可安装状态已验证。完整包/模型交付仍有未完成项；真机验收由用户安装后执行，正式发布另行安排。历史发布、研究和测试记录保留原有日期与结论。
+1.7.0（178）为上一版内部 TestFlight 交付基线；179 正在进行修复验证，尚未上传。完整包/模型交付仍有未完成项；真机验收由用户安装后执行，正式发布另行安排。历史发布、研究和测试记录保留原有日期与结论。
 
 | 文档 | 阅读目的 |
 |---|---|
-| [172 反馈修复与 177 验证](FLOE_172_REPAIR_EXECUTION.md) | 本次运行环境、手记助手、测试失败与分发状态 |
+| [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
+| [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 本轮改动、已验证范围与发布状态 |
+| [当前手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
 | [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 本轮改动与分发前剩余工作 |
 | [本轮继续实施状态](FLOE_1_7_CONTINUATION_STATUS.md) | 手记、Office、Whisper 与剩余验收事实 |
 | [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md) | 已验证路径、固定提交和剩余门槛 |
@@ -82,11 +84,11 @@
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
-177 修复候选尚未交付；已交付版本仍为 172。旧版本说明和候选记录保留历史状态。
+179 修复候选尚未交付；上一版交付基线为 178。旧版本说明和候选记录保留历史状态。
 
 - [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。
 
 - [Engineering viewers: format matrix, offline architecture and qualification](FLOE_ENGINEERING_VIEWERS.md)
 
-- [Build 177 candidate](RELEASE_NOTES_1.7.0_BUILD_177.md): live personalization, drawing review entry, CAD/IDE and UI qualification fixes; upload pending.
+- [Build 177 historical candidate record](RELEASE_NOTES_1.7.0_BUILD_177.md): earlier personalization, CAD/IDE and UI qualification work; its recorded status is historical.
 - [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.

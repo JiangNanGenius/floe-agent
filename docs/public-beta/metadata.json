@@ -58,9 +58,9 @@
   "generatedVideoSecondsUsed": 0,
   "credentialMayBeSharedWithReviewers": false,
   "credentialIncludedInMaterials": false,
-  "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 178 evidence."
+  "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 179 evidence."
  },
- "candidateQualification": {
+ "deliveredQualification": {
   "version": "1.7.0",
   "build": "178",
   "sourceCommit": "32acddd41f0f5735ac7f1cec2eb14feb1da28623",
@@ -69,5 +69,16 @@
   "testflightBuildID": "6e8cd002-e620-438a-ad10-c87c2bf33f27",
   "availabilityRun": 35121747998,
   "status": "uploaded_valid_internal_floe_qa_in_beta_testing"
+ },
+ "candidateQualification": {
+  "version": "1.7.0",
+  "build": "179",
+  "appSourceCommit": "a22e8c3e24976a1342a80c3439aa15b9a696a5bc",
+  "ideCIRun": 35212766190,
+  "status": "validation_in_progress_not_uploaded",
+  "limitations": [
+   "Native iPad ordinary-chat local-model crash acceptance remains pending.",
+   "The build 175 Agent recording is earlier-source demonstration evidence."
+  ]
  }
 }
