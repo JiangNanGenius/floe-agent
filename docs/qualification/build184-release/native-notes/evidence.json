@@ -1,0 +1,84 @@
+{
+  "sourceCommit": "8e0cf69f6387333e768b90d56372e587eb297375",
+  "run": 35287879287,
+  "target": "NativeNotes component host, SDK27, iPad Air 13-inch (M4) simulator",
+  "result": "failure",
+  "passed": 70,
+  "failed": 2,
+  "skipped": 0,
+  "iPhone": "not reached after iPad failure",
+  "failures": [
+    {
+      "failureText": "failed - Bundled map did not render the native document",
+      "targetName": "NativeNotesTests",
+      "testIdentifier": 1,
+      "testIdentifierString": "NativeNotesTests/testBundledMindMapRendersDocumentTextWithoutInterpretingMarkup()",
+      "testIdentifierURL": "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NativeNotesTests/testBundledMindMapRendersDocumentTextWithoutInterpretingMarkup",
+      "testName": "testBundledMindMapRendersDocumentTextWithoutInterpretingMarkup()"
+    },
+    {
+      "failureText": "XCTAssertEqual failed: (\"unsupported\") is not equal to (\"engineeringPreview\") - sample-plate.dxf must come from the bundled viewer, not unsupported (Could not render a preview; open the drawing)",
+      "targetName": "NativeNotesTests",
+      "testIdentifier": 34,
+      "testIdentifierString": "NotesOfficeThumbnailTests/testCoverServiceRendersDxfAndDwgThroughBundledViewer()",
+      "testIdentifierURL": "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NotesOfficeThumbnailTests/testCoverServiceRendersDxfAndDwgThroughBundledViewer",
+      "testName": "testCoverServiceRendersDxfAndDwgThroughBundledViewer()"
+    }
+  ],
+  "logSHA256": "c2dc02209451eb16cf20e41ddf78867deca136b061582677ac3f09a33e40a51e",
+  "screenshots": [
+    {
+      "file": "testOffscreenRendererPaintsRealDwgGeometry.png",
+      "test": "NotesOfficeThumbnailTests/testOffscreenRendererPaintsRealDwgGeometry()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "48453f0139ea9397a377fe7635aac520e399c67471f87373a0e78ed5a4881bdd"
+    },
+    {
+      "file": "testOffscreenRendererPaintsRealDxfGeometry.png",
+      "test": "NotesOfficeThumbnailTests/testOffscreenRendererPaintsRealDxfGeometry()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "35da0d2f863a518b1a7f83e8e379ce4c389f84e59a2e63f1e8c0d128d1cbfe0d"
+    },
+    {
+      "file": "testQuickLookRendersExcelBudgetForecast.png",
+      "test": "NotesOfficeThumbnailTests/testQuickLookRendersExcelBudgetForecast()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "127eb80782c9906c358ccc445eaa8d89bef9277f6376cec12870d5c85a89ae38"
+    },
+    {
+      "file": "testQuickLookRendersExcelQuarterlySummary.png",
+      "test": "NotesOfficeThumbnailTests/testQuickLookRendersExcelQuarterlySummary()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "127eb80782c9906c358ccc445eaa8d89bef9277f6376cec12870d5c85a89ae38"
+    },
+    {
+      "file": "testQuickLookRendersPowerPointDesignReview.png",
+      "test": "NotesOfficeThumbnailTests/testQuickLookRendersPowerPointDesignReview()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "9d7de756c9d2f271a56daa105bc59f68c246667064a136ab294d792ff9b51b78"
+    },
+    {
+      "file": "testQuickLookRendersPowerPointProductRoadmap.png",
+      "test": "NotesOfficeThumbnailTests/testQuickLookRendersPowerPointProductRoadmap()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "006d66768187a3a041c54a3c6a616553263acf2d67cb3b33276518ece1a9f617"
+    },
+    {
+      "file": "testQuickLookRendersWordBusinessWeekly.png",
+      "test": "NotesOfficeThumbnailTests/testQuickLookRendersWordBusinessWeekly()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "7e8fd9810489995e88c4d4559ce63dad9f041338a8df60c9aec24121d07f9398"
+    },
+    {
+      "file": "testQuickLookRendersWordMeetingNotes.png",
+      "test": "NotesOfficeThumbnailTests/testQuickLookRendersWordMeetingNotes()",
+      "device": "iPad Air 13-inch (M4)",
+      "sha256": "b94d7677a8ce9aa1298aafba0f08b5db22accacbaa3a464bb0602f82bdca1e1d"
+    }
+  ],
+  "limitations": [
+    "Component-host captures are not the full App library grid.",
+    "Successful direct CAD rendering does not clear the failed cover-service call.",
+    "Do not claim complete NativeNotes acceptance."
+  ]
+}
