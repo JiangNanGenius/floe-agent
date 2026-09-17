@@ -12,6 +12,13 @@ import time
 import uuid
 
 
+# Host processes worth a stack sample when a test run goes quiet. The SwiftPM
+# legs stall inside test bundles; the prebuilt xctestrun UI legs stall inside
+# xcodebuild itself (destination resolution / simulator install), so sampling
+# only bundle processes used to capture nothing at all for those legs.
+SAMPLED_PROCESS_MARKERS = ("swiftpm-testing", "PackageTests", "xcodebuild", "xctest")
+
+
 def sample_children(parent, destination):
     if sys.platform != "darwin":
         return
@@ -30,7 +37,7 @@ def sample_children(parent, destination):
     for row in processes:
         if len(row) != 3 or int(row[0]) not in owned:
             continue
-        if "swiftpm-testing" not in row[2] and "PackageTests" not in row[2]:
+        if not any(marker in row[2] for marker in SAMPLED_PROCESS_MARKERS):
             continue
         if sampled == 4:
             break
@@ -72,12 +79,24 @@ def sample_simulator(identifier, destination):
             fields = row.strip().split(None, 1)
             if len(fields) != 2 or marker not in fields[1]:
                 continue
+            # Only this run's App and its UI-test runner may be sampled; other
+            # simulator-hosted system processes are not ours to inspect.
             if not any(name in fields[1] for name in ("Floe Agent.app/", "FloeAgentUITests-Runner.app/")):
                 continue
-            subprocess.run(["sample", fields[0], "3", "-file", str(destination / f"simulator-sample-{fields[0]}.txt")],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        subprocess.run(["xcrun", "simctl", "io", identifier, "screenshot", str(destination / "simulator-stalled.png")],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            try:
+                subprocess.run(
+                    ["sample", fields[0], "3", "-file", str(destination / f"simulator-sample-{fields[0]}.txt")],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # The app may exit while the process list is being sampled.
+        # A failed screenshot must not vanish silently: run 35216642942 lost
+        # this evidence entirely, hiding whether the device was even booted.
+        shot = subprocess.run(["xcrun", "simctl", "io", identifier, "screenshot", str(destination / "simulator-stalled.png")],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=15)
+        if shot.returncode != 0:
+            (destination / "simulator-screenshot-error.txt").write_text(
+                shot.stderr or f"simctl io screenshot exited {shot.returncode}\n")
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -86,19 +105,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=900)
-    parser.add_argument("--stall-timeout", type=float, default=180)
+    parser.add_argument("--stall-timeout", type=float, default=180,
+                        help="Bounded quiet deadline once tests have started")
+    parser.add_argument("--startup-stall-timeout", type=float, default=None,
+                        help="Bounded quiet deadline before the first test starts; "
+                             "defaults to --stall-timeout")
     parser.add_argument("--simulator-id", type=lambda value: str(uuid.UUID(value)).upper())
     parser.add_argument("--defer-stall-until-tests", action="store_true",
                         help="Allow a combined xcodebuild compile phase before applying the quiet-test deadline")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if not command or any(not math.isfinite(v) or v <= 0 for v in [args.timeout, args.stall_timeout]):
+    startup_stall = args.startup_stall_timeout if args.startup_stall_timeout is not None else args.stall_timeout
+    if not command or any(not math.isfinite(v) or v <= 0 for v in [args.timeout, args.stall_timeout, startup_stall]):
         parser.error("a command and positive finite time limits are required")
     args.output_dir.mkdir(parents=True, exist_ok=False)
     path = args.output_dir / "tests.log"
     start = last_output = time.monotonic()
-    seen_tests = sampled = False
+    seen_tests = False
+    sampled_phase = None
     # A prebuilt xctestrun has no compile stage. Its launch can stall before
     # XCTest emits the first test, which still needs bounded diagnostics.
     execution_ready = args.simulator_id is not None and not args.defer_stall_until_tests
@@ -112,7 +137,13 @@ def main():
                 if data:
                     sys.stdout.buffer.write(data)
                     sys.stdout.buffer.flush()
-                    seen_tests |= any(marker in previous + data for marker in (b"Test run started", b"Test Suite ", b"Test Case "))
+                    first_test_seen = any(marker in previous + data for marker in (b"Test run started", b"Test Suite ", b"Test Case "))
+                    if first_test_seen and not seen_tests:
+                        # The startup deadline and the test-quiet deadline are
+                        # separate bounds; a new phase may capture its own
+                        # sample instead of reusing the startup one.
+                        sampled_phase = None
+                    seen_tests |= first_test_seen
                     execution_ready |= seen_tests or b"Build complete!" in previous + data
                     previous = data[-128:]
                     last_output = time.monotonic()
@@ -122,12 +153,17 @@ def main():
                     sys.stdout.buffer.flush()
                     break
                 now = time.monotonic()
-                if execution_ready and not sampled and now - last_output >= args.stall_timeout / 2:
+                # Startup stays bounded but generous (destination resolution and
+                # simulator install can be silently slow); once a test starts,
+                # the original tighter quiet deadline applies again.
+                quiet_phase = "tests" if seen_tests else "startup"
+                quiet_limit = args.stall_timeout if seen_tests else startup_stall
+                if execution_ready and sampled_phase != quiet_phase and now - last_output >= quiet_limit / 2:
                     print("\nTest output stalled; capturing owned test processes.", flush=True)
                     sample_children(process.pid, args.output_dir)
                     sample_simulator(args.simulator_id, args.output_dir)
-                    sampled = True
-                if now - start >= args.timeout or (execution_ready and now - last_output >= args.stall_timeout):
+                    sampled_phase = quiet_phase
+                if now - start >= args.timeout or (execution_ready and now - last_output >= quiet_limit):
                     reason = "timeout" if now - start >= args.timeout else "stalled"
                     if args.simulator_id:
                         # Give xcodebuild a chance to finish its xcresult before

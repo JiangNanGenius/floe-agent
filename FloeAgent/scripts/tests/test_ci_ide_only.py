@@ -10,6 +10,10 @@ phase still runs against a freshly built xctestrun (never a reused simulator
 ambiguous input combination fails fast instead of being silently ignored.
 """
 from pathlib import Path
+import os
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parents[3] / '.github' / 'workflows' / 'ci.yml'
@@ -27,6 +31,34 @@ class CiIdeOnlyTests(unittest.TestCase):
         cls.ide_step = cls.build_test.split(
             '- name: Verify IDE native saves and retain workbench screenshots', 1)[1] \
             .split('- name: Preserve simulator app', 1)[0]
+
+    def test_successful_app_test_loop_reaches_strict_result_verifier(self):
+        # Execute the real shell loop with a controlled test driver. A successful
+        # test command must not exit the step before its xcresult is verified.
+        phase = self.build_test.split('- name: Run Canvas, PiP, timeline and execution regressions', 1)[1].split('- name:', 1)[0]
+        run = textwrap.dedent(phase.split('        run: |', 1)[1])
+        run = run[run.index('attempt=1'):]
+        with tempfile.TemporaryDirectory() as root:
+            script = r'''
+set -e -o pipefail
+python3() {
+  case "$1" in
+    scripts/run_test_with_diagnostics.py) return "$FAKE_TEST_CODE" ;;
+    scripts/verify_app_regression_xcresult.py) touch "$VERIFIER_MARKER"; return 7 ;;
+    *) return 99 ;;
+  esac
+}
+''' + run
+            marker = Path(root) / 'verified'
+            env = dict(os.environ, RUNNER_TEMP=root, VERIFIER_MARKER=str(marker), FAKE_TEST_CODE='0')
+            result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertTrue(marker.exists(), result.stderr)
+            self.assertEqual(result.returncode, 7, 'Verifier failure must fail the step')
+            marker.unlink()
+            env['FAKE_TEST_CODE'] = '65'
+            result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 65)
+            self.assertFalse(marker.exists(), 'Failed test execution must not be reported as verified')
 
     def test_ide_only_input_is_explicit_and_defaults_off(self):
         lines = self.source.splitlines()

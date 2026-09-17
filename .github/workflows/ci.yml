@@ -256,6 +256,12 @@ jobs:
       - name: Install Xcode Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
+      - name: Verify test-runner recovery before compiling
+        run: |
+          python3 -m unittest discover -s scripts -p test_run_test_with_diagnostics.py
+          python3 -m unittest discover -s scripts/tests -p test_ci_ide_only.py
+          python3 -m unittest discover -s scripts/tests -p test_select_test_simulator.py
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen automake cmake
@@ -337,6 +343,29 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             build-for-testing
 
+      - name: Retain the complete compiled test host before UI execution
+        run: |
+          products="FloeAgent-AppRegressionBuild/Build/Products"
+          test -n "$(find "$products" -maxdepth 1 -name '*.xctestrun' -print -quit)"
+          test -n "$(find "$products" -type d -name 'FloeAgentUITests-Runner.app' -print -quit)"
+          archive="$RUNNER_TEMP/FloeCompiledTestHost"
+          mkdir -p "$archive"
+          tar -czf "$archive/Products.tar.gz" -C FloeAgent-AppRegressionBuild/Build Products
+          (cd "$archive" && shasum -a 256 Products.tar.gz > Products.tar.gz.sha256)
+          git rev-parse HEAD > "$archive/SOURCE-SHA.txt"
+          xcodebuild -version > "$archive/TOOLCHAIN.txt"
+          printf '%s\n' "$GITHUB_RUN_ID" > "$archive/SOURCE-RUN.txt"
+          printf '%s\n' "$GITHUB_RUN_ATTEMPT" > "$archive/SOURCE-ATTEMPT.txt"
+
+      - name: Upload recoverable compiled test host
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-test-host-${{ github.sha }}
+          path: ${{ runner.temp }}/FloeCompiledTestHost/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Run Canvas, PiP, timeline and execution regressions
         if: ${{ success() && !inputs.ide_only }}
         timeout-minutes: 20
@@ -351,9 +380,13 @@ jobs:
           attempt=1
           while true; do
             code=0
+            # The retry must not reuse the first attempt's diagnostics
+            # directory (the runner refuses an existing directory) nor its
+            # partial result bundle (xcodebuild refuses an existing path).
+            diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/app-regressions-attempt-$attempt"
             python3 scripts/run_test_with_diagnostics.py \
-              --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/app-regressions" \
-              --timeout 1020 --stall-timeout 420 --simulator-id "$test_device" -- xcodebuild \
+              --output-dir "$diag_dir" \
+              --timeout 1020 --stall-timeout 420 --startup-stall-timeout 420 --simulator-id "$test_device" -- xcodebuild \
               -xctestrun "$xctestrun" \
               -skipPackagePluginValidation \
               -skipMacroValidation \
@@ -384,15 +417,19 @@ jobs:
             # a retry can never mask an executed test's real failure.
             if [ "$code" -eq 124 ] && [ "$attempt" -eq 1 ] && \
                python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                 "$RUNNER_TEMP/SwiftTestDiagnostics/app-regressions/summary.json"; then
+                 "$diag_dir/summary.json"; then
+              if test -d FloeAgent-AppRegressionTests.xcresult; then
+                mv FloeAgent-AppRegressionTests.xcresult FloeAgent-AppRegressionTests-attempt-1.xcresult
+              fi
               attempt=2
               xcrun simctl shutdown "$test_device" || true
               xcrun simctl boot "$test_device" || true
               xcrun simctl bootstatus "$test_device" -b
               continue
             fi
-            exit "$code"
+            break
           done
+          if [ "$code" -ne 0 ]; then exit "$code"; fi
           python3 scripts/verify_app_regression_xcresult.py \
             --result-bundle FloeAgent-AppRegressionTests.xcresult
 
@@ -429,9 +466,14 @@ jobs:
             leg_attempt=1
             while true; do
               leg_code=0
+              # Per-attempt diagnostics, same rule as the IDE leg: the retry
+              # must never overwrite first-attempt evidence. The startup quiet
+              # phase is bounded at 420s while the post-test quiet deadline
+              # stays 210s; the total 660s cap is unchanged.
+              diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name-attempt-$leg_attempt"
               python3 scripts/run_test_with_diagnostics.py \
-                --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name" \
-                --timeout 660 --stall-timeout 210 --simulator-id "$test_device" -- \
+                --output-dir "$diag_dir" \
+                --timeout 660 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
                 xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
                 -destination "platform=iOS Simulator,id=$test_device" \
                 -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
@@ -440,18 +482,23 @@ jobs:
                 -parallel-testing-enabled NO -test-timeouts-enabled YES \
                 -maximum-test-execution-time-allowance 300 \
                 -retry-tests-on-failure -test-iterations 2 \
-                CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name.log" || leg_code=$?
+                CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-Notes-$name-attempt-$leg_attempt.log" || leg_code=$?
               # One retry only when the runner stalled before any test started.
               if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
                  python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                   "$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name/summary.json"; then
+                   "$diag_dir/summary.json"; then
+                # Keep any partial first-attempt bundle; xcodebuild refuses an
+                # existing -resultBundlePath, so the retry needs a clear path.
+                if test -d "FloeAgent-Notes-$name.xcresult"; then
+                  mv "FloeAgent-Notes-$name.xcresult" "FloeAgent-Notes-$name-attempt-1.xcresult"
+                fi
                 leg_attempt=2
                 kill -INT "$recording_pid" 2>/dev/null || true
                 wait "$recording_pid" || true
                 xcrun simctl shutdown "$test_device" || true
                 xcrun simctl boot "$test_device"
                 xcrun simctl bootstatus "$test_device" -b
-                xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-Notes-Recordings/$name.mp4" >> "FloeAgent-Notes-Recordings/$name.log" 2>&1 &
+                xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-Notes-Recordings/$name-attempt-$leg_attempt.mp4" >> "FloeAgent-Notes-Recordings/$name.log" 2>&1 &
                 recording_pid=$!
                 continue
               fi
@@ -461,8 +508,13 @@ jobs:
             kill -INT "$recording_pid" 2>/dev/null || true
             wait "$recording_pid" || true
             trap - EXIT
-            python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office --result-bundle "FloeAgent-Notes-$name.xcresult" \
-              --summary-output "FloeAgent-Notes-$name-summary.json" || status=1
+            if test -d "FloeAgent-Notes-$name.xcresult"; then
+              python3 scripts/verify_notes_ui_xcresult.py --simulator-without-office --result-bundle "FloeAgent-Notes-$name.xcresult" \
+                --summary-output "FloeAgent-Notes-$name-summary.json" || status=1
+            else
+              echo "FloeAgent-Notes-$name.xcresult was never produced; the leg has no verifiable result." >&2
+              status=1
+            fi
             if test -d "FloeAgent-Notes-$name.xcresult"; then
               mkdir -p "FloeAgent-Notes-Screenshots/$name"
               xcrun xcresulttool export attachments --path "FloeAgent-Notes-$name.xcresult" \
@@ -497,9 +549,17 @@ jobs:
             leg_attempt=1
             while true; do
               leg_code=0
+              # Per-attempt diagnostics: the runner refuses an existing output
+              # directory so first-attempt evidence can never be overwritten
+              # by the retry (run 35216642942 retry died on FileExistsError).
+              # A passing run also reached the startup sampling threshold.
+              # Allow a separate bounded startup margin (420s), collecting
+              # xcodebuild stacks rather than assuming a quiet launch is
+              # healthy. Tests keep their 210s quiet limit and 900s total cap.
+              diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name-attempt-$leg_attempt"
               python3 scripts/run_test_with_diagnostics.py \
-                --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name" \
-                --timeout 900 --stall-timeout 210 --simulator-id "$test_device" -- \
+                --output-dir "$diag_dir" \
+                --timeout 900 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
                 xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
                 -destination "platform=iOS Simulator,id=$test_device" \
                 -resultBundlePath "FloeAgent-IDE-$name.xcresult" \
@@ -507,11 +567,16 @@ jobs:
                 -parallel-testing-enabled NO -test-timeouts-enabled YES \
                 -maximum-test-execution-time-allowance 300 \
                 -retry-tests-on-failure -test-iterations 2 \
-                CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name.log" || leg_code=$?
+                CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name-attempt-$leg_attempt.log" || leg_code=$?
               # One retry only when the runner stalled before any test started.
               if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
                  python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                   "$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name/summary.json"; then
+                   "$diag_dir/summary.json"; then
+                # Keep any partial first-attempt bundle; xcodebuild refuses an
+                # existing -resultBundlePath, so the retry needs a clear path.
+                if test -d "FloeAgent-IDE-$name.xcresult"; then
+                  mv "FloeAgent-IDE-$name.xcresult" "FloeAgent-IDE-$name-attempt-1.xcresult"
+                fi
                 leg_attempt=2
                 xcrun simctl shutdown "$test_device" || true
                 xcrun simctl boot "$test_device"
@@ -521,8 +586,14 @@ jobs:
               [ "$leg_code" -ne 0 ] && status=1
               break
             done
-            python3 scripts/verify_ide_ui_xcresult.py --result-bundle "FloeAgent-IDE-$name.xcresult" \
-              --summary-output "FloeAgent-IDE-$name-summary.json" || status=1
+            # A missing bundle is a leg failure, not a verifier traceback.
+            if test -d "FloeAgent-IDE-$name.xcresult"; then
+              python3 scripts/verify_ide_ui_xcresult.py --result-bundle "FloeAgent-IDE-$name.xcresult" \
+                --summary-output "FloeAgent-IDE-$name-summary.json" || status=1
+            else
+              echo "FloeAgent-IDE-$name.xcresult was never produced; the leg has no verifiable result." >&2
+              status=1
+            fi
             if test -d "FloeAgent-IDE-$name.xcresult"; then
               mkdir -p "FloeAgent-IDE-Screenshots/$name"
               xcrun xcresulttool export attachments --path "FloeAgent-IDE-$name.xcresult" \
@@ -616,6 +687,7 @@ jobs:
             FloeAgent/LICENSES-THIRD-PARTY.md
             FloeAgent/.gitleaks-report.json
             FloeAgent/FloeAgent-AppRegressionTests.xcresult
+            FloeAgent/FloeAgent-AppRegressionTests-attempt-*.xcresult
             FloeAgent/FloeAgent-Notes-*.xcresult
             FloeAgent/FloeAgent-Notes-*.log
             FloeAgent/FloeAgent-IDE-*.log
