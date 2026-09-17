@@ -9,6 +9,46 @@ import FloeCore
 import FloeLocalModelCatalog
 import FloeProviders
 
+/// Process-wide MLX compiled-trace policy.
+///
+/// Cloud run 35189276226 (source 43a68eb8) showed that the accepted MLX
+/// revision pair retains ~1.3-1.6 GB of live buffers per engine when compiled
+/// traces are enabled, and drops to a stable <64 MB settled active set when
+/// compile is disabled. This type applies that policy exactly once per
+/// process, before any Floe MLX model construction.
+///
+/// Disabling compiled traces removes an optimization (graph specialization /
+/// fusion), not inference: generation still runs, just without the compiled
+/// fast path. There is deliberately no per-turn toggle and no environment
+/// mutation; the only public mutator is the one-time `applyBeforeModelLoad()`.
+@available(macOS 15.4, iOS 26.0, *)
+public enum MLXCompilePolicy {
+    /// The once-token. Swift initializes a `static let` at most once per
+    /// process under the runtime's thread-safe once-token, so concurrent first
+    /// model loads cannot race and the mode cannot be flipped per turn.
+    private static let disableCompiledTracesOnce: Void = {
+        MLX.compile(enable: false)
+    }()
+
+    /// Records whether the one-time policy actually ran. `Mutex` keeps the
+    /// diagnostic read race-free without unsafe assumptions.
+    private static let applied = Mutex<Bool>(false)
+
+    /// Applies the process compile policy. Must be called before any MLX model
+    /// or graph construction; repeated and concurrent calls are no-ops.
+    public static func applyBeforeModelLoad() {
+        _ = disableCompiledTracesOnce
+        applied.withLock { $0 = true }
+    }
+
+    /// Truthful diagnostic metadata for qualification hosts and logs: `true`
+    /// only after this process applied the compile-disabled policy. It reports
+    /// the production code path, not an environment variable.
+    public static var compiledTracesDisabled: Bool {
+        applied.withLock { $0 }
+    }
+}
+
 /// Serialized MLX inference engine backed by a fully downloaded, revision-
 /// pinned Hugging Face snapshot. The catalog owns all network transfer; this
 /// type only opens local files and therefore never performs a hidden download.
@@ -22,6 +62,13 @@ public actor MLXTextEngine {
         includesVisionProjector: Bool,
         resourceProfile: LocalInferenceResourceProfile
     ) async throws {
+        // Must precede every MLX model/graph construction below. MLX caches its
+        // global compile mode the first time a compiled trace is built, and on
+        // the accepted pins the enabled path retained ~1.3-1.6 GB per engine
+        // after shutdown. This one-time disable is the production guard the
+        // qualification host verifies; it is not per-turn and never reads or
+        // mutates the environment.
+        MLXCompilePolicy.applyBeforeModelLoad()
         self.resourceProfile = resourceProfile
         // A previous model or a failed Metal graph can leave process-wide
         // allocations cached even after its Swift container is gone. Start a
@@ -153,8 +200,14 @@ public actor MLXTextEngine {
         // autoclosure captures only `Sendable` values, never `prepared`.
         // `mlxProcessPeakBytes` is MLX's process-wide cumulative peak since
         // program start, NOT this turn's peak.
+        // `mlxCompilePolicy` is emitted with every prepared turn so a host log
+        // proves compiled traces are disabled by the production policy rather
+        // than by an environment variable. See `MLXCompilePolicy`.
+        let compilePolicyLabel = MLXCompilePolicy.compiledTracesDisabled
+            ? "disabled-by-process-policy"
+            : "not-applied"
         let preparedDiagnostic =
-            "localInferencePrepared trace=\(diagnosticTraceID ?? "none") inputTokens=\(preparedInputTokens) effectiveMaxTokens=\(effectiveMaximum) contextSize=\(resourceProfile.contextSize) batchSize=\(resourceProfile.batchSize) kvBits=\(kvBits) tokensRank=\(preparedTokensRank) tokensShape=\(preparedTokensShape) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory) mlxProcessPeakBytes=\(Memory.peakMemory)"
+            "localInferencePrepared trace=\(diagnosticTraceID ?? "none") inputTokens=\(preparedInputTokens) effectiveMaxTokens=\(effectiveMaximum) contextSize=\(resourceProfile.contextSize) batchSize=\(resourceProfile.batchSize) kvBits=\(kvBits) tokensRank=\(preparedTokensRank) tokensShape=\(preparedTokensShape) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory) mlxProcessPeakBytes=\(Memory.peakMemory) mlxCompilePolicy=\(compilePolicyLabel)"
         FloeLogger(category: .providers).info(preparedDiagnostic)
         // A simple quantized cache is not rotating, so enforce the device
         // context before asking MLX to allocate it. The prepared token shape

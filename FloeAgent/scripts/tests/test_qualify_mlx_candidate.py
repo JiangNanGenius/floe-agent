@@ -1,9 +1,17 @@
-"""Independent tests for the isolated MLX candidate diagnostic.
+"""Independent tests for the MLX pin/lifecycle guard.
 
 These tests drive the real ``qualify_mlx_candidate`` functions and CLI against
-fixtures taken from the committed repository (``git show HEAD:...``). They never
-resolve, build, download or touch the product ``Package.swift`` or any
+the working tree, which CI checks out at the immutable source SHA. They never
+resolve, build, download or mutate the product ``Package.swift`` or any
 ``Package.resolved``; every write happens inside a temporary directory.
+
+Two guards are covered and both are semantic, not substring theatre:
+
+* the accepted production pin pair is parsed from ``Package.swift`` and every
+  committed lock, then compared field-by-field; and
+* the one-time ``MLXCompilePolicy`` is checked structurally so the actual
+  ``MLX.compile(enable: false)`` call is inside the engine initializer *before*
+  the first ``loadContainer`` and there is no enable/env/per-turn toggle.
 """
 import copy
 import hashlib
@@ -15,39 +23,65 @@ import tempfile
 import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+FLOE_AGENT = REPO_ROOT / "FloeAgent"
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT = SCRIPT_DIR / "qualify_mlx_candidate.py"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import qualify_mlx_candidate as qmc  # noqa: E402
 
-PACKAGE_SWIFT = "FloeAgent/Package.swift"
-LOCAL_INFERENCE_LOCK = "FloeAgent/Qualification/LocalInference/Package.resolved"
-
-
-def git_show(path):
-    return subprocess.check_output(
-        ["git", "show", "HEAD:%s" % path], cwd=str(REPO_ROOT), text=True)
+PACKAGE_SWIFT = FLOE_AGENT / "Package.swift"
+QUALIFICATION_HOST = FLOE_AGENT / "Qualification/LocalInference/Sources/Qualification.swift"
+MLX_ENGINE = FLOE_AGENT / "Sources/FloeLocalModels/MLXTextEngine.swift"
+ROOT_LOCKS = (
+    FLOE_AGENT / "Package.resolved",
+    FLOE_AGENT / "Qualification/Package.resolved",
+    FLOE_AGENT / "Qualification/LocalInference/Package.resolved",
+    FLOE_AGENT / "Qualification/Notes/Package.resolved",
+    FLOE_AGENT / "Qualification/Services/Package.resolved",
+)
 
 
 def current_package_swift():
-    return git_show(PACKAGE_SWIFT)
+    return PACKAGE_SWIFT.read_text()
 
 
-def baseline_lock():
-    return json.loads(git_show(LOCAL_INFERENCE_LOCK))
+def current_lock():
+    return json.loads((FLOE_AGENT / "Qualification/LocalInference/Package.resolved").read_text())
 
 
-def candidate_lock():
-    document = copy.deepcopy(baseline_lock())
-    for identity, state in qmc.CANDIDATE_PINS.items():
+def historical_lock():
+    """The committed host lock with the frozen historical baseline pair."""
+    document = copy.deepcopy(current_lock())
+    for identity, state in qmc.HISTORICAL_BASELINE_RESOLVED_PINS.items():
         for pin in document["pins"]:
             if pin["identity"] == identity:
                 pin["state"] = dict(state)
                 break
         else:
-            raise AssertionError("baseline lock missing %s" % identity)
+            raise AssertionError("lock missing %s" % identity)
     return document
+
+
+def manifest_targets(text=None):
+    """Parse the two committed MLX declarations (state + url) from Package.swift."""
+    found = qmc.find_target_declarations(text if text is not None else current_package_swift())
+    targets = {}
+    for identity in qmc.TARGET_IDENTITIES:
+        declarations = found.get(identity, [])
+        if len(declarations) != 1:
+            raise AssertionError("expected one %s declaration" % identity)
+        block = declarations[0]["block"]
+        targets[identity] = {
+            "state": qmc.pin_state(block),
+            "location": qmc._string_value(block, "url"),
+        }
+    return targets
+
+
+def lock_targets(document):
+    pins = {pin["identity"]: pin for pin in qmc.resolved_pins(document)}
+    return {identity: pins[identity] for identity in qmc.TARGET_IDENTITIES}
 
 
 def with_state(document, identity, state):
@@ -69,125 +103,216 @@ def run_cli(*args):
         cwd=str(REPO_ROOT), text=True, capture_output=True)
 
 
-class CandidatePatchTests(unittest.TestCase):
-    def test_patch_is_exactly_two_declarations(self):
+class AcceptedPinTests(unittest.TestCase):
+    """Semantic pin guard: manifest and every committed lock must agree."""
+
+    def test_manifest_declares_accepted_current_pins(self):
+        report = qmc.check_declarations("current", current_package_swift())
+        self.assertTrue(report["ok"], report)
+        for identity, state in qmc.CURRENT_PINS.items():
+            self.assertEqual(report["declarations"][identity]["state"], state)
+            self.assertEqual(report["declarations"][identity]["count"], 1)
+
+    def test_every_committed_lock_matches_the_manifest(self):
+        manifest = manifest_targets()
+        for lock_path in ROOT_LOCKS:
+            with self.subTest(lock=lock_path.name):
+                targets = lock_targets(json.loads(lock_path.read_text()))
+                for identity in qmc.TARGET_IDENTITIES:
+                    self.assertEqual(targets[identity]["state"], manifest[identity]["state"],
+                                     "%s pin disagrees with Package.swift" % identity)
+                    self.assertEqual(
+                        qmc.normalize_url(targets[identity]["location"]),
+                        qmc.normalize_url(manifest[identity]["location"]),
+                        "%s source URL disagrees with Package.swift" % identity)
+                    self.assertEqual(targets[identity]["state"], qmc.CURRENT_PINS[identity])
+
+    def test_locks_are_valid_json_and_keep_unrelated_pins(self):
+        # The MLX pair is the only intentional change; the lock must still parse
+        # to the full committed dependency set.
+        self.assertGreaterEqual(len(current_lock()["pins"]), 30)
+
+    def test_historical_baseline_patch_is_exactly_two_declarations(self):
         original = current_package_swift()
-        patched, changes = qmc.plan_candidate_patch(original)
+        patched, changes = qmc.plan_historical_baseline_patch(original)
 
         self.assertEqual(len(changes), 2)
         self.assertEqual({c["identity"] for c in changes}, set(qmc.TARGET_IDENTITIES))
         removed, added = qmc.line_changes(original, patched)
         self.assertEqual(len(removed), 2)
         self.assertEqual(len(added), 2)
-        for identity, state in qmc.CANDIDATE_PINS.items():
-            self.assertIn("%s: \"%s\"" % (next(iter(state)), state[next(iter(state))]), added)
+        for identity, state in qmc.HISTORICAL_BASELINE_PINS.items():
+            token = '%s: "%s"' % (next(iter(state)), state[next(iter(state))])
+            self.assertIn(token, added)
+        self.assertNotIn(qmc.CURRENT_PINS["mlx-swift"]["revision"], patched)
         self.assertNotIn(qmc.CURRENT_PINS["mlx-swift-lm"]["revision"], patched)
-        self.assertNotIn('exact: "0.31.4"', patched)
 
         # The original string is untouched, and the patched file presents the
-        # candidate state to a read-only profile check.
-        self.assertEqual(qmc.pin_state(qmc.find_target_declarations(original)["mlx-swift"][0]["block"]),
+        # historical state to a read-only profile check.
+        self.assertEqual(manifest_targets(original)["mlx-swift"]["state"],
                          qmc.CURRENT_PINS["mlx-swift"])
-        self.assertTrue(qmc.check_declarations("gpu-fix-candidate", patched)["ok"])
+        self.assertTrue(qmc.check_declarations("historical-baseline", patched)["ok"])
 
     def test_patch_rejects_mismatched_original(self):
         original = current_package_swift()
         corruptions = (
             ("mlx-swift-lm", qmc.CURRENT_PINS["mlx-swift-lm"]["revision"], "0" * 40),
-            ("mlx-swift", '"0.31.4"', '"0.31.5"'),
+            ("mlx-swift", qmc.CURRENT_PINS["mlx-swift"]["revision"], "f" * 40),
         )
         for identity, old, new in corruptions:
             with self.subTest(identity=identity):
                 corrupted = original.replace(old, new, 1)
                 self.assertNotEqual(corrupted, original)
                 with self.assertRaises(qmc.PatchError):
-                    qmc.plan_candidate_patch(corrupted)
+                    qmc.plan_historical_baseline_patch(corrupted)
 
-    def test_patch_rejects_missing_or_duplicate_declaration(self):
+    def test_patch_rejects_missing_duplicate_or_already_baseline(self):
         original = current_package_swift()
-        declarations = qmc.find_target_declarations(original)
-        block = declarations["mlx-swift"][0]["block"]
+        block = qmc.find_target_declarations(original)["mlx-swift"][0]["block"]
 
         missing = original.replace(qmc.MLX_SWIFT_LM_URL, "https://example.org/not-mlx.git", 1)
         with self.assertRaises(qmc.PatchError):
-            qmc.plan_candidate_patch(missing)
+            qmc.plan_historical_baseline_patch(missing)
 
         duplicated = original + "\n" + block + "\n"
         with self.assertRaises(qmc.PatchError):
-            qmc.plan_candidate_patch(duplicated)
+            qmc.plan_historical_baseline_patch(duplicated)
 
-    def test_patch_rejects_already_candidate(self):
-        patched, _ = qmc.plan_candidate_patch(current_package_swift())
+        patched, _ = qmc.plan_historical_baseline_patch(original)
         with self.assertRaises(qmc.PatchError):
-            qmc.plan_candidate_patch(patched)
+            qmc.plan_historical_baseline_patch(patched)
 
 
 class LockVerificationTests(unittest.TestCase):
-    def test_candidate_profile_accepts_exact_target_revisions(self):
-        report = qmc.verify_lock("gpu-fix-candidate", baseline_lock(), candidate_lock())
+    def test_historical_profile_accepts_exact_target_revisions(self):
+        report = qmc.verify_lock("historical-baseline", current_lock(), historical_lock())
         self.assertTrue(report["ok"], report)
         self.assertEqual(report["drifted"], [])
         self.assertEqual(report["added"], [])
         self.assertEqual(report["removed"], [])
         self.assertEqual(report["targets"]["mlx-swift"]["revision"],
-                         qmc.CANDIDATE_PINS["mlx-swift"]["revision"])
+                         qmc.HISTORICAL_BASELINE_RESOLVED_PINS["mlx-swift"]["revision"])
         self.assertEqual(report["targets"]["mlx-swift-lm"]["revision"],
-                         qmc.CANDIDATE_PINS["mlx-swift-lm"]["revision"])
+                         qmc.HISTORICAL_BASELINE_RESOLVED_PINS["mlx-swift-lm"]["revision"])
 
-    def test_candidate_profile_rejects_wrong_target_revision(self):
+    def test_historical_profile_rejects_wrong_target_revision(self):
         for identity in qmc.TARGET_IDENTITIES:
             with self.subTest(identity=identity):
-                resolved = with_state(candidate_lock(), identity, {"revision": "f" * 40})
-                report = qmc.verify_lock("gpu-fix-candidate", baseline_lock(), resolved)
+                resolved = with_state(historical_lock(), identity, {"revision": "f" * 40})
+                report = qmc.verify_lock("historical-baseline", current_lock(), resolved)
                 self.assertFalse(report["ok"], report)
                 self.assertIn(identity, [d["identity"] for d in report["drifted"]])
 
-    def test_candidate_profile_rejects_other_pin_drift(self):
-        resolved = with_state(candidate_lock(), "swift-crypto", {"revision": "0" * 40})
-        report = qmc.verify_lock("gpu-fix-candidate", baseline_lock(), resolved)
+    def test_historical_profile_rejects_other_pin_drift(self):
+        resolved = with_state(historical_lock(), "swift-crypto", {"revision": "0" * 40})
+        report = qmc.verify_lock("historical-baseline", current_lock(), resolved)
         self.assertFalse(report["ok"], report)
         self.assertIn("swift-crypto", [d["identity"] for d in report["drifted"]])
 
     def test_added_and_removed_pins_fail(self):
-        added = candidate_lock()
+        added = historical_lock()
         added["pins"].append({
-            "identity": "candidate-extra",
+            "identity": "extra-extra",
             "kind": "remoteSourceControl",
-            "location": "https://example.org/candidate-extra.git",
+            "location": "https://example.org/extra-extra.git",
             "state": {"revision": "a" * 40},
         })
-        report = qmc.verify_lock("gpu-fix-candidate", baseline_lock(), added)
+        report = qmc.verify_lock("historical-baseline", current_lock(), added)
         self.assertFalse(report["ok"], report)
-        self.assertIn("candidate-extra", report["added"])
+        self.assertIn("extra-extra", report["added"])
 
-        removed = candidate_lock()
+        removed = historical_lock()
         removed["pins"] = [pin for pin in removed["pins"] if pin["identity"] != "swift-log"]
-        report = qmc.verify_lock("gpu-fix-candidate", baseline_lock(), removed)
+        report = qmc.verify_lock("historical-baseline", current_lock(), removed)
         self.assertFalse(report["ok"], report)
         self.assertIn("swift-log", report["removed"])
 
     def test_extra_state_on_target_fails(self):
-        resolved = with_state(candidate_lock(), "mlx-swift",
-                              {"revision": qmc.CANDIDATE_PINS["mlx-swift"]["revision"],
-                               "version": "0.32.0"})
-        report = qmc.verify_lock("gpu-fix-candidate", baseline_lock(), resolved)
+        resolved = with_state(historical_lock(), "mlx-swift",
+                              {"revision": qmc.HISTORICAL_BASELINE_RESOLVED_PINS["mlx-swift"]["revision"],
+                               "version": "0.31.5"})
+        report = qmc.verify_lock("historical-baseline", current_lock(), resolved)
         self.assertFalse(report["ok"], report)
 
     def test_current_profile_requires_identical_lock(self):
-        report = qmc.verify_lock("current", baseline_lock(), baseline_lock())
+        report = qmc.verify_lock("current", current_lock(), current_lock())
         self.assertTrue(report["ok"], report)
 
-        self.assertFalse(qmc.verify_lock("current", baseline_lock(), candidate_lock())["ok"])
-        drifted = with_state(baseline_lock(), "swift-crypto", {"revision": "0" * 40})
-        self.assertFalse(qmc.verify_lock("current", baseline_lock(), drifted)["ok"])
+        self.assertFalse(qmc.verify_lock("current", current_lock(), historical_lock())["ok"])
+        drifted = with_state(current_lock(), "swift-crypto", {"revision": "0" * 40})
+        self.assertFalse(qmc.verify_lock("current", current_lock(), drifted)["ok"])
 
     def test_unknown_profile_and_missing_target_fail(self):
         with self.assertRaises(ValueError):
-            qmc.verify_lock("unknown", baseline_lock(), baseline_lock())
-        no_target = copy.deepcopy(baseline_lock())
+            qmc.verify_lock("unknown", current_lock(), current_lock())
+        no_target = copy.deepcopy(current_lock())
         no_target["pins"] = [p for p in no_target["pins"] if p["identity"] != "mlx-swift"]
         with self.assertRaises(ValueError):
-            qmc.verify_lock("gpu-fix-candidate", no_target, candidate_lock())
+            qmc.verify_lock("historical-baseline", no_target, historical_lock())
+
+
+class MLXCompilePolicyGuardTests(unittest.TestCase):
+    """Structural guard for the actual one-time compile configuration."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = MLX_ENGINE.read_text()
+
+    def test_exactly_one_disable_and_no_enable_env_or_per_turn_toggle(self):
+        self.assertEqual(self.source.count("MLX.compile(enable: false)"), 1)
+        self.assertNotIn("MLX.compile(enable: true)", self.source)
+        self.assertNotIn("MLX.compile()", self.source)
+        self.assertNotIn("MLX_DISABLE_COMPILE", self.source)
+        self.assertNotIn("setenv(", self.source)
+        self.assertNotIn("unsetenv(", self.source)
+
+    def test_disable_is_a_thread_safe_once_token(self):
+        # The single disabling call is the body of a private `static let`,
+        # which the Swift runtime evaluates at most once, thread-safely.
+        self.assertIn("private static let disableCompiledTracesOnce", self.source)
+        policy = self.source.index("public enum MLXCompilePolicy")
+        disable = self.source.index("MLX.compile(enable: false)", policy)
+        token_body = self.source[policy:disable]
+        self.assertIn("static let disableCompiledTracesOnce", token_body)
+        self.assertIn("Mutex<Bool>", self.source)
+
+    def test_policy_call_is_inside_initializer_before_first_load(self):
+        init_start = self.source.index("public init(")
+        init_end = self.source.index("public func shutdown", init_start)
+        initializer = self.source[init_start:init_end]
+
+        policy = initializer.index("MLXCompilePolicy.applyBeforeModelLoad()")
+        vlm = initializer.index("VLMModelFactory.shared.loadContainer(")
+        llm = initializer.index("LLMModelFactory.shared.loadContainer(")
+        self.assertLess(policy, vlm, "compile policy must precede VLM load")
+        self.assertLess(policy, llm, "compile policy must precede LLM load")
+        # The policy call is unconditional and first, not behind a branch.
+        prog = initializer.index("self.resourceProfile = resourceProfile")
+        self.assertLess(policy, prog)
+
+    def test_policy_exposes_truthful_metadata_label(self):
+        self.assertIn("disabled-by-process-policy", self.source)
+        self.assertIn("public static var compiledTracesDisabled", self.source)
+
+
+class QualificationHostMetadataTests(unittest.TestCase):
+    """The host must record environmentless compile-policy evidence."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.host = QUALIFICATION_HOST.read_text()
+
+    def test_host_records_compile_policy_on_every_event(self):
+        self.assertIn('"mlxCompilePolicy"', self.host)
+        self.assertIn('"mlxDisableCompileEnvSet"', self.host)
+        self.assertIn("MLXCompilePolicy.compiledTracesDisabled", self.host)
+
+    def test_host_fails_load_if_policy_missing(self):
+        # The post-construction guard must run before load-complete is recorded.
+        guard = self.host.index("guard MLXCompilePolicy.compiledTracesDisabled")
+        complete = self.host.index('record("load-complete", done)')
+        self.assertLess(guard, complete)
+        self.assertIn("mlxCompilePolicyAppliedBeforeLoad", self.host)
 
 
 class CliTests(unittest.TestCase):
@@ -202,13 +327,13 @@ class CliTests(unittest.TestCase):
 
             result = run_cli(
                 "apply-patch", "--package-swift", str(package),
-                "--profile", "gpu-fix-candidate",
-                "--diff", str(root / "candidate.diff"),
+                "--profile", "historical-baseline",
+                "--diff", str(root / "baseline.diff"),
                 "--manifest", str(root / "manifest.json"))
 
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(sha256(package), before)
-            self.assertFalse((root / "candidate.diff").exists())
+            self.assertFalse((root / "baseline.diff").exists())
             manifest = json.loads((root / "manifest.json").read_text())
             self.assertFalse(manifest["applied"])
             self.assertTrue(manifest["error"])
@@ -223,15 +348,15 @@ class CliTests(unittest.TestCase):
             result = run_cli(
                 "apply-patch", "--package-swift", str(package),
                 "--profile", "current",
-                "--diff", str(root / "candidate.diff"),
+                "--diff", str(root / "baseline.diff"),
                 "--manifest", str(root / "manifest.json"))
 
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(sha256(package), before)
-            self.assertFalse((root / "candidate.diff").exists())
+            self.assertFalse((root / "baseline.diff").exists())
 
     def test_apply_success_is_scoped_and_never_touches_product(self):
-        product = REPO_ROOT / PACKAGE_SWIFT
+        product = PACKAGE_SWIFT
         product_before = sha256(product)
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
@@ -240,8 +365,8 @@ class CliTests(unittest.TestCase):
 
             result = run_cli(
                 "apply-patch", "--package-swift", str(package),
-                "--profile", "gpu-fix-candidate",
-                "--diff", str(root / "candidate.diff"),
+                "--profile", "historical-baseline",
+                "--diff", str(root / "baseline.diff"),
                 "--manifest", str(root / "manifest.json"))
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -249,10 +374,10 @@ class CliTests(unittest.TestCase):
             removed, added = qmc.line_changes(current_package_swift(), patched)
             self.assertEqual(len(removed), 2)
             self.assertEqual(len(added), 2)
-            self.assertTrue(qmc.check_declarations("gpu-fix-candidate", patched)["ok"])
-            diff = (root / "candidate.diff").read_text()
-            self.assertIn("d5d8b290e601ac1bf11f24635f8f811a83b98bf8", diff)
-            self.assertIn("ab924c82ead3b970caaa1c0ac11171de23f0305a", diff)
+            self.assertTrue(qmc.check_declarations("historical-baseline", patched)["ok"])
+            diff = (root / "baseline.diff").read_text()
+            self.assertIn("bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57", diff)
+            self.assertIn('exact: "0.31.4"', diff)
             manifest = json.loads((root / "manifest.json").read_text())
             self.assertTrue(manifest["applied"])
             self.assertEqual(manifest["changed_line_count"], 2)
@@ -263,8 +388,8 @@ class CliTests(unittest.TestCase):
             root = Path(root)
             baseline = root / "baseline.json"
             resolved = root / "resolved.json"
-            baseline.write_text(json.dumps(baseline_lock()))
-            resolved.write_text(json.dumps(baseline_lock()))
+            baseline.write_text(json.dumps(current_lock()))
+            resolved.write_text(json.dumps(current_lock()))
             before = {path.name: sha256(path) for path in root.iterdir()}
 
             result = run_cli(
@@ -284,9 +409,9 @@ class CliTests(unittest.TestCase):
             root = Path(root)
             baseline = root / "baseline.json"
             resolved = root / "resolved.json"
-            baseline.write_text(json.dumps(baseline_lock()))
+            baseline.write_text(json.dumps(current_lock()))
             resolved.write_text(json.dumps(with_state(
-                baseline_lock(), "swift-crypto", {"revision": "0" * 40})))
+                current_lock(), "swift-crypto", {"revision": "0" * 40})))
             result = run_cli(
                 "verify-lock", "--check",
                 "--profile", "current",
@@ -316,61 +441,64 @@ class CliTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)["ok"])
             self.assertEqual(sha256(package), before)
 
-            candidate = run_cli("check", "--profile", "gpu-fix-candidate",
-                                "--package-swift", str(package))
-            self.assertEqual(candidate.returncode, 1)
-            self.assertFalse(json.loads(candidate.stdout)["ok"])
+            baseline = run_cli("check", "--profile", "historical-baseline",
+                               "--package-swift", str(package))
+            self.assertEqual(baseline.returncode, 1)
+            self.assertFalse(json.loads(baseline.stdout)["ok"])
             self.assertEqual(sha256(package), before)
 
     def test_check_accepts_patched_copy(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             package = root / "Package.swift"
-            patched, _ = qmc.plan_candidate_patch(current_package_swift())
+            patched, _ = qmc.plan_historical_baseline_patch(current_package_swift())
             package.write_text(patched)
-            result = run_cli("check", "--profile", "gpu-fix-candidate",
+            result = run_cli("check", "--profile", "historical-baseline",
                              "--package-swift", str(package))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(json.loads(result.stdout)["ok"])
 
 
-class CandidateSourceURLTests(unittest.TestCase):
+class SourceURLTests(unittest.TestCase):
     def test_target_github_git_suffix_alias_is_same_source(self):
-        baseline = baseline_lock()
-        resolved = candidate_lock()
+        baseline = current_lock()
+        resolved = historical_lock()
         target = next(p for p in resolved["pins"] if p["identity"] == "mlx-swift")
-        target["location"] = "https://github.com/ml-explore/mlx-swift.git"
-        result = qmc.verify_lock("gpu-fix-candidate", baseline, resolved)
-        self.assertTrue(result["ok"])
+        # The accepted lock stores the `.git` form; the old fetch may resolve
+        # without the suffix. Semantically they are the same repository.
+        target["location"] = "https://github.com/ml-explore/mlx-swift"
+        result = qmc.verify_lock("historical-baseline", baseline, resolved)
+        self.assertTrue(result["ok"], result)
         self.assertEqual(result["equivalent_source_urls"][0]["identity"], "mlx-swift")
         for invalid in ["https://github.com/another-owner/mlx-swift.git",
                         "http://github.com/ml-explore/mlx-swift.git",
                         "https://example.com/ml-explore/mlx-swift.git"]:
             with self.subTest(invalid=invalid):
                 target["location"] = invalid
-                self.assertFalse(qmc.verify_lock("gpu-fix-candidate", baseline, resolved)["ok"])
+                self.assertFalse(qmc.verify_lock("historical-baseline", baseline, resolved)["ok"])
 
 
 class ApplicationPinTests(unittest.TestCase):
+    def setUp(self):
+        self.project = (FLOE_AGENT / "project.yml").read_text()
+
     def test_host_may_omit_exact_xcode_only_dependency(self):
-        baseline = baseline_lock()
-        resolved = candidate_lock()
-        app = qmc.application_pins(git_show("FloeAgent/project.yml"))
+        resolved = historical_lock()
+        app = qmc.application_pins(self.project)
         self.assertEqual({p["identity"] for p in app}, {"whisperkit"})
         resolved["pins"] = [p for p in resolved["pins"] if p["identity"] != "whisperkit"]
-        self.assertFalse(qmc.verify_lock("gpu-fix-candidate", baseline, resolved)["ok"])
-        result = qmc.verify_lock("gpu-fix-candidate", baseline, resolved, app)
-        self.assertTrue(result["ok"])
+        self.assertFalse(qmc.verify_lock("historical-baseline", current_lock(), resolved)["ok"])
+        result = qmc.verify_lock("historical-baseline", current_lock(), resolved, app)
+        self.assertTrue(result["ok"], result)
         self.assertEqual(result["omitted_application_pins"], ["whisperkit"])
         resolved["pins"] = [p for p in resolved["pins"] if p["identity"] != "swift-crypto"]
-        self.assertFalse(qmc.verify_lock("gpu-fix-candidate", baseline, resolved, app)["ok"])
+        self.assertFalse(qmc.verify_lock("historical-baseline", current_lock(), resolved, app)["ok"])
 
     def test_application_pin_override_cannot_hide_drift(self):
-        baseline = baseline_lock()
-        app = qmc.application_pins(git_show("FloeAgent/project.yml"))
+        app = qmc.application_pins(self.project)
         app[0]["state"] = {"revision": "0" * 40}
         with self.assertRaises(ValueError):
-            qmc.verify_lock("gpu-fix-candidate", baseline, candidate_lock(), app)
+            qmc.verify_lock("historical-baseline", current_lock(), historical_lock(), app)
 
 
 if __name__ == "__main__":

@@ -24,10 +24,19 @@ import Synchronization
     }
 
     static func record(_ event: String, _ fields: [String: Any] = [:]) {
+        // Truthful compile-policy metadata, present on every event. It reports
+        // whether the production `MLXCompilePolicy` ran in-process and whether
+        // the diagnostic inherited the legacy environment switch. A host run
+        // with `mlxCompilePolicy=disabled-by-process-policy` and
+        // `mlxDisableCompileEnvSet=false` proves the guard is environmentless.
         let values: [String: Any] = fields.merging([
             "event": event, "platform": "macOS-host-not-iPad",
             "mlxActiveBytes": Memory.activeMemory, "mlxPeakBytes": Memory.peakMemory,
             "mlxCacheBytes": Memory.cacheMemory,
+            "mlxCompilePolicy": MLXCompilePolicy.compiledTracesDisabled
+                ? "disabled-by-process-policy" : "not-applied",
+            "mlxDisableCompileEnvSet":
+                ProcessInfo.processInfo.environment["MLX_DISABLE_COMPILE"] != nil,
             "processFootprintBytes": processFootprint().map { $0 as Any } ?? NSNull()
         ]) { _, new in new }
         if let data = try? JSONSerialization.data(withJSONObject: values, options: .sortedKeys) {
@@ -302,9 +311,21 @@ import Synchronization
                 includesVisionProjector: false,
                 resourceProfile: profileCase.profile
             )
+            // The one-time compile policy must have run inside the engine
+            // initializer before any model/graph construction. A future edit
+            // that drops it fails here instead of producing a green run with
+            // the retained-compiled-trace memory behavior we rejected.
+            guard MLXCompilePolicy.compiledTracesDisabled else {
+                throw NSError(domain: "Qualification", code: 6, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "MLXTextEngine constructed without applying MLXCompilePolicy; "
+                            + "compile-disabled retention is unverified"
+                ])
+            }
             var done = profileCase.fields
             done["elapsedSeconds"] = Date().timeIntervalSince(started)
             done["loadSucceeded"] = true
+            done["mlxCompilePolicyAppliedBeforeLoad"] = true
             record("load-complete", done)
             return engine
         } catch {

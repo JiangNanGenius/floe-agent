@@ -46,49 +46,41 @@ changed to make any assertion pass.
 
 ## Dependency profiles
 
-The manual dispatch and the `workflow_call` trigger both accept a
-`dependency_profile` input, defaulting to `current`.
+Both triggers accept `dependency_profile`, defaulting to `current`.
 
 | Profile | Root `FloeAgent/Package.swift` |
 | --- | --- |
-| `current` (default) | Committed pins. No dependency file is modified. |
-| `gpu-fix-candidate` | Only in the CI working copy, an isolated two-declaration patch is applied. |
+| `current` | Committed production pins; no patch. |
+| `historical-baseline` | In the CI working copy only, restore the two frozen pre-adoption declarations. |
 
-`gpu-fix-candidate` pins the MLX runtime `mlx-swift` to
-`ab924c82ead3b970caaa1c0ac11171de23f0305a` (the upstream GPU error-handling
-fix) and `mlx-swift-lm` to
-`d5d8b290e601ac1bf11f24635f8f811a83b98bf8`, which keeps the existing
-prefill-parameter behavior and contains upstream #389/#381/#488. The patch is
-applied by `FloeAgent/scripts/qualify_mlx_candidate.py apply-patch`, which first
-proves the two original declarations match the committed pins exactly and then
-refuses unless only those two lines change. The product `Package.swift` and
-every committed `Package.resolved` are never edited in the repository; the
-default `current` profile does not run the patch step at all.
+Current pins are `mlx-swift` `ab924c82ead3b970caaa1c0ac11171de23f0305a`
+and `mlx-swift-lm` `d5d8b290e601ac1bf11f24635f8f811a83b98bf8`.
+The historical pair is mlx-swift 0.31.4 (`dc43e62d7055353c7f99fa071a4e71d29dfddc44`)
+and mlx-swift-lm `bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57`.
+The patch guard verifies the original declarations and allows exactly those
+two lines to change. The real SwiftPM resolver then runs; lock verification
+rejects additional, removed or drifted dependencies except the documented
+app-only omission below. Compilation uses `--force-resolved-versions`.
 
-After the patch (or no patch for `current`) the workflow runs a real
-`swift package --package-path Qualification/LocalInference --scratch-path .build
-resolve` and verifies the frozen lock: the two target revisions must be exact
-and every other pin must be byte-identical to the committed baseline lock. A
-new, removed or drifted pin fails the run explicitly and is retained for
-evaluation, so a candidate is never silently upgraded. Compilation still uses
-`--force-resolved-versions` and inference reuses the existing single-download
-48/96 flow; no full-App CI runs.
+The production engine disables compiled traces once, before model loading.
+The workflow clears `MLX_DISABLE_COMPILE` and checks emitted policy metadata,
+so a pass must exercise the API policy itself. Both dependency profiles use
+this policy: the historical profile restores dependency pins, not every aspect
+of the older executable. Reproducing the earlier compile-enabled comparison
+requires its original immutable source/workflow.
 
 ### Evidence
 
-Everything is written under `LocalInferenceEvidence` and uploaded as
-`local-inference-diagnostic-<dependency_profile>-<sha>` even when resolve fails:
-`SOURCE-SHA.txt`, `dependency-profile.txt`, `FloeAgent-Package.swift.original`
-and `.candidate`, `candidate-manifest.diff`, `candidate-apply.json`,
-`LocalInference-Package.resolved.original.json` and `.resolved.json`,
-`resolve.log`, `resolve-exit-code.txt`, `lock-evaluation.json`,
-`lock-verify-exit-code.txt`, `build.log`, `run.log` and `toolchain.txt`.
+Artifacts are named `local-inference-diagnostic-<dependency_profile>-<sha>`.
+They retain source SHA, toolchain, original manifest and lock, resolved lock,
+resolver/verification logs, build log and runtime log even on failure. A
+historical-baseline run additionally retains `.baseline`,
+`baseline-manifest.diff` and `baseline-apply.json`. Its identity is the source
+SHA plus that isolated patch; a current run uses the committed manifest.
 
-Important: this evidence is a commit SHA **plus a candidate patch applied in
-the CI working copy**; it is not a build of the original commit exactly as
-committed. A `gpu-fix-candidate` result says whether that patched dependency
-set resolves, compiles and runs, and does not change or certify the product
-pins.
+See [the feedback evidence](../../../docs/FLOE_BUILD178_FEEDBACK_REPAIR.md)
+for the original compile-enabled failure and environment-disabled control.
+Neither replaces testing the production API policy or the reported iPad crash.
 
 ## Limits
 

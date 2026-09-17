@@ -62,18 +62,20 @@ let package = Package(
         // SWCompression supplies read-only 7z/RAR container decoding for
         // workspace.archive; archive creation stays zip/tar only.
         .package(url: "https://github.com/tsolomko/SWCompression.git", exact: "4.9.1"),
-        // Exact revision: Qwen3.5 and Gemma 4 text/VLM support with a verified,
-        // deterministic model-loading surface. Advance this pin only together
-        // with iPad memory, crash, tokenizer, and tool-calling validation.
+        // Accepted production pair, qualified with MLX compiled traces
+        // disabled; evidence in
+        // ../docs/FLOE_BUILD178_FEEDBACK_REPAIR.md (run
+        // 35189276226, source 43a68eb8). Disabling compiled traces removes
+        // graph specialization/fusion only, not inference. Advance only with
+        // host lifecycle evidence for both revisions.
         .package(
             url: "https://github.com/ml-explore/mlx-swift-lm.git",
-            revision: "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"
+            revision: "d5d8b290e601ac1bf11f24635f8f811a83b98bf8"
         ),
-        // Constrain the transitive MLX runtime to the revision verified by the
-        // Xcode 27 release gate and the separate Xcode 26.6 fallback gate.
+        // Transitive MLX runtime pinned to the same qualified pair.
         .package(
             url: "https://github.com/ml-explore/mlx-swift.git",
-            exact: "0.31.4"
+            revision: "ab924c82ead3b970caaa1c0ac11171de23f0305a"
         ),
         // mlx-swift-lm deliberately keeps Hugging Face tokenizers as a
         // consumer-provided integration. Floe downloads model snapshots

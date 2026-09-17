@@ -69,7 +69,7 @@ Last updated: 2026-09-17.
   lifetime. This is an iOS-app adapter change only; the native engine is
   unchanged.
 
-### Local model — diagnosis only
+### Local model — diagnosis and candidate mitigation
 
 - Matched-binary symbolication of the build-178 crash report places the four
   SIGABRT frames in the Qwen GatedDeltaNet prefill path (`getItemND` /
@@ -78,8 +78,30 @@ Last updated: 2026-09-17.
   different request context. Final prepared-token counts were not logged, so
   prompt length and chunking remain hypotheses. Some crashes followed a cancel
   request, while others did not; cancellation alone does not explain them.
-- **No root-cause fix has been written.** Candidate fault sites were narrowed
-  but not confirmed; this area remains unresolved and must not be described as fixed.
+- The original iPad crash remains unconfirmed as fixed. A newer MLX pair
+  includes upstream GPU error-handling changes, but its compiled-trace path
+  retained model buffers in host tests. Disabling compiled traces passed the
+  controlled lifecycle comparison below. The production one-time compile policy
+  and updated pins passed integration review and 29 targeted guard tests;
+  runtime verification of the API policy remains pending. Host evidence does not clear
+  the reported iPad ordinary-chat crash.
+
+### Compiled-trace lifecycle comparison
+
+[Run 35189276226](https://github.com/JiangNanGenius/floe-agent/actions/runs/35189276226),
+source `43a68eb8e8aea6f20bbd4e0ae1508ed929c1b97b`, tested the candidate
+`mlx-swift` `ab924c82ead3b970caaa1c0ac11171de23f0305a` and `mlx-swift-lm`
+`d5d8b290e601ac1bf11f24635f8f811a83b98bf8` with compiled traces disabled.
+The macOS host used real weights and 3,147 input tokens; batch sizes 48 and 96
+both produced the expected “Blue.” response. All four five-second shutdown
+gates passed: settled MLX active bytes were 4,000 / 7,992 / 11,984 / 15,976,
+with zero cached bytes. Peak MLX memory was 2,837,387,068 bytes.
+
+The compile-enabled comparison (run 35186352697) failed those same gates.
+This supports compiled-trace retention as the cause of that candidate's host
+memory regression. It does not establish the original iPad crash cause,
+physical-device performance, or acceptance of the subsequent production API
+policy. The original failed run and raw diagnostics are retained.
 
 ## Verification status
 
@@ -123,7 +145,7 @@ Observed on this checkout unless a line says otherwise:
 
 ## Not verified / open
 
-- Local-model crash root cause and fix are open; the branch only localizes it.
+- Local-model crash root cause and physical-device acceptance remain open.
   The initial tiny probe used a batched rank-2 input although the library expects
   rank 1. Its crash is invalid as product reproduction evidence. A separate
   source review confirms both App chat and benchmark construct rank-1 tokens;
@@ -133,8 +155,8 @@ Observed on this checkout unless a line says otherwise:
   check was between complete prefills, not mid-prefill cancellation.
 - Office native UI (font dropdown, host-owned close, explicit save) is not
   qualified by the adapter tests.
-- The Notes cloud component suite ran and failed as detailed below; full-App
-  simulator/device acceptance remains incomplete.
+- The latest Notes cloud component suite passed as detailed below; earlier
+  failures remain recorded. Full-App simulator/device acceptance is incomplete.
 - Mind-map long-text pagination and the runtime response-limit repair are
   implemented. Their latest regression tests compiled in the NativeNotes host
   (`native-notes-final-build2.log`, `TEST BUILD SUCCEEDED`). The subsequent cloud
@@ -294,8 +316,15 @@ Observed on this checkout unless a line says otherwise:
 - The Lua branch is now integrated. [Run 35187428944](https://github.com/JiangNanGenius/floe-agent/actions/runs/35187428944)
   at `148cd04e` passed 13 real Lua/WASM tests in two Swift Testing suites on
   macOS, covering scripts, Chinese stdin, file I/O, recovery, cancellation and
-  the existing WASM confinement/signature regressions. Signed catalog delivery
-  and the App's install-to-shell route remain separate integration gates.
+  the existing WASM confinement/signature regressions.
+- [Run 35189138967](https://github.com/JiangNanGenius/floe-agent/actions/runs/35189138967)
+  at `b56cc788b2c457b4ec8bda5bae1a50ed7bea0962` prepared the official signed
+  catalog without publishing a main-branch update. Primary verification used the
+  existing pinned public key, checked identical bundled/catalog bytes, and
+  downloaded both packages from their immutable commit URLs. Lua was 671,143
+  bytes with SHA-256 `81ad32f4eca06d232598ad7bf6f4f92bab4864a5b5d0f4da036e159b2efdf049`;
+  `floe-text` retained its prior bytes. Commit `16db8f09` bundles this catalog.
+  App install-to-shell acceptance remains pending.
 - Two approved cleanup batches removed obsolete extracted applications, finished
   build caches and an unused iPhone debugging-symbol cache. The second batch
   measured 15,206,846,464 allocated bytes in selected targets and increased volume

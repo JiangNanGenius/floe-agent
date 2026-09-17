@@ -1,28 +1,41 @@
 #!/usr/bin/env python3
 """Isolated MLX dependency-profile diagnostics for the local inference host.
 
-This tool exists so the cloud qualification workflow can *diagnose* a candidate
-MLX pin set without ever changing the dependency declarations that are committed
-to the product. Nothing here builds, downloads, resolves or reaches the network;
-the real ``swift package resolve`` is run by the workflow, not by this script.
+This tool exists so the cloud qualification workflow can verify the accepted MLX
+pin pair, and can still reproduce the *historical* baseline pair, without ever
+changing the dependency declarations that are committed to the product. Nothing
+here builds, downloads, resolves or reaches the network; the real
+``swift package resolve`` is run by the workflow, not by this script.
+
+Profiles
+--------
+``current``
+    The accepted production pair (``CURRENT_PINS``): mlx-swift
+    ``ab924c82ead3b970caaa1c0ac11171de23f0305a`` + mlx-swift-lm
+    ``d5d8b290e601ac1bf11f24635f8f811a83b98bf8``. No file is patched.
+
+``historical-baseline``
+    The frozen pre-adoption pair (``HISTORICAL_BASELINE_PINS``): mlx-swift
+    ``0.31.4`` + mlx-swift-lm ``bd4b7434...``. Reproducible on demand so the
+    earlier lifecycle evidence stays comparable. Never the default.
 
 Subcommands
 -----------
 ``apply-patch`` (writes)
-    Writes the two candidate declarations into a caller supplied ``Package.swift``.
-    It refuses unless exactly one declaration exists per target URL, the two
-    original pin states match ``CURRENT_PINS`` exactly, and the resulting file
-    differs from the original in exactly those two lines. On any mismatch the
-    target file is left byte-identical and a failure manifest is still written
-    for recovery evidence.
+    Writes the two ``historical-baseline`` declarations into a caller supplied
+    ``Package.swift``. It refuses unless exactly one declaration exists per
+    target URL, the two original pin states match ``CURRENT_PINS`` exactly, and
+    the resulting file differs from the original in exactly those two lines. On
+    any mismatch the target file is left byte-identical and a failure manifest
+    is still written for recovery evidence.
 
 ``verify-lock`` (read-only unless ``--output`` is given)
-    Compares a freshly resolved lock against the immutable baseline lock. For the
-    candidate profile the two target revisions must be exactly the candidate
-    values and every other pin must be identical; added, removed or drifted pins
-    fail. An optional XcodeGen project permits only the omission of matching
-    app-only pins from the host graph. ``--check`` prints JSON to stdout and is forbidden from writing any
-    output path.
+    Compares a freshly resolved lock against the immutable baseline lock. For
+    the ``historical-baseline`` profile the two target revisions must be exactly
+    the historical values and every other pin must be identical; added, removed
+    or drifted pins fail. An optional XcodeGen project permits only the omission
+    of matching app-only pins from the host graph. ``--check`` prints JSON to
+    stdout and is forbidden from writing any output path.
 
 ``check`` (read-only)
     Reports whether the target declarations in a ``Package.swift`` match the
@@ -48,27 +61,52 @@ _TARGET_URLS = {
     "mlx-swift-lm": MLX_SWIFT_LM_URL,
 }
 
-SUPPORTED_PROFILES = ("current", "gpu-fix-candidate")
+SUPPORTED_PROFILES = ("current", "historical-baseline")
 
-# Declarations committed in FloeAgent/Package.swift today. Changing these
-# constants is a product decision, not part of this diagnostic.
+# Accepted production declarations committed in FloeAgent/Package.swift. These
+# are the exact revisions qualified by cloud run 35189276226 (source 43a68eb8)
+# with MLX compiled traces disabled: mlx-swift carries the upstream GPU
+# error-handling fix and mlx-swift-lm keeps the existing prefill-parameter
+# behavior (upstream #389/#381/#488). Changing these constants is a product
+# decision.
 CURRENT_PINS = {
-    "mlx-swift-lm": {"revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"},
-    "mlx-swift": {"exact": "0.31.4"},
-}
-
-# Candidate declared only in the disposable CI working copy. mlx-swift moves to
-# the revision that carries the upstream GPU error-handling fix; mlx-swift-lm
-# keeps the existing prefill-parameter behavior and contains upstream
-# #389/#381/#488.
-CANDIDATE_PINS = {
     "mlx-swift-lm": {"revision": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8"},
     "mlx-swift": {"revision": "ab924c82ead3b970caaa1c0ac11171de23f0305a"},
 }
 
+# Frozen pre-adoption pair. Kept only so the historical baseline lifecycle
+# evidence (retained compiled traces) stays reproducible on demand; the cloud
+# run with this pair retained ~1.3-1.6 GB per engine, so it must not be used as
+# a production profile. The patch step may only move the committed current
+# declarations to this exact pair, never the reverse direction.
+HISTORICAL_BASELINE_PINS = {
+    "mlx-swift-lm": {"revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"},
+    "mlx-swift": {"exact": "0.31.4"},
+}
+
+# What a `Package.resolved` lock records for the historical baseline. A lock pin
+# always carries a concrete revision (and the exact-version tag), never the
+# manifest's `exact:` declaration form.
+HISTORICAL_BASELINE_RESOLVED_PINS = {
+    "mlx-swift-lm": {"revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"},
+    "mlx-swift": {
+        "revision": "dc43e62d7055353c7f99fa071a4e71d29dfddc44",
+        "version": "0.31.4",
+    },
+}
+
+
+def profile_pins(profile):
+    """Return the expected target declarations for a supported profile."""
+    if profile == "current":
+        return CURRENT_PINS
+    if profile == "historical-baseline":
+        return HISTORICAL_BASELINE_PINS
+    raise ValueError("unsupported dependency profile: %r" % (profile,))
+
 
 class PatchError(ValueError):
-    """The candidate patch could not be applied without ambiguity."""
+    """The historical baseline patch could not be applied without ambiguity."""
 
 
 def normalize_url(url):
@@ -161,10 +199,12 @@ def line_changes(before, after):
     return removed, added
 
 
-def plan_candidate_patch(text):
-    """Return ``(patched_text, changes)`` or raise ``PatchError``.
+def plan_historical_baseline_patch(text):
+    """Return ``(patched_text, changes)`` for the historical baseline or raise.
 
-    The original text is never mutated and no file is touched here.
+    Only the committed ``CURRENT_PINS`` declarations may be moved to
+    ``HISTORICAL_BASELINE_PINS``. The original text is never mutated and no
+    file is touched here.
     """
     found = find_target_declarations(text)
     replacements = []
@@ -180,17 +220,17 @@ def plan_candidate_patch(text):
         state = pin_state(declaration["block"])
         if state != CURRENT_PINS[identity]:
             raise PatchError(
-                "%s declaration state %r does not match pinned original %r"
+                "%s declaration state %r does not match accepted current %r"
                 % (identity, state, CURRENT_PINS[identity]))
-        candidate = CANDIDATE_PINS[identity]
-        if len(candidate) != 1:
-            raise PatchError("candidate pin for %s must be a single key" % identity)
+        baseline = HISTORICAL_BASELINE_PINS[identity]
+        if len(baseline) != 1:
+            raise PatchError("historical baseline pin for %s must be a single key" % identity)
         old_key = next(iter(state))
         old_token = '%s: "%s"' % (old_key, state[old_key])
-        new_key, new_value = next(iter(candidate.items()))
+        new_key, new_value = next(iter(baseline.items()))
         new_token = '%s: "%s"' % (new_key, new_value)
         if declaration["block"].count(old_token) != 1:
-            raise PatchError("%s original token %r is not unique" % (identity, old_token))
+            raise PatchError("%s current token %r is not unique" % (identity, old_token))
         new_block = declaration["block"].replace(old_token, new_token, 1)
         replacements.append((declaration["start"], declaration["end"], new_block))
         expected_removed.append(old_token)
@@ -202,11 +242,11 @@ def plan_candidate_patch(text):
     removed, added = line_changes(text, patched)
     if len(removed) != 2 or len(added) != 2:
         raise PatchError(
-            "candidate patch must change exactly two lines, got removed=%r added=%r"
+            "historical baseline patch must change exactly two lines, got removed=%r added=%r"
             % (removed, added))
     if sorted(removed) != sorted(expected_removed) or sorted(added) != sorted(expected_added):
         raise PatchError(
-            "candidate patch changed unexpected lines: removed=%r added=%r"
+            "historical baseline patch changed unexpected lines: removed=%r added=%r"
             % (removed, added))
     return patched, changes
 
@@ -221,14 +261,14 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
     baseline = {pin["identity"]: pin for pin in resolved_pins(baseline_document)}
     resolved = {pin["identity"]: pin for pin in resolved_pins(resolved_document)}
     expected = {identity: dict(pin) for identity, pin in baseline.items()}
-    if profile == "gpu-fix-candidate":
+    if profile == "historical-baseline":
         for identity in TARGET_IDENTITIES:
             if identity not in expected:
                 raise ValueError("baseline lock is missing target dependency %s" % identity)
             expected[identity] = {
                 "identity": identity,
                 "location": expected[identity]["location"],
-                "state": dict(CANDIDATE_PINS[identity]),
+                "state": dict(HISTORICAL_BASELINE_RESOLVED_PINS[identity]),
             }
     # App-only packages (currently WhisperKit) occur in the shared committed
     # lock, but SwiftPM may omit them from this host graph. Authorize only the
@@ -275,9 +315,7 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
 
 def check_declarations(profile, text):
     """Read-only profile check of the two target declarations."""
-    if profile not in SUPPORTED_PROFILES:
-        raise ValueError("unsupported dependency profile: %r" % (profile,))
-    expected = CURRENT_PINS if profile == "current" else CANDIDATE_PINS
+    expected = profile_pins(profile)
     found = find_target_declarations(text)
     report = {"profile": profile, "ok": True, "declarations": {}}
     for identity in TARGET_IDENTITIES:
@@ -316,7 +354,7 @@ def _write_text(path, text):
 
 
 def command_apply_patch(args):
-    if args.profile != "gpu-fix-candidate":
+    if args.profile != "historical-baseline":
         error = "profile %r does not patch pinned declarations" % (args.profile,)
         _write_json(args.manifest, {"profile": args.profile, "applied": False, "error": error})
         print("FAIL: %s" % error, file=sys.stderr)
@@ -324,13 +362,13 @@ def command_apply_patch(args):
     with open(args.package_swift, "r", encoding="utf-8") as handle:
         original = handle.read()
     try:
-        patched, changes = plan_candidate_patch(original)
+        patched, changes = plan_historical_baseline_patch(original)
     except PatchError as error:
         _write_json(args.manifest, {"profile": args.profile, "applied": False, "error": str(error)})
         print("FAIL: %s" % error, file=sys.stderr)
         return 1
     if patched == original:
-        error = "candidate patch produced no change"
+        error = "historical baseline patch produced no change"
         _write_json(args.manifest, {"profile": args.profile, "applied": False, "error": error})
         print("FAIL: %s" % error, file=sys.stderr)
         return 1
@@ -339,8 +377,8 @@ def command_apply_patch(args):
     diff = "".join(difflib.unified_diff(
         original.splitlines(keepends=True),
         patched.splitlines(keepends=True),
-        fromfile="Package.swift:current",
-        tofile="Package.swift:gpu-fix-candidate",
+        fromfile="Package.swift:accepted-current",
+        tofile="Package.swift:historical-baseline",
     ))
     _write_text(args.diff, diff)
     _write_json(args.manifest, {
@@ -387,7 +425,7 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     apply_parser = subparsers.add_parser(
-        "apply-patch", help="apply the two candidate declarations (CI working copy only)")
+        "apply-patch", help="apply the historical baseline declarations (CI working copy only)")
     apply_parser.add_argument("--package-swift", required=True)
     apply_parser.add_argument("--profile", required=True, choices=SUPPORTED_PROFILES)
     apply_parser.add_argument("--diff", required=True)

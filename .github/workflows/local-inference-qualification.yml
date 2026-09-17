@@ -3,26 +3,18 @@ on:
   workflow_dispatch:
     inputs:
       dependency_profile:
-        description: Dependency pin profile (current pins or isolated GPU-fix candidate)
+        description: Dependency pin profile (accepted current pins or the frozen historical baseline)
         type: choice
         options:
           - current
-          - gpu-fix-candidate
+          - historical-baseline
         default: current
-      disable_compile:
-        description: Diagnostic only — disable MLX compiled traces to isolate retained weights
-        type: boolean
-        default: false
   workflow_call:
     inputs:
       dependency_profile:
-        description: Dependency pin profile (current pins or isolated GPU-fix candidate)
+        description: Dependency pin profile (accepted current pins or the frozen historical baseline)
         type: string
         default: current
-      disable_compile:
-        description: Diagnostic only — disable MLX compiled traces to isolate retained weights
-        type: boolean
-        default: false
 permissions:
   contents: read
 concurrency:
@@ -35,7 +27,6 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_27_beta_6.app/Contents/Developer
       DEPENDENCY_PROFILE: ${{ inputs.dependency_profile || 'current' }}
-      DISABLE_COMPILE: ${{ inputs.disable_compile && 'true' || 'false' }}
     defaults:
       run:
         working-directory: FloeAgent
@@ -48,8 +39,7 @@ jobs:
           mkdir -p "$EVIDENCE"
           git rev-parse HEAD > "$EVIDENCE/SOURCE-SHA.txt"
           printf '%s\n' "$DEPENDENCY_PROFILE" > "$EVIDENCE/dependency-profile.txt"
-          printf '%s\n' "$DISABLE_COMPILE" > "$EVIDENCE/disable-compile.txt"
-          # Capture the immutable inputs before the candidate step may patch the
+          # Capture the immutable inputs before the baseline step may patch the
           # working copy, so failure recovery keeps the original lock and manifest.
           cp Package.swift "$EVIDENCE/FloeAgent-Package.swift.original"
           cp project.yml "$EVIDENCE/FloeAgent-project.yml.original"
@@ -57,20 +47,20 @@ jobs:
             "$EVIDENCE/LocalInference-Package.resolved.original.json"
       - name: Prepare Metal compiler
         run: xcodebuild -downloadComponent MetalToolchain
-      - name: Apply isolated GPU-fix candidate pins
-        if: env.DEPENDENCY_PROFILE == 'gpu-fix-candidate'
+      - name: Apply frozen historical-baseline pins
+        if: env.DEPENDENCY_PROFILE == 'historical-baseline'
         run: |
           set -o pipefail
           EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
-          # The only write to the root manifest, and only in this candidate
-          # step. The guard rejects any pin that does not match the declared
+          # The only write to the root manifest, and only in this reproducibility
+          # step. The guard rejects any pin that does not match the accepted
           # originals and refuses to change anything but those two lines.
           python3 scripts/qualify_mlx_candidate.py apply-patch \
             --package-swift Package.swift \
             --profile "$DEPENDENCY_PROFILE" \
-            --diff "$EVIDENCE/candidate-manifest.diff" \
-            --manifest "$EVIDENCE/candidate-apply.json"
-          cp Package.swift "$EVIDENCE/FloeAgent-Package.swift.candidate"
+            --diff "$EVIDENCE/baseline-manifest.diff" \
+            --manifest "$EVIDENCE/baseline-apply.json"
+          cp Package.swift "$EVIDENCE/FloeAgent-Package.swift.baseline"
       - name: Resolve dependencies with the real SwiftPM
         timeout-minutes: 15
         run: |
@@ -86,9 +76,9 @@ jobs:
             cp Qualification/LocalInference/Package.resolved \
               "$EVIDENCE/LocalInference-Package.resolved.resolved.json"
           fi
-          # Verify the frozen lock even when resolve failed: the original
-          # pins must be untouched and a candidate run must show exactly the
-          # two target revisions. Any added or drifted pin fails here.
+          # Verify the frozen lock even when resolve failed: the accepted pins
+          # must be untouched and a historical-baseline run must show exactly the
+          # two frozen revisions. Any added or drifted pin fails here.
           set +e
           python3 scripts/qualify_mlx_candidate.py verify-lock --check \
             --profile "$DEPENDENCY_PROFILE" \
@@ -122,13 +112,11 @@ jobs:
           test -n "$llama"
           DYLD_FRAMEWORK_PATH="$(dirname "$llama")"
           export DYLD_FRAMEWORK_PATH
-          # Isolate one runtime variable; never mutate the production model or
-          # loosen the existing generation/shutdown assertions for this probe.
-          if [ "$DISABLE_COMPILE" = true ]; then
-            export MLX_DISABLE_COMPILE=1
-          else
-            unset MLX_DISABLE_COMPILE
-          fi
+          # The production engine applies `MLXCompilePolicy` itself. Deliberately
+          # clear the legacy environment switch so this run proves the guard is
+          # environmentless instead of inheriting MLX_DISABLE_COMPILE.
+          unset MLX_DISABLE_COMPILE
+          test -z "${MLX_DISABLE_COMPILE:-}"
           # One LocalModelStore root, one snapshot download, reused by both
           # profiles inside a single host process. Weights are never uploaded as
           # an artifact and the existing single-download behavior is preserved.
@@ -140,10 +128,17 @@ jobs:
           test "$(grep -c '"event":"multi-chunk-verified"' "$EVIDENCE/run.log")" -eq 2
           grep -q '"event":"shutdown-complete"' "$EVIDENCE/run.log"
           grep -q '"event":"qualification-complete"' "$EVIDENCE/run.log"
+          # Truthful compile-policy metadata: the process starts unapplied, the
+          # engine applies the policy, and the environment switch stays absent.
+          grep -q '"mlxCompilePolicy":"not-applied"' "$EVIDENCE/run.log"
+          grep -q '"mlxCompilePolicy":"disabled-by-process-policy"' "$EVIDENCE/run.log"
+          grep -q '"mlxCompilePolicyAppliedBeforeLoad":true' "$EVIDENCE/run.log"
+          grep -q '"mlxDisableCompileEnvSet":false' "$EVIDENCE/run.log"
+          test "$(grep -c '"mlxDisableCompileEnvSet":true' "$EVIDENCE/run.log" || true)" -eq 0
       - name: Preserve diagnostic output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: local-inference-diagnostic-${{ inputs.dependency_profile || 'current' }}-${{ inputs.disable_compile && 'no-compile' || 'default' }}-${{ github.sha }}
+          name: local-inference-diagnostic-${{ inputs.dependency_profile || 'current' }}-${{ github.sha }}
           path: ${{ runner.temp }}/LocalInferenceEvidence/
           if-no-files-found: ignore
