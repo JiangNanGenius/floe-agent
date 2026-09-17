@@ -34,7 +34,8 @@
 | IDE/CAD repair, `3eecf735` | Compact-menu test updated; CAD fields reordered and Save made sticky; Swift type check, 73 CAD checks and 29 asset hashes passed |
 | Primary browser interaction, `3eecf735` | Narrow and wide layout inspected; real DWG edited, saved and reparsed with the bundled WASM engine; not native device evidence |
 | IDE diagnostic CI, `a22e8c3e`, run `35212766190` | All three iPad IDE cases passed; workflow failed afterward because the exact iPhone simulator was absent. No iPhone result |
-| Simulator selection repair, `b285c037`, run `35216642942` | Device selection succeeded and App host compiled; XCTest startup stalled before tests on both devices, then retry hit an existing diagnostic directory. No new App test results; diagnostic/retry repair in progress |
+| Simulator selection repair, `b285c037`, run `35216642942` | Device selection succeeded and App host compiled; XCTest startup stalled before tests on both devices, then retry hit an existing diagnostic directory. No App test results in that run; corrected by the subsequent diagnostic/retry patch |
+| Dual-device IDE qualification, `2e2a34c9`, run `35223435570` | Passed all three cases on both iPad and iPhone, first attempt; original screenshots and strict summaries retained. Targeted diagnostic run, not full release qualification |
 | Final release source, both SDK gates, signing, upload, Apple processing and internal group availability | Not complete for build 179 |
 
 Original [Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md), [CAD layout and output evidence](qualification/build178-feedback/cad-layout/README.md), and the [repair ledger](FLOE_BUILD178_FEEDBACK_REPAIR.md) retain source identifiers and failure history.

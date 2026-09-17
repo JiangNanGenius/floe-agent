@@ -1,0 +1,9 @@
+{
+  "tests": [
+    "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen",
+    "WorkspaceIDEUITests/testEngineeringDrawingInlineAndFullScreen",
+    "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen"
+  ],
+  "result": "Passed",
+  "coverage": "app-workbench-native-save-cold-reopen-and-engineering-preview"
+}

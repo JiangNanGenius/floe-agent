@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 178, previously delivered to internal Floe QA. Pu
 
 基线：1.7.0（178），此前已交付 Floe QA 内部 TestFlight；尚未提交公开／外部 Beta 审核。
 
-Build 179 is in preparation and is not uploaded. A fresh Apple query on 17 September confirms build 178 remains the latest upload and VALID. The current candidate has passing Notes simulator tests, but IDE save failures are still being repaired.
+Build 179 is in preparation and is not uploaded. The latest confirmed Apple upload is build 178 (VALID, queried 17 September). The candidate now has passing Notes and IDE/CAD simulator cases on both iPad and iPhone; final release qualification remains separate.
 
-179 正在准备，尚未上传。9 月 17 日重新查询 Apple，最新上传仍为 178，状态 VALID。候选的手记模拟器测试已通过，IDE 保存测试失败仍在修复。
+179 正在准备，尚未上传。9 月 17 日确认 Apple 最新上传为 178（VALID）。候选版现已有 iPad、iPhone 两端通过的手记与 IDE/CAD 模拟器用例；最终发布验收另行执行。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -242,9 +242,9 @@ Appearance belongs under General: light, dark and system-following behavior. Reo
 
 外观位于通用：浅色、深色及跟随系统。重启后核对模型、辅助能力、环境和语音设置，无需重复保存。
 
-Source 955e346a passed the SDK 27 App regression build and execution and three Notes UI cases on each iPad/iPhone simulator. One native Office case was skipped per device; IDE tests failed. Older release evidence remains recorded separately.
+Source 955e346a passed SDK 27 App regressions and three Notes UI cases per device, with native Office skipped. Source 2e2a34c9 then passed all three IDE/CAD cases on both iPad and iPhone on the first attempt (run 35223435570). Earlier failures remain recorded.
 
-源码 955e346a 通过 SDK 27 App 回归构建与执行，并在 iPad／iPhone 模拟器各通过三项手记 UI 用例；每端跳过一项原生 Office 用例，IDE 测试失败。旧版本交付证据单独保留。
+955e346a 通过 SDK 27 App 回归及每端三项手记 UI 用例，原生 Office 跳过。随后 2e2a34c9 在 iPad、iPhone 各首次通过三项 IDE/CAD 用例（运行 35223435570）；原始失败记录保留。
 
 TestFlight uses Xcode 26.6 / SDK 26.5. Its device build and signing/upload passed; simulator qualification for this expedited delivery was explicitly waived. This waiver does not automatically apply to the next public Beta.
 
@@ -294,9 +294,9 @@ Build 178 retains document conversation restart and live refresh after committed
 
 178 保留当前文档助手会话重开、提交编辑后实时刷新、iPad 完整助手栏和手机面板，并让已激活的 Soul／画像在下一次模型请求时生效。配图是已标注的较早源码，不是本候选版。
 
-Source 955e346a passed the SDK 27 App regression build and three Notes UI cases per device. IDE save tests failed and are being repaired. Source 59e24d61 separately passed the accepted-SDK compatibility build with unchanged App sources. Native Office remains pending.
+SDK 27 Notes and App regressions passed on 955e346a; dual-device IDE/CAD passed on 2e2a34c9. The earlier accepted-SDK compatibility build passed on 59e24d61. Final release-source qualification, native Office and physical-device acceptance remain separate.
 
-955e346a 通过 SDK 27 App 回归构建及每端三项手记 UI 用例；IDE 保存测试失败，正在修复。59e24d61 在 App 源码相同的前提下另已通过发布 SDK 兼容构建。原生 Office 验收仍待完成。
+955e346a 已通过 SDK 27 手记与 App 回归，2e2a34c9 已通过双端 IDE/CAD。59e24d61 较早通过发布 SDK 兼容构建；最终发布源码、原生 Office 与真机验收仍独立记录。
 
 The candidate MLX runtime passed real-weight macOS inference and four shutdown memory gates with compiled traces disabled. This is host evidence, not proof that the reported iPad ordinary-chat crash is fixed.
 

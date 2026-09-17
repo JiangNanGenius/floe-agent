@@ -73,9 +73,9 @@
  "candidateQualification": {
   "version": "1.7.0",
   "build": "179",
-  "appSourceCommit": "b285c037",
-  "ideCIRun": 35216642942,
-  "status": "xctest_startup_and_retry_repair_not_uploaded",
+  "appSourceCommit": "2e2a34c9f9d6a06d10b804df81ee1d92ec3f1381",
+  "ideCIRun": 35223435570,
+  "status": "dual_device_ide_passed_release_pending",
   "limitations": [
    "Native iPad ordinary-chat local-model crash acceptance remains pending.",
    "The build 175 Agent recording is earlier-source demonstration evidence."
@@ -84,6 +84,10 @@
    "run": 35212766190,
    "iPad": "three_cases_passed",
    "iPhone": "not_run_missing_requested_simulator"
+  },
+  "ideResult": {
+   "iPad": "three_cases_passed_first_attempt",
+   "iPhone": "three_cases_passed_first_attempt"
   }
  }
 }

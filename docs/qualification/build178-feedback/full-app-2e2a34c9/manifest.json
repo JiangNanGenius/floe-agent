@@ -1,0 +1,56 @@
+{
+  "sourceSHA": "2e2a34c9f9d6a06d10b804df81ee1d92ec3f1381",
+  "run": 35223435570,
+  "artifact": 10500206254,
+  "artifactSHA256": "edb06ecb32dfb267ec413e46316e4525c7d98e837122f30cb3e94651b2862ee7",
+  "screenshots": [
+    {
+      "file": "ipad-dwg-reopened.png",
+      "sha256": "d8524b9d7fa5ff2f88ba2ec166b173905403100277190e7a3055607ebff1ed60",
+      "original": "31859C03-74CB-4E5E-A5E2-3D927B8BEF53.png",
+      "test": "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789650974.625
+    },
+    {
+      "file": "ipad-dwg-saved.png",
+      "sha256": "ff70c9c2fe699ad49c0d7d00f6b6b7d63ebe5845d8d5cb635d11b8d8d414767c",
+      "original": "0639B0EA-17EE-4411-A7C0-292C90F9EDF0.png",
+      "test": "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789650921.923
+    },
+    {
+      "file": "ipad-ide-reopened.png",
+      "sha256": "2301c72410daf24c29f990d3f150f071907d8628526c9e1a5bcc0ae09102ac7c",
+      "original": "34F734A8-03C5-42A9-AE42-00783B5BFF22.png",
+      "test": "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789651147.268
+    },
+    {
+      "file": "iphone-dwg-reopened.png",
+      "sha256": "3210a379d55fbea33f96da2642664d9c1cd207c47141396635591354487bd1f5",
+      "original": "2FC8D976-2B66-443F-8F0C-58A6257257CF.png",
+      "test": "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen()",
+      "device": "iPhone 17 Pro",
+      "timestamp": 1789651532.727
+    },
+    {
+      "file": "iphone-dwg-saved.png",
+      "sha256": "3581ed10adb7f07de7898d6b4a8dc49df6b5984e617694629363e80628260ec6",
+      "original": "17B288E1-1288-4A1E-842A-C30C77DC4971.png",
+      "test": "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen()",
+      "device": "iPhone 17 Pro",
+      "timestamp": 1789651473.411
+    },
+    {
+      "file": "iphone-ide-reopened.png",
+      "sha256": "1f14a88e9462151da0b8c7624327d4d78857562a08f7db82dd3a68e49d7ac262",
+      "original": "06C85E6D-A829-4607-9EEA-E983B0DAEACF.png",
+      "test": "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen()",
+      "device": "iPhone 17 Pro",
+      "timestamp": 1789651695.878
+    }
+  ]
+}

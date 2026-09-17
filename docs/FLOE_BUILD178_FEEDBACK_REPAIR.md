@@ -482,3 +482,15 @@ CI now keeps separate diagnostic directories, log files and partial xcresults fo
 Primary review also corrected the existing App-regression loop exiting before its strict xcresult verifier. An executable test of the actual workflow shell confirms successful execution reaches the verifier and a verifier failure fails the step. Full compiled Products (including UITest runner and xctestrun), hash, source SHA/run/attempt and toolchain are now archived before UI execution, with seven-day retention. No unverified host reuse is enabled.
 
 Local validation: nine runner checks plus 29 workflow/selector/shared-host checks passed; actionlint passed. A second OpenCode review independently simulated the archive and retry shell. These script checks now run in CI before project generation. Run `35223435570` is the next dual IDE qualification, not an upload. The initial Kimi worker exhausted its monthly API allowance; its partial work was reviewed and completed by the available DeepSeek worker.
+
+
+### 2026-09-17 — dual-device IDE qualification passed
+
+[Run 35223435570](https://github.com/JiangNanGenius/floe-agent/actions/runs/35223435570), source `2e2a34c9`, completed successfully. iPad mini (A17 Pro) and iPhone 17 Pro each passed all three original IDE cases on the first attempt. The diagnostic runner reported exit 0, testsStarted true, and elapsed times of 525.186/443.372 seconds. No infrastructure retry or executed-test retry was used. The complete UI workflow step took 19 minutes 3 seconds including device preparation and attachment export. [Original screenshots, manifest and strict summaries](qualification/build178-feedback/full-app-2e2a34c9/README.md) are retained. Primary visual review confirms saved DWG text and reopened IDE contents on both devices.
+
+The full compiled test host was archived before UI execution and separately verified (artifact `10497993199`, Products SHA-256 `abfc75f5d8b30de8c34b9a3e575efa24a8671e71f4d6f5e9508f4fd671d6d250`). It is not a device IPA. This IDE-only CI intentionally skipped unrelated suites and does not replace standard final release qualification, signing, upload or physical-device checks. Build 179 is not yet uploaded at this checkpoint.
+
+
+### Compiled-host recovery entry
+
+The dispatch-only `ide-host-recovery.yml` restores a previously archived host after checking the trusted CI run, complete source SHA, run/attempt, successful upload step, digest and actual executing Xcode version/build. iPad and iPhone legs keep independent evidence. Archive extraction accepts regular files/directories only and rejects links, duplicate normalized paths and traversal. Primary review caught and corrected missing live-toolchain verification and link-chain handling; 49 executable/fixture checks and actionlint passed. Related existing checks had passed in the OpenCode review. The new recovery workflow has not been dispatched; the successful normal IDE run made another UI rerun unnecessary. It does not build or distribute an App.
