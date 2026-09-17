@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import XCTest
 import Vision
+import ImageIO
 
 @MainActor final class NativeNotesUITests: XCTestCase {
     func testReaderWindowScreenAndCloseInBothOrientations() throws {
@@ -34,23 +35,75 @@ import Vision
         let recognition = VNRecognizeTextRequest()
         recognition.recognitionLanguages = ["en-US", "zh-Hans"]
         recognition.recognitionLevel = .accurate
-        try VNImageRequestHandler(data: visiblePage.pngRepresentation, options: [:]).perform([recognition])
+        // Feed Vision the PNG's own EXIF orientation explicitly. The orientation
+        // initializer supersedes embedded metadata (VNRequestHandler.h), so the
+        // rotated buffer is corrected exactly once and the stored attachment is
+        // never rewritten, rotated or cropped in place.
+        let orientation = pngOrientation(of: visiblePage.pngRepresentation)
+        try VNImageRequestHandler(data: visiblePage.pngRepresentation, orientation: orientation, options: [:]).perform([recognition])
         let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
         XCTAssertTrue(text.contains("lecture"), "The screen must contain rendered PDF text, not only the editor header: \(text)")
     }
 
-    // XCUIScreen can retain the portrait screen canvas after the app rotates
-    // (observed in run 35180990348). Capture the actual app and verify the image
-    // dimensions as well as the accessibility frame before labeling evidence.
+    // XCUIScreen.main.screenshot() captures the whole screen; XCTest stores it as a
+    // PNG carrying EXIF orientation metadata instead of rotating the pixels. The
+    // previous XCUIApplication.screenshot() path was observed clipping the landscape
+    // scene to a portrait frame (run 35184454030), so capture the screen and verify
+    // the live app viewport before labeling evidence.
     private func capture(_ app: XCUIApplication, landscape: Bool) -> XCUIScreenshot {
         let deadline = Date().addingTimeInterval(10)
-        var shot = app.screenshot()
+        var shot = XCUIScreen.main.screenshot()
         while (shot.image.size.width > shot.image.size.height) != landscape && Date() < deadline {
             Thread.sleep(forTimeInterval: 0.2)
-            shot = app.screenshot()
+            shot = XCUIScreen.main.screenshot()
         }
         XCTAssertEqual(shot.image.size.width > shot.image.size.height, landscape,
                        "Capture orientation must match its label; image=\(shot.image.size), app=\(app.frame)")
+
+        // UIImage.size already reflects EXIF orientation (UIImage.h), so compare the
+        // oriented point extent with the actual viewport, not a hard-coded device size.
+        let viewport = app.frame
+        XCTAssertEqual(shot.image.size.width, viewport.width, accuracy: 1,
+                       "Oriented capture width must match the app viewport; image=\(shot.image.size), app=\(viewport)")
+        XCTAssertEqual(shot.image.size.height, viewport.height, accuracy: 1,
+                       "Oriented capture height must match the app viewport; image=\(shot.image.size), app=\(viewport)")
+
+        // Full-screen extent: decode the PNG through ImageIO, honoring its EXIF
+        // orientation, and require it to cover the viewport at the capture scale.
+        // A shortfall means the capture is clipped. Pixel-color probing is
+        // deliberately avoided because legitimate dark UI is not evidence of padding.
+        guard let pixels = orientedPixelSize(of: shot.pngRepresentation) else {
+            XCTFail("Captured PNG must decode through ImageIO; image=\(shot.image.size), app=\(viewport)")
+            return shot
+        }
+        let scale = max(shot.image.scale, 1)
+        XCTAssertGreaterThanOrEqual(pixels.width, viewport.width * scale - 1,
+                                    "Capture must not clip the viewport; pixels=\(pixels), viewport=\(viewport.size), scale=\(scale)")
+        XCTAssertGreaterThanOrEqual(pixels.height, viewport.height * scale - 1,
+                                    "Capture must not clip the viewport; pixels=\(pixels), viewport=\(viewport.size), scale=\(scale)")
         return shot
+    }
+
+    // ImageIO reports the stored (unrotated) pixel extent plus the EXIF orientation;
+    // transposing the extent yields the dimensions a conforming viewer displays.
+    private func orientedPixelSize(of png: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(png as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue else { return nil }
+        switch pngOrientation(of: png) {
+        case .left, .leftMirrored, .right, .rightMirrored:
+            return CGSize(width: height, height: width)
+        default:
+            return CGSize(width: width, height: height)
+        }
+    }
+
+    private func pngOrientation(of png: Data) -> CGImagePropertyOrientation {
+        guard let source = CGImageSourceCreateWithData(png as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let raw = (properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value,
+              let orientation = CGImagePropertyOrientation(rawValue: raw) else { return .up }
+        return orientation
     }
 }
