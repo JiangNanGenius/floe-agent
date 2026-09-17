@@ -306,7 +306,7 @@ jobs:
             ditto "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult" "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult"
           else
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
-          floe_test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "iPad mini (A17 Pro)")"
+          floe_test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "iPad mini (A17 Pro)" --family iPad --create)"
           xctestrun=$(find "$RUNNER_TEMP/FloeAppRegressionDerivedData/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
           test -n "$xctestrun"
           python3 scripts/run_test_with_diagnostics.py \
@@ -362,7 +362,10 @@ jobs:
           notes_result=0
           for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
             case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
-            xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,name=$device" \
+            floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
+            test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "$device" --family "${device%% *}" --create)"
+            test -n "$test_device"
+            xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,id=$test_device" \
               -resultBundlePath "$qualification/$name.xcresult" \
               -collect-test-diagnostics never \
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
@@ -618,7 +621,7 @@ jobs:
         timeout-minutes: 47
         run: |
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
-          floe_test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "iPad mini (A17 Pro)")"
+          floe_test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "iPad mini (A17 Pro)" --family iPad --create)"
           xctestrun=$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
           test -n "$xctestrun"
           python3 scripts/run_test_with_diagnostics.py \
@@ -671,7 +674,10 @@ jobs:
           notes_result=0
           for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
             case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
-            xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,name=$device" \
+            floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
+            test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "$device" --family "${device%% *}" --create)"
+            test -n "$test_device"
+            xcodebuild -xctestrun "$xctestrun" -destination "platform=iOS Simulator,id=$test_device" \
               -resultBundlePath "$qualification/$name.xcresult" \
               -collect-test-diagnostics never \
               -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \

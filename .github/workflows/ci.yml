@@ -343,7 +343,7 @@ jobs:
         run: |
           xctestrun=$(find FloeAgent-AppRegressionBuild/Build/Products -maxdepth 1 -name '*.xctestrun' -print -quit)
           test -n "$xctestrun"
-          test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "iPad mini (A17 Pro)")
+          test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "iPad mini (A17 Pro)" --family iPad --create)
           # The first test phase of the job boots the simulator from scratch;
           # finish boot and services before XCTest starts its own clock.
           xcrun simctl boot "$test_device" || true
@@ -414,7 +414,11 @@ jobs:
             # Sequential UI runners must not compete with the previous simulator.
             # Preserve the prior xcresult; establish boot readiness before XCTest.
             xcrun simctl shutdown all || true
-            test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$device")
+            # Runner device lists change between images (a model that existed
+            # on iOS 27 can vanish), so after the exact name prefer any
+            # available device of the same family on iOS 27, then create a
+            # task-specific one; the selector never leaves the iOS 27 major.
+            test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$device" --family "${device%% *}" --create)
             test -n "$test_device"
             xcrun simctl boot "$test_device"
             xcrun simctl bootstatus "$test_device" -b
@@ -483,7 +487,10 @@ jobs:
           for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'; do
             case "$device" in iPad*) name=ipad ;; *) name=iphone ;; esac
             xcrun simctl shutdown all || true
-            test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$device")
+            # Same family fallback and task-specific creation as the Notes
+            # leg: exact name first, then any available iOS 27 device of the
+            # family, then a created one; never another SDK major.
+            test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$device" --family "${device%% *}" --create)
             test -n "$test_device"
             xcrun simctl boot "$test_device"
             xcrun simctl bootstatus "$test_device" -b
