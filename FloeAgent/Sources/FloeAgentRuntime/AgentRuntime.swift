@@ -184,7 +184,10 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
                 artifacts: output.artifacts,
-                maximumSummaryCharacters: ["skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 : 4096
+                // These tools enforce their own bounded JSON pages. A second 4K
+                // cut here destroys the JSON and its continuation cursor.
+                maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
+                    (["skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 : 4096)
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")

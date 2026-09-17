@@ -8,6 +8,7 @@ struct NotesAssistantPanel: View {
     let document: NoteDocument
     let store: NotesStore
     let close: () -> Void
+    var pageID: UUID? = nil
     var onSaveAnswer: ((String) -> Void)? = nil
     var composerInput: ThreadComposerInput? = nil
     var onInputConsumed: (UUID) -> Void = { _ in }
@@ -77,6 +78,11 @@ struct NotesAssistantPanel: View {
                 try await store.bindAssistant(conversationID: conversation.id, documentID: document.id, canEdit: true)
                 conversationID = conversation.id
             } catch { failure = error.localizedDescription }
+        }
+        .task(id: "\(conversationID?.uuidString ?? ""): \(pageID?.uuidString ?? "")") {
+            guard let conversationID else { return }
+            do { try await store.setAssistantFocus(conversationID: conversationID, documentID: document.id, pageID: pageID) }
+            catch { failure = error.localizedDescription }
         }
     }
 

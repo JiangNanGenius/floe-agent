@@ -104,7 +104,7 @@ struct NotesDocumentEditor: View {
                 editorContent
                 if showAssistant, usesAssistantColumn(width: geometry.size.width), let store = session.store {
                     Divider()
-                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
+                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, pageID: page?.id, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
                         .frame(width: min(440, max(360, geometry.size.width * 0.36)))
                         .background(FloeTheme.readingSurface)
                         .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
@@ -114,7 +114,7 @@ struct NotesDocumentEditor: View {
             .background(FloeTheme.groupedSurface)
             .sheet(isPresented: Binding(get: { showAssistant && !usesAssistantColumn(width: geometry.size.width) }, set: { if !$0 { showAssistant = false } })) {
                 if let store = session.store {
-                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
+                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, pageID: page?.id, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
                         .presentationDetents([.large])
                         .presentationDragIndicator(.visible)
                 }
@@ -143,6 +143,8 @@ struct NotesDocumentEditor: View {
             if document.kind == .office {
                 NotesOfficeView(session: session, document: document,
                                 onAssistant: { showAssistant.toggle() }, onLinkedMaps: { showLinkedMaps = true })
+            } else if document.kind == .engineering {
+                NotesEngineeringView(session: session, document: document)
             } else if document.kind == .mindMap {
                 if showOutline { MindMapOutlineView(session: session, document: document) }
                 else { NoteMindMapView(document: document, onEdit: { edits, revision in
@@ -486,7 +488,7 @@ struct NotesDocumentEditor: View {
                 } else {
                     Menu {
                         Button("可编辑手记归档") { exportDocument(editable: true) }
-                        if document.kind != .office {
+                        if document.kind == .notebook || document.kind == .mindMap {
                             Button(document.kind == .notebook ? "PDF" : "Markdown 大纲") { exportDocument() }
                         }
                     } label: { Label("导出", systemImage: "square.and.arrow.up") }

@@ -72,7 +72,7 @@ struct NotesRootView: View {
                         }
                         Button("从 Floe 工作区导入", systemImage: "folder") { importingWorkspace = true }
                             .accessibilityIdentifier("notes.import.workspace")
-                        Button("导入手记、PDF、Office 或图片", systemImage: "square.and.arrow.down") { importing = true }
+                        Button("notes.import.all", systemImage: "square.and.arrow.down") { importing = true }
                     } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
                     .accessibilityLabel("新建或导入")
                     .accessibilityIdentifier("notes.create")
@@ -134,7 +134,7 @@ struct NotesRootView: View {
                     pendingWorkspaceImport = values
                 }
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, .plainText, UTType(exportedAs: "org.floeagent.note", conformingTo: .data)] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) }) { result in
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, .plainText, UTType(exportedAs: "org.floeagent.note", conformingTo: .data)] + ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].compactMap { UTType(filenameExtension: $0) } + NoteDocument.supportedEngineeringFileExtensions.sorted().compactMap { UTType(filenameExtension: $0) }) { result in
                 Task {
                     do {
                         let url = try result.get()
@@ -229,12 +229,12 @@ struct NotesRootView: View {
                     } label: {
                         let layout = showsCovers ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
                         layout {
-                            NotesCoverPreview(document: document, store: session.store)
+                            NotesDocumentThumbnail(document: document, store: session.store)
                                 .frame(width: showsCovers ? nil : 64, height: showsCovers ? 190 : 80)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(document.title).font(.headline).foregroundStyle(.primary)
-                                Text(document.kind == .mindMap ? "\(document.nodes.count) 个主题" : document.kind == .office ? (document.officeFileName ?? "Office 文档") : "\(document.pages.count) 页")
+                                Text(document.kind == .mindMap ? "\(document.nodes.count) 个主题" : document.kind == .office ? (document.officeFileName ?? "Office 文档") : document.kind == .engineering ? (document.engineeringFileName ?? String(localized: "notes.kind.engineering")) : "\(document.pages.count) 页")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                     Text(searchSnippet(document.searchableText))
@@ -358,44 +358,6 @@ private struct NotesRenameSheet: View {
                     Button("好") { error = nil }
                 } message: { Text(error ?? "") }
         }.presentationDetents([.medium]).interactiveDismissDisabled(saving)
-    }
-}
-@MainActor private struct NotesCoverPreview: View {
-    let document: NoteDocument
-    let store: NotesStore?
-    @State private var image: UIImage?
-    var body: some View {
-        ZStack {
-            Color(uiColor: .secondarySystemBackground)
-            if let image { Image(uiImage: image).resizable().scaledToFit() }
-            else {
-                VStack(spacing: 12) {
-                    Image(systemName: document.kind == .mindMap ? "point.3.connected.trianglepath.dotted" : document.kind == .office ? "doc.richtext" : "book.closed")
-                        .font(.largeTitle).foregroundStyle(.tint)
-                    Text(document.kind == .mindMap ? document.nodes.first?.title ?? document.title : document.officeFileName ?? document.title)
-                        .font(.caption).lineLimit(3).multilineTextAlignment(.center)
-                }.padding()
-            }
-        }
-        .task(id: document.revision) {
-            guard let store, let page = document.pages.first else { return }
-            do {
-                let background = (try await NoteFileImporter.background(page: page, store: store)).flatMap { UIImage(data: $0) }
-                let images = try await NoteFileImporter.elementImages(page: page, store: store)
-                let ink: PKDrawing?
-                if let id = page.drawingResourceID { ink = try PKDrawing(data: Data(contentsOf: await store.resourceURL(id))) }
-                else { ink = nil }
-                try Task.checkCancellation()
-                let scale = min(240 / page.width, 320 / page.height)
-                let size = CGSize(width: page.width * scale, height: page.height * scale)
-                image = UIGraphicsImageRenderer(size: size).image { context in
-                    context.cgContext.scaleBy(x: scale, y: scale)
-                    NotePageRenderer.draw(page, background: background, images: images.compactMapValues { UIImage(data: $0) })
-                    ink?.image(from: CGRect(x: 0, y: 0, width: page.width, height: page.height), scale: 240 / page.width)
-                        .draw(in: CGRect(x: 0, y: 0, width: page.width, height: page.height))
-                }
-            } catch { image = nil }
-        }
     }
 }
 

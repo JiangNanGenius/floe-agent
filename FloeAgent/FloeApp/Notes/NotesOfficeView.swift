@@ -21,10 +21,22 @@ struct NotesOfficeView: View {
     @State private var recoveryURL: URL?
     @State private var recoveries: [Recovery] = []
     @State private var showingRecoveries = false
+    @State private var keepingCopy = false
+    @State private var isVisible = false
+    @State private var externalRefreshTask: Task<Void, Never>?
+    @State private var externalUpdateAvailable = false
+    @State private var pendingExternalResource: UUID?
+    @State private var externalRefreshRunning = false
     private struct Recovery: Identifiable, Sendable {
         let url: URL
         let date: Date
         var id: URL { url }
+    }
+    private struct StagedDraft {
+        let target: URL
+        let recovery: URL
+        let resource: UUID
+        let revision: Int
     }
 
     var body: some View {
@@ -41,6 +53,29 @@ struct NotesOfficeView: View {
                         if let recoveryURL { ShareLink("导出恢复副本", item: recoveryURL) }
                     }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
+            }
+            if externalUpdateAvailable {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Label("notes.office.externalUpdate.banner", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.callout)
+                        if keepingCopy || externalRefreshRunning { ProgressView().controlSize(.small) }
+                    }
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 12) {
+                            externalUpdateActions
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            externalUpdateActions
+                        }
+                    }
+                    .disabled(keepingCopy || externalRefreshRunning || committing)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar)
+                .overlay(alignment: .bottom) { Divider() }
+                .accessibilityIdentifier("notes.office.externalUpdate")
             }
             if !OfficeFileSession.available {
                 ContentUnavailableView("Office 编辑器不可用", systemImage: "doc", description: Text("此构建不包含原生 Office 引擎。原文件已保留。"))
@@ -72,6 +107,7 @@ struct NotesOfficeView: View {
             }
         }
         .onAppear {
+            isVisible = true
             session.registerLeaveGuard(for: document.id) {
                 guard !committing else { session.errorMessage = "正在保存 Office 文档，请稍后切换。"; return false }
                 if !OfficeFileSession.available { return true }
@@ -91,12 +127,8 @@ struct NotesOfficeView: View {
         }
         .task { await prepare() }
         .onChange(of: document.officeResourceID) { _, value in
-            guard value != baseResourceID, office.readOnly, !committing, !pendingCommit else { return }
-            Task {
-                await office.release()
-                draftURL = nil; baseRevision = nil; baseResourceID = nil
-                await prepare()
-            }
+            guard let value, value != baseResourceID else { return }
+            externalResourceChanged(value)
         }
         .sheet(isPresented: $showingRecoveries) {
             NavigationStack {
@@ -125,69 +157,249 @@ struct NotesOfficeView: View {
             }
         }
         .onDisappear {
+            isVisible = false
+            pendingExternalResource = nil
+            externalRefreshTask?.cancel()
             session.removeLeaveGuard(for: document.id)
             Task { await office.release() }
         }
     }
 
     private func prepare() async {
-        guard draftURL == nil, let store = session.store, let resource = document.officeResourceID,
-              let fileName = document.officeFileName else { return }
+        guard draftURL == nil, session.store != nil else { return }
         do {
-            let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                                   appropriateFor: nil, create: true)
-                .appendingPathComponent("FloeAgent/Notes/OfficeDrafts/\(document.id.uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            let source = try await store.resourceURL(resource)
-            let documentID = document.id
-            var sourceHashes: [String: String] = [:]
-            for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
-                let metadataURL = folder.appendingPathComponent("recovery.json")
-                guard let data = try? Data(contentsOf: metadataURL), data.count < 16_384,
-                      let fields = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-                      let resourceID = fields["resourceID"], let id = UUID(uuidString: resourceID),
-                      let original = try? await store.resourceURL(id) else { continue }
-                sourceHashes[resourceID] = original.lastPathComponent
+            guard let latest = await latestOfficeDocument(), let root = try? draftsRoot() else { return }
+            if let resource = latest.officeResourceID, let store = session.store,
+               let source = try? await store.resourceURL(resource) {
+                recoveries = try await scanRecoveries(documentID: latest.id, source: source, root: root)
             }
-            let originalHashes = sourceHashes
-            recoveries = try await Task.detached(priority: .utility) {
-                var result: [Recovery] = []
-                let currentHash = try FloeDigest.sha256Hex(ofFileAt: source)
-                for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) {
-                    try Task.checkCancellation()
-                    let metadataURL = folder.appendingPathComponent("recovery.json")
-                    guard folder.resolvingSymlinksInPath().deletingLastPathComponent() == root.resolvingSymlinksInPath(),
-                          let metadata = try? Data(contentsOf: metadataURL), metadata.count < 16_384,
-                          let fields = try? JSONSerialization.jsonObject(with: metadata) as? [String: String],
-                          fields["documentID"] == documentID.uuidString,
-                          let name = fields["fileName"], name == (name as NSString).lastPathComponent else { continue }
-                    let file = folder.appendingPathComponent(name)
-                    guard file.resolvingSymlinksInPath().deletingLastPathComponent() == folder.resolvingSymlinksInPath(),
-                          let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]), values.isRegularFile == true,
-                          let hash = try? FloeDigest.sha256Hex(ofFileAt: file), hash != currentHash,
-                          hash != (fields["sourceHash"] ?? originalHashes[fields["resourceID"] ?? ""]) else { continue }
-                    result.append(Recovery(url: file, date: values.contentModificationDate ?? .distantPast))
-                }
-                return result.sorted { $0.date > $1.date }
-            }.value
-            let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let target = folder.appendingPathComponent(fileName)
-            try FileManager.default.copyItem(at: source, to: target)
-            let metadata: [String: String] = ["documentID": document.id.uuidString, "resourceID": resource.uuidString,
-                                             "revision": String(document.revision), "fileName": fileName, "sourceHash": source.lastPathComponent]
-            try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: folder.appendingPathComponent("recovery.json"), options: .atomic)
-            draftURL = target; baseRevision = document.revision; baseResourceID = resource; recoveryURL = target
-            await office.open(target)
+            guard let staged = try await stageWorkingCopy(latest) else { return }
+            apply(staged)
+            await office.open(staged.target)
             await office.enterEditing()
             if let error = office.error { message = error }
         } catch { message = error.localizedDescription }
     }
 
+    /// Resolve the freshest persisted revision instead of trusting the value
+    /// captured by this SwiftUI view.
+    private func latestOfficeDocument() async -> NoteDocument? {
+        guard let store = session.store, let latest = try? await store.document(document.id),
+              latest.deletedAt == nil, latest.officeResourceID != nil, latest.officeFileName != nil else { return nil }
+        return latest
+    }
+
+    private func draftsRoot() throws -> URL {
+        let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                               appropriateFor: nil, create: true)
+            .appendingPathComponent("FloeAgent/Notes/OfficeDrafts/\(document.id.uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func stageWorkingCopy(_ latest: NoteDocument) async throws -> StagedDraft? {
+        guard let store = session.store, let resource = latest.officeResourceID,
+              let fileName = latest.officeFileName, !fileName.isEmpty,
+              fileName == (fileName as NSString).lastPathComponent else { return nil }
+        let root = try draftsRoot()
+        let source = try await store.resourceURL(resource)
+        let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let target = folder.appendingPathComponent(fileName)
+        try FileManager.default.copyItem(at: source, to: target)
+        let metadata: [String: String] = ["documentID": document.id.uuidString, "resourceID": resource.uuidString,
+                                          "revision": String(latest.revision), "fileName": fileName, "sourceHash": source.lastPathComponent]
+        try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: folder.appendingPathComponent("recovery.json"), options: .atomic)
+        return StagedDraft(target: target, recovery: target, resource: resource, revision: latest.revision)
+    }
+
+    private func apply(_ staged: StagedDraft) {
+        draftURL = staged.target
+        baseRevision = staged.revision
+        baseResourceID = staged.resource
+        recoveryURL = staged.recovery
+    }
+
+    private func scanRecoveries(documentID: UUID, source: URL, root: URL) async throws -> [Recovery] {
+        guard let store = session.store else { return [] }
+        var sourceHashes: [String: String] = [:]
+        for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+            let metadataURL = folder.appendingPathComponent("recovery.json")
+            guard let data = try? Data(contentsOf: metadataURL), data.count < 16_384,
+                  let fields = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+                  let resourceID = fields["resourceID"], let id = UUID(uuidString: resourceID),
+                  let original = try? await store.resourceURL(id) else { continue }
+            sourceHashes[resourceID] = original.lastPathComponent
+        }
+        let originalHashes = sourceHashes
+        return try await Task.detached(priority: .utility) {
+            var result: [Recovery] = []
+            let currentHash = try FloeDigest.sha256Hex(ofFileAt: source)
+            for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) {
+                try Task.checkCancellation()
+                let metadataURL = folder.appendingPathComponent("recovery.json")
+                guard folder.resolvingSymlinksInPath().deletingLastPathComponent() == root.resolvingSymlinksInPath(),
+                      let metadata = try? Data(contentsOf: metadataURL), metadata.count < 16_384,
+                      let fields = try? JSONSerialization.jsonObject(with: metadata) as? [String: String],
+                      fields["documentID"] == documentID.uuidString,
+                      let name = fields["fileName"], name == (name as NSString).lastPathComponent else { continue }
+                let file = folder.appendingPathComponent(name)
+                guard file.resolvingSymlinksInPath().deletingLastPathComponent() == folder.resolvingSymlinksInPath(),
+                      let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]), values.isRegularFile == true,
+                      let hash = try? FloeDigest.sha256Hex(ofFileAt: file), hash != currentHash,
+                      hash != (fields["sourceHash"] ?? originalHashes[fields["resourceID"] ?? ""]) else { continue }
+                result.append(Recovery(url: file, date: values.contentModificationDate ?? .distantPast))
+            }
+            return result.sorted { $0.date > $1.date }
+        }.value
+    }
+
+    // MARK: - External revision changes
+
+    @ViewBuilder private var externalUpdateActions: some View {
+        Button("notes.office.externalUpdate.keepCopyAndOpen") {
+            Task { await keepCopyAndOpenLatest() }
+        }
+        .buttonStyle(.borderedProminent)
+        Button("notes.office.externalUpdate.continueEditing") { externalUpdateAvailable = false }
+            .buttonStyle(.bordered)
+    }
+
+    private func externalResourceChanged(_ value: UUID) {
+        guard value != baseResourceID else { return }
+        pendingExternalResource = value
+        startExternalRefreshIfIdle()
+    }
+
+    private func startExternalRefreshIfIdle() {
+        guard isVisible, !committing, !keepingCopy, !externalRefreshRunning else { return }
+        externalRefreshRunning = true
+        externalRefreshTask = Task {
+            await drainExternalResources()
+            externalRefreshRunning = false
+            externalRefreshTask = nil
+            if pendingExternalResource != nil { startExternalRefreshIfIdle() }
+        }
+    }
+
+    private func drainExternalResources() async {
+        var attempts = 0
+        while isVisible, !Task.isCancelled, let value = pendingExternalResource {
+            pendingExternalResource = nil
+            guard value != baseResourceID else { continue }
+            if committing || pendingCommit {
+                externalUpdateAvailable = true
+                return
+            }
+            if office.beginExternalRefresh() {
+                await applyExternalResource()
+                office.endExternalRefresh()
+                return
+            }
+            // The initial open, a save or an attachment insert owns the session.
+            // Let it settle instead of closing it from underneath the owner.
+            attempts += 1
+            if attempts > 20 { externalUpdateAvailable = true; return }
+            do { try await Task.sleep(nanoseconds: 150_000_000) }
+            catch { return }
+            guard isVisible, !Task.isCancelled else { return }
+            if pendingExternalResource == nil { pendingExternalResource = value }
+        }
+    }
+
+    /// Caller holds and releases `office.beginExternalRefresh()` on every path.
+    private func applyExternalResource(forceReload: Bool = false) async {
+        guard isVisible, !Task.isCancelled, let latest = await latestOfficeDocument(),
+              let resource = latest.officeResourceID, resource != baseResourceID else { return }
+        if !forceReload {
+            // The engine working-copy digest cannot see a save that only wrote
+            // back the draft (the explicit-save bridge clears its latch). Compare
+            // the draft file itself against the immutable Notes resource captured
+            // in `baseResourceID`; this runs even when `office.readOnly` because a
+            // read-only preview is not a committed Notes revision.
+            if await draftDiffersFromBaseResource() {
+                externalUpdateAvailable = true
+                return
+            }
+            // Only the engine's in-memory unsaved-edit probe is read-only gated.
+            if !office.readOnly, await office.hasLocalEditsToProtect() {
+                externalUpdateAvailable = true
+                return
+            }
+        }
+        do {
+            guard let staged = try await stageWorkingCopy(latest) else {
+                externalUpdateAvailable = true
+                return
+            }
+            guard isVisible, !Task.isCancelled else { return }
+            let reopenReadOnly = office.readOnly
+            try await office.replaceWithExternalVersion(url: staged.target, readOnly: reopenReadOnly)
+            apply(staged)
+            pendingCommit = false
+            externalUpdateAvailable = false
+            message = nil
+        } catch {
+            message = error.localizedDescription
+            externalUpdateAvailable = true
+        }
+    }
+
+    /// Engine-independent guard for the external-refresh path: the current draft
+    /// file must still hash to the immutable Notes resource pointed to by
+    /// `baseResourceID`. Missing draft, unresolvable resource or any digest
+    /// failure is treated as a local modification so a refresh can never
+    /// silently discard a draft that was saved back but never committed.
+    private func draftDiffersFromBaseResource() async -> Bool {
+        guard let url = draftURL, let baseResourceID, let store = session.store,
+              let source = try? await store.resourceURL(baseResourceID) else { return true }
+        return await Task.detached(priority: .utility) {
+            guard let draftHash = try? FloeDigest.sha256Hex(ofFileAt: url),
+                  let sourceHash = try? FloeDigest.sha256Hex(ofFileAt: source) else { return true }
+            return draftHash != sourceHash
+        }.value
+    }
+
+    private func keepCopyAndOpenLatest() async {
+        guard isVisible, !keepingCopy, !externalRefreshRunning, !committing,
+              let store = session.store, let url = draftURL else { return }
+        keepingCopy = true
+        defer {
+            keepingCopy = false
+            if pendingExternalResource != nil { startExternalRefreshIfIdle() }
+        }
+        // Flush the visible editor into the working copy and draft file first so
+        // the independent document actually contains the user's edits.
+        guard await office.saveInPlace() else {
+            message = office.error ?? String(localized: "notes.office.externalUpdate.keepCopyFailed")
+            return
+        }
+        // No await between the completed flush and freezing input. The copied
+        // version must include every edit accepted before this decision.
+        guard isVisible, office.beginExternalRefresh() else { return }
+        defer { office.endExternalRefresh() }
+        do {
+            var restored = try await NoteFileImporter.importFile(url, notebookID: document.notebookID, store: store)
+            restored.title = document.title + " · " + String(localized: "notes.office.externalUpdate.copySuffix")
+            _ = try await store.create(restored)
+            try await session.reload()
+        } catch {
+            message = error.localizedDescription
+            return
+        }
+        externalUpdateAvailable = false
+        message = nil
+        await applyExternalResource(forceReload: true)
+    }
+
     private func commit() async {
         guard !committing, let url = draftURL, let store = session.store, baseRevision != nil else { return }
         committing = true
-        defer { committing = false }
+        defer {
+            committing = false
+            if pendingExternalResource == baseResourceID { pendingExternalResource = nil }
+            if pendingExternalResource != nil { startExternalRefreshIfIdle() }
+        }
         do {
             // OfficeFileSession's save path has already validated its native save receipt and
             // working-copy commit. Re-import never overwrites the former immutable resource.

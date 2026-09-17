@@ -53,13 +53,101 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private static func findWebView(in view: UIView) -> WKWebView? {
+    static func findWebView(in view: UIView) -> WKWebView? {
         if let webView = view as? WKWebView { return webView }
         for child in view.subviews {
             if let found = findWebView(in: child) { return found }
         }
         return nil
     }
+
+    // FLOE_MODIFIED_STATUS_PROBE_BEGIN
+    /// Reports the pinned engine's `.uno:ModifiedStatus` state. `true`/`false`
+    /// are authoritative; `null` means the accessor or its value is unknown and
+    /// must never be treated as a clean document.
+    static let modifiedStatusProbeScript = #"""
+    (() => {
+        try {
+            if (window.floeModifiedSinceCommit === true) return true;
+            if (window.floeModifiedSinceCommit !== false) return null;
+            const map = window.app && window.app.map;
+            const handler = map && map.stateChangeHandler;
+            if (!handler || typeof handler.getItemValue !== 'function') return null;
+            const state = handler.getItemValue('.uno:ModifiedStatus');
+            if (state === true || state === 'true') return true;
+            if (state === false || state === 'false') return false;
+            return null;
+        } catch (_) {
+            return null;
+        }
+    })()
+    """#
+    // FLOE_MODIFIED_STATUS_PROBE_END
+
+    static func didCommit(controller: UIViewController) async {
+        guard let webView = findWebView(in: controller.view) else { return }
+        // Only the verified original-file commit clears this latch. Engine
+        // autosaves and their ModifiedStatus=false notifications cannot do so.
+        _ = try? await webView.evaluateJavaScript("if (window.floeModificationTrackingInstalled === true) window.floeModifiedSinceCommit = false;")
+    }
+
+    /// Host-owned chrome applies to previews as well as editable sessions.
+    /// Keep the pinned engine bundle intact; the app owns this small adapter.
+    static func installEmbeddedControls(controller: UIViewController) throws {
+        controller.loadViewIfNeeded()
+        guard let webView = findWebView(in: controller.view) else {
+            throw CocoaError(.featureUnsupported)
+        }
+        webView.configuration.userContentController.addUserScript(WKUserScript(
+            source: embeddedControlsScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    }
+
+    // FLOE_EMBEDDED_CONTROLS_SCRIPT_BEGIN
+    static let embeddedControlsScript = #"""
+    (() => {
+        const install = () => {
+            if (window.floeEmbeddedControlsInstalled) return;
+            window.floeEmbeddedControlsInstalled = true;
+            // Floe's tab close saves/commits before releasing the native session.
+            // The engine's close button bypasses that owner and strands the tab.
+            const style = document.createElement('style');
+            style.textContent = '#closebuttonwrapper, #closebuttonwrapperseparator, #closebutton { display: none !important; }';
+            document.head.appendChild(style);
+            if (window.L && window.L.Params) window.L.Params.closeButtonEnabled = false;
+
+            const proto = window.L && window.L.Control && window.L.Control.NotebookbarBuilder
+                && window.L.Control.NotebookbarBuilder.prototype;
+            if (!proto || !window.JSDialog || typeof window.JSDialog.combobox !== 'function') return;
+            const original = proto._comboboxControl;
+            if (typeof original !== 'function') return;
+            // Use the same searchable, anchored dropdown as font size. Its entries
+            // come from the engine, not the device's unrelated system font list.
+            proto._comboboxControl = function (parent, data, builder) {
+                if (data.id === 'fontnamecombobox')
+                    return window.JSDialog.combobox(parent, data, builder);
+                return original.apply(this, arguments);
+            };
+            const stateChanged = proto.onCommandStateChanged;
+            if (typeof stateChanged !== 'function') return;
+            window.floeModificationTrackingInstalled = true;
+            window.floeModifiedSinceCommit = false;
+            proto.onCommandStateChanged = function (event) {
+                if (event.commandName === '.uno:ModifiedStatus'
+                    && (event.state === true || event.state === 'true'))
+                    window.floeModifiedSinceCommit = true;
+                if (event.commandName === '.uno:CharFontName') {
+                    const control = document.getElementById('fontnamecombobox');
+                    if (control && typeof control.onSetText === 'function') control.onSetText(event.state);
+                }
+                return stateChanged.apply(this, arguments);
+            };
+        };
+        if (document.readyState === 'loading')
+            document.addEventListener('DOMContentLoaded', install, { once: true });
+        else install();
+    })();
+    """#
+    // FLOE_EMBEDDED_CONTROLS_SCRIPT_END
 
     // FLOE_EXPLICIT_SAVE_SCRIPT_BEGIN
     static let script = #"""

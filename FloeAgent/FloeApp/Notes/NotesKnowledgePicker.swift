@@ -65,7 +65,7 @@ struct NotesKnowledgePicker: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(document.title).foregroundStyle(.primary)
-                                Text(document.kind == .office ? "Office 文件" : document.kind == .mindMap ? "思维导图" : "\(document.pages.count) 页")
+                                Text(document.kind == .office ? "Office 文件" : document.kind == .mindMap ? "思维导图" : document.kind == .engineering ? (document.engineeringFileName ?? String(localized: "notes.kind.engineering")) : "\(document.pages.count) 页")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }.disabled(selecting)

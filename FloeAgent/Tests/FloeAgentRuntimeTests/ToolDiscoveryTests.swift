@@ -41,6 +41,27 @@ struct ToolDiscoveryTests {
         #expect(decoded["nextOffset"] as? Int == 25)
     }
 
+    @Test(arguments: ["notes.read", "notes.search"])
+    func executorPreservesNotesJSONAndContinuation(toolName: String) async throws {
+        let registry = ToolRunnerRegistry()
+        let data = try JSONSerialization.data(withJSONObject: [
+            "text": String(repeating: "中文 notes ", count: 2_000),
+            "nextTextOffset": 18_000
+        ], options: [.sortedKeys])
+        let text = String(decoding: data, as: UTF8.self)
+        registry.register(AnyAgentTool(descriptor: descriptor(toolName)) { _, _ in
+            .init(summary: text, fullOutputSHA256: "", maximumSummaryCharacters: 196_608)
+        })
+        let result = try await CatalogToolExecutor(runners: registry).execute(
+            ToolCall(id: "notes-page", toolName: toolName, argumentsJSON: Data("{}".utf8), scope: .local),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(result.status == .ok)
+        #expect(result.outputSummary == text)
+        let decoded = try #require(JSONSerialization.jsonObject(with: Data(result.outputSummary.utf8)) as? [String: Any])
+        #expect(decoded["nextTextOffset"] as? Int == 18_000)
+    }
+
     @Test func instructionsRespectTheEffectiveCatalog() {
         let limited = ToolDiscovery.index([descriptor("workspace.readFile")])
         #expect(!limited.contains("checklist.updatePlan"))

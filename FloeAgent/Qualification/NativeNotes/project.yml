@@ -43,6 +43,12 @@ targets:
       - ../../FloeApp/Notes/MindMapTopicInspector.swift
       - ../../FloeApp/Notes/NotesLinkedMindMaps.swift
       - ../../FloeApp/Notes/NotesAgentTools.swift
+      - ../../FloeApp/Notes/NotesDocumentThumbnail.swift
+      - ../../FloeApp/Notes/NotesEngineeringView.swift
+      - ../../FloeApp/Workspace/EngineeringFilePreview.swift
+      - ../../FloeApp/Workspace/OfficeExplicitSaveBridge.swift
+      - ../../FloeApp/Browser/LocalStaticFileServer.swift
+      - ../../FloeApp/Browser/BrowserURLPolicy.swift
       - ../../FloeApp/Files/QuickLookView.swift
       - ../../FloeApp/Files/PDFKitAccess.swift
       - ../../FloeApp/Files/FloePDFExceptionGuard.mm
@@ -62,6 +68,14 @@ targets:
         product: FloeNotes
       - package: FloeAgent
         product: FloeDocuments
+      - package: FloeAgent
+        product: FloeAgentRuntime
+      - package: FloeAgent
+        product: FloePersistence
+      - package: FloeAgent
+        product: FloeSecurity
+      - package: FloeAgent
+        product: FloeModels
       - package: FloeAgent
         product: FloeTools
       - package: FloeAgent

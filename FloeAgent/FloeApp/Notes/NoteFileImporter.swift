@@ -7,6 +7,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import FloeNotes
 import FloeDocuments
+import FloeWorkspace
 import PencilKit
 import Vision
 
@@ -128,6 +129,20 @@ enum NoteFileImporter {
             var document = NoteDocument(kind: .office, notebookID: notebookID, title: url.deletingPathExtension().lastPathComponent)
             document.officeResourceID = resourceID
             document.officeFileName = url.lastPathComponent
+            try document.validate()
+            return document
+        }
+        // Engineering/CAD files keep their immutable original; the bundled viewer
+        // reads bounded bytes on demand. The Quick Look/Office paths must not see them.
+        let engineeringName = url.lastPathComponent
+        if let engineeringKind = EngineeringPreviewKind.identify(engineeringName) {
+            guard engineeringKind != .unsupported else {
+                throw NoteError.invalidOperation("暂不支持预览此工程图格式，请导出为 DXF、DWG、STL 或 STEP 后重试。")
+            }
+            let resourceID = try await store.importResource(from: url, mediaType: type?.preferredMIMEType ?? "application/octet-stream")
+            var document = NoteDocument(kind: .engineering, notebookID: notebookID, title: url.deletingPathExtension().lastPathComponent)
+            document.engineeringResourceID = resourceID
+            document.engineeringFileName = engineeringName
             try document.validate()
             return document
         }

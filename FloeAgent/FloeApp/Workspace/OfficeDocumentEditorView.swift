@@ -273,6 +273,7 @@ final class OfficeFileSession: ObservableObject {
             try await workspace.save(session)
             hasSaveConflict = false
             hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
+            if !hasUncommittedChanges { await OfficeExplicitSaveBridge.didCommit(controller: native) }
             if returnToPreview {
                 try await closeController()
                 readOnly = true
@@ -292,6 +293,93 @@ final class OfficeFileSession: ObservableObject {
             phase = runtimeFailed || controller == nil ? .failed : .ready
             return false
         }
+    }
+
+    // MARK: - External resource refresh
+
+    /// Freezes the current editor and holds the session's operating lock across
+    /// an external-revision decision and close. Returns false when another
+    /// session operation (initial open, save, attachment) is in flight.
+    func beginExternalRefresh() -> Bool {
+        guard canAct else { return false }
+        operating = true
+        setEditorInteraction(false)
+        return true
+    }
+
+    func endExternalRefresh() {
+        guard operating else { return }
+        setEditorInteraction(true)
+        finishOperation()
+    }
+
+    /// True when the visible editor holds edits worth protecting. The engine's
+    /// `.uno:ModifiedStatus` is authoritative because `hasUncommittedChanges`
+    /// only tracks the working-copy file and ignores in-memory keyboard edits.
+    /// A nil (unknown) engine answer must never be treated as clean.
+    func hasLocalEditsToProtect() async -> Bool {
+        if hasUncommittedChanges { return true }
+        // Autosave can clear the engine's modified flag while the private
+        // working copy still differs from Floe's last committed document.
+        guard let workspace, let session else { return true }
+        do {
+            if try await workspace.hasUncommittedWorkingCopy(session) { return true }
+        } catch { return true }
+        switch await engineModifiedState() {
+        case .some(false): return false
+        default: return true
+        }
+    }
+
+    /// Closes the current controller/working copy and reopens `url` while the
+    /// caller still holds `beginExternalRefresh()`. On failure the editor is
+    /// left in a recoverable failed state instead of silently discarding work.
+    func replaceWithExternalVersion(url: URL, readOnly: Bool) async throws {
+        try await closeController()
+        if let session, let workspace { await workspace.close(session) }
+        session = nil
+        workspace = nil
+        hasUncommittedChanges = false
+        self.readOnly = true
+        phase = .loading
+        error = nil
+        do {
+            let files = try SecurityScopedDocumentWorkspace()
+            let opened = try await files.open(securityScopedURL: url)
+            workspace = files
+            session = opened
+            try await activate(readOnly: readOnly)
+        } catch {
+            self.readOnly = true
+            fail(error)
+            throw error
+        }
+    }
+
+    private func engineModifiedState() async -> Bool? {
+        #if canImport(FloeOfficeNative)
+        guard let native = controller as? FloeOfficeNativeViewController, native.isViewLoaded,
+              let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else { return nil }
+        do {
+            let value = try await webView.evaluateJavaScript(OfficeExplicitSaveBridge.modifiedStatusProbeScript)
+            if let number = value as? NSNumber { return number.boolValue }
+            if let text = value as? String {
+                if text == "true" { return true }
+                if text == "false" { return false }
+            }
+            return nil
+        } catch {
+            return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    private func setEditorInteraction(_ enabled: Bool) {
+        guard let controller, controller.isViewLoaded else { return }
+        controller.view.isUserInteractionEnabled = enabled
+        if !enabled { controller.view.endEditing(true) }
     }
 
     func discardAndReturn() async -> Bool {
@@ -488,6 +576,7 @@ final class OfficeFileSession: ObservableObject {
             self.error = "文档已关闭，编辑副本已保留。"
             self.phase = .failed
         }
+        try OfficeExplicitSaveBridge.installEmbeddedControls(controller: native)
         if !readOnly {
             explicitSaveBridge = try OfficeExplicitSaveBridge(controller: native) { [weak self, weak native] in
                 guard let self, let native, self.controller === native else { return false }

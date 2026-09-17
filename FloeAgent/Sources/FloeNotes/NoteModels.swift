@@ -204,7 +204,7 @@ public struct Notebook: Codable, Hashable, Identifiable, Sendable {
 }
 
 public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
-    public enum Kind: String, Codable, CaseIterable, Sendable { case notebook, mindMap, office }
+    public enum Kind: String, Codable, CaseIterable, Sendable { case notebook, mindMap, office, engineering }
     public var schemaVersion: Int = 1
     public var id: UUID
     public var kind: Kind
@@ -228,6 +228,10 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     public var officeTextResourceID: UUID?
     public var officeExtractedText: String?
     public var officeTextError: String?
+    /// Standalone engineering/CAD document: exactly one immutable resource, previewed read-only.
+    /// Optional so archives written before this kind still decode.
+    public var engineeringResourceID: UUID?
+    public var engineeringFileName: String?
     public init(id: UUID = UUID(), kind: Kind = .notebook, notebookID: UUID? = nil, title: String) {
         self.id = id; self.kind = kind; self.notebookID = notebookID; self.title = title; self.revision = 0
         self.pages = kind == .notebook ? [NotePage()] : []
@@ -239,11 +243,28 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         Set(pages.flatMap { page in
             [page.backgroundResourceID, page.drawingResourceID].compactMap { $0 }
             + page.elements.compactMap(\.resourceID)
-        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID].compactMap { $0 })
+        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID, engineeringResourceID].compactMap { $0 })
     }
     public var searchableText: String {
-        ([title] + tags + ((officeTextResourceID == officeResourceID ? officeExtractedText : nil).map { [$0] } ?? []) + pages.compactMap(\.extractedText) + pages.compactMap(\.indexedVisualText) + pages.flatMap { $0.elements.map(\.text) }
+        ([title] + tags + ((officeTextResourceID == officeResourceID ? officeExtractedText : nil).map { [$0] } ?? []) + (engineeringFileName.map { [$0] } ?? []) + pages.compactMap(\.extractedText) + pages.compactMap(\.indexedVisualText) + pages.flatMap { $0.elements.map(\.text) }
          + nodes.flatMap { [$0.title, $0.note] + ($0.attachments ?? []).flatMap { [$0.fileName, $0.caption] } }).joined(separator: "\n")
+    }
+    /// Engineering formats this build can route to a bundled viewer. Mirrors
+    /// `EngineeringPreviewKind.identify` (FloeWorkspace) minus `.unsupported`;
+    /// keep the two in sync when the viewer gains or drops a decoder.
+    public static let supportedEngineeringFileExtensions: Set<String> = [
+        "stl", "obj", "ply", "off", "3ds", "dae", "fbx", "3mf", "amf", "gltf", "glb", "wrl", "bim",
+        "dxf", "dwg", "step", "stp", "iges", "igs", "brep",
+        "gbr", "ger", "gerber", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gm1", "gml", "drl", "xln"
+    ]
+    /// Strict basename + supported-format check for an engineering import.
+    public static func isSupportedEngineeringFileName(_ name: String) -> Bool {
+        guard !name.isEmpty, name != ".", name != "..",
+              name == (name as NSString).lastPathComponent,
+              !name.contains("\\"), !name.contains(":"),
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              name.utf8.count <= 255 else { return false }
+        return supportedEngineeringFileExtensions.contains((name as NSString).pathExtension.lowercased())
     }
     public func validate() throws {
         guard schemaVersion == 1, revision >= 0, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -288,12 +309,22 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         switch kind {
         case .office:
             guard pages.isEmpty, nodes.isEmpty, connections.isEmpty, officeResourceID != nil,
+                  engineeringResourceID == nil, engineeringFileName == nil,
                   let name = officeFileName, name == (name as NSString).lastPathComponent,
                   ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].contains((name as NSString).pathExtension.lowercased()) else {
                 throw NoteError.invalidDocument("Office 文档缺少有效的文件引用。")
             }
+        case .engineering:
+            guard pages.isEmpty, nodes.isEmpty, connections.isEmpty,
+                  officeResourceID == nil, officeFileName == nil,
+                  officeTextResourceID == nil, officeExtractedText == nil, officeTextError == nil,
+                  engineeringResourceID != nil, let name = engineeringFileName,
+                  Self.isSupportedEngineeringFileName(name) else {
+                throw NoteError.invalidDocument("工程图文档缺少有效的文件引用，或格式不受支持。")
+            }
         case .notebook:
-            guard !pages.isEmpty, nodes.isEmpty, connections.isEmpty, officeResourceID == nil, officeFileName == nil else {
+            guard !pages.isEmpty, nodes.isEmpty, connections.isEmpty, officeResourceID == nil, officeFileName == nil,
+                  engineeringResourceID == nil, engineeringFileName == nil else {
                 throw NoteError.invalidDocument("笔记至少需要一页，且不能包含导图节点。")
             }
         case .mindMap:
@@ -301,6 +332,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                 throw NoteError.invalidDocument("一张导图最多使用 64 张不同的图片，请拆分导图。")
             }
             guard pages.isEmpty, !nodes.isEmpty, nodes.count <= 10_000, officeResourceID == nil, officeFileName == nil,
+                  engineeringResourceID == nil, engineeringFileName == nil,
                   nodes.filter({ $0.parentID == nil }).count == 1 else {
                 throw NoteError.invalidDocument("导图需要唯一中心主题。")
             }

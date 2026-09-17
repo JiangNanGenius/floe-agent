@@ -1174,6 +1174,198 @@
     }
   }
 },
+    "notes.office.externalUpdate.banner": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document has an update. Your edits are kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文档已有更新，你的编辑已保留"
+          }
+        }
+      }
+    },
+    "notes.office.externalUpdate.continueEditing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep editing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续编辑"
+          }
+        }
+      }
+    },
+    "notes.office.externalUpdate.copySuffix": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kept copy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留副本"
+          }
+        }
+      }
+    },
+    "notes.office.externalUpdate.exportCopy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export recovery copy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出恢复副本"
+          }
+        }
+      }
+    },
+    "notes.office.externalUpdate.keepCopyAndOpen": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep a copy and open the update"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留副本并打开新版"
+          }
+        }
+      }
+    },
+    "notes.office.externalUpdate.keepCopyFailed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The edit could not be flushed, so it was not copied. The editor keeps your work and can be exported."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能写入编辑副本，未创建新文档。当前页面仍保留你的编辑，可导出或重试。"
+          }
+        }
+      }
+    },
+    "notes.engineering.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to preview the drawing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法预览工程图"
+          }
+        }
+      }
+    },
+    "notes.engineering.loading": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opening drawing…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在打开工程图…"
+          }
+        }
+      }
+    },
+    "notes.engineering.retry": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "notes.engineering.tooLarge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The drawing exceeds the 20 MB preview limit. The original file has been preserved; export it and open it in professional software."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工程图超过 20 MB 的预览上限。原文件已保留，请导出后使用专业软件打开。"
+          }
+        }
+      }
+    },
+    "notes.import.all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import notes, PDF, Office, CAD, or images"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入手记、PDF、Office、CAD 或图片"
+          }
+        }
+      }
+    },
+    "notes.kind.engineering": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drawing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工程图"
+          }
+        }
+      }
+    },
   "packages.node.manager": {
   "localizations": {
     "en": {

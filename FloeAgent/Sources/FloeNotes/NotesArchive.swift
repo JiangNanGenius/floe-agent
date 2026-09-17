@@ -153,6 +153,7 @@ public enum NotesArchive {
             var document = original
             document.id = documentIDs[original.id]!; document.notebookID = notebookID; document.deletedAt = nil
             document.officeResourceID = document.officeResourceID.flatMap { ids[$0] }
+            document.engineeringResourceID = document.engineeringResourceID.flatMap { ids[$0] }
             if var links = document.linkedMindMaps {
                 for index in links.indices { links[index].documentID = documentIDs[links[index].documentID]! }
                 document.linkedMindMaps = links

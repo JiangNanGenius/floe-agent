@@ -8,6 +8,7 @@ import FloeDocuments
     var body: some Scene { WindowGroup {
         if ProcessInfo.processInfo.arguments.contains("--search-fixture") { SearchQualificationPage() }
         else if ProcessInfo.processInfo.arguments.contains("--linked-map-fixture") { LinkedMapQualificationPage() }
+        else if ProcessInfo.processInfo.arguments.contains("--preview-fixture") { PreviewQualificationPage() }
         else { QualificationPage() }
     } }
 }

@@ -476,6 +476,89 @@ struct NotesStoreTests {
         #expect(restored.summaries == value.summaries)
         #expect(try await NotesStore(root: root).document(value.id).nodes == value.nodes)
     }
+
+    @Test func textElementFramePlacementPersistsResizeAndIdempotentReceipt() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Layout"))
+        let page = base.pages[0].id
+        let placed = NoteElement(frame: NoteRect(x: 24, y: 48, width: 320, height: 140), text: "Placement", isAIGenerated: true)
+        let inserted = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision, title: "Place text",
+            edits: [.upsertElement(pageID: page, element: placed)], requestID: "layout:add"))
+        let saved = try #require(inserted.pages[0].elements.first(where: { $0.id == placed.id }))
+        #expect(saved.frame == placed.frame && saved.text == "Placement")
+        #expect(inserted.revision == base.revision + 1)
+        var moved = saved
+        moved.frame = NoteRect(x: 60, y: 96, width: 200, height: 80)
+        let resized = try await store.apply(.init(documentID: base.id, expectedRevision: inserted.revision, title: "Move text",
+            edits: [.upsertElement(pageID: page, element: moved)], requestID: "layout:move"))
+        let current = try #require(resized.pages[0].elements.first(where: { $0.id == placed.id }))
+        #expect(current.frame == moved.frame && current.text == "Placement")
+        #expect(resized.revision == inserted.revision + 1)
+        // The same request ID replays the stored receipt instead of moving the text twice.
+        let replay = try await store.apply(.init(documentID: base.id, expectedRevision: inserted.revision, title: "Move text",
+            edits: [.upsertElement(pageID: page, element: moved)], requestID: "layout:move"))
+        #expect(replay == resized)
+        let undone = try await store.undo(base.id, expectedRevision: resized.revision)
+        let restored = try #require(undone.pages[0].elements.first(where: { $0.id == placed.id }))
+        #expect(restored.frame == placed.frame && restored.text == "Placement")
+    }
+
+    @Test func textElementFrameEditRebasesOnUnrelatedElementAndConflictsOnSameElement() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var value = NoteDocument(title: "Layout rebase")
+        let a = NoteElement(frame: NoteRect(x: 20, y: 20, width: 200, height: 100), text: "A")
+        let b = NoteElement(text: "B")
+        value.pages[0].elements = [a, b]
+        let base = try await store.create(value)
+        let page = base.pages[0].id
+        var other = b; other.text = "B changed"
+        _ = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision, title: "Other element",
+            edits: [.upsertElement(pageID: page, element: other)]))
+        var moved = a; moved.frame = NoteRect(x: 60, y: 80, width: 240, height: 120)
+        let merged = try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision, title: "Move text",
+            edits: [.upsertElement(pageID: page, element: moved)]), base: base)
+        let mergedA = try #require(merged.pages[0].elements.first(where: { $0.id == a.id }))
+        let mergedB = try #require(merged.pages[0].elements.first(where: { $0.id == b.id }))
+        #expect(mergedA.frame == moved.frame && mergedA.text == "A")
+        #expect(mergedB.text == "B changed")
+        _ = try await store.apply(.init(documentID: base.id, expectedRevision: merged.revision, title: "Change A",
+            edits: [.upsertElement(pageID: page, element: mergedA)]))
+        var stale = a; stale.frame = NoteRect(x: 1, y: 1, width: 50, height: 50)
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision, title: "Stale A",
+                edits: [.upsertElement(pageID: page, element: stale)]), base: base)
+        }
+    }
+
+    @Test func invalidTextElementFrameIsRejectedBeforeCommit() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Invalid frame"))
+        let page = base.pages[0].id
+        await #expect(throws: (any Error).self) {
+            try await store.apply(.init(documentID: base.id, expectedRevision: base.revision, title: "Bad frame",
+                edits: [.upsertElement(pageID: page, element: NoteElement(frame: NoteRect(x: 0, y: 0, width: 0, height: 40), text: "bad", isAIGenerated: true))]))
+        }
+        #expect(try await store.document(base.id) == base)
+    }
+
+    @Test func officeTextCacheIsBoundedAndKeepsRevision() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let file = root.appendingPathComponent("big.docx")
+        try Data("big".utf8).write(to: file)
+        let resource = try await store.importResource(from: file, mediaType: "application/octet-stream")
+        var draft = NoteDocument(kind: .office, title: "Big")
+        draft.officeResourceID = resource; draft.officeFileName = "big.docx"
+        let saved = try await store.create(draft)
+        let oversized = String(repeating: "字", count: 2_000_100)
+        try await store.cacheOfficeText(documentID: saved.id, resourceID: resource, text: oversized, error: nil)
+        let cached = try await store.document(saved.id)
+        #expect(cached.revision == saved.revision)
+        #expect((cached.officeExtractedText ?? "").count == 2_000_000)
+    }
 }
 
 @Test func permanentDeletionPreservesSharedHistoryAndActiveReaders() async throws {
