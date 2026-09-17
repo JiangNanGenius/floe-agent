@@ -1,17 +1,17 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (178)",
-  "candidate": "1.7.0 (179), not uploaded; dual-device IDE/CAD passed",
-  "pages": 13,
-  "sha256": "153cabbbebc13781d73729a5ab4d3bf3fc6863401646387292ca7d82e1593ec6",
-  "bytes": 2745541,
+  "candidate": "1.7.0 (181), not uploaded; full release qualification pending",
+  "pages": 14,
+  "sha256": "d1b533d05c408117932b9939e377252d9407785846c9f03fc8ec59bd16b8aa8e",
+  "bytes": 2761093,
   "textExtractionChecked": true,
   "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout",
   "reviewStatus": "draft, external review not submitted",
   "reviewerCloudCredits": "none authorized; demonstration credentials excluded",
   "localInference": "Apple Foundation Models user-reported working; MLX macOS host memory/inference passes do not clear iPad chat crash",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
-  "updatedAt": "2026-09-17",
+  "updatedAt": "2026-09-18",
   "currentRenderedPagesReviewed": [
     1,
     2,
@@ -25,12 +25,13 @@
     10,
     11,
     12,
-    13
+    13,
+    14
   ],
   "unchangedPageTextComparedToPreviouslyReviewedPDF": [],
   "footerChange": "Baseline178/candidate179 preparation draft; all pages visually reviewed; pages12/13 reviewed again after status corrections",
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
   "latestEvidence": "IDE CI35223435570: three cases passed per device on first attempt; no build179 upload",
-  "visualReview": "13-page contact sheet reviewed; changed evidence text retains layout; final page12 enlarged review"
+  "visualReview": "All 14 rendered pages visually inspected after the candidate update; no clipping or overlap."
 }
