@@ -1,6 +1,6 @@
 # IDE cloud builds / IDE 云端构建
 
-Build 180 candidate. Source and focused checks are under review; full-App cloud
+Build 181 candidate. Source and focused checks are under review; full-App cloud
 qualification and a live account dispatch are still required. This page describes
 the implemented flow, not a TestFlight availability claim.
 
@@ -58,7 +58,7 @@ cancel-before-association, retry/backoff, terminal-state preservation during an
 artifact refresh, redirect authorization handling, digest mismatch, and an
 actual GitHub run continued across App relaunch. The local state-machine and
 transport fixtures provide focused evidence; they do not replace full-App UI or
-real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_37.md)
+real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_38.md)
 for current delivery status.
 
 Observed before the build-180 tag: the production center/engine/store/policy and
@@ -69,3 +69,21 @@ concurrent stale artifact response after run completion. All 14 generated
 workflow templates parsed and passed actionlint; a hostile filename was checked
 as one literal shell argument. Full-App execution and live-account recovery are
 still pending; no cloud build or TestFlight result is implied by these checks.
+
+### Real transport correction in build 181
+
+A real API check exposed that `URLComponents` dropped the base URL when query
+parameters were appended. Build 180 was cancelled before upload. The correction
+resolves the absolute URL first; fixtures now reject non-HTTPS relative URLs.
+The production client with an ordinary URLSession subsequently read workflows,
+runs, jobs and artifacts, followed pagination (100 to 198 runs), and downloaded
+a small diagnostic artifact with the GitHub digest matching. No transport shim
+was used. [Recorded evidence](qualification/build181-release/github-actions/live-api.json)
+is a read-only network check, not App relaunch or UI acceptance.
+
+Build 181 adds two real-disk recovery regressions (19 App engine cases total).
+A two-process CLI check writes running/cancelling records through the production
+store, then a separate process reconstructs the production engine and verifies
+foreground reconciliation, preserved cancellation intent, terminal persistence,
+and zero dispatch calls. The remote responses in that check are controlled
+fixtures; the separate live API check above covers real network transport.

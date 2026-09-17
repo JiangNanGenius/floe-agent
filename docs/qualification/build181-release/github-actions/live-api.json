@@ -1,0 +1,49 @@
+{
+  "observedAt": "2026-09-17T16:25:20Z",
+  "kind": "real read-only GitHub API via production GitHubActionsClient and plain URLSession; not App UI acceptance",
+  "sourceFiles": {
+    "FloeAgent/Sources/FloeGit/GitHubActionsModels.swift": "595463416c2012149ce040069f69d53662ae08719f6c03882ae08736f87a61d8",
+    "FloeAgent/Sources/FloeGit/GitHubActionsService.swift": "414229a28d4d61365c2e2208a4fb7ad86dea877a3f53962e11d97682e209aa9d"
+  },
+  "errors": 0,
+  "run": {
+    "conclusion": "cancelled",
+    "event": "push",
+    "headBranch": "v1.7.0-beta.37",
+    "headSHA": "5e7a609e8c289572679507cd52a49fd4a21efc9e",
+    "id": 35244918975,
+    "isTerminal": true,
+    "runNumber": 198,
+    "sourceShaMatchesFrozen": true,
+    "status": "completed",
+    "succeeded": false,
+    "workflowID": 335356613
+  },
+  "pagination": {
+    "maxPages1Count": 100,
+    "maxPages3Count": 198,
+    "newestRunIDsMaxPages3": [
+      35244918975,
+      35228451173,
+      35106710878,
+      35106582867,
+      35096506727
+    ],
+    "perPageRequested": 100,
+    "secondPageFollowed": true,
+    "workflowID": 335356613
+  },
+  "artifact": {
+    "artifactID": 10507217402,
+    "bytes": 1957,
+    "limitBytes": 2097152,
+    "metadataSizeInBytes": 1957,
+    "name": "app-regression-SDK27-35244918975",
+    "serverDigest": "sha256:49d570352dcb37dbeafc3d89f697389cb2907a0b944b1e1b71622b3c3898970b",
+    "serverDigestMatches": true,
+    "sha256": "49d570352dcb37dbeafc3d89f697389cb2907a0b944b1e1b71622b3c3898970b",
+    "sourceHost": "api.github.com",
+    "suggestedFileName": "app-regression-SDK27-35244918975.zip"
+  },
+  "limits": "No live App dispatch/relaunch observed. The downloaded small artifact is CI diagnostics, not an application IPA."
+}

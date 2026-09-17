@@ -1,0 +1,10 @@
+PASS  reader process sees the writer's records on disk [2 == 2]
+PASS  recovery published both terminal records
+PASS  running record recovered to completed [Optional(main.GitHubActionsJobState.completed) == Optional(main.GitHubActionsJobState.completed)]
+PASS  running conclusion persisted [Optional("success") == Optional("success")]
+PASS  cancelling record recovered to cancelled [Optional(main.GitHubActionsJobState.cancelled) == Optional(main.GitHubActionsJobState.cancelled)]
+PASS  cancel intent preserved across processes
+PASS  no dispatch during recovery [0 == 0]
+PASS  no cancel for an already terminal run [0 == 0]
+
+==== ALL PASS ====

@@ -1,0 +1,5 @@
+PASS  writer persisted both records to the real store [2 == 2]
+PASS  writer left no corrupt files
+WROTE_RECORDS 2
+
+==== ALL PASS ====

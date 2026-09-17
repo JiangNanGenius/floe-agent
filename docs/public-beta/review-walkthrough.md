@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (178). Candidate: 1.7.0 (180). preparation draft; build 180 cloud qualification running; not uploaded; external review not submitted.
+Baseline: 1.7.0 (178). Candidate: 1.7.0 (181). preparation draft; build 181 pending cloud qualification; not uploaded; external review not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 178, previously delivered to internal Floe QA. Pu
 
 基线：1.7.0（178），此前已交付 Floe QA 内部 TestFlight；尚未提交公开／外部 Beta 审核。
 
-Build 180 (source 5e7a609e, beta.37) is undergoing cloud qualification and is not uploaded. Apple discovery on 18 September Sydney time still returned build 178 as the latest VALID upload. Build 179 retained an unsigned package but did not reach upload after its accepted-SDK Notes gate timed out.
+Build 181 (beta.38) is the next candidate and is not uploaded. Build 180 was cancelled before upload after a real GitHub query URL defect was found. Apple discovery on 18 September Sydney time returned build 178 as the latest VALID upload. Build 179 retained an unsigned package but did not reach upload after its accepted-SDK Notes gate timed out.
 
-180（源码 5e7a609e，beta.37）正在云端验收，尚未上传。悉尼时间 9 月 18 日查询，Apple 最新 VALID 上传仍为 178。179 已保留未签名包，但发布 SDK 手记验收超时，未进入上传。
+181（beta.38）是新的候选版，尚未上传。180 在真实 GitHub 接口验证发现查询地址缺陷后已停止，未进入上传。悉尼时间 9 月 18 日查询，Apple 最新 VALID 上传仍为 178；179 已保留未签名包，但发布 SDK 手记验收超时，未进入上传。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -246,13 +246,13 @@ Source 955e346a passed SDK 27 App regressions and three Notes UI cases per devic
 
 955e346a 通过 SDK 27 App 回归及每端三项手记 UI 用例，原生 Office 跳过。随后 2e2a34c9 在 iPad、iPhone 各首次通过三项 IDE/CAD 用例（运行 35223435570）；原始失败记录保留。
 
-The build-178 release passed both SDK jobs and signed/uploaded successfully; its later GitHub publication step failed and was recovered separately. The older build-172 expedited simulator waiver does not apply to build 180 or public Beta review.
+The build-178 release passed both SDK jobs and signed/uploaded successfully; its later GitHub publication step failed and was recovered separately. The older build-172 expedited simulator waiver does not apply to build 181 or public Beta review.
 
-178 发布的两套 SDK 验收及签名上传成功；其后 GitHub 发布步骤失败，另行恢复。较早 172 的加急模拟器豁免不适用于 180 或公开 Beta 审核。
+178 发布的两套 SDK 验收及签名上传成功；其后 GitHub 发布步骤失败，另行恢复。较早 172 的加急模拟器豁免不适用于 181 或公开 Beta 审核。
 
-Every screenshot identifies its original source. The retained captures show earlier full-App simulator runs, not physical Pencil acceptance or the final build-180 submission binary. Office/PPT/CAD library covers require their own new evidence; earlier PDF captures do not prove them.
+Every screenshot identifies its original source. The retained captures show earlier full-App simulator runs, not physical Pencil acceptance or the final build-181 submission binary. Office/PPT/CAD library covers require their own new evidence; earlier PDF captures do not prove them.
 
-每张截图标明原始来源。现有配图来自较早完整 App 模拟器运行，不代表 Pencil 真机验收或最终 180 安装包；Office/PPT/CAD 文件列表缩略图需要新证据，早先 PDF 截图不能替代。
+每张截图标明原始来源。现有配图来自较早完整 App 模拟器运行，不代表 Pencil 真机验收或最终 181 安装包；Office/PPT/CAD 文件列表缩略图需要新证据，早先 PDF 截图不能替代。
 
 Before submission, confirm the final build, review contact, feedback email, support/privacy URLs and accepted access arrangement. These real details are not yet completed; this document is a preparation draft.
 
@@ -294,9 +294,9 @@ Build 178 retains document conversation restart and live refresh after committed
 
 178 保留当前文档助手会话重开、提交编辑后实时刷新、iPad 完整助手栏和手机面板，并让已激活的 Soul／画像在下一次模型请求时生效。配图是已标注的较早源码，不是本候选版。
 
-Earlier dual-device IDE/CAD evidence remains valid for its labelled source. Build 180 adds real Office/PPT/CAD cover assertions, Node/Python service lifecycle cases and durable GitHub job tests. Focused source/harness checks passed; run 35244918975 is the pending full release gate.
+Earlier dual-device IDE/CAD evidence remains valid only for its labelled source. The candidate adds real Office/PPT/CAD cover assertions, Node/Python service lifecycle cases and durable GitHub job tests. The original API transport fixture missed a query URL defect found by real-network validation; the corrected source requires a new cloud release gate.
 
-此前双端 IDE/CAD 证据只对应各自标注源码。180 新增真实 Office/PPT/CAD 封面断言、Node/Python 服务生命周期及 GitHub 持久任务测试；定向源码与测试宿主检查通过，运行 35244918975 的完整发布验收仍在进行。
+此前双端 IDE/CAD 证据只对应各自标注源码。候选新增真实 Office/PPT/CAD 封面断言、Node/Python 服务生命周期及 GitHub 持久任务测试。原 API 模拟测试漏掉的查询地址缺陷由真实网络验证发现；修正源码需要重新完成云端发布验收。
 
 The candidate MLX runtime passed real-weight macOS inference and four shutdown memory gates with compiled traces disabled. This is host evidence, not proof that the reported iPad ordinary-chat crash is fixed.
 
@@ -320,9 +320,9 @@ No model sleep loop is needed. An uncertain submission must not create duplicate
 
 无需模型循环等待。提交结果不明时不能重复触发；取消需等待 GitHub 确认。读取日志、下载未过期产物；摘要不匹配时必须保留原有文件。
 
-These are candidate acceptance instructions. The exact build-180 UI, live-account dispatch and relaunch observations still need to be recorded before treating this feature as review-ready.
+These are candidate acceptance instructions. The exact build-181 UI, live-account dispatch and relaunch observations still need to be recorded before treating this feature as review-ready.
 
-以上是候选版验收操作。仍需记录 180 的界面、真实账户提交和重开观察，才能把此项标为送审就绪。
+以上是候选版验收操作。仍需记录 181 的界面、真实账户提交和重开观察，才能把此项标为送审就绪。
 
 ## 13  演示结果与反馈 / Expected results and feedback
 

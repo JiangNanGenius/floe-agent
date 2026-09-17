@@ -53,6 +53,21 @@ private final class FixtureURLProtocol: URLProtocol, @unchecked Sendable {
             }
             captured.httpBody = data
         }
+        // Regression guard: the production client must always build absolute
+        // HTTPS requests. A scheme-less/relative URL is what the old
+        // `apiURL(_:query:)` produced for any query-bearing endpoint, and
+        // URLSession reports it as "unsupported URL". Rejecting it here means a
+        // reintroduced query-composition defect fails the fixture loudly instead
+        // of silently round-tripping through a custom protocol. Signed
+        // redirects stay absolute HTTPS, so they are unaffected.
+        guard let requestURL = captured.url,
+              requestURL.scheme?.lowercased() == "https",
+              let host = requestURL.host, !host.isEmpty else {
+            let rejected = captured.url?.absoluteString ?? "nil"
+            Issue.record("FixtureURLProtocol rejected a non-absolute HTTPS request: \(rejected)")
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
         Self.lock.lock()
         Self.recorded.append(captured)
         let handler = Self.handler
@@ -327,5 +342,85 @@ struct GitHubActionsFixtureTests {
         let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
         #expect(body.contains("\"force\":false") || body.contains("\"force\": false"))
         #expect(body.contains("\"sha\":\"abc\"") || body.contains("\"sha\": \"abc\""))
+    }
+
+    // MARK: - Absolute-origin regression for query-bearing endpoints
+    //
+    // `apiURL(_:query:)` composes a query with
+    // `URLComponents(url:resolvingAgainstBaseURL:false)`. If the resolved URL is
+    // passed with its `baseURL` still attached, URLComponents reads only the
+    // relative portion and drops scheme/host, producing a scheme-less URL that
+    // URLSession refuses with "unsupported URL". These tests pin the wire URL
+    // for every query-bearing endpoint to `https://api.github.com` plus the
+    // intended query, and the strict FixtureURLProtocol rejects regressions.
+
+    private func queryItems(of url: URL) -> [URLQueryItem] {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    }
+
+    private func expectGitHubOrigin(_ url: URL, path: String) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && url.host?.lowercased() == "api.github.com"
+            && url.path == path
+    }
+
+    @Test func workflowsQueryKeepsAPIGitHubOriginAndQuery() async throws {
+        FixtureURLProtocol.prepare { _ in
+            FixtureURLProtocol.Response(status: 200, headers: [:], body: json(["workflows": []]))
+        }
+        _ = try await makeClient().workflows(owner: "octo", repository: "demo", token: "t")
+        let url = try #require(FixtureURLProtocol.requests().last?.url)
+        #expect(expectGitHubOrigin(url, path: "/repos/octo/demo/actions/workflows"))
+        #expect(queryItems(of: url).contains { $0.name == "per_page" && $0.value == "100" })
+    }
+
+    @Test func runRequestKeepsAPIGitHubOriginWithoutQuery() async throws {
+        FixtureURLProtocol.prepare { _ in
+            FixtureURLProtocol.Response(status: 200, headers: [:], body: json([
+                "id": 11, "workflow_id": 7, "run_number": 3, "event": "push",
+                "status": "completed", "conclusion": "cancelled", "head_sha": "abc",
+                "head_branch": "main", "created_at": "2026-01-01T00:00:00Z"
+            ]))
+        }
+        _ = try await makeClient().run(owner: "octo", repository: "demo", runID: 11, token: "t")
+        let url = try #require(FixtureURLProtocol.requests().last?.url)
+        #expect(expectGitHubOrigin(url, path: "/repos/octo/demo/actions/runs/11"))
+        #expect(url.query == nil)
+    }
+
+    @Test func jobsQueryKeepsAPIGitHubOriginAndQuery() async throws {
+        FixtureURLProtocol.prepare { _ in
+            FixtureURLProtocol.Response(status: 200, headers: [:], body: json(["jobs": []]))
+        }
+        _ = try await makeClient().jobs(owner: "octo", repository: "demo", runID: 42, token: "t")
+        let url = try #require(FixtureURLProtocol.requests().last?.url)
+        #expect(expectGitHubOrigin(url, path: "/repos/octo/demo/actions/runs/42/jobs"))
+        #expect(queryItems(of: url).contains { $0.name == "per_page" && $0.value == "100" })
+    }
+
+    @Test func artifactsQueryKeepsAPIGitHubOriginAndQuery() async throws {
+        FixtureURLProtocol.prepare { _ in
+            FixtureURLProtocol.Response(status: 200, headers: [:], body: json(["artifacts": []]))
+        }
+        _ = try await makeClient().artifacts(owner: "octo", repository: "demo", runID: 42, token: "t")
+        let url = try #require(FixtureURLProtocol.requests().last?.url)
+        #expect(expectGitHubOrigin(url, path: "/repos/octo/demo/actions/runs/42/artifacts"))
+        #expect(queryItems(of: url).contains { $0.name == "per_page" && $0.value == "100" })
+    }
+
+    @Test func workflowRunsQueryKeepsAPIGitHubOriginAndAllQueryItems() async throws {
+        FixtureURLProtocol.prepare { _ in
+            FixtureURLProtocol.Response(status: 200, headers: [:], body: json(["workflow_runs": []]))
+        }
+        _ = try await makeClient().workflowRuns(
+            owner: "octo", repository: "demo", workflowID: 7, token: "t",
+            branch: "floe-ide/x", event: "workflow_dispatch", maxPages: 1
+        )
+        let url = try #require(FixtureURLProtocol.requests().last?.url)
+        #expect(expectGitHubOrigin(url, path: "/repos/octo/demo/actions/workflows/7/runs"))
+        let items = queryItems(of: url)
+        #expect(items.contains { $0.name == "per_page" && $0.value == "100" })
+        #expect(items.contains { $0.name == "branch" && $0.value == "floe-ide/x" })
+        #expect(items.contains { $0.name == "event" && $0.value == "workflow_dispatch" })
     }
 }

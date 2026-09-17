@@ -1,13 +1,11 @@
-# Floe Agent 1.7.0 (180) — beta.37 candidate
+# Floe Agent 1.7.0 (181) — beta.38 candidate
 
-**Cancelled before upload after a real-network API defect was found.**
+**Preparing the corrected candidate; not uploaded.**
 
-Immutable source: `5e7a609e8c289572679507cd52a49fd4a21efc9e` /
-`v1.7.0-beta.37`. [Release run 35244918975](https://github.com/JiangNanGenius/floe-agent/actions/runs/35244918975)
-was cancelled on 17 September 2026 at 16:21 UTC. Query-bearing GitHub API URLs
-lost their base URL and failed with `unsupported URL`; the transport fixtures
-had masked this defect. No signing or upload occurred. The immutable tag is
-preserved; [build 181](RELEASE_1.7.0_BETA_38.md) carries the correction.
+Release tag: `v1.7.0-beta.38` (source fixed when tagged). Build 180 was
+cancelled before upload after real GitHub API validation found malformed query
+URLs. This candidate preserves absolute API URLs and adds regressions that
+reject the invalid relative requests previously accepted by the fixture.
 
 ## 简体中文
 
@@ -29,12 +27,14 @@ preserved; [build 181](RELEASE_1.7.0_BETA_38.md) carries the correction.
 
 Focused source checks passed: 258 release-script tests (one skipped), asset
 hashes, workflow lint, Notes Swift semantic checks, and the GitHub job engine/
-transport harnesses. The new App source has **not**
+transport harnesses. The corrected production GitHub client also passed real
+read-only API requests, pagination and a digest-matched artifact download
+([evidence](qualification/build181-release/github-actions/live-api.json)). The new App source has **not**
 passed cloud compilation, simulator UI tests or upload validation yet. Component
 or source checks do not establish full-App or physical-device acceptance.
 
 Build 179 / beta.36 remains immutable at `a510ea6d`; its retained unsigned IPA
-must not be relabelled as build 180. Build 178 remains the last confirmed internal
+must not be relabelled as build 181. Build 178 remains the last confirmed internal
 TestFlight release. No public Beta review has been submitted by this change.
 
 Remaining physical checks include the reported iPad local-model ordinary-chat

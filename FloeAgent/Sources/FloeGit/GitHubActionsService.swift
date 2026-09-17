@@ -48,13 +48,21 @@ public struct GitHubActionsClient: Sendable {
 
     private func apiURL(_ segments: [String], query: [URLQueryItem] = []) throws -> URL {
         guard let url = URL(string: segments.map(escaped).joined(separator: "/"), relativeTo: baseURL),
-              url.host == baseURL.host else {
+              url.scheme?.lowercased() == baseURL.scheme?.lowercased(),
+              url.host?.lowercased() == baseURL.host?.lowercased() else {
             throw GitHubActionsError.invalidConfiguration("invalid GitHub API path")
         }
         guard !query.isEmpty else { return url }
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        // `URL(string:relativeTo:)` stores the base in `baseURL`; `URLComponents`
+        // with `resolvingAgainstBaseURL: false` reads only the relative portion
+        // and would emit a scheme-less URL, which URLSession rejects as an
+        // "unsupported URL". Resolve to the absolute URL first so the composed
+        // query URL keeps https://api.github.com before it reaches the network.
+        var components = URLComponents(url: url.absoluteURL, resolvingAgainstBaseURL: false)
         components?.queryItems = query
-        guard let composed = components?.url else {
+        guard let composed = components?.url,
+              composed.scheme?.lowercased() == "https",
+              composed.host?.lowercased() == baseURL.host?.lowercased() else {
             throw GitHubActionsError.invalidConfiguration("invalid GitHub API query")
         }
         return composed

@@ -1,12 +1,14 @@
 # Floe 1.7 TestFlight delivery
 
-## Candidate: 1.7.0 (180)
+## Candidate: 1.7.0 (181)
 
-Tagged `v1.7.0-beta.37`, source `5e7a609e8c289572679507cd52a49fd4a21efc9e`.
-[Release run 35244918975](https://github.com/JiangNanGenius/floe-agent/actions/runs/35244918975) is in progress.
-This is not an upload or availability claim. Build 179 retained an unsigned
-artifact but never entered upload after its accepted-SDK Notes gate timed out.
-The latest Apple discovery still returned build 178 VALID.
+Preparing `v1.7.0-beta.38`; not uploaded. See [candidate record](RELEASE_1.7.0_BETA_38.md).
+Build 180 / `v1.7.0-beta.37`, source `5e7a609e8c289572679507cd52a49fd4a21efc9e`,
+was cancelled in [run 35244918975](https://github.com/JiangNanGenius/floe-agent/actions/runs/35244918975)
+after real-network checks found query URLs lost their domain. No signing or
+upload occurred. Build 179 retained an unsigned artifact but never entered
+upload after its accepted-SDK Notes gate timed out. Apple discovery returned
+build 178 VALID; a new candidate is not an upload or availability claim.
 
 ## Current delivery: 1.7.0 (178)
 
