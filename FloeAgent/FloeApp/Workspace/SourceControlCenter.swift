@@ -116,7 +116,11 @@ final class SourceControlCenter: ObservableObject {
         errorMessage = nil
     }
 
-    func startDeviceLogin() async {
+    /// Starts the OAuth device flow. `includeWorkflows` is an explicit opt-in
+    /// for the `workflow` scope needed to install build templates; it defaults
+    /// to `false`, and an existing credential is never upgraded silently — only
+    /// a fresh sign-in can widen the granted scopes.
+    func startDeviceLogin(includeWorkflows: Bool = false) async {
         guard !isBusy, deviceLoginTask == nil else { return }
         guard let clientID = githubOAuthClientID else {
             errorMessage = "此构建尚未配置 GitHub OAuth Client ID，请联系构建管理员；访问令牌登录仍可使用。"
@@ -124,7 +128,10 @@ final class SourceControlCenter: ObservableObject {
         }
         isBusy = true
         do {
-            let authorization = try await github.beginDeviceAuthorization(clientID: clientID)
+            let authorization = try await github.beginDeviceAuthorization(
+                clientID: clientID,
+                includeWorkflows: includeWorkflows
+            )
             deviceAuthorization = authorization
             errorMessage = nil
             isBusy = false

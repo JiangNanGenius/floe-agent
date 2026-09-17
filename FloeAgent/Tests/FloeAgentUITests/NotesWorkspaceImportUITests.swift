@@ -231,6 +231,201 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         capture("notes-body-search-opened-document")
     }
 
+    /// End-to-end library-cover acceptance for real generated Office packages
+    /// (Word/Excel/PowerPoint), a notebook page, a mind map and bundled DXF/DWG
+    /// drawings. The debug fixture imports them through the same
+    /// `NoteFileImporter` path as workspace import; the test then asserts each
+    /// library card reports a real content-cover source instead of the explicit
+    /// unsupported/placeholder state.
+    ///
+    /// Office must satisfy the native system Quick Look content path only: a
+    /// bounded OOXML content summary is a legitimate product fallback, but it is
+    /// not the original Office thumbnail and therefore is not accepted here.
+    /// CAD must satisfy the bundled viewer (`engineeringPreview`); `unsupported`
+    /// and `quickLook` are not accepted for CAD.
+    func testNotesLibraryCardsShowRealContentCovers() throws {
+        continueAfterFailure = false
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
+            || UIDevice.current.userInterfaceIdiom == .pad
+        var app = launchNotesWithOfficeCoverFixture(ipad: ipad)
+        defer { app.terminate() }
+
+        let cases: [CoverCase] = [
+            .init(kind: "office", title: "封面验收-Word", allowed: ["quickLook"]),
+            .init(kind: "office", title: "封面验收-Excel", allowed: ["quickLook"]),
+            .init(kind: "office", title: "封面验收-PPT", allowed: ["quickLook"]),
+            .init(kind: "notebook", title: "封面验收 手写页", allowed: ["notePage"]),
+            .init(kind: "mindMap", title: "封面验收 导图", allowed: ["mindMap"]),
+            .init(kind: "engineering", title: "封面验收-图纸", allowed: ["engineeringPreview"]),
+            .init(kind: "engineering", title: "封面验收-图纸-DWG", allowed: ["engineeringPreview"])
+        ]
+
+        for cover in cases {
+            assertContentCover(app, cover: cover)
+            capture("notes-cover-\(cover.kind)-\(cover.title)")
+        }
+        capture("notes-content-covers")
+
+        // Revision-keyed invalidation: rename the Word card through the real
+        // Notes store (a save that advances the document revision), then assert
+        // the reloaded card reports a strictly newer revision and still a real
+        // Quick Look cover. A stale cached cover from the pre-rename revision
+        // would fail this.
+        let originalRevision = assertContentCover(
+            app, cover: .init(kind: "office", title: "封面验收-Word", allowed: ["quickLook"])).revision
+        let renamedTitle = "封面验收-Word 修订"
+        renameDocument(app, kind: "office", title: "封面验收-Word", to: renamedTitle)
+        let renamed = assertContentCover(
+            app, cover: .init(kind: "office", title: renamedTitle, allowed: ["quickLook"]))
+        XCTAssertGreaterThan(renamed.revision, originalRevision,
+                             "renaming must invalidate the revision-keyed cover")
+        capture("notes-content-cover-renamed")
+
+        // Open the renamed card and return: the regenerated cover survives a
+        // real open/close cycle.
+        let word = revealCard(app, kind: "office", title: renamedTitle)
+        XCTAssertTrue(word.isHittable, "the renamed cover must open a document")
+        word.tap()
+        let back = app.buttons["notes.back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 45))
+        XCTAssertTrue(back.isHittable)
+        capture("notes-content-cover-opened")
+        back.tap()
+        assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: ["quickLook"]))
+
+        // Quit and relaunch: in-memory covers are gone, so every card must
+        // regenerate from the persisted documents. The renamed Word document is
+        // kept (the fixture only seeds when its marker prefix is absent).
+        app.terminate()
+        app = launchNotesWithOfficeCoverFixture(ipad: ipad)
+        for cover in cases where cover.title != "封面验收-Word" { assertContentCover(app, cover: cover) }
+        assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: ["quickLook"]))
+        capture("notes-content-covers-relaunch")
+    }
+
+    private struct CoverCase {
+        let kind: String
+        let title: String
+        let allowed: Set<String>
+    }
+
+    private struct ParsedCover {
+        let source: String
+        let revision: Int
+    }
+
+    /// Renames a library document through the same context menu a person uses,
+    /// committing a real store revision.
+    private func renameDocument(_ app: XCUIApplication, kind: String, title: String, to newTitle: String,
+                                file: StaticString = #filePath, line: UInt = #line) {
+        let card = revealCard(app, kind: kind, title: title, file: file, line: line)
+        card.press(forDuration: 1.2)
+        let rename = app.buttons["重命名"]
+        XCTAssertTrue(rename.waitForExistence(timeout: 10), "rename action must appear", file: file, line: line)
+        rename.tap()
+        let field = app.textFields["notes.rename.title"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "rename field must appear", file: file, line: line)
+        field.tap()
+        let existing = (field.value as? String) ?? ""
+        if !existing.isEmpty {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+        }
+        field.typeText(newTitle)
+        let save = app.buttons["notes.rename.save"]
+        XCTAssertTrue(save.isHittable, "rename save must be tappable", file: file, line: line)
+        save.tap()
+    }
+
+    private func launchNotesWithOfficeCoverFixture(ipad: Bool) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.terminate()
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
+                               "--ui-test-skip-onboarding", "--ui-test-batch-fixture",
+                               "--ui-test-notes-office-thumbnail-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        app.launch()
+        if ipad {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
+            wait(for: [landscape], timeout: 10)
+        }
+        if !ipad {
+            let sidebar = app.buttons["phone.sidebar.open"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 15))
+            sidebar.tap()
+        }
+        let notes = app.staticTexts["sidebar.notes"].firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 15))
+        notes.tap()
+        XCTAssertTrue(app.buttons["notes.create"].waitForExistence(timeout: 15))
+        return app
+    }
+
+    private func cardElement(_ app: XCUIApplication, kind: String, title: String) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "notes.card.\(kind).\(title).")).firstMatch
+    }
+
+    /// The library is a `LazyVGrid` inside a `ScrollView`, so an offscreen card
+    /// is not in the accessibility tree at all. Scroll the grid until the card
+    /// is realized instead of assuming every row exists on first query. The
+    /// search starts from the top so a card scrolled past during a previous case
+    /// is still reachable.
+    @discardableResult
+    private func revealCard(_ app: XCUIApplication, kind: String, title: String,
+                            file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        let card = cardElement(app, kind: kind, title: title)
+        if card.exists && card.isHittable { return card }
+        let scroll = app.scrollViews["notes.library.scroll"]
+        guard scroll.waitForExistence(timeout: 5) else {
+            XCTAssertTrue(card.waitForExistence(timeout: 30), "card \(title) must exist", file: file, line: line)
+            return card
+        }
+        for _ in 0..<8 where !(card.exists && card.isHittable) { scroll.swipeDown() }
+        let deadline = Date().addingTimeInterval(60)
+        while !(card.exists && card.isHittable) && Date() < deadline { scroll.swipeUp() }
+        XCTAssertTrue(card.exists && card.isHittable,
+                      "card \(title) must be reachable in the library grid", file: file, line: line)
+        return card
+    }
+
+    /// Polls until the card's identifier suffix (the settled cover source plus
+    /// `#<revision>`) is one of the allowed real sources. `none`/`placeholder`
+    /// and any unexpected source fail; a generic icon is never a source.
+    @discardableResult
+    private func assertContentCover(_ app: XCUIApplication, cover: CoverCase,
+                                    file: StaticString = #filePath, line: UInt = #line) -> ParsedCover {
+        let card = revealCard(app, kind: cover.kind, title: cover.title, file: file, line: line)
+        let deadline = Date().addingTimeInterval(90)
+        var parsed = ParsedCover(source: "missing", revision: 0)
+        while Date() < deadline {
+            if card.exists {
+                parsed = parseCover(card.identifier)
+                if cover.allowed.contains(parsed.source) { break }
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        let attachment = XCTAttachment(string: "\(cover.kind) \(cover.title) coverSource=\(parsed.source) revision=\(parsed.revision) allowed=\(cover.allowed.sorted())")
+        attachment.name = "cover-source-\(cover.kind)-\(cover.title)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertTrue(cover.allowed.contains(parsed.source),
+                      "\(cover.kind) \(cover.title) cover source '\(parsed.source)' is not a real content source \(cover.allowed.sorted())",
+                      file: file, line: line)
+        XCTAssertGreaterThan(parsed.revision, 0,
+                             "\(cover.kind) \(cover.title) must report its document revision",
+                             file: file, line: line)
+        return parsed
+    }
+
+    /// The card identifier ends in `<source>#<revision>` (see `NotesRootView`).
+    private func parseCover(_ identifier: String) -> ParsedCover {
+        let suffix = identifier.components(separatedBy: ".").last ?? "none"
+        let parts = suffix.components(separatedBy: "#")
+        return ParsedCover(source: parts.first ?? "none",
+                           revision: Int(parts.dropFirst().first ?? "") ?? 0)
+    }
+
     private func openImportedDocument() throws -> (XCUIApplication, XCUIElement, XCUIElement) {
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad

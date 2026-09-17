@@ -241,12 +241,20 @@ struct RootView: View {
         .background(alignment: .bottomTrailing) {
             BackgroundPiPSceneSource(videoService: environment.backgroundVideoService)
         }
+        .onAppear {
+            GitHubActionsJobCenter.shared.scenePhaseChanged(active: scenePhase == .active, sceneID: sceneID)
+        }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             router.handleScenePhase(
                 newPhase,
                 sceneID: sceneID,
                 environment: environment
             )
+            // IDE GitHub Actions runs live on GitHub, not in this process.
+            // Launch/foreground re-reads every durable record and resumes
+            // bounded polling; background stops the local poll only, never the
+            // remote run.
+            GitHubActionsJobCenter.shared.scenePhaseChanged(active: newPhase == .active, sceneID: sceneID)
             if newPhase == .active, environment.persistenceReady {
                 Task {
                     try? await environment.configurationSync.synchronize()
@@ -261,6 +269,11 @@ struct RootView: View {
             }
         }
         .onDisappear {
+            // A full-screen editor can cover this view while its scene is
+            // still active. View disappearance alone must not pause cloud jobs.
+            if scenePhase != .active {
+                GitHubActionsJobCenter.shared.sceneDidDisappear(sceneID: sceneID)
+            }
             router.removeScene(sceneID: sceneID, environment: environment)
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) {

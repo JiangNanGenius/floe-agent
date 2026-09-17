@@ -494,3 +494,17 @@ The full compiled test host was archived before UI execution and separately veri
 ### Compiled-host recovery entry
 
 The dispatch-only `ide-host-recovery.yml` restores a previously archived host after checking the trusted CI run, complete source SHA, run/attempt, successful upload step, digest and actual executing Xcode version/build. iPad and iPhone legs keep independent evidence. Archive extraction accepts regular files/directories only and rejects links, duplicate normalized paths and traversal. Primary review caught and corrected missing live-toolchain verification and link-chain handling; 49 executable/fixture checks and actionlint passed. Related existing checks had passed in the OpenCode review. The new recovery workflow has not been dispatched; the successful normal IDE run made another UI rerun unnecessary. It does not build or distribute an App.
+
+
+### 2026-09-17 — fixed-source release and accepted-SDK timeout
+
+Tag `v1.7.0-beta.36` fixes `a510ea6d`. Run `35228451173` completed its SDK 27 job and retained the unsigned build 179 IPA (809,398,720 bytes; SHA-256 `d0b8b8b847c89d192c7a34376c6e6b1f2e7f811c221aafc212db282f7cb2fa8e`). Primary inspection confirms `org.floeagent.ios`, version 1.7.0, build 179, SDK `iphoneos27.0`, DTXcodeBuild `27A266a`. This is a developer IPA, not a signed TestFlight upload.
+
+Accepted SDK 26.6 device compilation and App regression completed. The 20-minute shared Notes step then timed out. iPad's import case first failed its 10-second application-idle wait, passed on retry, and the strict final summary is three passed/one Office skip. iPhone was interrupted in the final import case, with no summary. A retry pass does not prove there is no timing defect; the original failure and partial logs remain retained. TestFlight was skipped and no upload began. The completed accepted-SDK device recovery artifact `10501886517` can be reused without rebuilding the device app after remaining qualification and distribution checks.
+
+[Release-source SDK 27 Notes evidence](qualification/build179-release/sdk27-notes/README.md) includes six primary-reviewed original images and both strict summaries. Both devices passed three cases, with native Office skipped. Recovery work separates per-device time allowances and retains complete simulator hosts before tests.
+
+
+### User correction — Word/Excel library thumbnails are not covered by PDF UI tests
+
+The SDK 27 release Notes screenshots above use PDFs. Historical NativeNotes component run `35186569645` returned all six real Office Quick Look samples on both device families, but it did not prove DOCX/XLSX content thumbnails appear in the full-App library after import, creation, saving or reopening. That end-to-end acceptance remains open; the user explicitly reiterated this gap. A dedicated investigation and true DOCX/XLSX library-card UI checks are in progress. No PDF or generic file icon will satisfy this requirement, and any App source changes require a new immutable release source rather than relabeling build 179 artifacts.

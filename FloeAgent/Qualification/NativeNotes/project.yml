@@ -27,6 +27,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     sources:
       - App
       - ../../FloeApp/Notes/NotePageRenderer.swift
@@ -44,9 +46,11 @@ targets:
       - ../../FloeApp/Notes/NotesLinkedMindMaps.swift
       - ../../FloeApp/Notes/NotesAgentTools.swift
       - ../../FloeApp/Notes/NotesDocumentThumbnail.swift
+      - ../../FloeApp/Notes/NotesEngineeringCoverRenderer.swift
       - ../../FloeApp/Notes/NotesEngineeringView.swift
       - ../../FloeApp/Workspace/EngineeringFilePreview.swift
       - ../../FloeApp/Workspace/OfficeExplicitSaveBridge.swift
+      - ../../FloeApp/Workspace/OfficeInkPreferences.swift
       - ../../FloeApp/Browser/LocalStaticFileServer.swift
       - ../../FloeApp/Browser/BrowserURLPolicy.swift
       - ../../FloeApp/Files/QuickLookView.swift
@@ -59,6 +63,9 @@ targets:
         type: folder
         buildPhase: resources
       - path: ../../FloeApp/Resources/MindElixir
+        type: folder
+        buildPhase: resources
+      - path: ../../FloeApp/Resources/EngineeringViewers
         type: folder
         buildPhase: resources
     dependencies:

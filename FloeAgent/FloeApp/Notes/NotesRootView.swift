@@ -21,6 +21,11 @@ struct NotesRootView: View {
     @State private var deleting: NoteDocument?
     @State private var renaming: RenameTarget?
     @State private var selectedBook: UUID?
+    /// Settled cover source and revision per document, reported by each
+    /// thumbnail card so accessibility (and the UI acceptance tests) can
+    /// distinguish real content covers from the explicit unsupported/placeholder
+    /// state and prove a revision-keyed reload.
+    @State private var coverSources: [UUID: String] = [:]
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     private enum SectionFilter: String, CaseIterable {
@@ -157,7 +162,12 @@ struct NotesRootView: View {
             .alert("手记", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
                 Button("好") { session.errorMessage = nil }
             } message: { Text(session.errorMessage ?? "") }
-            .task { await session.open() }
+            .task {
+                await session.open()
+                #if DEBUG
+                await NotesOfficeThumbnailFixture.seedIfRequested(session: session)
+                #endif
+            }
         }
     }
 
@@ -229,7 +239,12 @@ struct NotesRootView: View {
                     } label: {
                         let layout = showsCovers ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
                         layout {
-                            NotesDocumentThumbnail(document: document, store: session.store)
+                            NotesDocumentThumbnail(document: document, store: session.store) { source, revision in
+                                let value = "\(source.rawValue)#\(revision)"
+                                if coverSources[document.id] != value {
+                                    coverSources[document.id] = value
+                                }
+                            }
                                 .frame(width: showsCovers ? nil : 64, height: showsCovers ? 190 : 80)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                             VStack(alignment: .leading, spacing: 5) {
@@ -254,6 +269,8 @@ struct NotesRootView: View {
                         }.padding(.vertical, 6)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("notes.card.\(document.kind.rawValue).\(document.title).\(coverSources[document.id] ?? "none")")
+                    .accessibilityValue(coverSources[document.id] ?? "none")
                     .multilineTextAlignment(.leading)
                     .disabled(document.deletedAt != nil)
                     .contextMenu {
@@ -285,6 +302,7 @@ struct NotesRootView: View {
                 }
               }.padding(20)
             }
+                .accessibilityIdentifier("notes.library.scroll")
                 .scrollDismissesKeyboard(.interactively)
                 .overlay {
                     if session.store == nil { ProgressView("正在打开手记…") }
@@ -337,7 +355,7 @@ private struct NotesRenameSheet: View {
     init(title: String, save: @escaping (String) async throws -> Void) { _name = State(initialValue: title); self.save = save }
     var body: some View {
         NavigationStack {
-            Form { TextField("名称", text: $name) }
+            Form { TextField("名称", text: $name).accessibilityIdentifier("notes.rename.title") }
                 .navigationTitle("重命名")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
@@ -350,6 +368,7 @@ private struct NotesRenameSheet: View {
                                 catch { self.error = error.localizedDescription }
                             }
                         }
+                            .accessibilityIdentifier("notes.rename.save")
                             .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }

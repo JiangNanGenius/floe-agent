@@ -6,6 +6,7 @@ struct GitHubSettingsView: View {
     @ObservedObject var center: SourceControlCenter
     @Environment(\.openURL) private var openURL
     @State private var token = ""
+    @State private var includeWorkflows = false
     @State private var showCreateRepository = false
     @State private var repositoryName = ""
     @State private var repositoryDescription = ""
@@ -47,8 +48,15 @@ struct GitHubSettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     } else {
+                        Toggle(isOn: $includeWorkflows) {
+                            Text(String(localized: "github.auth.workflows", defaultValue: "Allow GitHub Actions workflow setup"))
+                        }
+                        .disabled(center.isBusy)
+                        Text(String(localized: "github.auth.workflows.detail", defaultValue: "Enable this when installing build templates. Existing credentials are unchanged until you sign in again."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         Button {
-                            Task { await center.startDeviceLogin() }
+                            Task { await center.startDeviceLogin(includeWorkflows: includeWorkflows) }
                         } label: {
                             Label("登录 GitHub", systemImage: "person.crop.circle.badge.checkmark")
                         }

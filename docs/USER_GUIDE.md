@@ -485,4 +485,29 @@ This candidate is being verified and has not been uploaded to TestFlight.
 - The IDE can save and run the current file, stop execution and use a configured host for remote languages. Shell adds signed Lua installation with `apt install floe/lua`.
 - Local MLX models change how inference memory is released. The reported iPad chat crash still requires physical-device verification.
 
-Cloud full-App Notes tests passed on iPad and iPhone: three tests per device, with one native Office test skipped on each. See the [retained Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md). The same CI run failed IDE saving tests; those failures are being repaired. Native Office interactions, real SSH execution and this candidate's TestFlight delivery remain pending. See the [repair record](FLOE_BUILD178_FEEDBACK_REPAIR.md) and [candidate notes](RELEASE_1.7.0_BETA_36.md).
+Cloud full-App Notes tests passed on iPad and iPhone: three tests per device, with one native Office test skipped on each. See the [retained Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md). That run failed IDE saving tests; the later targeted run 35223435570 passed all three IDE cases on both simulator devices. Release run 35228451173 then timed out in accepted-SDK Notes qualification before upload. Native Office interactions, real SSH execution and this candidate's TestFlight delivery remain pending. See the [repair record](FLOE_BUILD178_FEEDBACK_REPAIR.md) and [candidate notes](RELEASE_1.7.0_BETA_36.md).
+
+
+### IDE cloud builds (build 180 candidate)
+
+After connecting GitHub in Settings, open a source file in the full-screen IDE
+and select **Run → GitHub Actions**. Choose the repository, base branch and
+workflow, then review the file snapshot before submitting. If the repository has
+no suitable workflow, review and install the provided template; installation adds
+a workflow file to the repository default branch, so this is an explicit action.
+
+Floe keeps the remote job record independently of the editor and conversation.
+Closing the editor or App does not cancel the GitHub build. On reopening, Floe
+reloads unfinished records and polls GitHub while the App is active, backing off
+when nothing changes or the network is unavailable. A cancelled job remains
+pending until GitHub confirms it stopped. If the submission response was lost,
+Floe looks for the original snapshot run instead of silently launching another.
+
+Return to the IDE run panel to see status, logs and available artifacts. Downloaded
+outputs are cloud build products, not iOS executables. Files on the device remain
+editable while the snapshot builds. This feature is still awaiting final-source
+cloud and interface qualification; see [the workflow guide](IDE_GITHUB_ACTIONS.md).
+
+Library cover qualification now explicitly includes Word, Excel, PowerPoint, DXF
+and DWG. A labelled Office summary is a fallback and does not establish a real
+original-layout thumbnail. See [thumbnail acceptance](NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md).

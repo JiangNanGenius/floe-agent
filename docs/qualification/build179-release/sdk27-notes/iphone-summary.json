@@ -1,0 +1,16 @@
+{
+  "totalTestCount": 4,
+  "passedTests": 3,
+  "failedTests": 0,
+  "skippedTests": 1,
+  "expectedFailures": 0,
+  "tests": {
+    "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant": "Passed",
+    "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen": "Skipped",
+    "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout": "Passed",
+    "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch": "Passed"
+  },
+  "result": "Passed",
+  "nativeOfficeAccepted": false,
+  "coverage": "simulator-notes-only"
+}

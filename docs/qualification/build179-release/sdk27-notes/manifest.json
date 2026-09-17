@@ -1,0 +1,56 @@
+{
+  "sourceSHA": "a510ea6df8ff4a366e237ad5bad3410e5023c92b",
+  "tag": "v1.7.0-beta.36",
+  "run": 35228451173,
+  "artifact": 10501664960,
+  "screenshots": [
+    {
+      "file": "ipad-notes-native-brushes.png",
+      "sha256": "fc60524b17a4dde5e6edd30c0b6075b216b435268e9838a9208e33f8c87f0ec7",
+      "original": "58429414-E474-49A2-AFFF-810222E7C1AC.png",
+      "test": "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789654638.586
+    },
+    {
+      "file": "ipad-notes-document-assistant.png",
+      "sha256": "46e22b850b23228f44f89c06fa70b9cb74e594c3fbbb365a29b196618b248a93",
+      "original": "4C296B8B-6CB0-43FC-A8D2-16861068C77E.png",
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789654691.612
+    },
+    {
+      "file": "ipad-notes-focused-writing.png",
+      "sha256": "097b3c86209afe0e118cb1cf424b0e42aeb348891b443ec2cc4b9aaf63e79f1d",
+      "original": "55A3ACDD-A27F-44C3-B61A-D9C73EE7CF68.png",
+      "test": "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789654649.915
+    },
+    {
+      "file": "ipad-notes-document-body-search.png",
+      "sha256": "4a4ebef988ece399efb7d0121dc84ca9e1c36dfcce28645a2857ae20b7f1ae3b",
+      "original": "7CA407AE-443F-4148-B3DE-52046EEB1F84.png",
+      "test": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()",
+      "device": "iPad mini (A17 Pro)",
+      "timestamp": 1789654590.708
+    },
+    {
+      "file": "iphone-notes-document-assistant.png",
+      "sha256": "ff09a9baa6ec766df5bca7ffb1bdb4cc382a32dfba37e75311bc5c67953a6402",
+      "original": "AF9BE7A6-3E6D-4A82-B22D-A8EEA0803705.png",
+      "test": "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant()",
+      "device": "iPhone 18 Pro",
+      "timestamp": 1789655270.133
+    },
+    {
+      "file": "iphone-notes-imported-pdf-fullscreen.png",
+      "sha256": "ac4dab97230cb9f0886d0c27859e3ce3cd05d73b9971df31fffcfbc343a499a5",
+      "original": "1DCA57CE-9639-4962-9985-41A37412FB98.png",
+      "test": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()",
+      "device": "iPhone 18 Pro",
+      "timestamp": 1789655073.559
+    }
+  ]
+}

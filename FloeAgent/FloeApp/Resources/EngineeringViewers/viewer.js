@@ -39,7 +39,7 @@ async function load(pkg){
   // Upstream changes its container to position:relative. Keep the app's
   // absolutely positioned viewport intact or it collapses to zero height.
   const surface=document.createElement('div');surface.style.cssText='width:100%;height:100%';view.append(surface);
-  const viewer=new DxfViewer(surface,{autoResize:true,retainParsedDxf:true,clearColor:new Color(config.dark?'#181e28':'#f5f6f8'),colorCorrection:true});
+  const viewer=new DxfViewer(surface,{autoResize:true,retainParsedDxf:true,preserveDrawingBuffer:config.thumbnail===!0,clearColor:new Color(config.dark?'#181e28':'#f5f6f8'),colorCorrection:true});
   destroy=()=>{cadEditor?.destroy();cad?.close();viewer.Destroy();};
   const layerVisibility=new Map();
   const refreshLayers=()=>{
@@ -149,6 +149,53 @@ function installPanZoom(img){
  view.onpointermove=e=>{if(!points.has(e.pointerId))return;const before=center();points.set(e.pointerId,{x:e.offsetX,y:e.offsetY});const after=center();const next=before.d>0?Math.max(.25,Math.min(24,scale*after.d/before.d)):scale;const ratio=next/scale;x=after.x-(before.x-x)*ratio;y=after.y-(before.y-y)*ratio;scale=next;apply();};
  view.onwheel=e=>{e.preventDefault();const next=Math.max(.25,Math.min(24,scale*Math.exp(-e.deltaY*.002))),r=next/scale;x=e.offsetX-(e.offsetX-x)*r;y=e.offsetY-(e.offsetY-y)*r;scale=next;apply();};
 }
+// Read-only thumbnail export used by the Notes library cover renderer.
+// The host may keep one offscreen web view alive for many documents, so each
+// call resets the previous render before loading the next package. It returns
+// only pixels the bundled viewer actually painted (or an explicit error), never
+// an icon or a file name. It is inert unless the host calls it.
+function resetThumbnailSurface(){
+ clearTimeout(timer);
+ try{destroy();}catch{}
+ destroy=()=>{};fit=()=>{};finished=false;
+ view.replaceChildren();
+ for(const url of urls){try{URL.revokeObjectURL(url);}catch{}}
+ urls.length=0;
+ window.floeEngineeringResult=undefined;
+ const error=$('error');if(error){error.hidden=true;error.textContent='';}
+}
+let _thumbnailAborted=false;
+window.floeEngineeringAbort=()=>{_thumbnailAborted=true;clearTimeout(timer);try{destroy();}catch{};destroy=()=>{};finished=true;};
+window.floeEngineeringThumbnail=async function(pkgJson,width,height){
+ let pkg;
+ try{pkg=typeof pkgJson==='string'?JSON.parse(pkgJson):pkgJson;}catch{return {ok:false,error:'invalid package'};}
+ const w=Math.max(64,Math.min(1024,Math.floor(Number(width)||360)));
+ const h=Math.max(64,Math.min(1024,Math.floor(Number(height)||460)));
+ if(!pkg||typeof pkg!=='object'||!Array.isArray(pkg.files)||!pkg.files.length
+    ||typeof pkg.files[0]?.base64!=='string'||pkg.files[0].base64.length>24*1024*1024)
+  return {ok:false,error:'invalid package'};
+ if(!['dxf','dwg','mesh','cadSurface','gerber'].includes(pkg.kind))return {ok:false,error:'unsupported kind'};
+ _thumbnailAborted=false;
+ resetThumbnailSurface();
+ try{
+  await load(pkg);
+  const deadline=Date.now()+20000;
+  while(!finished&&!_thumbnailAborted&&Date.now()<deadline){await new Promise(resolve=>setTimeout(resolve,40));}
+  if(_thumbnailAborted)return {ok:false,error:'aborted'};
+  if(!finished||window.floeEngineeringResult?.ok!==true)
+   return {ok:false,error:window.floeEngineeringResult?.error||'render failed'};
+  try{fit();}catch{}
+  const canvas=view.querySelector('canvas');
+  if(canvas){try{const dataURL=canvas.toDataURL('image/png');if(dataURL&&dataURL.length>256)return {ok:true,dataURL,kind:pkg.kind};}catch{}}
+  const img=view.querySelector('img');
+  if(img&&img.naturalWidth>0){
+   const surface=document.createElement('canvas');surface.width=w;surface.height=h;
+   const context=surface.getContext('2d');context.drawImage(img,0,0,w,h);
+   return {ok:true,dataURL:surface.toDataURL('image/png'),kind:pkg.kind};
+  }
+  return {ok:false,error:'no renderable surface'};
+ }catch(error){return {ok:false,error:String(error?.message??error)};}
+};
 window.floeEngineeringLoad=load;
 function boundedValue(value,depth=0){
  if(depth>5)return '[depth limit]';

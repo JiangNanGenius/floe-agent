@@ -1,0 +1,72 @@
+{
+  "sourceSHA": "955e346a",
+  "run": 35202845926,
+  "scope": "FloeApp tests in iOS simulator. Overall run failed unrelated IDE UI.",
+  "unchangedPathsVerifiedThrough": "e0c846f9",
+  "tests": [
+    {
+      "line": 468,
+      "text": "✔ Test installImportAndRemoveInSelectedEnvironment() passed after 17.396 seconds."
+    },
+    {
+      "line": 595,
+      "text": "✔ Test \"A managed Python HTTP service survives foreground runs and stops only for its owner\" passed after 0.667 seconds."
+    },
+    {
+      "line": 610,
+      "text": "✔ Test \"wheelhouse packages import inside the bundled runtime\" passed after 0.033 seconds."
+    },
+    {
+      "line": 612,
+      "text": "✔ Test \"bundled networking packages verify HTTPS and pytest executes a real test\" passed after 1.665 seconds."
+    },
+    {
+      "line": 660,
+      "text": "✔ Test serviceToolPublishesLivePreviewAndRevokesAfterStop() passed after 8.700 seconds."
+    },
+    {
+      "line": 662,
+      "text": "✔ Test managedNpmAndPnpmInstallAndExecuteRealPackages() passed after 4.198 seconds."
+    },
+    {
+      "line": 664,
+      "text": "✔ Test nodeServiceSurvivesForegroundCommandsAndStopsOnlyItsOwner() passed after 0.564 seconds."
+    },
+    {
+      "line": 779,
+      "text": "✔ Test pipelineTimeoutDrainsAndNextCommandRuns() passed after 0.303 seconds."
+    },
+    {
+      "line": 873,
+      "text": "✔ Test httpsThroughCurlPythonAndNode() passed after 1.118 seconds."
+    },
+    {
+      "line": 875,
+      "text": "✔ Test nativeNodeLiveInputAndCancellation() passed after 0.564 seconds."
+    },
+    {
+      "line": 1198,
+      "text": "✔ Test batchWorkflowUsesShellPythonAndNodeRepeatedly() passed after 1.505 seconds."
+    },
+    {
+      "line": 1279,
+      "text": "✔ Test nodeReceivesPipedInputAndShellRecoversFromMissingCommand() passed after 1.018 seconds."
+    },
+    {
+      "line": 1326,
+      "text": "✔ Test timeoutRetainsWorkerUntilItStopsAndNextRunCanProceed() passed after 0.206 seconds."
+    },
+    {
+      "line": 1393,
+      "text": "✔ Test environmentDoesNotLeakAcrossRuns() passed after 0.081 seconds."
+    },
+    {
+      "line": 1457,
+      "text": "✔ Test cancellationReturnsAndNextCommandRuns() passed after 0.299 seconds."
+    },
+    {
+      "line": 1474,
+      "text": "✔ Test loopTimeoutReturnsWithoutTerminatingCaller() passed after 0.246 seconds."
+    }
+  ]
+}

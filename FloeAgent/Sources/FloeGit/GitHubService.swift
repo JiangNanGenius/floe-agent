@@ -20,14 +20,27 @@ public actor GitHubService {
         self.session = session
     }
 
+    /// Default OAuth scopes: repository read/write plus the user identity.
+    public static let defaultOAuthScope = "repo read:user"
+    /// `workflow` is required to create or update files under
+    /// `.github/workflows` through the git-data API (Floe's build-template
+    /// install). It is opt-in because it is broader than the default and the
+    /// user must approve the extra GitHub dialog.
+    public static let workflowOAuthScope = "repo read:user workflow"
+
+    /// Begins the OAuth device flow. `includeWorkflows` requests the `workflow`
+    /// scope in addition to the default scopes; it defaults to `false` so an
+    /// existing login is never silently upgraded and the standard flow keeps
+    /// the same consent screen.
     public func beginDeviceAuthorization(
         clientID: String,
-        scope: String = "repo read:user"
+        includeWorkflows: Bool = false
     ) async throws -> GitHubDeviceAuthorization {
         let clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientID.isEmpty else {
             throw FloeError.invalidConfiguration("GitHub 登录尚未配置 OAuth Client ID")
         }
+        let scope = includeWorkflows ? Self.workflowOAuthScope : Self.defaultOAuthScope
         let payload: DeviceCodePayload = try await oauthFormRequest(
             url: URL(string: "https://github.com/login/device/code")!,
             fields: ["client_id": clientID, "scope": scope]

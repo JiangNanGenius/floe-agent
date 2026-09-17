@@ -485,4 +485,23 @@ IDE 与图纸控件跟随应用语言。这些候选变更仍需完成固定源�
 - IDE 可保存并运行当前文件、停止执行，并使用已配置主机运行远端语言。Shell 新增 `apt install floe/lua` 安装签名 Lua。
 - 本地 MLX 模型调整推理内存释放方式。报告的 iPad 聊天崩溃仍需真机复核。
 
-云端完整 App 的手记测试在 iPad、iPhone 各通过三项，各跳过一项原生 Office 测试。可查看[留存的手记截图](qualification/build178-feedback/full-app-955e346a/README.md)。同一 CI 运行的 IDE 保存测试失败，正在修复。Office 原生交互、真实 SSH 执行及本候选的 TestFlight 交付仍待完成，详见[修复记录](FLOE_BUILD178_FEEDBACK_REPAIR.md)与[候选版说明](RELEASE_1.7.0_BETA_36.md)。
+云端完整 App 的手记测试在 iPad、iPhone 各通过三项，各跳过一项原生 Office 测试。可查看[留存的手记截图](qualification/build178-feedback/full-app-955e346a/README.md)。该运行的 IDE 保存测试失败；之后的定向运行 35223435570 已在两个模拟器设备各通过三项 IDE 用例。发布运行 35228451173 随后在发布 SDK 的手记检查超时，未进入上传。Office 原生交互、真实 SSH 执行及本候选的 TestFlight 交付仍待完成，详见[修复记录](FLOE_BUILD178_FEEDBACK_REPAIR.md)与[候选版说明](RELEASE_1.7.0_BETA_36.md)。
+
+
+### IDE 云端构建（Build 180 候选）
+
+在设置中连接 GitHub 后，从完整 IDE 打开源码文件，选择**运行 → GitHub Actions**。
+选择仓库、基础分支与工作流，检查将要上传的文件快照，再提交构建。仓库尚无合适工作流时，
+可以查看并安装 Floe 模板；此操作会向仓库默认分支添加工作流文件，需要主动点击安装。
+
+任务记录独立于编辑器和聊天保存。关闭编辑器或 App 不会取消 GitHub 上的构建；
+重新打开 App 后会自动回读未完成任务，并在 App 活跃期间主动查询。状态不变、断网或
+达到服务限流时会延长查询间隔。点击取消后，需等 GitHub 确认停止才显示已取消。
+若提交响应丢失，Floe 会先寻找原快照对应的运行，不会自动再开一轮构建。
+
+回到 IDE 运行面板可以查看状态、日志及可下载产物。云端生成的 Linux／macOS 程序不能
+作为 iOS 程序直接在本机执行；构建期间，本机源码仍可继续编辑。这项新增功能尚待固定
+源码的云端和界面验收，详见[云端构建说明](IDE_GITHUB_ACTIONS.md)。
+
+本轮封面验收明确包括 Word、Excel、PPT、DXF 和 DWG。标记为“内容摘要”的 Office
+封面属于降级展示，不等于原排版缩略图；详见[缩略图验收记录](NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md)。

@@ -103,6 +103,22 @@ enum IDELanguageRunStatus: Sendable, Equatable {
     /// and the run's cleanup trap are never observed, so no "stopped" claim is
     /// made and the SSH close is not asserted merely from the token cancel.
     case stopRequestedRemote
+    /// A GitHub Actions snapshot is being published and the workflow
+    /// dispatched. The trigger is a remote API call, not a local process.
+    case gitHubActionsPreparing
+    /// The workflow was dispatched. `runID` is nil when GitHub's 204 carried
+    /// no run id and association is still in progress; the durable record (not
+    /// this transient status) is the source of truth.
+    case gitHubActionsDispatched(runID: Int64?)
+    /// The dispatch succeeded but no unique run could be associated yet. The
+    /// snapshot and baseline are retained; no duplicate dispatch is made.
+    case gitHubActionsAssociationPending
+    /// A stop was requested. GitHub finalizes cancellation asynchronously, so
+    /// the durable record keeps reconciling until the run is `cancelled`.
+    case gitHubActionsCancelRequested
+    /// A local GitHub Actions failure before/around dispatch; the durable
+    /// record keeps the detail.
+    case gitHubActionsFailed(String)
 }
 
 @MainActor
@@ -118,6 +134,15 @@ final class IDELanguageRunController: ObservableObject {
     /// the captured remote result), for the run terminal surface.
     @Published private(set) var runOutput = Data()
     @Published private(set) var localRunSessionID: String?
+
+    /// GitHub Actions state is owned by the app-level `GitHubActionsJobCenter`
+    /// so a dispatched run survives this controller (and the IDE view) being
+    /// dismissed. The controller only tracks the record it started.
+    let gitHubActions = GitHubActionsJobCenter.shared
+    @Published private(set) var gitHubRepositories: [GitHubActionsRepositorySelection] = []
+    @Published private(set) var gitHubWorkflowPaths: [String] = []
+    @Published private(set) var gitHubActionsPreview: GitHubActionsSnapshotPreview?
+    @Published private(set) var activeGitHubActionsRecordID: UUID?
 
     /// Set by the IDE so a successful dispatch can reveal the run-owned
     /// output surface. Used for both local and remote runs.
@@ -180,8 +205,11 @@ final class IDELanguageRunController: ObservableObject {
 
     var isRunning: Bool {
         switch status {
-        case .runningLocal, .runningRemote: return true
-        default: return false
+        case .runningLocal, .runningRemote,
+             .gitHubActionsDispatched, .gitHubActionsAssociationPending:
+            return true
+        default:
+            return false
         }
     }
 
@@ -196,7 +224,28 @@ final class IDELanguageRunController: ObservableObject {
     var canStop: Bool { isRunning || isPreparing }
 
     var canDispatch: Bool {
-        plan.isAvailable && !dispatching && !isRunning && state?.activePath != nil
+        guard plan.isAvailable, !dispatching, !isRunning, state?.activePath != nil else {
+            return false
+        }
+        // A cloud run needs a dispatchable workflow. Installing the Floe
+        // template on the default branch (or picking a registered one) is an
+        // explicit step, so the Run button stays disabled until it is done.
+        if case .githubActions = selection.target {
+            return !(selection.target.gitHubActionsWorkflowPath ?? "").isEmpty
+        }
+        return true
+    }
+
+    /// The durable record for the GitHub Actions run this controller started,
+    /// if any. The app-level center owns it, so it survives this sheet.
+    var gitHubActiveRecord: GitHubActionsJobRecord? {
+        guard let id = activeGitHubActionsRecordID else { return nil }
+        return gitHubActions.record(id: id)
+    }
+
+    /// Every GitHub Actions record for this workspace, newest first.
+    var gitHubWorkspaceRecords: [GitHubActionsJobRecord] {
+        gitHubActions.records(workspaceID: workspaceID)
     }
 
     // MARK: Loading
@@ -208,6 +257,142 @@ final class IDELanguageRunController: ObservableObject {
         await refreshCapabilities()
         preselectConfiguredHostIfNeeded(profiles: profiles)
         refreshPlan()
+    }
+
+    /// Called when the run target changes. Selecting GitHub Actions loads the
+    /// connected account's repositories and the reviewable snapshot; the
+    /// existing local/SSH plan is untouched.
+    func selectionDidChange() async {
+        refreshPlan()
+        if case .githubActions = selection.target {
+            if gitHubRepositories.isEmpty {
+                await gitHubActions.loadConnection()
+                gitHubRepositories = gitHubActions.repositories
+            }
+            rebuildGitHubActionsPreview()
+            await loadGitHubWorkflowPaths()
+        } else {
+            gitHubActionsPreview = nil
+        }
+    }
+
+    private func rebuildGitHubActionsPreview() {
+        guard let root, let path = state?.activePath, !path.isEmpty else {
+            gitHubActionsPreview = nil
+            return
+        }
+        gitHubActionsPreview = gitHubActions.buildSnapshotPreview(
+            root: root, activePath: path, fileService: center.fileService
+        )
+    }
+
+    /// Loads the repository's registered workflows. These are exactly the ones
+    /// GitHub accepts a `workflow_dispatch` for, because they exist on the
+    /// default branch.
+    func loadGitHubWorkflowPaths() async {
+        guard let repository = selection.target.repository else {
+            gitHubWorkflowPaths = []
+            return
+        }
+        let registered = await gitHubActions.registeredWorkflows(repository: repository)
+        gitHubWorkflowPaths = registered.map(\.path).sorted()
+    }
+
+    /// Explicit install of the Floe template for the active language on the
+    /// selected repository's default branch. The whole default branch must
+    /// grow a workflow file before `workflow_dispatch` can see it.
+    func installGitHubWorkflowTemplate() async {
+        guard let repository = selection.target.repository,
+              let path = state?.activePath,
+              let definition = IDELanguageRunPolicy.definition(forRelativePath: path),
+              let role = IDELanguageRunPolicy.gitHubActionsRole(for: definition.id) else {
+            return
+        }
+        let platform: GitHubActionsRunnerPlatform = definition.id == "swift" ? .macOS : .linux
+        guard let template = gitHubActions.template(
+            languageID: definition.id, role: role, platform: platform
+        ) else { return }
+        let result = await gitHubActions.installWorkflow(
+            template: template, repository: repository, workspaceRoot: root
+        )
+        if let result, result.isUsable {
+            setGitHubWorkflowPath(result.path)
+            await loadGitHubWorkflowPaths()
+        }
+    }
+
+    /// Current template for the active language, for the review/export UI.
+    var gitHubTemplate: IDEGitHubActionsWorkflowTemplate? {
+        guard let path = state?.activePath,
+              let definition = IDELanguageRunPolicy.definition(forRelativePath: path),
+              let role = IDELanguageRunPolicy.gitHubActionsRole(for: definition.id) else {
+            return nil
+        }
+        let platform: GitHubActionsRunnerPlatform = definition.id == "swift" ? .macOS : .linux
+        return gitHubActions.template(languageID: definition.id, role: role, platform: platform)
+    }
+
+    // MARK: GitHub Actions selection
+
+    func setGitHubRepository(_ repository: GitHubActionsRepositorySelection) {
+        selection.target = .githubActions(
+            repository: repository,
+            ref: selection.target.gitHubActionsRef,
+            workflowPath: selection.target.gitHubActionsWorkflowPath
+        )
+    }
+
+    func setGitHubRef(_ ref: String?) {
+        guard let repository = selection.target.repository else { return }
+        let trimmed = ref?.trimmingCharacters(in: .whitespacesAndNewlines)
+        selection.target = .githubActions(
+            repository: repository,
+            ref: (trimmed?.isEmpty == false) ? trimmed : nil,
+            workflowPath: selection.target.gitHubActionsWorkflowPath
+        )
+    }
+
+    func setGitHubWorkflowPath(_ path: String?) {
+        guard let repository = selection.target.repository else { return }
+        selection.target = .githubActions(
+            repository: repository,
+            ref: selection.target.gitHubActionsRef,
+            workflowPath: path
+        )
+    }
+
+    func refreshGitHubRecord(_ recordID: UUID) async {
+        await gitHubActions.refresh(recordID: recordID)
+    }
+
+    func reconcileGitHubRecord(_ recordID: UUID) async {
+        await gitHubActions.reconcile(recordID: recordID)
+    }
+
+    func cancelGitHubRecord(_ recordID: UUID) async {
+        await gitHubActions.cancel(recordID: recordID)
+    }
+
+    func loadGitHubArtifacts(_ recordID: UUID) async {
+        await gitHubActions.loadArtifacts(recordID: recordID)
+    }
+
+    func gitHubJobLog(recordID: UUID, jobID: Int64) async -> GitHubActionsLogSlice? {
+        await gitHubActions.jobLog(recordID: recordID, jobID: jobID)
+    }
+
+    func gitHubJobs(recordID: UUID) async -> [GitHubActionsJob] {
+        await gitHubActions.jobs(recordID: recordID)
+    }
+
+    @discardableResult
+    func downloadGitHubArtifact(
+        recordID: UUID, artifact: GitHubActionsArtifactRecord, overwrite: Bool
+    ) async -> GitHubActionsArtifactRecord? {
+        guard let root else { return nil }
+        return await gitHubActions.downloadArtifact(
+            recordID: recordID, artifact: artifact, workspaceRoot: root, overwrite: overwrite
+        )
     }
 
     func refreshCapabilities() async {
@@ -366,8 +551,67 @@ final class IDELanguageRunController: ObservableObject {
             await dispatchLocal(argv: argv, pinned: pinned, attempt: attempt)
         case .remote(let command, _):
             await dispatchRemote(command, pinned: pinned, attempt: attempt)
+        case .githubActions(let gitHubPlan, _):
+            await dispatchGitHubActions(gitHubPlan, attempt: attempt)
         case .unavailable(let reason):
             status = .blocked(reason)
+        }
+    }
+
+    // MARK: GitHub Actions dispatch
+
+    /// Publishes the reviewed snapshot (the sheet already showed it), triggers
+    /// the workflow and hands ownership to the app-level
+    /// `GitHubActionsJobCenter`. The durable record, not this controller, is
+    /// the source of truth once the request id exists.
+    private func dispatchGitHubActions(
+        _ plan: IDEGitHubActionsRunPlan,
+        attempt: IDELanguageRunAttempt
+    ) async {
+        guard let root, let state else { status = .workspaceChanged; return }
+        guard isCurrent(attempt), !isStopRequested(attempt) else { return }
+        guard let workflowPath = plan.workflowPath, !workflowPath.isEmpty else {
+            // The template must be installed on the default branch (or an
+            // existing registered workflow selected) before dispatch.
+            status = .gitHubActionsFailed(
+                IDELanguageRunText.t(
+                    "请先选择已注册的工作流，或安装 Floe 模板到默认分支。",
+                    "Select a registered workflow or install the Floe template on the default branch first."
+                )
+            )
+            return
+        }
+        status = .gitHubActionsPreparing
+        let preview = gitHubActions.buildSnapshotPreview(
+            root: root, activePath: state.activePath ?? "", fileService: center.fileService
+        )
+        gitHubActionsPreview = preview
+        guard let preview else {
+            status = .gitHubActionsFailed(
+                gitHubActions.errorMessage ?? "The snapshot could not be published."
+            )
+            return
+        }
+        guard isCurrent(attempt), !isStopRequested(attempt) else { return }
+        let requestID = String(UUID().uuidString.prefix(12)).lowercased()
+        let record = await gitHubActions.dispatch(
+            plan: plan, manifest: preview.manifest,
+            workspaceRoot: root, workspaceID: workspaceID,
+            environmentID: center.currentWorkspace?.environmentID,
+            requestID: requestID
+        )
+        guard isCurrent(attempt) else { return }
+        guard let record else {
+            status = .gitHubActionsFailed(gitHubActions.errorMessage ?? "GitHub Actions dispatch failed.")
+            return
+        }
+        activeGitHubActionsRecordID = record.id
+        if record.runID != nil {
+            status = .gitHubActionsDispatched(runID: record.runID)
+        } else if record.state == .associationPending {
+            status = .gitHubActionsAssociationPending
+        } else {
+            status = .gitHubActionsFailed(record.lastError ?? "GitHub Actions stopped before a run was created.")
         }
     }
 
@@ -885,6 +1129,17 @@ final class IDELanguageRunController: ObservableObject {
     }
 
     func stop() async {
+        // A dispatched GitHub Actions run is owned by the app-level center and
+        // keeps going on GitHub regardless of this controller. Cancel through
+        // the durable record; the request is not a confirmed stop.
+        if let recordID = activeGitHubActionsRecordID,
+           let record = gitHubActions.record(id: recordID),
+           !record.state.isTerminal {
+            await gitHubActions.cancel(recordID: recordID)
+            activeAttempt = nil
+            status = .gitHubActionsCancelRequested
+            return
+        }
         guard let attempt = activeAttempt else { return }
         // Invalidate this attempt for every later await and side effect, and
         // cancel the per-attempt token so an in-flight probe/verified transfer/

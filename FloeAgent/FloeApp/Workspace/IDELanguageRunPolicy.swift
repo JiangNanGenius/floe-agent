@@ -123,6 +123,14 @@ struct IDELanguageRunSelection: Sendable, Equatable {
     enum Target: Sendable, Equatable, Hashable {
         case local
         case remote(hostID: UUID, hostName: String)
+        /// A GitHub Actions run on the user's own repository. `ref` overrides
+        /// the repository default branch; `workflowPath` selects an existing
+        /// workflow, nil installs a Floe template on the run-owned branch.
+        case githubActions(
+            repository: GitHubActionsRepositorySelection,
+            ref: String?,
+            workflowPath: String?
+        )
 
         var hostID: UUID? {
             if case .remote(let id, _) = self { return id }
@@ -131,6 +139,21 @@ struct IDELanguageRunSelection: Sendable, Equatable {
 
         var hostName: String? {
             if case .remote(_, let name) = self { return name }
+            return nil
+        }
+
+        var repository: GitHubActionsRepositorySelection? {
+            if case .githubActions(let repository, _, _) = self { return repository }
+            return nil
+        }
+
+        var gitHubActionsRef: String? {
+            if case .githubActions(_, let ref, _) = self { return ref }
+            return nil
+        }
+
+        var gitHubActionsWorkflowPath: String? {
+            if case .githubActions(_, _, let path) = self { return path }
             return nil
         }
     }
@@ -170,6 +193,14 @@ enum IDELanguageRunUnavailableReason: Sendable, Equatable {
     case noRemoteHostConfigured
     case conflictUnresolved
     case snapshotSaveFailed
+    /// GitHub Actions target without a connected GitHub account or a selected
+    /// repository.
+    case gitHubNotConnected
+    case noGitHubRepositorySelected
+    /// The selected repository has no Floe template for this language/role.
+    case gitHubActionsUnsupported(language: String)
+    /// The caller named a workflow outside `.github/workflows`.
+    case invalidWorkflowPath
 }
 
 /// One verified remote execution of the staged current file. All remote
@@ -237,12 +268,14 @@ struct IDELanguageRunRemoteCommand: Sendable, Equatable {
 enum IDELanguageRunPlan: Sendable, Equatable {
     case local(languageID: String, argv: [String], mechanism: IDELanguageRunMechanism)
     case remote(IDELanguageRunRemoteCommand, mechanism: IDELanguageRunMechanism)
+    case githubActions(IDEGitHubActionsRunPlan, mechanism: IDELanguageRunMechanism)
     case unavailable(IDELanguageRunUnavailableReason)
 
     var languageID: String? {
         switch self {
         case .local(let id, _, _): return id
         case .remote(let command, _): return command.languageID
+        case .githubActions(let plan, _): return plan.languageID
         case .unavailable: return nil
         }
     }
@@ -251,16 +284,19 @@ enum IDELanguageRunPlan: Sendable, Equatable {
         switch self {
         case .local(_, _, let mechanism): return mechanism
         case .remote(_, let mechanism): return mechanism
+        case .githubActions(_, let mechanism): return mechanism
         case .unavailable: return nil
         }
     }
 
-    /// The exact line that will be sent into the terminal, or nil when the
-    /// plan is unavailable. Shown in the sheet so the user sees the quoting.
+    /// The exact line that will be sent into the terminal, or a readable
+    /// dispatch summary for a GitHub Actions run, or nil when unavailable.
     var commandLine: String? {
         switch self {
         case .local(_, let argv, _): return IDELanguageRunPolicy.shellCommand(argv)
         case .remote(let command, _): return command.shellCommand
+        case .githubActions(let plan, _):
+            return "workflow_dispatch \(plan.workflowPath ?? "Floe template") @ \(plan.repository.fullName) ref=\(plan.ref)"
         case .unavailable: return nil
         }
     }
@@ -271,16 +307,21 @@ enum IDELanguageRunPlan: Sendable, Equatable {
     }
 }
 
-/// Distinguishes the on-device interpreter, a remote interpreted run and a
-/// remote compile-then-run so the sheet never presents cross-compilation as a
-/// local build.
+/// Distinguishes the on-device interpreter, a remote interpreted run, a
+/// remote compile-then-run and a GitHub-hosted cloud build so the sheet never
+/// presents cross-compilation as a local build.
 enum IDELanguageRunMechanism: String, Sendable, Equatable {
     case localInterpreter
     case remoteInterpreter
     case remoteCompileRun
+    /// A GitHub-hosted runner builds or checks the snapshot. The output is a
+    /// Linux/macOS artifact; it is never an iOS-executable binary and the
+    /// device cannot run it directly.
+    case gitHubActionsCloud
 
-    var isCrossCompile: Bool { self == .remoteCompileRun }
+    var isCrossCompile: Bool { self == .remoteCompileRun || self == .gitHubActionsCloud }
     var isRemote: Bool { self != .localInterpreter }
+    var isCloudHosted: Bool { self == .gitHubActionsCloud }
 }
 
 enum IDELanguageRunDispatchDecision: Sendable, Equatable {
@@ -382,7 +423,83 @@ enum IDELanguageRunPolicy {
                 hostName: hostName,
                 runToken: request.runToken
             )
+        case .githubActions(let repository, let ref, let workflowPath):
+            return gitHubActionsPlan(
+                definition,
+                path: path,
+                repository: repository,
+                ref: ref,
+                workflowPath: workflowPath
+            )
         }
+    }
+
+    /// Role of one language on GitHub's runners: compiled languages get a
+    /// build template, interpreted languages get a lint/check template.
+    static func gitHubActionsRole(for languageID: String) -> IDEGitHubActionsRunRole? {
+        switch languageID {
+        case "rust", "swift", "c", "cpp", "go", "java", "kotlin":
+            return .build
+        case "python", "javascript", "shell", "lua", "php", "ruby":
+            return .lintTest
+        default:
+            return nil
+        }
+    }
+
+    /// The GitHub Actions plan for one language. A user-supplied workflow path
+    /// is validated and used verbatim; with no workflow, the catalog must have
+    /// a Floe template for this language/role or the target is unavailable —
+    /// the plan never invents a build recipe.
+    private static func gitHubActionsPlan(
+        _ definition: IDELanguageRunDefinition,
+        path: String,
+        repository: GitHubActionsRepositorySelection,
+        ref: String?,
+        workflowPath: String?
+    ) -> IDELanguageRunPlan {
+        guard repository.id != 0, !repository.fullName.isEmpty else {
+            return .unavailable(.noGitHubRepositorySelected)
+        }
+        let selectedWorkflow: String?
+        if let workflowPath {
+            let trimmed = workflowPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard IDEGitHubActionsWorkflowCatalog.isWorkflowPath(trimmed) else {
+                return .unavailable(.invalidWorkflowPath)
+            }
+            selectedWorkflow = trimmed
+        } else {
+            selectedWorkflow = nil
+        }
+        guard let role = gitHubActionsRole(for: definition.id) else {
+            return .unavailable(.gitHubActionsUnsupported(language: definition.id))
+        }
+        let platform: GitHubActionsRunnerPlatform = definition.id == "swift" ? .macOS : .linux
+        let template = IDEGitHubActionsWorkflowCatalog.template(
+            languageID: definition.id, role: role, platform: platform
+        )
+        // When no workflow is selected a template is mandatory; otherwise the
+        // build recipe is unknown and the target must refuse.
+        if selectedWorkflow == nil, template == nil {
+            return .unavailable(.gitHubActionsUnsupported(language: definition.id))
+        }
+        let baseRef = (ref?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? ref!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : repository.defaultBranch
+        let inputs: [String: String] = selectedWorkflow == nil ? ["target_file": path] : [:]
+        let plan = IDEGitHubActionsRunPlan(
+            languageID: definition.id,
+            role: role,
+            repository: repository,
+            ref: baseRef,
+            targetFile: path,
+            workflowPath: selectedWorkflow,
+            expectedArtifactName: selectedWorkflow == nil ? template?.expectedArtifactName : nil,
+            runnerPlatform: platform,
+            dispatchInputs: inputs,
+            installsTemplate: selectedWorkflow == nil
+        )
+        return .githubActions(plan, mechanism: .gitHubActionsCloud)
     }
 
     private static func localPlan(

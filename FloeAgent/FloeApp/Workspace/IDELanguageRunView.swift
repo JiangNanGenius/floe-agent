@@ -43,6 +43,14 @@ enum IDELanguageRunText {
             return t("存在未解决的编辑冲突，已取消运行", "An unresolved edit conflict cancelled the run")
         case .snapshotSaveFailed:
             return t("保存当前文件失败，已取消运行", "Saving the current file failed; the run was cancelled")
+        case .gitHubNotConnected:
+            return t("尚未连接 GitHub，请在设置中登录", "GitHub is not connected; sign in under Settings")
+        case .noGitHubRepositorySelected:
+            return t("请选择要运行 CI 的 GitHub 仓库", "Choose the GitHub repository to run CI on")
+        case .gitHubActionsUnsupported(let language):
+            return t("GitHub Actions 暂不支持运行 \(language)", "GitHub Actions cannot run \(language) yet")
+        case .invalidWorkflowPath:
+            return t("工作流路径无效，必须位于 .github/workflows 下的 YAML 文件", "The workflow path is invalid; it must be a YAML file under .github/workflows")
         }
     }
 
@@ -116,6 +124,21 @@ enum IDELanguageRunText {
         case .stopRequestedRemote:
             return t("已请求停止本次远程运行；无法确认远端进程是否退出、SSH 客户端是否关闭或暂存目录是否已清理。",
                      "Stop was requested for this remote run; the remote process exit, the SSH client close and the staging cleanup are not confirmed.")
+        case .gitHubActionsPreparing:
+            return t("正在发布快照并触发 GitHub Actions…", "Publishing the snapshot and dispatching GitHub Actions…")
+        case .gitHubActionsDispatched(let runID):
+            if let runID {
+                return t("已触发 GitHub Actions（run \(runID)）", "GitHub Actions dispatched (run \(runID))")
+            }
+            return t("已触发 GitHub Actions，正在关联运行记录", "GitHub Actions dispatched; associating the run")
+        case .gitHubActionsAssociationPending:
+            return t("已触发工作流，但尚未唯一关联到本次快照；不会重复提交，将按快照继续核对。",
+                     "The workflow was dispatched but no unique run is associated yet; Floe will not resubmit and keeps checking by snapshot.")
+        case .gitHubActionsCancelRequested:
+            return t("已请求取消；GitHub 会异步结束该运行，Floe 会继续核对直到确认 cancelled。",
+                     "Cancel requested; GitHub finalizes the run asynchronously and Floe keeps checking until it is cancelled.")
+        case .gitHubActionsFailed(let detail):
+            return detail
         }
     }
 
@@ -127,6 +150,45 @@ enum IDELanguageRunText {
             return t("远程解释运行", "Remote interpreter")
         case .remoteCompileRun:
             return t("远程编译运行", "Remote compile & run")
+        case .gitHubActionsCloud:
+            return t("GitHub Actions 云端构建", "GitHub Actions cloud build")
+        }
+    }
+
+    static func runnerPlatform(_ platform: GitHubActionsRunnerPlatform) -> String {
+        switch platform {
+        case .linux: return "Linux"
+        case .macOS: return "macOS"
+        }
+    }
+
+    static func snapshotSummary(_ preview: GitHubActionsSnapshotPreview?) -> String {
+        guard let preview else { return t("尚无快照", "No snapshot yet") }
+        let bytes = ByteCountFormatter.string(fromByteCount: Int64(preview.totalBytes), countStyle: .file)
+        return t("将上传 \(preview.manifest.fileCount) 个文件（\(bytes)）；排除 \(preview.manifest.excluded.count) 个。",
+                 "\(preview.manifest.fileCount) files (\(bytes)) will be uploaded; \(preview.manifest.excluded.count) excluded.")
+    }
+
+    static func role(_ role: IDEGitHubActionsRunRole) -> String {
+        switch role {
+        case .build: return t("编译构建", "Build")
+        case .lintTest: return t("Lint/测试", "Lint/test")
+        }
+    }
+
+    static func remoteState(_ state: GitHubActionsJobState) -> String {
+        switch state {
+        case .preparing: return t("准备中", "Preparing")
+        case .snapshotPublished: return t("快照已发布", "Snapshot published")
+        case .dispatching: return t("已触发，等待运行记录", "Dispatched, awaiting run")
+        case .associationPending: return t("等待关联运行", "Awaiting run association")
+        case .queued: return t("排队中", "Queued")
+        case .running: return t("运行中", "Running")
+        case .cancelling: return t("取消中", "Cancelling")
+        case .completed: return t("已完成", "Completed")
+        case .failed: return t("失败", "Failed")
+        case .cancelled: return t("已取消", "Cancelled")
+        case .error: return t("出错", "Error")
         }
     }
 }
@@ -134,7 +196,13 @@ enum IDELanguageRunText {
 struct IDELanguageRunView: View {
     @ObservedObject var controller: IDELanguageRunController
     @ObservedObject var state: IDEWorkbenchState
+    /// The app-owned center is observed directly so a run dispatched from a
+    /// previous session (or this sheet reopened) is still listed and updated.
+    @ObservedObject private var gitHubCenter = GitHubActionsJobCenter.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var jobLogRecordID: UUID?
+    @State private var jobLogText: String?
+    @State private var showingJobLog = false
 
     private var fileName: String {
         guard let path = state.activePath, let last = path.split(separator: "/").last else {
@@ -154,6 +222,7 @@ struct IDELanguageRunView: View {
                 fileSection
                 targetSection
                 if case .remote = controller.selection.target { remoteSettingsSection }
+                if case .githubActions = controller.selection.target { gitHubActionsSection }
                 availabilitySection
                 commandSection
             }
@@ -183,8 +252,31 @@ struct IDELanguageRunView: View {
                 }
             }
             .task { await controller.prepare() }
-            .onChange(of: controller.selection) { _, _ in controller.refreshPlan() }
-            .onChange(of: state.activePath) { _, _ in controller.refreshPlan() }
+            .onChange(of: controller.selection) { _, _ in
+                Task { await controller.selectionDidChange() }
+            }
+            .onChange(of: state.activePath) { _, _ in
+                controller.refreshPlan()
+                Task { await controller.selectionDidChange() }
+            }
+            .sheet(isPresented: $showingJobLog) {
+                NavigationStack {
+                    ScrollView {
+                        Text(jobLogText ?? IDELanguageRunText.t("暂无日志", "No log"))
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                    }
+                    .navigationTitle(IDELanguageRunText.t("作业日志", "Job log"))
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(IDELanguageRunText.t("关闭", "Close")) { showingJobLog = false }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -208,15 +300,52 @@ struct IDELanguageRunView: View {
         }
     }
 
+    /// The target picker uses a stable string so a value-carrying
+    /// `githubActions` target still round-trips; selecting it fills in the
+    /// first connected repository (or the placeholder until one exists).
+    private var targetKindBinding: Binding<String> {
+        Binding(
+            get: {
+                switch controller.selection.target {
+                case .local: return "local"
+                case .remote(let id, _): return "remote:\(id.uuidString)"
+                case .githubActions: return "github"
+                }
+            },
+            set: { value in
+                if value == "github" {
+                    if let repository = controller.gitHubRepositories.first {
+                        controller.setGitHubRepository(repository)
+                    } else {
+                        controller.setGitHubRepository(placeholderRepository)
+                    }
+                } else if value.hasPrefix("remote:"),
+                          let host = controller.hosts.first(where: { value.hasSuffix($0.id.uuidString) }) {
+                    controller.selection.target = .remote(hostID: host.id, hostName: host.name)
+                } else {
+                    controller.selection.target = .local
+                }
+            }
+        )
+    }
+
+    private var placeholderRepository: GitHubActionsRepositorySelection {
+        GitHubActionsRepositorySelection(
+            id: 0, fullName: "", defaultBranch: "main", isPrivate: false
+        )
+    }
+
     private var targetSection: some View {
         Section(IDELanguageRunText.t("运行目标", "Run target")) {
-            Picker(selection: $controller.selection.target) {
+            Picker(selection: targetKindBinding) {
                 Text(IDELanguageRunText.t("本机", "This device"))
-                    .tag(IDELanguageRunSelection.Target.local)
+                    .tag("local")
                 ForEach(controller.hosts) { host in
                     Text(host.name)
-                        .tag(IDELanguageRunSelection.Target.remote(hostID: host.id, hostName: host.name))
+                        .tag("remote:\(host.id.uuidString)")
                 }
+                Text("GitHub Actions")
+                    .tag("github")
             } label: {
                 Text(IDELanguageRunText.t("目标", "Target"))
             }
@@ -255,13 +384,247 @@ struct IDELanguageRunView: View {
         }
     }
 
-    private var availabilitySection: some View {
-        Section(IDELanguageRunText.t("可用性", "Availability")) {
+    // MARK: GitHub Actions
+
+    private var gitHubTemplateYAML: String? {
+        controller.gitHubTemplate?.yaml
+    }
+
+    private var repositoryBinding: Binding<Int64> {
+        Binding(
+            get: { controller.selection.target.repository?.id ?? 0 },
+            set: { id in
+                guard let repository = controller.gitHubRepositories.first(where: { $0.id == id }) else { return }
+                controller.setGitHubRepository(repository)
+            }
+        )
+    }
+
+    private var branchBinding: Binding<String> {
+        Binding(
+            get: {
+                controller.selection.target.gitHubActionsRef
+                    ?? controller.selection.target.repository?.defaultBranch
+                    ?? ""
+            },
+            set: { controller.setGitHubRef($0) }
+        )
+    }
+
+    private var workflowBinding: Binding<String> {
+        Binding(
+            get: { controller.selection.target.gitHubActionsWorkflowPath ?? "" },
+            set: { controller.setGitHubWorkflowPath($0.isEmpty ? nil : $0) }
+        )
+    }
+
+    private var gitHubActionsSection: some View {
+        Section(IDELanguageRunText.t("GitHub Actions 云构建", "GitHub Actions cloud build")) {
+            Label(IDELanguageRunText.t(
+                "workflow_dispatch 只能发现默认分支上的工作流；安装会把 Floe 模板提交到该仓库默认分支（仅快进，不覆盖内容不同的同名文件）。",
+                "workflow_dispatch only discovers workflows on the default branch; installing commits the Floe template there (fast-forward only, never overwriting a same-name file with different content)."
+            ), systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.secondary)
+
+            if controller.gitHubRepositories.isEmpty {
+                Text(IDELanguageRunText.t("尚未连接 GitHub 或未读取到仓库。", "GitHub is not connected, or no repository was returned."))
+                    .font(.caption).foregroundStyle(.secondary)
+                Button(IDELanguageRunText.t("重新读取仓库", "Reload repositories")) {
+                    Task { await controller.selectionDidChange() }
+                }
+            } else {
+                Picker(selection: repositoryBinding) {
+                    ForEach(controller.gitHubRepositories) { repository in
+                        Text(repository.isPrivate ? "\(repository.fullName) (private)" : repository.fullName)
+                            .tag(repository.id)
+                    }
+                } label: {
+                    Text(IDELanguageRunText.t("仓库", "Repository"))
+                }
+                .accessibilityIdentifier("workspace.ide.run.github.repository")
+
+                LabeledContent(IDELanguageRunText.t("分支", "Branch")) {
+                    TextField(IDELanguageRunText.t("分支", "Branch"), text: branchBinding)
+                        .multilineTextAlignment(.trailing)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("workspace.ide.run.github.branch")
+                }
+
+                Picker(selection: workflowBinding) {
+                    if controller.gitHubTemplate != nil {
+                        Text(IDELanguageRunText.t("Floe 模板（需先安装）", "Floe template (install first)"))
+                            .tag("")
+                    }
+                    ForEach(controller.gitHubWorkflowPaths, id: \.self) { path in
+                        Text(path).tag(path)
+                    }
+                } label: {
+                    Text(IDELanguageRunText.t("工作流", "Workflow"))
+                }
+                .accessibilityIdentifier("workspace.ide.run.github.workflow")
+
+                if controller.gitHubActionsPreview == nil {
+                    Text(IDELanguageRunText.t(
+                        "快照不可用：请先打开一个工作区文件。",
+                        "Snapshot unavailable: open a workspace file first."
+                    ))
+                    .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(IDELanguageRunText.snapshotSummary(controller.gitHubActionsPreview))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                if controller.selection.target.gitHubActionsWorkflowPath == nil,
+                   let template = controller.gitHubTemplate {
+                    Button {
+                        Task { await controller.installGitHubWorkflowTemplate() }
+                    } label: {
+                        Label(
+                            IDELanguageRunText.t("安装模板到默认分支", "Install template on default branch"),
+                            systemImage: "arrow.up.doc"
+                        )
+                    }
+                    .accessibilityIdentifier("workspace.ide.run.github.install")
+                    DisclosureGroup(IDELanguageRunText.t("查看模板 YAML", "Review template YAML")) {
+                        Text(template.yaml)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    Text(IDELanguageRunText.t(
+                        "安装只写入 \(template.workflowPath)；若该路径已有不同内容，Floe 会改为导出到工作区 .floe/workflows/ 供你审查。",
+                        "Install writes only \(template.workflowPath); if that path already has different content Floe exports it to .floe/workflows/ for review instead."
+                    ))
+                    .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            gitHubRunList
+
+            if let error = gitHubCenter.errorMessage {
+                Text(error).font(.caption).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    /// Durable records owned by the app-level center. They are listed even
+    /// after the sheet is reopened, so a run that continued on GitHub is not
+    /// lost when the app (or this view) went away.
+    @ViewBuilder
+    private var gitHubRunList: some View {
+        let records = controller.gitHubWorkspaceRecords
+        if !records.isEmpty {
+            DisclosureGroup(IDELanguageRunText.t("运行记录", "Runs")) {
+                if records.contains(where: { !$0.state.isTerminal }) {
+                    Label(IDELanguageRunText.t(
+                        "自动更新中。关闭 App 后构建继续，重新打开会同步结果。",
+                        "Updates automatically. Builds continue with the App closed; reopening syncs the result."
+                    ), systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                ForEach(records) { record in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("\(record.languageID) · \(record.role)")
+                                .font(.subheadline)
+                            Spacer()
+                            Text(IDELanguageRunText.remoteState(record.state))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let runID = record.runID {
+                            Text("run \(runID) · \(record.remoteStatus ?? "") \(record.remoteConclusion ?? "")")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text(record.updatedAt, format: .dateTime.month().day().hour().minute())
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if let detail = record.lastError {
+                            Text(detail).font(.caption2).foregroundStyle(.orange)
+                        }
+                        HStack(spacing: 12) {
+                            Button(IDELanguageRunText.t("刷新", "Refresh")) {
+                                Task { await controller.refreshGitHubRecord(record.id) }
+                            }
+                            if !record.state.isTerminal {
+                                Button(IDELanguageRunText.t("取消", "Cancel"), role: .destructive) {
+                                    Task { await controller.cancelGitHubRecord(record.id) }
+                                }
+                            }
+                            if record.runID != nil {
+                                Button(IDELanguageRunText.t("读取产物列表", "Load artifacts")) {
+                                    Task { await controller.loadGitHubArtifacts(record.id) }
+                                }
+                                Button(IDELanguageRunText.t("作业日志", "Job log")) {
+                                    Task { await loadJobLog(recordID: record.id) }
+                                }
+                            }
+                        }
+                        .font(.caption)
+                        ForEach(record.artifacts) { artifact in
+                            HStack {
+                                Text(artifact.name).font(.caption2)
+                                if artifact.expired {
+                                    Text(IDELanguageRunText.t("已过期", "expired"))
+                                        .font(.caption2).foregroundStyle(.orange)
+                                }
+                                Spacer()
+                                if let path = artifact.downloadedRelativePath {
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text(path)
+                                        Text(artifact.downloadVerified == true
+                                             ? IDELanguageRunText.t("摘要已验证", "Digest verified")
+                                             : IDELanguageRunText.t("已下载 · 仅本地校验和", "Downloaded · local checksum only"))
+                                    }
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                } else {
+                                    Button(IDELanguageRunText.t("下载", "Download")) {
+                                        Task {
+                                            _ = await controller.downloadGitHubArtifact(
+                                                recordID: record.id, artifact: artifact, overwrite: false
+                                            )
+                                        }
+                                    }
+                                    .font(.caption2)
+                                    .disabled(artifact.expired)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private func loadJobLog(recordID: UUID) async {
+        jobLogRecordID = recordID
+        let jobs = await controller.gitHubJobs(recordID: recordID)
+        guard let job = jobs.first else {
+            jobLogText = nil
+            showingJobLog = true
+            return
+        }
+        let slice = await controller.gitHubJobLog(recordID: recordID, jobID: job.id)
+        if let slice {
+            jobLogText = slice.truncated ? slice.text + "\n[truncated]" : slice.text
+        } else {
+            jobLogText = nil
+        }
+        showingJobLog = true
+    }
+
+    private var availabilitySection: some View {        Section(IDELanguageRunText.t("可用性", "Availability")) {
             if let mechanism = controller.plan.mechanism {
                 LabeledContent(IDELanguageRunText.t("方式", "Mechanism")) {
                     Text(IDELanguageRunText.mechanism(mechanism))
                 }
-                if mechanism.isCrossCompile {
+                if mechanism.isCloudHosted {
+                    Label(IDELanguageRunText.t(
+                        "编译在 GitHub 的 Linux/macOS 运行器上进行；产物是云端编译结果，不能作为 iOS 可执行文件在本机安装或运行。",
+                        "The build runs on GitHub's Linux/macOS runner; the artifact is a cloud build output and cannot be installed or run as an iOS binary on this device."
+                    ), systemImage: "cloud")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if mechanism.isCrossCompile {
                     Label(IDELanguageRunText.t("编译产物写入运行专属临时目录，运行后由该次运行清理。",
                                                "Compiled output goes to a run-owned temporary directory and is cleaned up by this run."),
                           systemImage: "info.circle")
@@ -296,9 +659,17 @@ struct IDELanguageRunView: View {
             } else {
                 Text("—").foregroundStyle(.secondary)
             }
-            Text(IDELanguageRunText.t("每个参数单独加引号，绝不拼接原始字符串。",
-                                      "Every argument is quoted individually; raw strings are never concatenated."))
+            if case .githubActions = controller.plan {
+                Text(IDELanguageRunText.t(
+                    "此处是 workflow_dispatch 摘要；仓库、分支、工作流与快照在上方确认。",
+                    "This is the workflow_dispatch summary; confirm repository, branch, workflow and snapshot above."
+                ))
                 .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text(IDELanguageRunText.t("每个参数单独加引号，绝不拼接原始字符串。",
+                                          "Every argument is quoted individually; raw strings are never concatenated."))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 
