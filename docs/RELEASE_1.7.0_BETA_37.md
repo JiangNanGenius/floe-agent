@@ -1,6 +1,10 @@
 # Floe Agent 1.7.0 (180) — beta.37 candidate
 
-**Development candidate; not yet tagged, cloud-qualified or uploaded.**
+**Tagged candidate; cloud qualification running, not yet uploaded.**
+
+Immutable source: `5e7a609e8c289572679507cd52a49fd4a21efc9e` /
+`v1.7.0-beta.37`. [Release run 35244918975](https://github.com/JiangNanGenius/floe-agent/actions/runs/35244918975)
+is building and qualifying SDK 27 and the accepted upload SDK.
 
 ## 简体中文
 

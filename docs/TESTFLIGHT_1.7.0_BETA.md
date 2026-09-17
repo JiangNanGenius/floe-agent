@@ -1,5 +1,13 @@
 # Floe 1.7 TestFlight delivery
 
+## Candidate: 1.7.0 (180)
+
+Tagged `v1.7.0-beta.37`, source `5e7a609e8c289572679507cd52a49fd4a21efc9e`.
+[Release run 35244918975](https://github.com/JiangNanGenius/floe-agent/actions/runs/35244918975) is in progress.
+This is not an upload or availability claim. Build 179 retained an unsigned
+artifact but never entered upload after its accepted-SDK Notes gate timed out.
+The latest Apple discovery still returned build 178 VALID.
+
 ## Current delivery: 1.7.0 (178)
 
 **Available in the existing internal Floe QA group.** Apple `VALID`, unexpired, exactly one private internal group (`Floe QA`, feedback enabled, no public link) and `IN_BETA_TESTING` were verified at 2026-09-16 16:25 UTC by [run 35121747998](https://github.com/JiangNanGenius/floe-agent/actions/runs/35121747998). ASC build ID `6e8cd002-e620-438a-ad10-c87c2bf33f27`.
