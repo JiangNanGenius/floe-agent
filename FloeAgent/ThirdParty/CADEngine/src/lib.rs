@@ -466,7 +466,8 @@ impl CadSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acadrust::{DxfVersion, Layer, LineType, ObjectType, TextStyle};
+    use acadrust::{DxfVersion, Layer, LineType, TableEntry, TextStyle};
+    use acadrust::objects::ObjectType;
 
     fn fixture(version: DxfVersion) -> CadDocument {
         let mut doc = CadDocument::new(); doc.version = version;
