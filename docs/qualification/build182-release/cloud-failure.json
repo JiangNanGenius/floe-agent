@@ -1,0 +1,38 @@
+{
+  "sourceSHA": "4f8cce1bbb42dbefbe59c3418c63043ae966896f",
+  "build": "182",
+  "tag": "v1.7.0-beta.39",
+  "run": 35248979573,
+  "result": "failure",
+  "upload": "not_started",
+  "deviceArtifact": "not_produced",
+  "sdk27": {
+    "job": 105296416221,
+    "stage": "dependency resolution before App compilation",
+    "errors": [
+      "swift-jpeg clone curl 56 timeout",
+      "LlamaFramework and libssh2 binary target artifact mapping",
+      "Could not update repository submodules"
+    ]
+  },
+  "acceptedSDK": {
+    "job": 105296416318,
+    "stage": "App Swift compilation",
+    "errors": [
+      "IDEWorkbenchState missing GitHubActionsJob and GitHubActionsLogSlice types",
+      "WorkspaceFileService optional not unwrapped",
+      "WorkspaceRecord has no environmentID",
+      "IDELanguageRunView cascading Binding diagnostics"
+    ]
+  },
+  "retainedLogs": {
+    "sdk27-job.log": {
+      "sha256": "757d28264a95cb7c60e5b31e9f7227bbc0bd90fe062670ff8a1d0414ccdc0cff",
+      "bytes": 1221826
+    },
+    "accepted-sdk-job.log": {
+      "sha256": "d946d8d73475ac5b9c60553c876de095cf983c1b92361cef9786825fe77aa384",
+      "bytes": 9119163
+    }
+  }
+}

@@ -1,10 +1,11 @@
 # Floe 1.7 TestFlight delivery
 
-## Candidate: 1.7.0 (182)
+## Failed candidate: 1.7.0 (182)
 
 Tagged `v1.7.0-beta.39`, source `4f8cce1bbb42dbefbe59c3418c63043ae966896f`.
 [Run 35248979573](https://github.com/JiangNanGenius/floe-agent/actions/runs/35248979573)
-is in complete cloud qualification; not uploaded. See [candidate record](RELEASE_1.7.0_BETA_39.md).
+failed before packaging/upload: SDK 27 dependency resolution and accepted-SDK
+IDE integration compilation. Module checks passed; App/UI gates did not. See [candidate record](RELEASE_1.7.0_BETA_39.md).
 
 ## Cancelled candidate: 1.7.0 (181)
 
