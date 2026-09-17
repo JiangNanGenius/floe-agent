@@ -448,6 +448,8 @@ Both editors remain available. If a text file changes before saving, review the 
 
 Open DXF/DWG, mesh or Gerber/drill files from workspace files or the IDE, then expand the preview. DXF/DWG offer Edit for lines, circles and text, numeric moves, undo/redo and same-format Save. Previous versions and conflicting drafts stay in `Recovered Edits`; a conflicting save never silently replaces someone else's revision. Remote CAD and other 3D/PCB formats remain read only.
 
+The current repair branch adds a Pen control for local DXF/DWG annotations. Open Edit to choose a color and line width, then draw with Apple Pencil; finger drawing is a separate switch and starts off. One stroke is one undo step, and the annotation layer can be hidden in Layers. Save keeps the original format and validates the output. Some drawings cannot be saved without losing unsupported style or layout data; in that case saving fails and preserves the original. The preview may simplify printed line widths. This addition has browser-component and engine evidence; native Pencil acceptance and TestFlight delivery are still pending.
+
 Choose **Ask AI** to attach the current viewport and parsed drawing information, inspect the evidence, add a question and send with your configured model. Missing references and sampled geometry are identified. This helps review visible content; it does not establish complete engineering approval. See [the format and evidence matrix](FLOE_ENGINEERING_VIEWERS.md) for verified versions and pending App and KiCad work.
 
 ### Build 177 candidate: drawing review from files
