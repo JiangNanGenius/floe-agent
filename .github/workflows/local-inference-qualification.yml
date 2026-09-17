@@ -10,7 +10,7 @@ concurrency:
 jobs:
   qwen-host:
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_27_beta_6.app/Contents/Developer
     defaults:
@@ -28,13 +28,14 @@ jobs:
           git rev-parse HEAD > "$RUNNER_TEMP/LocalInferenceEvidence/SOURCE-SHA.txt"
           swift build --package-path Qualification/LocalInference --scratch-path .build --force-resolved-versions --jobs 4 \
             2>&1 | tee "$RUNNER_TEMP/LocalInferenceEvidence/build.log"
-      - name: Exercise pinned Qwen cold load, repeat generation and long prefill
-        timeout-minutes: 15
+      - name: Exercise the App's constrained batch48 and balanced batch96 profiles
+        timeout-minutes: 25
         run: |
           set -o pipefail
-          mkdir -p "$RUNNER_TEMP/LocalInferenceEvidence"
-          git rev-parse HEAD > "$RUNNER_TEMP/LocalInferenceEvidence/SOURCE-SHA.txt"
-          xcodebuild -version > "$RUNNER_TEMP/LocalInferenceEvidence/toolchain.txt"
+          EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
+          mkdir -p "$EVIDENCE"
+          git rev-parse HEAD > "$EVIDENCE/SOURCE-SHA.txt"
+          xcodebuild -version > "$EVIDENCE/toolchain.txt"
           bin_path=$(swift build --package-path Qualification/LocalInference --scratch-path .build --show-bin-path)
           # The transitive llama binary target needs its standard macOS rpath,
           # even though this diagnostic uses MLX and never loads a GGUF model.
@@ -42,9 +43,17 @@ jobs:
           test -n "$llama"
           DYLD_FRAMEWORK_PATH="$(dirname "$llama")"
           export DYLD_FRAMEWORK_PATH
+          # One LocalModelStore root, one snapshot download, reused by both
+          # profiles inside a single host process. Weights are never uploaded as
+          # an artifact and the existing single-download behavior is preserved.
           /usr/bin/time -l "$bin_path/FloeLocalInferenceQualification" "$RUNNER_TEMP/QwenSnapshot" \
-            2>&1 | tee "$RUNNER_TEMP/LocalInferenceEvidence/run.log"
-          grep -q '"event":"shutdown-complete"' "$RUNNER_TEMP/LocalInferenceEvidence/run.log"
+            2>&1 | tee "$EVIDENCE/run.log"
+          grep -q '"event":"download-complete"' "$EVIDENCE/run.log"
+          grep -q '"event":"profile-complete".*"profile":"constrained-batch48"' "$EVIDENCE/run.log"
+          grep -q '"event":"profile-complete".*"profile":"balanced-batch96"' "$EVIDENCE/run.log"
+          test "$(grep -c '"event":"multi-chunk-verified"' "$EVIDENCE/run.log")" -eq 2
+          grep -q '"event":"shutdown-complete"' "$EVIDENCE/run.log"
+          grep -q '"event":"qualification-complete"' "$EVIDENCE/run.log"
       - name: Preserve diagnostic output
         if: always()
         uses: actions/upload-artifact@v4

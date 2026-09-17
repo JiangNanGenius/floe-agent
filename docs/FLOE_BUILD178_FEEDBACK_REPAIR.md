@@ -2,8 +2,8 @@
 
 Working record for branch `codex/build178-feedback` (base `4bd5d16f`, build 178 /
 1.7.0). It tracks the user feedback received for build 178 and the repairs that
-are implemented in this branch. It is **not** a release record: nothing here has
-been pushed, run through CI or uploaded to TestFlight. The branch retains a
+are implemented in this branch. It is **not** a release record: these repairs
+have not been uploaded to TestFlight. The branch retains a
 local code checkpoint with the open acceptance items below. Earlier
 release records in `docs/` are unchanged.
 
@@ -153,8 +153,25 @@ Observed on this checkout unless a line says otherwise:
   `MobileDevices-0002.bundle` as a pending component. This is an additional
   host setup blocker, not an App UI result; the active installer was preserved.
   Opening Xcode itself and choosing its required component installation showed
-  “Waiting for other install tasks on the system”. No installer service was reset.
-- CI, `git push`, merge and any TestFlight upload have **not** started.
+  “Waiting for other install tasks on the system”. No installer service was reset. A subsequent read-only authorization-log
+  investigation identified outstanding administrator authentication requests.
+  The protected system authorization window cannot be operated by the computer
+  tool; the user was asked to complete it locally. Waiting is not being counted
+  as installation progress.
+- Full-App/release CI, merge and TestFlight upload have **not**
+  started. The separate existing macOS local-model diagnostic was dispatched
+  on immutable source `4bd5d16f2b3e8ecbb223ebb3f572c5d571622b8e` in
+  [run 35179224276](https://github.com/JiangNanGenius/floe-agent/actions/runs/35179224276).
+  This uses the unchanged production model engine and exact catalog weights;
+  its actual log was retrieved and checked: 31/31/5,773 input tokens produced
+  nonempty responses, including `blue` for the long prompt; peak MLX allocation
+  was 2,780,685,808 bytes and shutdown left 4,000 active MLX bytes. This passed
+  on Xcode 27 (27A5252f), macOS, batch 32 only. It does not represent iPad or
+  distribution acceptance. The diagnostic host now additionally covers the
+  observed batch 48/96 resource profiles, a synthetic SYSTEM-context turn and
+  teardown/reload, with one build and one download per run. Local checks use
+  stub engine declarations; actual cloud compilation and inference remain the
+  gate. The branch is being pushed only for this directed diagnostic.
 - Localization rendering in a running App, and English-locale copy review, is
   unverified.
 - `notes.kind.engineering` localizes the new CAD fallback only; the sibling
