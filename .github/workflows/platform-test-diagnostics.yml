@@ -14,6 +14,20 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
+      # Authenticate the signed catalog and stage the pinned lua.wasm fixture.
+      # The repository-tracked artifact is the only source: no download
+      # fallback, no network.  cryptography is pinned in a throwaway venv
+      # because clean runners ship no third-party packages.
+      - name: Install pinned catalog verification dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/floe-lua-venv"
+          "$RUNNER_TEMP/floe-lua-venv/bin/pip" install cryptography==46.0.6
+      # Assign the path before writing GITHUB_ENV so a preparation failure
+      # aborts the step instead of exporting an empty FLOE_LUA_WASI.
+      - name: Prepare the pinned Lua WASI fixture
+        run: |
+          floe_lua_wasi="$("$RUNNER_TEMP/floe-lua-venv/bin/python" FloeAgent/scripts/prepare_lua_qualification.py)" || exit 1
+          echo "FLOE_LUA_WASI=$floe_lua_wasi" >> "$GITHUB_ENV"
       - name: Run real platform tests with owned-process diagnostics
         run: |
           python3 FloeAgent/scripts/run_test_with_diagnostics.py \

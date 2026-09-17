@@ -376,8 +376,17 @@ Observed on this checkout unless a line says otherwise:
   the current master license. The primary-operated browser test failed during
   module-Worker initialization with `ReferenceError: document is not defined`.
   The passing Node-host suite does not qualify this browser path. The artifact
-  is not bundled, and browser cancellation/recovery remain unpassed. Dedicated
-  Worker compatibility and a current-patch build remain separate open work.
+  was not bundled; cancellation and recovery were unpassed in that initial
+  harness. The original failure and screenshot are retained.
+- A subsequent private Worker bootstrap prototype passed primary-operated
+  Chromium browser checks: PHP 8.4.1/embed version, two complete 13-check suites
+  (stdin, file I/O, errors and repeated execution), a 10-second automatic stop,
+  explicit manual termination of an infinite loop, and successful fresh-instance
+  recovery. The bootstrap permits only the module loader's null current-script
+  lookup; other attempted DOM operations fail explicitly. This is browser
+  prototype evidence, not App integration or iPad/WKWebView acceptance. A current
+  PHP patch build, environment/task ownership, HTTPS and persistent filesystem
+  qualification remain open; the old runtime is still not a shipping artifact.
 - Two approved cleanup batches removed obsolete extracted applications, finished
   build caches and an unused iPhone debugging-symbol cache. The second batch
   measured 15,206,846,464 allocated bytes in selected targets and increased volume
@@ -388,6 +397,32 @@ Observed on this checkout unless a line says otherwise:
   retained. The device-support symlink still points to an existing empty cache
   directory; user/test simulator data was not erased. Exact paths, hash checks,
   partial failures and resume records are kept in private cleanup evidence.
+
+## Full App compile follow-up (2026-09-17)
+
+CI run `35199099305` used immutable source
+`59e24d61e2b766b74380ce779f7874855466a4a6`. The full App compiled successfully
+with Xcode 26.6 in Release configuration for arm64 iOS Simulator, including the
+new IDE run and Office ink sources. The Linux Swift package build also passed.
+The SDK compilation took approximately 32 minutes including preparation; it
+produced no device archive or TestFlight upload.
+
+The overall run failed because the separate Xcode 27 `build-test` job had not
+provided `FLOE_LUA_WASI` to its Qualification tests. All three Lua interpreter
+tests failed with that missing-fixture error before the App regression host was
+built. Subsequent missing-host UI errors do not establish a product UI failure.
+The original logs are retained. Runtime, native editor interaction and device
+acceptance are still separate from the successful compatibility compilation.
+
+The follow-up CI patch verifies the signed catalog and stages the tracked Lua
+fixture, installs its pinned verifier dependency in a clean virtual environment,
+and stops before exporting an environment variable if preparation fails.
+Eleven focused preparation tests pass locally; the original thirteen-test result
+included download paths subsequently removed from this helper. A manual
+`build_test_only` dispatch can rerun the failed leg while retaining the already
+passed SDK/Linux evidence for unchanged App sources. Normal push, PR and default
+dispatch keep the full matrix. Native UI steps now require a successfully built
+regression host; failures against a built host still fail the run.
 
 ## References
 

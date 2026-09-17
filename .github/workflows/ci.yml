@@ -55,6 +55,10 @@ on:
         description: "Build native CPython 3.13 iOS wheel candidates: a package name from ios-wheelhouse/manifest.json, 'pandas', or 'all'"
         type: string
         default: ''
+      build_test_only:
+        description: 'Rerun only the build-test leg (skip SDK-compatibility and Linux jobs) after the rest of the matrix is green; rerun evidence, not release acceptance'
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -179,6 +183,27 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Authenticate the signed catalog and stage the pinned lua.wasm fixture.
+      # The repository-tracked artifact is the only source: there is no
+      # download fallback and no network use.  The verifier imports
+      # cryptography, which clean runners do not ship, so it is pinned in a
+      # throwaway venv rather than relying on image-provided packages.
+      - name: Install pinned catalog verification dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/floe-lua-venv"
+          "$RUNNER_TEMP/floe-lua-venv/bin/pip" install cryptography==46.0.6
+
+      # Assign the path before writing GITHUB_ENV: when preparation fails,
+      # the assignment's non-zero status aborts this step and nothing is
+      # exported, instead of masking the failure with an empty FLOE_LUA_WASI.
+      # GITHUB_ENV exports FLOE_LUA_WASI to every later step in this job,
+      # including the Qualification swift test runs.
+      - name: Prepare the pinned Lua WASI fixture
+        run: |
+          "$RUNNER_TEMP/floe-lua-venv/bin/python" scripts/tests/test_prepare_lua_qualification.py
+          floe_lua_wasi="$("$RUNNER_TEMP/floe-lua-venv/bin/python" scripts/prepare_lua_qualification.py)" || exit 1
+          echo "FLOE_LUA_WASI=$floe_lua_wasi" >> "$GITHUB_ENV"
+
       - name: Qualify environment, package, media and job modules
         run: |
           set -o pipefail
@@ -252,6 +277,7 @@ jobs:
           python3 scripts/tests/test_office_ink_bridge.py
 
       - name: Build App regression host once
+        id: app_regression_build
         timeout-minutes: 90
         run: |
           xcodebuild \
@@ -338,7 +364,9 @@ jobs:
             --result-bundle FloeAgent-AppRegressionTests.xcresult
 
       - name: Verify Notes workspace import and retain full App screenshots
-        if: ${{ !cancelled() }}
+        # Skip when the shared test host was never built; a missing xctestrun
+        # must not mask the real build failure with a secondary UI error.
+        if: ${{ !cancelled() && steps.app_regression_build.outcome == 'success' }}
         # Two devices each have three independently bounded 300-second tests.
         # The phase must also allow boot, runner teardown and evidence export.
         timeout-minutes: 25
@@ -406,7 +434,10 @@ jobs:
           exit "$status"
 
       - name: Verify IDE native saves and retain workbench screenshots
-        if: ${{ !cancelled() }}
+        # Same skip rule as the Notes phase: only run against a host that the
+        # build-for-testing step actually produced; real UI failures after a
+        # successful build are still reported and never retried into passes.
+        if: ${{ !cancelled() && steps.app_regression_build.outcome == 'success' }}
         # Two device legs, each rebuilding the drawing engine; a slow snapshot
         # window once pushed the phase past fifteen minutes despite passing.
         timeout-minutes: 25
@@ -559,7 +590,11 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    # build_test_only reruns the failed build-test leg of an otherwise-green
+    # matrix without paying another ~33-minute SDK 26 compile that already
+    # passed.  It is rerun evidence only, never release acceptance, and never
+    # gates push/PR runs (inputs are empty there, so this condition is true).
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
     # the explicit unsupported-Foundation-Models path and the rest of Floe's
@@ -616,7 +651,10 @@ jobs:
             build
 
   spm-linux-build:
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    # Skipped together with appstore-sdk-compatibility by build_test_only;
+    # that input only reruns the failed build-test leg and never gates
+    # push/PR runs (inputs are empty there, so this condition is true).
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only }}
     runs-on: ubuntu-latest
     # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
     # below do not link MLX. Resolution must therefore use a 6.3 toolchain.
