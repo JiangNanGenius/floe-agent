@@ -1,7 +1,20 @@
 name: Local inference diagnostic
 on:
   workflow_dispatch:
+    inputs:
+      dependency_profile:
+        description: Dependency pin profile (current pins or isolated GPU-fix candidate)
+        type: choice
+        options:
+          - current
+          - gpu-fix-candidate
+        default: current
   workflow_call:
+    inputs:
+      dependency_profile:
+        description: Dependency pin profile (current pins or isolated GPU-fix candidate)
+        type: string
+        default: current
 permissions:
   contents: read
 concurrency:
@@ -13,28 +26,84 @@ jobs:
     timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_27_beta_6.app/Contents/Developer
+      DEPENDENCY_PROFILE: ${{ inputs.dependency_profile || 'current' }}
     defaults:
       run:
         working-directory: FloeAgent
     steps:
       - uses: actions/checkout@v5
-      - name: Prepare Metal compiler
-        run: xcodebuild -downloadComponent MetalToolchain
-      - name: Build the actual Floe inference engine in a diagnostic host
-        timeout-minutes: 25
-        run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/LocalInferenceEvidence"
-          git rev-parse HEAD > "$RUNNER_TEMP/LocalInferenceEvidence/SOURCE-SHA.txt"
-          swift build --package-path Qualification/LocalInference --scratch-path .build --force-resolved-versions --jobs 4 \
-            2>&1 | tee "$RUNNER_TEMP/LocalInferenceEvidence/build.log"
-      - name: Exercise the App's constrained batch48 and balanced batch96 profiles
-        timeout-minutes: 25
+      - name: Capture source and pristine dependency evidence
         run: |
           set -o pipefail
           EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
           mkdir -p "$EVIDENCE"
           git rev-parse HEAD > "$EVIDENCE/SOURCE-SHA.txt"
+          printf '%s\n' "$DEPENDENCY_PROFILE" > "$EVIDENCE/dependency-profile.txt"
+          # Capture the immutable inputs before the candidate step may patch the
+          # working copy, so failure recovery keeps the original lock and manifest.
+          cp Package.swift "$EVIDENCE/FloeAgent-Package.swift.original"
+          cp project.yml "$EVIDENCE/FloeAgent-project.yml.original"
+          cp Qualification/LocalInference/Package.resolved \
+            "$EVIDENCE/LocalInference-Package.resolved.original.json"
+      - name: Prepare Metal compiler
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Apply isolated GPU-fix candidate pins
+        if: env.DEPENDENCY_PROFILE == 'gpu-fix-candidate'
+        run: |
+          set -o pipefail
+          EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
+          # The only write to the root manifest, and only in this candidate
+          # step. The guard rejects any pin that does not match the declared
+          # originals and refuses to change anything but those two lines.
+          python3 scripts/qualify_mlx_candidate.py apply-patch \
+            --package-swift Package.swift \
+            --profile "$DEPENDENCY_PROFILE" \
+            --diff "$EVIDENCE/candidate-manifest.diff" \
+            --manifest "$EVIDENCE/candidate-apply.json"
+          cp Package.swift "$EVIDENCE/FloeAgent-Package.swift.candidate"
+      - name: Resolve dependencies with the real SwiftPM
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
+          set +e
+          swift package --package-path Qualification/LocalInference --scratch-path .build resolve \
+            2>&1 | tee "$EVIDENCE/resolve.log"
+          resolve_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$resolve_status" > "$EVIDENCE/resolve-exit-code.txt"
+          if [ -f Qualification/LocalInference/Package.resolved ]; then
+            cp Qualification/LocalInference/Package.resolved \
+              "$EVIDENCE/LocalInference-Package.resolved.resolved.json"
+          fi
+          # Verify the frozen lock even when resolve failed: the original
+          # pins must be untouched and a candidate run must show exactly the
+          # two target revisions. Any added or drifted pin fails here.
+          set +e
+          python3 scripts/qualify_mlx_candidate.py verify-lock --check \
+            --profile "$DEPENDENCY_PROFILE" \
+            --app-project project.yml \
+            --baseline "$EVIDENCE/LocalInference-Package.resolved.original.json" \
+            --resolved "$EVIDENCE/LocalInference-Package.resolved.resolved.json" \
+            > "$EVIDENCE/lock-evaluation.json" 2>&1
+          verify_status=$?
+          set -e
+          printf '%s\n' "$verify_status" > "$EVIDENCE/lock-verify-exit-code.txt"
+          cat "$EVIDENCE/lock-evaluation.json"
+          test "$resolve_status" -eq 0
+          test "$verify_status" -eq 0
+      - name: Build the actual Floe inference engine in a diagnostic host
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
+          swift build --package-path Qualification/LocalInference --scratch-path .build --force-resolved-versions --jobs 4 \
+            2>&1 | tee "$EVIDENCE/build.log"
+      - name: Exercise the App's constrained batch48 and balanced batch96 profiles
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
           xcodebuild -version > "$EVIDENCE/toolchain.txt"
           bin_path=$(swift build --package-path Qualification/LocalInference --scratch-path .build --show-bin-path)
           # The transitive llama binary target needs its standard macOS rpath,
@@ -58,6 +127,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: local-inference-diagnostic-${{ github.sha }}
+          name: local-inference-diagnostic-${{ inputs.dependency_profile || 'current' }}-${{ github.sha }}
           path: ${{ runner.temp }}/LocalInferenceEvidence/
           if-no-files-found: ignore
