@@ -138,14 +138,24 @@ public actor MLXTextEngine {
         // Single source of truth so the logged KV precision is exactly what
         // GenerateParameters below will use.
         let kvBits = resourceProfile.tier == .constrained ? 4 : 8
+        // Materialize every numeric telemetry value while `prepared` is still a
+        // plain local. `FloeLogger.info` takes an `@autoclosure`, so an inline
+        // interpolation would let that actor-isolated closure capture the
+        // non-Sendable `LMInput` and keep it aliased across the later `sending`
+        // transfer to `generatePrepared`, which is the Swift 6.4 region-isolation
+        // error at the `prepared` declaration. Reading rank/shape only (never
+        // token ids, instructions or prompt text) preserves the privacy boundary.
+        let preparedTokensRank = prepared.text.tokens.ndim
+        let preparedTokensShape = prepared.text.tokens.shape
         // Numeric-only prefill diagnostics, emitted after the real tokenizer
         // has prepared the prompt and before the context guard can reject it.
-        // `tokens` is recorded as rank/shape only: never token ids, instructions
-        // or prompt text. `mlxProcessPeakBytes` is MLX's process-wide cumulative
-        // peak since program start, NOT this turn's peak.
-        FloeLogger(category: .providers).info(
-            "localInferencePrepared trace=\(diagnosticTraceID ?? "none") inputTokens=\(preparedInputTokens) effectiveMaxTokens=\(effectiveMaximum) contextSize=\(resourceProfile.contextSize) batchSize=\(resourceProfile.batchSize) kvBits=\(kvBits) tokensRank=\(prepared.text.tokens.ndim) tokensShape=\(prepared.text.tokens.shape) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory) mlxProcessPeakBytes=\(Memory.peakMemory)"
-        )
+        // The message is fully built as a `String` here, so the logger
+        // autoclosure captures only `Sendable` values, never `prepared`.
+        // `mlxProcessPeakBytes` is MLX's process-wide cumulative peak since
+        // program start, NOT this turn's peak.
+        let preparedDiagnostic =
+            "localInferencePrepared trace=\(diagnosticTraceID ?? "none") inputTokens=\(preparedInputTokens) effectiveMaxTokens=\(effectiveMaximum) contextSize=\(resourceProfile.contextSize) batchSize=\(resourceProfile.batchSize) kvBits=\(kvBits) tokensRank=\(preparedTokensRank) tokensShape=\(preparedTokensShape) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory) mlxProcessPeakBytes=\(Memory.peakMemory)"
+        FloeLogger(category: .providers).info(preparedDiagnostic)
         // A simple quantized cache is not rotating, so enforce the device
         // context before asking MLX to allocate it. The prepared token shape
         // includes chat-template overhead and native tool schemas, unlike a
