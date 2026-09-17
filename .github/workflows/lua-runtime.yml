@@ -29,9 +29,17 @@ jobs:
           bash FloeAgent/ThirdParty/LuaWASI/build_wasi.sh "$RUNNER_TEMP/floe-lua" 2>&1 | tee "$RUNNER_TEMP/lua-build.log"
       - name: Run the interpreter through the WASI command runtime
         run: |
+          set -o pipefail
+          # Reuse the production WASM regression source unchanged in this small
+          # host: loops, cancellation, output bounds, confinement and signatures.
+          cp FloeAgent/Tests/FloeExecutionTests/WasmCapabilityTests.swift \
+            FloeAgent/Qualification/Tests/WasmCommandTests/WasmCapabilityTests.swift
+          shasum -a 256 FloeAgent/Tests/FloeExecutionTests/WasmCapabilityTests.swift \
+            > "$RUNNER_TEMP/floe-lua/evidence/wasm-regression-source.sha256"
           cd FloeAgent/Qualification
           FLOE_LUA_WASI="$RUNNER_TEMP/floe-lua/lua.wasm" swift test --package-path . --scratch-path .build \
-            --force-resolved-versions --jobs 4 --filter LuaInterpreterTests
+            --force-resolved-versions --jobs 4 --filter '(LuaInterpreterTests|WasmCapabilityTests)' \
+            2>&1 | tee "$RUNNER_TEMP/lua-tests.log"
       - name: Retain artifact, hash and original failure
         if: always()
         uses: actions/upload-artifact@v4
@@ -41,4 +49,5 @@ jobs:
             ${{ runner.temp }}/floe-lua/lua.wasm
             ${{ runner.temp }}/floe-lua/evidence
             ${{ runner.temp }}/lua-build.log
+            ${{ runner.temp }}/lua-tests.log
           retention-days: 30

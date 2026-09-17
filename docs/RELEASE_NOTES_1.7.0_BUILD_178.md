@@ -6,6 +6,15 @@ iPhone Notes UI on both SDKs, Linux compilation, secret scan, SBOM and license
 inventory. It was signed and uploaded to TestFlight from immutable source
 `32acddd41f0f5735ac7f1cec2eb14feb1da28623`, tag `v1.7.0-beta.35`.
 
+> **Correction · 2026-09-17:** The Lua/WasmKit 0.3.1 component work described
+> below remained on `codex/wasmkit-eh-languages`; it was not included in source
+> `32acddd41f0f5735ac7f1cec2eb14feb1da28623`. Build 178 retains WasmKit 0.2.2
+> and has no registered Lua command. The original claim is retained below as
+> history, not as a shipped capability.
+>
+> **更正：** 下文 Lua／WasmKit 0.3.1 的组件工作未合入 Build 178 的固定源码。
+> 此版本仍使用 WasmKit 0.2.2，没有 Lua 命令；不能将独立分支的测试计作已交付。
+
 ### 简体中文
 
 - 保留前一候选版的运行环境、包管理、手记助手隔离与实时刷新修复。

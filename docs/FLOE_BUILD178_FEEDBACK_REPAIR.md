@@ -264,6 +264,29 @@ Observed on this checkout unless a line says otherwise:
   Notes kind labels (`Office 文件`, `思维导图`, page counts) remain literal
   Chinese and are out of scope for this round.
 
+## Additional work and cleanup — 2026-09-17
+
+- Office Pencil work will reuse the engine's editable freehand shape tool and
+  existing conflict-aware saving. Color, width, transparency and Pencil/touch
+  behavior require verified bridge contracts and actual device interaction.
+  Existing host compilation is not proof that annotation round-trips work.
+- CAD Pencil work is checking bounded world-coordinate strokes against the real
+  bundled editing engine. Undo, partial-failure recovery and save/reopen are
+  required before claiming durable annotations.
+- Lua integration was found on an unmerged branch; Build 178's historical release
+  note is explicitly corrected. Rust/Swift/PHP runtime paths remain under audit;
+  editor syntax support alone is not execution support.
+- Two approved cleanup batches removed obsolete extracted applications, finished
+  build caches and an unused iPhone debugging-symbol cache. The second batch
+  measured 15,206,846,464 allocated bytes in selected targets and increased volume
+  free space by 12,678,459,392 bytes (APFS allocation and concurrent activity make
+  these different metrics). Final observed free space was 18,695,557,120 bytes.
+  The old shell worktree's five source edits and diff hash were unchanged.
+  Current Build 178, rollback Build 172, recovery archives, logs and images were
+  retained. The device-support symlink still points to an existing empty cache
+  directory; user/test simulator data was not erased. Exact paths, hash checks,
+  partial failures and resume records are kept in private cleanup evidence.
+
 ## References
 
 - Localization: `FloeAgent/FloeApp/Resources/Localizable.xcstrings`;
