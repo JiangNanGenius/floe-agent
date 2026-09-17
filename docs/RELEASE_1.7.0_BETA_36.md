@@ -33,7 +33,8 @@
 | Notes in that SDK 27 run | Three cases passed on each iPad/iPhone simulator; native Office skipped on each |
 | IDE/CAD repair, `3eecf735` | Compact-menu test updated; CAD fields reordered and Save made sticky; Swift type check, 73 CAD checks and 29 asset hashes passed |
 | Primary browser interaction, `3eecf735` | Narrow and wide layout inspected; real DWG edited, saved and reparsed with the bundled WASM engine; not native device evidence |
-| IDE diagnostic CI, `a22e8c3e`, run `35212766190` | In progress; must pass the original three UI cases on both devices |
+| IDE diagnostic CI, `a22e8c3e`, run `35212766190` | All three iPad IDE cases passed; workflow failed afterward because the exact iPhone simulator was absent. No iPhone result |
+| Simulator selection repair, `b285c037`, run `35216642942` | Family and SDK matching repaired, 28 directed checks and workflow lint passed; dual-device IDE retest in progress |
 | Final release source, both SDK gates, signing, upload, Apple processing and internal group availability | Not complete for build 179 |
 
 Original [Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md), [CAD layout and output evidence](qualification/build178-feedback/cad-layout/README.md), and the [repair ledger](FLOE_BUILD178_FEEDBACK_REPAIR.md) retain source identifiers and failure history.

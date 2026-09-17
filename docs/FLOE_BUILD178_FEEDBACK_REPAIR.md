@@ -463,3 +463,8 @@ Manual `ci.yml` dispatch accepts `ide_only=true`. It builds a fresh App test hos
 ### 2026-09-17 — IDE retest 35212766190
 
 Source `a22e8c3e`: App host build passed. All three iPad IDE cases passed, including DWG save/cold reopen and native text disk readback/cold reopen. The workflow then failed with `No available iPhone 17 Pro simulator for iOS 27`; iPhone did not run. This is a CI device-selection failure, not another failed iPad save. Original artifact `10493219821` (8,748,166 bytes), SHA256 `a5674c2eb0c638b93e9800b3c879ff4bf94e856d9783420af26fe3900d07c514`, retained locally with logs and xcresult. [Original native screenshots and summary](qualification/build178-feedback/full-app-a22e8c3e/README.md). OpenCode is repairing compatible simulator selection without skipping iPhone or relaxing the three assertions. No build 179 upload yet.
+
+
+### Simulator selection repair and retry
+
+`b285c037` retains exact-model preference, then matches available devices by actual type/family within the required iOS major, and creates a matching device only when necessary. Both CI and release qualification adopt the selector. Renamed iPads cannot satisfy iPhone requests; newly created devices use their actual type name. Primary verification: 28 unit checks and actionlint passed; real local iOS 27 inventory selected both families without booting or creating devices. Run `35216642942` retries the original dual IDE cases. Artifact `10492994998` contains the App only, not a reusable UI test runner/xctestrun; a fresh host build is required.
