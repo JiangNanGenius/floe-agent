@@ -246,8 +246,10 @@ jobs:
       - name: Guardian real PTY lifecycle regressions
         run: python3 scripts/test_remote_shell.py
 
-      - name: Office explicit save bridge contracts
-        run: python3 scripts/test_office_explicit_save.py
+      - name: Office save and ink bridge contracts
+        run: |
+          python3 scripts/test_office_explicit_save.py
+          python3 scripts/tests/test_office_ink_bridge.py
 
       - name: Build App regression host once
         timeout-minutes: 90
@@ -271,6 +273,8 @@ jobs:
             -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+            -only-testing:FloeAppTests/IDELanguageRunPolicyTests \
+            -only-testing:FloeAppTests/IDERunSourceStagingTests \
             -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             build-for-testing
@@ -310,6 +314,8 @@ jobs:
               -only-testing:FloeAppTests/LocalPythonRuntimeTests \
               -only-testing:FloeAppTests/LocalShellRuntimeTests \
               -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+              -only-testing:FloeAppTests/IDELanguageRunPolicyTests \
+              -only-testing:FloeAppTests/IDERunSourceStagingTests \
               -test-timeouts-enabled YES \
               -maximum-test-execution-time-allowance 300 \
               -retry-tests-on-failure -test-iterations 2 \

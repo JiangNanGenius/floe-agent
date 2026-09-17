@@ -714,6 +714,8 @@ targets:
     sources:
       - path: Tests/FloeAgentUITests
         excludes:
+          - IDERunSourceStagingTests.swift
+          - IDELanguageRunPolicyTests.swift
           - HomeChatSeparationTests.swift
           - BrowserProtocolTests.swift
           - ThreadTimelineTests.swift
@@ -746,6 +748,8 @@ targets:
     platform: iOS
     deploymentTarget: "26.0"
     sources:
+      - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
+      - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift
       - path: Tests/FloeAgentUITests/ThreadTimelineTests.swift
       - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift

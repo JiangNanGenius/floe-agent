@@ -305,10 +305,22 @@ Observed on this checkout unless a line says otherwise:
 
 ## Additional work and cleanup — 2026-09-17
 
-- Office Pencil work will reuse the engine's editable freehand shape tool and
-  existing conflict-aware saving. Color, width, transparency and Pencil/touch
-  behavior require verified bridge contracts and actual device interaction.
-  Existing host compilation is not proof that annotation round-trips work.
+- Office now has document-scoped color, width and transparency controls for
+  the engine's editable freehand shapes. Zero transparency means solid ink.
+  The bridge requires fresh attribute events before confirming settings, rejects
+  changes while an existing graphic object is selected, and prevents an old
+  document/controller completion from consuming a new document's settings.
+  Four focused contract tests execute the injected JavaScript with a controlled
+  engine interface and compile/run the Swift persistence/sequencing logic;
+  they pass after primary review, including stable logical identity for remote
+  preview copies. That identity is prepared for future remote editing; the
+  existing cloud/network editor gate remains closed. Local/Notes documents use
+  their original file identity. A Swift 6 semantic check of the actual Office
+  editor, bridge and preferences passed with the pinned native framework both
+  enabled and absent, using existing dependency modules and peripheral UI stubs.
+  This is not a full-App compile. Native Office
+  drawing, save/reopen/export, and Pencil-versus-finger behavior remain unverified.
+  The pinned Office host has not been rebuilt or declared Pencil-only.
 - CAD source now has atomic `addStroke` with bounded world-coordinate points,
   canonical ACI colors/line widths, a dedicated annotation layer and one undo
   entry per stroke. Run 35190789049 exposed test import errors; after those were
@@ -335,7 +347,29 @@ Observed on this checkout unless a line says otherwise:
   downloaded both packages from their immutable commit URLs. Lua was 671,143
   bytes with SHA-256 `81ad32f4eca06d232598ad7bf6f4f92bab4864a5b5d0f4da036e159b2efdf049`;
   `floe-text` retained its prior bytes. Commit `16db8f09` bundles this catalog.
-  App install-to-shell acceptance remains pending.
+  Commit `b8ddc39d` connects `apt install floe/lua`, catalog search/list/show,
+  removal and the `lua` alias through the signed capability owner. Mixed WASM
+  and Debian mutations are rejected before changes; a later WASM failure retains
+  earlier per-package results. Fifteen current-source routing tests pass, with
+  installer/runtime tests retained separately. The exact app router body also
+  passes Swift 6 type checking against current compiled package dependencies and
+  a stub command registry; this is not a full-App compile. App-wide immutable WASM resources
+  remain distinct from environment-layer packages. App install-to-shell
+  acceptance remains pending.
+- The IDE Run flow now selects a capability-backed local interpreter or an
+  explicitly configured SSH host. Rust/Swift/C/C++ compilation and PHP/Ruby/
+  Go/Java/Kotlin execution use that host; no on-device compiler is claimed.
+  Remote runs transfer one saved source file (up to 1 MiB), verify its bytes,
+  and use a run-owned staging directory. They do not transfer a whole project
+  or its dependencies. A missing Floe remote agent or changed workspace stops
+  dispatch. Preparation cancellation checks bracket transport operations;
+  cleanup checks the ownership marker, and uncertain remote cleanup remains
+  visible. SSH cancellation does not establish that the remote child exited.
+  The policy/staging harness passed 106 checks, including cancellation before
+  upload and between marker/source writes. App sources parse; full-App semantic
+  compilation, actual SSH execution and native interaction remain pending.
+  The two new Swift Testing suites are included in FloeAppTests and the cloud
+  regression selection; their execution is separate from the harness result.
 - Two approved cleanup batches removed obsolete extracted applications, finished
   build caches and an unused iPhone debugging-symbol cache. The second batch
   measured 15,206,846,464 allocated bytes in selected targets and increased volume

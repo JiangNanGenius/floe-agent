@@ -15,6 +15,10 @@ struct WorkspaceIDEView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showsCloseConfirmation = false
     @State private var terminalOwner: LocalTerminalOwner?
+    @State private var runController: IDELanguageRunController?
+    @State private var showsRunSheet = false
+    @State private var showsRunTerminal = false
+    @State private var pendingRunTerminal = false
     @State private var preview: Preview?
     private struct Preview: Identifiable { let id: String }
 
@@ -46,6 +50,12 @@ struct WorkspaceIDEView: View {
                     .accessibilityIdentifier("workspace.ide.close")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { presentRun() } label: {
+                        Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .disabled(state.activePath == nil || root == nil || center.currentWorkspace?.id != workspaceID)
+                    .accessibilityIdentifier("workspace.ide.run")
                     Button { Task { if await state.saveAll() { onSaved() } } } label: {
                         Label("ide.save.all", systemImage: "square.and.arrow.down")
                     }.disabled(!state.ready || state.saving).accessibilityIdentifier("workspace.ide.save").keyboardShortcut("s", modifiers: .command)
@@ -75,6 +85,17 @@ struct WorkspaceIDEView: View {
         }
         .interactiveDismissDisabled(state.dirty || state.saving)
         .sheet(item: $terminalOwner) { LocalTerminalView(owner: $0) }
+        .sheet(isPresented: $showsRunSheet, onDismiss: {
+            if pendingRunTerminal {
+                pendingRunTerminal = false
+                showsRunTerminal = true
+            }
+        }) {
+            if let runController { IDELanguageRunView(controller: runController, state: state) }
+        }
+        .sheet(isPresented: $showsRunTerminal) {
+            if let runController { IDERunTerminalView(controller: runController) }
+        }
         .sheet(item: $state.conflict) { review in
             TextConflictReviewView(conflict: review, onResolve: { content in
                 await state.resolve(review, content: content)
@@ -93,6 +114,29 @@ struct WorkspaceIDEView: View {
             Button("ide.continue", role: .cancel) {}
         }
     }
-    private func close() { onSaved(); dismiss() }
+    /// The run controller is created once per pinned workspace and reuses the
+    /// same pinned values for every dispatch. A successful dispatch asks the
+    /// IDE to reveal the run-owned output surface after the sheet closes —
+    /// the same surface renders the local session stream and the captured
+    /// remote result.
+    private func presentRun() {
+        guard let workspaceID, root != nil, let path = state.activePath, !path.isEmpty else { return }
+        let controller = runController ?? IDELanguageRunController(
+            workspaceID: workspaceID, root: root, center: center, state: state
+        )
+        controller.onRequestRunTerminal = {
+            pendingRunTerminal = true
+            showsRunSheet = false
+        }
+        runController = controller
+        showsRunSheet = true
+    }
+
+    private func close() {
+        // Do not leave a run-owned session behind when the IDE closes.
+        if let runController { Task { await runController.stop() } }
+        onSaved()
+        dismiss()
+    }
 }
 #endif

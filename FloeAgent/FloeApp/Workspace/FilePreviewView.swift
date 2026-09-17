@@ -141,7 +141,9 @@ struct FilePreviewView: View {
             Task { await load() }
         }) {
             NavigationStack {
-                OfficeDocumentEditorView(relativePath: relativePath, session: officeSession)
+                OfficeDocumentEditorView(relativePath: relativePath,
+                                         session: officeSession,
+                                         stableInkIdentity: remoteInkIdentity)
             }
         }
         .onDisappear {
@@ -206,6 +208,18 @@ struct FilePreviewView: View {
             && !center.isCloudWorkspacePath(relativePath)
             && !center.isNetworkWorkspacePath(relativePath)
             && center.fileService != nil
+    }
+
+    /// Stable logical identity for a cloud/network Office document. Its local
+    /// editing URL is a fresh `remotePreview.store` copy whose directory changes
+    /// on every load, so the physical path can never key persisted ink settings.
+    /// Local Office documents return nil and keep their physical-URL identity.
+    private var remoteInkIdentity: OfficeInkDocumentIdentity? {
+        guard center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) else {
+            return nil
+        }
+        return OfficeInkDocumentIdentity(workspaceIdentity: center.currentWorkspace?.id.uuidString,
+                                         relativePath: relativePath)
     }
 
     @ToolbarContentBuilder

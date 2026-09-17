@@ -19,6 +19,11 @@ final class OfficeFileSession: ObservableObject {
     @Published var error: String?
     @Published private(set) var hasSaveConflict = false
     @Published private(set) var drawingMode = false
+    /// Floe-owned stroke settings for the current document. Independent from
+    /// Notes and Canvas ink; persisted under its own defaults key.
+    @Published private(set) var inkPreferences: OfficeInkPreferences
+    @Published private(set) var inkApplyOutcome: OfficeExplicitSaveBridge.InkApplyOutcome?
+    @Published var inkError: String?
     private var workspace: SecurityScopedDocumentWorkspace?
     private var session: DocumentSession?
     private var operating = false
@@ -29,8 +34,12 @@ final class OfficeFileSession: ObservableObject {
     private var explicitSaveBridge: OfficeExplicitSaveBridge?
     private var exportSnapshot: DocumentExportSnapshot?
     private var exportWorkspace: SecurityScopedDocumentWorkspace?
+    /// Serializes/coalesces ink dispatches so an older completion can never
+    /// publish over the latest stroke or a document that has since switched.
+    private var inkSequencer = OfficeInkApplySequencer()
 
     init() {
+        inkPreferences = OfficeInkPreferences.session(forDocument: "")
         #if canImport(FloeOfficeNative)
         runtimeFailureObservation = NotificationCenter.default.publisher(for: .FloeOfficeNativeRuntimeDidFail)
             .receive(on: DispatchQueue.main)
@@ -88,6 +97,80 @@ final class OfficeFileSession: ObservableObject {
             _ = controller.perform(NSSelectorFromString("setDrawingMode:completion:"), with: NSNumber(value: enabled), with: callback as AnyObject)
         }
         drawingMode = enabled
+        if enabled { await applyInkPreferences() } else { inkApplyOutcome = nil; inkError = nil }
+    }
+
+    /// Points the current document's stroke preferences at the given workspace
+    /// document. Call before editing starts; settings persist per document and
+    /// never read or write Canvas/Notes ink. The workspace identity keeps two
+    /// same-named files in different workspaces separate while the digest keeps
+    /// the raw path out of `UserDefaults`.
+    ///
+    /// `stableIdentity` is only supplied by `FilePreviewView` for a cloud or
+    /// network file, whose local editing URL is a fresh preview copy each load.
+    /// Local Office documents and Notes pass nil, so their persisted settings
+    /// keep following the stable `session.originalURL` physical path and can
+    /// never be rebound to a transient workspace id.
+    func useInkPreferences(stableIdentity: OfficeInkDocumentIdentity? = nil,
+                           workspaceIdentity: String?,
+                           documentKey: String) {
+        let key = OfficeInkPreferences.resolvedDocumentKey(
+            stableIdentity: stableIdentity,
+            originalURL: session?.originalURL,
+            fallbackWorkspaceIdentity: workspaceIdentity,
+            fallbackDocumentKey: documentKey)
+        guard inkPreferences.documentKey != key else { return }
+        invalidateInkApply()
+        inkPreferences = OfficeInkPreferences.session(forDocument: key)
+        inkApplyOutcome = nil
+        inkError = nil
+    }
+
+    /// Dispatches the current stroke to the engine's own freehand tool. Rapid
+    /// slider/colour changes are coalesced: a request that arrives while a
+    /// dispatch is in flight returns immediately and the running drain loop
+    /// re-runs with the newest stroke. Only the newest generation may publish,
+    /// so an older completion can never overwrite the latest settings.
+    ///
+    /// Pencil-only input is not gated: the pinned host owns the WebView pointer
+    /// handlers and exposes no verified pen-vs-finger event hook, so no finger
+    /// protection is claimed here.
+    func applyInkPreferences() async {
+        inkError = nil
+        guard drawingMode, !readOnly, let controller, supportsDrawing else {
+            inkApplyOutcome = nil
+            return
+        }
+        let epoch = inkSequencer.epoch
+        guard inkSequencer.begin() else { return }
+        while let generation = inkSequencer.next(epoch: epoch) {
+            let key = inkPreferences.documentKey
+            let stroke = inkPreferences.stroke
+            do {
+                let outcome = try await OfficeExplicitSaveBridge.applyInk(stroke, controller: controller)
+                guard inkSequencer.complete(generation, epoch: epoch),
+                      key == inkPreferences.documentKey,
+                      self.controller === controller,
+                      drawingMode else { continue }
+                inkApplyOutcome = outcome
+                inkError = nil
+            } catch {
+                guard inkSequencer.complete(generation, epoch: epoch),
+                      key == inkPreferences.documentKey,
+                      self.controller === controller,
+                      drawingMode else { continue }
+                inkApplyOutcome = nil
+                inkError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Rejects any in-flight ink completion and clears its published result.
+    /// Called whenever the session closes, switches document or replaces its
+    /// controller so an older dispatch cannot describe the new document.
+    private func invalidateInkApply() {
+        inkSequencer.invalidate()
+        inkApplyOutcome = nil
     }
 
     func exportDocument(format: String) async throws -> URL {
@@ -553,6 +636,8 @@ final class OfficeFileSession: ObservableObject {
         guard let session else { throw CocoaError(.fileReadUnknown) }
         self.readOnly = readOnly
         drawingMode = false
+        invalidateInkApply()
+        inkError = nil
         phase = .loading
         error = nil
         #if canImport(FloeOfficeNative)
@@ -610,6 +695,7 @@ final class OfficeFileSession: ObservableObject {
             }
         }
         #endif
+        invalidateInkApply()
         explicitSaveBridge?.invalidate()
         explicitSaveBridge = nil
         self.controller = nil
@@ -665,6 +751,9 @@ struct OfficeDocumentSurface: View {
 struct OfficeDocumentEditorView: View {
     let relativePath: String
     @ObservedObject var session: OfficeFileSession
+    /// Set by `FilePreviewView` only for a cloud/network document; nil for
+    /// local Office and Notes so they keep their physical-URL ink identity.
+    var stableInkIdentity: OfficeInkDocumentIdentity? = nil
     var onSaved: (() async -> Bool)?
     var onClose: (() -> Void)? = nil
     /// A feature-owned tab strip replaces the standalone navigation title.
@@ -681,6 +770,7 @@ struct OfficeDocumentEditorView: View {
     @State private var choosingAttachment = false
     @State private var choosingWorkspaceAttachment = false
     @State private var showingAttachments = false
+    @State private var showingInkControls = false
     @State private var attachmentError: String?
 
     var body: some View {
@@ -709,7 +799,13 @@ struct OfficeDocumentEditorView: View {
                 }
             }
             .interactiveDismissDisabled()
-            .task { await session.enterEditing() }
+            .task {
+                session.useInkPreferences(
+                    stableIdentity: stableInkIdentity,
+                    workspaceIdentity: environment.workspaceCenter.currentWorkspace?.id.uuidString,
+                    documentKey: relativePath)
+                await session.enterEditing()
+            }
             .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
             .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }
             .sheet(isPresented: $choosingWorkspaceAttachment) {
@@ -800,11 +896,17 @@ struct OfficeDocumentEditorView: View {
         }
         if session.supportsDrawing {
             Button {
-                Task { do { try await session.toggleDrawing() } catch { session.error = error.localizedDescription } }
+                showingInkControls = true
             } label: {
-                Label(session.drawingMode ? "结束批注" : "画笔批注", systemImage: "pencil.tip")
+                Label(OfficeInkText.t("画笔批注", "Annotate"), systemImage: "pencil.tip")
                     .frame(minWidth: 44, minHeight: 44)
-            }.disabled(!session.canAct).accessibilityIdentifier("office.drawing.toggle")
+            }
+            .disabled(!session.canAct && !session.drawingMode)
+            .accessibilityIdentifier("office.drawing.toggle")
+            .popover(isPresented: $showingInkControls, arrowEdge: .top) {
+                OfficeInkControlPanel(session: session, ink: session.inkPreferences)
+                    .presentationCompactAdaptation(.popover)
+            }
         }
         if session.supportsPresentation {
             Button {
@@ -907,5 +1009,137 @@ private struct OfficeConvertedExportShareSheet: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: [url], applicationActivities: nil)
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// Compact app-owned pen panel. It only edits Floe's typed stroke settings and
+/// starts/stops the engine's own editable freehand tool; it never draws a
+/// screen-space overlay and never writes Notes/Canvas ink.
+private struct OfficeInkControlPanel: View {
+    @ObservedObject var session: OfficeFileSession
+    let ink: OfficeInkPreferences
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Button {
+                    Task {
+                        do { try await session.toggleDrawing() }
+                        catch { session.inkError = error.localizedDescription }
+                    }
+                } label: {
+                    Label(session.drawingMode
+                          ? OfficeInkText.t("结束批注", "End annotations")
+                          : OfficeInkText.t("开始批注", "Start annotations"),
+                          systemImage: session.drawingMode ? "pencil.tip.crop.circle.badge.minus" : "pencil.tip")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!session.canAct)
+                .accessibilityIdentifier("office.ink.startStop")
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(OfficeInkText.t("颜色", "Color")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        ForEach(OfficeInkColor.allCases) { color in
+                            Button {
+                                ink.setColor(color)
+                                reapply()
+                            } label: {
+                                Circle()
+                                    .fill(color.swatch)
+                                    .frame(width: 28, height: 28)
+                                    .overlay(Circle().strokeBorder(
+                                        ink.color == color ? Color.accentColor : Color.secondary.opacity(0.35),
+                                        lineWidth: ink.color == color ? 2.5 : 1))
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(color.title)
+                            .accessibilityAddTraits(ink.color == color ? .isSelected : [])
+                            .accessibilityIdentifier("office.ink.color.\(color.rawValue)")
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(OfficeInkText.t("线宽", "Width")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.2f mm", ink.stroke.widthMillimeters))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    // Presets own a real 44pt tap target on their own row so
+                    // `.controlSize(.small)` cannot shrink the hit area and the
+                    // slider still gets the full 330pt panel width on compact
+                    // screens. The frame is on the button's label, not outside
+                    // the button, so the whole 44pt region is tappable.
+                    HStack(spacing: 8) {
+                        ForEach(OfficeInkWidthPreset.allCases) { preset in
+                            Button {
+                                ink.setWidthMillimeters(preset.rawValue)
+                                reapply()
+                            } label: {
+                                Text(preset.title)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(abs(ink.stroke.widthMillimeters - preset.rawValue) < 0.01 ? Color.accentColor : Color.gray)
+                            .accessibilityIdentifier("office.ink.widthPreset.\(preset.title)")
+                        }
+                    }
+                    Slider(value: Binding(get: { ink.stroke.widthMillimeters },
+                                          set: { ink.setWidthMillimeters($0) }),
+                           in: OfficeInkStroke.widthRange, step: 0.25,
+                           onEditingChanged: { editing in if !editing { reapply() } })
+                        .accessibilityIdentifier("office.ink.width")
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(OfficeInkText.t("透明度", "Transparency")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(ink.stroke.transparencyPercent == 0
+                             ? OfficeInkText.t("0%（实心）", "0% (solid)")
+                             : "\(ink.stroke.transparencyPercent)%")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Slider(value: Binding(
+                        get: { Double(ink.stroke.transparencyPercent) },
+                        set: { ink.setTransparencyPercent(Int($0.rounded())) }),
+                           in: 0...100, step: 1,
+                           onEditingChanged: { editing in if !editing { reapply() } })
+                        .accessibilityIdentifier("office.ink.transparency")
+                    Text(OfficeInkText.t("0% 为实心，数值越大越透明",
+                                         "0% is solid; higher values are more transparent"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+
+                if let inkError = session.inkError {
+                    Label(inkError, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("office.ink.error")
+                } else if session.drawingMode, let outcome = session.inkApplyOutcome {
+                    Label(outcome == .verified
+                          ? OfficeInkText.t("画笔设置已确认", "Pen settings confirmed")
+                          : OfficeInkText.t("设置已发送，尚未确认生效", "Settings sent; awaiting confirmation"),
+                          systemImage: outcome == .verified ? "checkmark.circle" : "clock")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("office.ink.outcome")
+                }
+            }
+            .padding(16)
+        }
+        .frame(idealWidth: 330, maxWidth: 330, idealHeight: 420, maxHeight: 420)
+    }
+
+    private func reapply() {
+        guard session.drawingMode else { return }
+        Task { await session.applyInkPreferences() }
+    }
 }
 #endif
