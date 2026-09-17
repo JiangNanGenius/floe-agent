@@ -301,8 +301,41 @@ final class NotesAgentToolsTests: XCTestCase {
         XCTAssertEqual(page.attachmentTotal, 3)
         XCTAssertEqual(page.attachmentOffset, 1)
         XCTAssertEqual(page.attachmentsReturned, 2)
-        XCTAssertEqual(page.nextAttachmentOffset, 3)
+        // This window is terminal: offset 1 + 2 reaches attachmentTotal. Every
+        // continuation field in this tool (nextPageOffset, nextElementOffset,
+        // nextOffset, nextTextOffset, nextAttachmentOffset) is nil once its
+        // window reaches the end, and the tool description promises
+        // nextAttachmentOffset only "when more content exists"; a terminal page
+        // must not advertise a non-existent continuation at offset 3.
+        XCTAssertEqual(page.attachmentOffset + page.attachmentsReturned, page.attachmentTotal)
+        XCTAssertNil(page.nextAttachmentOffset)
         XCTAssertEqual(page.attachments.map(\.attachmentID), Array(node.attachments!.dropFirst(1)).map(\.id))
+
+        // A window that stops before the end must advertise the exact
+        // continuation offset, and an offset-1 walk must return every attachment
+        // exactly once (no omission, no duplicate).
+        let continued = NotesReadTool.nodeDetail(document, node: node, offset: 1, limit: 1, textOffset: 0, textLimit: 8_000)
+        XCTAssertLessThanOrEqual(try encodedBytes(continued), NotesReadTool.maximumResponseBytes)
+        XCTAssertEqual(continued.attachmentsReturned, 1)
+        XCTAssertEqual(continued.nextAttachmentOffset, 2)
+        XCTAssertEqual(continued.attachments.map(\.attachmentID), [node.attachments![1].id])
+
+        var walkedAttachmentIDs: [UUID] = []
+        var walkOffset = 0
+        var walkSteps = 0
+        while true {
+            let slice = NotesReadTool.nodeDetail(document, node: node, offset: walkOffset, limit: 1,
+                                                 textOffset: 0, textLimit: 8_000)
+            XCTAssertLessThanOrEqual(try encodedBytes(slice), NotesReadTool.maximumResponseBytes)
+            XCTAssertEqual(slice.attachmentOffset, walkOffset)
+            walkedAttachmentIDs.append(contentsOf: slice.attachments.map(\.attachmentID))
+            guard let advance = slice.nextAttachmentOffset, advance > walkOffset else { break }
+            walkOffset = advance
+            walkSteps += 1
+            XCTAssertLessThan(walkSteps, 100, "attachment pagination must make bounded progress")
+        }
+        XCTAssertEqual(walkedAttachmentIDs, node.attachments!.map(\.id),
+                       "attachment pages must not drop or repeat an attachment")
 
         // Every attachment caption is independently recoverable with its own
         // nextOffset; identity and resource IDs are never replaced by a summary.
@@ -410,8 +443,17 @@ final class NotesAgentToolsTests: XCTestCase {
     /// Real generated .docx: read stable field IDs, rewrite one field through
     /// the immutable Notes CAS, reopen the committed revision and match text.
     func testOfficeFieldsReadAndUpdateRoundTripsThroughCAS() async throws {
-        let (store, root) = try makeOfficeStore()
-        defer { try? FileManager.default.removeItem(at: root) }
+        var store: NotesStore! = nil
+        var root: URL!
+        (store, root) = try makeOfficeStore()
+        // A scratch store owns GRDB's open SQLite connection. Release the store
+        // reference first, then unlink the directory: removing the file while the
+        // connection is open makes SQLite log "vnode unlinked while in use". This
+        // only reorders test teardown; the product storage API is unchanged.
+        defer {
+            store = nil
+            try? FileManager.default.removeItem(at: root)
+        }
         let source = try makeOfficeFixture(root: root, name: "contract.docx", title: "合同",
                                            paragraphs: ["甲方：Floe", "乙方：用户"])
         let document = try await importOfficeDocument(source, fileName: "合同.docx", title: "合同", store: store)
@@ -457,8 +499,17 @@ final class NotesAgentToolsTests: XCTestCase {
     /// A stale expectedRevision or a stale sha256 fails closed and never
     /// overwrites the current document or its resource pointer.
     func testStaleOfficeRevisionAndSHA256NeverOverwrite() async throws {
-        let (store, root) = try makeOfficeStore()
-        defer { try? FileManager.default.removeItem(at: root) }
+        var store: NotesStore! = nil
+        var root: URL!
+        (store, root) = try makeOfficeStore()
+        // A scratch store owns GRDB's open SQLite connection. Release the store
+        // reference first, then unlink the directory: removing the file while the
+        // connection is open makes SQLite log "vnode unlinked while in use". This
+        // only reorders test teardown; the product storage API is unchanged.
+        defer {
+            store = nil
+            try? FileManager.default.removeItem(at: root)
+        }
         let source = try makeOfficeFixture(root: root, name: "note.docx", title: "笔记", paragraphs: ["第一版"])
         let document = try await importOfficeDocument(source, fileName: "note.docx", title: "笔记", store: store)
         let conversation = UUID()
@@ -502,8 +553,17 @@ final class NotesAgentToolsTests: XCTestCase {
     /// Reading and rewriting another document requires its own explicit grant;
     /// the CAS replacement cannot bypass the transaction's scope check.
     func testOfficeTextEditRejectsUnauthorizedDocument() async throws {
-        let (store, root) = try makeOfficeStore()
-        defer { try? FileManager.default.removeItem(at: root) }
+        var store: NotesStore! = nil
+        var root: URL!
+        (store, root) = try makeOfficeStore()
+        // A scratch store owns GRDB's open SQLite connection. Release the store
+        // reference first, then unlink the directory: removing the file while the
+        // connection is open makes SQLite log "vnode unlinked while in use". This
+        // only reorders test teardown; the product storage API is unchanged.
+        defer {
+            store = nil
+            try? FileManager.default.removeItem(at: root)
+        }
         let sourceA = try makeOfficeFixture(root: root, name: "a.docx", title: "甲", paragraphs: ["甲文"])
         let sourceB = try makeOfficeFixture(root: root, name: "b.docx", title: "乙", paragraphs: ["乙文"])
         let documentA = try await importOfficeDocument(sourceA, fileName: "a.docx", title: "甲", store: store)
@@ -534,8 +594,17 @@ final class NotesAgentToolsTests: XCTestCase {
     /// A very long Office field stays inside the 196608-byte transport, parses
     /// as JSON and reconstructs exactly through fieldID + textOffset.
     func testLongOfficeFieldIsByteBoundedParseableAndFullyRecoverable() async throws {
-        let (store, root) = try makeOfficeStore()
-        defer { try? FileManager.default.removeItem(at: root) }
+        var store: NotesStore! = nil
+        var root: URL!
+        (store, root) = try makeOfficeStore()
+        // A scratch store owns GRDB's open SQLite connection. Release the store
+        // reference first, then unlink the directory: removing the file while the
+        // connection is open makes SQLite log "vnode unlinked while in use". This
+        // only reorders test teardown; the product storage API is unchanged.
+        defer {
+            store = nil
+            try? FileManager.default.removeItem(at: root)
+        }
         let longText = String(repeating: "长字段中文内容🙂", count: 8_000)
         let source = try makeOfficeFixture(root: root, name: "long.docx", title: "长文档", paragraphs: [longText])
         let document = try await importOfficeDocument(source, fileName: "long.docx", title: "长文档", store: store)

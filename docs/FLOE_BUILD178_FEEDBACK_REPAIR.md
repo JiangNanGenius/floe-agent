@@ -41,7 +41,14 @@ Last updated: 2026-09-17.
   use `QLThumbnailGenerator` against a uniquely scoped temp copy with the
   validated extension, generation is bounded to two concurrent requests, and a
   single-resume request state handles timeout/cancel. Limits stay 128 MiB
-  source, 48 MiB cache, 15 s.
+  source and 48 MiB cache. Transient failure recovery now uses the same product
+  and test generator: up to three attempts, 15 s per attempt and 45 s total with
+  bounded backoff. The two-request gate also bounds staging copies. Cancellation
+  stops retries and suppresses publication, while failed results are not cached.
+  Logs identify format, attempt and sanitized error category without document
+  names or paths. Cold-start extension failure is a hypothesis, not a proven
+  explanation for the first Word sample. Six required fixture tests and two
+  cancellation tests passed Swift 6 semantic checks; execution is pending.
 
 ### Notes assistant tools
 
@@ -98,7 +105,7 @@ Observed on this checkout unless a line says otherwise:
   `python3 FloeAgent/scripts/test_office_explicit_save.py` → `Ran 1 test ...
   OK`. These exercise the JavaScript adapter and save bridge; they do not
   qualify the native Office UI.
-- **iPad simulator execution — not passed.** The simulator run was interrupted
+- **Earlier local iPad simulator execution — not passed.** The simulator run was interrupted
   by host load before any test case executed (`TEST EXECUTE INTERRUPTED`). An
   interrupted run is not a pass and is not counted as one.
 - **Localization (this task).** New `notes.engineering.*`, `notes.import.all`
@@ -126,11 +133,16 @@ Observed on this checkout unless a line says otherwise:
   check was between complete prefills, not mid-prefill cancellation.
 - Office native UI (font dropdown, host-owned close, explicit save) is not
   qualified by the adapter tests.
-- The Notes simulator/device acceptance run has not completed.
+- The Notes cloud component suite ran and failed as detailed below; full-App
+  simulator/device acceptance remains incomplete.
 - Mind-map long-text pagination and the runtime response-limit repair are
   implemented. Their latest regression tests compiled in the NativeNotes host
-  (`native-notes-final-build2.log`, `TEST BUILD SUCCEEDED`); simulator execution
-  has not passed. The third integration review found no new blocking issue in
+  (`native-notes-final-build2.log`, `TEST BUILD SUCCEEDED`). The subsequent cloud
+  run found one incorrect terminal-page test expectation: offset 1 plus two
+  returned attachments reaches a total of 3, so `nextAttachmentOffset` is nil,
+  not 3. The correction preserves the nil-at-end contract and adds a real
+  nonterminal continuation and an exact once-only attachment walk. The third
+  integration review found no new blocking issue in
   resource remapping, server extraction, response limits or target membership.
 - Notes Office content editing is implemented; its new tests passed a directed
   NativeNotes build (`native-notes-office-tools-build.log`). The refresh/conflict
@@ -191,8 +203,41 @@ Observed on this checkout unless a line says otherwise:
   [run 35180990348](https://github.com/JiangNanGenius/floe-agent/actions/runs/35180990348).
   It selects the development SDK and executes iPad before iPhone. Real Quick Look
   thumbnail images are retained as XCTest attachments when a system generator
-  returns them. Results are pending; generated images and automated component
-  tests are not manual full-App acceptance.
+  returns them. On Xcode 27 (27A5252f), the build succeeded, but 36 XCTest tests
+  reported three assertion failures across two cases: the terminal attachment
+  expectation above, and the six-Office-fixture thumbnail case (first Word
+  fixture missing; five of six generated). The other 20 Agent tool cases passed,
+  including actual Office text read/edit/CAS round-trip and stale revision/hash
+  rejection. The original 11-case native suite and the two thumbnail-gate cases
+  passed. The separate reader/linked-map UI test passed, but primary inspection
+  found its landscape capture still used a portrait system canvas; it is not
+  accepted as landscape screenshot evidence. The test now captures the app and
+  checks image dimensions. iPhone execution did not start after the iPad failure.
+  Primary inspection confirmed real text in the returned Word, Excel and PPT
+  thumbnails; these generator images are not full-App library-card acceptance.
+  Xcode then spent 600 seconds on optional simulator diagnostics and timed out.
+  The workflow now disables only that verbose diagnostic collection, retaining
+  assertions, timeouts, console logs, xcresult and explicit image attachments.
+- GPU-fix candidate dependencies remain isolated to the diagnostic workflow;
+  production pins are unchanged. Run 35181975790 resolved the intended two
+  revisions but its guard rejected SwiftPM's equivalent `.git` source URL.
+  The corrected guard accepts this alias only for the exact target repositories
+  and still rejects unrelated dependency drift. Run 35182411389 then passed real
+  resolution but failed Swift compilation on `prepared` sendability in the new
+  numeric inference diagnostics. It never ran generation. Commit `e48d771a`
+  fixes the diagnostic autoclosure capturing the non-Sendable prepared input:
+  the original error was reproduced locally using real production-pin modules,
+  while the patch passed typecheck and emit-SIL region-isolation checks.
+  [Run 35183627027](https://github.com/JiangNanGenius/floe-agent/actions/runs/35183627027)
+  then compiled and generated real answers on both candidate profiles. Both
+  3,147-token long turns returned `Blue.` (25.26 s at batch 48, 18.43 s at batch
+  96), and reload follow-ups returned the correct arithmetic answer. **The
+  candidate is not accepted for adoption:** final shutdown reported
+  3,111,710,152 active MLX bytes and 3,419,956,672 process-footprint bytes;
+  process peak footprint was 4,937,360,064 bytes. This differs materially from
+  the old-pin diagnostic's 15,976 final active bytes. Delayed GPU release versus
+  retained resources remains under investigation. A successful generation/CI
+  exit is insufficient lifecycle evidence and does not establish an iPad fix.
 - Localization rendering in a running App, and English-locale copy review, is
   unverified.
 - `notes.kind.engineering` localizes the new CAD fallback only; the sibling

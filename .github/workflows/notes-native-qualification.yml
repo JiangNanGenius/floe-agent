@@ -21,6 +21,9 @@ concurrency:
 # These are automated simulator/component-host regressions and Quick Look
 # generator captures. They are not human UI acceptance, not full-App build
 # evidence and not a physical-device qualification.
+# Keep xcresult, console logs and explicit image attachments. Skip optional
+# verbose sysdiagnose collection, which timed out for 600s after tests in
+# run 35180990348; this does not skip assertions or change test timeouts.
 jobs:
   development:
     # A dispatch defaults to `both`; `development` starts exactly this job. Push
@@ -96,6 +99,7 @@ jobs:
               -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
               -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
               -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
+              -collect-test-diagnostics never \
               -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log"
             result=${PIPESTATUS[0]}
             if [ "$result" -ne 0 ]; then exit "$result"; fi
@@ -183,6 +187,7 @@ jobs:
               -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
               -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
               -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
+              -collect-test-diagnostics never \
               -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log"
             result=${PIPESTATUS[0]}
             if [ "$result" -ne 0 ]; then exit "$result"; fi

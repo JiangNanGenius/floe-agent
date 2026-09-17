@@ -6,6 +6,7 @@ import Foundation
 import QuickLookThumbnailing
 import FloeNotes
 import PencilKit
+import os
 
 /// Bounded in-memory cache for Notes grid thumbnails.
 ///
@@ -43,7 +44,6 @@ struct NotesDocumentThumbnail: View {
     @State private var currentKey: String?
 
     private static let thumbnailSize = CGSize(width: 320, height: 420)
-    private static let thumbnailTimeout: Duration = .seconds(15)
     /// A card must not ask Quick Look to decode an arbitrarily large Office file.
     private static let maximumThumbnailSourceBytes = 128 * 1024 * 1024
 
@@ -131,7 +131,8 @@ struct NotesDocumentThumbnail: View {
 
     private func loadOfficeThumbnail(key: String) async {
         // Quick Look cannot type an extensionless SHA-256 CAS path, so a copy
-        // carrying the validated Office filename extension is staged per request.
+        // carrying the validated Office filename extension is staged once and
+        // reused by every bounded retry attempt.
         guard let store, let resourceID = document.officeResourceID,
               let fileName = document.officeFileName,
               let fileExtension = NotesOfficeThumbnailStaging.validatedExtension(of: fileName) else {
@@ -144,15 +145,32 @@ struct NotesDocumentThumbnail: View {
             guard values.isRegularFile == true, let size = values.fileSize,
                   size <= Self.maximumThumbnailSourceBytes else { apply(nil, key: key); return }
             try Task.checkCancellation()
+            // The shared slot is acquired BEFORE staging: a staged copy can be
+            // up to 128 MiB, so copying must be bounded by the same gate as
+            // generation instead of running unbounded for every visible card.
+            // One gate slot covers the whole bounded request: cancellation of
+            // the card task (scroll-away) cancels the retry loop at once, and
+            // the policy caps how long a slot can be held.
             let slotID = UUID()
             guard await NotesOfficeThumbnailGate.shared.acquire(id: slotID) else { return }
             defer { NotesOfficeThumbnailGate.shared.release() }
             try Task.checkCancellation()
             let staged = try await NotesOfficeThumbnailStaging.stage(source: url, fileExtension: fileExtension)
             defer { NotesOfficeThumbnailStaging.remove(staged) }
-            let generated = await Self.generateThumbnail(url: staged, size: Self.thumbnailSize, timeout: Self.thumbnailTimeout)
-            try Task.checkCancellation()
-            apply(generated, key: key)
+            let outcome = await NotesOfficeThumbnailGenerator.thumbnail(url: staged, size: Self.thumbnailSize,
+                                                                        fileExtension: fileExtension)
+            // A card cancelled while Quick Look was working must not publish
+            // pixels to a card it no longer owns.
+            guard !Task.isCancelled else { return }
+            if let image = outcome.image {
+                NotesOfficeThumbnailGenerator.logSuccess(fileExtension: fileExtension, attempt: outcome.attempts,
+                                                         elapsed: outcome.elapsed)
+                apply(image, key: key)
+            } else {
+                NotesOfficeThumbnailGenerator.logFailure(fileExtension: fileExtension, attempts: outcome.attempts,
+                                                         elapsed: outcome.elapsed, outcome: outcome)
+                apply(nil, key: key)
+            }
         } catch is CancellationError {
         } catch {
             apply(nil, key: key)
@@ -181,30 +199,169 @@ struct NotesDocumentThumbnail: View {
             apply(nil, key: key)
         }
     }
+}
+
+/// Bounded retry policy for one Office thumbnail card. Every value is finite:
+/// a card can never poll Quick Look forever, and cancellation always wins.
+struct NotesOfficeThumbnailPolicy: Sendable {
+    /// Hard cap on a single generator request.
+    var perAttemptTimeout: Duration = .seconds(15)
+    /// Total attempts including the first; attempts two and three may recover
+    /// a transient first-attempt failure (e.g. a cold-start generator launch
+    /// race — still a hypothesis here, not yet proven by a green cloud run).
+    var maxAttempts: Int = 3
+    /// Absolute wall-clock budget for the whole card request.
+    var totalDeadline: Duration = .seconds(45)
+    var initialBackoff: Duration = .milliseconds(500)
+    var maximumBackoff: Duration = .seconds(2)
+}
+
+/// The single Office thumbnail request path shared by the product grid and
+/// the NativeNotes qualification tests. One bounded request at a time,
+/// explicit generator cancellation on timeout/cancel, and structured
+/// diagnostics (attempt, elapsed, sanitized error domain+code) for every
+/// failure so a cloud run can be diagnosed from logs alone. Product logs
+/// never carry document file names, staged paths or raw error text; the full
+/// diagnosis stays in the returned outcome for local test triage only. A
+/// failed request is never cached; callers decide how to retry within
+/// `NotesOfficeThumbnailPolicy`.
+@MainActor
+enum NotesOfficeThumbnailGenerator {
+    private static let logger = Logger(subsystem: "ai.floe.notes", category: "office-thumbnail")
+
+    /// The settled result of one bounded request attempt.
+    struct AttemptOutcome: Sendable {
+        var image: UIImage?
+        /// Full diagnosis for local test triage; never written to os.Logger.
+        var diagnosis: String
+        var timedOut: Bool
+        var elapsed: Duration
+        /// Numeric generator error identity (domain + code); the only error
+        /// detail product logs may carry.
+        var errorDomain: String? = nil
+        var errorCode: Int? = nil
+    }
+
+    /// The settled result of a whole bounded card request.
+    struct CardOutcome: Sendable {
+        var image: UIImage?
+        var attempts: Int
+        var diagnosis: String
+        var elapsed: Duration
+        var timedOut: Bool = false
+        var errorDomain: String? = nil
+        var errorCode: Int? = nil
+    }
+
+    /// The product retry policy, shared with the qualification tests so both
+    /// exercise identical bounded recovery behaviour for transient first
+    /// attempts (cold-start launch races remain a hypothesis until a green
+    /// cloud run confirms them).
+    static let cardPolicy = NotesOfficeThumbnailPolicy()
+
+    /// Bounded retry over `request`: at most `policy.maxAttempts` tries, an
+    /// absolute `policy.totalDeadline`, cancellable backoff between attempts
+    /// (capped so the sleep can never push past the deadline), and no attempt
+    /// ever started after cancellation. `request` defaults to the shared
+    /// Quick Look path; tests may inject a controlled request to exercise
+    /// in-flight cancellation without a generator. `fileExtension` (already
+    /// validated by staging) is the only document detail that labels logs.
+    static func thumbnail(url: URL, size: CGSize, fileExtension: String = "",
+                          policy: NotesOfficeThumbnailPolicy = NotesOfficeThumbnailGenerator.cardPolicy,
+                          request: @escaping (URL, CGSize, Duration) async -> AttemptOutcome = requestThumbnail) async -> CardOutcome {
+        let start = ContinuousClock.now
+        func elapsed() -> Duration { start.duration(to: ContinuousClock.now) }
+        var attempt = 0
+        var backoff = policy.initialBackoff
+        var last = AttemptOutcome(image: nil, diagnosis: "no attempt ran", timedOut: false, elapsed: .zero)
+        while attempt < policy.maxAttempts,
+              !Task.isCancelled,
+              elapsed() < policy.totalDeadline {
+            attempt += 1
+            let remaining = policy.totalDeadline - elapsed()
+            let outcome = await request(url, size, min(policy.perAttemptTimeout, remaining))
+            if let image = outcome.image {
+                return CardOutcome(image: image, attempts: attempt,
+                                   diagnosis: outcome.diagnosis, elapsed: elapsed())
+            }
+            last = outcome
+            logRetry(fileExtension: fileExtension, attempt: attempt, maxAttempts: policy.maxAttempts,
+                     elapsed: elapsed(), outcome: outcome)
+            guard attempt < policy.maxAttempts, elapsed() < policy.totalDeadline else { break }
+            // Cancellable backoff clamped to the remaining total budget, so a
+            // sleep can never exceed the absolute deadline; cancellation
+            // throws at once and the loop condition exits without another
+            // request.
+            let remainingAfterAttempt = policy.totalDeadline - elapsed()
+            try? await Task.sleep(for: min(backoff, remainingAfterAttempt))
+            backoff = min(backoff * 2, policy.maximumBackoff)
+        }
+        return CardOutcome(image: nil, attempts: attempt, diagnosis: last.diagnosis,
+                           elapsed: elapsed(), timedOut: last.timedOut,
+                           errorDomain: last.errorDomain, errorCode: last.errorCode)
+    }
 
     /// Bounded and cancellable Quick Look request: one hard timeout, no polling,
     /// explicit cancellation of the generator request, and a guarded single
     /// resume shared by the generator callback, the timeout and cancellation.
-    private static func generateThumbnail(url: URL, size: CGSize, timeout: Duration) async -> UIImage? {
+    static func requestThumbnail(url: URL, size: CGSize, timeout: Duration) async -> AttemptOutcome {
+        let start = ContinuousClock.now
         let request = QLThumbnailGenerator.Request(fileAt: url, size: size, scale: 1, representationTypes: .thumbnail)
         let state = NotesThumbnailRequestState(request: request)
         let timeoutTask = Task { @MainActor in
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled else { return }
-            state.cancel()
+            state.cancel(reason: "per-attempt timeout")
         }
         defer { timeoutTask.cancel() }
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
+        let result = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<AttemptOutcome, Never>) in
                 guard state.attach(continuation) else { return }
-                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, _ in
+                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, error in
                     let image = representation?.uiImage
-                    Task { @MainActor in state.finish(image) }
+                    let nsError = error.map { $0 as NSError }
+                    let diagnosis: String?
+                    if let error { diagnosis = String(describing: error) }
+                    else if image == nil { diagnosis = "empty representation" }
+                    else { diagnosis = nil }
+                    Task { @MainActor in
+                        state.finish(image: image, diagnosis: diagnosis, timedOut: false,
+                                     errorDomain: nsError?.domain, errorCode: nsError?.code)
+                    }
                 }
             }
         } onCancel: {
-            Task { @MainActor in state.cancel() }
+            Task { @MainActor in state.cancel(reason: "task cancelled") }
         }
+        return AttemptOutcome(image: result.image, diagnosis: result.diagnosis, timedOut: result.timedOut,
+                              elapsed: start.duration(to: ContinuousClock.now),
+                              errorDomain: result.errorDomain, errorCode: result.errorCode)
+    }
+
+    /// Logs carry only the validated extension, attempt, elapsed time and a
+    /// non-sensitive failure category (timeout, empty representation, or the
+    /// numeric error domain+code) — never a document file name, staged path
+    /// or raw error description.
+    private static func category(of outcome: AttemptOutcome) -> String {
+        if outcome.diagnosis == "task cancelled" { return "cancelled" }
+        if outcome.timedOut { return "timed out" }
+        if let domain = outcome.errorDomain, let code = outcome.errorCode { return "\(domain) \(code)" }
+        return "empty representation"
+    }
+
+    static func logSuccess(fileExtension: String, attempt: Int, elapsed: Duration) {
+        logger.info("[thumbnail] .\(fileExtension, privacy: .public) rendered on attempt \(attempt, privacy: .public) in \(elapsed, privacy: .public)s")
+    }
+
+    static func logRetry(fileExtension: String, attempt: Int, maxAttempts: Int, elapsed: Duration, outcome: AttemptOutcome) {
+        logger.error("[thumbnail] .\(fileExtension, privacy: .public) attempt \(attempt, privacy: .public)/\(maxAttempts, privacy: .public) failed after \(elapsed, privacy: .public)s: \(category(of: outcome), privacy: .public)")
+    }
+
+    static func logFailure(fileExtension: String, attempts: Int, elapsed: Duration, outcome: CardOutcome) {
+        let last = AttemptOutcome(image: nil, diagnosis: outcome.diagnosis, timedOut: outcome.timedOut,
+                                  elapsed: outcome.elapsed, errorDomain: outcome.errorDomain,
+                                  errorCode: outcome.errorCode)
+        logger.error("[thumbnail] .\(fileExtension, privacy: .public) gave up after \(attempts, privacy: .public) attempt(s), \(elapsed, privacy: .public)s total; last: \(category(of: last), privacy: .public)")
     }
 }
 
@@ -302,29 +459,38 @@ final class NotesOfficeThumbnailGate {
 @MainActor
 private final class NotesThumbnailRequestState {
     private let request: QLThumbnailGenerator.Request
-    private var continuation: CheckedContinuation<UIImage?, Never>?
+    private var continuation: CheckedContinuation<NotesOfficeThumbnailGenerator.AttemptOutcome, Never>?
     private var finished = false
 
     init(request: QLThumbnailGenerator.Request) { self.request = request }
 
-    func attach(_ continuation: CheckedContinuation<UIImage?, Never>) -> Bool {
-        guard !finished else { continuation.resume(returning: nil); return false }
+    func attach(_ continuation: CheckedContinuation<NotesOfficeThumbnailGenerator.AttemptOutcome, Never>) -> Bool {
+        guard !finished else {
+            continuation.resume(returning: NotesOfficeThumbnailGenerator.AttemptOutcome(image: nil,
+                                                          diagnosis: "request settled before attach",
+                                                          timedOut: false, elapsed: .zero))
+            return false
+        }
         self.continuation = continuation
         return true
     }
 
-    func finish(_ image: UIImage?) {
+    func finish(image: UIImage?, diagnosis: String?, timedOut: Bool,
+                errorDomain: String? = nil, errorCode: Int? = nil) {
         guard !finished else { return }
         finished = true
         let continuation = continuation
         self.continuation = nil
-        continuation?.resume(returning: image)
+        continuation?.resume(returning: NotesOfficeThumbnailGenerator.AttemptOutcome(image: image,
+                                                       diagnosis: diagnosis ?? "request settled without a result",
+                                                       timedOut: timedOut, elapsed: .zero,
+                                                       errorDomain: errorDomain, errorCode: errorCode))
     }
 
-    func cancel() {
+    func cancel(reason: String) {
         guard !finished else { return }
         QLThumbnailGenerator.shared.cancel(request)
-        finish(nil)
+        finish(image: nil, diagnosis: reason, timedOut: reason == "per-attempt timeout")
     }
 }
 #endif
