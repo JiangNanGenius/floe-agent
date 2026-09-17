@@ -241,8 +241,16 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
     omitted_app = sorted((set(expected) - set(resolved)) & set(app))
     removed = sorted((set(expected) - set(resolved)) - set(app))
     drifted = []
+    equivalent_source_urls = []
     for identity in sorted(set(expected) & set(resolved)):
-        if expected[identity] != resolved[identity]:
+        comparison = dict(resolved[identity])
+        if identity in TARGET_IDENTITIES and comparison["location"] != expected[identity]["location"]:
+            if normalize_url(comparison["location"]) == normalize_url(expected[identity]["location"]):
+                equivalent_source_urls.append({"identity": identity,
+                                              "original": expected[identity]["location"],
+                                              "resolved": comparison["location"]})
+                comparison["location"] = expected[identity]["location"]
+        if expected[identity] != comparison:
             drifted.append({
                 "identity": identity,
                 "expected": expected[identity],
@@ -258,6 +266,7 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
         "added": added,
         "removed": removed,
         "omitted_application_pins": omitted_app,
+        "equivalent_source_urls": equivalent_source_urls,
         "drifted": drifted,
         "targets": target_state,
         "expected_targets": expected_target_state,

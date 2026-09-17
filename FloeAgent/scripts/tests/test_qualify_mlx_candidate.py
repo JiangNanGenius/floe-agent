@@ -334,6 +334,23 @@ class CliTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)["ok"])
 
 
+class CandidateSourceURLTests(unittest.TestCase):
+    def test_target_github_git_suffix_alias_is_same_source(self):
+        baseline = baseline_lock()
+        resolved = candidate_lock()
+        target = next(p for p in resolved["pins"] if p["identity"] == "mlx-swift")
+        target["location"] = "https://github.com/ml-explore/mlx-swift.git"
+        result = qmc.verify_lock("gpu-fix-candidate", baseline, resolved)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["equivalent_source_urls"][0]["identity"], "mlx-swift")
+        for invalid in ["https://github.com/another-owner/mlx-swift.git",
+                        "http://github.com/ml-explore/mlx-swift.git",
+                        "https://example.com/ml-explore/mlx-swift.git"]:
+            with self.subTest(invalid=invalid):
+                target["location"] = invalid
+                self.assertFalse(qmc.verify_lock("gpu-fix-candidate", baseline, resolved)["ok"])
+
+
 class ApplicationPinTests(unittest.TestCase):
     def test_host_may_omit_exact_xcode_only_dependency(self):
         baseline = baseline_lock()

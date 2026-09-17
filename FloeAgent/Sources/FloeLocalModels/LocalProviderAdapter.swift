@@ -208,7 +208,8 @@ public actor LocalModelRuntime {
                 prompt: prompt,
                 images: images,
                 tools: tools,
-                maxTokens: min(maxTokens, profile.maximumOutputTokens)
+                maxTokens: min(maxTokens, profile.maximumOutputTokens),
+                diagnosticTraceID: traceID
             )
             // Do not leave a multi-gigabyte mapped container resident while
             // the harness executes a tool or renders the completed answer.

@@ -5,6 +5,7 @@ import MLXLMCommon
 import MLXLLM
 import MLXVLM
 import Tokenizers
+import FloeCore
 import FloeLocalModelCatalog
 import FloeProviders
 
@@ -80,7 +81,11 @@ public actor MLXTextEngine {
         prompt: String,
         images: [Data] = [],
         tools: [ToolSchemaDescriptor] = [],
-        maxTokens: Int = 1_024
+        maxTokens: Int = 1_024,
+        // Optional correlation with the caller's existing provider trace.
+        // Defaulted so tool/qualification hosts that never pass a trace keep
+        // their current call sites unchanged.
+        diagnosticTraceID: String? = nil
     ) async throws -> LocalGenerationResult {
         guard let container else { throw LocalInferenceError.contextCreationFailed }
         // Keep the mapped model resident across tool turns, but release Metal
@@ -130,6 +135,17 @@ public actor MLXTextEngine {
 
         let effectiveMaximum = min(max(1, maxTokens), resourceProfile.maximumOutputTokens)
         let preparedInputTokens = prepared.text.tokens.dim(-1)
+        // Single source of truth so the logged KV precision is exactly what
+        // GenerateParameters below will use.
+        let kvBits = resourceProfile.tier == .constrained ? 4 : 8
+        // Numeric-only prefill diagnostics, emitted after the real tokenizer
+        // has prepared the prompt and before the context guard can reject it.
+        // `tokens` is recorded as rank/shape only: never token ids, instructions
+        // or prompt text. `mlxProcessPeakBytes` is MLX's process-wide cumulative
+        // peak since program start, NOT this turn's peak.
+        FloeLogger(category: .providers).info(
+            "localInferencePrepared trace=\(diagnosticTraceID ?? "none") inputTokens=\(preparedInputTokens) effectiveMaxTokens=\(effectiveMaximum) contextSize=\(resourceProfile.contextSize) batchSize=\(resourceProfile.batchSize) kvBits=\(kvBits) tokensRank=\(prepared.text.tokens.ndim) tokensShape=\(prepared.text.tokens.shape) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory) mlxProcessPeakBytes=\(Memory.peakMemory)"
+        )
         // A simple quantized cache is not rotating, so enforce the device
         // context before asking MLX to allocate it. The prepared token shape
         // includes chat-template overhead and native tool schemas, unlike a
@@ -143,7 +159,7 @@ public actor MLXTextEngine {
             // cache is not quantized by the current upstream implementation.
             // Leave it nil so kvBits actually applies to KVCacheSimple.
             maxKVSize: nil,
-            kvBits: resourceProfile.tier == .constrained ? 4 : 8,
+            kvBits: kvBits,
             temperature: 0.55,
             topP: 0.95,
             repetitionPenalty: 1.05,
