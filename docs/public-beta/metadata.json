@@ -73,10 +73,10 @@
   "candidateQualification": {
     "version": "1.7.0",
     "build": "182",
-    "appSourceCommit": null,
+    "appSourceCommit": "4f8cce1bbb42dbefbe59c3418c63043ae966896f",
     "tag": "v1.7.0-beta.39",
-    "releaseRun": null,
-    "status": "source_repair_and_real_network_retest_in_progress_not_uploaded",
+    "releaseRun": 35248979573,
+    "status": "cloud_qualification_in_progress_not_uploaded",
     "focusedEvidence": [
       "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
       "real disk store and engine recovery across two processes without redispatch",

@@ -1,8 +1,10 @@
 # Floe Agent 1.7.0 (182) — beta.39 candidate
 
-**Preparing the corrected candidate; not uploaded.**
+**Tagged candidate; complete cloud qualification running, not uploaded.**
 
-Release tag: `v1.7.0-beta.39` (source fixed when tagged). Builds 180 and 181
+Immutable source: `4f8cce1bbb42dbefbe59c3418c63043ae966896f` / `v1.7.0-beta.39`.
+[Release run 35248979573](https://github.com/JiangNanGenius/floe-agent/actions/runs/35248979573)
+is running the complete two-SDK qualification. Builds 180 and 181
 were cancelled before upload after actual GitHub network checks exposed URL
 construction and recovery-status defects. Their immutable tags and original
 failures remain. This candidate includes direct, identity-checked lookup of a
