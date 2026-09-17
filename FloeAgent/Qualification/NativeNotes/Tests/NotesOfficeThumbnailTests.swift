@@ -68,7 +68,10 @@ final class NotesOfficeThumbnailTests: XCTestCase {
     /// The view stages a copy with a validated extension and asks Quick Look for
     /// a real representation. This test performs the same request. When the host
     /// OS has no Office generator the check is skipped rather than falsely
-    /// passing; a returned image must be non-empty.
+    /// passing; a returned image must be non-empty. Every real representation is
+    /// also attached with `.keepAlways` so the result bundle carries the actual
+    /// generator output for review. The fixtures are synthetic OOXML, so a
+    /// hand-drawn or placeholder image must never be attached in its place.
     func testQuickLookCanRenderGeneratedOfficeFixtures() async throws {
         let root = makeScratchDirectory("quicklook")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -81,6 +84,13 @@ final class NotesOfficeThumbnailTests: XCTestCase {
                 XCTAssertGreaterThan(image.size.width, 0)
                 XCTAssertGreaterThan(image.size.height, 0)
                 XCTAssertNotNil(image.cgImage)
+                // Keep the actual Quick Look output for this generated package.
+                // Nothing is synthesized here: an attachment only exists when the
+                // system generator returned a real representation.
+                let attachment = XCTAttachment(image: image)
+                attachment.name = "quicklook-thumbnail-\(url.lastPathComponent)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
                 rendered.append(url.lastPathComponent)
             } else {
                 missing.append(url.lastPathComponent)
