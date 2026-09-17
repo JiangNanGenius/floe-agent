@@ -3,3 +3,18 @@
 #cadPanel{width:310px;max-width:calc(100% - 16px);max-height:calc(100% - 112px);overflow:auto;z-index:3}#cadPanel>strong{font-size:16px}#cadPanel>button{float:right}#cadMessage{font-size:12px;line-height:1.5;clear:both}#cadMessage.failure{color:#d74738}.cadActions{display:flex;flex-wrap:wrap;gap:4px}.cadFields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.cadFields label{display:flex;flex-direction:column;align-items:stretch;gap:4px;font-size:12px;min-width:0}.cadFields input,#cadEntities{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;width:100%;min-height:40px;padding:8px}#cadEntities{margin-top:8px}button:disabled{opacity:.35}#cadSave{background:var(--accent);color:var(--bg)}@media(max-width:600px){header{padding:4px 8px;gap:2px}header button{padding:0 8px;font-size:13px}#cadPanel{top:auto;bottom:42px;max-height:60%;left:8px;right:8px;width:auto}}
 
 #cadPanel{background:var(--bg)}
+
+#cadPen.active{background:var(--accent);color:var(--bg)}
+.cadInk{clear:both;border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+.cadInk>strong{font-size:13px}
+.cadFieldLabel{display:block;margin-top:8px;font-size:12px;opacity:.72}
+.cadInkMessage{font-size:12px;line-height:1.5;margin:6px 0 0}
+.cadSwatches,.cadWidths{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.cadSwatch,.cadWidth{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
+.cadSwatch.selected,.cadWidth.selected{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.cadSwatchDot{width:18px;height:18px;border-radius:50%;border:1px solid var(--line);display:inline-block;flex:none}
+.cadInk.unsupported .cadSwatches,.cadInk.unsupported .cadWidths{opacity:.6}
+.cadInkOverlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2}
+@media(max-width:600px){.cadSwatch,.cadWidth{min-width:44px;padding:0 8px;font-size:13px}}
+
+.cadSwatches{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}.cadSwatch{flex-direction:column;min-width:0;padding:7px 2px;gap:4px;font-size:12px;line-height:1.2}

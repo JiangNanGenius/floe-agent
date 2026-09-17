@@ -1,0 +1,38 @@
+{
+  "engineSource": "175adf04be75f02d1c34f540baa646e8da2cd9cf",
+  "engineRun": 35191461614,
+  "engineWasmSHA256": "efea33c639f20453e94493e752663daef1e1b650f36e1848a6f008ae25205109",
+  "uiAssets": {
+    "cad-editor.js": "65ea7c294ce1ac97f97c48c180ad2a378bf69eb56faf3d217947802637a2376b",
+    "cad-ink.js": "4af98c60c107753d151db5286d31375df99e3ce5fc2a7b6714a41479ba3eb6ed",
+    "viewer.js": "1325c15f7fd78f155c263f151291aa821f206b783d2d41396ab81c48c87af6eb",
+    "viewer.css": "d85bc82b005ac6db8cf12b67e69c3a24c325bc0019d6246968a239bf26705404"
+  },
+  "platform": "desktop Codex in-app browser; CDP pen input, NOT native Apple Pencil",
+  "screenshots": [
+    {
+      "file": "dwg-ink-saved.png",
+      "sha256": "391d7fa7fa67cee41df70210394d43bcd7c979d9818852f6f9b2960bf5217122"
+    },
+    {
+      "file": "dxf-ink-saved.png",
+      "sha256": "fa4532ccb89a05c8cedc3507dcce79ca61a821aebb59cdb44776f5fab58e7c5a"
+    },
+    {
+      "file": "dxf-compact-controls.png",
+      "sha256": "a005ca73272c3629cb88ba782586c53c1beab286dcac70b84d5556d09dce0aca"
+    }
+  ],
+  "checks": [
+    "DWG one-stroke undo/redo, save, native-engine reopen: original3 plus3 ink segments",
+    "DXF save/reopen: original7 plus2 ink segments, ACI5 and50 hundredths mm",
+    "Zoom preserved across ink rebuild; annotation layer independently hides",
+    "390x844 controls and mutually exclusive panels visible"
+  ],
+  "limits": [
+    "Native bridge replaced only in local synthetic harness with save-to-test-file adapter",
+    "No iPad/iPhone App or Pencil palm-rejection acceptance",
+    "DWG screenshot precedes compact swatch refinement; DXF screenshots show final controls",
+    "Renderer may simplify CAD line weights even when saved values are correct"
+  ]
+}

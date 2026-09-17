@@ -1,17 +1,18 @@
 {
   "CAD_NOTICES.txt": "38414e9de5245c8753aadd81a4de803c884146f6381df864e4f9c1082d91dbff",
-  "CAD_SOURCES.json": "f6ea73544945ef28fc2e7808e1187daa4c2838c6793f480db43ca0ea90f7df3c",
+  "CAD_SOURCES.json": "d36b1e1b5ef6efdc356c4010ce4ca574c6bdcc6c1216cb95d10f0d414d1ebfc3",
   "MiSans-Regular.ttf": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
   "OCCT_LGPL_EXCEPTION.txt": "04580a884ea6cea294402649ff7b5cbb167d47462d1340a4ed33e550db10a81b",
   "OCCT_SOURCES.json": "64f01d0a00483d030b82ad89d3854ec0d9b372d383566bda999dc8ad6728b238",
   "THIRD_PARTY_NOTICES.txt": "354d4591562ee7d854507cd4a79a9a9e37b83c1179213201a0c30f294af9f4cc",
-  "cad-editor.js": "480199a8972fc74d8c60f9033925a2d8889efc927ef25cd3231f65c06a151966",
+  "cad-editor.js": "65ea7c294ce1ac97f97c48c180ad2a378bf69eb56faf3d217947802637a2376b",
+  "cad-ink.js": "4af98c60c107753d151db5286d31375df99e3ce5fc2a7b6714a41479ba3eb6ed",
   "cad-worker.js": "bd276890b544e71c8ddeb2abc82dd6b4b7bf1d4501f0a9cc0353d70d19ecec27",
   "dxf-worker.js": "eafd29924ac974ff307ae47ef95e827521b90c25d80d6e10f6cd276e59e7bbce",
   "dxf.js": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
   "dxf.js.LEGAL.txt": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
   "floe_cad_engine.js": "4c3dccc1cef71624330948c25f871e5a7a8b5f06085370d1fef9b56df4bce3ee",
-  "floe_cad_engine_bg.wasm": "63e031c94d75e940aacf8953fd46433065193451b024f611d57fdc1ef5bfd831",
+  "floe_cad_engine_bg.wasm": "efea33c639f20453e94493e752663daef1e1b650f36e1848a6f008ae25205109",
   "gerber-to-svg.min.js": "8f16104893ab462f0bc1513ac2c6508fce59fcb10fab648848dddcfa7aafb76c",
   "gerber-to-svg.min.js.LICENSE.txt": "a41d4ce5d77ff2e5a5c511d8287e8752530ceb955fd04c1f48855a8d9796708a",
   "gerber-worker.js": "c34ebdcca12d59a0339cbe962d459edb6fbd118ab5e965f30ae3502d1d3c270b",
@@ -25,6 +26,6 @@
   "occt-worker.js": "d22a4038c70df590947577c1d7d8682d36a84957871bbdff9e8c4acbf56169da",
   "sample-editable.dwg": "67c70f76a8cd634b528be3f8de7160409704f68f2450d03749aa85cc3775bfdb",
   "sample-plate.dxf": "76d7580228e8732bb91decb98668f4ee12499b3483825f35d7fa8d3aef016c7d",
-  "viewer.css": "aab523aaf81322980925d9f22c30c98c7cdbe4e47bee4c6678eb1be86deb7934",
-  "viewer.js": "7b7c2b2ed6c5bfe2f62ad5f02a8cbb55c627cf93354ac58c4c4f8d260ff08c98"
+  "viewer.css": "d85bc82b005ac6db8cf12b67e69c3a24c325bc0019d6246968a239bf26705404",
+  "viewer.js": "1325c15f7fd78f155c263f151291aa821f206b783d2d41396ab81c48c87af6eb"
 }

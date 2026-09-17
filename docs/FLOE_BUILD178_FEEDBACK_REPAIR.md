@@ -83,7 +83,7 @@ Last updated: 2026-09-17.
   retained model buffers in host tests. Disabling compiled traces passed the
   controlled lifecycle comparison below. The production one-time compile policy
   and updated pins passed integration review and 29 targeted guard tests;
-  runtime verification of the API policy remains pending. Host evidence does not clear
+  runtime verification of the API policy passed run 35191202276. Host evidence does not clear
   the reported iPad ordinary-chat crash.
 
 ### Compiled-trace lifecycle comparison
@@ -102,6 +102,8 @@ This supports compiled-trace retention as the cause of that candidate's host
 memory regression. It does not establish the original iPad crash cause,
 physical-device performance, or acceptance of the subsequent production API
 policy. The original failed run and raw diagnostics are retained.
+
+The production API policy subsequently passed [run 35191202276](https://github.com/JiangNanGenius/floe-agent/actions/runs/35191202276), source `0f4e2394`. Both real generations and all four shutdown gates passed without `MLX_DISABLE_COMPILE`; metadata reported `disabled-by-process-policy`. Settled active bytes were again 4,000 / 7,992 / 11,984 / 15,976, and peak MLX memory was 2,836,352,972 bytes. This remains macOS host evidence.
 
 ## Verification status
 
@@ -307,9 +309,18 @@ Observed on this checkout unless a line says otherwise:
   existing conflict-aware saving. Color, width, transparency and Pencil/touch
   behavior require verified bridge contracts and actual device interaction.
   Existing host compilation is not proof that annotation round-trips work.
-- CAD Pencil work is checking bounded world-coordinate strokes against the real
-  bundled editing engine. Undo, partial-failure recovery and save/reopen are
-  required before claiming durable annotations.
+- CAD source now has atomic `addStroke` with bounded world-coordinate points,
+  canonical ACI colors/line widths, a dedicated annotation layer and one undo
+  entry per stroke. Run 35190789049 exposed test import errors; after those were
+  repaired, [run 35190961896](https://github.com/JiangNanGenius/floe-agent/actions/runs/35190961896)
+  passed 12 tests and failed 3. The failures exposed malformed test DXF section
+  removal and upstream loss of TrueType-family/paper-unit fields. Commit
+  `175adf04` fixes fixture framing and adds explicit rejection checks for real
+  data loss. It does not weaken the preservation guard to accept those losses.
+  The successor run 35191461614 passed 16 tests. Its exact-source WASM is now
+  bundled; 73 script checks and primary browser draw/undo/save/reopen checks
+  passed. See [CAD ink evidence](qualification/build178-feedback/cad-ink/README.md).
+  Native Pencil UI acceptance remains pending.
 - Lua integration was found on an unmerged branch; Build 178's historical release
   note is explicitly corrected. Rust/Swift/PHP runtime paths remain under audit;
   editor syntax support alone is not execution support.

@@ -5,7 +5,7 @@ const say=(cn,en)=>zh?cn:en;
 const $=id=>document.getElementById(id),view=$('view');
 document.body.classList.toggle('dark',!!config.dark);
 $('fit').textContent=say('复位','Fit');$('layersButton').textContent=say('图层','Layers');
-$('layersButton').onclick=()=>{$('layers').hidden=!$('layers').hidden;};
+$('layersButton').onclick=()=>{const opening=$('layers').hidden;$('layers').hidden=!opening;if(opening){const editor=$('cadPanel');if(editor)editor.hidden=true;}};
 let destroy=()=>{},fit=()=>{},timer,finished=false,reviewContext=()=>({});
 $('review').textContent=say('AI 审图','Ask AI');
 $('review').onclick=async()=>{
@@ -41,22 +41,36 @@ async function load(pkg){
   const surface=document.createElement('div');surface.style.cssText='width:100%;height:100%';view.append(surface);
   const viewer=new DxfViewer(surface,{autoResize:true,retainParsedDxf:true,clearColor:new Color(config.dark?'#181e28':'#f5f6f8'),colorCorrection:true});
   destroy=()=>{cadEditor?.destroy();cad?.close();viewer.Destroy();};
+  const layerVisibility=new Map();
+  const refreshLayers=()=>{
+   $('layers').replaceChildren();
+   for(const layer of viewer.GetLayers(true)){
+    const visible=layerVisibility.get(layer.name)??true;
+    const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=visible;
+    input.onchange=()=>{layerVisibility.set(layer.name,input.checked);viewer.ShowLayer(layer.name,input.checked);};
+    label.append(input,document.createTextNode(layer.displayName??layer.name));$('layers').append(label);
+    if(!visible)viewer.ShowLayer(layer.name,false);
+   }
+   $('layersButton').hidden=$('layers').children.length===0;
+  };
   const render=async data=>{
+   // Load rebuilds the viewer, so retain the world-space viewport across an
+   // edit, undo or redo, including when the drawing's normalized origin moves.
+   const camera=viewer.GetCamera(),origin=viewer.GetOrigin();
+   const prior=viewer.bounds&&origin?{x:camera.position.x+origin.x,y:camera.position.y+origin.y,width:(camera.right-camera.left)/camera.zoom}:null;
    const url=URL.createObjectURL(new Blob([data]));
-   try{await viewer.Load({url,fonts:[new URL('MiSans-Regular.ttf',location.href).href],workerFactory:()=>new Worker(new URL('dxf-worker.js',location.href),{type:'module'})});}
-   finally{URL.revokeObjectURL(url);}
+   try{
+    await viewer.Load({url,fonts:[new URL('MiSans-Regular.ttf',location.href).href],workerFactory:()=>new Worker(new URL('dxf-worker.js',location.href),{type:'module'})});
+    if(prior){const next=viewer.GetOrigin();viewer.SetView({x:prior.x-next.x,y:prior.y-next.y},prior.width);viewer.Render();}
+    refreshLayers();
+   }finally{URL.revokeObjectURL(url);}
   };
   await render(source);
   if(!viewer.bounds)throw Error(say('未找到可显示的二维几何。','No supported 2D geometry.'));
   fit=()=>{const b=viewer.bounds,o=viewer.GetOrigin();viewer.FitView(b.minX-o.x,b.maxX-o.x,b.minY-o.y,b.maxY-o.y);viewer.Render();};
-  for(const layer of viewer.GetLayers(true)){
-   const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=true;
-   input.onchange=()=>viewer.ShowLayer(layer.name,input.checked);label.append(input,document.createTextNode(layer.displayName??layer.name));$('layers').append(label);
-  }
-  $('layersButton').hidden=$('layers').children.length===0;
   if(cad&&config.canEdit){
    const {installCadEditor}=await import('./cad-editor.js');
-   cadEditor=installCadEditor({engine:cad,initial:cadState.info,render,viewer,zh,onDirty:dirty=>{
+   cadEditor=installCadEditor({engine:cad,initial:cadState.info,render,viewer,zh,dark:!!config.dark,onDirty:dirty=>{
     window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'dirty',dirty}).catch(()=>{});
    }});
   }
