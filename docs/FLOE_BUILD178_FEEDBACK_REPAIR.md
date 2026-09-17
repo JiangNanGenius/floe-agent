@@ -424,6 +424,16 @@ passed SDK/Linux evidence for unchanged App sources. Normal push, PR and default
 dispatch keep the full matrix. Native UI steps now require a successfully built
 regression host; failures against a built host still fail the run.
 
+## Full App SDK 27 follow-up — 2026-09-17
+
+[CI 35202845926](https://github.com/JiangNanGenius/floe-agent/actions/runs/35202845926), source `955e346a0c5fc74390f78d7f0a59a70ab9adcd57`, passed the repaired Lua fixture setup, platform/Notes qualification, runtime and Office bridge checks, and the full App regression build and execution. The build-for-testing phase took about nine minutes after preparation.
+
+Notes UI passed three cases each on iPad mini (A17 Pro) and iPhone 17 Pro; each device skipped the native Office case. Original [Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md) and their hashes are retained. These are cloud simulator observations and do not establish native Office or physical-device acceptance.
+
+The overall run **failed** IDE UI verification. The iPhone text save reached the saved disk contents, then failed when locating the rich-editor action, which compact layouts place in More. Both device legs also failed the DWG save scenario; its cause is under investigation. Original result bundles, logs and videos remain in private evidence (artifact `10491178819`, ZIP SHA-256 `24a0488eb448ea06d3fe9b7e83b6bbd73e2407ebbe9cc217f042533261c37d88`). A successful Notes phase must not obscure these IDE failures.
+
+Build 179 / beta.36 metadata and bilingual notes are being prepared; no new tag, device package or upload exists at this checkpoint. Read-only App Store Connect discovery in run `35208620408` confirms build 178 remains the latest uploaded version and is `VALID`. It did not re-query group availability. The local simulator can boot, but DeviceHub UI access still times out while Xcode component installation is pending; no local App interaction is claimed.
+
 ## References
 
 - Localization: `FloeAgent/FloeApp/Resources/Localizable.xcstrings`;

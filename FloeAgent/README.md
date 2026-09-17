@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe 1.7. The minimum deployment target is iOS/iPadOS 26.0; database migrations now reach schema v40. Version 1.7.0 (172) is available to the existing internal Floe QA TestFlight group. Physical-device acceptance and full package/model delivery remain separate. See the [current build and acceptance guide](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) before running builds.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe 1.7. The minimum deployment target is iOS/iPadOS 26.0; database migrations now reach schema v40. Version 1.7.0 (178) is available to the existing internal Floe QA TestFlight group; the next candidate 1.7.0 (179) is documented in [the beta.36 candidate notes](../docs/RELEASE_1.7.0_BETA_36.md) and is not uploaded — its cloud run 35202845926 failed at IDE native saves and is under investigation. Physical-device acceptance and full package/model delivery remain separate. See the [current build and acceptance guide](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) before running builds.
 
 ## Build prerequisites
 

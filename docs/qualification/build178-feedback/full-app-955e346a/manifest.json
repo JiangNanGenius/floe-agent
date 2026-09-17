@@ -1,0 +1,24 @@
+{
+  "sourceSHA": "955e346a0c5fc74390f78d7f0a59a70ab9adcd57",
+  "ciRun": 35202845926,
+  "artifactID": 10491178819,
+  "capture": "Original XCUIScreen attachments; synthetic test documents; no pixel edits",
+  "review": "Primary visually inspected these screenshots. The overall CI failed separate IDE tests; these images are not whole-App or device acceptance.",
+  "images": [
+    {
+      "file": "notes-ipad-tabs.png",
+      "original": "FloeAgent-Notes-Screenshots/ipad/F67D063B-EC1D-4273-9013-45BC197B3C35.png",
+      "sha256": "4480e5dd297b556532faaa7595459ca7a01a11cc384c1769a9bf8e5edc83285a"
+    },
+    {
+      "file": "notes-ipad-focused.png",
+      "original": "FloeAgent-Notes-Screenshots/ipad/9B8AA425-638B-4964-8E4A-37B190ED382E.png",
+      "sha256": "bb7d3c41ace2590236d2bbe7298bdacd60369c161e3597c4c71161aff498ee8f"
+    },
+    {
+      "file": "notes-iphone-body-search.png",
+      "original": "FloeAgent-Notes-Screenshots/iphone/6DED054D-29A4-4C62-850F-A721D7EE7A0C.png",
+      "sha256": "204355324e565e9f1631707ac97e7d58a682446d291fa01ce4fb848c2750ecb2"
+    }
+  ]
+}

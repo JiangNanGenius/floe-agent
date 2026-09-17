@@ -91,6 +91,8 @@ Local models receive a smaller, intent-ranked catalog of real Floe tools and a l
 
 Greetings, ordinary conversation, questions and brainstorming do not require an explicit task command. Apple Foundation Model should answer them naturally and asks for clarification only when missing information materially changes a consequential action. Downloaded MLX models prefill prompts in device-budgeted chunks and release transient Metal/KV caches after each generation while retaining model weights only for tool continuation within the active task.
 
+Build 179 candidate adjusts local-model memory release. The iPad ordinary-chat crash reported on build 178 is not yet confirmed fixed; if it recurs, export the diagnostic log for that session.
+
 ## 4. Start a task
 
 Normal app launch opens **New Task**. Before sending, use the chips around the composer to choose:
@@ -213,11 +215,15 @@ An installed skill may include bounded UTF-8 `.py` scripts and exact-version pur
 
 Open Python, JavaScript, MJS or CJS files from the workspace to use the structured editor with line numbers, syntax highlighting, search/replace, symbols, undo/redo and bounded local execution where supported.
 
+The Build 179 candidate also installs Lua 5.4.8 as a signed WASM capability: in Shell, `apt install floe/lua` installs it app-wide with `apt search`, `apt list` and `apt show` support and a `lua` alias; mixed WASM and Debian package changes in one command are rejected before any change. App-wide WASM capabilities are separate from environment-layer packages. PHP is not shipped in this candidate (the browser prototype remains a private experiment), and Rust/Swift/C/C++ are not locally compiled — route them to a configured host as described under Run the current file.
+
 ## 13. Create and manually edit Office documents
 
 The Agent can create native DOCX, XLSX and PPTX files with `document.createWord`, `document.createWorkbook` and `presentation.createDeck`. It can inspect semantic fields with `document.office.inspect` and apply bounded text, cell, formula and slide-note changes with `document.office.updateText`. These operations are local and do not wait for an approval model when they remain inside the current workspace.
 
 For manual revision, open the file from the workspace or Notes and enter the full-screen Office editor. Builds with the embedded Office engine provide document layout and editing controls for Word, spreadsheets and presentations; the document menu includes drawing/annotation and presentation controls where applicable. Notes keeps document tabs and access to its assistant. The repair candidate consolidates the outer controls into one row and moves compact-screen actions into a menu. Saving checks the original version and preserves recoverable drafts after conflicts or errors. Advanced macros, animations and exact desktop Office formatting are not guaranteed.
+
+Build 179 candidate updates Office font selection, saving and closing. If another editor changes the document, Floe keeps your draft and asks you to resolve the conflict. Saving, reopening and native controls still need device verification.
 
 PDF is separate from Office: open it directly from the file list, read it in the wide-screen inspector, then expand to fullscreen. The shared reading session retains page and zoom state; changed local files reload. Remote previews are downloaded read-only snapshots. Office saves check the file version and retain your draft when saving fails or conflicts.
 
@@ -469,3 +475,14 @@ the review panel alone does not create a task or call a model. CAD review needs 
 configured model; visual limits and missing drawing references remain visible.
 Embedded IDE and drawing controls follow the app language. These candidate changes
 are still awaiting final-source TestFlight qualification.
+
+### Build 179 internal candidate
+
+This candidate is being verified and has not been uploaded to TestFlight.
+
+- Notes adds Word, Excel and PPT cover previews and imports DXF/DWG drawings with a read-only preview. Its assistant can read long documents in sections and place text at specific positions on a page.
+- Office updates font selection, saving, closing and per-document pen settings. Conflicting changes preserve your draft for review.
+- The IDE can save and run the current file, stop execution and use a configured host for remote languages. Shell adds signed Lua installation with `apt install floe/lua`.
+- Local MLX models change how inference memory is released. The reported iPad chat crash still requires physical-device verification.
+
+Cloud full-App Notes tests passed on iPad and iPhone: three tests per device, with one native Office test skipped on each. See the [retained Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md). The same CI run failed IDE saving tests; those failures are being repaired. Native Office interactions, real SSH execution and this candidate's TestFlight delivery remain pending. See the [repair record](FLOE_BUILD178_FEEDBACK_REPAIR.md) and [candidate notes](RELEASE_1.7.0_BETA_36.md).

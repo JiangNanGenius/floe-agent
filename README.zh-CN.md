@@ -26,13 +26,15 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**1.7.0（172）已在 Floe QA 内部 TestFlight 可安装，Apple 状态为 VALID / IN_BETA_TESTING。** 正式发布另行安排，分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**最新内部测试版为 1.7.0（178）。** 2026-09-17 重新查询 Apple，处理状态为 VALID；已有分组交付证据见下方记录。 正式发布另行安排，分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
 当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
 
 [反馈修复版](docs/FLOE_156_FEEDBACK_REPAIR.md)的手记新增 **“＋”→“从 Floe 工作区导入”**，可以选择会话或项目中生成的文档，复制到手记独立保存。封面资料列表支持打开文档进入全屏编辑，并搜索已经索引的正文。详见[搜索与导入说明](docs/USER_GUIDE.zh-CN.md#本轮修复候选搜索与工作区导入)；SDK 27 完整 App 的手记 UI 用例已在 iPad/iPhone 通过；build 172 已在 Floe QA TestFlight 可安装；固定源码还通过 1,270 次 Swift 测试执行和 159 项 SDK 27 完整 App 回归，真机验收仍由用户执行。
 
-[176 修复候选](docs/FLOE_172_REPAIR_EXECUTION.md)正在验证：手记助手使用完整 iPad 右栏，支持重新开始当前文档会话，并在提交修改后自动刷新；专属记录与普通聊天保持隔离。上一源码 8958d8f1 完整 App 回归 172/172 通过，但较长的 iPad 界面用例超时；新候选将覆盖拆为独立且必须通过的用例。[原始证据](docs/evidence/floe-1.7/build172-repair/app-build175.json)保留。本轮新 TestFlight 尚未上传。
+[Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
+
+下一内部候选为 **Build 179 / beta.36，尚未上传**：补充手记文件封面与图纸预览、Office 画笔设置、IDE 当前文件运行和 Lua 安装，并调整本地模型的内存释放。手记双端云端测试各通过三项，原生 Office 各跳过一项；IDE 保存测试的失败正在修复。可查看[手记截图](docs/qualification/build178-feedback/full-app-955e346a/README.md)、[候选说明](docs/RELEASE_1.7.0_BETA_36.md)和[反馈修复记录](docs/FLOE_BUILD178_FEEDBACK_REPAIR.md)。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 
