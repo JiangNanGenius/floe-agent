@@ -2,7 +2,7 @@ name: Qualify local CAD editing engine
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/floe-172-completion']
+    branches: ['codex/floe-172-completion', 'codex/build178-feedback']
     paths: ['FloeAgent/ThirdParty/CADEngine/**', '.github/workflows/cad-engine-qualification.yml']
 permissions:
   contents: read
