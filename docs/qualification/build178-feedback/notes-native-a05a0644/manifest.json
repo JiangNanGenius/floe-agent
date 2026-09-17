@@ -1,0 +1,28 @@
+{
+  "sourceSHA": "a05a06443cb928a784d7009b3af6210faafdfce7",
+  "run": "https://github.com/JiangNanGenius/floe-agent/actions/runs/35186569645",
+  "scope": "NativeNotes component host, Xcode27, simulator. Not full App or physical device.",
+  "inspection": "Original full-screen PNGs preserve EXIF orientation. iPhone landscape controls overlap right topic; this is a defect, not an approved marketing screenshot.",
+  "files": {
+    "ipad-portrait.png": {
+      "sha256": "b79b2221dd7e6b990f4caaf066b6b96a3c0d53803ee69a5ba6b1fd3957b4e5eb",
+      "bytes": 251435,
+      "originalAttachment": "C8BF376E-6E29-450B-BCE7-4F15C4FB9807.png"
+    },
+    "ipad-landscape.png": {
+      "sha256": "6a340ed20a2a4b69d1bffec188303e241a5bae569ece85dab6a91ad8b99b0aaf",
+      "bytes": 298318,
+      "originalAttachment": "4D5551A7-0C03-494D-92AA-33F9EEE0015D.png"
+    },
+    "iphone-portrait.png": {
+      "sha256": "c60998e1a0355f2fa4aadd675b0a994204e0744c6ff35b1fdf078ae3a6486482",
+      "bytes": 201557,
+      "originalAttachment": "76B604D3-3DDF-42F8-B267-3F1A3E58081E.png"
+    },
+    "iphone-landscape-overlap.png": {
+      "sha256": "eac80cd457c9020bd582537642204cecaf1741432d50b492be41c99d466417b8",
+      "bytes": 276043,
+      "originalAttachment": "87D82A39-48D0-4616-89B6-7ACB40E4C0A7.png"
+    }
+  }
+}

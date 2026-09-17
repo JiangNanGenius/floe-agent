@@ -138,17 +138,20 @@ struct NotesMindMapWindow: View {
         GeometryReader { geometry in
             let available = geometry.size
             let compact = available.width < 600
-            let width = expanded || compact ? available.width : min(available.width, max(340, available.width * relativeWidth + resizing.width))
-            let height = expanded ? available.height : min(available.height, max(280, available.height * relativeHeight + resizing.height))
+            // A landscape phone has regular-looking width but little height.
+            // Keep the document visible beside a full-height map, with one bar.
+            let shortWindow = available.height < 500
+            let width = expanded || compact ? available.width : min(available.width, max(shortWindow ? 420 : 340, available.width * relativeWidth + resizing.width))
+            let height = expanded || shortWindow ? available.height : min(available.height, max(280, available.height * relativeHeight + resizing.height))
             let x = expanded || compact ? 0 : max(0, min(available.width - width, (available.width - width) * relativeX + moving.width))
             let y = expanded ? 0 : max(0, min(available.height - height, (available.height - height) * relativeY + moving.height))
-            panel
-                .padding(.bottom, expanded ? 0 : 44)
+            panel(condensed: shortWindow)
+                .padding(.bottom, expanded || shortWindow ? 0 : 44)
                 .frame(width: width, height: height)
                 .background(.background, in: RoundedRectangle(cornerRadius: expanded ? 0 : 18))
                 .clipShape(RoundedRectangle(cornerRadius: expanded ? 0 : 18))
                 .overlay(alignment: .top) {
-                    if !expanded {
+                    if !expanded && !shortWindow {
                         Capsule().fill(.secondary).frame(width: 44, height: 5)
                             .frame(width: 100, height: 28).contentShape(Rectangle())
                             .accessibilityLabel("拖动导图小窗")
@@ -160,7 +163,7 @@ struct NotesMindMapWindow: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    if !expanded {
+                    if !expanded && !shortWindow {
                         Image(systemName: "arrow.up.left.and.arrow.down.right").font(.caption)
                             .frame(width: 44, height: 44).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                             .accessibilityLabel("调整导图小窗大小")
@@ -197,20 +200,38 @@ struct NotesMindMapWindow: View {
             Button("好") { session.errorMessage = nil }
         } message: { Text(session.errorMessage ?? "") }
     }
-    private var panel: some View {
+    private func panel(condensed: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Text(session.document?.title ?? "导图").font(.headline).lineLimit(1)
                 Spacer()
-                Button("完整编辑器", systemImage: "arrow.up.forward.app") {
-                    Task { if let map = session.document { await parentSession.select(map); close() } }
+                if condensed {
+                    Menu {
+                        Button("完整编辑器", systemImage: "arrow.up.forward.app") {
+                            Task { if let map = session.document { await parentSession.select(map); close() } }
+                        }
+                        Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
+                            .disabled(!session.canUndo || session.pendingWrites > 0)
+                        Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
+                            .disabled(!session.canRedo || session.pendingWrites > 0)
+                        Button("主题附件", systemImage: "paperclip") { inspector = selectedNode }
+                            .disabled(selectedNode == nil)
+                        if let document = session.document {
+                            Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { onAssistant(document) }
+                        }
+                    } label: { Label("更多操作", systemImage: "ellipsis") }
+                } else {
+                    Button("完整编辑器", systemImage: "arrow.up.forward.app") {
+                        Task { if let map = session.document { await parentSession.select(map); close() } }
+                    }
                 }
                 Button(expanded ? "还原小窗" : "展开", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { expanded.toggle() }
                 Button("关闭小窗", systemImage: "xmark") { close() }
-            }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(.horizontal, 12).padding(.top, expanded ? 8 : 22).padding(.bottom, 6)
+            }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(.horizontal, 12).padding(.top, expanded || condensed ? 4 : 22).padding(.bottom, 4)
             Divider()
             if let document = session.document, document.deletedAt == nil {
-                HStack(spacing: 16) {
+                if !condensed {
+                  HStack(spacing: 16) {
                     Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }.disabled(!session.canUndo)
                     Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }.disabled(!session.canRedo)
                     Button("主题附件", systemImage: "paperclip") { inspector = selectedNode }
@@ -219,6 +240,7 @@ struct NotesMindMapWindow: View {
                     Text(session.pendingWrites > 0 ? "保存中" : "已保存").font(.caption).foregroundStyle(.secondary)
                 }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(8)
                     .disabled(session.pendingWrites > 0)
+                }
                 NoteMindMapView(document: document, onEdit: { edits, revision in
                     try await session.commit(edits, documentID: document.id, expectedRevision: revision)
                 }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 }, images: images, onSelection: { selected = $0 })

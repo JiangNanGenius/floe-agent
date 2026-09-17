@@ -257,7 +257,22 @@ Observed on this checkout unless a line says otherwise:
   this does not prove all core thread-local streams idle or define an iPad
   memory limit. The real diagnostic source passed Swift 6 semantic checking
   with Xcode-beta `swiftlang-6.4.0.30.4` against existing production-pin modules.
-  Candidate runtime results with this new gate are pending.
+  [Run 35186352697](https://github.com/JiangNanGenius/floe-agent/actions/runs/35186352697)
+  failed this gate on all four shutdowns: 1,526,183,248; 2,798,003,280;
+  1,573,659,776; and 2,909,070,610 active MLX bytes remained unchanged throughout
+  the observation window. Peak MLX allocation was 4,744,341,096 bytes. Candidate
+  adoption remains blocked; this does not identify the original iPad crash cause.
+- [Run 35186569645](https://github.com/JiangNanGenius/floe-agent/actions/runs/35186569645)
+  at `a05a06443cb928a784d7009b3af6210faafdfce7` passed on both iPad and iPhone:
+  each ran 43 XCTest unit/component tests, 19 Swift Testing cases and one UI
+  test. Six real Office Quick Look samples passed on each device family. The
+  XCUIScreen captures retain complete content and original EXIF orientation.
+  Primary visual inspection nevertheless found the iPhone landscape map controls
+  overlapping a topic. That layout is being corrected; passing text-existence
+  assertions does not establish visual acceptance. Original screenshots and
+  hashes are in [the component evidence](qualification/build178-feedback/notes-native-a05a0644/manifest.json).
+  These are SDK 27 simulator component results, not full-App, physical-device,
+  release-SDK or TestFlight acceptance.
 - Localization rendering in a running App, and English-locale copy review, is
   unverified.
 - `notes.kind.engineering` localizes the new CAD fallback only; the sibling
@@ -276,6 +291,11 @@ Observed on this checkout unless a line says otherwise:
 - Lua integration was found on an unmerged branch; Build 178's historical release
   note is explicitly corrected. Rust/Swift/PHP runtime paths remain under audit;
   editor syntax support alone is not execution support.
+- The Lua branch is now integrated. [Run 35187428944](https://github.com/JiangNanGenius/floe-agent/actions/runs/35187428944)
+  at `148cd04e` passed 13 real Lua/WASM tests in two Swift Testing suites on
+  macOS, covering scripts, Chinese stdin, file I/O, recovery, cancellation and
+  the existing WASM confinement/signature regressions. Signed catalog delivery
+  and the App's install-to-shell route remain separate integration gates.
 - Two approved cleanup batches removed obsolete extracted applications, finished
   build caches and an unused iPhone debugging-symbol cache. The second batch
   measured 15,206,846,464 allocated bytes in selected targets and increased volume
