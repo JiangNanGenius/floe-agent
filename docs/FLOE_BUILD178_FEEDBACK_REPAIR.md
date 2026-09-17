@@ -90,8 +90,9 @@ Observed on this checkout unless a line says otherwise:
   -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
   -jobs 2 ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO
   build-for-testing` → `TEST BUILD SUCCEEDED`. The newest `FloeAgentRuntime`
-  target added to `Qualification/NativeNotes/project.yml` has not been rebuilt
-  since that run.
+  target added to `Qualification/NativeNotes/project.yml` was included in the
+  later successful `native-notes-office-tools-build.log` build-for-testing run.
+  This is compilation evidence; test execution remains separate.
 - **Office adapter Python tests — passed.** `python3
   FloeAgent/scripts/test_office_embedded_controls.py` → `Ran 1 test ... OK`;
   `python3 FloeAgent/scripts/test_office_explicit_save.py` → `Ran 1 test ...
@@ -106,6 +107,12 @@ Observed on this checkout unless a line says otherwise:
   values, and the three Notes views now use those keys. The catalog parses and
   the diff is additive only (no whole-file reformat); `swiftc -parse` over the
   three iOS-sdk files exits 0. No App/runtime rendering check was performed.
+
+- **CAD browser component — primary-operated checks passed.** The bundled DXF
+  and DWG fixtures rendered through the real parser/decoder. Layer toggling,
+  zoom/Fit and compact-width Fit were exercised. Screenshots and precise limits
+  are retained in [the component evidence](qualification/build178-feedback/README.md).
+  This does not qualify native Notes import or iPad/iPhone App behavior.
 
 ## Not verified / open
 
@@ -169,9 +176,23 @@ Observed on this checkout unless a line says otherwise:
   on Xcode 27 (27A5252f), macOS, batch 32 only. It does not represent iPad or
   distribution acceptance. The diagnostic host now additionally covers the
   observed batch 48/96 resource profiles, a synthetic SYSTEM-context turn and
-  teardown/reload, with one build and one download per run. Local checks use
-  stub engine declarations; actual cloud compilation and inference remain the
-  gate. The branch is being pushed only for this directed diagnostic.
+  teardown/reload, with one build and one download per run. The subsequent
+  [run 35180378429](https://github.com/JiangNanGenius/floe-agent/actions/runs/35180378429)
+  passed on immutable source `6c2bc8ee2171564109ac0f913621470ac8d2ca6b` and
+  Xcode 27 (27A5252f). Both profiles processed the same 12,156-character synthetic
+  system prompt (3,147 input tokens), answered `Blue.`, shut down, reloaded and
+  answered the arithmetic follow-up. Batch 48 took 30.08 seconds for the long
+  turn; batch 96 took 23.43 seconds. Overall MLX process peak allocation was
+  2,804,000,582 bytes; final shutdown left 15,976 active MLX bytes. These macOS
+  results do not establish that the iPad crash is fixed. The original crash
+  context and synthetic diagnostic input are different despite similar lengths.
+- A separate directed native Notes run was dispatched at
+  `84d6500e013c6f0b44b30972c6a6ce19a8b272c1`:
+  [run 35180990348](https://github.com/JiangNanGenius/floe-agent/actions/runs/35180990348).
+  It selects the development SDK and executes iPad before iPhone. Real Quick Look
+  thumbnail images are retained as XCTest attachments when a system generator
+  returns them. Results are pending; generated images and automated component
+  tests are not manual full-App acceptance.
 - Localization rendering in a running App, and English-locale copy review, is
   unverified.
 - `notes.kind.engineering` localizes the new CAD fallback only; the sibling
