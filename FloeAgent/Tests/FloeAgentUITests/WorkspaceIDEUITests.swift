@@ -44,8 +44,32 @@ final class WorkspaceIDEUITests: XCTestCase {
         try openWorkbench(app, ipad: ipad, expectedSavedText: String(marker))
         let reopened = app.webViews.textViews.firstMatch
         XCTAssertTrue(reopened.waitForExistence(timeout: 20))
-        XCTAssertTrue(app.buttons["workspace.ide.richEditor"].isEnabled)
-        XCTAssertTrue(app.buttons["workspace.ide.terminal"].isEnabled)
+        // Compact widths collapse the trailing toolbar items into the system
+        // overflow menu; assert the same two actions through whichever
+        // surface actually renders them instead of weakening the check.
+        let richEditor = app.buttons["workspace.ide.richEditor"]
+        let terminal = app.buttons["workspace.ide.terminal"]
+        if richEditor.waitForExistence(timeout: 5) {
+            XCTAssertTrue(richEditor.isEnabled)
+            XCTAssertTrue(terminal.isEnabled)
+        } else {
+            let overflow = app.buttons["OverflowBarButtonItem"]
+            XCTAssertTrue(overflow.waitForExistence(timeout: 5))
+            overflow.tap()
+            // The app is forced to zh-Hans above; overflow menu items carry
+            // only their localized labels, not the button identifiers.
+            let richItem = overflowedAction(app, label: "用专用编辑器打开")
+            let terminalItem = overflowedAction(app, label: "终端")
+            XCTAssertTrue(richItem.exists)
+            XCTAssertTrue(terminalItem.exists)
+            XCTAssertTrue(richItem.isEnabled)
+            XCTAssertTrue(terminalItem.isEnabled)
+            capture("ide-native-cold-reopen-overflow")
+            // Dismiss the menu through its own dismissal layer before the
+            // close step below; the tap must not reach the editor.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
+            wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: richItem)], timeout: 5)
+        }
         capture("ide-native-cold-reopen")
         app.buttons["workspace.ide.close"].tap()
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
@@ -169,5 +193,20 @@ final class WorkspaceIDEUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// Overflowed toolbar actions surface as menu items on current OS
+    /// releases and as plain buttons on others; poll both renderings until
+    /// one appears so the menu's presentation animation cannot race us.
+    private func overflowedAction(_ app: XCUIApplication, label: String, timeout: TimeInterval = 5) -> XCUIElement {
+        let item = app.menuItems[label].firstMatch
+        let button = app.buttons[label].firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if item.exists { return item }
+            if button.exists { return button }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return item
     }
 }

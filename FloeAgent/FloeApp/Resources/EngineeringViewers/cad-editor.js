@@ -25,7 +25,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  let info=initial,selected='',busy=false,dirty=false,pointerStart=null;
  const panel=document.createElement('aside');panel.id='cadPanel';panel.hidden=true;
  const message=document.createElement('p');message.id='cadMessage';message.setAttribute('role','status');
- const controls=document.createElement('div');controls.className='cadActions';
+ const controls=document.createElement('div');controls.className='cadActions cadPrimaryActions';
  const fields=document.createElement('div');fields.className='cadFields';
  const entities=document.createElement('select');entities.id='cadEntities';entities.setAttribute('aria-label',say('选择图元','Select entity'));
  const tools=document.createElement('div');tools.className='cadActions';
@@ -52,7 +52,6 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  const finger=document.createElement('input');finger.type='checkbox';finger.checked=false;
  fingerRow.append(finger,document.createTextNode(say('用手指绘制','Draw with finger')));
  ink.append(inkTitle,inkMessage,colorLabel,colorGroup,widthLabel,widthGroup,fingerRow);
- panel.insertBefore(ink,entities);
 
  const pen=document.createElement('button');pen.id='cadPen';pen.type='button';pen.textContent=say('画笔','Pen');
  pen.setAttribute('aria-pressed','false');
@@ -262,6 +261,8 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  };
  viewer.Subscribe('pointerdown',down);viewer.Subscribe('pointerup',up);
  const add=document.createElement('div');add.className='cadActions';panel.append(add);
+ // Keep basic editing and save controls ahead of the optional pen settings.
+ panel.append(ink);
  for(const kind of ['line','circle','text'])button(add,say({line:'直线',circle:'圆',text:'文字'}[kind],`Add ${kind}`),()=>{
   selected='';entities.value='';reset();const x=number('X'),y=number('Y');
   const layer=text(say('图层','Layer'),'0');
