@@ -1,8 +1,11 @@
 # IDE cloud builds / IDE 云端构建
 
-Build 182 candidate. Source and focused checks are under review; full-App cloud
-qualification and a live account dispatch are still required. This page describes
-the implemented flow, not a TestFlight availability claim.
+Build 184 candidate. Full-App cloud qualification remains required; this page
+describes the implemented flow, not a TestFlight availability claim. The build
+182 section below records the original live dispatch/recovery; build 184 re-ran
+the production client/engine/disk-store CLI against the same existing run
+(`35247779223`) with 28 passing checks and zero redispatch, but that is CLI
+evidence, not App UI acceptance.
 
 ## 使用流程
 
@@ -58,7 +61,7 @@ cancel-before-association, retry/backoff, terminal-state preservation during an
 artifact refresh, redirect authorization handling, digest mismatch, and an
 actual GitHub run continued across App relaunch. The local state-machine and
 transport fixtures provide focused evidence; they do not replace full-App UI or
-real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_40.md)
+real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_41.md)
 for current delivery status.
 
 Observed before the build-180 tag: the production center/engine/store/policy and
@@ -105,3 +108,19 @@ and no dispatch. The focused repair harness passed 28 assertions. The formal
 App engine suite now contains 23 cases, and the service fixture suite 25;
 Swift 6 semantic checks pass. This remains production-source CLI evidence,
 not rendered App UI or TestFlight acceptance.
+
+### Build 184 response freshness
+
+Foreground recovery and polling explicitly bypass the URLSession response cache
+and request remote revalidation. Current Actions sources, the engine/store and
+25 service / 23 App engine tests passed mandatory SIL and object emission. This
+is compiler evidence, not execution of those tests or full-App acceptance.
+
+A production-source CLI check with the current (184) client, engine and disk
+store passed 28 assertions: associating the existing run `35247779223` succeeded
+by direct run read in 0.42 s without the list endpoint, and a fresh process
+recovered the seeded record to completed/success in 2.01 s, cleared the stale
+`lastError` and used no dispatch endpoint (`newDispatches: 0`).
+[Redacted evidence](qualification/build184-release/live-recovery.json). This
+reuses an immutable existing run; it is not a new dispatch, App relaunch or UI
+acceptance.

@@ -6,8 +6,11 @@ selectors; the real FloeAppTests run must still happen in cloud CI on an iOS
 Simulator with network access. No `xcodebuild`, simulator boot, app source
 change or dependency install was performed on this Mac.
 
-Source under test: branch `codex/build178-feedback`, HEAD `e0c846f93c48d690fe71433ea0418faaad221aa5`
-(`git rev-parse HEAD`). The runtime/execution/package paths were byte-identical
+Reviewed production baseline: branch `codex/build178-feedback`,
+`e0c846f93c48d690fe71433ea0418faaad221aa5`. The two executable-check files and
+their `project.yml`/workflow wiring were added on top in `5e7a609e` and are
+present at candidate HEAD `8e0cf69`; they did not exist at `e0c846f9`. The
+runtime/execution/package paths were byte-identical
 through `e0c846f9` to the green CI source `955e346a` recorded in
 `docs/qualification/build179-release/runtime/README.md`; that checkpoint lists
 three open acceptance items for which this change adds executable checks:
@@ -102,9 +105,9 @@ them from the `FloeAgentUITests` UI-test bundle. Both new files are now wired:
 2. `FloeAppTests.sources` — both paths (`project.yml:761-762`).
 3. `.github/workflows/ci.yml` `-only-testing:FloeAppTests/LocalServiceLifecycleTests`
    and `.../LuaShellInstallTests` in both the build-for-testing and the
-   test-without-building phases (`ci.yml:339-340`, `411-412`).
+   test-without-building phases (`ci.yml:340-341`, `413-414`).
 4. `.github/workflows/release-unsigned-ipa.yml` selects both in its App
-   regression phases (`release-unsigned-ipa.yml:364-365`, `818-819`).
+   regression phases (`release-unsigned-ipa.yml:406-407`, `899-900`).
 5. `FloeAgent/scripts/verify_app_regression_xcresult.py:27-28` requires
    `LocalServiceLifecycleTests >= 2` and `LuaShellInstallTests >= 1`.
 
@@ -113,7 +116,7 @@ them from the `FloeAgentUITests` UI-test bundle. Both new files are now wired:
 HTTP start/get/stop fixture is reused by the new tests.
 
 The main Xcode project was regenerated and now includes these tests with build
-180. The generated project and `project.yml` are part of the same candidate;
+184. The generated project and `project.yml` are part of the same candidate;
 cloud compilation and execution remain pending.
 
 ## Source-backed API review (2026-09-18)

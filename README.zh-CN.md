@@ -34,7 +34,7 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
 
-下一内部候选为 **Build 183 / beta.40，App 编译失败，尚未上传**：加入 IDE 云端构建的持久任务与自动回读，并修复 Office／CAD 文件内容封面。Build 179 的 SDK 27 安装包已留存，但发布 SDK 的手记步骤超时，未进入上传；此前 IDE 保存已单独通过双端模拟器验收，不能据此宣称新候选已验收。详见[候选说明](docs/RELEASE_1.7.0_BETA_40.md)、[缩略图验收](docs/NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md)与[修复记录](docs/FLOE_BUILD178_FEEDBACK_REPAIR.md)。Build 178 仍是最后确认的内部 TestFlight 版本；iPad 本地模型普通聊天闪退尚未确认根治。
+下一内部候选为 **Build 184 / beta.41，云端验收中，尚未上传**：加入 IDE 云端构建的持久任务与自动回读，并修复 Office／CAD 文件内容封面。Build 179 的 SDK 27 安装包已留存，但发布 SDK 的手记步骤超时，未进入上传；此前 IDE 保存已单独通过双端模拟器验收，不能据此宣称新候选已验收。详见[候选说明](docs/RELEASE_1.7.0_BETA_41.md)、[缩略图验收](docs/NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md)与[修复记录](docs/FLOE_BUILD178_FEEDBACK_REPAIR.md)。Build 178 仍是最后确认的内部 TestFlight 版本；iPad 本地模型普通聊天闪退尚未确认根治。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 

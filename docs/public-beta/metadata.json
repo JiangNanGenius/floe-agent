@@ -72,22 +72,19 @@
   },
   "candidateQualification": {
     "version": "1.7.0",
-    "build": "183",
-    "appSourceCommit": "0b7f7903c9fd851b9d9e278249766c39d5069cf1",
-    "tag": "v1.7.0-beta.40",
-    "releaseRun": 35284117684,
-    "status": "app_compilation_failed_not_uploaded",
+    "build": "184",
+    "appSourceCommit": "8e0cf69f6387333e768b90d56372e587eb297375",
+    "tag": "v1.7.0-beta.41",
+    "releaseRun": 35287358993,
+    "status": "cloud_qualification_in_progress_not_uploaded",
     "focusedEvidence": [
       "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
       "real disk store and engine recovery across two processes without redispatch",
       "23 formal engine test cases Swift 6 typechecked; actual-source harness passed"
     ],
     "limitations": [
-      "Both SDK App builds failed on NotesEngineeringCoverRenderer non-Sendable continuation transfer; App/UI gates were not reached.",
-      "Native iPad ordinary-chat local-model crash acceptance remains pending.",
-      "Native Office and Pencil interaction require physical-device verification.",
-      "Build 175 Agent recording is earlier-source demonstration evidence.",
-      "Actual App live-account dispatch/relaunch UI observation pending."
+      "Full App and native UI gates remain pending.",
+      "Focused compiler checks do not establish runtime or TestFlight availability."
     ]
   },
   "earlierIDEQualification": {
@@ -133,5 +130,27 @@
   "reviewMaterialPolicy": {
     "developerCloudKeyIncluded": false,
     "publicBetaSubmission": "not submitted"
-  }
+  },
+  "failedCandidates": [
+    {
+      "version": "1.7.0",
+      "build": "183",
+      "appSourceCommit": "0b7f7903c9fd851b9d9e278249766c39d5069cf1",
+      "tag": "v1.7.0-beta.40",
+      "releaseRun": 35284117684,
+      "status": "app_compilation_failed_not_uploaded",
+      "focusedEvidence": [
+        "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
+        "real disk store and engine recovery across two processes without redispatch",
+        "23 formal engine test cases Swift 6 typechecked; actual-source harness passed"
+      ],
+      "limitations": [
+        "Both SDK App builds failed on NotesEngineeringCoverRenderer non-Sendable continuation transfer; App/UI gates were not reached.",
+        "Native iPad ordinary-chat local-model crash acceptance remains pending.",
+        "Native Office and Pencil interaction require physical-device verification.",
+        "Build 175 Agent recording is earlier-source demonstration evidence.",
+        "Actual App live-account dispatch/relaunch UI observation pending."
+      ]
+    }
+  ]
 }

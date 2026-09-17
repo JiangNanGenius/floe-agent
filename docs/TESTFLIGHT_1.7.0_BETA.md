@@ -1,5 +1,12 @@
 # Floe 1.7 TestFlight delivery
 
+## Current candidate: 1.7.0 (184)
+
+Tag `v1.7.0-beta.41`, source `8e0cf69f6387333e768b90d56372e587eb297375`.
+[Run 35287358993](https://github.com/JiangNanGenius/floe-agent/actions/runs/35287358993)
+is performing two-SDK cloud qualification. No package, upload or availability is
+claimed yet. [Candidate record](RELEASE_1.7.0_BETA_41.md).
+
 ## Failed candidate: 1.7.0 (183)
 
 Tagged `v1.7.0-beta.40`, source `0b7f7903c9fd851b9d9e278249766c39d5069cf1`.

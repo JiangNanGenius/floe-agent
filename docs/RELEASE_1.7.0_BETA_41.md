@@ -1,12 +1,20 @@
 # Floe Agent 1.7.0 (184) — beta.41 candidate
 
-**Preparation in progress; not tagged, built or uploaded.**
+**Cloud qualification in progress; not uploaded.**
+
+Tag `v1.7.0-beta.41`, App source `8e0cf69f6387333e768b90d56372e587eb297375`.
+[Run 35287358993](https://github.com/JiangNanGenius/floe-agent/actions/runs/35287358993).
 
 This candidate retains durable IDE GitHub Actions jobs, content covers for
 Office/Notes/mind maps/CAD, and Node/Python/Lua lifecycle qualification. It
 repairs the CAD cover bridge by normalizing the JavaScript reply to a Sendable
 value before continuation transfer. Foreground cloud-job queries explicitly
 revalidate remote responses instead of using URLSession's local response cache.
+A production-source CLI check on this commit passed 28 assertions: direct-run
+association of the existing run `35247779223` in 0.42 s, and fresh-process
+recovery to completed/success in 2.01 s with the stale error cleared and no new
+dispatch. That is CLI evidence, not App relaunch or UI acceptance.
+[Evidence](qualification/build184-release/live-recovery.json).
 
 Build 183 / `v1.7.0-beta.40` remains immutable. Both real Xcode dependency
 resolutions succeeded on the first attempt with pinned locks unchanged. Module

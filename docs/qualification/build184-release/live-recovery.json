@@ -1,0 +1,31 @@
+{
+  "candidate": "1.7.0 (184)",
+  "sourceCommit": "8e0cf69f6387333e768b90d56372e587eb297375",
+  "testHost": "macOS CLI using current production Actions client, job engine and disk store; not full App UI",
+  "selftest": {
+    "failed": 0,
+    "failures": [],
+    "passed": 28
+  },
+  "associate": {
+    "directRunReadUsed": true,
+    "elapsedSeconds": 0.4247239828109741,
+    "identityMatchesReceipt": true,
+    "listEndpointUsed": false,
+    "matchedRunID": 35247779223,
+    "runConclusion": "success",
+    "runStatus": "completed"
+  },
+  "recover": {
+    "directRunReadUsed": true,
+    "dispatchEndpointUsed": false,
+    "elapsedSeconds": 2.011397957801819,
+    "finalRemoteConclusion": "success",
+    "finalState": "completed",
+    "lastErrorCleared": true,
+    "terminalReached": true
+  },
+  "newDispatches": 0,
+  "existingRun": 35247779223,
+  "logSHA256": "5422ad06a9341c9b66e734874a19e3dcac6fd665523628f49b95e9654edfc67e"
+}

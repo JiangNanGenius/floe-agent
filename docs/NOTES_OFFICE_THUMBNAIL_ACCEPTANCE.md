@@ -155,6 +155,17 @@ valid against the current module APIs. They are **not** a build or a run, so the
 offscreen DXF/DWG painting, Quick Look content on the runner, and all unit/UI
 test assertions remain unobserved until the CI/device jobs above execute.
 
+### Build 184 correction (added after the type-check above)
+
+The renderer was changed after this type-check: the read-only JS bridge now
+normalizes the viewer reply into a `Sendable` `BridgePayload` before the checked
+continuation. `swiftc -typecheck` did **not** catch the build-183 non-`Sendable`
+continuation transfer, so the type-check rows above are retained as historical
+evidence, not as current compiler acceptance for the fixed renderer. The current
+renderer's evidence is the mandatory SIL and object emission check in
+`qualification/build184-release/focused-compiler-checks.json`; that check compiles
+source, it does not execute the offscreen DXF/DWG or Office tests.
+
 ## 6. Evidence still required (not observed)
 
 1. **Component tests** (cloud/CI, Xcode): `xcodebuild build-for-testing` /
@@ -168,7 +179,7 @@ test assertions remain unobserved until the CI/device jobs above execute.
    conversion performance are device claims; a simulator pass is not a device
    pass.
 4. **Project membership:** XcodeGen regenerated the main project with the new
-   renderer and test sources, and all app/extension build numbers are 180.
+   renderer and test sources, and all app/extension build numbers are 184.
    The generated project is included in the candidate diff. This establishes
    membership, not successful cloud compilation.
 
