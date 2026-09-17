@@ -473,3 +473,12 @@ Source `a22e8c3e`: App host build passed. All three iPad IDE cases passed, inclu
 ### 2026-09-17 — retest 35216642942 startup failure
 
 App host compilation passed on `b285c037`. Both simulator families were found and booted (including iPhone 17 Pro), but XCTest produced no test-start output within the 210-second stall window. On retry, the diagnostic wrapper raised `FileExistsError` for the already-existing `SwiftTestDiagnostics/ide-ipad` and `ide-iphone` directories, so neither leg produced an xcresult. No App test cases ran; this is not evidence of an App assertion failure or a passing retry. Original artifact `10496971475` (2068 bytes), SHA256 `423adfb078f8be0b11e920b86a8116806cf8ff1354fa953b61303941e606e3ee`, and the failed-step log are retained locally. OpenCode is investigating startup and correcting retry evidence handling before another run. Build 179 remains untagged and not uploaded.
+
+
+### XCTest diagnostic and retry repair — 2e2a34c9
+
+CI now keeps separate diagnostic directories, log files and partial xcresults for each attempt. Notes/IDE startup gets a bounded 420-second quiet allowance; after tests start the existing 210-second limit applies, with total limits unchanged. App regression retains its original 420-second quiet tolerance. The diagnostic sampler now includes the owned xcodebuild/xctest processes and retains screenshot-command errors. The startup cause is still unconfirmed: a prior passing run also reached its sampling threshold, but this does not prove the failed launches were healthy.
+
+Primary review also corrected the existing App-regression loop exiting before its strict xcresult verifier. An executable test of the actual workflow shell confirms successful execution reaches the verifier and a verifier failure fails the step. Full compiled Products (including UITest runner and xctestrun), hash, source SHA/run/attempt and toolchain are now archived before UI execution, with seven-day retention. No unverified host reuse is enabled.
+
+Local validation: nine runner checks plus 29 workflow/selector/shared-host checks passed; actionlint passed. A second OpenCode review independently simulated the archive and retry shell. These script checks now run in CI before project generation. Run `35223435570` is the next dual IDE qualification, not an upload. The initial Kimi worker exhausted its monthly API allowance; its partial work was reviewed and completed by the available DeepSeek worker.
