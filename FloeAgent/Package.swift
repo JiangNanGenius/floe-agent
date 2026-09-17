@@ -679,6 +679,17 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "FloePackagesTests",
+            dependencies: [
+                "FloePackages", "FloeCore", "FloeTools", "FloeEnvironments"
+            ],
+            path: "Tests/FloePackagesTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
             name: "FloeLocalModelsTests",
             dependencies: [
                 "FloeLocalModelCatalog", "FloeLocalModels", "FloeProviders",

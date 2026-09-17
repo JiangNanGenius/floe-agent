@@ -2,8 +2,11 @@
 // existing skill and font stores without FloeExecution importing app code.
 
 import Foundation
+import FloeCore
 import FloeExecution
+import FloePackages
 import FloeSkills
+import FloeTools
 
 struct SkillCenterCapabilityAdapter: CapabilitySkillInstalling {
     let center: SkillsCenter
@@ -23,6 +26,59 @@ struct FontStoreCapabilityAdapter: CapabilityFontInstalling {
 
     func installCapabilityFont(downloadedFile: URL, sha256: String?) async throws {
         _ = try await store.importFont(from: downloadedFile)
+    }
+}
+
+/// apt/pkg routing for signed WASM command capabilities. Capability facts
+/// (id, command, version, install state) come only from the verified signed
+/// catalog; installs go through CapabilityInstaller so the purpose policy,
+/// ledger and busy/integrity checks keep a single owner. WASM commands are
+/// app-global immutable resources: this route never writes into an
+/// environment layer or the dpkg database, and removal is honest about that.
+/// Cancellation is taken from the active shell invocation when the caller
+/// does not supply one.
+struct ShellWasmCapabilityRouter: WasmCapabilityRouter {
+    func capabilities() async -> [WasmCapabilityInfo] {
+        guard let store = FloeShellCommandRegistry.shared.wasm else { return [] }
+        let installed = Set(await store.installedIDs())
+        return store.catalog.packages.map {
+            WasmCapabilityInfo(
+                id: $0.id,
+                command: $0.command,
+                version: $0.version,
+                summary: "Signed WASI command (verified catalog)",
+                installed: installed.contains($0.id)
+            )
+        }
+    }
+
+    func resolve(operand: String) async -> WasmCapabilityInfo? {
+        let normalized = operand.lowercased()
+        return await capabilities().first {
+            $0.id.lowercased() == normalized || $0.command.lowercased() == normalized
+        }
+    }
+
+    func install(id: String, cancellation: CancellationToken?) async throws -> String {
+        guard let installer = FloeShellCommandRegistry.shared.installer else {
+            throw FloeError.invalidConfiguration("Signed capability installer is unavailable in this build")
+        }
+        let token = cancellation ?? FloeShellCommandRegistry.shared.context?.cancellation
+        _ = try await installer.install(
+            id: id,
+            purpose: "apt install \(id) from the Floe shell",
+            capabilities: [],
+            cancellation: token
+        )
+        return "installed app-wide as an immutable signed WASM command resource; it is not an environment package"
+    }
+
+    func remove(id: String) async throws -> String {
+        guard let installer = FloeShellCommandRegistry.shared.installer else {
+            throw FloeError.invalidConfiguration("Signed capability installer is unavailable in this build")
+        }
+        _ = try await installer.remove(id: id)
+        return "removed the app-wide WASM command resource; environment layers are unchanged"
     }
 }
 

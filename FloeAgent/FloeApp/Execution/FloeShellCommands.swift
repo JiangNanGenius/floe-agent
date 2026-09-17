@@ -296,11 +296,25 @@ enum FloeShellCommands {
         FloeShellCommandRegistry.shared.replacePythonCommands(entries)
     }
 
+    /// Bare-shell aliases for real signed catalog commands. An alias is only
+    /// registered when the signed catalog carries its canonical `floe-*`
+    /// entry, and it dispatches through the same store, context, task and
+    /// cancellation lifecycle as that entry.
+    private static let wasmCommandAliases: [String: String] = ["floe-lua": "lua"]
+
     private static func registerWasm(_ registry: FloeShellCommandRegistry) {
         guard let store = registry.wasm else { return }
         for entry in store.catalog.packages {
-            registry.register(entry.command) { arguments, stdout, stderr in
+            let handler: FloeShellCommandRegistry.Handler = { arguments, stdout, stderr in
                 guard let context = registry.context else { return 2 }
+                // Only a genuinely installed artifact runs; a missing one gets
+                // actionable install guidance instead of a bare command miss.
+                let installed = await store.installedIDs().contains(entry.id)
+                guard installed else {
+                    let invoked = arguments.first.map { ($0 as NSString).lastPathComponent } ?? entry.command
+                    FloeShellWrite(stderr, "\(invoked): \(entry.id) is not installed; run `apt install \(entry.id)` to install the signed capability\n")
+                    return 127
+                }
                 var standardInput: String?
                 // A terminal is not EOF-terminated piped input. Reading it to
                 // completion here prevents even `--version` from starting.
@@ -333,6 +347,9 @@ enum FloeShellCommands {
                 case .failed(let message): FloeShellWrite(stderr, message + "\n"); return 1
                 }
             }
+            registry.register(entry.command, handler: handler)
+            guard let alias = wasmCommandAliases[entry.command], registry.handler(for: alias) == nil else { continue }
+            registry.register(alias, handler: handler)
         }
     }
 

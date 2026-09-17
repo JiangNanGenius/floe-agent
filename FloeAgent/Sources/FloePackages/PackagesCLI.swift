@@ -32,10 +32,16 @@ public struct PackagesCLI: Sendable {
 
     private let engine: AptEngine
     private let contextProvider: @Sendable () async -> Context?
+    private let wasmRouter: (any WasmCapabilityRouter)?
 
-    public init(engine: AptEngine, contextProvider: @escaping @Sendable () async -> Context?) {
+    public init(
+        engine: AptEngine,
+        contextProvider: @escaping @Sendable () async -> Context?,
+        wasmRouter: (any WasmCapabilityRouter)? = nil
+    ) {
         self.engine = engine
         self.contextProvider = contextProvider
+        self.wasmRouter = wasmRouter
     }
 
     public func run(command: String, arguments: [String]) async -> Result {
@@ -59,7 +65,7 @@ public struct PackagesCLI: Sendable {
 
     private func runApt(_ arguments: [String]) async -> Result {
         if arguments.dropFirst().contains("--help") || arguments.dropFirst().contains("-h") {
-            return Result(output: "Floe APT-compatible package manager\napt [--yes] update | list [--installed] | search QUERY | show PACKAGE | install PACKAGE[=VERSION] | remove PACKAGE | upgrade\nSources and trust are configured in the environment package settings. Unsupported flags fail before making changes.")
+            return Result(output: "Floe APT-compatible package manager\napt [--yes] update | list [--installed] | search QUERY | show PACKAGE | install PACKAGE[=VERSION] | remove PACKAGE | upgrade\nSources and trust are configured in the environment package settings. Signed WASM capabilities (floe/* ids, e.g. floe/lua) install app-wide through the same command and are never Debian packages. Unsupported flags fail before making changes.")
         }
         var positional: [String] = []
         var installedOnly = false
@@ -107,13 +113,48 @@ public struct PackagesCLI: Sendable {
                 let state = installedNames.contains(package.name) ? "[installed]" : "[available]"
                 lines.append("\(package.name)/\(package.component) \(package.version) \(context.container.architecture) \(state)")
             }
+            if let wasmRouter {
+                for info in await wasmRouter.capabilities()
+                where operands.isEmpty || operands.contains(where: { info.id.contains($0) || info.command.contains($0) }) {
+                    if installedOnly && !info.installed { continue }
+                    let state = info.installed ? "[installed]" : "[available]"
+                    lines.append("\(info.id)/wasm \(info.version) wasi \(state)")
+                }
+            }
             return Result(output: lines.joined(separator: "\n"))
         case "search":
-            let results = await engine.search(operands.joined(separator: " "), container: context.container)
-            return Result(output: results.map { "\($0.name) - \($0.description?.split(separator: "\n").first ?? "")" }.joined(separator: "\n"))
+            let query = operands.joined(separator: " ")
+            var lines = await engine.search(query, container: context.container)
+                .map { "\($0.name) - \($0.description?.split(separator: "\n").first ?? "")" }
+            if let wasmRouter {
+                let normalized = query.lowercased()
+                for info in await wasmRouter.capabilities()
+                where info.id.lowercased().contains(normalized)
+                    || info.command.lowercased().contains(normalized)
+                    || info.summary.lowercased().contains(normalized) {
+                    let state = info.installed ? "[installed]" : "[available]"
+                    lines.append("\(info.id) - \(info.summary) (\(info.command) \(info.version)) \(state)")
+                }
+            }
+            return Result(output: lines.joined(separator: "\n"))
         case "show":
             var lines: [String] = []
+            var debOperands: [String] = []
             for name in operands {
+                if let info = await wasmRouter?.resolve(operand: name) {
+                    lines.append("Package: \(info.id)")
+                    lines.append("Version: \(info.version)")
+                    lines.append("Architecture: wasi")
+                    lines.append("Floe-Kind: signed-wasm-command")
+                    lines.append("Floe-Command: \(info.command)")
+                    lines.append("Description: \(info.summary)")
+                    lines.append("Installed: \(info.installed ? "yes" : "no")")
+                    lines.append("")
+                } else {
+                    debOperands.append(name)
+                }
+            }
+            for name in debOperands {
                 for package in await engine.show(name, container: context.container) {
                     lines.append("Package: \(package.name)")
                     lines.append("Version: \(package.version)")
@@ -140,23 +181,97 @@ public struct PackagesCLI: Sendable {
             }
             return Result(output: lines.joined(separator: "\n"))
         case "install":
-            do {
-                let steps = try await engine.install(operands, container: context.container)
-                var lines = ["Reading package lists... Done", "Building dependency tree... Done"]
-                for step in steps {
-                    lines.append("Setting up \(step.package) (\(step.version)) ...")
+            // Classify every operand before the first side effect. WASM
+            // capabilities and Debian packages live in independent stores, so a
+            // request that spans both is rejected up front instead of
+            // half-applying one store and then failing the other.
+            let installRoutes = await classify(operands)
+            if let rejection = mixedStoreRejection(installRoutes, verb: "install") { return rejection }
+            let wasmInstalls = installRoutes.compactMap(\.wasmCapability)
+            if wasmInstalls.isEmpty {
+                // Unchanged Debian-only path.
+                do {
+                    let steps = try await engine.install(operands, container: context.container)
+                    var lines = ["Reading package lists... Done", "Building dependency tree... Done"]
+                    for step in steps {
+                        lines.append("Setting up \(step.package) (\(step.version)) ...")
+                    }
+                    return Result(output: lines.joined(separator: "\n"))
+                } catch is CancellationError {
+                    return Result(output: "E: cancelled", exitCode: 130)
+                } catch FloeError.cancelled {
+                    return Result(output: "E: cancelled", exitCode: 130)
+                } catch {
+                    return Result(output: "E: \(error.localizedDescription)", exitCode: 100)
                 }
-                return Result(output: lines.joined(separator: "\n"))
-            } catch {
-                return Result(output: "E: \(error.localizedDescription)", exitCode: 100)
             }
+            guard let router = wasmRouter else {
+                return Result(output: "E: signed WASM capability installer is unavailable", exitCode: 100)
+            }
+            var installLines = ["Reading package lists... Done", "Building dependency tree... Done"]
+            var installFailures: [String] = []
+            for info in wasmInstalls {
+                do {
+                    let detail = try await router.install(id: info.id, cancellation: nil)
+                    installLines.append("Setting up \(info.id) (\(info.version)) ...")
+                    if !detail.isEmpty { installLines.append(detail) }
+                } catch is CancellationError {
+                    installFailures.append("E: cancelled")
+                    installLines.append(contentsOf: installFailures)
+                    return Result(output: installLines.joined(separator: "\n"), exitCode: 130)
+                } catch FloeError.cancelled {
+                    installFailures.append("E: cancelled")
+                    installLines.append(contentsOf: installFailures)
+                    return Result(output: installLines.joined(separator: "\n"), exitCode: 130)
+                } catch {
+                    installFailures.append("E: \(info.id): \(error.localizedDescription)")
+                }
+            }
+            installLines.append(contentsOf: installFailures)
+            return Result(output: installLines.joined(separator: "\n"), exitCode: installFailures.isEmpty ? 0 : 100)
         case "remove", "purge":
-            do {
-                let steps = try await engine.remove(operands, container: context.container, purge: subcommand == "purge")
-                return Result(output: steps.map { "Removing \($0.package) (\($0.version)) ..." }.joined(separator: "\n"))
-            } catch {
-                return Result(output: "E: \(error.localizedDescription)", exitCode: 100)
+            let removeRoutes = await classify(operands)
+            if let rejection = mixedStoreRejection(removeRoutes, verb: subcommand == "purge" ? "purge" : "remove") {
+                return rejection
             }
+            let wasmRemovals = removeRoutes.compactMap(\.wasmCapability)
+            if wasmRemovals.isEmpty {
+                // Unchanged Debian-only path.
+                do {
+                    let steps = try await engine.remove(operands, container: context.container, purge: subcommand == "purge")
+                    return Result(output: steps.map { "Removing \($0.package) (\($0.version)) ..." }.joined(separator: "\n"))
+                } catch is CancellationError {
+                    return Result(output: "E: cancelled", exitCode: 130)
+                } catch FloeError.cancelled {
+                    return Result(output: "E: cancelled", exitCode: 130)
+                } catch {
+                    return Result(output: "E: \(error.localizedDescription)", exitCode: 100)
+                }
+            }
+            guard let router = wasmRouter else {
+                return Result(output: "E: signed WASM capability installer is unavailable", exitCode: 100)
+            }
+            var removeLines: [String] = []
+            var removeFailures: [String] = []
+            for info in wasmRemovals {
+                do {
+                    let detail = try await router.remove(id: info.id)
+                    removeLines.append("Removing \(info.id) (\(info.version)) ...")
+                    if !detail.isEmpty { removeLines.append(detail) }
+                } catch is CancellationError {
+                    removeFailures.append("E: cancelled")
+                    removeLines.append(contentsOf: removeFailures)
+                    return Result(output: removeLines.joined(separator: "\n"), exitCode: 130)
+                } catch FloeError.cancelled {
+                    removeFailures.append("E: cancelled")
+                    removeLines.append(contentsOf: removeFailures)
+                    return Result(output: removeLines.joined(separator: "\n"), exitCode: 130)
+                } catch {
+                    removeFailures.append("E: \(info.id): \(error.localizedDescription)")
+                }
+            }
+            removeLines.append(contentsOf: removeFailures)
+            return Result(output: removeLines.joined(separator: "\n"), exitCode: removeFailures.isEmpty ? 0 : 100)
         case "upgrade", "full-upgrade":
             let plan: [AptEngine.Step]
             do { plan = try await engine.upgradePlan(container: context.container) }
@@ -187,6 +302,49 @@ public struct PackagesCLI: Sendable {
         default:
             return Result(output: "E: Invalid operation \(subcommand)", exitCode: 100)
         }
+    }
+
+    /// Preflight classification for install/remove. Resolving every operand
+    /// before any mutation is what keeps a mixed WASM + Debian request from
+    /// half-applying: signed WASM capabilities are app-global immutable
+    /// artifacts while Debian packages are per-environment layer data, so the
+    /// two must never be mutated in one transaction.
+    private enum PackageRoute {
+        case wasm(WasmCapabilityInfo)
+        case deb(String)
+
+        var wasmCapability: WasmCapabilityInfo? {
+            if case .wasm(let info) = self { return info }
+            return nil
+        }
+    }
+
+    private func classify(_ operands: [String]) async -> [PackageRoute] {
+        var routes: [PackageRoute] = []
+        routes.reserveCapacity(operands.count)
+        for operand in operands {
+            if let info = await wasmRouter?.resolve(operand: operand) {
+                routes.append(.wasm(info))
+            } else {
+                routes.append(.deb(operand))
+            }
+        }
+        return routes
+    }
+
+    /// Returns a clear rejection when a request names both stores, before any
+    /// install/remove is attempted. `nil` means the request is single-store.
+    private func mixedStoreRejection(_ routes: [PackageRoute], verb: String) -> Result? {
+        let wasmIDs = routes.compactMap { $0.wasmCapability?.id }
+        let debNames = routes.compactMap { route -> String? in
+            if case .deb(let name) = route { return name }
+            return nil
+        }
+        guard !wasmIDs.isEmpty, !debNames.isEmpty else { return nil }
+        return Result(
+            output: "E: cannot \(verb) signed WASM capabilities (\(wasmIDs.joined(separator: ", "))) together with Debian packages (\(debNames.joined(separator: ", "))) in one apt transaction; they use independent stores. Run them separately. No changes made.",
+            exitCode: 100
+        )
     }
 
     private func runAptCache(_ arguments: [String]) async -> Result {
