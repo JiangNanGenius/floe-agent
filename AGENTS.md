@@ -6,6 +6,7 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 
 - Inspect `git status`, the current branch, relevant diffs and active worktrees before editing. Preserve unrelated changes, untracked files, unmerged commits and reproduction evidence. Use `codex/` for new task branches; do not assume an old integration branch still exists.
 - Trace the actual UI → service → runtime/storage path before fixing symptoms. Read only the relevant modules and documentation. Prefer `rg` and small, focused reads.
+- Within this project, the user’s request to “open a new thread” means an OpenCode subtask by default. Use Codex tasks only for unrelated independent work; keep architecture, UI judgment and operational acceptance with the primary agent.
 - Continue authorized reversible work without repeated confirmation. Never infer approval to publish production releases, grant account access or remove independent work.
 - Give concise Chinese progress updates unless the user requests another language. Distinguish implemented, compiled, tested, uploaded and installable; do not promise a completion time from an unmeasured build stage.
 
@@ -53,7 +54,8 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 ## Safe cleanup
 
 - Keep new task-owned local files inside this repository: `Local/Private`, `Local/Artifacts`, `Local/Worktrees` and `Local/Scratch` are Git-ignored. Do not create sibling project/output directories on the external disk. After delivery, consolidate existing Floe-owned directories with a relocation record; move Git worktrees with Git and preserve unrelated projects. Public, redacted evidence belongs in `docs/`.
-- Inspect active processes, Git boundaries and exact paths first. Remove only confirmed regenerable scratch/staging/cache owned by this work. Preserve source, delivery packages, logs, screenshots, rollback copies, credentials, virtual environments and uncertain files.
+- Inspect active processes, Git boundaries and exact paths first. Remove confirmed regenerable scratch/staging/cache and superseded build copies. Preserve source, credentials, virtual environments, user data and meaningful failure/acceptance evidence; do not keep every historical build indefinitely.
+- Inventory `.app`, IPA, archive and runtime copies by bundle ID, version, build and purpose after qualification/delivery. Keep the current deliverable and the necessary rollback version; prune obsolete duplicates once their regeneration or verified recovery path is recorded. Generated `.app` bundles are distinct from installed apps and their data. Check runtime dependents before removing an unused runtime. Record exact targets, retained versions and measured space reclaimed.
 - Do not broadly delete DerivedData, `.build`, Archives or CoreSimulator. Simulators containing user/test apps are protected even when shut down. Prefer a specific finished build directory; report measured space reclaimed.
 
 ## Read on demand

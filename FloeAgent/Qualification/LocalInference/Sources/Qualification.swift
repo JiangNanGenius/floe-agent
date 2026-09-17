@@ -3,6 +3,7 @@ import FloeLocalModels
 import FloeLocalModelCatalog
 import MLX
 import Darwin
+import Synchronization
 
 /// macOS-host diagnostic for the real pinned Qwen3.8 snapshot. It intentionally
 /// runs the production `MLXTextEngine` and `LocalModelStore` unchanged; only the
@@ -151,6 +152,141 @@ import Darwin
 
     static func shortBenchmarkInstructions() -> String { "Answer briefly in one sentence." }
 
+    // MARK: - Post-shutdown lifecycle observation (macOS-host regression gate)
+
+    // Baseline run 35180378429 (baseline pins) ended every shutdown at
+    // mlxActiveBytes 4,000-15,976 with footprint ~311MB, while candidate run
+    // 35183627027 retained 1.56GB-3.11GB of live MLX memory after the same
+    // engine.shutdown(). Generation-string checks stayed green in both, so
+    // the host now gates on what the engine leaves behind. These thresholds
+    // are a macOS-host regression gate for pin evaluation, NOT an iPad
+    // jetsam limit: the host has more memory and no
+    // `os_proc_available_memory` pressure.
+    static let settledActiveLimitBytes = 64 * 1024 * 1024
+    /// Diagnostic reference only. Baseline run 35180378429
+    /// (`/usr/bin/time`) reported a 4.86GB peak footprint with normal
+    /// architecture noise, so the footprint is captured per observation but
+    /// never fails the run by itself.
+    static let footprintReferenceBytes = 512 * 1024 * 1024
+    /// Baseline run 35180378429 peak mlxActiveBytes. Report-only comparison
+    /// (+10% note); never a failure by itself.
+    static let baselinePeakActiveReferenceBytes = 2_804_000_582
+    /// Post-barrier settle window per engine shutdown. This budget starts
+    /// ONLY after the synchronous GPU barrier above returns; the barrier
+    /// itself is unbounded and is bounded in practice only by the CI
+    /// job-level timeout, so this must not be described as a "total budget
+    /// including the barrier". Bounded: no unbounded polling and no
+    /// synthetic allocations or extra MLX work between samples.
+    static let shutdownSettleBudgetSeconds: TimeInterval = 5.0
+    static let shutdownSettleSampleIntervalSeconds: TimeInterval = 0.25
+
+    /// Collected across every profile so a violation in an early profile
+    /// never hides evidence from later scenarios: the run records everything
+    /// and only fails at the end with a useful summary. Mutex-isolated so
+    /// the mutable static state is Swift 6 concurrency-safe without
+    /// resorting to unsafe assumptions.
+    static let lifecycleViolations = Mutex<[String]>([])
+
+    /// Observe engine memory immediately after `MLXTextEngine.shutdown()`.
+    ///
+    /// Order: (1) preserve the immediate snapshot, (2) synchronize the
+    /// generation GPU stream, (3) watch a bounded settle window, then gate
+    /// on the settled active bytes.
+    ///
+    /// GPU barrier scope (verified against both pin sets via local git
+    /// objects): mlx-swift always resolves `StreamOrDevice.default` to the
+    /// process-wide static `Stream.gpu` (`Device.defaultStream()` returns
+    /// that same static), and mlx-swift-lm at both bd4b7434 and d5d8b290
+    /// never installs a task-local stream (`withNewDefaultStream` absent), so
+    /// generation runs on that one stream. On the candidate MLX 0.32.2 core
+    /// `gpu::synchronize` (mlx/backend/metal/eval.cpp) commits the stream's
+    /// `CommandEncoder` and `waitUntilCompleted()` (device.cpp), which fires
+    /// the completion handlers that release encoder temporaries. LIMIT: the
+    /// 0.32 core also has per-thread default streams
+    /// (`mlx/stream.cpp: default_stream_storage`); work submitted to a core
+    /// thread-local default stream that mlx-swift never saw would NOT be
+    /// covered by this barrier. No such path is reachable from the Swift
+    /// layers at either pin, but the observation records the scope instead
+    /// of claiming the whole GPU is idle.
+    static func observePostShutdown(profileCase: ProfileCase, engineIndex: Int) {
+        var fields = profileCase.fields
+        fields["engineIndex"] = engineIndex
+        record("shutdown-immediate", fields)
+        let immediateActive = Memory.activeMemory
+        let immediateFootprint = processFootprint()
+
+        fields["gpuSyncScope"] = "swift-static-Stream.gpu (covers mlx-swift "
+            + "default stream; core per-thread default streams not reachable "
+            + "from Swift layers at either pin)"
+        // Blocks until the stream's committed command buffer completes;
+        // on MLX 0.32 this releases CommandEncoder temporaries held by
+        // completion handlers. Not wrapped in a scheduler barrier, so
+        // stream-thread queue tasks that were never submitted are not
+        // awaited; the settle window below covers their reclamation.
+        // `synchronize()` is not `throws`; a hard MLX error would terminate
+        // the process rather than reach a catch block.
+        Stream.gpu.synchronize()
+        fields["gpuSynchronize"] = "completed"
+        record("shutdown-gpu-synchronize", fields)
+
+        let settleStarted = Date()
+        let deadline = settleStarted.addingTimeInterval(shutdownSettleBudgetSeconds)
+        var sample = 0
+        var previousActive = immediateActive
+        var previousFootprint = immediateFootprint ?? 0
+        // Observe the entire post-barrier window, including after a low
+        // sample, so a delayed increase remains visible in the final gate.
+        while true {
+            Thread.sleep(forTimeInterval: shutdownSettleSampleIntervalSeconds)
+            if Date() >= deadline { break }
+            sample += 1
+            let active = Memory.activeMemory
+            let footprint = processFootprint()
+            var sampleFields = profileCase.fields
+            sampleFields["engineIndex"] = engineIndex
+            sampleFields["settleSample"] = sample
+            sampleFields["deltaActiveBytes"] = active - immediateActive
+            sampleFields["activeDeltaVersusPrevious"] = active - previousActive
+            sampleFields["footprintDeltaVersusPrevious"] =
+                footprint.map { Int64($0) - Int64(previousFootprint) } ?? 0
+            record("shutdown-settle", sampleFields)
+            previousActive = active
+            previousFootprint = footprint ?? previousFootprint
+        }
+        let settleElapsed = Date().timeIntervalSince(settleStarted)
+
+        // Gate the FINAL sample directly: the final active bytes decide,
+        // not a sticky "was under limit at some point" flag that could
+        // mask a later rise back above the limit.
+        let settledActive = Memory.activeMemory
+        let settledUnderLimit = settledActive <= settledActiveLimitBytes
+        fields["settledActiveBytes"] = settledActive
+        fields["settleSamples"] = sample
+        fields["settleElapsedSeconds"] = settleElapsed
+        fields["settledUnderLimit"] = settledUnderLimit
+        fields["settledActiveLimitBytes"] = settledActiveLimitBytes
+        fields["footprintReferenceBytes"] = footprintReferenceBytes
+        fields["settledFootprintBytes"] = processFootprint().map { $0 as Any } ?? NSNull()
+        record("shutdown-settled", fields)
+
+        if !settledUnderLimit {
+            // Still above the limit at the end of the bounded post-barrier
+            // window: sustained retention, not promptly reclaimed pending
+            // work. This is exactly the candidate-pin regression (final
+            // shutdown left 3,111,710,152 bytes active) that
+            // generation-string checks missed. The message reports the
+            // ACTUAL elapsed window, not the nominal budget.
+            lifecycleViolations.withLock {
+                $0.append(
+                    "profile \(profileCase.label) engine \(engineIndex): settled active "
+                        + "\(settledActive) bytes still exceeds "
+                        + "\(settledActiveLimitBytes) byte limit after "
+                        + String(format: "%.2f", settleElapsed)
+                        + "s post-barrier settle (immediate was \(immediateActive))")
+            }
+        }
+    }
+
     // MARK: - Engine lifecycle
 
     static func loadEngine(_ entry: LocalModelCatalogEntry, using profileCase: ProfileCase,
@@ -296,6 +432,7 @@ import Darwin
                            baselinePeak: baselinePeak)
         await first.shutdown()
         record("shutdown-complete", profileCase.fields)
+        observePostShutdown(profileCase: profileCase, engineIndex: 1)
 
         // Turn 3: one reload, then a short follow-up question.
         let reloadedPeak = Memory.peakMemory
@@ -307,6 +444,7 @@ import Darwin
                            baselinePeak: reloadedPeak)
         await second.shutdown()
         record("shutdown-complete", profileCase.fields)
+        observePostShutdown(profileCase: profileCase, engineIndex: 2)
 
         record("profile-complete", profileCase.fields)
     }
@@ -339,6 +477,7 @@ import Darwin
         }
         await engine.shutdown()
         record("shutdown-complete", profileCase.fields)
+        observePostShutdown(profileCase: profileCase, engineIndex: 1)
         record("profile-complete", profileCase.fields)
     }
 
@@ -348,6 +487,31 @@ import Darwin
         do {
             try await run()
             record("qualification-complete")
+            let violations = lifecycleViolations.withLock { $0 }
+            var summary: [String: Any] = [
+                "violationCount": violations.count,
+                "settledActiveLimitBytes": settledActiveLimitBytes,
+                "footprintReferenceBytes": footprintReferenceBytes,
+                "footprintGate": "diagnostic-only",
+                "baselinePeakActiveReferenceBytes": baselinePeakActiveReferenceBytes,
+                "peakGate": "report-only"
+            ]
+            // Peak reference is Memory.peakMemory (process-wide peak), NOT
+            // the per-sample active bytes; label matches the source metric.
+            let peak = Memory.peakMemory
+            summary["finalPeakMemoryBytes"] = peak
+            summary["peakVersusBaselinePct"] = Int(
+                (Double(peak) / Double(baselinePeakActiveReferenceBytes) * 100).rounded())
+            if !violations.isEmpty {
+                summary["violations"] = violations
+                record("lifecycle-gate-failed", summary)
+                throw NSError(domain: "Qualification", code: 5, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Post-shutdown memory gate failed with \(violations.count) "
+                        + "violation(s): " + violations.joined(separator: " | ")
+                ])
+            }
+            record("lifecycle-gate-passed", summary)
         } catch {
             record("qualification-failed", errorFields(error))
             throw error

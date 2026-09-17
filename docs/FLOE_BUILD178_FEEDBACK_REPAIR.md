@@ -209,10 +209,11 @@ Observed on this checkout unless a line says otherwise:
   fixture missing; five of six generated). The other 20 Agent tool cases passed,
   including actual Office text read/edit/CAS round-trip and stale revision/hash
   rejection. The original 11-case native suite and the two thumbnail-gate cases
-  passed. The separate reader/linked-map UI test passed, but primary inspection
-  found its landscape capture still used a portrait system canvas; it is not
-  accepted as landscape screenshot evidence. The test now captures the app and
-  checks image dimensions. iPhone execution did not start after the iPad failure.
+  passed. The separate reader/linked-map UI test passed. Initial primary
+  inspection incorrectly attributed the landscape image to a portrait system
+  canvas and changed capture to `app.screenshot()`. Later inspection of the
+  original PNG's EXIF orientation disproved that diagnosis (see follow-up below).
+  iPhone execution did not start after the iPad failure.
   Primary inspection confirmed real text in the returned Word, Excel and PPT
   thumbnails; these generator images are not full-App library-card acceptance.
   Xcode then spent 600 seconds on optional simulator diagnostics and timed out.
@@ -238,6 +239,25 @@ Observed on this checkout unless a line says otherwise:
   the old-pin diagnostic's 15,976 final active bytes. Delayed GPU release versus
   retained resources remains under investigation. A successful generation/CI
   exit is insufficient lifecycle evidence and does not establish an iPad fix.
+- [Run 35184454030](https://github.com/JiangNanGenius/floe-agent/actions/runs/35184454030)
+  at `bd11e05a8f0be2d282716c44e15d1eccd2323edd` compiled the native Notes host.
+  All 43 XCTest unit/component tests and 19 Swift Testing tests passed, including
+  all six real Office Quick Look samples. The separate iPad UI test failed two
+  capture assertions: the viewport was 1366×1024, but the app screenshot's
+  oriented image size was 1024×1366. Its raw PNG was 2732×2048 with EXIF
+  orientation 8 and 684 black columns. Earlier `XCUIScreen` captures had EXIF
+  orientation 8 with complete content and no such black band. The app capture
+  change introduced this evidence regression; originals remain retained and
+  no image was rotated/cropped to manufacture a pass. iPhone was not reached.
+  Total run time was 11m12s after disabling verbose diagnostic collection.
+- The macOS inference diagnostic now observes immediate shutdown memory, a
+  `Stream.gpu` barrier and the entire five-second post-barrier window. It fails
+  if final active MLX allocation exceeds 64 MiB, recording all profiles before
+  reporting failure. The synchronous barrier is bounded only by the CI timeout;
+  this does not prove all core thread-local streams idle or define an iPad
+  memory limit. The real diagnostic source passed Swift 6 semantic checking
+  with Xcode-beta `swiftlang-6.4.0.30.4` against existing production-pin modules.
+  Candidate runtime results with this new gate are pending.
 - Localization rendering in a running App, and English-locale copy review, is
   unverified.
 - `notes.kind.engineering` localizes the new CAD fallback only; the sibling
