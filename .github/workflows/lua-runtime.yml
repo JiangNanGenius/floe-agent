@@ -30,9 +30,9 @@ jobs:
       - name: Run the interpreter through the WASI command runtime
         run: |
           set -o pipefail
-          # Reuse the production WASM regression source unchanged in this small
-          # host: loops, cancellation, output bounds, confinement and signatures.
-          cp FloeAgent/Tests/FloeExecutionTests/WasmCapabilityTests.swift \
+          # This host already links the production WASM regression source.
+          # Verify that link rather than copying a file over its own symlink.
+          cmp FloeAgent/Tests/FloeExecutionTests/WasmCapabilityTests.swift \
             FloeAgent/Qualification/Tests/WasmCommandTests/WasmCapabilityTests.swift
           shasum -a 256 FloeAgent/Tests/FloeExecutionTests/WasmCapabilityTests.swift \
             > "$RUNNER_TEMP/floe-lua/evidence/wasm-regression-source.sha256"
