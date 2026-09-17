@@ -1,8 +1,10 @@
 # Floe Agent 1.7.0 (181) — beta.38 candidate
 
-**Preparing the corrected candidate; not uploaded.**
+**Tagged candidate; cloud qualification in progress, not uploaded.**
 
-Release tag: `v1.7.0-beta.38` (source fixed when tagged). Build 180 was
+Immutable source: `69bb48df398afe520943356b061d2cff80139306` /
+`v1.7.0-beta.38`. [Release run 35247156362](https://github.com/JiangNanGenius/floe-agent/actions/runs/35247156362)
+is qualifying the two SDKs. Build 180 was
 cancelled before upload after real GitHub API validation found malformed query
 URLs. This candidate preserves absolute API URLs and adds regressions that
 reject the invalid relative requests previously accepted by the fixture.
