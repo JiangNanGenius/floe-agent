@@ -1,0 +1,54 @@
+{
+  "sourceCommit": "a22e8c3e24976a1342a80c3439aa15b9a696a5bc",
+  "run": 35212766190,
+  "platform": "SDK27 full App iPad simulator",
+  "artifactID": 10493219821,
+  "artifactSHA256": "a5674c2eb0c638b93e9800b3c879ff4bf94e856d9783420af26fe3900d07c514",
+  "captures": [
+    {
+      "file": "ipad-dwg-reopened.png",
+      "sha256": "9052acf6785f4ca13321f34bd0b27639df820a20603e1a7517282dc2b06ee121",
+      "originalAttachment": {
+        "configurationName": "Test Scheme Action",
+        "deviceId": "FA4E2F7A-87DE-46BF-82D5-AF1EF61F7869",
+        "deviceName": "iPad mini (A17 Pro)",
+        "exportedFileName": "4A0072EC-51B8-4349-B305-CF1DF0B8B9B4.png",
+        "isAssociatedWithFailure": false,
+        "repetitionNumber": 1,
+        "suggestedHumanReadableName": "engineering-dwg-native-review_0_7F01B396-29F7-4A59-B3E3-3DABBF6FD2B5.png",
+        "timestamp": 1789643873.44
+      },
+      "test": "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen()"
+    },
+    {
+      "file": "ipad-dwg-saved.png",
+      "sha256": "c75fdb51cb73b6710d3013fa54b0131795fdc9c69b0e049160769140c9a8c608",
+      "originalAttachment": {
+        "configurationName": "Test Scheme Action",
+        "deviceId": "FA4E2F7A-87DE-46BF-82D5-AF1EF61F7869",
+        "deviceName": "iPad mini (A17 Pro)",
+        "exportedFileName": "F785C2AC-665B-4463-9F5D-6E4890ACE4E6.png",
+        "isAssociatedWithFailure": false,
+        "repetitionNumber": 1,
+        "suggestedHumanReadableName": "engineering-dwg-native-saved_0_A0D4E083-949F-427E-BF81-DE28429AE1C5.png",
+        "timestamp": 1789643817.546
+      },
+      "test": "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen()"
+    },
+    {
+      "file": "ipad-ide-reopened.png",
+      "sha256": "1061bdad69332f041c3082bab21c25c09ce467591984c1fac88f362a58360535",
+      "originalAttachment": {
+        "configurationName": "Test Scheme Action",
+        "deviceId": "FA4E2F7A-87DE-46BF-82D5-AF1EF61F7869",
+        "deviceName": "iPad mini (A17 Pro)",
+        "exportedFileName": "B1CAC6A9-B9DF-4E52-AB1E-B8B7AE568D1C.png",
+        "isAssociatedWithFailure": false,
+        "repetitionNumber": 1,
+        "suggestedHumanReadableName": "ide-native-cold-reopen_0_9DEC9BCD-D0AD-4A8B-B75B-B4385B338DB6.png",
+        "timestamp": 1789644094.263
+      },
+      "test": "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen()"
+    }
+  ]
+}

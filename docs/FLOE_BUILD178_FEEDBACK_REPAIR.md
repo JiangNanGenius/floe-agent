@@ -458,3 +458,8 @@ Manual `ci.yml` dispatch accepts `ide_only=true`. It builds a fresh App test hos
   `FloeAgent/scripts/test_office_explicit_save.py`.
 - Tests: `FloeAgent/Qualification/Notes/Tests/`,
   `FloeAgent/Qualification/NativeNotes/Tests/`.
+
+
+### 2026-09-17 — IDE retest 35212766190
+
+Source `a22e8c3e`: App host build passed. All three iPad IDE cases passed, including DWG save/cold reopen and native text disk readback/cold reopen. The workflow then failed with `No available iPhone 17 Pro simulator for iOS 27`; iPhone did not run. This is a CI device-selection failure, not another failed iPad save. Original artifact `10493219821` (8,748,166 bytes), SHA256 `a5674c2eb0c638b93e9800b3c879ff4bf94e856d9783420af26fe3900d07c514`, retained locally with logs and xcresult. [Original native screenshots and summary](qualification/build178-feedback/full-app-a22e8c3e/README.md). OpenCode is repairing compatible simulator selection without skipping iPhone or relaxing the three assertions. No build 179 upload yet.
