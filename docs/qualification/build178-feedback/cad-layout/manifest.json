@@ -1,0 +1,49 @@
+{
+  "source": "3eecf7359bd82ee7f84c46ddfce3dce6b0c280ce",
+  "kind": "primary actual browser component interaction",
+  "date": "2026-09-17",
+  "viewports": [
+    {
+      "width": 402,
+      "height": 688
+    },
+    {
+      "width": 1133,
+      "height": 638
+    }
+  ],
+  "actions": [
+    "open bundled DWG",
+    "add FLOE-CAD-179 text",
+    "scroll panel",
+    "click sticky save",
+    "parse output with actual bundled WASM engine"
+  ],
+  "readback": {
+    "format": "dwg",
+    "bytes": 20818,
+    "sha256": "a67272ee063523b0bb2c052bd63ccfdb2538289c15dbf4dff705df46b763e4b0",
+    "readBackPassed": true,
+    "marker": "FLOE-CAD-179",
+    "entityCount": 4
+  },
+  "files": [
+    {
+      "file": "iphone-dwg-saved.png",
+      "sha256": "f6a7d63126e0944173ade10e45e53010d7eda64e0c8810c3b3283ea1a5683374"
+    },
+    {
+      "file": "ipad-dwg-saved.png",
+      "sha256": "2d2c3661ea7825c6c5578d708beb8ee1b26eb001f5353b1f8a77ae84951e7a06"
+    },
+    {
+      "file": "saved-dwg-readback.json",
+      "sha256": "582855b87f23e1d28c3bd3705e9a96cb08883065c7c64662623fbd4e05763f28"
+    }
+  ],
+  "limits": [
+    "Not native iPhone/iPad or Apple Pencil evidence",
+    "Test host simulates native save bridge; native file persistence remains cloud UI gate"
+  ],
+  "cleanup": "Localhost host stopped; task tab closed; viewport reset"
+}

@@ -434,6 +434,12 @@ The overall run **failed** IDE UI verification. The iPhone text save reached the
 
 Build 179 / beta.36 metadata and bilingual notes are being prepared; no new tag, device package or upload exists at this checkpoint. Read-only App Store Connect discovery in run `35208620408` confirms build 178 remains the latest uploaded version and is `VALID`. It did not re-query group availability. The local simulator can boot, but DeviceHub UI access still times out while Xcode component installation is pending; no local App interaction is claimed.
 
+### IDE/CAD follow-up patch
+
+Commit `3eecf735` updates the compact IDE UI test to inspect enabled actions inside the actual overflow menu. It retains all save, disk-readback and cold-reopen assertions. The test file passes SDK 27 Swift type checking.
+
+The CAD failure was caused by the Pencil settings pushing text fields and Save outside the panel viewport. Basic editing now precedes pen settings, and Undo/Redo/Save remain visible while scrolling. The primary agent [verified the browser component](qualification/build178-feedback/cad-layout/README.md) at narrow and wide sizes and reparsed the saved DWG with the bundled WASM engine. The 73 CAD checks and all 29 resource hashes pass. Native double-device revalidation is still pending; browser success does not replace it.
+
 ## References
 
 - Localization: `FloeAgent/FloeApp/Resources/Localizable.xcstrings`;
