@@ -6,8 +6,10 @@ on:
         description: Sign official WASI packages and commit the catalog (no app release)
         type: boolean
         default: false
-env:
-  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      prepare:
+        description: Sign the catalog and bundle as a CI artifact at this immutable source SHA (no commit)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -15,9 +17,59 @@ jobs:
     runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
+      - name: Select installed Xcode 27
+        run: |
+          for app in /Applications/Xcode_27.0.app /Applications/Xcode_27_beta_6.app; do
+            if [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ] && DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version | head -1 | grep -q '^Xcode 27'; then
+              echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo '::error::Xcode 27 is unavailable on this runner'
+          exit 1
       - run: python3 -m venv /tmp/capability-signing
       - run: /tmp/capability-signing/bin/pip install cryptography==46.0.3
-      - run: /tmp/capability-signing/bin/python capability-hub/build.py --test-key --output /tmp/capability-test
+      - name: Verify the fixed manifest, pinned Lua artifact and signing contract
+        run: /tmp/capability-signing/bin/python -m unittest discover -s capability-hub -p 'test_*.py'
+      - name: Assemble and test-sign the packages with a temporary key
+        run: /tmp/capability-signing/bin/python capability-hub/build.py --test-key --output /tmp/capability-test
+  prepare:
+    needs: verify
+    if: inputs.prepare && !inputs.publish
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select installed Xcode 27
+        run: |
+          for app in /Applications/Xcode_27.0.app /Applications/Xcode_27_beta_6.app; do
+            if [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ] && DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version | head -1 | grep -q '^Xcode 27'; then
+              echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo '::error::Xcode 27 is unavailable on this runner'
+          exit 1
+      - run: python3 -m venv /tmp/capability-signing
+      - run: /tmp/capability-signing/bin/pip install cryptography==46.0.3
+      - name: Sign the catalog and app bundle at the immutable source SHA
+        env:
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+          FLOE_CAPABILITY_REVISION: ${{ github.sha }}
+        run: /tmp/capability-signing/bin/python capability-hub/build.py
+      - name: Verify the signed catalog against the fixed manifest
+        run: /tmp/capability-signing/bin/python capability-hub/build.py --check
+      - name: Upload the verified catalog, bundle and immutable packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: floe-wasi-capability-bundle-${{ github.sha }}
+          path: |
+            capability-hub/catalog.json
+            capability-hub/catalog.sig
+            capability-hub/packages
+            FloeAgent/FloeApp/Resources/Capabilities
+            skill-hub/public-key.json
+          if-no-files-found: error
+          retention-days: 90
   publish:
     needs: verify
     if: inputs.publish && github.ref == 'refs/heads/main'
@@ -28,6 +80,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: true
+      - name: Select installed Xcode 27
+        run: |
+          for app in /Applications/Xcode_27.0.app /Applications/Xcode_27_beta_6.app; do
+            if [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ] && DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version | head -1 | grep -q '^Xcode 27'; then
+              echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo '::error::Xcode 27 is unavailable on this runner'
+          exit 1
       - run: python3 -m venv /tmp/capability-signing
       - run: /tmp/capability-signing/bin/pip install cryptography==46.0.3
       - name: Commit immutable WASI artifact
@@ -47,6 +109,8 @@ jobs:
         env:
           FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
         run: /tmp/capability-signing/bin/python capability-hub/build.py
+      - name: Verify the signed catalog against the fixed manifest
+        run: /tmp/capability-signing/bin/python capability-hub/build.py --check
       - name: Commit immutable packages and app catalog
         run: |
           git config user.name github-actions[bot]
