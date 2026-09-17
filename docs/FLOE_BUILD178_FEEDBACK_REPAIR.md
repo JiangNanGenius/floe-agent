@@ -468,3 +468,8 @@ Source `a22e8c3e`: App host build passed. All three iPad IDE cases passed, inclu
 ### Simulator selection repair and retry
 
 `b285c037` retains exact-model preference, then matches available devices by actual type/family within the required iOS major, and creates a matching device only when necessary. Both CI and release qualification adopt the selector. Renamed iPads cannot satisfy iPhone requests; newly created devices use their actual type name. Primary verification: 28 unit checks and actionlint passed; real local iOS 27 inventory selected both families without booting or creating devices. Run `35216642942` retries the original dual IDE cases. Artifact `10492994998` contains the App only, not a reusable UI test runner/xctestrun; a fresh host build is required.
+
+
+### 2026-09-17 — retest 35216642942 startup failure
+
+App host compilation passed on `b285c037`. Both simulator families were found and booted (including iPhone 17 Pro), but XCTest produced no test-start output within the 210-second stall window. On retry, the diagnostic wrapper raised `FileExistsError` for the already-existing `SwiftTestDiagnostics/ide-ipad` and `ide-iphone` directories, so neither leg produced an xcresult. No App test cases ran; this is not evidence of an App assertion failure or a passing retry. Original artifact `10496971475` (2068 bytes), SHA256 `423adfb078f8be0b11e920b86a8116806cf8ff1354fa953b61303941e606e3ee`, and the failed-step log are retained locally. OpenCode is investigating startup and correcting retry evidence handling before another run. Build 179 remains untagged and not uploaded.
