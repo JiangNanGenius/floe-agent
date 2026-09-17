@@ -1,24 +1,24 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (172). Candidate: 1.7.0 (178). review preparation, candidate 1.7.0 (178) delivered to internal Floe QA, external review not submitted.
+Baseline: 1.7.0 (178). Candidate: 1.7.0 (179). preparation draft; build 179 not uploaded; external review not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
-Baseline: version 1.7.0, build 172. This internal TestFlight build is available in Floe QA. Public/external Beta review has not been submitted.
+Baseline: version 1.7.0, build 178, previously delivered to internal Floe QA. Public/external Beta review has not been submitted.
 
-基线：1.7.0（172），已交付 Floe QA 内部 TestFlight；尚未提交外部 Beta 审核。
+基线：1.7.0（178），此前已交付 Floe QA 内部 TestFlight；尚未提交公开／外部 Beta 审核。
 
-Build 178, source 32acddd4, passed the complete release verification and is uploaded to TestFlight: Apple VALID, unexpired, in the existing internal Floe QA group and IN_BETA_TESTING. Builds 173–177 did not complete upload; their findings are recorded separately from this delivered baseline.
+Build 179 is in preparation and is not uploaded. A fresh Apple query on 17 September confirms build 178 remains the latest upload and VALID. The current candidate has passing Notes simulator tests, but IDE save failures are still being repaired.
 
-178（源码 32acddd4）已通过完整发布验证并上传 TestFlight：Apple VALID、未过期，在既有 Floe QA 内部组且处于 IN_BETA_TESTING 可安装状态。173–177 各候选未上传，相应发现与本次已交付基线分开记录。
+179 正在准备，尚未上传。9 月 17 日重新查询 Apple，最新上传仍为 178，状态 VALID。候选的手记模拟器测试已通过，IDE 保存测试失败仍在修复。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
 Floe 以 iPad 为优先，整合 AI 任务、手记、文档与创意画布，同时兼容 iPhone；云端模型由用户自行配置。
 
-No developer-funded AI key or cloud credits are included. Local AI is usable with restricted capabilities; it does not replace every cloud feature.
+No developer-funded AI key or cloud credits are included. Apple Foundation Models and downloaded local models have different capabilities; the reported iPad downloaded-model chat crash still requires re-testing.
 
-不提供开发者付费 Key 或云端额度。本地 AI 可用但能力有限，不能替代全部云端功能。
+不提供开发者付费 Key 或云端额度。Apple Foundation Models 与下载的本地模型能力不同；已报告的 iPad 下载模型聊天闪退仍需复核。
 
 Use the separate two-page file Floe-公开Beta送审示例.pdf for import, handwriting, search and selection exercises.
 
@@ -46,9 +46,9 @@ The delivery supports iOS/iPadOS 26 compatibility. Version 27 native interfaces 
 
 保留 iOS/iPadOS 26 兼容；27 原生接口取决于实际构建 SDK 与设备可用性。
 
-The owner reports working local AI. The exact local model, hardware and final review build still need to be recorded for a reproducible reviewer walkthrough.
+The owner reports that Apple Foundation Models work. Downloaded MLX models have passing real-weight macOS host diagnostics, which do not establish iPad chat stability. Record the final review build, exact model and hardware before relying on this path for review.
 
-用户已实测本地 AI 可用；仍需记录具体模型、硬件及最终送审构建，保证演示可复现。
+用户报告 Apple Foundation Models 可用。下载的 MLX 模型已通过 macOS 真实权重宿主测试，但不代表 iPad 聊天稳定。采用该路径送审前需记录最终构建、具体模型与硬件。
 
 ## 02  手记资料、导入与搜索 / Notes library, import and search
 
@@ -242,17 +242,17 @@ Appearance belongs under General: light, dark and system-following behavior. Reo
 
 外观位于通用：浅色、深色及跟随系统。重启后核对模型、辅助能力、环境和语音设置，无需重复保存。
 
-Build 172 source passed 1,270 Swift test executions, 159 SDK 27 full-App regressions and one full Notes UI case on each of iPad and iPhone. Physical-device acceptance remains with the owner.
+Source 955e346a passed the SDK 27 App regression build and execution and three Notes UI cases on each iPad/iPhone simulator. One native Office case was skipped per device; IDE tests failed. Older release evidence remains recorded separately.
 
-172 源码通过 1,270 次 Swift 测试执行、159 项 SDK 27 完整 App 回归，以及 iPad/iPhone 各一项完整手记 UI 用例；真机验收仍由用户执行。
+源码 955e346a 通过 SDK 27 App 回归构建与执行，并在 iPad／iPhone 模拟器各通过三项手记 UI 用例；每端跳过一项原生 Office 用例，IDE 测试失败。旧版本交付证据单独保留。
 
 TestFlight uses Xcode 26.6 / SDK 26.5. Its device build and signing/upload passed; simulator qualification for this expedited delivery was explicitly waived. This waiver does not automatically apply to the next public Beta.
 
 TestFlight 使用 Xcode 26.6 / SDK 26.5；设备构建与签名上传通过，本次加急明确豁免模拟器验收，该豁免不自动适用于下次公开 Beta。
 
-Screenshots in this guide identify their sources: baseline 172 and the labelled earlier candidate. They are original full-App simulator captures, not physical Pencil evidence or captures of an unbuilt submission.
+Screenshots identify their sources: build 172, earlier source 9e4434ca and current qualification source 955e346a. They are original full-App simulator captures, not physical Pencil evidence or screenshots of the final submission build.
 
-截图分别标注来源：172 基线与注明源码的较早候选版；均为原始完整 App 模拟器截图，不代表真机 Pencil 验收，也不是未构建版本的截图。
+截图标明来源：172、较早源码 9e4434ca 和当前验证源码 955e346a。均为原始完整 App 模拟器截图，不是真实 Pencil 验收，也不是最终送审安装包截图。
 
 Before submission, confirm the final build, review contact, feedback email, support/privacy URLs and accepted access arrangement. These real details are not yet completed; this document is a preparation draft.
 
@@ -264,9 +264,9 @@ A changed binary requires a new upload build number. The marketing version may r
 
 ## 10  IDE 与工程图纸 / IDE and engineering drawings
 
-In the Build 178 candidate, open a workspace file, then use Open in Editor to expand the full-screen IDE. Use the file tree, tabs, code editor and existing document editors. Syntax highlighting does not imply that every programming language can execute locally.
+In build 178 and the current candidate, open a workspace file, then use Open in Editor to expand the full-screen IDE. Use the file tree, tabs, code editor and existing document editors. Syntax highlighting does not imply that every programming language can execute locally.
 
-178 候选版中，打开工作区文件，再通过「在编辑器中打开」进入全屏 IDE，使用文件树、标签、代码及现有文档编辑器。语法高亮不代表所有语言都能在本地执行。
+178 与当前候选版中，打开工作区文件，再通过「在编辑器中打开」进入全屏 IDE，使用文件树、标签、代码及现有文档编辑器。语法高亮不代表所有语言都能在本地执行。
 
 When an Agent changes a file while the user is editing, preserve the user draft, compare the file version and review overlapping changes before overwriting. Independent edits can be merged; conflict copies remain recoverable.
 
@@ -288,19 +288,19 @@ Native RDP connection and certificate checks have separate qualification evidenc
 
 原生 RDP 连接与证书检查有独立验证证据，但 App 主机设置、查看器和 Agent 注册尚未完成，本候选版不将 RDP 声明为可用功能；已有 VNC 独立保留。
 
-## 11  本轮修复验证状态 / Candidate repair evidence - 16 September 2026
+## 11  本轮修复验证状态 / Candidate repair evidence - 17 September 2026
 
 Build 178 retains document conversation restart and live refresh after committed edits, with a full-height iPad assistant column or phone sheet. It also applies activated Soul/profile changes at the next model request. The screenshot shows the labelled earlier source, not this candidate.
 
 178 保留当前文档助手会话重开、提交编辑后实时刷新、iPad 完整助手栏和手机面板，并让已激活的 Soul／画像在下一次模型请求时生效。配图是已标注的较早源码，不是本候选版。
 
-Source 4eb99f62 passed the accepted-SDK build, Linux build and full-App core regressions but failed UI checks. Build 177 fixes the observed language, IDE control identification and stale keyboard-geometry issues; complete App run 34986754638 is pending. Native Office remains device-only.
+Source 955e346a passed the SDK 27 App regression build and three Notes UI cases per device. IDE save tests failed and are being repaired. Source 59e24d61 separately passed the accepted-SDK compatibility build with unchanged App sources. Native Office remains pending.
 
-4eb99f62 通过发布 SDK 构建、Linux 编译和完整 App 核心回归，但界面检查失败。178 修复对应语言、IDE 控件定位及过期键盘坐标问题；完整 App 流程 34986754638 尚未结束。原生 Office 仍需真机验收。
+955e346a 通过 SDK 27 App 回归构建及每端三项手记 UI 用例；IDE 保存测试失败，正在修复。59e24d61 在 App 源码相同的前提下另已通过发布 SDK 兼容构建。原生 Office 验收仍待完成。
 
-A macOS Qwen diagnostic passed cold load, repeated short prompts and a 5,773-token prompt. It does not establish an iPad crash fix or a device memory pass.
+The candidate MLX runtime passed real-weight macOS inference and four shutdown memory gates with compiled traces disabled. This is host evidence, not proof that the reported iPad ordinary-chat crash is fixed.
 
-macOS Qwen 诊断已通过冷加载、重复短问题和 5,773 token 长输入；不等于 iPad 崩溃已修复或真机内存验收通过。
+候选 MLX 运行时关闭编译轨迹后，通过 macOS 真实权重推理与四项关闭后内存检查。这是宿主证据，不能证明已修复报告中的 iPad 普通聊天闪退。
 
 ## 12  演示结果与反馈 / Expected results and feedback
 
@@ -328,6 +328,6 @@ Public Beta testers use their own cloud services. Neither this PDF nor local AI 
 
 公开 Beta 测试者使用自己的云端服务；本 PDF 与本地覆盖均不保证 Apple 通过，额外访问要求需在用户不提供付费额度的前提下如实处理。
 
-Primary references: Apple App Review Guidelines; TestFlight test information; Floe Beta 29 release and repository evidence.
+Primary references: Apple App Review Guidelines; TestFlight test information; Floe Beta 35 release and repository evidence.
 
-主要依据：Apple 审核指南、TestFlight 测试信息、Floe Beta 29 发布页及仓库证据。
+主要依据：Apple 审核指南、TestFlight 测试信息、Floe Beta 35 发布页及仓库证据。

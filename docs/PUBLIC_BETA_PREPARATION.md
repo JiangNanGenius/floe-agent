@@ -1,8 +1,8 @@
 # 下一版公开 TestFlight Beta：材料准备
 
-状态：材料草稿已准备，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。目标是 build 172 之后的下一版；版本号、构建号和最终功能范围待该版本冻结后填写。本轮 172 的内部 TestFlight 分发独立进行。
+状态：材料草稿已更新，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。当前已上传基线为 1.7.0（178），下一候选为 179；179 尚未上传，IDE 云端保存失败仍在修复。版本冻结和安装包验证完成后才能作为最终送审材料。
 
-完整的 [12 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf) 已准备，并保留 [Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。以已交付 1.7.0（172）为基线，另列 173 候选修复证据；实际送审前仍需对应最终安装包核对。更新草稿也已复制至 iCloud Drive 根目录的「Floe-公开Beta审核演示说明.pdf」，本机文件摘要一致；其他设备是否完成同步尚未观测。
+[13 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf)已更新，保留[Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。新增源码 955e346a 的手记截图，并说明原生 Office 测试跳过、IDE 测试失败及 iPad 下载模型聊天闪退仍需复核。所有页面已重新检查排版；校验摘要见[验证记录](public-beta/review-guide-validation.json)。旧版曾复制到 iCloud Drive，本次更新当前仅保存在仓库，尚未重新同步。
 
 ## 可直接使用的材料
 
@@ -23,7 +23,7 @@
 
 ## 外部测试发布顺序
 
-1. 固定下一版源码，完成当轮约定的验证。172 为个人测试跳过的检查不自动适用于下一版公开 Beta。
+1. 固定下一版源码，完成当轮约定的验证。旧版个人测试跳过的检查不自动适用于本轮公开 Beta。
 2. 上传允许外部测试的构建，核对实际 bundle ID、版本和处理状态。
 3. 补齐 Beta 介绍、反馈邮箱、What to Test、审核联系人和经验证的本地演示／实际审核访问安排；提交 TestFlight App Review。
 4. 审核通过后，按用户确定的外部组、人数及设备／系统范围配置公开链接。产品以 iPad 优先，但不要未经用户决定排除 iPhone 或兼容系统用户。

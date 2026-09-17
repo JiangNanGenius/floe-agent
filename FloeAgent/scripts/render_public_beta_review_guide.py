@@ -17,7 +17,7 @@ pdfmetrics.registerFont(TTFont('CJK','/System/Library/Fonts/STHeiti Light.ttc',s
 
 data=json.loads(Path('docs/public-beta/review-walkthrough.json').read_text())
 sections=data['sections']
-Path('output/pdf').mkdir(parents=True,exist_ok=True)
+Path('Local/Artifacts/public-beta').mkdir(parents=True,exist_ok=True)
 styles=getSampleStyleSheet()
 styles.add(ParagraphStyle(name='FloeBody',fontName='CJK',fontSize=10.2,leading=15,spaceAfter=3,wordWrap='CJK',textColor=colors.HexColor('#263B4A')))
 styles.add(ParagraphStyle(name='FloeCN',parent=styles['FloeBody'],textColor=colors.HexColor('#526976'),spaceAfter=12))
@@ -40,11 +40,11 @@ for i,s in enumerate(sections):
   story +=[OriginalScreenshot(p),Spacer(1,8),Paragraph(html.escape(s.get('imageCaption', 'Original SDK 27 capture / 原始截图，仅旋转排版 · delivered baseline 172')),styles['FloeCaption'])]
  for n,item in enumerate(s['items'],1):
   story +=[KeepTogether([Paragraph(f'{n}. '+html.escape(item['english']),styles['FloeBody']),Paragraph(html.escape(item['chinese']),styles['FloeCN'])])]
-story += [Spacer(1,12),Paragraph('<link href="https://developer.apple.com/app-store/review/guidelines/" color="#347584">Apple App Review Guidelines</link> · <link href="https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information" color="#347584">TestFlight information</link> · <link href="https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.29" color="#347584">Floe Beta 29</link>',styles['FloeCaption'])]
+story += [Spacer(1,12),Paragraph('<link href="https://developer.apple.com/app-store/review/guidelines/" color="#347584">Apple App Review Guidelines</link> · <link href="https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information" color="#347584">TestFlight information</link> · <link href="https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.35" color="#347584">Floe Beta 35</link>',styles['FloeCaption'])]
 def footer(c,doc):
  c.setStrokeColor(colors.HexColor('#DCE7EB'));c.line(44,43,551,43)
  c.setFont('CJK',8);c.setFillColor(colors.HexColor('#607A86'));c.drawString(44,29,'FLOE · REVIEW PREPARATION / 审核准备稿 · '+data['baseline']+' / '+data['candidate']);c.drawRightString(551,29,str(doc.page))
-out=Path('output/pdf/floe-public-beta-review-guide.pdf')
+out=Path('Local/Artifacts/public-beta/floe-public-beta-review-guide.pdf')
 doc=SimpleDocTemplate(str(out),pagesize=(595,842),rightMargin=44,leftMargin=44,topMargin=45,bottomMargin=59,title='Floe Agent - Public Beta Review Walkthrough',author='Floe Agent')
 doc.build(story,onFirstPage=footer,onLaterPages=footer)
 

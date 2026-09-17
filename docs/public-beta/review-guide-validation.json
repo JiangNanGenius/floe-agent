@@ -1,17 +1,17 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
-  "baseline": "1.7.0 (172)",
-  "candidate": "1.7.0 (178), delivered to internal Floe QA (VALID, IN_BETA_TESTING)",
+  "baseline": "1.7.0 (178)",
+  "candidate": "1.7.0 (179), not uploaded; IDE UI repair pending",
   "pages": 13,
-  "sha256": "fc90906105b7c02292bfa50ef0eef7eac6431801c22c8e73d9f663487d711d78",
-  "bytes": 2747645,
+  "sha256": "b7ede650c71fea22168731d8909a94e9b90b5669b237003e136a1c16abfbc6fa",
+  "bytes": 2745785,
   "textExtractionChecked": true,
-  "screenshots": "Original baseline 172 and source-labelled 9e4434ca full-App simulator screenshots; rotated only in layout",
+  "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout",
   "reviewStatus": "draft, external review not submitted",
   "reviewerCloudCredits": "none authorized; demonstration credentials excluded",
-  "localInference": "Mac host qualification is separate from unresolved iPad crash",
+  "localInference": "Apple Foundation Models user-reported working; MLX macOS host memory/inference passes do not clear iPad chat crash",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
-  "updatedAt": "2026-09-16T16:40:00+00:00",
+  "updatedAt": "2026-09-17T10:35:38.556341+00:00",
   "currentRenderedPagesReviewed": [
     1,
     2,
@@ -28,7 +28,7 @@
     13
   ],
   "unchangedPageTextComparedToPreviouslyReviewedPDF": [],
-  "footerChange": "Candidate 178 on all pages after the internal TestFlight delivery; page 1 records VALID and group availability; pages 10 and 12 rerendered and reviewed after evidence corrections",
+  "footerChange": "Baseline178/candidate179 preparation draft; all pages visually reviewed; pages12/13 reviewed again after status corrections",
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator"
 }
