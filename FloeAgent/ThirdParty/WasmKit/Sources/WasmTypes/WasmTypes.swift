@@ -20,6 +20,9 @@ public enum AbstractHeapType: UInt8, Equatable, Hashable, Sendable {
 
     /// An external host data.
     case externRef  // -> to be renamed extern
+
+    /// A reference to an exception.
+    case exnRef
 }
 
 public enum HeapType: Equatable, Hashable, Sendable {
@@ -32,6 +35,10 @@ public enum HeapType: Equatable, Hashable, Sendable {
 
     public static var externRef: HeapType {
         return .abstract(.externRef)
+    }
+
+    public static var exnRef: HeapType {
+        return .abstract(.exnRef)
     }
 }
 
@@ -46,6 +53,10 @@ public struct ReferenceType: Equatable, Hashable, Sendable {
 
     public static var externRef: ReferenceType {
         ReferenceType(isNullable: true, heapType: .externRef)
+    }
+
+    public static var exnRef: ReferenceType {
+        ReferenceType(isNullable: true, heapType: .exnRef)
     }
 
     public init(isNullable: Bool, heapType: HeapType) {
@@ -69,10 +80,36 @@ public enum ValueType: Equatable, Hashable, Sendable {
     case ref(ReferenceType)
 }
 
+/// A 128-bit vector value, represented by its raw bytes.
+public struct V128: Equatable, Hashable, Sendable {
+    public static let byteCount = 16
+
+    public let bytes: [UInt8]
+
+    public init(bytes: [UInt8]) {
+        precondition(bytes.count == Self.byteCount, "V128 must be exactly \(Self.byteCount) bytes")
+        self.bytes = bytes
+    }
+}
+
+/// The 16 lane indices used by `i8x16.shuffle`.
+public struct V128ShuffleMask: Equatable, Hashable, Sendable {
+    public static let laneCount = 16
+
+    public let lanes: [UInt8]
+
+    public init(lanes: [UInt8]) {
+        precondition(lanes.count == Self.laneCount, "V128ShuffleMask must be exactly \(Self.laneCount) bytes")
+        self.lanes = lanes
+    }
+}
+
 /// Runtime representation of a WebAssembly function reference.
 public typealias FunctionAddress = Int
 /// Runtime representation of an external entity reference.
 public typealias ExternAddress = Int
+/// Runtime representation of an exception reference.
+public typealias ExceptionAddress = Int
 
 @available(*, unavailable, message: "Address-based APIs has been removed; use `Table` instead")
 public typealias TableAddress = Int
@@ -90,6 +127,8 @@ public enum Reference: Hashable, Sendable {
     case function(FunctionAddress?)
     /// A reference to an external entity.
     case extern(ExternAddress?)
+    /// A reference to an exception.
+    case exception(ExceptionAddress?)
 }
 
 /// Runtime representation of a value.
@@ -102,6 +141,8 @@ public enum Value: Hashable, Sendable {
     case f32(UInt32)
     /// Value of a 64-bit IEEE 754 floating-point number.
     case f64(UInt64)
+    /// 128-bit vector of packed integer or floating-point data.
+    case v128(V128)
     /// Reference value.
     case ref(Reference)
 }

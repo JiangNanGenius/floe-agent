@@ -1,7 +1,7 @@
 import WasmParser
 
 /// A simple bump allocator for a single type.
-class BumpAllocator<T> {
+class BumpAllocator<T: ~Copyable> {
     private var pages: [UnsafeMutableBufferPointer<T>] = []
     private var currentPage: UnsafeMutableBufferPointer<T>
     private var currentOffset: Int = 0
@@ -36,7 +36,7 @@ class BumpAllocator<T> {
     ///
     /// - Parameter value: The value to initialize the allocated memory with.
     /// - Returns: A pointer to the allocated memory.
-    func allocate(initializing value: T) -> UnsafeMutablePointer<T> {
+    func allocate(initializing value: consuming T) -> UnsafeMutablePointer<T> {
         let pointer = allocate()
         pointer.initialize(to: value)
         return pointer
@@ -58,9 +58,9 @@ class BumpAllocator<T> {
     }
 }
 
-protocol ValidatableEntity {
+protocol ValidatableEntity: ~Copyable {
     /// Create an error for an out-of-bounds access to the entity.
-    static func createOutOfBoundsError(index: Int, count: Int) -> any Error
+    static func createOutOfBoundsError(index: Int, count: Int) -> WasmKitError
 }
 
 /// A simple bump allocator for immutable arrays with various element types.
@@ -70,7 +70,7 @@ private class ImmutableArrayAllocator {
     /// Allocates a buffer for an immutable array of `T` with the given `count`.
     ///
     /// - Note: The element type `T` must be a trivial type.
-    func allocate<T>(count: Int) -> UnsafeMutableBufferPointer<T> {
+    func allocate<T: ~Copyable>(count: Int) -> UnsafeMutableBufferPointer<T> {
         // We only support trivial types for now. Otherwise, we have to track the element type
         // until the deallocation of this allocator.
         assert(_isPOD(T.self), "ImmutableArrayAllocator only supports trivial element types.")
@@ -121,15 +121,15 @@ struct ImmutableArray<T> {
 
     /// Accesses the element at the specified position, with bounds checking.
     subscript(validating index: Int) -> T where T: ValidatableEntity {
-        get throws {
+        get throws(WasmKitError) {
             return try self[validating: index, T.createOutOfBoundsError]
         }
     }
 
     /// Accesses the element at the specified position, with bounds checking
     /// and a custom error creation function.
-    subscript(validating index: Int, createError: (_ index: Int, _ count: Int) -> any Error) -> T {
-        get throws {
+    subscript(validating index: Int, createError: (_ index: Int, _ count: Int) -> WasmKitError) -> T {
+        get throws(WasmKitError) {
             guard index >= 0 && index < buffer.count else {
                 throw createError(index, buffer.count)
             }
@@ -212,11 +212,17 @@ class StoreAllocator {
     private var tables: BumpAllocator<TableEntity>
     private var memories: BumpAllocator<MemoryEntity>
     private var globals: BumpAllocator<GlobalEntity>
+    private var tags: BumpAllocator<TagEntity>
     private var elements: BumpAllocator<ElementSegmentEntity>
     private var datas: BumpAllocator<DataSegmentEntity>
     private var codes: BumpAllocator<Code>
     private let arrayAllocator: ImmutableArrayAllocator
     let iseqAllocator: ISeqAllocator
+
+    #if ComponentModel
+        private var componentInstances: BumpAllocator<ComponentInstanceEntity>
+        private var componentFunctions: BumpAllocator<ComponentFunctionEntity>
+    #endif
 
     /// Function type interner shared across stores associated with the same `Runtime`.
     let funcTypeInterner: Interner<FunctionType>
@@ -229,11 +235,17 @@ class StoreAllocator {
         tables = BumpAllocator(initialCapacity: 2)
         memories = BumpAllocator(initialCapacity: 2)
         globals = BumpAllocator(initialCapacity: 256)
+        tags = BumpAllocator(initialCapacity: 2)
         elements = BumpAllocator(initialCapacity: 2)
         datas = BumpAllocator(initialCapacity: 64)
         arrayAllocator = ImmutableArrayAllocator()
         iseqAllocator = ISeqAllocator()
         self.funcTypeInterner = funcTypeInterner
+
+        #if ComponentModel
+            componentInstances = BumpAllocator(initialCapacity: 2)
+            componentFunctions = BumpAllocator(initialCapacity: 16)
+        #endif
     }
 }
 
@@ -261,6 +273,7 @@ extension StoreAllocator {
         var importedTables: [InternalTable] = []
         var importedMemories: [InternalMemory] = []
         var importedGlobals: [InternalGlobal] = []
+        var importedTags: [InternalTag] = []
 
         // External values imported in this module should be included in corresponding index spaces before definitions
         // local to to the module are added.
@@ -276,7 +289,7 @@ extension StoreAllocator {
             case (.function(let typeIndex), .function(let externalFunc)):
                 let type = externalFunc.type
                 guard typeIndex < module.types.count else {
-                    throw ValidationError(.indexOutOfBounds("type", typeIndex, max: module.types.count))
+                    throw WasmKitError(message: .indexOutOfBounds("type", typeIndex, max: module.types.count))
                 }
                 let expected = module.types[Int(typeIndex)]
                 guard engine.internType(expected) == type else {
@@ -292,8 +305,27 @@ extension StoreAllocator {
                 importedTables.append(table)
 
             case (.memory(let memoryType), .memory(let memory)):
-                if let max = memory.limit.max, max < memoryType.min {
-                    throw ImportError(.incompatibleMemoryType(importEntry, actual: memoryType, expected: memory.limit))
+                let limit = memory.withValue { $0.limit }
+
+                // Check shared flag matches
+                guard memoryType.shared == limit.shared else {
+                    throw ImportError(.incompatibleMemoryType(importEntry, actual: memoryType, expected: limit))
+                }
+                // Check memory64 flag matches
+                guard memoryType.isMemory64 == limit.isMemory64 else {
+                    throw ImportError(.incompatibleMemoryType(importEntry, actual: memoryType, expected: limit))
+                }
+                // Check limits compatibility: provided memory must satisfy imported memory type requirements.
+                // Note: The memory may have grown already, so compare against the current size.
+                let currentSizeInPages = UInt64(memory.withValue { $0.byteCount }) / UInt64(MemoryEntity.pageSize)
+                guard currentSizeInPages >= memoryType.min else {
+                    throw ImportError(.incompatibleMemoryType(importEntry, actual: memoryType, expected: limit))
+                }
+                // If the imported memory type has a max, the provided memory must have a max and be <= imported max.
+                if let importedMax = memoryType.max {
+                    guard let providedMax = limit.max, providedMax <= importedMax else {
+                        throw ImportError(.incompatibleMemoryType(importEntry, actual: memoryType, expected: limit))
+                    }
                 }
                 importedMemories.append(memory)
 
@@ -302,6 +334,16 @@ extension StoreAllocator {
                     throw ImportError(.incompatibleGlobalType(importEntry, actual: global.globalType, expected: globalType))
                 }
                 importedGlobals.append(global)
+
+            case (.tag(let typeIndex), .tag(let tag)):
+                guard typeIndex < module.types.count else {
+                    throw WasmKitError(message: .indexOutOfBounds("type", typeIndex, max: module.types.count))
+                }
+                let expected = module.types[Int(typeIndex)]
+                guard engine.internType(expected) == tag.type else {
+                    throw ImportError(.incompatibleFunctionType(importEntry, actual: engine.resolveType(tag.type), expected: expected))
+                }
+                importedTags.append(tag)
 
             default:
                 throw ImportError(.incompatibleType(importEntry, entity: external))
@@ -358,7 +400,7 @@ extension StoreAllocator {
         let memories = try allocateEntities(
             imports: importedMemories,
             internals: module.internalMemories,
-            allocateHandle: { m, _ in try allocate(memoryType: m, resourceLimiter: resourceLimiter) }
+            allocateHandle: { m, _ in try allocate(memoryType: m, engineConfiguration: engine.configuration, resourceLimiter: resourceLimiter) }
         )
 
         var functionRefs: Set<InternalFunction> = []
@@ -379,6 +421,16 @@ extension StoreAllocator {
                     context: constEvalContext, expectedType: global.type.valueType
                 )
                 return try allocate(globalType: global.type, initialValue: initialValue)
+            }
+        )
+
+        // Allocate tags.
+        let tags = try allocateEntities(
+            imports: importedTags,
+            internals: module.tagTypes[module.moduleImports.numberOfTags...],
+            allocateHandle: { typeIndex, _ in
+                let funcType = try Module.resolveType(typeIndex, typeSection: module.types)
+                return allocate(tagType: funcType, engine: engine)
             }
         )
 
@@ -424,17 +476,20 @@ extension StoreAllocator {
                 let handle = try tables[validating: Int(index)]
                 return .table(handle)
             case .memory(let index):
-                let handle = try memories[validating: Int(index)]
+                let handle = try memories[validating: Int(index), MemoryEntity.createOutOfBoundsError]
                 return .memory(handle)
             case .global(let index):
                 let handle = try globals[validating: Int(index)]
                 return .global(handle)
+            case .tag(let index):
+                let handle = try tags[validating: Int(index)]
+                return .tag(handle)
             }
         }
 
         let exports: [String: InternalExternalValue] = try module.exports.reduce(into: [:]) { result, export in
             guard result[export.name] == nil else {
-                throw ValidationError(.duplicateExportName(name: export.name))
+                throw WasmKitError(message: .duplicateExportName(name: export.name))
             }
             result[export.name] = try createExportValue(export)
         }
@@ -446,6 +501,7 @@ extension StoreAllocator {
             tables: tables,
             memories: memories,
             globals: globals,
+            tags: tags,
             elementSegments: elements,
             dataSegments: dataSegments,
             exports: exports,
@@ -481,7 +537,7 @@ extension StoreAllocator {
 
     internal func allocate(
         type: FunctionType,
-        implementation: @escaping (Caller, [Value]) throws -> [Value],
+        implementation: @escaping Function.Implementation,
         engine: Engine
     ) -> InternalFunction {
         let pointer = hostFunctions.allocate(
@@ -501,8 +557,8 @@ extension StoreAllocator {
 
     /// > Note:
     /// <https://webassembly.github.io/spec/core/exec/modules.html#alloc-mem>
-    func allocate(memoryType: MemoryType, resourceLimiter: any ResourceLimiter) throws -> InternalMemory {
-        let pointer = try memories.allocate(initializing: MemoryEntity(memoryType, resourceLimiter: resourceLimiter))
+    func allocate(memoryType: MemoryType, engineConfiguration: EngineConfiguration, resourceLimiter: any ResourceLimiter) throws -> InternalMemory {
+        let pointer = try memories.allocate(initializing: MemoryEntity(memoryType, engineConfiguration: engineConfiguration, resourceLimiter: resourceLimiter))
         return InternalMemory(unsafe: pointer)
     }
 
@@ -511,6 +567,13 @@ extension StoreAllocator {
     func allocate(globalType: GlobalType, initialValue: Value) throws -> InternalGlobal {
         let pointer = try globals.allocate(initializing: GlobalEntity(globalType: globalType, initialValue: initialValue))
         return InternalGlobal(unsafe: pointer)
+    }
+
+    /// > Note:
+    /// <https://webassembly.github.io/spec/core/exec/modules.html#alloc-tag>
+    func allocate(tagType: FunctionType, engine: Engine) -> InternalTag {
+        let pointer = tags.allocate(initializing: TagEntity(type: engine.internType(tagType)))
+        return InternalTag(unsafe: pointer)
     }
 
     /// > Note:
@@ -527,3 +590,46 @@ extension StoreAllocator {
         return EntityHandle(unsafe: pointer)
     }
 }
+
+// MARK: - Component Model Allocation
+
+#if ComponentModel
+    extension StoreAllocator {
+        /// Allocates a new component instance with the given entity.
+        func allocate(componentInstance: ComponentInstanceEntity) -> InternalComponentInstance {
+            let pointer = componentInstances.allocate(initializing: componentInstance)
+            return InternalComponentInstance(unsafe: pointer)
+        }
+
+        /// Allocates a new component function with the given entity.
+        func allocate(componentFunction: ComponentFunctionEntity) -> InternalComponentFunction {
+            let pointer = componentFunctions.allocate(initializing: componentFunction)
+            return InternalComponentFunction(unsafe: pointer)
+        }
+
+        /// Allocates a synthetic core instance with the given exports.
+        /// Used for inline export instances in Component Model.
+        func allocateSyntheticCoreInstance(exports: [String: InternalExternalValue]) -> InternalInstance {
+            // Create a minimal InstanceEntity with only the exports
+            // All other fields are empty/default since this is purely for aggregating exports
+            let entity = InstanceEntity(
+                types: [],
+                functions: ImmutableArray(),
+                tables: ImmutableArray(),
+                memories: ImmutableArray(),
+                globals: ImmutableArray(),
+                tags: ImmutableArray(),
+                elementSegments: ImmutableArray(),
+                dataSegments: ImmutableArray(),
+                exports: exports,
+                functionRefs: [],
+                features: .default,
+                dataCount: nil,
+                isDebuggable: false,
+                instructionMapping: DebuggerInstructionMapping()
+            )
+            let pointer = instances.allocate(initializing: entity)
+            return InternalInstance(unsafe: pointer)
+        }
+    }
+#endif

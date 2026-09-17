@@ -3,19 +3,19 @@ import WasmTypes
 import struct WasmParser.Import
 
 /// The backtrace of the trap.
-struct Backtrace: CustomStringConvertible, Sendable {
+public struct Backtrace: CustomStringConvertible, Sendable {
     /// A symbol in the backtrace.
-    struct Symbol: @unchecked Sendable {
+    public struct Symbol: @unchecked Sendable {
         /// The name of the symbol.
-        let name: String?
+        public let name: String?
         let address: Pc
     }
 
     /// The symbols in the backtrace.
-    let symbols: [Symbol]
+    public let symbols: [Symbol]
 
     /// Textual description of the backtrace.
-    var description: String {
+    public var description: String {
         symbols.enumerated().map { (index, symbol) in
             let name = symbol.name ?? "unknown"
             return "    \(index): (\(symbol.address)) \(name)"
@@ -56,6 +56,29 @@ public struct Trap: Error, CustomStringConvertible {
     }
 }
 
+/// An uncaught WebAssembly exception that propagated out of a module.
+public struct WasmKitException: Error, CustomStringConvertible {
+    /// The tag identity, stored as the bit pattern of the tag handle pointer.
+    /// Used only for equality comparison when matching catch clauses.
+    let tagIdentity: Int
+    /// The exception payload values.
+    let payload: [Value]
+
+    init(tag: InternalTag, payload: [Value]) {
+        self.tagIdentity = tag.bitPattern
+        self.payload = payload
+    }
+
+    public var description: String {
+        "wasm exception (payload: \(payload))"
+    }
+
+    /// Returns true if this exception's tag matches the given tag handle.
+    func hasTag(_ tag: InternalTag) -> Bool {
+        tagIdentity == tag.bitPattern
+    }
+}
+
 /// A reason for a trap that occurred during execution of a WebAssembly module.
 package enum TrapReason: Error, CustomStringConvertible {
     package struct Message {
@@ -77,6 +100,8 @@ package enum TrapReason: Error, CustomStringConvertible {
     case tableOutOfBounds(Int)
     /// Out of bounds memory access
     case memoryOutOfBounds
+    /// Unaligned atomic memory access
+    case unalignedAtomic
     /// `call_indirect` instruction called an uninitialized table element.
     case indirectCallToNull(Int)
     /// Indirect call type mismatch
@@ -99,6 +124,8 @@ package enum TrapReason: Error, CustomStringConvertible {
             return "call stack exhausted"
         case .memoryOutOfBounds:
             return "out of bounds memory access"
+        case .unalignedAtomic:
+            return "unaligned atomic"
         case .integerDividedByZero:
             return "integer divide by zero"
         case .integerOverflow:
@@ -173,6 +200,8 @@ extension ImportError.Message {
             expected = "memory"
         case .table:
             expected = "table"
+        case .tag:
+            expected = "tag"
         }
         let got: String
         switch entity {
@@ -184,6 +213,8 @@ extension ImportError.Message {
             got = "memory"
         case .table:
             got = "table"
+        case .tag:
+            got = "tag"
         }
         return Self("incompatible import type for \(importEntry.module).\(importEntry.name), expected \(expected), got \(got)")
     }

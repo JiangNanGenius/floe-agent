@@ -22,12 +22,45 @@ The pinned grammar bundle recognizes common source languages, including C, C++, 
 | C/C++ | Candidate: clang/LLVM targeting WASI, then interpreted execution | a-Shell and Code App demonstrate the architecture; reviewed current compiler payload, source/hash/license, sysroot, native/device tests and update path still needed |
 | PHP | Candidate: signed iOS PHP framework or maintained WASI PHP | Code App's published framework is historical; version/ABI/source update must be established before shipping. Old PHP 8.2.6 WASI artifacts are not accepted as a current runtime |
 | Swift | Editor support now; local compiler unresolved | Swift's official WASM SDK compiles on its host; it does not establish an on-iPad Swift compiler. Code App documents Swift as server-side |
-| Lua/Ruby/other interpreters | Candidate: maintained WASI builds or reviewed native runtimes | Not shipped/validated by this patch |
+| Lua/Ruby/other interpreters | Candidate: maintained WASI builds or reviewed native runtimes | **Lua 5.4.8 delivered through the WASI route 2026-09-16** (see below); Ruby/PHP need the same EH-capable path and are not shipped/validated by this patch |
 | Native Python wheels | pip / Floe wheelhouse | Requires matching CPython/iOS ABI and embedded/signable extensions; never npm or APT wheels |
 | Native npm addons | npm/pnpm compatibility repository | Node ABI, platform and signed framework bridge required; no generic Linux `.node` claim |
 | Native Linux binaries | Only compatible prebuilt iOS/WASI commands | A Linux ELF binary does not become executable on iOS through installation alone |
 
 The local shell provides a Linux-like command environment. It does not introduce a Linux kernel or bypass iOS executable-code restrictions. Public Beta materials must describe actual execution routes.
+
+## 2026-09-16 Lua interpreter delivered (wasm EH)
+
+The vendored interpreter engine moved from WasmKit 0.2.2 to **0.3.1**, which
+implements the final exception-handling proposal (`try_table`). Interpreters
+whose error recovery is built on setjmp/longjmp need that proposal; the older
+engine rejected every such module at parse time. The token-loop cooperative
+budget check and the 256-descriptor cap are re-applied as explicit patches
+(`ThirdParty/WasmKit/FLOE_PATCHES.md`); stat init, borrowed host stdio and
+descriptor teardown now come from upstream, and the runtime closes its bridge
+explicitly as 0.3.1 requires.
+
+`ThirdParty/LuaWASI` pins Lua 5.4.8 and wasi-sdk 34 with SHA-256 and licenses.
+Lua is compiled to wasm32-wasip1 with `-fwasm-exceptions -mllvm
+-wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false`, the only wasi-sdk flag
+combination whose setjmp/longjmp lowering emits the final encoding.
+`os.execute()` reports no shell (the same stance upstream takes for iOS), and
+`tmpfile`/`tmpnam` are jailed unique names rather than a shared /tmp.
+Emscripten's four passthrough syscalls (`dup3`, `unlinkat`, `rmdir`,
+`renameat`) are aliased onto the jailed WASI operations so emscripten-built
+language packages link unchanged.
+
+Cloud run
+[35033351611](https://github.com/JiangNanGenius/floe-agent/actions/runs/35033351611):
+reproducible build (`lua.wasm` sha256
+`81ad32f4eca06d232598ad7bf6f4f92bab4864a5b5d0f4da036e159b2efdf049`, identical
+on macOS 26 cloud and local builds) executed through the production
+`WasmKitCommandRuntime` — scripts, jailed file write/read inside the preopen
+jail, UTF-8 stdin, and Lua `error()` recovery with stack tracebacks all pass
+(`Qualification/Tests/WasmCommandTests/LuaInterpreterTests.swift`). This is
+component-level interpreter evidence; capability-hub packaging, shell/agent
+registration and device acceptance remain open, and Ruby/PHP/C-family
+runtimes are separate follow-ups along the same route.
 
 ## Candidate review
 

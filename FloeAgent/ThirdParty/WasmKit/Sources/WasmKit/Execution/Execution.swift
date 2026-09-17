@@ -15,6 +15,26 @@ struct Execution: ~Copyable {
     /// - Note: If the trap is set, it must be released manually.
     private var trap: (error: UnsafeRawPointer, sp: Sp)? = nil
 
+    /// The stack of active exception handlers for `try_table` blocks.
+    var exceptionHandlers: [ExceptionHandler] = []
+
+    /// Storage for caught exceptions that may be referenced via `exnref`.
+    var storedExceptions: [WasmKitException] = []
+
+    /// An active exception handler entry registered by a `try_table` block.
+    struct ExceptionHandler {
+        /// The tag to match, `nil` for `catch_all`/`catch_all_ref`.
+        let tag: InternalTag?
+        /// Whether this handler pushes an `exnref` (`catch_ref`/`catch_all_ref`).
+        let isRef: Bool
+        /// The `sp` to restore when this handler catches.
+        let sp: Sp
+        /// The `pc` to jump to when this handler catches.
+        let targetPC: Pc
+        /// The register offset where payload values should be written (relative to `sp`).
+        let payloadRegBase: VReg
+    }
+
     #if WasmDebuggingSupport
         package init(store: StoreRef, stackEnd: UnsafeMutablePointer<StackSlot>) {
             self.store = store
@@ -92,13 +112,13 @@ struct Execution: ~Copyable {
 
     private func initializeConstSlots(
         sp: Sp, iseq: InstructionSequence,
-        numberOfNonParameterLocals: Int
+        numberOfNonParameterLocalSlots: Int
     ) {
         // Initialize the locals with zeros (all types of value have the same representation)
-        sp.initialize(repeating: UntypedValue.default.storage, count: numberOfNonParameterLocals)
+        sp.initialize(repeating: UntypedValue.default.storage, count: numberOfNonParameterLocalSlots)
         if let constants = iseq.constants.baseAddress {
             let count = iseq.constants.count
-            sp.advanced(by: numberOfNonParameterLocals).withMemoryRebound(to: UntypedValue.self, capacity: count) {
+            sp.advanced(by: numberOfNonParameterLocalSlots).withMemoryRebound(to: UntypedValue.self, capacity: count) {
                 $0.initialize(from: constants, count: count)
             }
         }
@@ -109,13 +129,13 @@ struct Execution: ~Copyable {
     func pushFrame(
         iseq: InstructionSequence,
         function: EntityHandle<WasmFunctionEntity>,
-        numberOfNonParameterLocals: Int,
+        numberOfNonParameterLocalSlots: Int,
         sp: Sp, returnPC: Pc,
         spAddend: VReg
     ) throws -> Sp {
         let newSp = sp.advanced(by: Int(spAddend))
         try checkStackBoundary(newSp.advanced(by: iseq.maxStackHeight))
-        initializeConstSlots(sp: newSp, iseq: iseq, numberOfNonParameterLocals: numberOfNonParameterLocals)
+        initializeConstSlots(sp: newSp, iseq: iseq, numberOfNonParameterLocalSlots: numberOfNonParameterLocalSlots)
         newSp.previousSP = sp
         newSp.returnPC = returnPC
         newSp.currentFunction = function
@@ -241,6 +261,31 @@ extension Sp {
         nonmutating set { write(index, .f64(newValue)) }
     }
 
+    func loadValue(at reg: VReg, type: ValueType) -> Value {
+        switch type {
+        case .v128:
+            let lo = self[Int(reg)]
+            let hi = self[Int(reg) + 1]
+            return .v128(V128Storage(lo: lo, hi: hi).value)
+        case .i32, .i64, .f32, .f64, .ref:
+            return self[reg].cast(to: type)
+        }
+    }
+
+    func storeValue(_ value: Value, at reg: VReg, type: ValueType) {
+        switch type {
+        case .v128:
+            guard case .v128(let v) = value else {
+                preconditionFailure("type mismatch: expected v128, got \(value)")
+            }
+            let storage = V128Storage(v)
+            self[Int(reg)] = storage.lo
+            self[Int(reg) + 1] = storage.hi
+        case .i32, .i64, .f32, .f64, .ref:
+            self[reg] = UntypedValue(value)
+        }
+    }
+
     // MARK: - Special slots
 
     /// The current executing function.
@@ -305,8 +350,10 @@ func executeWasm(
         // Mark root stack pointer and current function as nil.
         sp.previousSP = nil
         sp.currentFunction = nil
+        let layout = FrameHeaderLayout(type: type)
         for (index, argument) in arguments.enumerated() {
-            sp[VReg(index)] = UntypedValue(argument)
+            let reg = layout.size + layout.paramReg(index)
+            sp.storeValue(argument, at: reg, type: type.parameters[index])
         }
 
         try withUnsafeTemporaryAllocation(of: CodeSlot.self, capacity: 2) { rootISeq in
@@ -320,14 +367,14 @@ func executeWasm(
                 type: type
             )
         }
-        return type.results.enumerated().map { (i, type) in
-            sp[VReg(i)].cast(to: type)
+        return type.results.enumerated().map { (i, resultType) in
+            let reg = layout.size + layout.returnReg(i)
+            return sp.loadValue(at: reg, type: resultType)
         }
     }
 }
 
 extension Execution {
-
     #if WasmDebuggingSupport
 
         /// Counterpart to the free `executeWasm` function but implemented as a method of `Execution`,
@@ -346,8 +393,10 @@ extension Execution {
             // Mark root stack pointer and current function as nil.
             sp.previousSP = nil
             sp.currentFunction = nil
+            let layout = FrameHeaderLayout(type: type)
             for (index, argument) in arguments.enumerated() {
-                sp[VReg(index)] = UntypedValue(argument)
+                let reg = layout.size + layout.paramReg(index)
+                sp.storeValue(argument, at: reg, type: type.parameters[index])
             }
 
             try self.execute(
@@ -357,8 +406,9 @@ extension Execution {
                 type: type
             )
 
-            return type.results.enumerated().map { (i, type) in
-                sp[VReg(i)].cast(to: type)
+            return type.results.enumerated().map { (i, resultType) in
+                let reg = layout.size + layout.returnReg(i)
+                return sp.loadValue(at: reg, type: resultType)
             }
         }
 
@@ -375,8 +425,9 @@ extension Execution {
         /// Assigns the current memory to the given memory entity.
         @inline(__always)
         static func assign(md: inout Md, ms: inout Ms, memory: inout MemoryEntity) {
-            md = UnsafeMutableRawPointer(memory.data._baseAddressIfContiguous)
-            ms = memory.data.count
+            md = memory.baseAddress
+            ms = memory.byteCount
+            wasmkit_trap_guard_set_current_memory(md, memory.trapGuardReservationSize)
         }
 
         /// Assigns the current memory to nil.
@@ -384,6 +435,7 @@ extension Execution {
         private static func assignNil(md: inout Md, ms: inout Ms) {
             md = nil
             ms = 0
+            wasmkit_trap_guard_set_current_memory(md, 0)
         }
 
         /// Updates the current memory if the instance has changed.
@@ -457,15 +509,48 @@ extension Execution {
         #if os(WASI)
             fatalError("Direct threading is not supported on WASI")
         #else
+            var sp = sp
             var pc = pc
-            let handler = pc.read(wasmkit_tc_exec.self)
-            wasmkit_tc_start(handler, sp, pc, md, ms, &self)
-            if let (rawError, trappingSp) = self.trap {
+            var md = md
+            var ms = ms
+            let shouldUseMprotectTrapGuards = store.value.engine.configuration.memoryBoundsChecking == .mprotect
+            let storeValue = store.value
+            while true {
+                let handler = pc.read(wasmkit_tc_exec.self)
+                try withUnsafeMutablePointer(to: &self) { execution in
+                    if shouldUseMprotectTrapGuards {
+                        let trapped: Bool = {
+                            let statePtr = UnsafeMutableRawPointer(execution)
+                            var context = WasmKitDirectThreadedTrapGuardContext(
+                                exec: handler,
+                                sp: sp,
+                                pc: pc,
+                                md: md,
+                                ms: ms,
+                                state: statePtr
+                            )
+                            return wasmkit_trap_guard_run(wasmkit_direct_threaded_trap_guard_entry, &context)
+                        }()
+                        if trapped {
+                            throw Trap(.memoryOutOfBounds).withBacktrace(Self.captureBacktrace(sp: sp, store: storeValue))
+                        }
+                    } else {
+                        wasmkit_tc_start(handler, sp, pc, md, ms, execution)
+                    }
+                }
+                guard let (rawError, trappingSp) = self.trap else { return }
                 let error = unsafeBitCast(rawError, to: Error.self)
                 // Manually release the error object because the trap is caught in C and
                 // held as a raw pointer.
                 wasmkit_swift_errorRelease(rawError)
+                self.resetError()
 
+                if let exception = error as? WasmKitException {
+                    if handleException(exception, sp: &sp, pc: &pc, md: &md, ms: &ms) {
+                        continue
+                    }
+                    throw exception
+                }
                 guard let trap = error as? Trap else {
                     throw error
                 }
@@ -548,20 +633,28 @@ extension Execution {
         #endif
         var opcode = pc.read(OpcodeID.self)
         var budgetCountdown = 0
-        do {
-            while true {
-                if budgetCountdown == 0 {
-                    try self.store.value.engine.configuration.executionCheck?()
-                    budgetCountdown = 1024
+        while true {
+            do {
+                while true {
+                    if budgetCountdown == 0 {
+                        try self.store.value.engine.configuration.executionCheck?()
+                        budgetCountdown = 1024
+                    }
+                    budgetCountdown -= 1
+                    #if EngineStats
+                        stats.track(inst)
+                    #endif
+                    opcode = try doExecute(opcode, sp: &sp, pc: &pc, md: &md, ms: &ms)
                 }
-                budgetCountdown -= 1
-                #if EngineStats
-                    stats.track(inst)
-                #endif
-                opcode = try doExecute(opcode, sp: &sp, pc: &pc, md: &md, ms: &ms)
+            } catch let exception as WasmKitException {
+                if handleException(exception, sp: &sp, pc: &pc, md: &md, ms: &ms) {
+                    opcode = pc.read(OpcodeID.self)
+                    continue
+                }
+                throw exception
+            } catch let trap as Trap {
+                throw trap.withBacktrace(Self.captureBacktrace(sp: sp, store: store.value))
             }
-        } catch let trap as Trap {
-            throw trap.withBacktrace(Self.captureBacktrace(sp: sp, store: store.value))
         }
     }
 
@@ -636,7 +729,7 @@ extension Execution {
         try checkStackBoundary(sp.advanced(by: iseq.maxStackHeight))
         sp.currentFunction = function
 
-        initializeConstSlots(sp: sp, iseq: iseq, numberOfNonParameterLocals: function.numberOfNonParameterLocals)
+        initializeConstSlots(sp: sp, iseq: iseq, numberOfNonParameterLocalSlots: function.numberOfNonParameterLocalSlots)
 
         Execution.CurrentMemory.mayUpdateCurrentInstance(
             instance: function.instance,
@@ -658,7 +751,7 @@ extension Execution {
         let newSp = try pushFrame(
             iseq: iseq,
             function: function,
-            numberOfNonParameterLocals: function.numberOfNonParameterLocals,
+            numberOfNonParameterLocalSlots: function.numberOfNonParameterLocalSlots,
             sp: sp,
             returnPC: pc,
             spAddend: spAddend
@@ -679,16 +772,27 @@ extension Execution {
         let resolvedType = store.value.engine.resolveType(function.type)
         let layout = FrameHeaderLayout(type: resolvedType)
         let parameters = resolvedType.parameters.enumerated().map { (i, type) in
-            sp[spAddend + layout.paramReg(i)].cast(to: type)
+            sp.loadValue(at: spAddend + layout.paramReg(i), type: type)
         }
         let instance = self.currentInstance(sp: sp)
         let caller = Caller(
             instanceHandle: instance,
-            store: store.value
+            store: store.value,
+            sp: sp
         )
         let results = try function.implementation(caller, Array(parameters))
+        guard resolvedType.results.count == results.count else {
+            throw Trap(.resultTypesMismatch(expected: resolvedType.results, got: results))
+        }
+        for (expected, value) in zip(resolvedType.results, results) {
+            do {
+                try value.checkType(expected)
+            } catch {
+                throw Trap(.resultTypesMismatch(expected: resolvedType.results, got: results))
+            }
+        }
         for (index, result) in results.enumerated() {
-            sp[spAddend + layout.returnReg(index)] = UntypedValue(result)
+            sp.storeValue(result, at: spAddend + layout.returnReg(index), type: resolvedType.results[index])
         }
     }
 }

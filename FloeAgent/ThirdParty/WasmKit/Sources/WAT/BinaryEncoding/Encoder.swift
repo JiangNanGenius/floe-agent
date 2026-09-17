@@ -1,17 +1,27 @@
 import WasmParser
 import WasmTypes
 
-struct Encoder {
-    var output: [UInt8] = []
+package struct Encoder {
+    package var output: [UInt8] = []
 
-    mutating func writeHeader() {
+    package init() {}
+
+    package mutating func writeHeader() {
         output.append(contentsOf: [
             0x00, 0x61, 0x73, 0x6D,  // magic
             0x01, 0x00, 0x00, 0x00,  // version
         ])
     }
 
-    mutating func section(id: UInt8, _ sectionContent: (inout Encoder) throws -> Void) rethrows {
+    package mutating func writeComponentHeader() {
+        output.append(contentsOf: [
+            0x00, 0x61, 0x73, 0x6D,  // magic
+            0x0D, 0x00,  // version 13
+            0x01, 0x00,  // layer 1 (component)
+        ])
+    }
+
+    package mutating func section<E: Error>(id: UInt8, _ sectionContent: (inout Encoder) throws(E) -> Void) throws(E) {
         output.append(id)
         var contentEncoder = Encoder()
         try sectionContent(&contentEncoder)
@@ -19,16 +29,16 @@ struct Encoder {
         output.append(contentsOf: contentEncoder.output)
     }
 
-    mutating func encodeVector<Source: Collection>(
-        _ values: Source, encodeElement: (Source.Element, inout Encoder) throws -> Void
-    ) rethrows {
+    package mutating func encodeVector<Source: Collection, E: Error>(
+        _ values: Source, encodeElement: (Source.Element, inout Encoder) throws(E) -> Void
+    ) throws(E) {
         writeUnsignedLEB128(UInt32(values.count))
         for value in values {
             try encodeElement(value, &self)
         }
     }
 
-    mutating func encodeVector<Source: Collection, Element: WasmEncodable>(_ values: Source, transform: (Source.Element) -> (Element)) {
+    package mutating func encodeVector<Source: Collection, Element: WasmEncodable>(_ values: Source, transform: (Source.Element) -> (Element)) {
         encodeVector(
             values,
             encodeElement: { element, encoder in
@@ -36,20 +46,20 @@ struct Encoder {
             })
     }
 
-    mutating func encodeVector<Source: Collection>(_ values: Source) where Source.Element: WasmEncodable {
+    package mutating func encodeVector<Source: Collection>(_ values: Source) where Source.Element: WasmEncodable {
         encodeVector(values, encodeElement: { $0.encode(to: &$1) })
     }
 
-    mutating func encodeByteVector(_ values: [UInt8]) {
+    package mutating func encodeByteVector(_ values: [UInt8]) {
         writeUnsignedLEB128(UInt32(values.count))
         output.append(contentsOf: values)
     }
 
-    mutating func encode<T: WasmEncodable>(_ value: T) {
+    package mutating func encode<T: WasmEncodable>(_ value: T) {
         value.encode(to: &self)
     }
 
-    mutating func writeUnsignedLEB128<T: UnsignedInteger & FixedWidthInteger>(_ value: T) {
+    package mutating func writeUnsignedLEB128<T: UnsignedInteger & FixedWidthInteger>(_ value: T) {
         var value = value
         repeat {
             var byte = UInt8(value & 0b0111_1111)
@@ -61,7 +71,7 @@ struct Encoder {
         } while value != 0
     }
 
-    mutating func writeSignedLEB128<T: SignedInteger & FixedWidthInteger>(_ value: T) {
+    package mutating func writeSignedLEB128<T: SignedInteger & FixedWidthInteger>(_ value: T) {
         func leb128LoopUntil(_ until: (T, UInt8) -> Bool) {
             var value = value
             while true {
@@ -87,7 +97,7 @@ struct Encoder {
         }
     }
 
-    mutating func writeExpression(lexer: inout Lexer, wat: inout Wat) throws {
+    mutating func writeExpression(lexer: inout Lexer, wat: inout Wat) throws(WatParserError) {
         var parser = ExpressionParser<ExpressionEncoder>(lexer: lexer, features: wat.features)
         var exprEncoder = ExpressionEncoder()
         try parser.parse(visitor: &exprEncoder, wat: &wat)
@@ -96,7 +106,7 @@ struct Encoder {
         lexer = parser.parser.lexer
     }
 
-    mutating func writeInstruction(lexer: inout Lexer, wat: inout Wat) throws {
+    mutating func writeInstruction(lexer: inout Lexer, wat: inout Wat) throws(WatParserError) {
         var parser = ExpressionParser<ExpressionEncoder>(lexer: lexer, features: wat.features)
         var exprEncoder = ExpressionEncoder()
         guard try parser.instruction(visitor: &exprEncoder, wat: &wat) else {
@@ -108,12 +118,12 @@ struct Encoder {
     }
 }
 
-protocol WasmEncodable {
+package protocol WasmEncodable {
     func encode(to encoder: inout Encoder)
 }
 
 extension ValueType: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         switch self {
         case .i32: encoder.output.append(0x7F)
         case .i64: encoder.output.append(0x7E)
@@ -126,11 +136,12 @@ extension ValueType: WasmEncodable {
 }
 
 extension ReferenceType: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         switch (isNullable, heapType) {
         // Use short form when available
         case (true, .externRef): encoder.output.append(0x6F)
         case (true, .funcRef): encoder.output.append(0x70)
+        case (true, .exnRef): encoder.output.append(0x69)
         default:
             encoder.output.append(isNullable ? 0x63 : 0x64)
             encoder.encode(heapType)
@@ -139,10 +150,11 @@ extension ReferenceType: WasmEncodable {
 }
 
 extension HeapType: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         switch self {
         case .abstract(.externRef): encoder.output.append(0x6F)
         case .abstract(.funcRef): encoder.output.append(0x70)
+        case .abstract(.exnRef): encoder.output.append(0x69)
         case .concrete(let typeIndex):
             // Note that the typeIndex is decoded as s33,
             // so we need to encode it as signed.
@@ -152,7 +164,7 @@ extension HeapType: WasmEncodable {
 }
 
 extension FunctionType: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         encoder.output.append(0x60)
         encoder.writeUnsignedLEB128(UInt32(parameters.count))
         for param in parameters {
@@ -166,20 +178,19 @@ extension FunctionType: WasmEncodable {
 }
 
 extension TableType: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         elementType.encode(to: &encoder)
         limits.encode(to: &encoder)
     }
 }
 
 struct ElementExprCollector: AnyInstructionVisitor {
-    typealias Output = Void
-
+    typealias VisitorError = WatParserError
     var binaryOffset: Int = 0
     var isAllRefFunc: Bool = true
     var instructions: [Instruction] = []
 
-    mutating func parse(indices: WatParser.ElementDecl.Indices, wat: inout Wat) throws {
+    mutating func parse(indices: WatParser.ElementDecl.Indices, wat: inout Wat) throws(WatParserError) {
         switch indices {
         case .elementExprList(let lexer):
             var parser = ExpressionParser<ElementExprCollector>(lexer: lexer, features: wat.features)
@@ -193,7 +204,7 @@ struct ElementExprCollector: AnyInstructionVisitor {
         instructions.append(.refFunc(functionIndex: index))
     }
 
-    private mutating func parseFunctionList(lexer: Lexer, wat: Wat) throws {
+    private mutating func parseFunctionList(lexer: Lexer, wat: Wat) throws(WatParserError) {
         var parser = Parser(lexer)
         while let funcUse = try parser.takeIndexOrId() {
             let (_, funcIndex) = try wat.functionsMap.resolve(use: funcUse)
@@ -201,7 +212,7 @@ struct ElementExprCollector: AnyInstructionVisitor {
         }
     }
 
-    mutating func visit(_ instruction: Instruction) throws {
+    mutating func visit(_ instruction: Instruction) {
         if case .refFunc = instruction {
         } else {
             isAllRefFunc = false
@@ -211,8 +222,8 @@ struct ElementExprCollector: AnyInstructionVisitor {
 }
 
 extension WAT.WatParser.ElementDecl {
-    func encode(to encoder: inout Encoder, wat: inout Wat) throws {
-        func isMemory64(tableIndex: Int) throws -> Bool {
+    func encode(to encoder: inout Encoder, wat: inout Wat) throws(WatParserError) {
+        func isMemory64(tableIndex: Int) throws(WatParserError) -> Bool {
             guard tableIndex < wat.tablesMap.count else { return false }
             return try wat.tablesMap[tableIndex].type.resolve(wat.types).limits.isMemory64
         }
@@ -290,7 +301,7 @@ extension WAT.WatParser.ElementDecl {
         }
 
         if useExpression {
-            try encoder.encodeVector(collector.instructions) { instruction, encoder in
+            try encoder.encodeVector(collector.instructions) { instruction, encoder throws(WatParserError) in
                 var exprEncoder = ExpressionEncoder()
                 switch instruction {
                 case .globalGet(let globalIndex):
@@ -300,7 +311,7 @@ extension WAT.WatParser.ElementDecl {
                 case .refNull(let type):
                     try exprEncoder.visitRefNull(type: type)
                 default:
-                    throw WatParserError("unexpected instruction in element expression (\(instruction)", location: nil)
+                    throw WatParserError("unexpected instruction in element expression \(instruction)", location: nil)
                 }
                 try exprEncoder.visitEnd()
                 encoder.output.append(contentsOf: exprEncoder.encoder.output)
@@ -315,14 +326,14 @@ extension WAT.WatParser.ElementDecl {
 }
 
 extension String: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         encoder.writeUnsignedLEB128(UInt32(utf8.count))
         encoder.output.append(contentsOf: utf8)
     }
 }
 
 extension Export: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         encoder.encode(name)
         switch descriptor {
         case .function(let index):
@@ -337,12 +348,15 @@ extension Export: WasmEncodable {
         case .global(let index):
             encoder.output.append(0x03)
             encoder.writeUnsignedLEB128(UInt32(index))
+        case .tag(let index):
+            encoder.output.append(0x04)
+            encoder.writeUnsignedLEB128(UInt32(index))
         }
     }
 }
 
 extension WatParser.GlobalDecl {
-    func encode(to encoder: inout Encoder, wat: inout Wat) throws {
+    func encode(to encoder: inout Encoder, wat: inout Wat) throws(WatParserError) {
         let type = try self.type.resolve(wat.types)
         encoder.encode(type)
         guard case .definition(var expr) = kind else {
@@ -353,13 +367,13 @@ extension WatParser.GlobalDecl {
 }
 
 extension WatParser.MemoryDecl: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         encoder.encode(type)
     }
 }
 
 extension Limits: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         var flags = 0
         if max != nil {
             flags |= 0b0001
@@ -380,7 +394,7 @@ extension Limits: WasmEncodable {
 }
 
 extension GlobalType: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         encoder.encode(self.valueType)
         switch self.mutability {
         case .constant:
@@ -392,7 +406,7 @@ extension GlobalType: WasmEncodable {
 }
 
 extension Import: WasmEncodable {
-    func encode(to encoder: inout Encoder) {
+    package func encode(to encoder: inout Encoder) {
         encoder.encode(module)
         encoder.encode(name)
         switch descriptor {
@@ -408,12 +422,16 @@ extension Import: WasmEncodable {
         case .global(let globalType):
             encoder.output.append(0x03)
             globalType.encode(to: &encoder)
+        case .tag(let typeIndex):
+            encoder.output.append(0x04)
+            encoder.output.append(0x00)  // attribute: exception
+            encoder.writeUnsignedLEB128(UInt32(typeIndex))
         }
     }
 }
 
 extension WatParser.DataSegmentDecl.Offset {
-    func encode(to encoder: inout Encoder, wat: inout Wat, isMemory64: Bool) throws {
+    func encode(to encoder: inout Encoder, wat: inout Wat, isMemory64: Bool) throws(WatParserError) {
         switch self {
         case .source(var offset):
             try encoder.writeExpression(lexer: &offset, wat: &wat)
@@ -431,7 +449,7 @@ extension WatParser.DataSegmentDecl.Offset {
 }
 
 extension WatParser.DataSegmentDecl {
-    func encode(to encoder: inout Encoder, wat: inout Wat) throws {
+    func encode(to encoder: inout Encoder, wat: inout Wat) throws(WatParserError) {
         func isMemory64(memoryIndex: Int) -> Bool {
             guard memoryIndex < wat.memories.count else { return false }
             return wat.memories[memoryIndex].type.isMemory64
@@ -463,6 +481,7 @@ extension WatParser.DataSegmentDecl {
 }
 
 struct ExpressionEncoder: BinaryInstructionEncoder {
+    typealias VisitorError = WatParserError
     var binaryOffset: Int = 0
     var encoder = Encoder()
     var hasDataSegmentInstruction: Bool = false
@@ -484,24 +503,24 @@ struct ExpressionEncoder: BinaryInstructionEncoder {
     }
 
     // MARK: Special instructions
-    mutating func visitMemoryInit(dataIndex: UInt32) throws {
-        try encodeInstruction([0xFC, 0x08])
-        try encodeImmediates(dataIndex: dataIndex)
+    mutating func visitMemoryInit(dataIndex: UInt32) {
+        encodeInstruction([0xFC, 0x08])
+        encodeImmediates(dataIndex: dataIndex)
         encodeByte(0x00)  // reserved value
     }
 
-    mutating func visitTypedSelect(type: ValueType) throws {
-        try encodeInstruction([0x1C])
+    mutating func visitTypedSelect(type: ValueType) {
+        encodeInstruction([0x1C])
         encodeByte(0x01)  // number of result types
-        try encodeImmediates(type: type)
+        encodeImmediates(type: type)
     }
 
     // MARK: InstructionEncoder conformance
 
-    mutating func encodeInstruction(_ opcode: [UInt8]) throws {
+    mutating func encodeInstruction(_ opcode: [UInt8]) {
         encoder.output.append(contentsOf: opcode)
     }
-    mutating func encodeImmediates(blockType: WasmParser.BlockType) throws {
+    mutating func encodeImmediates(blockType: WasmParser.BlockType) {
         switch blockType {
         case .empty: encoder.output.append(0x40)
         case .type(let valueType): encoder.encode(valueType)
@@ -509,53 +528,85 @@ struct ExpressionEncoder: BinaryInstructionEncoder {
             encoder.writeSignedLEB128(Int64(typeIndex))
         }
     }
-    mutating func encodeImmediates(dataIndex: UInt32) throws {
+    mutating func encodeImmediates(dataIndex: UInt32) {
         hasDataSegmentInstruction = true
         encodeUnsigned(dataIndex)
     }
-    mutating func encodeImmediates(elemIndex: UInt32) throws { encodeUnsigned(elemIndex) }
-    mutating func encodeImmediates(functionIndex: UInt32) throws { encodeUnsigned(functionIndex) }
-    mutating func encodeImmediates(globalIndex: UInt32) throws { encodeUnsigned(globalIndex) }
-    mutating func encodeImmediates(localIndex: UInt32) throws { encodeUnsigned(localIndex) }
-    mutating func encodeImmediates(typeIndex: UInt32) throws { encodeUnsigned(typeIndex) }
-    mutating func encodeImmediates(memarg: WasmParser.MemArg) throws {
+    mutating func encodeImmediates(elemIndex: UInt32) { encodeUnsigned(elemIndex) }
+    mutating func encodeImmediates(functionIndex: UInt32) { encodeUnsigned(functionIndex) }
+    mutating func encodeImmediates(globalIndex: UInt32) { encodeUnsigned(globalIndex) }
+    mutating func encodeImmediates(localIndex: UInt32) { encodeUnsigned(localIndex) }
+    mutating func encodeImmediates(typeIndex: UInt32) { encodeUnsigned(typeIndex) }
+    mutating func encodeImmediates(memarg: WasmParser.MemArg) {
         encodeUnsigned(UInt(memarg.align))
         encodeUnsigned(memarg.offset)
     }
-    mutating func encodeImmediates(memory: UInt32) throws { encodeUnsigned(memory) }
-    mutating func encodeImmediates(relativeDepth: UInt32) throws { encodeUnsigned(relativeDepth) }
-    mutating func encodeImmediates(table: UInt32) throws { encodeUnsigned(table) }
-    mutating func encodeImmediates(targets: WasmParser.BrTable) throws {
+    mutating func encodeImmediates(lane: UInt8) { encoder.output.append(lane) }
+    mutating func encodeImmediates(memarg: WasmParser.MemArg, lane: UInt8) {
+        encodeImmediates(memarg: memarg)
+        encodeImmediates(lane: lane)
+    }
+    mutating func encodeImmediates(lanes: WasmTypes.V128ShuffleMask) {
+        encoder.output.append(contentsOf: lanes.lanes)
+    }
+    mutating func encodeImmediates(memory: UInt32) { encodeUnsigned(memory) }
+    mutating func encodeImmediates(relativeDepth: UInt32) { encodeUnsigned(relativeDepth) }
+    mutating func encodeImmediates(table: UInt32) { encodeUnsigned(table) }
+    mutating func encodeImmediates(targets: WasmParser.BrTable) {
         encoder.encodeVector(targets.labelIndices) { value, encoder in
             encoder.writeUnsignedLEB128(value)
         }
         encodeUnsigned(targets.defaultIndex)
     }
-    mutating func encodeImmediates(type: WasmTypes.ValueType) throws { encoder.encode(type) }
-    mutating func encodeImmediates(type: WasmTypes.HeapType) throws { encoder.encode(type) }
-    mutating func encodeImmediates(value: Int32) throws { encodeSigned(value) }
-    mutating func encodeImmediates(value: Int64) throws { encodeSigned(value) }
-    mutating func encodeImmediates(value: WasmParser.IEEE754.Float32) throws { encodeFixedWidth(value.bitPattern) }
-    mutating func encodeImmediates(value: WasmParser.IEEE754.Float64) throws { encodeFixedWidth(value.bitPattern) }
-    mutating func encodeImmediates(dstMem: UInt32, srcMem: UInt32) throws {
+    mutating func encodeImmediates(type: WasmTypes.ValueType) { encoder.encode(type) }
+    mutating func encodeImmediates(type: WasmTypes.HeapType) { encoder.encode(type) }
+    mutating func encodeImmediates(value: Int32) { encodeSigned(value) }
+    mutating func encodeImmediates(value: Int64) { encodeSigned(value) }
+    mutating func encodeImmediates(value: WasmTypes.V128) { encoder.output.append(contentsOf: value.bytes) }
+    mutating func encodeImmediates(value: WasmParser.IEEE754.Float32) { encodeFixedWidth(value.bitPattern) }
+    mutating func encodeImmediates(value: WasmParser.IEEE754.Float64) { encodeFixedWidth(value.bitPattern) }
+    mutating func encodeImmediates(tagIndex: UInt32) { encodeUnsigned(tagIndex) }
+    mutating func encodeImmediates(blockType: WasmParser.BlockType, tryCatch: WasmParser.TryCatch) {
+        encodeImmediates(blockType: blockType)
+        encoder.writeUnsignedLEB128(UInt32(tryCatch.catches.count))
+        for clause in tryCatch.catches {
+            switch clause {
+            case .catch(let tagIndex, let labelIndex):
+                encoder.output.append(0x00)
+                encoder.writeUnsignedLEB128(tagIndex)
+                encoder.writeUnsignedLEB128(labelIndex)
+            case .catchRef(let tagIndex, let labelIndex):
+                encoder.output.append(0x01)
+                encoder.writeUnsignedLEB128(tagIndex)
+                encoder.writeUnsignedLEB128(labelIndex)
+            case .catchAll(let labelIndex):
+                encoder.output.append(0x02)
+                encoder.writeUnsignedLEB128(labelIndex)
+            case .catchAllRef(let labelIndex):
+                encoder.output.append(0x03)
+                encoder.writeUnsignedLEB128(labelIndex)
+            }
+        }
+    }
+    mutating func encodeImmediates(dstMem: UInt32, srcMem: UInt32) {
         encodeUnsigned(dstMem)
         encodeUnsigned(srcMem)
     }
-    mutating func encodeImmediates(dstTable: UInt32, srcTable: UInt32) throws {
+    mutating func encodeImmediates(dstTable: UInt32, srcTable: UInt32) {
         encodeUnsigned(dstTable)
         encodeUnsigned(srcTable)
     }
-    mutating func encodeImmediates(elemIndex: UInt32, table: UInt32) throws {
+    mutating func encodeImmediates(elemIndex: UInt32, table: UInt32) {
         encodeUnsigned(elemIndex)
         encodeUnsigned(table)
     }
-    mutating func encodeImmediates(typeIndex: UInt32, tableIndex: UInt32) throws {
+    mutating func encodeImmediates(typeIndex: UInt32, tableIndex: UInt32) {
         encodeUnsigned(typeIndex)
         encodeUnsigned(tableIndex)
     }
 }
 
-func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
+func encode(module: inout Wat, options: EncodeOptions) throws(WatParserError) -> [UInt8] {
     var encoder = Encoder()
     encoder.writeHeader()
 
@@ -567,13 +618,15 @@ func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
         return (locals, function)
     }
     var functionSection: [UInt32] = []
+    var tagSection: [UInt32] = []
     var hasDataSegmentInstruction = false
+    var functionLabelNames: [[(Int, String)]] = []
 
     if !functions.isEmpty {
-        try codeEncoder.section(id: 0x0A) { encoder in
+        try codeEncoder.section(id: 0x0A) { encoder throws(WatParserError) in
             try encoder.encodeVector(
                 functions,
-                encodeElement: { source, encoder in
+                encodeElement: { source, encoder throws(WatParserError) in
                     let (locals, function) = source
                     var exprEncoder = ExpressionEncoder()
                     // Encode locals
@@ -590,8 +643,9 @@ func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
                         encoder.writeUnsignedLEB128(local.count)
                         local.type.encode(to: &encoder)
                     }
-                    let funcTypeIndex = try function.parse(visitor: &exprEncoder, wat: &module, features: module.features)
-                    functionSection.append(UInt32(funcTypeIndex))
+                    let parseResult = try function.parse(visitor: &exprEncoder, wat: &module, features: module.features)
+                    functionSection.append(UInt32(parseResult.typeIndex))
+                    functionLabelNames.append(parseResult.labelNames)
                     // TODO?
                     try exprEncoder.visitEnd()
                     encoder.writeUnsignedLEB128(UInt(exprEncoder.encoder.output.count))
@@ -599,6 +653,13 @@ func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
                     hasDataSegmentInstruction = hasDataSegmentInstruction || exprEncoder.hasDataSegmentInstruction
                 })
         }
+    }
+
+    // Pre-resolve tag type indices so their types are in the type section.
+    let tagDefinitions = module.tagsMap.definitions()
+    for tag in tagDefinitions {
+        let typeIndex = try module.types.resolveIndex(use: tag.typeUse)
+        tagSection.append(UInt32(typeIndex))
     }
 
     // Section 1: Type section
@@ -627,8 +688,8 @@ func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
     // Section 4: Table section
     let tables = module.tablesMap.definitions()
     if !tables.isEmpty {
-        try encoder.section(id: 0x04) { encoder in
-            try encoder.encodeVector(tables) { table, encoder in
+        try encoder.section(id: 0x04) { encoder throws(WatParserError) in
+            try encoder.encodeVector(tables) { table, encoder throws(WatParserError) in
                 try table.type.resolve(module.types).encode(to: &encoder)
             }
         }
@@ -642,11 +703,23 @@ func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
         }
     }
 
+    // Section 13: Tag section
+    // Note: tagsec is placed between memsec and globalsec in the module grammar.
+    // https://webassembly.github.io/exception-handling/core/binary/modules.html#binary-module
+    if !tagSection.isEmpty {
+        encoder.section(id: 0x0D) { encoder in
+            encoder.encodeVector(tagSection) { typeIndex, encoder in
+                encoder.output.append(0x00)  // attribute: exception
+                encoder.writeUnsignedLEB128(typeIndex)
+            }
+        }
+    }
+
     // Section 6: Global section
     let globals = module.globals.definitions()
     if !globals.isEmpty {
-        try encoder.section(id: 0x06) { encoder in
-            try encoder.encodeVector(globals) { global, encoder in
+        try encoder.section(id: 0x06) { encoder throws(WatParserError) in
+            try encoder.encodeVector(globals) { global, encoder throws(WatParserError) in
                 try global.encode(to: &encoder, wat: &module)
             }
         }
@@ -670,9 +743,9 @@ func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
 
     // Section 9: Element section
     if !module.elementsMap.isEmpty {
-        try encoder.section(id: 0x09) { encoder in
-            try encoder.encodeVector(module.elementsMap) {
-                try $0.encode(to: &$1, wat: &module)
+        try encoder.section(id: 0x09) { encoder throws(WatParserError) in
+            try encoder.encodeVector(module.elementsMap) { element, encoder throws(WatParserError) in
+                try element.encode(to: &encoder, wat: &module)
             }
         }
     }
@@ -689,32 +762,195 @@ func encode(module: inout Wat, options: EncodeOptions) throws -> [UInt8] {
 
     // Section 11: Data section
     if !module.data.isEmpty {
-        try encoder.section(id: 0x0B) { encoder in
-            try encoder.encodeVector(module.data) { data, encoder in
+        try encoder.section(id: 0x0B) { encoder throws(WatParserError) in
+            try encoder.encodeVector(module.data) { data, encoder throws(WatParserError) in
                 try data.encode(to: &encoder, wat: &module)
             }
         }
     }
 
     // (Optional) Name Section
-    if !module.functionsMap.isEmpty, options.nameSection {
-        encoder.section(id: 0) { encoder in
-            encoder.encode("name")
-            // Subsection 1: Function names
-            encoder.section(id: 1) { encoder in
-                let functionNames = module.functionsMap.enumerated().compactMap { i, decl -> (Int, String)? in
-                    guard let name = decl.id else { return nil }
-                    return (i, name.value)
-                }
-                encoder.encodeVector(functionNames) { entry, encoder in
-                    let (index, name) = entry
-                    encoder.writeUnsignedLEB128(UInt(index))
-                    // Drop initial "$"
-                    encoder.encode(String(name.dropFirst()))
-                }
-            }
-        }
+    if options.nameSection {
+        try encodeNameSection(module: &module, options: options, encoder: &encoder, functions: functions, functionLabelNames: functionLabelNames)
     }
 
     return encoder.output
+}
+
+/// Helper to encode a name map subsection (index → name pairs with "$" prefix stripped)
+private func encodeNameMapSubsection(
+    id: UInt8,
+    entries: some Collection<(Int, String)>,
+    encoder: inout Encoder
+) {
+    encoder.section(id: id) { encoder in
+        encoder.encodeVector(Array(entries)) { entry, encoder in
+            let (index, name) = entry
+            encoder.writeUnsignedLEB128(UInt(index))
+            // Drop initial "$"
+            encoder.encode(String(name.dropFirst()))
+        }
+    }
+}
+
+/// Encodes the name custom section with all available name subsections.
+/// Subsections are emitted in ascending ID order as required by the spec.
+private func encodeNameSection(
+    module: inout Wat,
+    options: EncodeOptions,
+    encoder: inout Encoder,
+    functions: [([WatParser.LocalDecl], WatParser.FunctionDecl)],
+    functionLabelNames: [[(Int, String)]]
+) throws(WatParserError) {
+    let hasModuleName = module.id != nil
+    let functionNames = module.functionsMap.enumerated().compactMap { i, decl -> (Int, String)? in
+        guard let name = decl.id else { return nil }
+        return (i, name.value)
+    }
+    var localNames: [(Int, [(Int, String)])] = []
+    for (funcDefIndex, entry) in functions.enumerated() {
+        let (locals, function) = entry
+        // Find the function's index in the module (accounting for imports)
+        let importFuncCount = module.functionsMap.count(where: { decl in
+            if case .imported = decl.kind { return true }
+            return false
+        })
+        let funcIndex = importFuncCount + funcDefIndex
+
+        // Collect parameter names from the function's type use
+        var paramNames: [(Int, String)] = []
+        if let inline = function.typeUse.inline {
+            let resolved = try inline.resolve(module.types)
+            for (i, name) in resolved.parameterNames.enumerated() {
+                if let name {
+                    paramNames.append((i, name.value))
+                }
+            }
+        }
+
+        // Collect local names (offset by parameter count)
+        let paramCount: Int
+        if let inline = function.typeUse.inline {
+            paramCount = try inline.resolve(module.types).signature.parameters.count
+        } else if let typeIndex = function.typeUse.index {
+            let resolvedIndex: Int
+            switch typeIndex {
+            case .index(let idx, _): resolvedIndex = Int(idx)
+            case .id: resolvedIndex = 0  // Approximate; full resolution not needed for name count
+            }
+            if resolvedIndex < module.types.count {
+                paramCount = module.types[resolvedIndex].type.signature.parameters.count
+            } else {
+                paramCount = 0
+            }
+        } else {
+            paramCount = 0
+        }
+
+        for (i, local) in locals.enumerated() {
+            if let name = local.id {
+                paramNames.append((paramCount + i, name.value))
+            }
+        }
+
+        if !paramNames.isEmpty {
+            localNames.append((funcIndex, paramNames))
+        }
+    }
+    let importFuncCount = module.functionsMap.count(where: { decl in
+        if case .imported = decl.kind { return true }
+        return false
+    })
+    let labelNames: [(Int, [(Int, String)])] = functionLabelNames.enumerated().compactMap { funcDefIndex, names in
+        guard !names.isEmpty else { return nil }
+        return (importFuncCount + funcDefIndex, names)
+    }
+    let typeNames = module.types.enumerated().compactMap { i, decl -> (Int, String)? in
+        guard let name = decl.id else { return nil }
+        return (i, name.value)
+    }
+    let tableNames = module.tablesMap.enumerated().compactMap { i, decl -> (Int, String)? in
+        guard let name = decl.id else { return nil }
+        return (i, name.value)
+    }
+    let memoryNames = module.memories.enumerated().compactMap { i, decl -> (Int, String)? in
+        guard let name = decl.id else { return nil }
+        return (i, name.value)
+    }
+    let globalNames = module.globals.enumerated().compactMap { i, decl -> (Int, String)? in
+        guard let name = decl.id else { return nil }
+        return (i, name.value)
+    }
+    let elemNames = module.elementsMap.enumerated().compactMap { i, decl -> (Int, String)? in
+        guard let name = decl.id else { return nil }
+        return (i, name.value)
+    }
+    let dataNames = module.data.enumerated().compactMap { i, decl -> (Int, String)? in
+        guard let name = decl.id else { return nil }
+        return (i, name.value)
+    }
+
+    let hasAnyNames =
+        hasModuleName || !functionNames.isEmpty || !localNames.isEmpty
+        || !labelNames.isEmpty || !typeNames.isEmpty || !tableNames.isEmpty || !memoryNames.isEmpty
+        || !globalNames.isEmpty || !elemNames.isEmpty || !dataNames.isEmpty
+
+    guard hasAnyNames else { return }
+
+    encoder.section(id: 0) { encoder in
+        encoder.encode("name")
+
+        if let moduleId = module.id {
+            encoder.section(id: 0) { encoder in
+                encoder.encode(String(moduleId.dropFirst()))  // Drop "$" prefix
+            }
+        }
+        if !functionNames.isEmpty {
+            encodeNameMapSubsection(id: 1, entries: functionNames, encoder: &encoder)
+        }
+        if !localNames.isEmpty {
+            encoder.section(id: 2) { encoder in
+                encoder.encodeVector(localNames) { entry, encoder in
+                    let (funcIndex, names) = entry
+                    encoder.writeUnsignedLEB128(UInt(funcIndex))
+                    encoder.encodeVector(names) { local, encoder in
+                        let (localIndex, name) = local
+                        encoder.writeUnsignedLEB128(UInt(localIndex))
+                        encoder.encode(String(name.dropFirst()))
+                    }
+                }
+            }
+        }
+        if !labelNames.isEmpty {
+            encoder.section(id: 3) { encoder in
+                encoder.encodeVector(labelNames) { entry, encoder in
+                    let (funcIndex, names) = entry
+                    encoder.writeUnsignedLEB128(UInt(funcIndex))
+                    encoder.encodeVector(names) { label, encoder in
+                        let (labelIndex, name) = label
+                        encoder.writeUnsignedLEB128(UInt(labelIndex))
+                        encoder.encode(String(name.dropFirst()))
+                    }
+                }
+            }
+        }
+        if !typeNames.isEmpty {
+            encodeNameMapSubsection(id: 4, entries: typeNames, encoder: &encoder)
+        }
+        if !tableNames.isEmpty {
+            encodeNameMapSubsection(id: 5, entries: tableNames, encoder: &encoder)
+        }
+        if !memoryNames.isEmpty {
+            encodeNameMapSubsection(id: 6, entries: memoryNames, encoder: &encoder)
+        }
+        if !globalNames.isEmpty {
+            encodeNameMapSubsection(id: 7, entries: globalNames, encoder: &encoder)
+        }
+        if !elemNames.isEmpty {
+            encodeNameMapSubsection(id: 8, entries: elemNames, encoder: &encoder)
+        }
+        if !dataNames.isEmpty {
+            encodeNameMapSubsection(id: 9, entries: dataNames, encoder: &encoder)
+        }
+    }
 }

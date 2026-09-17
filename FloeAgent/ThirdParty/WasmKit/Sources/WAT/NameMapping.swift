@@ -2,15 +2,21 @@ import WasmParser
 import WasmTypes
 
 /// A name with its location in the source file
-struct Name: Equatable {
+struct Name: Equatable, Hashable {
     /// The name of the module field declaration specified in $id form
     let value: String
     /// The location of the name in the source file
     let location: Location
+
+    func hash(into hasher: inout Hasher) {
+        // Hash only by value, not location
+        hasher.combine(value)
+    }
 }
 
-/// A module field declaration that may have its name
-protocol NamedModuleFieldDecl {
+/// A module or component field declaration that may have a name identifier.
+/// Otherwise it's identified by an index.
+protocol NamedFieldDecl {
     /// The name of the module field declaration specified in $id form
     var id: Name? { get }
 }
@@ -22,19 +28,19 @@ protocol ImportableModuleFieldDecl {
 }
 
 protocol NameToIndexResolver {
-    func resolveIndex(use: Parser.IndexOrId) throws -> Int
+    func resolveIndex(use: Parser.IndexOrId) throws(WatParserError) -> Int
 }
 
 /// A map of module field declarations indexed by their name
-struct NameMapping<Decl: NamedModuleFieldDecl>: NameToIndexResolver {
-    private var decls: [Decl] = []
-    private var nameToIndex: [String: Int] = [:]
+struct NameMapping<Decl: NamedFieldDecl>: NameToIndexResolver {
+    private(set) var decls: [Decl] = []
+    private(set) var nameToIndex: [String: Int] = [:]
 
     /// Adds a new declaration to the mapping
     /// - Parameter newDecl: The declaration to add
     /// - Returns: The index of the added declaration
     @discardableResult
-    mutating func add(_ newDecl: Decl) throws -> Int {
+    mutating func add(_ newDecl: Decl) throws(WatParserError) -> Int {
         let index = decls.count
         decls.append(newDecl)
         if let name = newDecl.id {
@@ -46,7 +52,7 @@ struct NameMapping<Decl: NamedModuleFieldDecl>: NameToIndexResolver {
         return index
     }
 
-    func resolveIndex(use: Parser.IndexOrId) throws -> Int {
+    func resolveIndex(use: Parser.IndexOrId) throws(WatParserError) -> Int {
         switch use {
         case .id(let id, _):
             guard let byName = nameToIndex[id.value] else {
@@ -61,7 +67,7 @@ struct NameMapping<Decl: NamedModuleFieldDecl>: NameToIndexResolver {
     /// Resolves a declaration by its name or index
     /// - Parameter use: The name or index of the declaration
     /// - Returns: The declaration and its index
-    func resolve(use: Parser.IndexOrId) throws -> (decl: Decl, index: Int) {
+    func resolve(use: Parser.IndexOrId) throws(WatParserError) -> (decl: Decl, index: Int) {
         let index = try resolveIndex(use: use)
         guard index < decls.count else {
             throw WatParserError("Invalid \(Decl.self) index \(index)", location: use.location)
@@ -102,7 +108,7 @@ typealias TypesNameMapping = NameMapping<TypesMap.NamedResolvedType>
 
 /// A map of unique function types indexed by their name or type signature
 struct TypesMap {
-    struct NamedResolvedType: NamedModuleFieldDecl {
+    struct NamedResolvedType: NamedFieldDecl {
         let id: Name?
         let type: WatParser.FunctionType
     }
@@ -112,7 +118,7 @@ struct TypesMap {
 
     /// Adds a new function type to the mapping
     @discardableResult
-    mutating func add(_ decl: NamedResolvedType) throws -> Int {
+    mutating func add(_ decl: NamedResolvedType) throws(WatParserError) -> Int {
         try nameMapping.add(decl)
         // Normalize the function type signature without parameter names
         if let existing = indices[decl.type.signature] {
@@ -125,7 +131,7 @@ struct TypesMap {
     }
 
     /// Adds a new function type to the mapping without parameter names
-    private mutating func addAnonymousSignature(_ signature: FunctionType) throws -> Int {
+    private mutating func addAnonymousSignature(_ signature: FunctionType) throws(WatParserError) -> Int {
         if let existing = indices[signature] {
             return existing
         }
@@ -139,8 +145,8 @@ struct TypesMap {
 
     private mutating func resolveBlockType(
         results: [ValueType],
-        resolveSignatureIndex: (inout TypesMap) throws -> Int
-    ) throws -> BlockType {
+        resolveSignatureIndex: (inout TypesMap) throws(WatParserError) -> Int
+    ) throws(WatParserError) -> BlockType {
         if let result = results.first {
             guard results.count > 1 else { return .type(result) }
             return try .funcType(UInt32(resolveSignatureIndex(&self)))
@@ -149,8 +155,8 @@ struct TypesMap {
     }
     private mutating func resolveBlockType(
         signature: WasmTypes.FunctionType,
-        resolveSignatureIndex: (inout TypesMap) throws -> Int
-    ) throws -> BlockType {
+        resolveSignatureIndex: (inout TypesMap) throws(WatParserError) -> Int
+    ) throws(WatParserError) -> BlockType {
         if signature.parameters.isEmpty {
             return try resolveBlockType(results: signature.results, resolveSignatureIndex: resolveSignatureIndex)
         }
@@ -158,26 +164,26 @@ struct TypesMap {
     }
 
     /// Resolves a block type from a list of result types
-    mutating func resolveBlockType(results: [ValueType]) throws -> BlockType {
+    mutating func resolveBlockType(results: [ValueType]) throws(WatParserError) -> BlockType {
         return try resolveBlockType(
             results: results,
-            resolveSignatureIndex: {
+            resolveSignatureIndex: { resolver throws(WatParserError) in
                 let signature = FunctionType(parameters: [], results: results)
-                return try $0.addAnonymousSignature(signature)
+                return try resolver.addAnonymousSignature(signature)
             })
     }
 
     /// Resolves a block type from a function type signature
-    mutating func resolveBlockType(signature: WasmTypes.FunctionType) throws -> BlockType {
+    mutating func resolveBlockType(signature: WasmTypes.FunctionType) throws(WatParserError) -> BlockType {
         return try resolveBlockType(
             signature: signature,
-            resolveSignatureIndex: {
-                return try $0.addAnonymousSignature(signature)
+            resolveSignatureIndex: { resolver throws(WatParserError) in
+                return try resolver.addAnonymousSignature(signature)
             })
     }
 
     /// Resolves a block type from a type use
-    mutating func resolveBlockType(use: WatParser.TypeUse) throws -> BlockType {
+    mutating func resolveBlockType(use: WatParser.TypeUse) throws(WatParserError) -> BlockType {
         switch (use.index, use.inline) {
         case (let indexOrId?, let inline):
             let (type, index) = try resolveAndCheck(use: indexOrId, inline: inline?.resolve(nameMapping))
@@ -188,7 +194,7 @@ struct TypesMap {
         }
     }
 
-    mutating func resolveIndex(use: WatParser.TypeUse) throws -> Int {
+    mutating func resolveIndex(use: WatParser.TypeUse) throws(WatParserError) -> Int {
         switch (use.index, use.inline) {
         case (let indexOrId?, _):
             return try nameMapping.resolveIndex(use: indexOrId)
@@ -199,12 +205,12 @@ struct TypesMap {
     }
 
     /// Resolves a function type from a type use
-    func resolve(use: Parser.IndexOrId) throws -> (decl: WatParser.FunctionType, index: Int) {
+    func resolve(use: Parser.IndexOrId) throws(WatParserError) -> (decl: WatParser.FunctionType, index: Int) {
         let (decl, index) = try nameMapping.resolve(use: use)
         return (decl.type, index)
     }
 
-    private func resolveAndCheck(use indexOrId: Parser.IndexOrId, inline: WatParser.FunctionType?) throws -> (type: WatParser.FunctionType, index: Int) {
+    private func resolveAndCheck(use indexOrId: Parser.IndexOrId, inline: WatParser.FunctionType?) throws(WatParserError) -> (type: WatParser.FunctionType, index: Int) {
         let (found, index) = try resolve(use: indexOrId)
         if let inline {
             // If both index and inline type, then they must match
@@ -216,7 +222,7 @@ struct TypesMap {
     }
 
     /// Resolves a function type from a type use with an optional inline type
-    mutating func resolve(use: WatParser.TypeUse) throws -> (type: WatParser.FunctionType, index: Int) {
+    mutating func resolve(use: WatParser.TypeUse) throws(WatParserError) -> (type: WatParser.FunctionType, index: Int) {
         switch (use.index, use.inline) {
         case (let indexOrId?, let inline):
             return try resolveAndCheck(use: indexOrId, inline: inline?.resolve(nameMapping))
@@ -251,3 +257,49 @@ extension TypesMap: Collection {
         return nameMapping.makeIterator()
     }
 }
+
+#if ComponentModel
+    import ComponentModel
+
+    /// A map for core types that can be either function types or module types
+    struct CoreTypesMap {
+        private(set) var declarations: [ComponentWatParser.CoreTypeDef] = []
+        private(set) var nameToIndex: [String: Int] = [:]
+
+        @discardableResult
+        mutating func add(_ decl: ComponentWatParser.CoreTypeDef) throws(WatParserError) -> Int {
+            let index = declarations.count
+            declarations.append(decl)
+            if let name = decl.id {
+                guard nameToIndex[name.value] == nil else {
+                    throw WatParserError("Duplicate \(name.value) identifier", location: name.location)
+                }
+                nameToIndex[name.value] = index
+            }
+            return index
+        }
+
+        func resolveIndex(use: Parser.IndexOrId) throws(WatParserError) -> Int {
+            switch use {
+            case .id(let id, _):
+                guard let byName = nameToIndex[id.value] else {
+                    throw WatParserError("Unknown core type \(id)", location: use.location)
+                }
+                return byName
+            case .index(let index, _):
+                guard Int(index) < declarations.count else {
+                    throw WatParserError("Core type index \(index) out of bounds", location: use.location)
+                }
+                return Int(index)
+            }
+        }
+
+        var count: Int {
+            declarations.count
+        }
+
+        subscript(index: Int) -> ComponentWatParser.CoreTypeDef {
+            declarations[index]
+        }
+    }
+#endif

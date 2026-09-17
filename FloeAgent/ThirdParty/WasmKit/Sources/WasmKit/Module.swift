@@ -5,18 +5,21 @@ struct ModuleImports {
     let numberOfGlobals: Int
     let numberOfMemories: Int
     let numberOfTables: Int
+    let numberOfTags: Int
 
     static func build(
         from imports: [Import],
         functionTypeIndices: inout [TypeIndex],
         globalTypes: inout [GlobalType],
         memoryTypes: inout [MemoryType],
-        tableTypes: inout [TableType]
+        tableTypes: inout [TableType],
+        tagTypes: inout [TypeIndex]
     ) -> ModuleImports {
         var numberOfFunctions: Int = 0
         var numberOfGlobals: Int = 0
         var numberOfMemories: Int = 0
         var numberOfTables: Int = 0
+        var numberOfTags: Int = 0
         for item in imports {
             switch item.descriptor {
             case .function(let typeIndex):
@@ -31,13 +34,17 @@ struct ModuleImports {
             case .global(let globalType):
                 numberOfGlobals += 1
                 globalTypes.append(globalType)
+            case .tag(let typeIndex):
+                numberOfTags += 1
+                tagTypes.append(typeIndex)
             }
         }
         return ModuleImports(
             numberOfFunctions: numberOfFunctions,
             numberOfGlobals: numberOfGlobals,
             numberOfMemories: numberOfMemories,
-            numberOfTables: numberOfTables
+            numberOfTables: numberOfTables,
+            numberOfTags: numberOfTags
         )
     }
 }
@@ -50,8 +57,9 @@ public struct Module {
     var functions: [GuestFunction]
     let elements: [ElementSegment]
     let data: [DataSegment]
-    let start: FunctionIndex?
+    private(set) var start: FunctionIndex?
     let globals: [WasmParser.Global]
+    let tags: [WasmParser.Tag]
     public let imports: [Import]
     public let exports: [Export]
     public let customSections: [CustomSection]
@@ -61,6 +69,7 @@ public struct Module {
     let importedFunctionTypes: [TypeIndex]
     let memoryTypes: [MemoryType]
     let tableTypes: [TableType]
+    let tagTypes: [TypeIndex]
     let features: WasmFeatureSet
     let dataCount: UInt32?
 
@@ -75,6 +84,7 @@ public struct Module {
         globals: [WasmParser.Global],
         memories: [MemoryType],
         tables: [TableType],
+        tags: [WasmParser.Tag] = [],
         customSections: [CustomSection],
         features: WasmFeatureSet,
         dataCount: UInt32?
@@ -86,6 +96,7 @@ public struct Module {
         self.imports = imports
         self.exports = exports
         self.globals = globals
+        self.tags = tags
         self.customSections = customSections
         self.features = features
         self.dataCount = dataCount
@@ -94,30 +105,33 @@ public struct Module {
         var globalTypes: [GlobalType] = []
         var memoryTypes: [MemoryType] = []
         var tableTypes: [TableType] = []
+        var tagTypes: [TypeIndex] = []
 
         self.moduleImports = ModuleImports.build(
             from: imports,
             functionTypeIndices: &importedFunctionTypes,
             globalTypes: &globalTypes,
             memoryTypes: &memoryTypes,
-            tableTypes: &tableTypes
+            tableTypes: &tableTypes,
+            tagTypes: &tagTypes
         )
         self.types = types
         self.importedFunctionTypes = importedFunctionTypes
         self.memoryTypes = memoryTypes + memories
         self.tableTypes = tableTypes + tables
+        self.tagTypes = tagTypes + tags.map(\.type)
     }
 
-    static func resolveType(_ index: TypeIndex, typeSection: [FunctionType]) throws -> FunctionType {
+    static func resolveType(_ index: TypeIndex, typeSection: [FunctionType]) throws(WasmKitError) -> FunctionType {
         guard Int(index) < typeSection.count else {
-            throw TranslationError("Type index \(index) is out of range")
+            throw WasmKitError("Type index \(index) is out of range")
         }
         return typeSection[Int(index)]
     }
 
-    internal func resolveFunctionType(_ index: FunctionIndex) throws -> FunctionType {
+    internal func resolveFunctionType(_ index: FunctionIndex) throws(WasmKitError) -> FunctionType {
         guard Int(index) < functions.count + self.moduleImports.numberOfFunctions else {
-            throw TranslationError("Function index \(index) is out of range")
+            throw WasmKitError("Function index \(index) is out of range")
         }
         if Int(index) < self.moduleImports.numberOfFunctions {
             return try Self.resolveType(
@@ -126,6 +140,15 @@ public struct Module {
             )
         }
         return functions[Int(index) - self.moduleImports.numberOfFunctions].type
+    }
+
+    /// Drop the start section information from this module.
+    ///
+    /// This is useful to guarantee that "instantiation" of a module
+    /// will eventually halt.
+    @_spi(Fuzzing)
+    public mutating func dropStartFunction() {
+        self.start = nil
     }
 
     /// Instantiate this module in the given imports.
@@ -189,15 +212,22 @@ public struct Module {
             )
             try table.withValue { table in
                 guard let offset = offsetValue.maybeAddressOffset(table.limits.isMemory64) else {
-                    throw ValidationError(
-                        .unexpectedOffsetInitializer(expected: .addressType(isMemory64: table.limits.isMemory64), got: offsetValue)
+                    throw WasmKitError(
+                        kind: .message(
+                            .unexpectedOffsetInitializer(
+                                expected: .addressType(isMemory64: table.limits.isMemory64),
+                                got: offsetValue
+                            )
+                        )
                     )
                 }
                 guard table.tableType.elementType == element.type else {
-                    throw ValidationError(
-                        .elementSegmentTypeMismatch(
-                            elementType: element.type,
-                            tableElementType: table.tableType.elementType
+                    throw WasmKitError(
+                        kind: .message(
+                            .elementSegmentTypeMismatch(
+                                elementType: element.type,
+                                tableElementType: table.tableType.elementType
+                            )
                         )
                     )
                 }
@@ -210,15 +240,21 @@ public struct Module {
 
         // Step 16.
         for case .active(let data) in data {
-            let memory = try instance.memories[validating: Int(data.index)]
+            let memory = try instance.memories[validating: Int(data.index), MemoryEntity.createOutOfBoundsError]
+            let isMemory64 = memory.withValue { $0.limit.isMemory64 }
             let offsetValue = try data.offset.evaluate(
                 context: constEvalContext,
-                expectedType: .addressType(isMemory64: memory.limit.isMemory64)
+                expectedType: .addressType(isMemory64: isMemory64)
             )
             try memory.withValue { memory in
-                guard let offset = offsetValue.maybeAddressOffset(memory.limit.isMemory64) else {
-                    throw ValidationError(
-                        .unexpectedOffsetInitializer(expected: .addressType(isMemory64: memory.limit.isMemory64), got: offsetValue)
+                guard let offset = offsetValue.maybeAddressOffset(isMemory64) else {
+                    throw WasmKitError(
+                        kind: .message(
+                            .unexpectedOffsetInitializer(
+                                expected: .addressType(isMemory64: isMemory64),
+                                got: offsetValue
+                            )
+                        )
                     )
                 }
                 try memory.write(offset: Int(offset), bytes: data.initializer)

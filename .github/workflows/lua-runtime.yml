@@ -1,0 +1,44 @@
+name: Qualify Lua interpreter runtime
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/wasmkit-eh-languages']
+    paths:
+      - 'FloeAgent/ThirdParty/LuaWASI/**'
+      - 'FloeAgent/Qualification/Tests/WasmCommandTests/**'
+      - '.github/workflows/lua-runtime.yml'
+permissions:
+  contents: read
+concurrency:
+  group: lua-runtime-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  lua:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build the pinned Lua interpreter
+        run: |
+          set -o pipefail
+          bash FloeAgent/ThirdParty/LuaWASI/build_wasi.sh "$RUNNER_TEMP/floe-lua" 2>&1 | tee "$RUNNER_TEMP/lua-build.log"
+      - name: Run the interpreter through the WASI command runtime
+        run: |
+          cd FloeAgent/Qualification
+          FLOE_LUA_WASI="$RUNNER_TEMP/floe-lua/lua.wasm" swift test --package-path . --scratch-path .build \
+            --force-resolved-versions --jobs 4 --filter LuaInterpreterTests
+      - name: Retain artifact, hash and original failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lua-wasm-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/floe-lua/lua.wasm
+            ${{ runner.temp }}/floe-lua/evidence
+            ${{ runner.temp }}/lua-build.log
+          retention-days: 30

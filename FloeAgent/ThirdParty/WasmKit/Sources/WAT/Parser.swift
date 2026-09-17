@@ -1,4 +1,5 @@
 import WasmParser
+import WasmTypes
 
 internal struct Parser {
     var lexer: Lexer
@@ -11,7 +12,7 @@ internal struct Parser {
         self.lexer = lexer
     }
 
-    func peek(_ kind: TokenKind? = nil) throws -> Token? {
+    func peek(_ kind: TokenKind? = nil) throws(WatParserError) -> Token? {
         var lexer = lexer
         guard let token = try lexer.lex() else { return nil }
         if let kind {
@@ -20,20 +21,35 @@ internal struct Parser {
         return token
     }
 
-    func peekKeyword() throws -> String? {
+    func peekKeyword() throws(WatParserError) -> String? {
         guard let token = try peek(.keyword) else {
             return nil
         }
         return token.text(from: lexer)
     }
 
-    mutating func take(_ kind: TokenKind) throws -> Bool {
+    /// Peek at the keyword after a left paren without consuming any tokens.
+    /// Returns nil if the next token is not `(` or the token after that is not a keyword.
+    func peekKeywordAfterLeftParen() throws(WatParserError) -> String? {
+        var lexer = lexer
+        // First token should be (
+        guard let first = try lexer.lex(), first.kind == .leftParen else {
+            return nil
+        }
+        // Second token should be a keyword
+        guard let second = try lexer.lex(), second.kind == .keyword else {
+            return nil
+        }
+        return second.text(from: self.lexer)
+    }
+
+    mutating func take(_ kind: TokenKind) throws(WatParserError) -> Bool {
         guard try peek(kind) != nil else { return false }
         try consume()
         return true
     }
 
-    mutating func takeKeyword(_ keyword: String) throws -> Bool {
+    mutating func takeKeyword(_ keyword: String) throws(WatParserError) -> Bool {
         guard let token = try peek(.keyword), token.text(from: lexer) == keyword else {
             return false
         }
@@ -42,7 +58,7 @@ internal struct Parser {
     }
 
     /// Consume a `(keyword` sequence, returning whether the tokens were consumed.
-    mutating func takeParenBlockStart(_ keyword: String) throws -> Bool {
+    mutating func takeParenBlockStart(_ keyword: String) throws(WatParserError) -> Bool {
         let original = lexer
         guard try take(.leftParen), try takeKeyword(keyword) else {
             lexer = original
@@ -51,7 +67,7 @@ internal struct Parser {
         return true
     }
 
-    mutating func takeUnsignedInt<IntegerType: UnsignedInteger & FixedWidthInteger>(_: IntegerType.Type = IntegerType.self) throws -> IntegerType? {
+    mutating func takeUnsignedInt<IntegerType: UnsignedInteger & FixedWidthInteger>(_: IntegerType.Type = IntegerType.self) throws(WatParserError) -> IntegerType? {
         guard let token = try peek() else { return nil }
         guard case .integer(nil, let pattern) = token.kind else {
             return nil
@@ -73,7 +89,7 @@ internal struct Parser {
 
     mutating func takeSignedInt<IntegerType: FixedWidthInteger, UnsignedType: FixedWidthInteger & UnsignedInteger>(
         fromBitPattern: (UnsignedType) -> IntegerType
-    ) throws -> IntegerType? {
+    ) throws(WatParserError) -> IntegerType? {
         guard let token = try peek() else { return nil }
         guard case .integer(let sign, let pattern) = token.kind else {
             return nil
@@ -100,20 +116,20 @@ internal struct Parser {
         }
     }
 
-    mutating func takeStringBytes() throws -> [UInt8]? {
+    mutating func takeStringBytes() throws(WatParserError) -> [UInt8]? {
         guard let token = try peek(), case .string(let bytes) = token.kind else { return nil }
         try consume()
         return bytes
     }
 
-    mutating func takeString() throws -> String? {
+    mutating func takeString() throws(WatParserError) -> String? {
         guard let bytes = try takeStringBytes() else { return nil }
         return String(decoding: bytes, as: UTF8.self)
     }
 
     /// Parse a `u32` raw index or a symbolic `id` identifier.
     /// https://webassembly.github.io/function-references/core/text/modules.html#indices
-    mutating func takeIndexOrId() throws -> IndexOrId? {
+    mutating func takeIndexOrId() throws(WatParserError) -> IndexOrId? {
         let location = lexer.location()
         if let index: UInt32 = try takeUnsignedInt() {
             return .index(index, location)
@@ -124,7 +140,7 @@ internal struct Parser {
     }
 
     @discardableResult
-    mutating func expect(_ kind: TokenKind) throws -> Token {
+    mutating func expect(_ kind: TokenKind) throws(WatParserError) -> Token {
         guard let token = try lexer.lex() else {
             throw WatParserError("expected \(kind)", location: lexer.location())
         }
@@ -135,7 +151,7 @@ internal struct Parser {
     }
 
     @discardableResult
-    mutating func expectKeyword(_ keyword: String? = nil) throws -> String {
+    mutating func expectKeyword(_ keyword: String? = nil) throws(WatParserError) -> String {
         let token = try expect(.keyword)
         let text = token.text(from: lexer)
         if let keyword {
@@ -146,7 +162,7 @@ internal struct Parser {
         return text
     }
 
-    mutating func expectStringBytes() throws -> [UInt8] {
+    mutating func expectStringBytes() throws(WatParserError) -> [UInt8] {
         guard let token = try lexer.lex() else {
             throw WatParserError("expected string", location: lexer.location())
         }
@@ -155,18 +171,18 @@ internal struct Parser {
         }
         return text
     }
-    mutating func expectString() throws -> String {
+    mutating func expectString() throws(WatParserError) -> String {
         // TODO: Use SE-0405 once we can upgrade minimum-supported Swift version to 6.0
         let bytes = try expectStringBytes()
-        return try bytes.withUnsafeBufferPointer {
-            guard let value = String._tryFromUTF8($0) else {
+        return try bytes.withUnsafeBufferPointer { buffer throws(WatParserError) in
+            guard let value = String._tryFromUTF8(buffer) else {
                 throw WatParserError("invalid UTF-8 string", location: lexer.location())
             }
             return value
         }
     }
 
-    mutating func expectStringList() throws -> [UInt8] {
+    mutating func expectStringList() throws(WatParserError) -> [UInt8] {
         var data: [UInt8] = []
         while try !take(.rightParen) {
             data += try expectStringBytes()
@@ -174,7 +190,7 @@ internal struct Parser {
         return data
     }
 
-    mutating func expectUnsignedInt<IntegerType: UnsignedInteger & FixedWidthInteger>(_: IntegerType.Type = IntegerType.self) throws -> IntegerType {
+    mutating func expectUnsignedInt<IntegerType: UnsignedInteger & FixedWidthInteger>(_: IntegerType.Type = IntegerType.self) throws(WatParserError) -> IntegerType {
         guard let value: IntegerType = try takeUnsignedInt() else {
             throw WatParserError("expected decimal index without sign", location: lexer.location())
         }
@@ -183,7 +199,7 @@ internal struct Parser {
 
     mutating func expectSignedInt<IntegerType: FixedWidthInteger, UnsignedType: FixedWidthInteger & UnsignedInteger>(
         fromBitPattern: (UnsignedType) -> IntegerType
-    ) throws -> IntegerType {
+    ) throws(WatParserError) -> IntegerType {
         guard let value: IntegerType = try takeSignedInt(fromBitPattern: fromBitPattern) else {
             throw WatParserError("expected decimal index with sign", location: lexer.location())
         }
@@ -197,7 +213,7 @@ internal struct Parser {
             _ exponentBitPattern: UInt,
             _ significandBitPattern: UInt
         ) -> BitPattern
-    ) throws -> BitPattern {
+    ) throws(WatParserError) -> BitPattern {
         let token = try consume()
 
         var infinityExponent: UInt {
@@ -207,7 +223,7 @@ internal struct Parser {
         let makeError = { [lexer] in
             WatParserError("invalid float literal \(token.text(from: lexer))", location: token.location(in: lexer))
         }
-        let parse = { (pattern: String) throws -> F in
+        let parse = { (pattern: String) throws(WatParserError) -> F in
             // Swift's Float{32,64} initializer returns +/- infinity for too large/too small values.
             // We know that the given pattern will not be expected to be parsed as infinity,
             // so we can check if the parsing succeeded by checking if the returned value is infinite.
@@ -248,7 +264,7 @@ internal struct Parser {
         }
     }
 
-    mutating func expectFloat32() throws -> IEEE754.Float32 {
+    mutating func expectFloat32() throws(WatParserError) -> IEEE754.Float32 {
         let bitPattern = try expectFloatingPoint(
             Float32.self, toBitPattern: \.bitPattern,
             isNaN: { Float32(bitPattern: $0).isNaN },
@@ -262,7 +278,7 @@ internal struct Parser {
         return IEEE754.Float32(bitPattern: bitPattern)
     }
 
-    mutating func expectFloat64() throws -> IEEE754.Float64 {
+    mutating func expectFloat64() throws(WatParserError) -> IEEE754.Float64 {
         let bitPattern = try expectFloatingPoint(
             Float64.self, toBitPattern: \.bitPattern,
             isNaN: { Float64(bitPattern: $0).isNaN },
@@ -276,9 +292,9 @@ internal struct Parser {
         return IEEE754.Float64(bitPattern: bitPattern)
     }
 
-    mutating func expectIndex() throws -> UInt32 { try expectUnsignedInt(UInt32.self) }
+    mutating func expectIndex() throws(WatParserError) -> UInt32 { try expectUnsignedInt(UInt32.self) }
 
-    mutating func expectParenBlockStart(_ keyword: String) throws {
+    mutating func expectParenBlockStart(_ keyword: String) throws(WatParserError) {
         guard try takeParenBlockStart(keyword) else {
             throw WatParserError("expected \(keyword)", location: lexer.location())
         }
@@ -293,35 +309,43 @@ internal struct Parser {
                 return location
             }
         }
+        var name: Name? {
+            switch self {
+            case .id(let name, _):
+                return name
+            case .index:
+                return nil
+            }
+        }
     }
 
-    mutating func expectIndexOrId() throws -> IndexOrId {
+    mutating func expectIndexOrId() throws(WatParserError) -> IndexOrId {
         guard let indexOrId = try takeIndexOrId() else {
             throw WatParserError("expected index or id", location: lexer.location())
         }
         return indexOrId
     }
 
-    func isEndOfParen() throws -> Bool {
+    func isEndOfParen() throws(WatParserError) -> Bool {
         guard let token = try peek() else { return true }
         return token.kind == .rightParen
     }
 
     @discardableResult
-    mutating func consume() throws -> Token {
+    mutating func consume() throws(WatParserError) -> Token {
         guard let token = try lexer.lex() else {
             throw WatParserError("unexpected EOF", location: lexer.location())
         }
         return token
     }
 
-    mutating func takeId() throws -> Name? {
+    mutating func takeId() throws(WatParserError) -> Name? {
         guard let token = try peek(.id) else { return nil }
         try consume()
         return Name(value: token.text(from: lexer), location: token.location(in: lexer))
     }
 
-    mutating func skipParenBlock() throws {
+    mutating func skipParenBlock() throws(WatParserError) {
         var depth = 1
         while depth > 0 {
             let token = try consume()
@@ -335,23 +359,69 @@ internal struct Parser {
             }
         }
     }
-}
 
-public struct WatParserError: Error, CustomStringConvertible {
-    public let message: String
-    public let location: Location?
-
-    public var description: String {
-        if let location {
-            let (line, column) = location.computeLineAndColumn()
-            return "\(line):\(column): \(message)"
-        } else {
-            return message
-        }
+    /// Raw source representation for binary or quote forms in WAST.
+    enum RawSource {
+        case binary([UInt8])
+        case quote([UInt8])
     }
 
-    init(_ message: String, location: Location?) {
-        self.message = message
-        self.location = location
+    /// Parse binary or quote source if present.
+    /// Returns nil if the next token is not "binary" or "quote".
+    /// Consumes the keyword and string list, but NOT the closing paren.
+    mutating func parseBinaryOrQuote() throws(WatParserError) -> RawSource? {
+        guard let keyword = try peekKeyword() else { return nil }
+        if keyword == "binary" {
+            try consume()
+            return .binary(try expectStringList())
+        } else if keyword == "quote" {
+            try consume()
+            return .quote(try expectStringList())
+        }
+        return nil
+    }
+}
+
+extension Parser {
+    /// Parse a list of `(param ...)` clauses with optional names.
+    /// The `parseType` closure is called for each type token.
+    mutating func parseParamList<T>(
+        mayHaveName: Bool,
+        parseType: (inout Parser) throws(WatParserError) -> T
+    ) throws(WatParserError) -> ([T], [Name?]) {
+        var types: [T] = []
+        var names: [Name?] = []
+        while try takeParenBlockStart("param") {
+            if mayHaveName {
+                if let id = try takeId() {
+                    let valueType = try parseType(&self)
+                    types.append(valueType)
+                    names.append(id)
+                    try expect(.rightParen)
+                    continue
+                }
+            }
+            while try !take(.rightParen) {
+                let valueType = try parseType(&self)
+                types.append(valueType)
+                names.append(nil)
+            }
+        }
+        return (types, names)
+    }
+
+    /// Parse a list of `(result ...)` clauses.
+    /// The `parseType` closure is called for each type token.
+    mutating func parseResultList<T>(
+        parseType: (inout Parser) throws(WatParserError) -> T
+    ) throws(WatParserError) -> [T] {
+        var results: [T] = []
+        while try takeParenBlockStart("result") {
+            while try !take(.rightParen) {
+                let valueType = try parseType(&self)
+                results.append(valueType)
+            }
+        }
+        return results
     }
 }
