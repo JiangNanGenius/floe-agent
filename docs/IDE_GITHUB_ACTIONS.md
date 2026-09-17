@@ -58,7 +58,7 @@ cancel-before-association, retry/backoff, terminal-state preservation during an
 artifact refresh, redirect authorization handling, digest mismatch, and an
 actual GitHub run continued across App relaunch. The local state-machine and
 transport fixtures provide focused evidence; they do not replace full-App UI or
-real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_39.md)
+real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_40.md)
 for current delivery status.
 
 Observed before the build-180 tag: the production center/engine/store/policy and

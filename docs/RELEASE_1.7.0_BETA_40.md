@@ -1,6 +1,10 @@
 # Floe Agent 1.7.0 (183) — beta.40 candidate
 
-**Preparation in progress; not tagged, built or uploaded.**
+**Tagged candidate; cloud qualification running, not uploaded.**
+
+Immutable source: `0b7f7903c9fd851b9d9e278249766c39d5069cf1` / `v1.7.0-beta.40`.
+[Release run 35284117684](https://github.com/JiangNanGenius/floe-agent/actions/runs/35284117684)
+runs the complete two-SDK qualification.
 
 This candidate retains the durable IDE GitHub Actions jobs, document content
 covers and runtime lifecycle qualification introduced in builds 179–182. It

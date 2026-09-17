@@ -93,7 +93,7 @@
 - [Build 177 historical candidate record](RELEASE_NOTES_1.7.0_BUILD_177.md): earlier personalization, CAD/IDE and UI qualification work; its recorded status is historical.
 - [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.
 
-- [Build 182 candidate](RELEASE_1.7.0_BETA_39.md): durable IDE cloud builds, real library covers, runtime lifecycle checks; cloud qualification failed before upload.
+- [Build 183 candidate](RELEASE_1.7.0_BETA_40.md): durable IDE cloud builds, real library covers, runtime lifecycle checks; cloud qualification running, not uploaded.
 - [IDE GitHub Actions](IDE_GITHUB_ACTIONS.md): snapshots, workflow setup, restart recovery and cancellation.
 - [Office/CAD covers](NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md): per-format content and full-App evidence requirements.
 - [Runtime lifecycle](RUNTIME_LIFECYCLE_ACCEPTANCE.md): service restart, environment deletion and Lua execution acceptance.

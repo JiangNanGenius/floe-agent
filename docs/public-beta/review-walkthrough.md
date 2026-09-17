@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (178). Candidate: 1.7.0 (182). preparation draft; build 182 pending cloud qualification; not uploaded; external review not submitted.
+Baseline: 1.7.0 (178). Candidate: 1.7.0 (183). preparation draft; build 183 pending cloud qualification; not uploaded; external review not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 178, previously delivered to internal Floe QA. Pu
 
 基线：1.7.0（178），此前已交付 Floe QA 内部 TestFlight；尚未提交公开／外部 Beta 审核。
 
-Build 182 (beta.39) is the next candidate and is not uploaded. Builds 180 and 181 were cancelled before upload after real GitHub checks exposed URL and recovery-status defects. Apple discovery returned build 178 as the latest VALID upload. Build 179 retained an unsigned package but did not reach upload after its accepted-SDK Notes gate timed out.
+Build 183 (beta.40) is undergoing cloud qualification and is not uploaded. Build 182 failed SDK 27 dependency resolution and accepted-SDK IDE compilation; this candidate includes the corrections. Builds 180 and 181 were cancelled before upload. Build 178 remains the latest confirmed VALID internal TestFlight release; the retained build-179 unsigned package was never uploaded.
 
-182（beta.39）是新的候选版，尚未上传。180 和 181 在真实 GitHub 验证发现查询地址与恢复状态缺陷后停止，均未进入上传。Apple 最新 VALID 上传仍为 178；179 已保留未签名包，但发布 SDK 手记验收超时，未进入上传。
+183（beta.40）正在云端验收，尚未上传。182 的 SDK 27 依赖解析和发布 SDK 的 IDE 编译失败，新候选已加入修复；180 和 181 均在上传前停止。178 仍是最后确认 VALID 的内部 TestFlight 版本；179 留存的未签名包未上传。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -246,13 +246,13 @@ Source 955e346a passed SDK 27 App regressions and three Notes UI cases per devic
 
 955e346a 通过 SDK 27 App 回归及每端三项手记 UI 用例，原生 Office 跳过。随后 2e2a34c9 在 iPad、iPhone 各首次通过三项 IDE/CAD 用例（运行 35223435570）；原始失败记录保留。
 
-The build-178 release passed both SDK jobs and signed/uploaded successfully; its later GitHub publication step failed and was recovered separately. The older build-172 expedited simulator waiver does not apply to build 182 or public Beta review.
+The build-178 release passed both SDK jobs and signed/uploaded successfully; its later GitHub publication step failed and was recovered separately. The older build-172 expedited simulator waiver does not apply to build 183 or public Beta review.
 
-178 发布的两套 SDK 验收及签名上传成功；其后 GitHub 发布步骤失败，另行恢复。较早 172 的加急模拟器豁免不适用于 182 或公开 Beta 审核。
+178 发布的两套 SDK 验收及签名上传成功；其后 GitHub 发布步骤失败，另行恢复。较早 172 的加急模拟器豁免不适用于 183 或公开 Beta 审核。
 
-Every screenshot identifies its original source. The retained captures show earlier full-App simulator runs, not physical Pencil acceptance or the final build-182 submission binary. Office/PPT/CAD library covers require their own new evidence; earlier PDF captures do not prove them.
+Every screenshot identifies its original source. The retained captures show earlier full-App simulator runs, not physical Pencil acceptance or the final build-183 submission binary. Office/PPT/CAD library covers require their own new evidence; earlier PDF captures do not prove them.
 
-每张截图标明原始来源。现有配图来自较早完整 App 模拟器运行，不代表 Pencil 真机验收或最终 182 安装包；Office/PPT/CAD 文件列表缩略图需要新证据，早先 PDF 截图不能替代。
+每张截图标明原始来源。现有配图来自较早完整 App 模拟器运行，不代表 Pencil 真机验收或最终 183 安装包；Office/PPT/CAD 文件列表缩略图需要新证据，早先 PDF 截图不能替代。
 
 Before submission, confirm the final build, review contact, feedback email, support/privacy URLs and accepted access arrangement. These real details are not yet completed; this document is a preparation draft.
 
@@ -320,9 +320,9 @@ No model sleep loop is needed. An uncertain submission must not create duplicate
 
 无需模型循环等待。提交结果不明时不能重复触发；取消需等待 GitHub 确认。读取日志、下载未过期产物；摘要不匹配时必须保留原有文件。
 
-These are candidate acceptance instructions. The exact build-182 UI, live-account dispatch and relaunch observations still need to be recorded before treating this feature as review-ready.
+These are candidate acceptance instructions. The exact build-183 UI, live-account dispatch and relaunch observations still need to be recorded before treating this feature as review-ready.
 
-以上是候选版验收操作。仍需记录 182 的界面、真实账户提交和重开观察，才能把此项标为送审就绪。
+以上是候选版验收操作。仍需记录 183 的界面、真实账户提交和重开观察，才能把此项标为送审就绪。
 
 ## 13  演示结果与反馈 / Expected results and feedback
 

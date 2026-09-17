@@ -72,18 +72,18 @@
   },
   "candidateQualification": {
     "version": "1.7.0",
-    "build": "182",
-    "appSourceCommit": "4f8cce1bbb42dbefbe59c3418c63043ae966896f",
-    "tag": "v1.7.0-beta.39",
-    "releaseRun": 35248979573,
-    "status": "cloud_qualification_failed_not_uploaded",
+    "build": "183",
+    "appSourceCommit": "0b7f7903c9fd851b9d9e278249766c39d5069cf1",
+    "tag": "v1.7.0-beta.40",
+    "releaseRun": 35284117684,
+    "status": "cloud_qualification_in_progress_not_uploaded",
     "focusedEvidence": [
       "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
       "real disk store and engine recovery across two processes without redispatch",
       "23 formal engine test cases Swift 6 typechecked; actual-source harness passed"
     ],
     "limitations": [
-      "SDK 27 dependency resolution and accepted-SDK App compilation failed; simulator UI gates were not reached.",
+      "Full App compilation and both SDK simulator gates pending for build 183.",
       "Native iPad ordinary-chat local-model crash acceptance remains pending.",
       "Native Office and Pencil interaction require physical-device verification.",
       "Build 175 Agent recording is earlier-source demonstration evidence.",
@@ -109,5 +109,29 @@
       "iPad": "three_cases_passed_first_attempt",
       "iPhone": "three_cases_passed_first_attempt"
     }
+  },
+  "previousFailedCandidateQualification": {
+    "version": "1.7.0",
+    "build": "182",
+    "appSourceCommit": "4f8cce1bbb42dbefbe59c3418c63043ae966896f",
+    "tag": "v1.7.0-beta.39",
+    "releaseRun": 35248979573,
+    "status": "cloud_qualification_failed_not_uploaded",
+    "focusedEvidence": [
+      "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
+      "real disk store and engine recovery across two processes without redispatch",
+      "23 formal engine test cases Swift 6 typechecked; actual-source harness passed"
+    ],
+    "limitations": [
+      "SDK 27 dependency resolution and accepted-SDK App compilation failed; simulator UI gates were not reached.",
+      "Native iPad ordinary-chat local-model crash acceptance remains pending.",
+      "Native Office and Pencil interaction require physical-device verification.",
+      "Build 175 Agent recording is earlier-source demonstration evidence.",
+      "Actual App live-account dispatch/relaunch UI observation pending."
+    ]
+  },
+  "reviewMaterialPolicy": {
+    "developerCloudKeyIncluded": false,
+    "publicBetaSubmission": "not submitted"
   }
 }

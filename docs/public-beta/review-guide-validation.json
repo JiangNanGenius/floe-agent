@@ -1,10 +1,10 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (178)",
-  "candidate": "1.7.0 (182), not uploaded; full release qualification pending",
+  "candidate": "1.7.0 (183), not uploaded; full release qualification pending",
   "pages": 14,
-  "sha256": "b63dd0806b44fb2e6cc1c0694ac7c4dc0fd44df94d8836717facf8897dce358e",
-  "bytes": 2760019,
+  "sha256": "a7b984565b00665eb579eeeb1faa0f8a499122d33a4397a1d3814a000ed82e98",
+  "bytes": 2759793,
   "textExtractionChecked": true,
   "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout",
   "reviewStatus": "draft, external review not submitted",
@@ -29,9 +29,9 @@
     14
   ],
   "unchangedPageTextComparedToPreviouslyReviewedPDF": [],
-  "footerChange": "Baseline178/candidate179 preparation draft; all pages visually reviewed; pages12/13 reviewed again after status corrections",
+  "footerChange": "Baseline178/candidate183 preparation draft",
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
-  "latestEvidence": "IDE CI35223435570: three cases passed per device on first attempt; no build179 upload",
-  "visualReview": "14-page contact sheet checked for layout; changed pages 1, 10, 12, 13 individually inspected. No clipping or overlap. Previous full-page review retained for unchanged content."
+  "latestEvidence": "Run35284117684 current cloud qualification; 186 script tests passed, new full App/UI gates pending.",
+  "visualReview": "14-page current contact sheet reviewed for layout; changed pages1,12,13 individually inspected at 1200px. No clipping/overlap. Previous full-page review retained for unchanged body content."
 }
