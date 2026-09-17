@@ -1,0 +1,319 @@
+name: IDE test host recovery
+
+# Dispatch-only recovery of the dual-device IDE UI qualification from an
+# already compiled test host. It never rebuilds the App, never reacts to push
+# or pull requests, and never distributes. Each leg proves provenance, integrity
+# and toolchain from a trusted CI run before xcodebuild executes anything.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-hex SHA of the trusted CI commit that built the host
+        required: true
+        type: string
+      source_run:
+        description: Trusted CI workflow run id that uploaded the host
+        required: true
+        type: string
+      source_attempt:
+        description: Run attempt that uploaded the host
+        required: false
+        default: "1"
+        type: string
+      xcode_version:
+        description: Exact Xcode version recorded in the host archive
+        required: false
+        default: "27.0"
+        type: string
+      xcode_build:
+        description: Exact Xcode build recorded in the host archive
+        required: false
+        default: "27A5252f"
+        type: string
+      products_sha256:
+        description: Pinned SHA-256 of Products.tar.gz (empty skips the independent pin)
+        required: false
+        default: "abfc75f5d8b30de8c34b9a3e575efa24a8671e71f4d6f5e9508f4fd671d6d250"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: floe-ide-host-recovery-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate-controller:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # The recovery helper must come from the executing workflow commit, not
+      # from the older source under test where it does not exist yet.
+      - name: Validate the recovery controller fixtures
+        run: |
+          python3 -m unittest discover -s FloeAgent/scripts/tests -p test_compiled_test_host_recovery.py
+
+  recover-ide-ui:
+    needs: validate-controller
+    runs-on: xcode-27
+    timeout-minutes: 75
+    strategy:
+      # Both device families must be attempted; one UI failure never cancels
+      # the other leg.
+      fail-fast: false
+      matrix:
+        include:
+          - device: iPad mini (A17 Pro)
+            name: ipad
+          - device: iPhone 17 Pro
+            name: iphone
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Inputs reach the shell only through the environment, never interpolated
+      # into the script text, so a hostile dispatch value cannot inject a
+      # command.
+      - name: Validate dispatch inputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+        run: |
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "source_sha must be lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then
+            echo "source_sha must be a full 40-hex commit" >&2
+            exit 1
+          fi
+          case "$SOURCE_RUN" in
+            *[!0-9]*|'') echo "source_run must be numeric" >&2; exit 1 ;;
+          esac
+          case "$SOURCE_ATTEMPT" in
+            *[!0-9]*|'') echo "source_attempt must be numeric" >&2; exit 1 ;;
+          esac
+          if [ "$SOURCE_ATTEMPT" -lt 1 ]; then
+            echo "source_attempt must be at least 1" >&2
+            exit 1
+          fi
+
+      # The archive only records the toolchain the host was built with. Before
+      # anything is downloaded or extracted, prove the executing runner really
+      # exposes that exact `xcodebuild -version` and an iOS 27 simulator SDK, so
+      # a mismatched runner is refused instead of silently testing the host on
+      # an unexpected Xcode.
+      - name: Verify the runner toolchain matches the archive request
+        env:
+          XCODE_VERSION: ${{ inputs.xcode_version }}
+          XCODE_BUILD: ${{ inputs.xcode_build }}
+        run: |
+          set -o pipefail
+          expected="$(printf 'Xcode %s\nBuild version %s\n' "$XCODE_VERSION" "$XCODE_BUILD")"
+          actual="$(xcodebuild -version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "runner xcodebuild -version does not match the requested toolchain" >&2
+            printf 'expected: %s\nactual: %s\n' "$expected" "$actual" >&2
+            exit 1
+          fi
+          sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          case "$sdk_version" in
+            27.*) ;;
+            *)
+              echo "iPhoneSimulator SDK major is not 27: $sdk_version" >&2
+              exit 1
+              ;;
+          esac
+          echo "runner toolchain Xcode $XCODE_VERSION ($XCODE_BUILD), iPhoneSimulator SDK $sdk_version"
+
+      # The original source supplies the original test source, selector,
+      # diagnostic wrapper and xcresult verifier the host was built against.
+      - name: Check out the original source under test
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: original-source
+          persist-credentials: false
+
+      # The verification helper lives in the executing workflow commit only.
+      - name: Check out the executing recovery controller
+        uses: actions/checkout@v5
+        with:
+          path: recovery-controller
+          persist-credentials: false
+
+      - name: Fetch trusted run, job and artifact metadata
+        env:
+          SOURCE_RUN: ${{ inputs.source_run }}
+        run: |
+          metadata_dir="$RUNNER_TEMP/host-metadata"
+          mkdir -p "$metadata_dir"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$metadata_dir/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > "$metadata_dir/jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts?per_page=100" > "$metadata_dir/artifacts.json"
+          python3 - "$metadata_dir" <<'PYMETA'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          run = json.loads((root / 'run.json').read_text())
+          jobs = json.loads((root / 'jobs.json').read_text())
+          artifacts = json.loads((root / 'artifacts.json').read_text())
+          metadata = {
+              'repository': run['repository']['full_name'],
+              'workflow_path': run['path'],
+              'event': run['event'],
+              'head_sha': run['head_sha'],
+              'run_id': run['id'],
+              'run_attempt': run['run_attempt'],
+              'status': run['status'],
+              'jobs': [
+                  {
+                      'name': job['name'],
+                      'steps': [
+                          {'name': step['name'], 'status': step['status'],
+                           'conclusion': step['conclusion']}
+                          for step in job.get('steps', [])
+                      ],
+                  }
+                  for job in jobs.get('jobs', [])
+              ],
+              'artifacts': [
+                  {
+                      'id': artifact['id'],
+                      'name': artifact['name'],
+                      'expired': artifact['expired'],
+                      'workflow_run_id': artifact['workflow_run']['id'],
+                      'size_in_bytes': artifact['size_in_bytes'],
+                  }
+                  for artifact in artifacts.get('artifacts', [])
+              ],
+          }
+          (root / 'host-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PYMETA
+
+      - name: Download the compiled test host artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compiled-test-host-${{ inputs.source_sha }}
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/host-artifact
+
+      - name: Verify provenance, digest, toolchain and archive
+        id: verify_host
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+          XCODE_VERSION: ${{ inputs.xcode_version }}
+          XCODE_BUILD: ${{ inputs.xcode_build }}
+          PRODUCTS_SHA256: ${{ inputs.products_sha256 }}
+        run: |
+          python3 recovery-controller/FloeAgent/scripts/verify_compiled_test_host.py \
+            --metadata "$RUNNER_TEMP/host-metadata/host-metadata.json" \
+            --artifact-dir "$RUNNER_TEMP/host-artifact" \
+            --source-sha "$SOURCE_SHA" \
+            --source-run "$SOURCE_RUN" \
+            --source-attempt "$SOURCE_ATTEMPT" \
+            --xcode-version "$XCODE_VERSION" \
+            --xcode-build "$XCODE_BUILD" \
+            --products-sha256 "$PRODUCTS_SHA256" \
+            --extract-dir "$RUNNER_TEMP/host-products" \
+            --report "$RUNNER_TEMP/host-verification.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Run the three original IDE UI tests without rebuilding
+        env:
+          XCTESTRUN: ${{ steps.verify_host.outputs.xctestrun }}
+          SIM_DEVICE: ${{ matrix.device }}
+          SIM_NAME: ${{ matrix.name }}
+        run: |
+          set -o pipefail
+          test -n "$XCTESTRUN"
+          cd original-source/FloeAgent
+          status=0
+          xcrun simctl shutdown all || true
+          test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$SIM_DEVICE" --family "${SIM_DEVICE%% *}" --create)
+          test -n "$test_device"
+          xcrun simctl boot "$test_device"
+          xcrun simctl bootstatus "$test_device" -b
+          mkdir -p FloeAgent-IDE-Recordings
+          xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-IDE-Recordings/$SIM_NAME.mp4" > "FloeAgent-IDE-Recordings/$SIM_NAME.log" 2>&1 &
+          recording_pid=$!
+          trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
+          leg_attempt=1
+          while true; do
+            leg_code=0
+            diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/ide-$SIM_NAME-attempt-$leg_attempt"
+            python3 scripts/run_test_with_diagnostics.py \
+              --output-dir "$diag_dir" \
+              --timeout 900 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
+              xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$XCTESTRUN" \
+              -destination "platform=iOS Simulator,id=$test_device" \
+              -resultBundlePath "FloeAgent-IDE-$SIM_NAME.xcresult" \
+              -collect-test-diagnostics never -only-testing:FloeAgentUITests/WorkspaceIDEUITests \
+              -parallel-testing-enabled NO -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 300 \
+              -retry-tests-on-failure -test-iterations 2 \
+              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$SIM_NAME-attempt-$leg_attempt.log" || leg_code=$?
+            # One retry only when the runner stalled before any test started; a
+            # real executed failure can never be retried into a pass.
+            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
+               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
+                 "$diag_dir/summary.json"; then
+              if test -d "FloeAgent-IDE-$SIM_NAME.xcresult"; then
+                mv "FloeAgent-IDE-$SIM_NAME.xcresult" "FloeAgent-IDE-$SIM_NAME-attempt-1.xcresult"
+              fi
+              leg_attempt=2
+              kill -INT "$recording_pid" 2>/dev/null || true
+              wait "$recording_pid" || true
+              xcrun simctl shutdown "$test_device" || true
+              xcrun simctl boot "$test_device"
+              xcrun simctl bootstatus "$test_device" -b
+              xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-IDE-Recordings/$SIM_NAME-attempt-$leg_attempt.mp4" >> "FloeAgent-IDE-Recordings/$SIM_NAME.log" 2>&1 &
+              recording_pid=$!
+              trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
+              continue
+            fi
+            [ "$leg_code" -ne 0 ] && status=1
+            break
+          done
+          kill -INT "$recording_pid" 2>/dev/null || true
+          wait "$recording_pid" || true
+          trap - EXIT
+          # The original verifier requires all three cases to pass with no
+          # skips; a missing bundle is a leg failure, not a traceback.
+          if test -d "FloeAgent-IDE-$SIM_NAME.xcresult"; then
+            python3 scripts/verify_ide_ui_xcresult.py --result-bundle "FloeAgent-IDE-$SIM_NAME.xcresult" \
+              --summary-output "FloeAgent-IDE-$SIM_NAME-summary.json" || status=1
+          else
+            echo "FloeAgent-IDE-$SIM_NAME.xcresult was never produced; the leg has no verifiable result." >&2
+            status=1
+          fi
+          if test -d "FloeAgent-IDE-$SIM_NAME.xcresult"; then
+            mkdir -p "FloeAgent-IDE-Screenshots/$SIM_NAME"
+            xcrun xcresulttool export attachments --path "FloeAgent-IDE-$SIM_NAME.xcresult" \
+              --output-path "FloeAgent-IDE-Screenshots/$SIM_NAME" || true
+          fi
+          exit "$status"
+
+      - name: Upload recovered IDE evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ide-host-recovery-${{ matrix.name }}-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/host-metadata/host-metadata.json
+            ${{ runner.temp }}/host-verification.json
+            original-source/FloeAgent/FloeAgent-IDE-*.log
+            original-source/FloeAgent/FloeAgent-IDE-*.json
+            original-source/FloeAgent/FloeAgent-IDE-*.xcresult
+            original-source/FloeAgent/FloeAgent-IDE-Screenshots
+            original-source/FloeAgent/FloeAgent-IDE-Recordings
+            ${{ runner.temp }}/SwiftTestDiagnostics
+          if-no-files-found: ignore
+          retention-days: 7
