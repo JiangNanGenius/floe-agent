@@ -209,8 +209,48 @@ jobs:
         run: |
           swift package resolve
           python3 scripts/tests/test_resolved_pins.py
+          python3 scripts/tests/test_resolve_xcode_dependencies.py
           scripts/pin_check.sh
           scripts/license_inventory.sh
+
+      # `swift package resolve` above uses SwiftPM's default cache, but
+      # xcodebuild resolves the same graph again into $FLOE_SPM_CACHE_ROOT.
+      # Build 182 (job 105296416221) hit a curl 56 clone timeout and a GitHub
+      # DNS failure there and reported only the downstream binary-target
+      # mapping error. Isolate that network phase, retry it only on explicit
+      # network signatures (deterministic checksum/manifest/auth errors always
+      # fail immediately), and keep every raw attempt. The tracked host lock
+      # stays byte-identical; the actual Xcode lock is compared by normalized
+      # pins so an originHash/schema/format rewrite passes while a revision
+      # change is rejected with the drift bytes kept as evidence.
+      # xcodebuild reads its own project.xcworkspace lock, not the tracked host
+      # lock, so the committed HEAD lock is the read-only baseline for seeding
+      # and verifying that actual Xcode lock (including app-only WhisperKit).
+      - name: Resolve Xcode package dependencies with bounded network retry
+        timeout-minutes: 30
+        run: |
+          git show HEAD:FloeAgent/Package.resolved > "$RUNNER_TEMP/FloeCanonicalPackage.resolved"
+          scripts/resolve_xcode_dependencies.sh \
+            --project FloeAgent.xcodeproj \
+            --scheme FloeAgent \
+            --configuration Debug \
+            --destination 'generic/platform=iOS Simulator' \
+            --package-cache-path "$FLOE_SPM_CACHE_ROOT" \
+            --derived-data-path "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
+            --resolved-file Package.resolved \
+            --canonical-lock "$RUNNER_TEMP/FloeCanonicalPackage.resolved" \
+            --xcode-lock FloeAgent.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved \
+            --project-yml project.yml \
+            --log-dir "$RUNNER_TEMP/FloeDependencyTransport/sdk27" \
+            --max-attempts 3
+
+      - name: Preserve SDK 27 dependency-resolution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sdk27-dependency-transport-${{ github.run_id }}
+          path: ${{ runner.temp }}/FloeDependencyTransport/sdk27/
+          if-no-files-found: ignore
 
       # Fonts are a release-blocking build input: the app must never ship
       # without the verified bundled CJK set.
@@ -292,6 +332,7 @@ jobs:
         run: |
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" -project FloeAgent.xcodeproj -scheme FloeAgent \
             -skipPackagePluginValidation -skipMacroValidation \
+            -onlyUsePackageVersionsFromResolvedFile \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
             -only-testing:FloeAppTests \
@@ -549,6 +590,7 @@ jobs:
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
+            -onlyUsePackageVersionsFromResolvedFile \
             -project FloeAgent.xcodeproj \
             -scheme FloeAgent \
             -configuration Release \
@@ -700,16 +742,52 @@ jobs:
       - name: Prime the pinned shell artifact cache through GitHub API
         run: python3 scripts/prime_shell_artifact_cache.py --cache-dir "$FLOE_SPM_CACHE_ROOT/artifacts"
 
-      - name: Rebuild the exact tag with the accepted App Store SDK
+      - name: Install accepted-SDK release tooling and generate the project
         run: |
           brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
           scripts/pin_check.sh
+
+      # Same bounded resolution as the SDK 27 job, using this job's cache,
+      # derived data, configuration and destination, and the same committed
+      # HEAD lock as the read-only baseline for the actual Xcode workspace
+      # lock. The build below freezes package versions with
+      # -onlyUsePackageVersionsFromResolvedFile; those flags do not make the build offline.
+      # A missing checkout or binary artifact may still be downloaded.
+      - name: Resolve Xcode package dependencies with bounded network retry
+        timeout-minutes: 30
+        run: |
+          git show HEAD:FloeAgent/Package.resolved > "$RUNNER_TEMP/FloeCanonicalPackage.resolved"
+          scripts/resolve_xcode_dependencies.sh \
+            --project FloeAgent.xcodeproj \
+            --scheme FloeAgent \
+            --configuration Release \
+            --destination 'generic/platform=iOS' \
+            --package-cache-path "$FLOE_SPM_CACHE_ROOT" \
+            --derived-data-path "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
+            --resolved-file Package.resolved \
+            --canonical-lock "$RUNNER_TEMP/FloeCanonicalPackage.resolved" \
+            --xcode-lock FloeAgent.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved \
+            --project-yml project.yml \
+            --log-dir "$RUNNER_TEMP/FloeDependencyTransport/accepted-sdk" \
+            --max-attempts 3
+
+      - name: Preserve accepted-SDK dependency-resolution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk-dependency-transport-${{ github.run_id }}
+          path: ${{ runner.temp }}/FloeDependencyTransport/accepted-sdk/
+          if-no-files-found: ignore
+
+      - name: Rebuild the exact tag with the accepted App Store SDK
+        run: |
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
+            -onlyUsePackageVersionsFromResolvedFile \
             -project FloeAgent.xcodeproj \
             -scheme FloeAgent \
             -configuration Release \
@@ -751,6 +829,7 @@ jobs:
         run: |
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" -project FloeAgent.xcodeproj -scheme FloeAgent \
             -skipPackagePluginValidation -skipMacroValidation \
+            -onlyUsePackageVersionsFromResolvedFile \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
             -only-testing:FloeAppTests \
