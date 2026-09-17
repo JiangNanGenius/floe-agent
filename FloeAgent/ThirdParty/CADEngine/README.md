@@ -70,7 +70,11 @@ what allows no-op saves of drawings that omit an `OBJECTS` section (they keep
 `initialize_defaults()`-synthesized standard objects) without blanket-stripping
 objects. Regression tests cover the no-OBJECTS no-op save, annotation strokes
 on such drawings, preservation of non-default custom styles/objects/layouts,
-and rejection of genuinely missing objects.
+and rejection of genuinely missing objects. The upstream writer/reader also
+loses the in-memory TrueType family field and non-default layout paper units
+in the diagnosed fixture. Those differences remain errors: tests assert that
+saving refuses replacement bytes and preserves the source. They are not
+normalized as equivalent references.
 
 Run `cargo test --locked` for native qualification. The dedicated Linux workflow
 also compiles WASM with a 384 MiB linear-memory maximum and emits web bindings.

@@ -656,11 +656,12 @@ mod tests {
         let mut kept = Vec::with_capacity(lines.len());
         let mut i = 0;
         while i < lines.len() {
-            let target = lines.get(i).is_some_and(|line| line.trim() == "SECTION")
-                && lines.get(i + 1).is_some_and(|line| line.trim() == "2")
-                && lines.get(i + 2) == Some(&section);
+            let target = lines.get(i).is_some_and(|line| line.trim() == "0")
+                && lines.get(i + 1).is_some_and(|line| line.trim() == "SECTION")
+                && lines.get(i + 2).is_some_and(|line| line.trim() == "2")
+                && lines.get(i + 3) == Some(&section);
             if target {
-                i += 3;
+                i += 4;
                 while i + 1 < lines.len()
                     && !(lines[i].trim() == "0" && lines[i + 1].trim() == "ENDSEC") { i += 1; }
                 i += 2; // consume the 0/ENDSEC pair
@@ -714,7 +715,8 @@ mod tests {
         linetype.set_handle(document.allocate_handle());
         let linetype_handle = linetype.handle;
         document.line_types.add(linetype).unwrap();
-        let mut text_style = TextStyle::with_truetype("FLOE_TXT", "MiSans-Regular.ttf");
+        let mut text_style = TextStyle::new("FLOE_TXT");
+        text_style.font_file = "MiSans-Regular.ttf".into();
         text_style.set_handle(document.allocate_handle());
         let text_style_handle = text_style.handle;
         document.text_styles.add(text_style).unwrap();
@@ -730,7 +732,6 @@ mod tests {
                 ObjectType::Layout(layout) if layout.name == "Layout1" => {
                     layout.paper_width = 420.0;
                     layout.paper_height = 297.0;
-                    layout.plot_paper_units = 1;
                 }
                 _ => {}
             }
@@ -741,7 +742,7 @@ mod tests {
         let dashed = reopened.line_types.get("Dashed").expect("custom linetype preserved");
         assert!(!dashed.elements.is_empty());
         let custom = reopened.text_styles.get("FLOE_TXT").expect("custom text style preserved");
-        assert_eq!(custom.true_type_font, "MiSans-Regular.ttf");
+        assert_eq!(custom.font_file, "MiSans-Regular.ttf");
         let mleader = reopened.objects.values().find_map(|object| match object {
             ObjectType::MultiLeaderStyle(style) => Some(style), _ => None,
         }).unwrap();
@@ -764,20 +765,46 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_gate_rejects_unpreserved_font_and_paper_units() {
+        // CI 35190961896 exposed actual upstream loss, not equivalent reference
+        // encoding. These fields must keep failing the gate; never normalize
+        // away the missing font family or changed paper-unit meaning.
+        for font_case in [true, false] {
+            let mut document = fixture(DxfVersion::AC1032);
+            if font_case {
+                let mut style = TextStyle::with_truetype("FLOE_LOSS", "MiSans-Regular.ttf");
+                style.set_handle(document.allocate_handle());
+                document.text_styles.add(style).unwrap();
+            } else {
+                let layout = document.objects.values_mut().find_map(|object| match object {
+                    ObjectType::Layout(layout) if layout.name == "Layout1" => Some(layout),
+                    _ => None,
+                }).unwrap();
+                layout.plot_paper_units = 1;
+            }
+            let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![] };
+            let before = auxiliary_image(&session.document);
+            assert!(session.save().is_err());
+            assert_eq!(before, auxiliary_image(&session.document));
+        }
+    }
+
+    #[test]
     fn roundtrip_gate_still_rejects_missing_objects() {
-        // Guard against over-normalization: genuinely losing a non-graphical
-        // object must still fail the save gate.
-        let input = encode(&fixture(DxfVersion::AC1032), "dxf").unwrap();
-        let stripped = without_dxf_section(&input, "OBJECTS");
-        let mut session = CadSession::new(&stripped, "dxf").unwrap();
+        // Simulate actual loss after encoding: compare an intact source with
+        // a reopened document missing one object, instead of deliberately
+        // deleting source content before save (which is a different contract).
+        let document = fixture(DxfVersion::AC1032);
+        let mut reopened = read(&encode(&document, "dxf").unwrap(), "dxf").unwrap();
+        verify(&document, &reopened).unwrap();
         let mut removed = 0;
-        session.document.objects.retain(|_, object| {
+        reopened.objects.retain(|_, object| {
             let keep = !matches!(object, ObjectType::MultiLeaderStyle(_));
             if !keep { removed += 1; }
             keep
         });
         assert_eq!(removed, 1);
-        assert!(session.save().is_err());
+        assert!(verify(&document, &reopened).is_err());
     }
 
     #[test]
