@@ -1,6 +1,6 @@
 # 下一版公开 TestFlight Beta：材料准备
 
-状态：材料草稿已更新，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。当前已上传基线为 1.7.0（178），下一候选为 179；179 尚未上传，IDE 云端保存失败仍在修复。版本冻结和安装包验证完成后才能作为最终送审材料。
+状态：材料草稿已更新，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。当前已上传基线为 1.7.0（178），下一候选为 179；179 尚未上传，IDE 保存修复已提交，正在进行双端云端复测。版本冻结和安装包验证完成后才能作为最终送审材料。
 
 [13 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf)已更新，保留[Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。新增源码 955e346a 的手记截图，并说明原生 Office 测试跳过、IDE 测试失败及 iPad 下载模型聊天闪退仍需复核。所有页面已重新检查排版；校验摘要见[验证记录](public-beta/review-guide-validation.json)。新版已另存到 iCloud Drive 根目录「Floe-公开Beta审核演示说明-179准备稿.pdf」，本机副本摘要一致；保留旧 PDF，其他设备同步状态尚未观测。
 
