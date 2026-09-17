@@ -1,0 +1,28 @@
+{
+  "sourceSHA": "0b7f7903c9fd851b9d9e278249766c39d5069cf1",
+  "build": "183",
+  "tag": "v1.7.0-beta.40",
+  "run": 35284117684,
+  "result": "failure",
+  "upload": "not_started",
+  "deviceArtifact": "not_produced",
+  "passed": [
+    "both SDK actual Xcode lock checks and package resolution on attempt1",
+    "Swift module and environment/package/media/Node qualification"
+  ],
+  "failure": "NotesEngineeringCoverRenderer.swift lines477/491: non-Sendable Result<Any?, Error> sent through continuation",
+  "jobs": {
+    "sdk27": 105412588382,
+    "acceptedSDK": 105412588381
+  },
+  "retainedLogs": {
+    "sdk27-job.log": {
+      "sha256": "32bb12b7756f8d9f70f6608b0adee000652bfbf0f6b8243a16a0918209eee865",
+      "bytes": 11301414
+    },
+    "accepted-sdk-job.log": {
+      "sha256": "852baf453a5a1ca1719c6be1c5a88267d2fd58467198ce6b37057caa1ecdc3ea",
+      "bytes": 9126684
+    }
+  }
+}

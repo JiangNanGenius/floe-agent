@@ -1,10 +1,13 @@
 # Floe Agent 1.7.0 (183) — beta.40 candidate
 
-**Tagged candidate; cloud qualification running, not uploaded.**
+**Cloud App compilation failed; no package or upload.**
 
 Immutable source: `0b7f7903c9fd851b9d9e278249766c39d5069cf1` / `v1.7.0-beta.40`.
 [Release run 35284117684](https://github.com/JiangNanGenius/floe-agent/actions/runs/35284117684)
-runs the complete two-SDK qualification.
+completed with matching Swift concurrency errors in `NotesEngineeringCoverRenderer`
+while transferring `Result<Any?, Error>` through continuations. Both real Xcode
+dependency resolutions and the module gates passed; App/UI acceptance did not.
+[Failure record](qualification/build183-release/cloud-failure.json).
 
 This candidate retains the durable IDE GitHub Actions jobs, document content
 covers and runtime lifecycle qualification introduced in builds 179–182. It
