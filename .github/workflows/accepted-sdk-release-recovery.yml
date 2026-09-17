@@ -1,0 +1,1079 @@
+name: Accepted-SDK release recovery (Xcode 26.6)
+
+# Dispatch-only continuation of the failed build 179 release. Run 35228451173
+# (push of v1.7.0-beta.36, a510ea6d) produced the SDK 27 unsigned IPA, the
+# retained unsigned device application and passed focused App regressions, but
+# its accepted-SDK Notes step hit the fixed 20-minute per-step budget while the
+# iPhone UI leg was still running, so the accepted-sdk-input, signing and
+# TestFlight upload never ran.
+#
+# This controller:
+#   * never rebuilds the device application: it reuses
+#     accepted-sdk-device-recovery-<version>-build<build> from the exact source
+#     run after proving repository/path/event/tag/SHA/attempt/step/artifact
+#     digest with FloeAgent/scripts/verify_accepted_sdk_recovery.py;
+#   * never rebuilds App regressions: it re-runs the original
+#     verify_app_regression_xcresult.py against the retained
+#     accepted-sdk-app-diagnostics xcresult;
+#   * rebuilds only the accepted-SDK simulator test host (the SDK 26 host was
+#     never retained) and reuses it afterwards without rebuilding;
+#   * runs the original Notes selector and original verifier per device, each in
+#     its own 25-minute step so one device can never consume the other's budget.
+#     The selector and Office scope are derived from the source tag's release
+#     workflow, so they cannot be narrowed by a dispatch input;
+#   * normalizes and audits the restored device application exactly like the
+#     standard release, stages the accepted-sdk-input and calls the proven
+#     sign/validate/altool upload logic;
+#   * never tags, never publishes a GitHub release, never uses the expedited
+#     waiver and never rebuilds SDK 27.
+#
+# The application source is always checked out from the existing tag; the
+# verification controller comes from the executing workflow ref, so fixes to
+# the recovery logic do not require moving the tag.
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Failed release workflow run id that retained the device build
+        required: true
+        type: string
+      source_attempt:
+        description: Run attempt that retained the artifacts
+        required: false
+        default: "1"
+        type: string
+      tag:
+        description: Existing immutable release tag
+        required: true
+        type: string
+      source_sha:
+        description: Full 40-hex commit the tag points at
+        required: true
+        type: string
+      # Version, build, source SHA and artifact ids/digests are intentionally
+      # required with no defaults: the same workflow serves any tag, and a run
+      # for one tag can never be silently paired with another tag's package.
+      version:
+        description: Marketing version recorded in the tag
+        required: true
+        type: string
+      build:
+        description: Build number recorded in the tag
+        required: true
+        type: string
+      device_artifact_id:
+        description: Pinned accepted-sdk-device-recovery artifact id
+        required: true
+        type: string
+      device_artifact_digest:
+        description: Pinned sha256 digest of the device-recovery artifact
+        required: true
+        type: string
+      diagnostics_artifact_id:
+        description: Pinned accepted-sdk-app-diagnostics artifact id
+        required: true
+        type: string
+      diagnostics_artifact_digest:
+        description: Pinned sha256 digest of the app-diagnostics artifact
+        required: true
+        type: string
+      xcode_version:
+        description: Exact App Store accepted Xcode version (for example 26.6)
+        required: true
+        type: string
+      xcode_build:
+        description: Exact App Store accepted Xcode build (for example 17F113)
+        required: true
+        type: string
+      # The Notes selector and the verifier's Office scope are NOT inputs: the
+      # recovery derives them from the source tag's own release workflow with
+      # recovery-controller/FloeAgent/scripts/bind_notes_scope.py, so a dispatch
+      # can never narrow the qualification to a weaker suite.
+      simulator_host_run:
+        description: Run id of a previously retained simulator host (empty rebuilds)
+        required: false
+        default: ""
+        type: string
+      simulator_host_attempt:
+        description: Run attempt of the retained simulator host
+        required: false
+        default: "1"
+        type: string
+      simulator_host_artifact_id:
+        description: Artifact id of a previously retained simulator host
+        required: false
+        default: ""
+        type: string
+      simulator_host_sha256:
+        description: Pinned Products.tar.gz digest of the retained host
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: floe-accepted-sdk-recovery-${{ inputs.tag }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate-controller:
+    name: Validate the recovery controller fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      # The verification helper and its fixtures must come from the executing
+      # workflow commit, never from the older tagged source under test.
+      - name: Unit-test the strict recovery helper
+        run: |
+          python3 -m unittest discover -s FloeAgent/scripts/tests \
+            -p test_accepted_sdk_release_recovery.py
+
+  verify-reused-evidence:
+    name: Re-verify the reused device and App-regression evidence
+    needs: validate-controller
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      REQUIRED_XCODE_VERSION: Xcode ${{ inputs.xcode_version }}
+      REQUIRED_XCODE_BUILD: ${{ inputs.xcode_build }}
+      XCODE_BUILD: ${{ inputs.xcode_build }}
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      APP_VERSION: ${{ inputs.version }}
+      APP_BUILD: ${{ inputs.build }}
+      DEVICE_ARTIFACT_ID: ${{ inputs.device_artifact_id }}
+      DEVICE_ARTIFACT_DIGEST: ${{ inputs.device_artifact_digest }}
+      DIAGNOSTICS_ARTIFACT_ID: ${{ inputs.diagnostics_artifact_id }}
+      DIAGNOSTICS_ARTIFACT_DIGEST: ${{ inputs.diagnostics_artifact_digest }}
+    outputs:
+      total: ${{ steps.app_regression.outputs.total }}
+      passed: ${{ steps.app_regression.outputs.passed }}
+      failed: ${{ steps.app_regression.outputs.failed }}
+      skipped: ${{ steps.app_regression.outputs.skipped }}
+    steps:
+      - name: Validate dispatch inputs
+        run: |
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "source_sha must be lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then
+            echo "source_sha must be a full 40-hex commit" >&2; exit 1
+          fi
+          for value in "$SOURCE_RUN" "$SOURCE_ATTEMPT" "$APP_BUILD" \
+              "$DEVICE_ARTIFACT_ID" "$DIAGNOSTICS_ARTIFACT_ID"; do
+            case "$value" in
+              *[!0-9]*|'') echo "numeric dispatch input required, got '$value'" >&2; exit 1 ;;
+            esac
+          done
+          if [ "$SOURCE_ATTEMPT" -lt 1 ]; then
+            echo "source_attempt must be at least 1" >&2; exit 1
+          fi
+          case "$DEVICE_ARTIFACT_DIGEST$DIAGNOSTICS_ARTIFACT_DIGEST" in
+            sha256:*) ;;
+            *) echo "artifact digests must be sha256:<hex>" >&2; exit 1 ;;
+          esac
+          case "$RELEASE_TAG" in
+            v[0-9]*.*.*) ;;
+            *) echo "tag must be SemVer" >&2; exit 1 ;;
+          esac
+          test -n "$APP_VERSION"
+
+      - name: Check out the exact tagged application source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag }}
+          path: original-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The verifier is part of the executing controller, not the tagged app.
+      - name: Check out the executing recovery controller
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: recovery-controller
+          persist-credentials: false
+
+      - name: Require the tagged source and accepted toolchain
+        run: |
+          set -euo pipefail
+          test "$(git -C original-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C original-source rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          preflight="$(mktemp)"
+          GITHUB_OUTPUT="$preflight" bash original-source/FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG" >/dev/null
+          grep -Fx "version=$APP_VERSION" "$preflight"
+          grep -Fx "build=$APP_BUILD" "$preflight"
+          grep -Fx "source_sha=$SOURCE_SHA" "$preflight"
+          actual="$(xcodebuild -version)"
+          printf '%s\n' "$actual" | grep -F "$REQUIRED_XCODE_VERSION"
+          printf '%s\n' "$actual" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+          major="${REQUIRED_XCODE_VERSION#Xcode }"; major="${major%%.*}"
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          printf 'iPhoneOS SDK %s\n' "$SDK_VERSION"
+          case "$SDK_VERSION" in
+            "$major".*) ;;
+            *) echo "iPhoneOS SDK major is not $major: $SDK_VERSION" >&2; exit 1 ;;
+          esac
+
+      - name: Fetch the trusted source run metadata
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/source-metadata"
+          mkdir -p "$metadata"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$metadata/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > "$metadata/jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts?per_page=100" > "$metadata/artifacts.json"
+
+      - name: Verify reused provenance and pinned artifact digests
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/recovery-controller/FloeAgent/scripts/verify_accepted_sdk_recovery.py" \
+            source-run \
+            --run "$RUNNER_TEMP/source-metadata/run.json" \
+            --jobs "$RUNNER_TEMP/source-metadata/jobs.json" \
+            --artifacts "$RUNNER_TEMP/source-metadata/artifacts.json" \
+            --source-sha "$SOURCE_SHA" \
+            --source-run "$SOURCE_RUN" \
+            --source-attempt "$SOURCE_ATTEMPT" \
+            --tag "$RELEASE_TAG" \
+            --version "$APP_VERSION" \
+            --build "$APP_BUILD" \
+            --device-artifact-id "$DEVICE_ARTIFACT_ID" \
+            --device-artifact-digest "$DEVICE_ARTIFACT_DIGEST" \
+            --diagnostics-artifact-id "$DIAGNOSTICS_ARTIFACT_ID" \
+            --diagnostics-artifact-digest "$DIAGNOSTICS_ARTIFACT_DIGEST" \
+            --report "$RUNNER_TEMP/RECOVERY-SOURCE-PROVENANCE.json"
+
+      - name: Download the reused accepted-SDK App diagnostics
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk-app-diagnostics-${{ inputs.version }}-build${{ inputs.build }}
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/AcceptedDiagnostics
+
+      # The reused xcresult is re-checked with the original verifier from the
+      # tagged source, so the recorded App regressions are really the ones that
+      # passed under Xcode 26.6 and really cover every required suite.
+      - name: Re-verify the reused App regression xcresult
+        id: app_regression
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/AcceptedDiagnostics/FloeStable-AppRegressionTests.xcresult"
+          test -d "$bundle"
+          python3 original-source/FloeAgent/scripts/verify_app_regression_xcresult.py \
+            --result-bundle "$bundle" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary-output "$RUNNER_TEMP/AcceptedDiagnostics/FloeStable-AppRegressionTests-SUMMARY.txt"
+
+      - name: Upload the re-verified evidence for staging
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk-recovery-evidence-${{ inputs.version }}-build${{ inputs.build }}
+          path: |
+            ${{ runner.temp }}/RECOVERY-SOURCE-PROVENANCE.json
+            ${{ runner.temp }}/AcceptedDiagnostics/FloeStable-AppRegressionTests.xcresult
+            ${{ runner.temp }}/AcceptedDiagnostics/FloeStable-AppRegressionTests-SUMMARY.txt
+          if-no-files-found: error
+
+  recover-notes-qualification:
+    name: Rebuild the simulator host and run both Notes legs
+    needs: [validate-controller, verify-reused-evidence]
+    runs-on: macos-26
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      REQUIRED_XCODE_VERSION: Xcode ${{ inputs.xcode_version }}
+      REQUIRED_XCODE_BUILD: ${{ inputs.xcode_build }}
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      APP_VERSION: ${{ inputs.version }}
+      APP_BUILD: ${{ inputs.build }}
+      HOST_RUN: ${{ inputs.simulator_host_run }}
+      HOST_ATTEMPT: ${{ inputs.simulator_host_attempt }}
+      HOST_ARTIFACT_ID: ${{ inputs.simulator_host_artifact_id }}
+      HOST_SHA256: ${{ inputs.simulator_host_sha256 }}
+      XCODE_VERSION: ${{ inputs.xcode_version }}
+      XCODE_BUILD: ${{ inputs.xcode_build }}
+    steps:
+      - name: Validate dispatch inputs
+        run: |
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "source_sha must be lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then
+            echo "source_sha must be a full 40-hex commit" >&2; exit 1
+          fi
+
+      - name: Check out the exact tagged application source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag }}
+          path: original-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the executing recovery controller
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: recovery-controller
+          persist-credentials: false
+
+      - name: Require the tagged source and accepted toolchain
+        run: |
+          set -euo pipefail
+          test "$(git -C original-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C original-source rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          preflight="$(mktemp)"
+          GITHUB_OUTPUT="$preflight" bash original-source/FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG" >/dev/null
+          grep -Fx "version=$APP_VERSION" "$preflight"
+          grep -Fx "build=$APP_BUILD" "$preflight"
+          grep -Fx "source_sha=$SOURCE_SHA" "$preflight"
+          actual="$(xcodebuild -version)"
+          expected="$(printf 'Xcode %s\nBuild version %s\n' "$XCODE_VERSION" "$XCODE_BUILD")"
+          if [ "$actual" != "$expected" ]; then
+            printf 'runner toolchain mismatch\nexpected: %s\nactual: %s\n' "$expected" "$actual" >&2
+            exit 1
+          fi
+          sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          case "$sdk_version" in
+            26.*) ;;
+            *) echo "iPhoneSimulator SDK major is not 26: $sdk_version" >&2; exit 1 ;;
+          esac
+          echo "runner toolchain Xcode $XCODE_VERSION ($XCODE_BUILD), iPhoneSimulator SDK $sdk_version"
+
+      # The selector and Office scope come from the source tag itself, never
+      # from a dispatch input, so a caller cannot narrow the Notes suite.
+      - name: Bind the Notes selector and verifier scope to the source tag
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/recovery-controller/FloeAgent/scripts/bind_notes_scope.py" \
+            --workflow original-source/.github/workflows/release-unsigned-ipa.yml \
+            --github-env "$GITHUB_ENV"
+
+      # A previously retained host is reused only after the same provenance,
+      # digest and archive checks as the IDE recovery, so a second Notes flake
+      # never rebuilds the App.
+      - name: Decide whether a retained simulator host is reused
+        id: host_mode
+        run: |
+          set -euo pipefail
+          if [ -z "$HOST_ARTIFACT_ID" ] && [ -z "$HOST_RUN" ] && [ -z "$HOST_SHA256" ]; then
+            echo "reuse=0" >> "$GITHUB_OUTPUT"
+            echo "No retained simulator host requested; it will be built and retained."
+            exit 0
+          fi
+          test -n "$HOST_ARTIFACT_ID"
+          test -n "$HOST_RUN"
+          test -n "$HOST_SHA256"
+          case "$HOST_RUN$HOST_ARTIFACT_ID" in
+            *[!0-9]*) echo "host run and artifact id must be numeric" >&2; exit 1 ;;
+          esac
+          case "$HOST_SHA256" in
+            *[!0-9a-f]*|'') echo "host products digest must be lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#HOST_SHA256}" -ne 64 ]; then
+            echo "host products digest must be a SHA-256" >&2; exit 1
+          fi
+          echo "reuse=1" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the retained simulator-host run metadata
+        if: steps.host_mode.outputs.reuse == '1'
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/host-metadata"
+          mkdir -p "$metadata"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOST_RUN" > "$metadata/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOST_RUN/jobs?per_page=100" > "$metadata/jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOST_RUN/artifacts?per_page=100" > "$metadata/artifacts.json"
+          python3 - "$metadata" <<'PYMETA'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          run = json.loads((root / 'run.json').read_text())
+          jobs = json.loads((root / 'jobs.json').read_text())
+          artifacts = json.loads((root / 'artifacts.json').read_text())
+          metadata = {
+              'repository': run['head_repository']['full_name'],
+              'workflow_path': run['path'].split('@')[0],
+              'event': run['event'],
+              'head_sha': run['head_sha'],
+              'run_id': run['id'],
+              'run_attempt': run['run_attempt'],
+              'status': run['status'],
+              'jobs': [
+                  {'name': job['name'],
+                   'steps': [{'name': step['name'], 'status': step['status'],
+                              'conclusion': step['conclusion']}
+                             for step in job.get('steps', [])]}
+                  for job in jobs.get('jobs', [])
+              ],
+              'artifacts': [
+                  {'id': artifact['id'], 'name': artifact['name'],
+                   'expired': artifact['expired'],
+                   'workflow_run_id': artifact['workflow_run']['id'],
+                   'size_in_bytes': artifact['size_in_bytes']}
+                  for artifact in artifacts.get('artifacts', [])
+              ],
+          }
+          (root / 'host-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PYMETA
+
+      - name: Download the retained accepted-SDK simulator host
+        if: steps.host_mode.outputs.reuse == '1'
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk26-simulator-host-${{ inputs.source_sha }}
+          run-id: ${{ inputs.simulator_host_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/host-artifact
+
+      - name: Verify and restore the retained simulator host
+        if: steps.host_mode.outputs.reuse == '1'
+        run: |
+          set -euo pipefail
+          # The metadata chooses one of two fixed contracts; callers cannot
+          # supply arbitrary step names or relax source/toolchain binding.
+          host_workflow="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow_path"])' "$RUNNER_TEMP/host-metadata/host-metadata.json")"
+          case "$host_workflow" in
+            .github/workflows/release-unsigned-ipa.yml)
+              host_binding=(
+                --workflow-path .github/workflows/release-unsigned-ipa.yml
+                --host-job "Qualify and build the accepted SDK in parallel"
+                --retain-step "Retain the compiled accepted-SDK simulator test host"
+                --upload-step "Upload recoverable accepted-SDK simulator host"
+              )
+              ;;
+            .github/workflows/accepted-sdk-release-recovery.yml)
+              host_binding=(
+                --workflow-path .github/workflows/accepted-sdk-release-recovery.yml
+                --host-job recover-notes-qualification
+                --retain-step "Retain the compiled accepted-SDK simulator host"
+                --upload-step "Upload recoverable accepted-SDK simulator host"
+                --controller-sha-binding
+                --source-checkout-step "Check out the exact tagged application source"
+                --source-verify-step "Require the tagged source and accepted toolchain"
+              )
+              ;;
+            *) echo "Unsupported simulator host workflow" >&2; exit 1 ;;
+          esac
+          python3 "$GITHUB_WORKSPACE/recovery-controller/FloeAgent/scripts/verify_compiled_test_host.py" \
+            --metadata "$RUNNER_TEMP/host-metadata/host-metadata.json" \
+            --artifact-dir "$RUNNER_TEMP/host-artifact" \
+            --source-sha "$SOURCE_SHA" \
+            --source-run "$HOST_RUN" \
+            --source-attempt "$HOST_ATTEMPT" \
+            --xcode-version "$XCODE_VERSION" \
+            --xcode-build "$XCODE_BUILD" \
+            --products-sha256 "$HOST_SHA256" \
+            --artifact-prefix accepted-sdk26-simulator-host \
+            "${host_binding[@]}" \
+            --extract-dir "$RUNNER_TEMP/FloeReleaseHost" \
+            --report "$RUNNER_TEMP/release-host-verification.json"
+          products="$RUNNER_TEMP/FloeReleaseHost/Products"
+          test -d "$products"
+          printf 'FLOE_XCTESTRUN=%s\n' "$(find "$products" -maxdepth 1 -name '*.xctestrun' -print -quit)" >> "$GITHUB_ENV"
+
+      - name: Restore bundled font cache
+        if: steps.host_mode.outputs.reuse != '1'
+        uses: actions/cache@v4
+        with:
+          path: |
+            original-source/FloeAgent/Vendor/Fonts/downloads
+            original-source/FloeAgent/FloeApp/Resources/Fonts/Bundled
+          key: floe-fonts-${{ hashFiles('original-source/FloeAgent/scripts/fonts/manifest.json') }}
+
+      - name: Fetch and verify bundled fonts
+        if: steps.host_mode.outputs.reuse != '1'
+        working-directory: original-source/FloeAgent
+        run: |
+          python3 scripts/fonts/fetch_fonts.py --check || {
+            python3 scripts/fonts/fetch_fonts.py
+            python3 scripts/fonts/fetch_fonts.py --check
+          }
+
+      - name: Select the job-local package cache
+        if: steps.host_mode.outputs.reuse != '1'
+        run: echo "FLOE_SPM_CACHE_ROOT=$RUNNER_TEMP/FloePackageCache" >> "$GITHUB_ENV"
+
+      - name: Restore verified shell binary archives
+        if: steps.host_mode.outputs.reuse != '1'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/FloePackageCache/artifacts
+          key: floe-shell-archives-v1-${{ hashFiles('original-source/FloeAgent/ThirdParty/FloeShellEngine/Package.swift') }}
+
+      - name: Prime the pinned shell artifact cache through GitHub API
+        if: steps.host_mode.outputs.reuse != '1'
+        working-directory: original-source/FloeAgent
+        run: python3 scripts/prime_shell_artifact_cache.py --cache-dir "$FLOE_SPM_CACHE_ROOT/artifacts"
+
+      # Only the simulator test host is rebuilt. The device application is
+      # never rebuilt on this path.
+      - name: Build the accepted-SDK simulator test host once
+        id: build_host
+        if: steps.host_mode.outputs.reuse != '1'
+        timeout-minutes: 75
+        working-directory: original-source/FloeAgent
+        run: |
+          set -euo pipefail
+          brew install xcodegen automake cmake
+          xcodebuild -downloadComponent MetalToolchain
+          scripts/bootstrap_python_runtime.sh
+          scripts/gen_project.sh
+          scripts/pin_check.sh
+          xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
+            -only-testing:FloeAppTests \
+            -only-testing:"$NOTES_TEST_SELECTOR" \
+            ENABLE_TESTABILITY=YES ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
+          products="$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products"
+          test -n "$(find "$products" -maxdepth 1 -name '*.xctestrun' -print -quit)"
+          test -n "$(find "$products" -type d -name 'FloeAgentUITests-Runner.app' -print -quit)"
+          printf 'FLOE_XCTESTRUN=%s\n' "$(find "$products" -maxdepth 1 -name '*.xctestrun' -print -quit)" >> "$GITHUB_ENV"
+
+      - name: Retain the compiled accepted-SDK simulator host
+        if: steps.host_mode.outputs.reuse != '1'
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/FloeAcceptedSDKHost"
+          mkdir -p "$archive"
+          tar -czf "$archive/Products.tar.gz" \
+            -C "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build" Products
+          (cd "$archive" && shasum -a 256 Products.tar.gz > Products.tar.gz.sha256)
+          printf '%s\n' "$SOURCE_SHA" > "$archive/SOURCE-SHA.txt"
+          xcodebuild -version > "$archive/TOOLCHAIN.txt"
+          printf '%s\n' "$GITHUB_RUN_ID" > "$archive/SOURCE-RUN.txt"
+          printf '%s\n' "$GITHUB_RUN_ATTEMPT" > "$archive/SOURCE-ATTEMPT.txt"
+          # The controller commit is the run's head SHA; a later reuse binds the
+          # host's run metadata to this commit and still checks SOURCE-SHA.txt.
+          printf '%s\n' "$GITHUB_SHA" > "$archive/CONTROLLER-SHA.txt"
+
+      - name: Upload recoverable accepted-SDK simulator host
+        if: steps.host_mode.outputs.reuse != '1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk26-simulator-host-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/FloeAcceptedSDKHost/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Require Notes import on the iPad simulator with the accepted SDK
+        timeout-minutes: 25
+        env:
+          SIM_DEVICE: iPad mini (A17 Pro)
+          SIM_NAME: ipad
+        run: |
+          set -o pipefail
+          test -n "$FLOE_XCTESTRUN"
+          qualification="$RUNNER_TEMP/FloeAcceptedSDKNotes"
+          mkdir -p "$qualification"
+          sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
+          test_device="$(xcrun simctl list devices available -j | python3 \
+            "$GITHUB_WORKSPACE/original-source/FloeAgent/scripts/select_test_simulator.py" \
+            --sdk-major "$sdk_major" --name "$SIM_DEVICE" --family "${SIM_DEVICE%% *}" --create)"
+          test -n "$test_device"
+          leg_attempt=1
+          status=0
+          while true; do
+            leg_code=0
+            diag_dir="$RUNNER_TEMP/FloeAcceptedSDKNotesDiagnostics/$SIM_NAME-attempt-$leg_attempt"
+            python3 "$GITHUB_WORKSPACE/original-source/FloeAgent/scripts/run_test_with_diagnostics.py" \
+              --output-dir "$diag_dir" --timeout 1320 --stall-timeout 420 \
+              --startup-stall-timeout 420 --simulator-id "$test_device" -- xcodebuild \
+              -xctestrun "$FLOE_XCTESTRUN" \
+              -destination "platform=iOS Simulator,id=$test_device" \
+              -resultBundlePath "$qualification/$SIM_NAME-attempt-$leg_attempt.xcresult" \
+              -collect-test-diagnostics never \
+              -only-testing:"$NOTES_TEST_SELECTOR" \
+              -parallel-testing-enabled NO -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 360 \
+              CODE_SIGNING_ALLOWED=NO test-without-building \
+              2>&1 | tee "$qualification/$SIM_NAME-attempt-$leg_attempt.log" || leg_code=$?
+            # One retry only when the runner stalled before any test started; a
+            # real executed failure can never be retried into a pass.
+            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
+               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
+                 "$diag_dir/summary.json"; then
+              leg_attempt=2
+              continue
+            fi
+            [ "$leg_code" -ne 0 ] && status=1
+            break
+          done
+          final="$qualification/$SIM_NAME-attempt-$leg_attempt.xcresult"
+          if test -d "$final"; then
+            verifier_args=(--result-bundle "$final" --summary-output "$qualification/$SIM_NAME-summary.json")
+            if [ "$NOTES_SIMULATOR_WITHOUT_OFFICE" = "true" ]; then
+              verifier_args+=(--simulator-without-office)
+            fi
+            python3 "$GITHUB_WORKSPACE/original-source/FloeAgent/scripts/verify_notes_ui_xcresult.py" \
+              "${verifier_args[@]}" || status=1
+            mkdir -p "$qualification/screenshots/$SIM_NAME"
+            xcrun xcresulttool export attachments --path "$final" \
+              --output-path "$qualification/screenshots/$SIM_NAME" || true
+          else
+            echo "$final was never produced; the leg has no verifiable result." >&2
+            status=1
+          fi
+          exit "$status"
+
+      - name: Require Notes import on the iPhone simulator with the accepted SDK
+        timeout-minutes: 25
+        env:
+          SIM_DEVICE: iPhone 17 Pro
+          SIM_NAME: iphone
+        run: |
+          set -o pipefail
+          test -n "$FLOE_XCTESTRUN"
+          qualification="$RUNNER_TEMP/FloeAcceptedSDKNotes"
+          mkdir -p "$qualification"
+          sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
+          test_device="$(xcrun simctl list devices available -j | python3 \
+            "$GITHUB_WORKSPACE/original-source/FloeAgent/scripts/select_test_simulator.py" \
+            --sdk-major "$sdk_major" --name "$SIM_DEVICE" --family "${SIM_DEVICE%% *}" --create)"
+          test -n "$test_device"
+          leg_attempt=1
+          status=0
+          while true; do
+            leg_code=0
+            diag_dir="$RUNNER_TEMP/FloeAcceptedSDKNotesDiagnostics/$SIM_NAME-attempt-$leg_attempt"
+            python3 "$GITHUB_WORKSPACE/original-source/FloeAgent/scripts/run_test_with_diagnostics.py" \
+              --output-dir "$diag_dir" --timeout 1320 --stall-timeout 420 \
+              --startup-stall-timeout 420 --simulator-id "$test_device" -- xcodebuild \
+              -xctestrun "$FLOE_XCTESTRUN" \
+              -destination "platform=iOS Simulator,id=$test_device" \
+              -resultBundlePath "$qualification/$SIM_NAME-attempt-$leg_attempt.xcresult" \
+              -collect-test-diagnostics never \
+              -only-testing:"$NOTES_TEST_SELECTOR" \
+              -parallel-testing-enabled NO -test-timeouts-enabled YES \
+              -maximum-test-execution-time-allowance 360 \
+              CODE_SIGNING_ALLOWED=NO test-without-building \
+              2>&1 | tee "$qualification/$SIM_NAME-attempt-$leg_attempt.log" || leg_code=$?
+            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
+               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
+                 "$diag_dir/summary.json"; then
+              leg_attempt=2
+              continue
+            fi
+            [ "$leg_code" -ne 0 ] && status=1
+            break
+          done
+          final="$qualification/$SIM_NAME-attempt-$leg_attempt.xcresult"
+          if test -d "$final"; then
+            verifier_args=(--result-bundle "$final" --summary-output "$qualification/$SIM_NAME-summary.json")
+            if [ "$NOTES_SIMULATOR_WITHOUT_OFFICE" = "true" ]; then
+              verifier_args+=(--simulator-without-office)
+            fi
+            python3 "$GITHUB_WORKSPACE/original-source/FloeAgent/scripts/verify_notes_ui_xcresult.py" \
+              "${verifier_args[@]}" || status=1
+            mkdir -p "$qualification/screenshots/$SIM_NAME"
+            xcrun xcresulttool export attachments --path "$final" \
+              --output-path "$qualification/screenshots/$SIM_NAME" || true
+          else
+            echo "$final was never produced; the leg has no verifiable result." >&2
+            status=1
+          fi
+          exit "$status"
+
+      - name: Upload recovered Notes and host evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk-notes-recovery-${{ inputs.version }}-build${{ inputs.build }}
+          path: |
+            ${{ runner.temp }}/FloeAcceptedSDKNotes/
+            ${{ runner.temp }}/FloeAcceptedSDKNotesDiagnostics/
+            ${{ runner.temp }}/FloeAcceptedSDKHost/
+            ${{ runner.temp }}/release-host-verification.json
+            ${{ runner.temp }}/host-metadata/
+          if-no-files-found: ignore
+
+  stage-accepted-input:
+    name: Normalize and stage the recovered accepted-SDK input
+    needs: [verify-reused-evidence, recover-notes-qualification]
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      REQUIRED_XCODE_VERSION: Xcode ${{ inputs.xcode_version }}
+      REQUIRED_XCODE_BUILD: ${{ inputs.xcode_build }}
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      APP_VERSION: ${{ inputs.version }}
+      APP_BUILD: ${{ inputs.build }}
+    outputs:
+      input_sha256: ${{ steps.stage.outputs.input_sha256 }}
+    steps:
+      - name: Check out the exact tagged application source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag }}
+          path: original-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the executing recovery controller
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: recovery-controller
+          persist-credentials: false
+
+      - name: Require the tagged source and accepted toolchain
+        run: |
+          set -euo pipefail
+          test "$(git -C original-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C original-source rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          preflight="$(mktemp)"
+          GITHUB_OUTPUT="$preflight" bash original-source/FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG" >/dev/null
+          grep -Fx "version=$APP_VERSION" "$preflight"
+          grep -Fx "build=$APP_BUILD" "$preflight"
+          grep -Fx "source_sha=$SOURCE_SHA" "$preflight"
+          actual="$(xcodebuild -version)"
+          printf '%s\n' "$actual" | grep -F "$REQUIRED_XCODE_VERSION"
+          printf '%s\n' "$actual" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+
+      - name: Download the retained device application without rebuilding
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk-device-recovery-${{ inputs.version }}-build${{ inputs.build }}
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/DeviceRecovery
+
+      - name: Verify and safely restore the retained device application
+        id: restore_device
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/recovery-controller/FloeAgent/scripts/verify_accepted_sdk_recovery.py" \
+            device-archive \
+            --artifact-dir "$RUNNER_TEMP/DeviceRecovery" \
+            --source-sha "$SOURCE_SHA" \
+            --version "$APP_VERSION" \
+            --build "$APP_BUILD" \
+            --extract-dir "$RUNNER_TEMP/DevicePayload" \
+            --report "$RUNNER_TEMP/device-archive-verification.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Download the re-verified App regression evidence
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk-recovery-evidence-${{ inputs.version }}-build${{ inputs.build }}
+          path: ${{ runner.temp }}/RecoveryEvidence
+
+      - name: Normalize reviewed App Store bundle defects before signing
+        working-directory: original-source/FloeAgent
+        env:
+          APP_PATH: ${{ steps.restore_device.outputs.app_path }}
+        run: |
+          set -euo pipefail
+          test -d "$APP_PATH"
+          python3 scripts/prepare_app_store_bundle.py \
+            --app "$APP_PATH" \
+            --report "$RUNNER_TEMP/bundle-normalization.json"
+
+      - name: Stage the qualified accepted-SDK application without rebuilding it
+        id: stage
+        run: |
+          set -euo pipefail
+          input="$RUNNER_TEMP/AcceptedDistributionInput"
+          mkdir -p "$input"
+          ditto "$RUNNER_TEMP/DevicePayload/FloeSignedPayload" "$input/FloeSignedPayload"
+          ditto "$RUNNER_TEMP/RecoveryEvidence/FloeStable-AppRegressionTests.xcresult" \
+            "$input/FloeStable-AppRegressionTests.xcresult"
+          cp "$RUNNER_TEMP/RecoveryEvidence/FloeStable-AppRegressionTests-SUMMARY.txt" "$input/"
+          cp "$RUNNER_TEMP/bundle-normalization.json" "$input/"
+          cp "$RUNNER_TEMP/RECOVERY-SOURCE-PROVENANCE.json" "$input/"
+          printf '%s\n' "$SOURCE_SHA" > "$input/SOURCE-SHA.txt"
+          ditto -c -k --sequesterRsrc --keepParent "$input" "$RUNNER_TEMP/accepted-sdk-input.zip"
+          echo "input_sha256=$(shasum -a 256 "$RUNNER_TEMP/accepted-sdk-input.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the recovered accepted-SDK distribution input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk-input-${{ inputs.version }}-build${{ inputs.build }}
+          path: ${{ runner.temp }}/accepted-sdk-input.zip
+          if-no-files-found: error
+
+  sign-upload-testflight:
+    name: Sign, validate and upload the recovered build to TestFlight
+    needs: [stage-accepted-input, verify-reused-evidence]
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      REQUIRED_XCODE_VERSION: Xcode ${{ inputs.xcode_version }}
+      REQUIRED_XCODE_BUILD: ${{ inputs.xcode_build }}
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      APP_VERSION: ${{ inputs.version }}
+      APP_BUILD: ${{ inputs.build }}
+      INPUT_SHA256: ${{ needs.stage-accepted-input.outputs.input_sha256 }}
+      APP_REGRESSION_PASSED: ${{ needs.verify-reused-evidence.outputs.passed }}
+      APP_REGRESSION_TOTAL: ${{ needs.verify-reused-evidence.outputs.total }}
+      APP_REGRESSION_FAILED: ${{ needs.verify-reused-evidence.outputs.failed }}
+      APP_REGRESSION_SKIPPED: ${{ needs.verify-reused-evidence.outputs.skipped }}
+    steps:
+      - name: Check out the exact tagged application source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag }}
+          path: original-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the tagged source and accepted toolchain
+        run: |
+          set -euo pipefail
+          test "$(git -C original-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C original-source rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          preflight="$(mktemp)"
+          GITHUB_OUTPUT="$preflight" bash original-source/FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG" >/dev/null
+          grep -Fx "version=$APP_VERSION" "$preflight"
+          grep -Fx "build=$APP_BUILD" "$preflight"
+          grep -Fx "source_sha=$SOURCE_SHA" "$preflight"
+          actual="$(xcodebuild -version)"
+          printf '%s\n' "$actual" | grep -F "$REQUIRED_XCODE_VERSION"
+          printf '%s\n' "$actual" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+          major="${REQUIRED_XCODE_VERSION#Xcode }"; major="${major%%.*}"
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          printf 'iPhoneOS SDK %s\n' "$SDK_VERSION"
+          case "$SDK_VERSION" in
+            "$major".*) ;;
+            *) echo "iPhoneOS SDK major is not $major: $SDK_VERSION" >&2; exit 1 ;;
+          esac
+
+      - name: Download the recovered accepted-SDK distribution input
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk-input-${{ inputs.version }}-build${{ inputs.build }}
+          path: ${{ runner.temp }}/AcceptedInput
+
+      - name: Download the re-verified recovery provenance
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk-recovery-evidence-${{ inputs.version }}-build${{ inputs.build }}
+          path: ${{ runner.temp }}/RecoveryEvidence
+
+      - name: Verify and restore the exact recovered accepted-SDK application
+        run: |
+          set -euo pipefail
+          test -n "$INPUT_SHA256"
+          printf '%s  %s\n' "$INPUT_SHA256" "$RUNNER_TEMP/AcceptedInput/accepted-sdk-input.zip" \
+            | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/AcceptedInput/accepted-sdk-input.zip" -d "$RUNNER_TEMP/AcceptedInput"
+          input="$RUNNER_TEMP/AcceptedInput/AcceptedDistributionInput"
+          test "$(cat "$input/SOURCE-SHA.txt")" = "$SOURCE_SHA"
+          ditto "$input/FloeSignedPayload" "$RUNNER_TEMP/FloeSignedPayload"
+          ditto "$input/FloeStable-AppRegressionTests.xcresult" \
+            "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult"
+          cp "$input/FloeStable-AppRegressionTests-SUMMARY.txt" "$RUNNER_TEMP/"
+          cp "$input/bundle-normalization.json" "$RUNNER_TEMP/"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "$APP_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "$APP_BUILD"
+          python3 original-source/FloeAgent/scripts/verify_app_regression_xcresult.py \
+            --result-bundle "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult"
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          test -n "$ASC_API_PRIVATE_KEY_BASE64"
+          test -n "$ASC_KEY_ID"
+          echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          cp "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Install distribution identity and existing App Store profiles
+        env:
+          DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          HOST_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          SCREENSHARE_PROVISIONING_PROFILE: ${{ secrets.APPLE_SCREENSHARE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          test -n "$DISTRIBUTION_CERTIFICATE"
+          test -n "$HOST_PROVISIONING_PROFILE"
+          test -n "$SCREENSHARE_PROVISIONING_PROFILE"
+          KEYCHAIN="$RUNNER_TEMP/floe-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)$(uuidgen)"
+          echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+          echo "$HOST_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Floe.mobileprovision"
+          echo "$SCREENSHARE_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/FloeScreenShare.mobileprovision"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/distribution.p12" -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          SIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Apple Distribution/{print $2; exit}')"
+          test "${#SIGN_IDENTITY}" -eq 40
+          echo "SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          validate_profile() {
+            PROFILE_PATH="$1"
+            EXPECTED_APP_ID="$2"
+            SOURCE_ENTITLEMENTS_PATH="$3"
+            ENTITLEMENTS_PATH="$4"
+            EXPECTED_HOMEKIT="${5:-false}"
+            PROFILE_PLIST="$RUNNER_TEMP/$(basename "$PROFILE_PATH").plist"
+            security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")" = "$EXPECTED_APP_ID"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$PROFILE_PLIST")" = false
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:beta-reports-active' "$PROFILE_PLIST")" = true
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups:0' "$PROFILE_PLIST")" = group.org.floeagent.ios
+            if test "$EXPECTED_HOMEKIT" = true; then
+              test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.homekit' "$PROFILE_PLIST")" = true
+            fi
+            cp "$SOURCE_ENTITLEMENTS_PATH" "$ENTITLEMENTS_PATH"
+            /usr/libexec/PlistBuddy \
+              -c "Add :application-identifier string $EXPECTED_APP_ID" \
+              -c 'Add :com.apple.developer.team-identifier string QYL72C43K6' \
+              -c 'Add :get-task-allow bool false' \
+              -c 'Add :beta-reports-active bool true' \
+              -c 'Add :keychain-access-groups array' \
+              -c "Add :keychain-access-groups:0 string $EXPECTED_APP_ID" \
+              "$ENTITLEMENTS_PATH"
+            plutil -lint "$ENTITLEMENTS_PATH"
+          }
+          validate_profile \
+            "$RUNNER_TEMP/Floe.mobileprovision" \
+            QYL72C43K6.org.floeagent.ios \
+            "$GITHUB_WORKSPACE/original-source/FloeAgent/FloeApp/Entitlements/Floe.entitlements" \
+            "$RUNNER_TEMP/Floe.entitlements" \
+            true
+          /usr/libexec/PlistBuddy \
+            -c 'Add :com.apple.developer.icloud-container-environment string Production' \
+            -c 'Add :com.apple.developer.ubiquity-kvstore-identifier string QYL72C43K6.org.floeagent.ios' \
+            "$RUNNER_TEMP/Floe.entitlements"
+          validate_profile \
+            "$RUNNER_TEMP/FloeScreenShare.mobileprovision" \
+            QYL72C43K6.org.floeagent.ios.screenshare \
+            "$GITHUB_WORKSPACE/original-source/FloeAgent/FloeScreenShare/FloeScreenShare.entitlements" \
+            "$RUNNER_TEMP/FloeScreenShare.entitlements"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.icloud-container-environment' "$RUNNER_TEMP/Floe.entitlements")" = Production
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.ubiquity-kvstore-identifier' "$RUNNER_TEMP/Floe.entitlements")" = QYL72C43K6.org.floeagent.ios
+
+      - name: Sign, verify, package, and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/TestFlightExport"
+          cp "$RUNNER_TEMP/RecoveryEvidence/RECOVERY-SOURCE-PROVENANCE.json" "$RUNNER_TEMP/TestFlightExport/"
+          cp "$RUNNER_TEMP/bundle-normalization.json" "$RUNNER_TEMP/TestFlightExport/"
+          cp "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt" "$RUNNER_TEMP/TestFlightExport/"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
+            "$RUNNER_TEMP/TestFlightExport/FloeStable-AppRegressionTests.xcresult.zip"
+          unzip -t "$RUNNER_TEMP/TestFlightExport/FloeStable-AppRegressionTests.xcresult.zip"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          APPEX_PATH="$APP_PATH/PlugIns/Floe Screen Share.appex"
+          test -d "$APPEX_PATH"
+          cp "$RUNNER_TEMP/FloeScreenShare.mobileprovision" "$APPEX_PATH/embedded.mobileprovision"
+          cp "$RUNNER_TEMP/Floe.mobileprovision" "$APP_PATH/embedded.mobileprovision"
+          if test -d "$APP_PATH/Frameworks"; then
+            find "$APP_PATH/Frameworks" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 \
+              | while IFS= read -r -d '' CODE_PATH; do
+                  codesign --force --sign "$SIGN_IDENTITY" --generate-entitlement-der "$CODE_PATH"
+                done
+          fi
+          codesign --force --sign "$SIGN_IDENTITY" \
+            --entitlements "$RUNNER_TEMP/FloeScreenShare.entitlements" \
+            --generate-entitlement-der "$APPEX_PATH"
+          codesign --force --sign "$SIGN_IDENTITY" \
+            --entitlements "$RUNNER_TEMP/Floe.entitlements" \
+            --generate-entitlement-der "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          mkdir -p "$RUNNER_TEMP/TestFlightPayload/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/TestFlightPayload/Payload/$(basename "$APP_PATH")"
+          (
+            cd "$RUNNER_TEMP/TestFlightPayload"
+            ditto -c -k --sequesterRsrc --keepParent Payload "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+          )
+          unzip -t "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+          xcrun altool --validate-app \
+            --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+          xcrun altool --upload-app \
+            --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            | tee "$RUNNER_TEMP/TestFlightExport/UPLOAD-RECEIPT.txt"
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "version=$APP_VERSION"
+            echo "build=$APP_BUILD"
+            echo "commit=$SOURCE_SHA"
+            echo "accepted_sdk_toolchain=$REQUIRED_XCODE_VERSION ($REQUIRED_XCODE_BUILD)"
+            echo "reused_source_run=$SOURCE_RUN"
+            echo "reused_device_artifact=${{ inputs.device_artifact_id }}"
+            echo "reused_diagnostics_artifact=${{ inputs.diagnostics_artifact_id }}"
+            echo "accepted_sdk_reused_app_regression_tests=$APP_REGRESSION_PASSED/$APP_REGRESSION_TOTAL passed"
+            echo "accepted_sdk_app_regression_failed=$APP_REGRESSION_FAILED"
+            echo "accepted_sdk_app_regression_skipped=$APP_REGRESSION_SKIPPED"
+            echo "notes_ui_summaries=verified separately for ipad and iphone"
+            echo "distribution_policy=standard_release_gates_no_expedited_waiver"
+            echo "testflight_upload=accepted_by_transport"
+            echo "apple_processing_state=not_verified"
+            echo "floe_qa_visibility=not_verified"
+          } > "$RUNNER_TEMP/TestFlightExport/TESTFLIGHT-SUMMARY.txt"
+
+      - name: Upload TestFlight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: testflight-recovery-${{ inputs.version }}-build${{ inputs.build }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/TestFlightExport/
+          if-no-files-found: error
+
+      - name: Upload accepted-SDK focused-test evidence for the GitHub release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk-app-regression-${{ inputs.version }}-build${{ inputs.build }}
+          path: |
+            ${{ runner.temp }}/TestFlightExport/FloeStable-AppRegressionTests-SUMMARY.txt
+            ${{ runner.temp }}/TestFlightExport/FloeStable-AppRegressionTests.xcresult.zip
+          if-no-files-found: ignore

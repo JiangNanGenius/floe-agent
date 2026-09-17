@@ -9,28 +9,29 @@ from verify_notes_ui_xcresult import verify
 
 class NotesUIGateTests(unittest.TestCase):
     def fixture(self):
-        return ({"result": "Passed", "totalTestCount": 4, "passedTests": 4,
+        return ({"result": "Passed", "totalTestCount": 5, "passedTests": 5,
                  "failedTests": 0, "skippedTests": 0, "expectedFailures": 0},
                 {"children": [{"nodeType": "Test Case", "result": "Passed", "nodeIdentifier":
                  "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant()"},
                  {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier":
                  "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen()"},
                  {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier": "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout()"},
-                 {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()"}]})
+                 {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()"},
+                 {"nodeType": "Test Case", "result": "Passed", "nodeIdentifier": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()"}]})
 
     def test_actual_case_passes(self):
         summary, tree = self.fixture()
-        self.assertEqual(verify(summary, tree)["passedTests"], 4)
+        self.assertEqual(verify(summary, tree)["passedTests"], 5)
 
     def test_explicit_simulator_scope_never_claims_native_office_passed(self):
         summary, tree = self.fixture()
-        summary.update(passedTests=3, skippedTests=1)
+        summary.update(passedTests=4, skippedTests=1)
         tree['children'][1]['result'] = 'Skipped'
         with self.assertRaises(ValueError):
             verify(summary, tree)
         result = verify(summary, tree, simulator_without_office=True)
         self.assertFalse(result['nativeOfficeAccepted'])
-        self.assertEqual(result['coverage'], 'simulator-notes-only')
+        self.assertEqual(result['coverage'], 'simulator-notes-and-content-covers')
         tree['children'][0]['result'] = 'Skipped'
         with self.assertRaises(ValueError):
             verify(summary, tree, simulator_without_office=True)

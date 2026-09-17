@@ -67,8 +67,8 @@ def _require(condition: object, message: str) -> None:
         raise HostVerificationError(message)
 
 
-def artifact_name(source_sha: str) -> str:
-    return f"compiled-test-host-{source_sha}"
+def artifact_name(source_sha: str, prefix: str = "compiled-test-host") -> str:
+    return f"{prefix}-{source_sha}"
 
 
 def expected_toolchain(xcode_version: str, xcode_build: str) -> str:
@@ -91,8 +91,29 @@ def _sha256(path: Path) -> str:
 
 def verify_metadata(metadata: dict, *, source_sha: str, source_run: str,
                     source_attempt: str, repository: str = TRUSTED_REPOSITORY,
-                    workflow_path: str = TRUSTED_WORKFLOW_PATH) -> dict:
-    """Prove the host came from the trusted run before it is downloaded."""
+                    workflow_path: str = TRUSTED_WORKFLOW_PATH,
+                    host_job: str = HOST_JOB,
+                    upload_step: str = HOST_UPLOAD_STEP,
+                    retain_step: str | None = HOST_RETAIN_STEP,
+                    artifact_prefix: str = "compiled-test-host",
+                    controller_sha: str = "",
+                    source_checkout_step: str | None = None,
+                    source_verify_step: str | None = None) -> dict:
+    """Prove the host came from the trusted run before it is downloaded.
+
+    The job and step names default to the ``ci.yml`` App-regression host; a
+    release-side recovery passes its own trusted workflow/job/step names while
+    keeping the same archive, digest and extraction policy.
+
+    A ``ci.yml`` host carries ``head_sha == source_sha``. A release-recovery host
+    is built by a ``workflow_dispatch`` controller run whose ``head_sha`` is the
+    controller commit, so the caller may pass ``controller_sha`` (the SHA
+    recorded inside the verified archive) together with the source-checkout and
+    tagged-source verification steps. Provenance is then bound, not loosened:
+    the run head must equal the controller commit, the run must be a dispatch,
+    both source-binding steps must have succeeded, and the archive itself is
+    still pinned to ``source_sha`` and (optionally) a digest.
+    """
     _require(isinstance(metadata, dict), "run metadata must be a JSON object")
     _require(bool(_FULL_SHA.match(source_sha or "")),
              "source SHA must be a full 40-hex lowercase commit")
@@ -107,15 +128,13 @@ def verify_metadata(metadata: dict, *, source_sha: str, source_run: str,
     event = metadata.get("event")
     _require(event in TRUSTED_EVENTS,
              f"run event {event!r} is not a trusted push/workflow_dispatch")
-    _require(metadata.get("head_sha") == source_sha,
-             "run head SHA does not match the requested full source SHA")
     run_id = metadata.get("run_id")
     _require(str(run_id) == str(source_run), "run id does not match the request")
     run_attempt = metadata.get("run_attempt")
     _require(str(run_attempt) == str(source_attempt),
              "run attempt does not match the request")
 
-    name = artifact_name(source_sha)
+    name = artifact_name(source_sha, artifact_prefix)
     artifacts = metadata.get("artifacts") or []
     matches = [item for item in artifacts
                if isinstance(item, dict) and item.get("name") == name]
@@ -129,29 +148,61 @@ def verify_metadata(metadata: dict, *, source_sha: str, source_run: str,
 
     jobs = metadata.get("jobs") or []
     job = next((item for item in jobs
-                if isinstance(item, dict) and item.get("name") == HOST_JOB), None)
-    _require(job is not None, f"trusted run has no {HOST_JOB} job")
+                if isinstance(item, dict) and item.get("name") == host_job), None)
+    _require(job is not None, f"trusted run has no {host_job} job")
     steps = {step.get("name"): step for step in (job.get("steps") or [])
              if isinstance(step, dict)}
-    upload = steps.get(HOST_UPLOAD_STEP)
+    upload = steps.get(upload_step)
     _require(upload is not None,
              "host upload step is missing: the run never built or uploaded a host")
     _require(upload.get("conclusion") == "success",
              "host upload step did not succeed; a failed or pending upload is not recoverable")
-    retain = steps.get(HOST_RETAIN_STEP)
-    if retain is not None:
-        _require(retain.get("conclusion") == "success",
-                 "host retention step did not succeed")
+    if retain_step is not None:
+        retain = steps.get(retain_step)
+        if retain is not None:
+            _require(retain.get("conclusion") == "success",
+                     "host retention step did not succeed")
+
+    # Bind the host's own source commit. A plain ci.yml host is built from the
+    # requested application SHA. A release-recovery host is built by a
+    # workflow_dispatch controller run whose head is the controller commit, so
+    # the caller passes that commit (recorded inside the same digest-pinned
+    # archive) plus the two source-binding steps; the application SHA is still
+    # proven separately by SOURCE-SHA.txt in verify_archive.
+    if controller_sha:
+        _require(bool(_FULL_SHA.match(controller_sha)),
+                 "controller SHA must be a full 40-hex lowercase commit")
+        _require(metadata.get("head_sha") == controller_sha,
+                 "run head SHA does not match the controller commit recorded in the host archive")
+        _require(event == "workflow_dispatch",
+                 "a controller-bound host must come from a workflow_dispatch run")
+        for label, step_name in (("source checkout", source_checkout_step),
+                                 ("tagged-source verification", source_verify_step)):
+            _require(bool(step_name),
+                     f"controller binding requires the {label} step name")
+            step = steps.get(step_name)
+            _require(step is not None,
+                     f"controller-bound run has no {label} step: {step_name}")
+            _require(step.get("conclusion") == "success",
+                     f"controller-bound {label} step did not succeed: {step_name}")
+    else:
+        _require(source_checkout_step is None and source_verify_step is None,
+                 "source binding steps require a controller SHA binding")
+        _require(metadata.get("head_sha") == source_sha,
+                 "run head SHA does not match the requested full source SHA")
 
     return {
         "repository": repository,
         "workflow_path": workflow_path,
         "event": event,
-        "head_sha": source_sha,
+        "head_sha": metadata.get("head_sha"),
+        "source_sha": source_sha,
+        "controller_sha": controller_sha or None,
         "run_id": int(run_id),
         "run_attempt": int(run_attempt),
         "artifact_id": artifact.get("id"),
         "artifact_name": name,
+        "binding": "controller" if controller_sha else "source",
     }
 
 
@@ -232,7 +283,8 @@ def safe_extract(tar_path: Path, dest: Path) -> int:
 
 def verify_archive(artifact_dir: Path, *, source_sha: str, source_run: str,
                    source_attempt: str, toolchain: str,
-                   extract_dir: Path, products_sha256: str = "") -> dict:
+                   extract_dir: Path, products_sha256: str = "",
+                   controller_sha: str = "") -> dict:
     """Prove the downloaded archive is intact, matching and safe to extract."""
     artifact_dir = Path(artifact_dir)
     _require(artifact_dir.is_dir(),
@@ -244,6 +296,18 @@ def verify_archive(artifact_dir: Path, *, source_sha: str, source_run: str,
              "SOURCE-RUN.txt does not match the requested run")
     _require(_read_text(artifact_dir / "SOURCE-ATTEMPT.txt").strip() == str(source_attempt),
              "SOURCE-ATTEMPT.txt does not match the requested attempt")
+    # A controller-built host records the commit that ran the recovery workflow
+    # next to the application SHA it checked out. The run metadata must equal
+    # that commit (verify_metadata) and this file must agree with it.
+    recorded_controller = ""
+    controller_file = artifact_dir / "CONTROLLER-SHA.txt"
+    if controller_file.is_file():
+        recorded_controller = controller_file.read_text(encoding="utf-8").strip()
+        _require(bool(_FULL_SHA.match(recorded_controller)),
+                 "CONTROLLER-SHA.txt is not a full 40-hex lowercase commit")
+    if controller_sha:
+        _require(recorded_controller == controller_sha,
+                 "CONTROLLER-SHA.txt does not match the controller commit bound in the run metadata")
     actual_toolchain = _read_text(artifact_dir / "TOOLCHAIN.txt").replace("\r\n", "\n")
     _require(actual_toolchain == toolchain,
              f"archive toolchain {actual_toolchain!r} does not match the expected {toolchain!r}")
@@ -290,6 +354,7 @@ def verify_archive(artifact_dir: Path, *, source_sha: str, source_run: str,
         "products_sha256": digest,
         "toolchain": actual_toolchain.strip(),
         "entries": entries,
+        "controller_sha": recorded_controller or None,
     }
 
 
@@ -318,10 +383,36 @@ def main(argv=None) -> int:
     parser.add_argument("--github-output", default="")
     parser.add_argument("--repository", default=TRUSTED_REPOSITORY)
     parser.add_argument("--workflow-path", default=TRUSTED_WORKFLOW_PATH)
+    parser.add_argument("--host-job", default=HOST_JOB,
+                        help="trusted run job that built and uploaded the host")
+    parser.add_argument("--upload-step", default=HOST_UPLOAD_STEP,
+                        help="step in that job that uploaded the host")
+    parser.add_argument("--retain-step", default=HOST_RETAIN_STEP,
+                        help="optional step that retained the host before upload; "
+                             "pass an empty string to skip the check")
+    parser.add_argument("--artifact-prefix", default="compiled-test-host",
+                        help="artifact name prefix; the source SHA is appended")
+    parser.add_argument("--controller-sha-binding", action="store_true",
+                        help="bind the run head SHA to the controller commit recorded "
+                             "in CONTROLLER-SHA.txt instead of requiring head_sha == "
+                             "--source-sha (release-recovery workflow runs)")
+    parser.add_argument("--source-checkout-step", default="",
+                        help="source-checkout step that must have succeeded in the "
+                             "controller-bound host job")
+    parser.add_argument("--source-verify-step", default="",
+                        help="tagged-source verification step that must have succeeded "
+                             "in the controller-bound host job")
     args = parser.parse_args(argv)
 
     toolchain = expected_toolchain(args.xcode_version, args.xcode_build)
     try:
+        artifact_dir = Path(args.artifact_dir)
+        controller_sha = ""
+        if args.controller_sha_binding:
+            controller_file = artifact_dir / "CONTROLLER-SHA.txt"
+            _require(controller_file.is_file(),
+                     "controller binding requires CONTROLLER-SHA.txt in the host artifact")
+            controller_sha = controller_file.read_text(encoding="utf-8").strip()
         metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
         provenance = verify_metadata(
             metadata,
@@ -330,15 +421,23 @@ def main(argv=None) -> int:
             source_attempt=args.source_attempt,
             repository=args.repository,
             workflow_path=args.workflow_path,
+            host_job=args.host_job,
+            upload_step=args.upload_step,
+            retain_step=args.retain_step or None,
+            artifact_prefix=args.artifact_prefix,
+            controller_sha=controller_sha,
+            source_checkout_step=args.source_checkout_step or None,
+            source_verify_step=args.source_verify_step or None,
         )
         archive = verify_archive(
-            Path(args.artifact_dir),
+            artifact_dir,
             source_sha=args.source_sha,
             source_run=args.source_run,
             source_attempt=args.source_attempt,
             toolchain=toolchain,
             extract_dir=Path(args.extract_dir),
             products_sha256=args.products_sha256,
+            controller_sha=controller_sha,
         )
     except (HostVerificationError, json.JSONDecodeError, OSError) as error:
         print(f"host verification failed: {error}", file=sys.stderr)

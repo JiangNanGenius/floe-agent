@@ -13,6 +13,7 @@ def verify(summary, tree, *, simulator_without_office=False):
     expected = {"NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant",
                 "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout",
                 "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch",
+                "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
                 "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen"}
     identities = [str(case.get("nodeIdentifier", "")).removesuffix("()") for case in cases]
     office = "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen"
@@ -28,7 +29,7 @@ def verify(summary, tree, *, simulator_without_office=False):
         raise ValueError("Notes must pass; Office must pass on device or be explicitly recorded as unavailable on simulator")
     return counts | {"tests": expected_results, "result": "Passed",
                      "nativeOfficeAccepted": not simulator_without_office,
-                     "coverage": "simulator-notes-only" if simulator_without_office else "notes-and-native-office"}
+                     "coverage": "simulator-notes-and-content-covers" if simulator_without_office else "notes-and-native-office"}
 
 
 def main():
