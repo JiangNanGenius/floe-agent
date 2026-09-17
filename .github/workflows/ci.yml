@@ -8,12 +8,20 @@
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
 #     schema remain portable. Tests run on the Apple job because Debian's
 #     system SQLite omits GRDB's SQLITE_ENABLE_SNAPSHOT linker symbols.
+# The manual ide_only input reruns ONLY the dual-device WorkspaceIDEUITests
+# leg after a fresh build-for-testing, reusing this job's dependency prep,
+# asset verification and the real App test host. It skips unrelated module
+# qualification, Notes checks, other App regressions, the SPM suite and the
+# two SDK/Linux jobs; it is targeted rerun evidence, never release
+# acceptance, and never changes the default push/PR gates.
 name: CI
 
 # Superseded branch checks may stop; release uploads have a separate,
-# non-cancelling concurrency group.
+# non-cancelling concurrency group. ide_only dispatches get their own group
+# so a targeted IDE rerun cannot cancel or be cancelled by a full run of
+# the same ref; the default group string is unchanged when ide_only is off.
 concurrency:
-  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}${{ inputs.ide_only && '-ide' || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 on:
@@ -59,13 +67,19 @@ on:
         description: 'Rerun only the build-test leg (skip SDK-compatibility and Linux jobs) after the rest of the matrix is green; rerun evidence, not release acceptance'
         type: boolean
         default: false
+      ide_only:
+        description: 'Rerun only the dual-device WorkspaceIDEUITests on a freshly built App test host (skips unrelated modules, Notes, other App regressions, SPM suite and SDK/Linux jobs); targeted rerun evidence, not release acceptance'
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
 
 jobs:
   live-agent-demo:
-    if: github.event_name == 'workflow_dispatch' && inputs.live_agent_demo
+    # ide_only conflicts are rejected by build-test's validation step; never
+    # start a potentially paid demo leg from an ambiguous combination.
+    if: github.event_name == 'workflow_dispatch' && inputs.live_agent_demo && !inputs.ide_only
     permissions:
       contents: read
       actions: read
@@ -77,16 +91,16 @@ jobs:
     secrets:
       FLOE_LIVE_DEMO_ARK_KEY: ${{ secrets.FLOE_LIVE_DEMO_ARK_KEY }}
   local-inference:
-    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.local_inference }}
+    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.local_inference }}
     uses: ./.github/workflows/local-inference-qualification.yml
   feedback-ui:
-    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.feedback_ui }}
+    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.feedback_ui }}
     uses: ./.github/workflows/feedback-ui.yml
     with:
       palette_only: ${{ inputs.palette_only }}
       palette_unit_only: ${{ inputs.palette_unit_only }}
   build-native-wheels:
-    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.native_wheels_package != '' }}
+    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.native_wheels_package != '' }}
     # CPython's upstream testbed still uses UIApplicationDelegate rather than
     # UIScene. Build/test this dependency with the compatible stable SDK;
     # the shipping Floe app and its native smoke tests still use Xcode 27.
@@ -120,7 +134,7 @@ jobs:
           path: ios-wheelhouse/out/
           if-no-files-found: error
   publish-skill-hub:
-    if: ${{ !inputs.live_agent_demo && github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub }}
+    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub }}
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -170,7 +184,11 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' }}
+    # Normally excluded whenever another single-purpose mode is selected.
+    # ide_only is allowed through even together with another selector so the
+    # validation step below can fail the ambiguous combination explicitly
+    # instead of silently ignoring ide_only.
+    if: ${{ (!inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '') || inputs.ide_only }}
     # Foundation Models is guarded by Swift 6.4. Building on the generic
     # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
     runs-on: xcode-27
@@ -181,6 +199,17 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Fail fast, before checkout and dependency preparation: ide_only is a
+      # standalone rerun mode and never combines with another selector.
+      # This step runs before checkout, so it cannot rely on the job-level
+      # working-directory (FloeAgent does not exist yet).
+      - name: Reject ambiguous ide_only combinations
+        if: ${{ inputs.ide_only && (inputs.live_agent_demo || inputs.local_inference || inputs.feedback_ui || inputs.publish_skill_hub || inputs.native_wheels_package != '' || inputs.build_test_only) }}
+        working-directory: .
+        run: |
+          echo "ide_only must be dispatched alone: it cannot combine with live_agent_demo, local_inference, feedback_ui, publish_skill_hub, native_wheels_package or build_test_only." >&2
+          exit 1
+
       - uses: actions/checkout@v5
 
       # Authenticate the signed catalog and stage the pinned lua.wasm fixture.
@@ -204,14 +233,17 @@ jobs:
           floe_lua_wasi="$("$RUNNER_TEMP/floe-lua-venv/bin/python" scripts/prepare_lua_qualification.py)" || exit 1
           echo "FLOE_LUA_WASI=$floe_lua_wasi" >> "$GITHUB_ENV"
 
+      # Unrelated module qualification: skipped by the ide_only rerun.
       - name: Qualify environment, package, media and job modules
+        if: ${{ success() && !inputs.ide_only }}
         run: |
           set -o pipefail
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/PlatformQualificationDiagnostics" --timeout 1200 -- swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
       - name: Qualify durable Notes storage and editable archives
+        if: ${{ success() && !inputs.ide_only }}
         run: python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/NotesQualificationDiagnostics" --timeout 1200 -- swift test --package-path Qualification/Notes --scratch-path .build --force-resolved-versions --jobs 4
       - name: Upload platform qualification evidence
-        if: always()
+        if: ${{ always() && !inputs.ide_only }}
         uses: actions/upload-artifact@v4
         with:
           name: platform-qualification-${{ github.sha }}
@@ -306,6 +338,7 @@ jobs:
             build-for-testing
 
       - name: Run Canvas, PiP, timeline and execution regressions
+        if: ${{ success() && !inputs.ide_only }}
         timeout-minutes: 20
         run: |
           xctestrun=$(find FloeAgent-AppRegressionBuild/Build/Products -maxdepth 1 -name '*.xctestrun' -print -quit)
@@ -366,7 +399,8 @@ jobs:
       - name: Verify Notes workspace import and retain full App screenshots
         # Skip when the shared test host was never built; a missing xctestrun
         # must not mask the real build failure with a secondary UI error.
-        if: ${{ !cancelled() && steps.app_regression_build.outcome == 'success' }}
+        # Also skipped by the ide_only rerun, which targets the IDE legs only.
+        if: ${{ !cancelled() && !inputs.ide_only && steps.app_regression_build.outcome == 'success' }}
         # Two devices each have three independently bounded 300-second tests.
         # The phase must also allow boot, runner teardown and evidence export.
         timeout-minutes: 25
@@ -515,6 +549,7 @@ jobs:
           retention-days: 7
 
       - name: SPM test (cross-platform targets)
+        if: ${{ success() && !inputs.ide_only }}
         run: |
           # SwiftPM links the universal llama binary into the local-model test
           # bundle but does not copy the macOS framework beside xctest. Put it
@@ -594,7 +629,9 @@ jobs:
     # matrix without paying another ~33-minute SDK 26 compile that already
     # passed.  It is rerun evidence only, never release acceptance, and never
     # gates push/PR runs (inputs are empty there, so this condition is true).
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only }}
+    # The ide_only rerun also skips this job; it re-verifies the IDE UI legs
+    # only and never substitutes for release qualification.
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only && !inputs.ide_only }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
     # the explicit unsupported-Foundation-Models path and the rest of Floe's
@@ -654,7 +691,8 @@ jobs:
     # Skipped together with appstore-sdk-compatibility by build_test_only;
     # that input only reruns the failed build-test leg and never gates
     # push/PR runs (inputs are empty there, so this condition is true).
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only }}
+    # Also skipped by the ide_only rerun.
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only && !inputs.ide_only }}
     runs-on: ubuntu-latest
     # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
     # below do not link MLX. Resolution must therefore use a 6.3 toolchain.

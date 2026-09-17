@@ -440,6 +440,10 @@ Commit `3eecf735` updates the compact IDE UI test to inspect enabled actions ins
 
 The CAD failure was caused by the Pencil settings pushing text fields and Save outside the panel viewport. Basic editing now precedes pen settings, and Undo/Redo/Save remain visible while scrolling. The primary agent [verified the browser component](qualification/build178-feedback/cad-layout/README.md) at narrow and wide sizes and reparsed the saved DWG with the bundled WASM engine. The 73 CAD checks and all 29 resource hashes pass. Native double-device revalidation is still pending; browser success does not replace it.
 
+### Targeted IDE reruns
+
+Manual `ci.yml` dispatch accepts `ide_only=true`. It builds a fresh App test host and runs the unchanged dual-device IDE phase and strict verifier, preserving original results and screenshots. Unrelated module, Notes, App regression, SDK-compatibility and Linux phases are skipped for this diagnostic mode only. Default push/PR/manual gates and release qualification are unchanged. Conflicting special-purpose inputs fail before dependency preparation and cannot start a paid demo or publishing job. Nine configuration checks and `actionlint` pass; cloud runtime and time savings remain to be measured.
+
 ## References
 
 - Localization: `FloeAgent/FloeApp/Resources/Localizable.xcstrings`;
