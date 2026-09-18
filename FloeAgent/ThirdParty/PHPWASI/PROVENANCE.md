@@ -78,6 +78,15 @@ available in git history at the previous commit of this directory.
   which extends the guard to cover the `max_length` computation; the object
   compiles locally with the macOS wasi-sdk 20 (`make main/streams/xp_socket.lo`).
 
+* 2026-09-19, `language-runtimes.yml` run 35396385874 (commit 24962e47): the
+  20-patch slim build produced the **CGI** SAPI (`php-cgi.wasm`, 4,080,679
+  bytes, SHA-256 `76f3a65c…d502`) and the runtime qualification ran; the **CLI**
+  SAPI failed only in `sapi/cli/php_cli_server.c`, whose built-in web server
+  needs `socket`/`bind`/`getsockname`/`listen`/`SOMAXCONN`, none declared by
+  wasi-sdk 20. Patch `0021` stubs the listener for WASM_WASI, so the CLI SAPI
+  (preferred: `-r`, plain stdin) can build; both CLI objects compile locally
+  with the macOS wasi-sdk 20.
+
 ## Compatibility evidence actually observed
 
 **2026-09-19, host macOS 27 arm64, PHP 8.2.6 published module (historical

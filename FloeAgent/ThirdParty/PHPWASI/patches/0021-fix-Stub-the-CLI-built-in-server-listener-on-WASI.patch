@@ -1,0 +1,27 @@
+diff --git a/sapi/cli/php_cli_server.c b/sapi/cli/php_cli_server.c
+index f078ce8e6d..c172b2518c 100644
+--- a/sapi/cli/php_cli_server.c
++++ b/sapi/cli/php_cli_server.c
+@@ -1328,6 +1328,14 @@ static void php_cli_server_logf(int type, const char *format, ...) /* {{{ */
+ 
+ static php_socket_t php_network_listen_socket(const char *host, int *port, int socktype, int *af, socklen_t *socklen, zend_string **errstr) /* {{{ */
+ {
++#ifdef WASM_WASI
++	/* The built-in CLI web server needs a listener socket; the WASI runtime
++	 * provides none. The CLI SAPI itself is unaffected. */
++	if (errstr) {
++		*errstr = ZSTR_INIT_LITERAL("The built-in CLI web server is not available on this WASI build", 0);
++	}
++	return SOCK_ERR;
++#else
+ 	php_socket_t retval = SOCK_ERR;
+ 	int err = 0;
+ 	struct sockaddr *sa = NULL, **p, **sal;
+@@ -1467,6 +1475,7 @@ static php_socket_t php_network_listen_socket(const char *host, int *port, int s
+ 		return SOCK_ERR;
+ 	}
+ 	return retval;
++#endif // WASM_WASI
+ } /* }}} */
+ 
+ static void php_cli_server_request_ctor(php_cli_server_request *req) /* {{{ */
