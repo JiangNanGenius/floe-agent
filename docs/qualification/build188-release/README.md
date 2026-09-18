@@ -46,3 +46,10 @@ skip. Details are retained in
 [final accepted-SDK evidence](../build187-release/final-accepted-sdk.json).
 This newly collected187 failure has not been declared fixed by188's component
 pass;188 full-App UI must establish the outcome.
+
+The SDK27 full-App regression suite has now passed204/204 with no skips
+([structured result](sdk27-app-regression.json)). An exact-source accepted-SDK
+device recovery package has been retained and its SHA-256, embedded source SHA,
+app/extension versions and SDK metadata checked
+([recovery record](device-recovery.json)). It is an unsigned recovery package,
+not a signed IPA or a TestFlight upload. Full-App UI gates remain in progress.

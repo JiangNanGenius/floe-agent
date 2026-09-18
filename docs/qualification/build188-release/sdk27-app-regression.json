@@ -1,0 +1,17 @@
+{
+  "sourceSHA": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+  "runID": 35317532109,
+  "build": 188,
+  "suite": "SDK27 App regression",
+  "result": {
+    "result": "Passed",
+    "totalTestCount": 204,
+    "passedTests": 204,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "testFailures": []
+  },
+  "limitations": [
+    "Not full-App UI acceptance or TestFlight availability."
+  ]
+}
