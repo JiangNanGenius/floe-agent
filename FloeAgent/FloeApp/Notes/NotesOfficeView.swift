@@ -41,6 +41,12 @@ struct NotesOfficeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The shared Notes header is hidden for Office editors, so a build
+            // without the native engine (or one whose document failed to load)
+            // must still expose the same compact Notes navigation: back, tabs
+            // and assistant/mind maps. Without it the unavailable placeholder
+            // traps the reader with no way back to the library.
+            if !OfficeFileSession.available { unavailableHeader }
             if !recoveries.isEmpty {
                 Button("发现 \(recoveries.count) 份 Office 恢复副本", systemImage: "clock.arrow.circlepath") { showingRecoveries = true }
                     .padding().frame(maxWidth: .infinity, alignment: .leading)
@@ -163,6 +169,37 @@ struct NotesOfficeView: View {
             session.removeLeaveGuard(for: document.id)
             Task { await office.release() }
         }
+    }
+
+    /// Compact Notes-owned navigation for the no-engine branch. It mirrors the
+    /// native editor's inline header (tabs plus the assistant/mind-map menu)
+    /// and leaves through the same registered session leave guard as the shared
+    /// `notes.back` header (`session.select(nil)`); the guard already returns
+    /// true immediately when the engine is unavailable, so no working copy is
+    /// silently discarded.
+    private var unavailableHeader: some View {
+        HStack(spacing: 4) {
+            Button("返回手记", systemImage: "chevron.left") {
+                Task { await session.select(nil) }
+            }
+            .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            .accessibilityIdentifier("notes.back")
+            NotesDocumentTabs(session: session)
+            Spacer(minLength: 0)
+            Menu {
+                Button("Floe 助手", systemImage: "bubble.left.and.bubble.right", action: onAssistant)
+                Button("思维导图", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
+            } label: {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("notes.office.assistantAndMindMaps")
+            .accessibilityIdentifier("notes.office.assistant")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(.bar)
+        .buttonStyle(NotesToolbarButtonStyle())
+        .accessibilityIdentifier("notes.office.header")
     }
 
     private func prepare() async {

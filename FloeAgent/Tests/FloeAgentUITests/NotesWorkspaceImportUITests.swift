@@ -286,11 +286,17 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let word = revealCard(app, kind: "office", title: renamedTitle)
         XCTAssertTrue(word.isHittable, "the renamed cover must open a document")
         word.tap()
-        let back = app.buttons["notes.back"]
-        XCTAssertTrue(back.waitForExistence(timeout: 45))
+        // This simulator build has no native Office engine, so the Notes-owned
+        // compact header must supply `notes.back`. A device build mounts the
+        // native editor's own `office.editor.back` instead (including its
+        // document-load-failed state); both are the real product control and
+        // both run the same Notes leave guard.
+        let back = openedDocumentBackControl(app)
         XCTAssertTrue(back.isHittable)
         capture("notes-content-cover-opened")
         back.tap()
+        XCTAssertTrue(app.buttons["notes.create"].waitForExistence(timeout: 30),
+                      "returning from the opened document must resume the Notes library")
         assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: ["quickLook"]))
 
         // Quit and relaunch: in-memory covers are gone, so every card must
@@ -405,7 +411,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
-        let attachment = XCTAttachment(string: "\(cover.kind) \(cover.title) coverSource=\(parsed.source) revision=\(parsed.revision) allowed=\(cover.allowed.sorted())")
+        // Bounded, redacted generator identity (attempts, timeout, numeric
+        // error identity, fallback stage). Never a path, file name or content.
+        let diagnostics = coverDiagnostics(app, cover: cover)
+        let attachment = XCTAttachment(string: "\(cover.kind) \(cover.title) coverSource=\(parsed.source) revision=\(parsed.revision) allowed=\(cover.allowed.sorted()) diagnostics=[\(diagnostics)]")
         attachment.name = "cover-source-\(cover.kind)-\(cover.title)"
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -416,6 +425,33 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                              "\(cover.kind) \(cover.title) must report its document revision",
                              file: file, line: line)
         return parsed
+    }
+
+    /// Reads the bounded, redacted generator identity the thumbnail element
+    /// publishes under `-ui-testing` (see `NotesDocumentThumbnail`): attempts,
+    /// timeout, numeric error domain/code and the fallback stage only. A card
+    /// that never settled reports `unavailable` instead of stalling the test.
+    private func coverDiagnostics(_ app: XCUIApplication, cover: CoverCase) -> String {
+        let element = app.descendants(matching: .any)
+            .matching(identifier: "notes.thumbnail.\(cover.kind).\(cover.title)").firstMatch
+        guard element.waitForExistence(timeout: 5), let value = element.value as? String else { return "unavailable" }
+        return value
+    }
+
+    /// The opened document exposes the Notes-owned compact header back control
+    /// when this build has no native Office engine, or the native editor's own
+    /// back control when it does (including its load-failed state). Both are
+    /// matched in one predicate so the device path never pays a false 45 s wait
+    /// for the other control.
+    private func openedDocumentBackControl(_ app: XCUIApplication,
+                                           file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        let backControls = app.buttons.matching(NSPredicate(
+            format: "identifier == %@ OR identifier == %@", "notes.back", "office.editor.back"))
+        let control = backControls.firstMatch
+        XCTAssertTrue(control.waitForExistence(timeout: 45),
+                      "an opened Office document must expose a usable back control (notes.back or office.editor.back)",
+                      file: file, line: line)
+        return control
     }
 
     /// The card identifier ends in `<source>#<revision>` (see `NotesRootView`).

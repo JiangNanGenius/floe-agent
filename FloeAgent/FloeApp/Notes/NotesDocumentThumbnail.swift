@@ -42,11 +42,73 @@ enum NotesDocumentCoverSource: String, Sendable, CaseIterable {
     }
 }
 
+/// Bounded, redacted failure identity for one Office cover render.
+///
+/// It carries only counters, booleans and the numeric Quick Look error
+/// identity. It never carries a file name, staged path, document content or a
+/// raw error description, so it is safe to attach to acceptance artifacts and
+/// to expose through the UI-test accessibility value. Normal VoiceOver output
+/// does not include it (`-ui-testing` only).
+struct NotesDocumentCoverDiagnostics: Sendable, Equatable {
+    /// The last relevant generator/fallback stage. `.quickLook` is retained
+    /// after a successful system thumbnail or a successful summary fallback;
+    /// the outcome source distinguishes those successes. Other cases name the
+    /// first failing native fallback step, so a size guard is never confused
+    /// with a parse or draw failure.
+    enum FallbackStage: String, Sendable {
+        case quickLook
+        case staging
+        case unsupportedType
+        case sizeLimit
+        case inspect
+        case render
+    }
+
+    var quickLookAttempts: Int = 0
+    var quickLookTimedOut: Bool = false
+    var quickLookErrorDomain: String?
+    var quickLookErrorCode: Int?
+    var quickLookWasIconFallback: Bool = false
+    var fallbackStage: FallbackStage = .quickLook
+
+    /// The only error domains a cover artifact may name. Quick Look and
+    /// Foundation failures use these; every other domain is reported as the
+    /// literal `other` so an unexpected error can never inject a path, account
+    /// name or other identifying text into an artifact. A character filter
+    /// alone is not enough: an all-alphanumeric hostile domain would still be
+    /// identifying.
+    static let knownErrorDomains: Set<String> = [
+        "QLThumbnailErrorDomain",
+        "QLThumbnailGenerationErrorDomain",
+        "NSCocoaErrorDomain",
+        "NSPOSIXErrorDomain",
+        "NSURLErrorDomain",
+        "NSOSStatusErrorDomain",
+    ]
+
+    static func boundedDomain(_ domain: String?) -> String? {
+        guard let domain, !domain.isEmpty else { return nil }
+        return knownErrorDomains.contains(domain) ? domain : "other"
+    }
+
+    var summary: String {
+        var parts = ["attempts=\(quickLookAttempts)", "timedOut=\(quickLookTimedOut)"]
+        if let quickLookErrorDomain { parts.append("domain=\(quickLookErrorDomain)") }
+        if let quickLookErrorCode { parts.append("code=\(quickLookErrorCode)") }
+        if quickLookWasIconFallback { parts.append("icon=true") }
+        parts.append("fallback=\(fallbackStage.rawValue)")
+        return parts.joined(separator: " ")
+    }
+}
+
 /// The settled result of one cover render.
 struct NotesDocumentCoverOutcome {
     var image: UIImage?
     var source: NotesDocumentCoverSource
     var diagnosis: String
+    /// Present for Office covers. Bounded and redacted; see
+    /// `NotesDocumentCoverDiagnostics`.
+    var diagnostics: NotesDocumentCoverDiagnostics? = nil
 }
 
 /// Bounded in-memory cache for Notes grid thumbnails.
@@ -103,6 +165,7 @@ struct NotesDocumentThumbnail: View {
     @State private var image: UIImage?
     @State private var source: NotesDocumentCoverSource = .none
     @State private var unsupportedDetail: String?
+    @State private var diagnostics: NotesDocumentCoverDiagnostics?
     /// The key of the newest load. A cancelled predecessor compares against this
     /// before touching `image`, so it can never clear or overwrite a newer card.
     @State private var currentKey: String?
@@ -137,8 +200,18 @@ struct NotesDocumentThumbnail: View {
         .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("notes.thumbnail.\(document.kind.rawValue).\(document.title)")
         .accessibilityLabel(placeholderTitle)
-        .accessibilityValue(source.rawValue)
+        .accessibilityValue(accessibilityCoverValue)
         .task(id: thumbnailKey) { await load() }
+    }
+
+    /// Production accessibility keeps the plain cover source. Under UI testing
+    /// the bounded, redacted generator identity is appended so an acceptance
+    /// artifact can name the exact failure stage (attempts, timeout, numeric
+    /// error identity, fallback stage) without any path, file name or content.
+    private var accessibilityCoverValue: String {
+        guard ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+              let diagnostics else { return source.rawValue }
+        return "\(source.rawValue); \(diagnostics.summary)"
     }
 
     /// Document identity + immutable resource + revision; never reuse a stale key.
@@ -195,12 +268,14 @@ struct NotesDocumentThumbnail: View {
             image = cached.image
             source = cached.source
             unsupportedDetail = nil
+            diagnostics = nil
             onSource?(cached.source, document.revision)
             return
         }
         image = nil
         source = .none
         unsupportedDetail = nil
+        diagnostics = nil
         guard !Task.isCancelled else { return }
         let outcome = await NotesDocumentCoverService.render(document: document, store: store,
                                                              size: Self.thumbnailSize,
@@ -219,6 +294,7 @@ struct NotesDocumentThumbnail: View {
         guard key == currentKey else { return }
         image = outcome.image
         source = outcome.source
+        diagnostics = outcome.diagnostics
         unsupportedDetail = outcome.source == .unsupported ? outcome.diagnosis : nil
         onSource?(outcome.source, document.revision)
     }
@@ -292,9 +368,13 @@ enum NotesOfficeThumbnailGenerator {
     /// generator, and it must never be returned as a cover.
     static func thumbnail(url: URL, size: CGSize, fileExtension: String = "",
                           policy: NotesOfficeThumbnailPolicy = NotesOfficeThumbnailGenerator.cardPolicy,
-                          request: @escaping (URL, CGSize, Duration) async -> AttemptOutcome = requestThumbnail) async -> CardOutcome {
+                          request: ((URL, CGSize, Duration) async -> AttemptOutcome)? = nil) async -> CardOutcome {
         let start = ContinuousClock.now
         func elapsed() -> Duration { start.duration(to: ContinuousClock.now) }
+        // `request` is an explicit per-call seam: a caller may inject a
+        // deterministic generator (e.g. a forced failure), and parallel cards
+        // never observe each other's request. There is no process-global mock.
+        let perform = request ?? requestThumbnail
         var attempt = 0
         var backoff = policy.initialBackoff
         var last = AttemptOutcome(image: nil, diagnosis: "no attempt ran", timedOut: false, elapsed: .zero)
@@ -303,7 +383,7 @@ enum NotesOfficeThumbnailGenerator {
               elapsed() < policy.totalDeadline {
             attempt += 1
             let remaining = policy.totalDeadline - elapsed()
-            let outcome = await request(url, size, min(policy.perAttemptTimeout, remaining))
+            let outcome = await perform(url, size, min(policy.perAttemptTimeout, remaining))
             if outcome.isIconFallback {
                 return CardOutcome(image: nil, attempts: attempt,
                                    diagnosis: outcome.diagnosis, elapsed: elapsed(),
@@ -537,15 +617,22 @@ enum NotesDocumentCoverService {
     /// bound and always runs off the main actor.
     static let maximumSummarySourceBytes = 48 * 1024 * 1024
 
+    /// One cover render per document. `request` is an optional per-call Quick
+    /// Look generator seam: nil (the product default) uses the real system
+    /// generator. It exists so a qualification test can force the "no system
+    /// content" branch for one render without a process-global mock that would
+    /// contaminate parallel cards.
     static func render(document: NoteDocument, store: NotesStore?, size: CGSize,
-                       maximumSourceBytes: Int) async -> NotesDocumentCoverOutcome {
+                       maximumSourceBytes: Int,
+                       request: ((URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
         guard let store else {
             return .init(image: nil, source: .unsupported,
                          diagnosis: String(localized: "notes.cover.error.storeUnavailable", defaultValue: "Notes storage is not ready"))
         }
         switch document.kind {
         case .office:
-            return await officeCover(document: document, store: store, size: size, maximumSourceBytes: maximumSourceBytes)
+            return await officeCover(document: document, store: store, size: size,
+                                     maximumSourceBytes: maximumSourceBytes, request: request)
         case .notebook:
             return await notePageCover(document: document, store: store)
         case .mindMap:
@@ -558,7 +645,8 @@ enum NotesDocumentCoverService {
     // MARK: - Office
 
     private static func officeCover(document: NoteDocument, store: NotesStore, size: CGSize,
-                                    maximumSourceBytes: Int) async -> NotesDocumentCoverOutcome {
+                                    maximumSourceBytes: Int,
+                                    request: ((URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
         guard let resourceID = document.officeResourceID, let fileName = document.officeFileName,
               let fileExtension = NotesOfficeThumbnailStaging.validatedExtension(of: fileName) else {
             return .init(image: nil, source: .unsupported,
@@ -596,45 +684,70 @@ enum NotesDocumentCoverService {
         defer { NotesOfficeThumbnailGate.shared.release() }
         if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
 
-        var quickLookDiagnosis = "not attempted"
+        // Quick Look keys off the file extension while a Notes resource is the
+        // extensionless CAS path. Stage exactly one validated, bounded copy and
+        // keep it for Quick Look *and* the native summary fallback: both must
+        // read the same bytes, and every return (including cancellation)
+        // removes the staging directory through the function-scope defer.
+        let staged: URL
         do {
-            let staged = try await NotesOfficeThumbnailStaging.stage(source: source, fileExtension: fileExtension)
-            defer { NotesOfficeThumbnailStaging.remove(staged) }
-            let outcome = await NotesOfficeThumbnailGenerator.thumbnail(url: staged, size: size,
-                                                                        fileExtension: fileExtension)
-            if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
-            if let image = outcome.image {
-                NotesOfficeThumbnailGenerator.logSuccess(fileExtension: fileExtension, attempt: outcome.attempts,
-                                                         elapsed: outcome.elapsed)
-                return .init(image: image, source: .quickLookThumbnail, diagnosis: "quick look")
-            }
-            NotesOfficeThumbnailGenerator.logUnavailable(fileExtension: fileExtension, outcome: outcome)
-            quickLookDiagnosis = outcome.wasIconFallback
-                ? String(localized: "notes.cover.office.iconOnly", defaultValue: "Quick Look returned only a generic icon")
-                : String(localized: "notes.cover.office.noQuickLook", defaultValue: "Quick Look did not produce a content thumbnail")
+            staged = try await NotesOfficeThumbnailStaging.stage(source: source, fileExtension: fileExtension)
         } catch is CancellationError {
             return .init(image: nil, source: .none, diagnosis: "cancelled")
         } catch {
-            quickLookDiagnosis = String(localized: "notes.cover.office.quickLookUnavailable", defaultValue: "Quick Look is unavailable")
+            var diagnostics = NotesDocumentCoverDiagnostics()
+            diagnostics.fallbackStage = .staging
+            return .init(image: nil, source: .unsupported,
+                         diagnosis: String(localized: "notes.cover.office.quickLookUnavailable",
+                                           defaultValue: "Quick Look is unavailable"),
+                         diagnostics: diagnostics)
         }
+        defer { NotesOfficeThumbnailStaging.remove(staged) }
+
+        var diagnostics = NotesDocumentCoverDiagnostics()
+        let outcome = await NotesOfficeThumbnailGenerator.thumbnail(url: staged, size: size,
+                                                                    fileExtension: fileExtension,
+                                                                    request: request)
+        diagnostics.quickLookAttempts = outcome.attempts
+        diagnostics.quickLookTimedOut = outcome.timedOut
+        diagnostics.quickLookErrorDomain = NotesDocumentCoverDiagnostics.boundedDomain(outcome.errorDomain)
+        diagnostics.quickLookErrorCode = outcome.errorCode
+        diagnostics.quickLookWasIconFallback = outcome.wasIconFallback
+        if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
+        if let image = outcome.image {
+            NotesOfficeThumbnailGenerator.logSuccess(fileExtension: fileExtension, attempt: outcome.attempts,
+                                                     elapsed: outcome.elapsed)
+            return .init(image: image, source: .quickLookThumbnail, diagnosis: "quick look",
+                         diagnostics: diagnostics)
+        }
+        NotesOfficeThumbnailGenerator.logUnavailable(fileExtension: fileExtension, outcome: outcome)
+        let quickLookDiagnosis = outcome.wasIconFallback
+            ? String(localized: "notes.cover.office.iconOnly", defaultValue: "Quick Look returned only a generic icon")
+            : String(localized: "notes.cover.office.noQuickLook", defaultValue: "Quick Look did not produce a content thumbnail")
 
         // The native OOXML inspector understands modern docx/xlsx/pptx only;
         // legacy/binary and OpenDocument formats stay explicitly unsupported.
-        guard let kind = OfficeDocumentKind(rawValue: fileExtension) else {
-            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis)
+        guard let kind = OfficeDocumentKind(url: staged) else {
+            diagnostics.fallbackStage = .unsupportedType
+            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis,
+                         diagnostics: diagnostics)
         }
         // The summary fallback parses the package off the main actor. It is
         // capped below the Quick Look bound so a card can never inflate a large
         // ZIP in the UI process.
         guard sourceBytes <= maximumSummarySourceBytes else {
-            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis)
+            diagnostics.fallbackStage = .sizeLimit
+            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis,
+                         diagnostics: diagnostics)
         }
         let snapshot: OfficeDocumentSnapshot? = await Task.detached(priority: .utility) {
-            try? OfficeDocumentService.inspect(url: source)
+            try? OfficeDocumentService.inspect(url: staged)
         }.value
         if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
         guard let snapshot, !snapshot.fields.isEmpty else {
-            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis)
+            diagnostics.fallbackStage = .inspect
+            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis,
+                         diagnostics: diagnostics)
         }
         // Drawing is a pure, bounded render (<= 240 fields); keep it off the
         // main actor as well so a card never blocks scrolling.
@@ -643,9 +756,12 @@ enum NotesDocumentCoverService {
         }.value
         if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
         guard let summary else {
-            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis)
+            diagnostics.fallbackStage = .render
+            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis,
+                         diagnostics: diagnostics)
         }
-        return .init(image: summary, source: .officeContentSummary, diagnosis: "native content summary")
+        return .init(image: summary, source: .officeContentSummary, diagnosis: "native content summary",
+                     diagnostics: diagnostics)
     }
 
     // MARK: - Notebook page

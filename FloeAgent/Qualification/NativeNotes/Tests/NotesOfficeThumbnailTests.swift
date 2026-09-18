@@ -12,7 +12,11 @@
 //  * when Quick Look only offers an icon, the bounded generator stops, reports
 //    the icon fallback and never returns it as content;
 //  * the bounded native OOXML content-summary fallback renders a real image
-//    from the document's own text/cells;
+//    from the document's own text/cells, including when the resource is the
+//    extensionless Notes CAS path and Quick Look produced no content at all
+//    (forced through the per-call render request seam, never a process-global
+//    mock), with bounded redacted failure diagnostics (attempts/timeout/
+//    whitelisted numeric error identity/fallback stage);
 //  * the mind-map cover is a bounded structural render of the node tree;
 //  * the bundled viewer paints real DXF and DWG geometry (non-background
 //    pixels) through the shared offscreen renderer, and a rename revision
@@ -219,6 +223,231 @@ final class NotesOfficeThumbnailTests: XCTestCase {
         let accent = UIColor(red: 0.145, green: 0.388, blue: 0.922, alpha: 1)
         XCTAssertTrue(containsColor(excel, closeTo: accent, tolerance: 0.08),
                       "the Excel summary header band must show the renderer's real content")
+    }
+
+    // MARK: - Extensionless CAS + forced Quick Look failure fallback
+
+    /// The Notes store keeps an imported Office resource at an extensionless
+    /// SHA-256 CAS path, and the product summary fallback must read that same
+    /// validated staged copy after Quick Look produced no content. These tests
+    /// force the Quick Look branch to fail and assert a real native content
+    /// summary for each OOXML type, comparing it with a separate summary
+    /// render of the original package. This checks CAS routing and source
+    /// equivalence; it is not an independent test of renderer quality. This is deliberately separate from the
+    /// strict Quick Look-only acceptance above: a summary is a legitimate
+    /// product fallback, but it is not the original Office thumbnail.
+    func testContentSummaryFallbackRendersWordFromExtensionlessCASWhenQuickLookFails() async throws {
+        try await assertContentSummaryFallback(fileName: "商务周报.docx", fileExtension: "docx")
+    }
+
+    func testContentSummaryFallbackRendersExcelFromExtensionlessCASWhenQuickLookFails() async throws {
+        try await assertContentSummaryFallback(fileName: "季度数据汇总.xlsx", fileExtension: "xlsx")
+    }
+
+    func testContentSummaryFallbackRendersPowerPointFromExtensionlessCASWhenQuickLookFails() async throws {
+        try await assertContentSummaryFallback(fileName: "产品路线图.pptx", fileExtension: "pptx")
+    }
+
+    /// A Quick Look failure on a format the native OOXML inspector cannot read
+    /// reports the unsupported-type fallback stage (never a parse or draw
+    /// failure) and still publishes no placeholder pixels.
+    func testUnsupportedOfficeFormatReportsUnsupportedTypeStage() async throws {
+        let root = makeScratchDirectory("cas-unsupported")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("legacy.rtf")
+        try "{\\rtf1\\ansi\\deff0 synthetic legacy document}".write(to: source, atomically: true, encoding: .utf8)
+
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let draft = try await NoteFileImporter.importFile(source, notebookID: nil, store: store)
+        let document = try await store.create(draft)
+        XCTAssertEqual(document.kind, .office)
+        XCTAssertEqual(document.officeFileName, "legacy.rtf")
+
+        let forcedFailure: (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome = { _, _, _ in
+            NotesOfficeThumbnailGenerator.AttemptOutcome(
+                image: nil, diagnosis: "injected quick look failure", timedOut: false,
+                elapsed: .zero, errorDomain: "QLThumbnailErrorDomain", errorCode: 102)
+        }
+        let outcome = await NotesDocumentCoverService.render(
+            document: document, store: store, size: CGSize(width: 320, height: 420),
+            maximumSourceBytes: 128 * 1024 * 1024, request: forcedFailure)
+        XCTAssertEqual(outcome.source, .unsupported)
+        XCTAssertNil(outcome.image, "an unsupported format must never publish placeholder pixels")
+        let diagnostics = try XCTUnwrap(outcome.diagnostics)
+        XCTAssertEqual(diagnostics.fallbackStage, .unsupportedType,
+                       "a non-OOXML format must be reported as unsupported type, not parsed: \(diagnostics.summary)")
+        XCTAssertEqual(diagnostics.quickLookAttempts, 3)
+        XCTAssertFalse(diagnostics.summary.isEmpty)
+    }
+
+    /// `other` is the only permitted substitution for an unknown error domain,
+    /// so a hostile or path-bearing domain can never leak identifying text
+    /// into an artifact or the UI-test accessibility value.
+    func testDiagnosticsRedactUnknownAndHostileErrorDomains() {
+        for known in ["QLThumbnailErrorDomain", "QLThumbnailGenerationErrorDomain",
+                      "NSCocoaErrorDomain", "NSPOSIXErrorDomain",
+                      "NSURLErrorDomain", "NSOSStatusErrorDomain"] {
+            XCTAssertEqual(NotesDocumentCoverDiagnostics.boundedDomain(known), known,
+                           "known system domain \(known) must be preserved")
+        }
+        XCTAssertEqual(NotesDocumentCoverDiagnostics.boundedDomain("com.apple.quicklook.private"), "other")
+        XCTAssertEqual(NotesDocumentCoverDiagnostics.boundedDomain("/Users/someone/Documents/secret.docx"), "other")
+        XCTAssertEqual(NotesDocumentCoverDiagnostics.boundedDomain("张三的私人文件夹"), "other")
+        XCTAssertEqual(NotesDocumentCoverDiagnostics.boundedDomain("SecretDomainWithNoPunctuation"), "other")
+        XCTAssertNil(NotesDocumentCoverDiagnostics.boundedDomain(nil))
+        XCTAssertNil(NotesDocumentCoverDiagnostics.boundedDomain(""))
+
+        var diagnostics = NotesDocumentCoverDiagnostics()
+        diagnostics.quickLookErrorDomain = NotesDocumentCoverDiagnostics.boundedDomain("/Users/someone")
+        diagnostics.quickLookErrorCode = 1
+        XCTAssertEqual(diagnostics.quickLookErrorDomain, "other")
+        XCTAssertFalse(diagnostics.summary.contains("someone"))
+        XCTAssertFalse(diagnostics.summary.contains("/"))
+    }
+
+    private func assertContentSummaryFallback(fileName: String, fileExtension: String,
+                                              file: StaticString = #filePath, line: UInt = #line) async throws {
+        let root = makeScratchDirectory("cas-fallback-\(fileExtension)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let urls = try PreviewFixtureFactory.writeSamples(to: root.appendingPathComponent("sources"))
+        let url = try XCTUnwrap(urls.first { $0.lastPathComponent == fileName }, file: file, line: line)
+        let originalBytes = try Data(contentsOf: url)
+
+        // Import through the same path the app uses, then prove the stored
+        // resource really is the extensionless CAS path Quick Look cannot read.
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let draft = try await NoteFileImporter.importFile(url, notebookID: nil, store: store)
+        let document = try await store.create(draft)
+        let resourceID = try XCTUnwrap(document.officeResourceID, file: file, line: line)
+        let resource = try await store.resourceURL(resourceID)
+        XCTAssertTrue(resource.pathExtension.isEmpty,
+                      "the Notes resource must stay at the extensionless CAS path", file: file, line: line)
+
+        // The expected content cover is a separate summary render of the
+        // original package as inspected by the shared Office service. The
+        // fallback must reproduce that full content render, not just a color.
+        let coverSize = CGSize(width: 320, height: 420)
+        let expectedSnapshot = try OfficeDocumentService.inspect(url: url)
+        XCTAssertFalse(expectedSnapshot.fields.isEmpty,
+                       "\(fileExtension) fixture must expose real inspectable content", file: file, line: line)
+        let expectedImage = try XCTUnwrap(NotesDocumentCoverService.contentSummary(
+            snapshot: expectedSnapshot, kind: expectedSnapshot.kind, size: coverSize),
+            "\(fileExtension) expected summary image must render", file: file, line: line)
+
+        // Force the "system generator produced no content" branch for this one
+        // render through the per-call seam. The injected closure also observes
+        // the real staged Quick Look input: an extension-carrying, byte-exact
+        // copy of the immutable resource while Quick Look runs.
+        var observedStagedURL: URL?
+        var observedStagedBytesMatch = false
+        let forcedFailure: (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome = { staged, _, _ in
+            observedStagedURL = staged
+            observedStagedBytesMatch = (try? Data(contentsOf: staged)) == originalBytes
+            return NotesOfficeThumbnailGenerator.AttemptOutcome(
+                image: nil, diagnosis: "injected quick look failure", timedOut: false,
+                elapsed: .zero, errorDomain: "QLThumbnailErrorDomain", errorCode: 102)
+        }
+        let outcome = await NotesDocumentCoverService.render(
+            document: document, store: store, size: coverSize,
+            maximumSourceBytes: 128 * 1024 * 1024, request: forcedFailure)
+
+        XCTAssertEqual(outcome.source, .officeContentSummary,
+                       "\(fileExtension) must fall back to the native content summary, got \(outcome.source) (\(outcome.diagnosis))",
+                       file: file, line: line)
+        let image = try XCTUnwrap(outcome.image, "\(fileExtension) summary must be an actual image",
+                                  file: file, line: line)
+        XCTAssertNotNil(image.cgImage, file: file, line: line)
+        assertSameRenderedContent(image, expectedImage, label: fileExtension, file: file, line: line)
+
+        // The staged copy must carry the validated extension, contain the
+        // exact document bytes while the request runs, and be removed with its
+        // staging directory once the render settles.
+        let staged = try XCTUnwrap(observedStagedURL,
+                                   "the Quick Look request must receive the staged copy", file: file, line: line)
+        XCTAssertTrue(observedStagedBytesMatch,
+                      "the staged copy must be the exact document bytes", file: file, line: line)
+        XCTAssertEqual(staged.lastPathComponent, "preview.\(fileExtension)", file: file, line: line)
+        XCTAssertEqual(staged.pathExtension, fileExtension, file: file, line: line)
+        XCTAssertTrue(staged.deletingLastPathComponent().lastPathComponent.hasPrefix("floe-notes-thumb-"),
+                      "staging must use the product staging directory", file: file, line: line)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path),
+                       "the staged Quick Look copy must be removed after the render", file: file, line: line)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.deletingLastPathComponent().path),
+                       "the staging directory must be removed after the render", file: file, line: line)
+
+        // Bounded, redacted failure identity for the artifact.
+        let diagnostics = try XCTUnwrap(outcome.diagnostics, file: file, line: line)
+        XCTAssertEqual(diagnostics.quickLookAttempts, 3, file: file, line: line)
+        XCTAssertFalse(diagnostics.quickLookTimedOut, file: file, line: line)
+        XCTAssertEqual(diagnostics.quickLookErrorDomain, "QLThumbnailErrorDomain", file: file, line: line)
+        XCTAssertEqual(diagnostics.quickLookErrorCode, 102, file: file, line: line)
+        XCTAssertFalse(diagnostics.quickLookWasIconFallback, file: file, line: line)
+        XCTAssertEqual(diagnostics.fallbackStage, .quickLook,
+                       "the failure originates in the Quick Look stage; the summary then succeeded",
+                       file: file, line: line)
+        XCTAssertFalse(diagnostics.summary.contains(fileName),
+                       "diagnostics must never carry a file name", file: file, line: line)
+        XCTAssertFalse(diagnostics.summary.contains("/"),
+                       "diagnostics must never carry a path", file: file, line: line)
+        XCTAssertFalse(diagnostics.summary.isEmpty, file: file, line: line)
+        // Match the bounded schema exactly: short spreadsheet cells may
+        // legitimately coincide with the numeric error code or attempt count.
+        XCTAssertEqual(diagnostics.summary,
+                       "attempts=3 timedOut=false domain=QLThumbnailErrorDomain code=102 fallback=quickLook",
+                       "diagnostics contain only the expected system identity", file: file, line: line)
+
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "cas-summary-fallback-\(fileExtension)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let evidence = XCTAttachment(string: "source=\(outcome.source.rawValue) diagnostics=\(diagnostics.summary) staged=\(staged.lastPathComponent) stagedRemoved=true")
+        evidence.name = "cas-summary-fallback-\(fileExtension)-evidence"
+        evidence.lifetime = .keepAlways
+        add(evidence)
+    }
+
+    /// Both images are separate `contentSummary` renders of the same
+    /// package at the same size. They must be the same pixels; only sub-pixel
+    /// antialiasing noise may differ, and never more than a strict bound.
+    private func assertSameRenderedContent(_ image: UIImage, _ expected: UIImage, label: String,
+                                           file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(image.size, expected.size, "\(label) summary size must match", file: file, line: line)
+        guard let actualData = image.pngData(), let expectedData = expected.pngData() else {
+            XCTFail("\(label) summary must encode to PNG", file: file, line: line)
+            return
+        }
+        if actualData == expectedData { return }
+        guard let actual = image.cgImage, let reference = expected.cgImage,
+              actual.width == reference.width, actual.height == reference.height else {
+            XCTFail("\(label) summary must match the original file's content render", file: file, line: line)
+            return
+        }
+        let width = actual.width, height = actual.height
+        var actualPixels = [UInt8](repeating: 0, count: width * height * 4)
+        var expectedPixels = [UInt8](repeating: 0, count: width * height * 4)
+        let space = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let actualContext = CGContext(data: &actualPixels, width: width, height: height,
+                                            bitsPerComponent: 8, bytesPerRow: width * 4, space: space, bitmapInfo: info),
+              let expectedContext = CGContext(data: &expectedPixels, width: width, height: height,
+                                              bitsPerComponent: 8, bytesPerRow: width * 4, space: space, bitmapInfo: info) else {
+            XCTFail("\(label) summary pixel buffers must be readable", file: file, line: line)
+            return
+        }
+        actualContext.draw(actual, in: CGRect(x: 0, y: 0, width: width, height: height))
+        expectedContext.draw(reference, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var mismatched = 0
+        for index in stride(from: 0, to: width * height * 4, by: 4) {
+            if abs(Int(actualPixels[index]) - Int(expectedPixels[index])) > 2
+                || abs(Int(actualPixels[index + 1]) - Int(expectedPixels[index + 1])) > 2
+                || abs(Int(actualPixels[index + 2]) - Int(expectedPixels[index + 2])) > 2 {
+                mismatched += 1
+            }
+        }
+        let total = width * height
+        XCTAssertLessThanOrEqual(Double(mismatched) / Double(max(total, 1)), 0.001,
+                                 "\(label) summary (\(mismatched)/\(total) mismatched pixels) must render the original package's content",
+                                 file: file, line: line)
     }
 
     // MARK: - Mind-map cover structure

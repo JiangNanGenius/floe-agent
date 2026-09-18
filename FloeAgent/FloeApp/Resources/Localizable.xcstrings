@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "返回手记": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back to Notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "返回手记"
+          }
+        }
+      }
+    },
     "notes.cover.badge.summary": {
       "localizations": {
         "en": {
