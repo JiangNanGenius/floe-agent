@@ -55,6 +55,10 @@ not an executable installation on iOS.
 
 ## Engineering and acceptance
 
+App root scene appearance and foreground changes activate the center; opening the
+IDE panel is not required for recovery. Covering the root with a full-screen
+editor does not deactivate an otherwise active scene.
+
 The app-owned `GitHubActionsJobCenter` publishes state; the actor
 `GitHubActionsJobEngine` owns recovery/polling and injectable transport;
 `GitHubActionsJobStore` atomically persists individual records. The service uses
