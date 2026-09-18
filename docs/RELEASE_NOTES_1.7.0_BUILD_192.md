@@ -1,16 +1,22 @@
-# Floe Agent 1.7.0 (192) / beta.49 — reserved candidate (not built)
+# Floe Agent 1.7.0 (192) / beta.49 — frozen internal-testing candidate
 
-Build 192 is the next reserved build number for `1.7.0`; the tag
-`v1.7.0-beta.49` is reserved and **does not exist**. As of this document:
+Build 192 carries the build 191 feedback repair. The release pipeline creates the
+reserved tag `v1.7.0-beta.49` at the frozen commit this document ships in,
+performs the **single** accepted-upload-SDK App build (Xcode 26.6 / 17F113), and
+retains the unsigned device IPA with its matching private symbols **before**
+signing or upload; reuse of a retained exact artifact is preferred over a
+rebuild. It then uploads to the internal TestFlight build and, after the upload
+is accepted, publishes the attested unsigned GitHub prerelease and requests the
+Feather source publication.
 
-- no source freeze, upload-SDK App build, tag, TestFlight upload, Apple
-  processing, GitHub prerelease or Feather publication has been performed for
-  build 192;
-- the working tree carries the build 191 feedback repair. The App target has
-  **not** been compiled with the upload SDK yet; the recorded validation is
-  host-level and fixture-level only (see "Verification performed");
-- internal TestFlight, the GitHub developer IPA and Feather remain separate
-  deliverables and each must be verified for the frozen source;
+- the frozen source is one immutable commit; the tag is created at that commit
+  by `release-unsigned-ipa.yml` and is never moved or re-pointed;
+- the validation recorded below is host-level and fixture-level and does not
+  replace the accepted-SDK App compile or device evidence;
+- internal TestFlight, the GitHub developer IPA and Feather are separate
+  deliverables and each is verified for the frozen source after the run; Apple
+  processing, `VALID`, the private Floe QA group and the bilingual note readback
+  are confirmed separately and recorded in the TestFlight record;
 - no public Beta submission is included; the public Beta materials remain
   drafts, not a submission.
 
@@ -57,7 +63,7 @@ device acceptance. **Physical-device acceptance belongs to the user.**
   优先于提交，下载中被取消的任务不会被宣告就绪；过期的结果地址如实标记。GIF 可
   检查真实帧数、循环与时长，`gif(fps,width)` 会真实合成并重采样为固定帧率，属于
   本地确定性转换而非 AI 生成。
-- **本地语言**：PHP 8.2.33、Ruby 3.4.1 与编译型语言交付仍在云端验证中；可安装状态以已签名并发布的目录为准，候选配方不代表设备已可安装。最终交付后更新本节。
+- **本地语言**：`floe/ruby` 3.4.1（34,719,962 B）与 `floe/php` 8.2.33（CLI SAPI，4,077,891 B）已推进到签名目录并随本构建打包（签名批次 `capability-hub.yml` run 35399070312，源提交 `96be231e`；`FloeAgent/FloeApp/Resources/Capabilities` 为本构建导入了该批次的签名副本）。`apt install floe/ruby`／`floe/php` 会从签名条目下载并校验工件后安装；解释器启动可能超过 Shell 默认超时，请提高 `timeout` 或改用后台任务。PHP 8.2 为安全维护版本（官方支持至 2026-12-31），已重放到最新 8.2.33 并带 21 个已复核补丁。Rust／C／C++／Go／Swift 单文件走云端编译路线，工件仍为未签名 `cloud-staging`。真机安装与运行验收由你完成。
 - **本地模型**：新增前台状态检查与后台取消保护，避免后台继续提交本地 GPU 推理；取消不会标记为模型失败。MLX 错误处理、释放前 GPU 排空与诊断已加强。生命周期测试 39 项、诊断测试 15 项通过，UIKit 分支已生成 SIL／目标文件。Build191 的前台 Qwen GatedDeltaNet 崩溃仍未证实修复，需真机确认。
 - **发布流程（内部）**：预检查改用可移植的 plist 读取（不再依赖 macOS `plutil`）；
   未签名设备工件在 dSYM 捕获之前先行留存；复用路径要求符号证据，重复的已接受上传
@@ -85,17 +91,18 @@ device acceptance. **Physical-device acceptance belongs to the user.**
 10. 视频：配置视频服务商后用 `video.models` 查看模型，提交一次带参考图的生成
     （会产生真实费用），确认任务持久、重放不重复、取消有效；GIF 检查与转换不需要
     云端费用。
-11. 语言：确认 `apt install floe/lua` 可安装且 `lua` 别名可用；确认 `php`／`ruby`
-   在未签名的本候选上不可安装并明确报错。
+11. 语言：确认 `apt install floe/lua` 可安装且 `lua` 别名可用；再 `apt install floe/ruby`（约 34.7 MB 下载）与 `apt install floe/php`，分别用 `ruby -e 'puts 1+1'` 和 `php -r 'echo 1+1;'` 验证；解释器启动超时可提高 `timeout` 或改用后台任务。安装失败时应给出明确错误。
 
 ### 已执行的验证（宿主级／夹具级，非 App 或真机证据）
 
 FloeShellBridge 宿主 20/20；运行时聚焦 Swift 测试 10/10；传输中取消探针在 0.47 s
 返回取消（URLSession 超时 30 s）；Python runner 13/13；Git 真实 libgit2 检查
 71/71（两套工具链）与 21/21 不变量检查；媒体夹具 156/156（providers 89、
-ownership 45、GIF 22）；语言兼容套件 12/12；capability-hub 27 项；发布流程
-39 项（含 32 项新增复核）与 278 项既有回归检查；Office 原生宿主云端运行
-`35373122891` 成功。App 目标编译、模拟器／真机 UI 与真实供应商调用均未执行。
+ownership 45、GIF 22）；语言兼容套件 12/12；capability-hub 27 项；签名目录与
+本构建内置的 `Resources/Capabilities` 副本已用固定公钥验证（签名批次
+35399070312）；发布流程 39 项（含 32 项新增复核）与 278 项既有回归检查；Office
+原生宿主云端运行 `35373122891` 成功。App 目标编译、模拟器／真机 UI 与真实供应
+商调用均未执行。
 
 ## English
 
@@ -159,7 +166,17 @@ ownership 45、GIF 22）；语言兼容套件 12/12；capability-hub 27 项；�
   frames, loop count and timing, and `gif(fps,width)` performs a real composite
   conversion resampled to a constant rate — a deterministic local conversion,
   not AI generation.
-- **Local languages**: PHP 8.2.33, Ruby 3.4.1 and compiler-backed language delivery are undergoing cloud validation. Installability requires the signed, published catalog; a candidate recipe is not an installable runtime. Refresh this section after delivery.
+- **Local languages**: `floe/ruby` 3.4.1 (34,719,962 B) and `floe/php` 8.2.33
+  (CLI SAPI, 4,077,891 B) are promoted into the signed catalog bundled by this
+  build (signing run `capability-hub.yml` 35399070312 at revision `96be231e`;
+  `FloeAgent/FloeApp/Resources/Capabilities` imports that signed copy). An
+  `apt install floe/ruby` / `floe/php` downloads the signed artifact, verifies
+  its digest and installs it app-wide; interpreter startup may exceed the shell
+  default timeout, so raise `timeout` or use a background job. PHP 8.2 is the
+  current security-maintenance release line (supported through 2026-12-31) and
+  the 21 reviewed patches are replayed onto 8.2.33. Rust/C/C++/Go/Swift single
+  files use the cloud-compile route and stay unsigned under `cloud-staging`.
+  Device install and runtime acceptance remain yours.
 - **Local models**: foreground admission and lifecycle cancellation prevent continued local GPU submission while inactive; cancellation is not a model failure. Scoped MLX error handling, GPU draining and diagnostics are strengthened. All 39 lifecycle and 15 diagnostic checks passed; the UIKit branch compiled to SIL/object. The build191 foreground Qwen GatedDeltaNet abort remains unproven fixed and needs device confirmation.
 - **Release pipeline (internal)**: preflight now uses a portable plist read
   (no macOS `plutil`); the unsigned device artifact is retained before dSYM
@@ -199,8 +216,11 @@ ownership 45、GIF 22）；语言兼容套件 12/12；capability-hub 27 项；�
     tracking, no duplicate on replay and effective cancellation. GIF inspect and
     conversion are local and need no provider spend.
 11. Languages: confirm `apt install floe/lua` installs and the `lua` alias
-    works; confirm `php`/`ruby` are not installable on this unsigned candidate
-    and fail with a clear message.
+    works; then `apt install floe/ruby` (about 34.7 MB download) and
+    `apt install floe/php`, and check `ruby -e 'puts 1+1'` and
+    `php -r 'echo 1+1;'`. Raise `timeout` or use a background job if interpreter
+    startup exceeds the default shell timeout. A failed install must report a
+    clear error.
 
 ### Verification performed (host-level/fixture-level, not App or device evidence)
 
@@ -208,7 +228,9 @@ FloeShellBridge host 20/20; focused runtime Swift tests 10/10; in-flight
 cancellation probe returned cancelled in 0.47 s against a 30 s URLSession
 timeout; Python runner 13/13; real libgit2 Git checks 71/71 on two toolchains
 plus 21/21 invariant checks; media fixtures 156/156 (providers 89, ownership 45,
-GIF 22); language compatibility suite 12/12; capability-hub 27 tests; release
-workflow 39 checks (including 32 new review tests) plus 278 existing regression
-tests; the native Office host cloud run `35373122891` succeeded. No App-target
-compile, simulator/device UI run, or paid provider call was performed.
+GIF 22); language compatibility suite 12/12; capability-hub 27 tests; the signed
+catalog and the `Resources/Capabilities` copy bundled by this build were verified
+against the pinned public key (signing run 35399070312); release workflow 39
+checks (including 32 new review tests) plus 278 existing regression tests; the
+native Office host cloud run `35373122891` succeeded. No App-target compile,
+simulator/device UI run, or paid provider call was performed.
