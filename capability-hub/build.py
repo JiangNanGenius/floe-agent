@@ -75,7 +75,7 @@ CANDIDATES = (
         'id': 'floe/ruby',
         'command': 'floe-ruby',
         'version': '3.4.1',
-        'minimumAppVersion': '1.7.1',
+        'minimumAppVersion': '1.7.0',
         'status': 'compilepending',
         'artifactPath': 'packages/floe-ruby/3.4.1/ruby.wasm',
         'limits': {
@@ -104,7 +104,7 @@ CANDIDATES = (
         'id': 'floe/php',
         'command': 'floe-php',
         'version': '8.2.33',
-        'minimumAppVersion': '1.7.1',
+        'minimumAppVersion': '1.7.0',
         'status': 'compilepending',
         'artifactPath': 'packages/floe-php/8.2.33/php.wasm',
         'limits': {

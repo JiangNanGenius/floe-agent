@@ -21,8 +21,10 @@ not a runtime and `CANDIDATES` entries are not installable.
 Small utilities keep the historical 4 MiB / 64 MiB / 30 s defaults. Interpreter
 entries may raise them within reviewed ceilings (module ≤ 64 MiB, memory ≤
 1 GiB, timeout ≤ 600 s); the app rejects a catalog entry outside those ranges at
-signature-verification time. Interpreter startup can exceed the shell tool's
-default timeout; use a longer `timeout` or a background job.
+signature-verification time. A signed entry whose `minimumAppVersion` is newer
+than the running app is skipped on its own; it never invalidates the rest of
+the signed catalog. Interpreter startup can exceed the shell tool's default
+timeout; use a longer `timeout` or a background job.
 
 ## Status
 

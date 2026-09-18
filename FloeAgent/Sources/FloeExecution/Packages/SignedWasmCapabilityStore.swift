@@ -50,6 +50,7 @@ public struct SignedWasmCatalog: Codable, Sendable {
         let catalog = try JSONDecoder().decode(Self.self, from: data)
         guard catalog.schemaVersion == 1, catalog.packages.count <= 256 else { throw FloeError.validationFailed("Unsupported WASM catalog") }
         var ids = Set<String>(), commands = Set<String>()
+        var supported: [Entry] = []
         for entry in catalog.packages {
             guard entry.id.range(of: "^floe/[a-z0-9][a-z0-9-]{0,63}$", options: .regularExpression) != nil,
                   entry.command.range(of: "^floe-[a-z0-9][a-z0-9-]{0,63}$", options: .regularExpression) != nil,
@@ -57,15 +58,19 @@ public struct SignedWasmCatalog: Codable, Sendable {
                   entry.sha256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
                   entry.url.scheme == "https", entry.url.host != nil, entry.url.user == nil, entry.url.password == nil,
                   entry.minimumAppVersion.range(of: "^[0-9]+[.][0-9]+[.][0-9]+$", options: .regularExpression) != nil,
-                  appVersion.compare(entry.minimumAppVersion, options: .numeric) != .orderedAscending,
                   ids.insert(entry.id).inserted, commands.insert(entry.command).inserted else {
                 throw FloeError.validationFailed("Invalid, duplicate or incompatible WASM catalog entry")
             }
+            // A signed entry that requires a newer app is skipped, never fatal:
+            // one forward-dated interpreter entry must not invalidate the whole
+            // catalog for an older build that can still use the other packages.
+            guard appVersion.compare(entry.minimumAppVersion, options: .numeric) != .orderedAscending else { continue }
             if let moduleMaxBytes = entry.moduleMaxBytes { try WasmPackageLimits.validateModuleMaxBytes(moduleMaxBytes) }
             if let memoryMaxBytes = entry.memoryMaxBytes { try WasmPackageLimits.validateMemoryMaxBytes(memoryMaxBytes) }
             if let defaultTimeoutSeconds = entry.defaultTimeoutSeconds { try WasmPackageLimits.validateTimeoutSeconds(defaultTimeoutSeconds) }
+            supported.append(entry)
         }
-        return catalog
+        return SignedWasmCatalog(packages: supported)
     }
 }
 
