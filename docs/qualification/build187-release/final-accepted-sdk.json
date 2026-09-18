@@ -1,0 +1,46 @@
+{
+  "build": 187,
+  "sourceSHA": "d77aa11f7b4933b987faf5cf65ebc817d520e15e",
+  "runID": 35312393708,
+  "conclusion": "failure",
+  "testFlightUpload": "skipped",
+  "acceptedSDK": {
+    "appRegression": {
+      "result": "Passed",
+      "totalTestCount": 204,
+      "passedTests": 204,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    },
+    "iPadNotesUI": {
+      "result": "Failed",
+      "totalTestCount": 5,
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "testFailures": [
+        {
+          "failureText": "Asynchronous wait failed: Exceeded timeout of 10 seconds, with unfulfilled expectations: \"Expect predicate `hittable == 1` for object \"notes.back\" Button\".",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 1,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch",
+          "testName": "testDocumentTabsAndBodySearch()"
+        }
+      ]
+    },
+    "iPhoneNotesUI": {
+      "result": "Passed",
+      "totalTestCount": 5,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 1
+    }
+  },
+  "notes": [
+    "Existing Office-header UI case is skipped on the accepted SDK; skipped is not passed.",
+    "iPad notes.back existed but did not become hittable within 10 seconds after workspace import. No matching automatic failure attachment was returned by xcresulttool. Root cause is not established; preserve and compare Build188 result.",
+    "SDK27 Notes UI and development component failures are retained separately. Both full-App SDK regression suites passed 204 tests, which does not override UI failures."
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "build": 188,
+  "sourceSHA": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+  "runID": 35317532109,
+  "componentOnly": true,
+  "functionalGate": "success",
+  "results": {
+    "iPad": {
+      "result": "Passed",
+      "totalTestCount": 101,
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    },
+    "iPhone": {
+      "result": "Passed",
+      "totalTestCount": 101,
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    }
+  },
+  "limitations": [
+    "Simulator component host, not full-App UI acceptance or TestFlight availability."
+  ]
+}

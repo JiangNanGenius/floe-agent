@@ -30,3 +30,19 @@ source guards intentionally reject this source. Build187's saved device recovery
 is not interchangeable with build188. CI lifecycle regression evidence is separate:
 build187 SDK27 App regression204/204 includes23IDE GitHub task tests; live App
 relaunch against a real remote run remains pending.
+
+## Cloud update — 2026-09-18
+
+Run35317532109 development NativeNotes component passed101/101 on both
+iPad and iPhone simulators, with no skips. This includes the staging-resource
+case and bounded mind-map snapshot cases. Structured evidence is in
+[notes-component.json](notes-component.json). Full-App dual-SDK jobs are still
+running; no TestFlight upload or installability is claimed.
+
+Build187 has now ended in failure. Its accepted-SDK App regression passed204/204,
+but iPad Notes UI failed while waiting for the imported PDF editor back button
+to become hittable. The accepted-SDK iPhone UI passed4 tests with1 existing
+skip. Details are retained in
+[final accepted-SDK evidence](../build187-release/final-accepted-sdk.json).
+This newly collected187 failure has not been declared fixed by188's component
+pass;188 full-App UI must establish the outcome.
