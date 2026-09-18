@@ -219,11 +219,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let snippet = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Inline reading")).firstMatch
         XCTAssertTrue(snippet.waitForExistence(timeout: 10))
         capture("notes-document-body-search")
-        let result = app.buttons.containing(.staticText, identifier: "预览验收").firstMatch
+        // Resolve the actionable card directly within the results grid. A
+        // global descendant-text firstMatch can stall when XCTest resolves
+        // the same element again for tap, even after its existence check.
+        let result = cardElement(app, kind: "notebook", title: "预览验收")
         XCTAssertTrue(result.waitForExistence(timeout: 10))
         // Landscape iPad fits only a few rows above the keyboard; reveal the
         // match with a real scroll instead of assuming its initial position.
-        if !result.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        if !result.isHittable { app.scrollViews["notes.library.scroll"].swipeUp() }
         XCTAssertTrue(result.isHittable)
         result.tap()
         XCTAssertTrue(back.waitForExistence(timeout: 10))

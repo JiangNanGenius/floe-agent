@@ -37,3 +37,19 @@ the original build190 failure or proving its scheduler-contention hypothesis.
 NativeNotes xcresults independently confirm101/101 passed,0 skipped on each
 simulator family. [Structured evidence](early-results.json). Both full-App SDK
 qualification jobs remain in progress; no upload or installability is claimed.
+
+## SDK27 iPad search-result failure
+
+The SDK27 App regression passed204/204. The iPad full-App Notes UI subsequently
+failed at `testDocumentTabsAndBodySearch` line228: XCTest timed out resolving
+the result card for `tap()`. The body-match snippet, result existence and
+hittability checks had passed. This path still used a global descendant-text
+`firstMatch`, unlike the library-scoped cover helper. The cover test, including
+cold relaunch, passed in93.502s. Original job output is retained; recordings
+and the other device/SDK results are still pending. No App deadlock or harmless
+test failure is inferred from this log alone.
+
+The pending test correction selects that same named notebook card through the
+existing library-scoped helper and scrolls the same results grid. All body-match,
+existence, hittability, tap and opened-editor assertions and deadlines remain.
+It changes no shipping code and does not alter the immutable191 tag.
