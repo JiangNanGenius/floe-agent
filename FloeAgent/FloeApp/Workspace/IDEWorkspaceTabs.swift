@@ -31,7 +31,7 @@ enum IDEWorkspaceTabKind: String, Equatable {
 }
 
 @MainActor
-final class IDEWorkspaceTab: ObservableObject, Identifiable {
+final class IDEWorkspaceTab: ObservableObject, @MainActor Identifiable {
     let relativePath: String
     let kind: IDEWorkspaceTabKind
     /// One Office session per Office tab. The embedded preview and the

@@ -1,23 +1,21 @@
-# Floe Agent 1.7.0 (193) / beta.50 — frozen internal-testing candidate
+# Floe Agent 1.7.0 (194) / beta.51 — frozen internal-testing candidate
 
-> **Status: not uploaded.** This frozen candidate passed the region-isolation fix
-> that stopped build 192 but then failed the accepted-SDK App compile with seven
-> App-target errors that the earlier compile never reached (media polling symbols,
-> a non-exhaustive `ShellRunOutcome` switch, an isolated `Identifiable`
-> conformance, an optional permission probe and two invalid `CocoaError` codes).
-> The immutable tag `v1.7.0-beta.50` remains at `e0b4c8ca` as the failed-freeze
-> record, and build 194 (`v1.7.0-beta.51`) carries the fixes and proceeds.
+Build 194 carries the build 191 feedback repair plus the accepted-SDK compile
+fixes for the two earlier freezes, none of which uploaded:
 
-Build 193 carries the build 191 feedback repair plus the accepted-SDK compile fix
-for the first freeze: build 192 (`v1.7.0-beta.49`, frozen at
-`1dc6577a9975519af292d2a871706a663f25026e`) stopped in the accepted-SDK App
-compile on `FloeLocalModels/MLXTextEngine.swift` with a Swift 6 region-isolation
-error ("sending 'input' risks causing data races") and was **never uploaded**;
-that immutable tag and its failure evidence stay recorded. Build 193 builds the
-chat input in the same region as the `consuming sending` tokenizer call and is
-the candidate that proceeds.
+- build 192 (`v1.7.0-beta.49` at `1dc6577a`) stopped in `FloeLocalModels/MLXTextEngine.swift`
+  with a Swift 6 region-isolation error ("sending 'input' risks causing data races");
+- build 193 (`v1.7.0-beta.50` at `e0b4c8ca`) then exposed seven App-target errors that the
+  earlier compile never reached: two missing media-polling symbols in
+  `BackgroundRunCoordinator`, a non-exhaustive `ShellRunOutcome` switch in
+  `FloeShellCommands`, an isolated `Identifiable` conformance in `IDEWorkspaceTabs`, an
+  optional `Bool?` permission probe and two invalid `CocoaError` codes in
+  `OfficeDocumentEditorView`.
 
-The release pipeline creates the reserved tag `v1.7.0-beta.50` at the frozen
+Both immutable tags and their failure evidence stay recorded. Build 194 applies
+those fixes and is the candidate that proceeds.
+
+The release pipeline creates the reserved tag `v1.7.0-beta.51` at the frozen
 commit this document ships in, performs the **single** accepted-upload-SDK App
 build (Xcode 26.6 / 17F113), and retains the unsigned device IPA with its matching
 private symbols **before** signing or upload; reuse of a retained exact artifact is

@@ -44,6 +44,29 @@ and internal TestFlight upload are performed by the release workflow at the
 frozen commit; Apple processing and Floe QA visibility are verified separately
 before this build is called installable.
 
+## Failed candidate: 1.7.0 (193)
+
+Tag `v1.7.0-beta.50` is fixed at `e0b4c8cafb971c5b5ea8bd2bc0f35b6989ade80c`.
+[Run 35402430509](https://github.com/JiangNanGenius/floe-agent/actions/runs/35402430509)
+created the tag and stopped in the accepted-SDK App build after the build-192
+region-isolation fix, with seven App-target errors that the earlier compile never
+reached: two missing media-polling symbols in `BackgroundRunCoordinator`, a
+non-exhaustive `ShellRunOutcome` switch in `FloeShellCommands`, an isolated
+`Identifiable` conformance in `IDEWorkspaceTabs`, an optional `Bool?` permission
+probe and two invalid `CocoaError` codes in `OfficeDocumentEditorView`. No App
+artifact, signing or upload occurred; the immutable tag is retained as the
+failed-freeze record and build number 193 is retired.
+
+## Preparing: 1.7.0 (194)
+
+Build 194 carries the build-191 feedback repair plus the compile fixes for the
+two failed freezes (192: local-model tokenizer transfer region; 193: media
+polling, shell outcome mapping, isolated conformance, Office permission probe and
+error codes). The single accepted-SDK App build and internal TestFlight upload
+are performed by the release workflow at the frozen commit; Apple processing and
+Floe QA visibility are verified separately before this build is called
+installable.
+
 ## Preparing: 1.7.0 (188)
 
 Build188 keeps the IDE service-owned CI recovery/polling work and repairs Notes

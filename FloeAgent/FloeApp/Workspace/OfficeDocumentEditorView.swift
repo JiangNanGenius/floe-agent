@@ -416,7 +416,10 @@ final class OfficeFileSession: ObservableObject {
         guard let native = controller as? FloeOfficeNativeViewController, native.isViewLoaded,
               let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else { return }
         var probe = await Self.permissionProbe(webView)
-        if probe.documentProtected {
+        // Only a definite protected state takes this path; an unknown probe is
+        // handled by the conservative `isReadOnly`/`verifiedEditable` checks
+        // below, which never read a missing flag as an editable grant.
+        if probe.documentProtected == true {
             try await fallBackToPreview(reason: OfficeInkText.t(
                 "该文档受保护，只能预览；未修改任何内容。",
                 "This document is protected. Preview only; nothing was changed."))
@@ -889,13 +892,13 @@ final class OfficeFileSession: ObservableObject {
         // failure here.
         native.onWorkingCopyOpened = { [weak self, weak native] success in
             guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
-            if !success { self.fail(CocoaError(.fileCorruptFile)) }
+            if !success { self.fail(CocoaError(.fileReadCorruptFile)) }
         }
         native.onWorkingCopyOpenedWithPermission = { [weak self, weak native] success, readOnly in
             guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
             self.engineSessionReadOnly = readOnly
             if !success {
-                self.fail(CocoaError(.fileCorruptFile))
+                self.fail(CocoaError(.fileReadCorruptFile))
                 return
             }
             if readOnly, !native.isReadOnly {

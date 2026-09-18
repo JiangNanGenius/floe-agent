@@ -1242,7 +1242,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         guard let jobs = try? await store.dueOwnedJobs(at: now) else { return }
         for job in jobs where !Task.isCancelled {
-            try? await pollMediaJob(job, store: store, now: now)
+            // One polling owner: the media service implements the state
+            // machine and the provider/credential handling.
+            try? await environment.mediaGenerationService.pollMediaJob(job, store: store, now: now)
         }
         if let next = (try? await store.dueJobs(at: .distantFuture, limit: 100))?
             .compactMap(\.nextPollAt).min() {
@@ -1250,13 +1252,6 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 earliest: max(next, Date().addingTimeInterval(60))
             )
         }
-    }
-
-    nonisolated private static func nextMediaPollDate(job: MediaGenerationJob, now: Date) -> Date {
-        if let estimate = job.estimatedCompletionAt, estimate > now {
-            return min(estimate, now.addingTimeInterval(5 * 60))
-        }
-        return now.addingTimeInterval(60)
     }
 
     private func runDueSchedules() async {
@@ -2141,7 +2136,18 @@ final class MediaGenerationService {
         return try await store.job(id: jobID)
     }
 
-    private func pollMediaJob(
+    /// Next poll instant for a running job, derived from the provider's own
+    /// estimate but bounded so a stale estimate cannot delay progress.
+    nonisolated static func nextMediaPollDate(job: MediaGenerationJob, now: Date) -> Date {
+        if let estimate = job.estimatedCompletionAt, estimate > now {
+            return min(estimate, now.addingTimeInterval(5 * 60))
+        }
+        return now.addingTimeInterval(60)
+    }
+
+    /// Polls one owned durable job. Visible to the coordinator's
+    /// reconciliation loop so there is exactly one polling state machine.
+    func pollMediaJob(
         _ owned: OwnedMediaGenerationJob,
         store: MediaGenerationJobStore,
         now: Date
