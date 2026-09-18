@@ -72,3 +72,19 @@ report1.7.0(190), iPhoneOS26.5, Xcode build17F113.
 This is a recoverable build artifact, not a signed IPA or a TestFlight upload.
 The accepted-SDK simulator-host build remains in progress; the SDK27 gate
 failure still prevents release. No duplicate download or build was started.
+
+## Final result — 2026-09-18
+
+Run35329733708 finished with failure. Accepted-SDK App regressions passed204/204;
+iPad and iPhone full-App Notes UI each passed4 tests with0 failures and1 existing
+native-Office/device-only skip. Both include cover regeneration after cold launch
+and the Pencil options close flow. NativeNotes components passed101/101 each.
+[Structured final results](final-results.json) retain these separate boundaries.
+SDK27 stopped at the Swift network deadline assertion; its full-App UI did not
+run. TestFlight upload and GitHub publication were skipped. Build190 remains a
+failed candidate; the next candidate incorporates the mandatory isolated suite.
+
+The preserved [iPad cover screenshot](accepted-ipad-covers-after-relaunch.png)
+was visually reviewed: Word, Excel, PPT, DXF, DWG, note and mind-map content
+appear after cold relaunch. These are synthetic simulator fixtures; the Office
+covers are extracted-content summaries, not native Office page-render fidelity.

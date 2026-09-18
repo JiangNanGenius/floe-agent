@@ -1,0 +1,30 @@
+{
+  "source": "5183112af7388b2a0c8742057176e584e76cc733",
+  "run": 35329733708,
+  "workflowResult": "failure",
+  "acceptedSDKAppRegression": {
+    "passed": 204,
+    "failed": 0,
+    "skipped": 0
+  },
+  "acceptedSDKNotesUI": {
+    "ipad": {
+      "result": "Passed",
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "totalTestCount": 5,
+      "testFailures": []
+    },
+    "iphone": {
+      "result": "Passed",
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "totalTestCount": 5,
+      "testFailures": []
+    }
+  },
+  "sdk27": "Failed Swift deadline gate before full-App UI build; not executed",
+  "limitation": "Simulator results. Native Office device-only test remains skipped; physical acceptance remains user-owned."
+}
