@@ -26,7 +26,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**178 仍是最后确认的内部 TestFlight 交付版本**（记录状态为 VALID／IN_BETA_TESTING）；本次修复准备未重新查询 App Store Connect，正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**178 仍是最后确认的内部 TestFlight 交付版本**（记录状态为 VALID／IN_BETA_TESTING）；2026-09-18 重新查询 Apple，最新 VALID 上传仍为 178，正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
 当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
 
@@ -34,7 +34,7 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
 
-**188 已固定为 `v1.7.0-beta.45` / `c5656276`，[云端验收](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109)进行中，尚未上传。** 本轮保留 App 自主管理的 GitHub CI 恢复与前台轮询，并加入渐进式 Office 封面：系统预览加载时先显示带标识的内容摘要。[186](docs/RELEASE_1.7.0_BETA_43.md) 验收失败：发布 SDK 的 App 回归通过 204/204（含 23 项 IDE 任务测试），但 Office 导航标识、一次系统预览超时和本地化键问题阻止了上传。[iPad/iPhone 真实 App 封面截图](docs/qualification/build186-release/app-ui/README.md)与未签名恢复包均已保留。详见 [188 准备记录](docs/RELEASE_1.7.0_BETA_45.md)。iPad 本地模型稳定性及原生 Office/Pencil 操作仍待真机验收。
+**Build191（`v1.7.0-beta.48`，源码 `715cbc42`）正按用户要求加急交付内部 TestFlight。** [上传任务复用现有设备工件](https://github.com/JiangNanGenius/floe-agent/actions/runs/35343019320)，不再编译 App。两个 SDK 的应用回归各通过 204/204，iPad、iPhone 手记组件各通过 101/101。两项 SDK27 界面失败仍保留，用户明确同意先行内部真机测试，不代表完整验收通过。签名、Apple 处理和 Floe QA 可安装状态仍待核实。[当前证据](docs/qualification/build191-release/README.md)、[已留存封面截图](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png)。Office 封面可能是带标识的内容摘要，并非原始页面排版；本地模型与原生 Office/Pencil 的真机验收仍由测试者完成。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 
