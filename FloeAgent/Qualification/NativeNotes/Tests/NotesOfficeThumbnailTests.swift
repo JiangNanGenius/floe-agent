@@ -254,6 +254,9 @@ final class NotesOfficeThumbnailTests: XCTestCase {
     func testUnsupportedOfficeFormatReportsUnsupportedTypeStage() async throws {
         let root = makeScratchDirectory("cas-unsupported")
         defer { try? FileManager.default.removeItem(at: root) }
+        // The scratch directory helper only returns a URL; the atomic write
+        // below fails with NSCocoaErrorDomain 4/3 if the parent does not exist.
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let source = root.appendingPathComponent("legacy.rtf")
         try "{\\rtf1\\ansi\\deff0 synthetic legacy document}".write(to: source, atomically: true, encoding: .utf8)
 
@@ -263,7 +266,7 @@ final class NotesOfficeThumbnailTests: XCTestCase {
         XCTAssertEqual(document.kind, .office)
         XCTAssertEqual(document.officeFileName, "legacy.rtf")
 
-        let forcedFailure: (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome = { _, _, _ in
+        let forcedFailure: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome) = { _, _, _ in
             NotesOfficeThumbnailGenerator.AttemptOutcome(
                 image: nil, diagnosis: "injected quick look failure", timedOut: false,
                 elapsed: .zero, errorDomain: "QLThumbnailErrorDomain", errorCode: 102)
@@ -340,7 +343,7 @@ final class NotesOfficeThumbnailTests: XCTestCase {
         // copy of the immutable resource while Quick Look runs.
         var observedStagedURL: URL?
         var observedStagedBytesMatch = false
-        let forcedFailure: (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome = { staged, _, _ in
+        let forcedFailure: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome) = { staged, _, _ in
             observedStagedURL = staged
             observedStagedBytesMatch = (try? Data(contentsOf: staged)) == originalBytes
             return NotesOfficeThumbnailGenerator.AttemptOutcome(

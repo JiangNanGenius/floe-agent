@@ -102,7 +102,7 @@ struct NotesDocumentCoverDiagnostics: Sendable, Equatable {
 }
 
 /// The settled result of one cover render.
-struct NotesDocumentCoverOutcome {
+struct NotesDocumentCoverOutcome: Sendable {
     var image: UIImage?
     var source: NotesDocumentCoverSource
     var diagnosis: String
@@ -300,19 +300,49 @@ struct NotesDocumentThumbnail: View {
     }
 }
 
-/// Bounded retry policy for one Quick Look cover request. Every value is finite:
-/// a card can never poll Quick Look forever, and cancellation always wins.
+/// Bounded policy for one Office cover resource. Every value is finite: a card
+/// can never poll Quick Look forever, and cancellation always wins.
+///
+/// A request that is merely *late* is not a failure to restart. In the build 185
+/// full-App diagnostic, seven app-side 15 s timeouts produced seven late host
+/// error replies (`QLExtensionHostContextThumbnailOperation Code=1` /
+/// `QLThumbnailErrorDomain Code=0`), three of them explicitly logged more than
+/// 60 s after the request started — the Office Quick Look extension host was
+/// still holding cancelled work rather than releasing it. One request therefore
+/// holds the remaining total budget and is cancelled at most once, at the total
+/// deadline. A retry only starts after the previous request has *settled* (its
+/// callback was delivered), never while it is still outstanding. This does not
+/// claim the host's exact congestion behaviour; it only removes app-side
+/// cancel/restart multiplication while the host is busy.
 struct NotesOfficeThumbnailPolicy: Sendable {
-    /// Hard cap on a single generator request.
-    var perAttemptTimeout: Duration = .seconds(15)
-    /// Total attempts including the first; attempts two and three may recover
-    /// a transient first-attempt failure (e.g. a cold-start generator launch
-    /// race).
+    /// Total attempts including the first. An attempt after the first recovers
+    /// a settled generator error only; an outstanding request is never
+    /// duplicated.
     var maxAttempts: Int = 3
-    /// Absolute wall-clock budget for the whole card request.
+    /// Absolute wall-clock budget for one resource, covering every attempt and
+    /// backoff. One generator request holds the remaining budget and is
+    /// cancelled exactly once at this deadline.
     var totalDeadline: Duration = .seconds(45)
     var initialBackoff: Duration = .milliseconds(500)
     var maximumBackoff: Duration = .seconds(2)
+}
+
+/// The settled signal of one generator request attempt. It is Quick Look-free
+/// so the bounded lifecycle below can be driven deterministically in tests
+/// without constructing a `QLThumbnailRepresentation`.
+enum NotesQuickLookAttemptSignal: Sendable {
+    case content(image: UIImage, diagnosis: String?)
+    case icon(diagnosis: String)
+    case failure(diagnosis: String, domain: String?, code: Int?)
+}
+
+/// Deterministic transport seam for exactly one generator request. The product
+/// driver wraps `QLThumbnailGenerator`; a test driver can hold the completion,
+/// reply late, or never reply, and count cancels, all without a simulator
+/// generator. `start` delivers its completion on the main actor at most once.
+struct NotesQuickLookRequestDriver {
+    var start: (@escaping @MainActor (NotesQuickLookAttemptSignal) -> Void) -> Void
+    var cancel: @MainActor () -> Void
 }
 
 /// The single Quick Look request path shared by the product grid and the
@@ -361,19 +391,36 @@ enum NotesOfficeThumbnailGenerator {
         type != .icon
     }
 
-    /// Bounded retry over `request`: at most `policy.maxAttempts` tries, an
-    /// absolute `policy.totalDeadline`, cancellable backoff between attempts,
-    /// and no attempt ever started after cancellation. A generic `.icon`
-    /// representation is terminal: there is no point retrying an unsupported
-    /// generator, and it must never be returned as a cover.
+    /// One bounded card request over `request`: at most `policy.maxAttempts`
+    /// tries, an absolute `policy.totalDeadline`, cancellable backoff between
+    /// settled failures, and no attempt ever started after cancellation. A
+    /// request that times out (its own deadline cancelled it exactly once) is
+    /// terminal: it is never restarted while the shared extension host may
+    /// still hold it. A generic `.icon` representation is terminal too: there
+    /// is no point retrying an unsupported generator, and it must never be
+    /// returned as a cover. Per-resource coalescing is owned by
+    /// `NotesOfficeCoverFlights`, above the shared host slot, so this function
+    /// always performs exactly the one bounded request its caller asked for.
     static func thumbnail(url: URL, size: CGSize, fileExtension: String = "",
                           policy: NotesOfficeThumbnailPolicy = NotesOfficeThumbnailGenerator.cardPolicy,
-                          request: ((URL, CGSize, Duration) async -> AttemptOutcome)? = nil) async -> CardOutcome {
+                          request: (@MainActor (URL, CGSize, Duration) async -> AttemptOutcome)? = nil) async -> CardOutcome {
+        // `request` is an explicit per-call seam: a caller may inject a
+        // deterministic generator (e.g. a forced failure or a held callback),
+        // and parallel cards never observe each other's request. There is no
+        // process-global mock for the generator itself.
+        await boundedOutcome(url: url, size: size, fileExtension: fileExtension,
+                             policy: policy, request: request)
+    }
+
+    /// The bounded attempt loop. A timeout is terminal (the outstanding request
+    /// was already cancelled exactly once by its own deadline); only a settled,
+    /// non-timeout failure may retry, so the host never sees a cancel/restart
+    /// storm.
+    private static func boundedOutcome(url: URL, size: CGSize, fileExtension: String,
+                                       policy: NotesOfficeThumbnailPolicy,
+                                       request: (@MainActor (URL, CGSize, Duration) async -> AttemptOutcome)?) async -> CardOutcome {
         let start = ContinuousClock.now
         func elapsed() -> Duration { start.duration(to: ContinuousClock.now) }
-        // `request` is an explicit per-call seam: a caller may inject a
-        // deterministic generator (e.g. a forced failure), and parallel cards
-        // never observe each other's request. There is no process-global mock.
         let perform = request ?? requestThumbnail
         var attempt = 0
         var backoff = policy.initialBackoff
@@ -382,8 +429,12 @@ enum NotesOfficeThumbnailGenerator {
               !Task.isCancelled,
               elapsed() < policy.totalDeadline {
             attempt += 1
+            // One request holds the remaining total budget. There is no
+            // per-attempt cancel/restart: the request's own bounded deadline
+            // settles it, and a late callback after that is dropped by the
+            // request state.
             let remaining = policy.totalDeadline - elapsed()
-            let outcome = await perform(url, size, min(policy.perAttemptTimeout, remaining))
+            let outcome = await perform(url, size, remaining)
             if outcome.isIconFallback {
                 return CardOutcome(image: nil, attempts: attempt,
                                    diagnosis: outcome.diagnosis, elapsed: elapsed(),
@@ -396,7 +447,11 @@ enum NotesOfficeThumbnailGenerator {
             last = outcome
             logRetry(fileExtension: fileExtension, attempt: attempt, maxAttempts: policy.maxAttempts,
                      elapsed: elapsed(), outcome: outcome)
-            guard attempt < policy.maxAttempts, elapsed() < policy.totalDeadline else { break }
+            // A timed-out request must not be restarted: the extension host may
+            // still be working on it even though the app-side deadline passed.
+            guard !outcome.timedOut,
+                  attempt < policy.maxAttempts,
+                  elapsed() < policy.totalDeadline else { break }
             let remainingAfterAttempt = policy.totalDeadline - elapsed()
             try? await Task.sleep(for: min(backoff, remainingAfterAttempt))
             backoff = min(backoff * 2, policy.maximumBackoff)
@@ -406,40 +461,64 @@ enum NotesOfficeThumbnailGenerator {
                            errorDomain: last.errorDomain, errorCode: last.errorCode)
     }
 
-    /// Bounded and cancellable Quick Look request: one hard timeout, no polling,
-    /// explicit cancellation of the generator request, and a guarded single
-    /// resume shared by the generator callback, the timeout and cancellation.
+    /// One bounded and cancellable Quick Look request: a single hard deadline,
+    /// no polling, explicit cancellation of the generator request exactly once,
+    /// and a guarded single resume shared by the generator callback, the
+    /// deadline and cancellation. The product adapter rejects a generic `.icon`
+    /// representation before it can reach the cover path.
     static func requestThumbnail(url: URL, size: CGSize, timeout: Duration) async -> AttemptOutcome {
-        let start = ContinuousClock.now
         let request = QLThumbnailGenerator.Request(fileAt: url, size: size, scale: 1, representationTypes: .thumbnail)
-        let state = NotesThumbnailRequestState(request: request)
-        let timeoutTask = Task { @MainActor in
-            try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled else { return }
-            state.cancel(reason: "per-attempt timeout")
-        }
-        defer { timeoutTask.cancel() }
-        let result = await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<AttemptOutcome, Never>) in
-                guard state.attach(continuation) else { return }
+        let driver = NotesQuickLookRequestDriver(
+            start: { completion in
                 QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, error in
                     let nsError = error.map { $0 as NSError }
                     // A generic file-type icon is not document content. Reject
                     // it explicitly so it can never be cached or shown as a
                     // thumbnail, and so the bounded loop does not waste retries.
-                    let isIcon = representation.map { !isContentRepresentation($0.type) } ?? false
-                    let image = isIcon ? nil : representation?.uiImage
-                    let diagnosis: String?
-                    if let error { diagnosis = String(describing: error) }
-                    else if isIcon { diagnosis = "generic icon representation" }
-                    else if image == nil { diagnosis = "empty representation" }
-                    else { diagnosis = nil }
-                    Task { @MainActor in
-                        state.finish(image: image, diagnosis: diagnosis, timedOut: false,
-                                     errorDomain: nsError?.domain, errorCode: nsError?.code,
-                                     isIconFallback: isIcon)
+                    let signal: NotesQuickLookAttemptSignal
+                    if let representation, !isContentRepresentation(representation.type) {
+                        signal = .icon(diagnosis: "generic icon representation")
+                    } else if let image = representation?.uiImage {
+                        signal = .content(image: image, diagnosis: nil)
+                    } else if let error {
+                        signal = .failure(diagnosis: String(describing: error),
+                                          domain: nsError?.domain, code: nsError?.code)
+                    } else {
+                        signal = .failure(diagnosis: "empty representation", domain: nil, code: nil)
                     }
+                    Task { @MainActor in completion(signal) }
                 }
+            },
+            cancel: { QLThumbnailGenerator.shared.cancel(request) })
+        return await drive(driver, timeout: timeout)
+    }
+
+    /// Runs the exact product request lifecycle for one injected driver: attach
+    /// first, start once, settle once on the first callback or at `timeout`, and
+    /// cancel the outstanding request at most once. A late callback after the
+    /// request settled is dropped by the single-resume state, never delivered
+    /// twice and never applied to a newer cover.
+    static func drive(_ driver: NotesQuickLookRequestDriver, timeout: Duration) async -> AttemptOutcome {
+        let start = ContinuousClock.now
+        let state = NotesThumbnailRequestState()
+        let deadlineTask = Task { @MainActor in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            state.cancel(reason: "request deadline", timedOut: true)
+        }
+        defer { deadlineTask.cancel() }
+        let result = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<AttemptOutcome, Never>) in
+                guard state.attach(continuation) else { return }
+                guard !Task.isCancelled else {
+                    // The owner went away before the request could start:
+                    // settle without starting (and therefore without
+                    // cancelling) a generator request.
+                    state.cancel(reason: "task cancelled")
+                    return
+                }
+                state.arm(driver.cancel)
+                driver.start { signal in state.finish(signal) }
             }
         } onCancel: {
             Task { @MainActor in state.cancel(reason: "task cancelled") }
@@ -471,6 +550,77 @@ enum NotesOfficeThumbnailGenerator {
 
     static func logUnavailable(fileExtension: String, outcome: CardOutcome) {
         logger.error("[thumbnail] .\(fileExtension, privacy: .public) no content cover after \(outcome.attempts, privacy: .public) attempt(s), \(outcome.elapsed, privacy: .public)s; last: \(outcome.wasIconFallback ? "icon only" : "unavailable", privacy: .public)")
+    }
+}
+
+/// Service-owned single-flight registry for one Office cover resource. The
+/// whole resource operation — shared-host slot, staging, the one bounded Quick
+/// Look request and the native fallback — is owned by one service task, so a
+/// second card for the same revision joins that operation *before* it waits for
+/// the shared host slot. (A generator-level wrap would sit behind the gate: the
+/// second card would wait outside the shared request and never join it.) The
+/// staged copy is created and removed inside the shared operation, so a
+/// cancelled first caller can never delete a copy another waiter needs. The
+/// task is cancelled only when its last waiter cancels, so one scrolling card
+/// can never cancel work another card still needs. Entries are removed as soon
+/// as they settle; beyond `maximumEntries` a new resource runs without
+/// coalescing rather than growing the registry without bound.
+@MainActor
+final class NotesOfficeCoverFlights {
+    static let shared = NotesOfficeCoverFlights()
+
+    /// Hard cap on tracked resources. It is only a memory bound: the shared
+    /// Quick Look gate still bounds how many of them can actually run.
+    static let maximumEntries = 16
+
+    private final class Flight {
+        let task: Task<NotesDocumentCoverOutcome, Never>
+        var waiters: Set<UUID> = []
+        init(task: Task<NotesDocumentCoverOutcome, Never>) { self.task = task }
+    }
+
+    private var flights: [String: Flight] = [:]
+
+    func outcome(key: String,
+                 perform: @escaping @MainActor () async -> NotesDocumentCoverOutcome) async -> NotesDocumentCoverOutcome {
+        let token = UUID()
+        let flight: Flight
+        if let existing = flights[key] {
+            flight = existing
+        } else if flights.count < Self.maximumEntries {
+            let task = Task { @MainActor in await perform() }
+            flight = Flight(task: task)
+            flights[key] = flight
+        } else {
+            // Bounded fallback: no coalescing beyond the cap.
+            return await perform()
+        }
+        flight.waiters.insert(token)
+        let task = flight.task
+        let value = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { @MainActor in self.leave(key: key, token: token) }
+        }
+        leave(key: key, token: token)
+        return value
+    }
+
+    /// Test-visible observability for the service-path coalescing check: the
+    /// number of waiters currently joined to one resource flight.
+    func waiterCount(forKey key: String) -> Int {
+        flights[key]?.waiters.count ?? 0
+    }
+
+    /// Removes one waiter; when the last waiter leaves, the shared request is
+    /// cancelled (at most once) and the entry is dropped. Idempotent: the
+    /// normal path and the cancellation handler both call it.
+    private func leave(key: String, token: UUID) {
+        guard let flight = flights[key], flight.waiters.remove(token) != nil else { return }
+        if flight.waiters.isEmpty {
+            flight.task.cancel()
+            flights[key] = nil
+        }
     }
 }
 
@@ -521,13 +671,22 @@ enum NotesOfficeThumbnailStaging {
     }
 }
 
-/// Process-wide bound on concurrent Quick Look generation. A scrolling grid can
-/// spawn many cards at once; at most two previews decode a source file at a
-/// time and the rest wait for a slot. Cancelling a queued card resumes it at
-/// once without ever handing it a slot.
+/// Process-wide bound on concurrent Office cover work. A scrolling grid can
+/// spawn many cards at once, and every card contends for the same system Office
+/// Quick Look extension host. In the build 185 full-App diagnostic one card
+/// rendered on a second attempt while a concurrent card timed out all three
+/// attempts (the host may serialize, or resources/system contention may have
+/// starved it; the exact cause is not proven). The host slot is therefore one at
+/// a time: a queued card's own deadline does not start until it owns the slot,
+/// so serialization bounds concurrency without consuming another card's budget.
+/// Cancelling a queued card resumes it at once without ever handing it a slot.
+/// Engineering's secondary Quick Look fallback shares the same slot (it only
+/// runs after the bundled viewer fails), so mixed CAD/Office work is serialized
+/// first-in, first-out and cannot multiply host requests; each owner's own
+/// deadline starts only after it holds the slot.
 @MainActor
 final class NotesOfficeThumbnailGate {
-    static let shared = NotesOfficeThumbnailGate()
+    static let shared = NotesOfficeThumbnailGate(limit: 1)
     private let limit: Int
     private var active = 0
     private var waiters: [(UUID, CheckedContinuation<Bool, Never>)] = []
@@ -561,15 +720,16 @@ final class NotesOfficeThumbnailGate {
     }
 }
 
-/// Main-actor serialization makes registration + generator start atomic with
-/// respect to cancellation. A cancelled request can never start afterwards.
+/// Main-actor single-resume state shared by the generator callback, the bounded
+/// deadline and the owner's cancellation. Registration is atomic with respect
+/// to cancellation, so a cancelled request can never start afterwards. It is
+/// Quick Look-free so the exact product lifecycle (including a late callback
+/// after a settle) is directly testable with a deterministic driver.
 @MainActor
-private final class NotesThumbnailRequestState {
-    private let request: QLThumbnailGenerator.Request
+final class NotesThumbnailRequestState {
     private var continuation: CheckedContinuation<NotesOfficeThumbnailGenerator.AttemptOutcome, Never>?
+    private var cancelOutstanding: (@MainActor () -> Void)?
     private var finished = false
-
-    init(request: QLThumbnailGenerator.Request) { self.request = request }
 
     func attach(_ continuation: CheckedContinuation<NotesOfficeThumbnailGenerator.AttemptOutcome, Never>) -> Bool {
         guard !finished else {
@@ -582,23 +742,49 @@ private final class NotesThumbnailRequestState {
         return true
     }
 
-    func finish(image: UIImage?, diagnosis: String?, timedOut: Bool,
-                errorDomain: String? = nil, errorCode: Int? = nil, isIconFallback: Bool = false) {
+    /// Arms the one-shot cancellation of the outstanding generator request.
+    /// It must be armed only immediately before the request starts, so a
+    /// request that was never started is never cancelled.
+    func arm(_ cancelOutstanding: @escaping @MainActor () -> Void) {
+        guard !finished else { return }
+        self.cancelOutstanding = cancelOutstanding
+    }
+
+    /// Settles the request once from a generator callback. A callback that
+    /// arrives after the request already settled is dropped here, so a late
+    /// reply can never resume the continuation twice or touch a newer cover.
+    func finish(_ signal: NotesQuickLookAttemptSignal) {
         guard !finished else { return }
         finished = true
         let continuation = continuation
         self.continuation = nil
-        continuation?.resume(returning: NotesOfficeThumbnailGenerator.AttemptOutcome(image: image,
-                                                       diagnosis: diagnosis ?? "request settled without a result",
-                                                       timedOut: timedOut, elapsed: .zero,
-                                                       errorDomain: errorDomain, errorCode: errorCode,
-                                                       isIconFallback: isIconFallback))
+        cancelOutstanding = nil
+        switch signal {
+        case .content(let image, let diagnosis):
+            continuation?.resume(returning: NotesOfficeThumbnailGenerator.AttemptOutcome(
+                image: image, diagnosis: diagnosis ?? "content representation",
+                timedOut: false, elapsed: .zero))
+        case .icon(let diagnosis):
+            continuation?.resume(returning: NotesOfficeThumbnailGenerator.AttemptOutcome(
+                image: nil, diagnosis: diagnosis, timedOut: false, elapsed: .zero,
+                isIconFallback: true))
+        case .failure(let diagnosis, let domain, let code):
+            continuation?.resume(returning: NotesOfficeThumbnailGenerator.AttemptOutcome(
+                image: nil, diagnosis: diagnosis, timedOut: false, elapsed: .zero,
+                errorDomain: domain, errorCode: code))
+        }
     }
 
-    func cancel(reason: String) {
+    func cancel(reason: String, timedOut: Bool = false) {
         guard !finished else { return }
-        QLThumbnailGenerator.shared.cancel(request)
-        finish(image: nil, diagnosis: reason, timedOut: reason == "per-attempt timeout")
+        finished = true
+        let continuation = continuation
+        self.continuation = nil
+        let cancelOutstanding = self.cancelOutstanding
+        self.cancelOutstanding = nil
+        cancelOutstanding?()
+        continuation?.resume(returning: NotesOfficeThumbnailGenerator.AttemptOutcome(
+            image: nil, diagnosis: reason, timedOut: timedOut, elapsed: .zero))
     }
 }
 
@@ -624,7 +810,7 @@ enum NotesDocumentCoverService {
     /// contaminate parallel cards.
     static func render(document: NoteDocument, store: NotesStore?, size: CGSize,
                        maximumSourceBytes: Int,
-                       request: ((URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
+                       request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
         guard let store else {
             return .init(image: nil, source: .unsupported,
                          diagnosis: String(localized: "notes.cover.error.storeUnavailable", defaultValue: "Notes storage is not ready"))
@@ -644,14 +830,48 @@ enum NotesDocumentCoverService {
 
     // MARK: - Office
 
+    /// One Office cover per resource. Validation and the single-flight key are
+    /// computed first; the whole resource operation (shared host slot, staging,
+    /// Quick Look, native fallback) then runs once inside
+    /// `NotesOfficeCoverFlights`, so a second concurrent card for the same
+    /// resource joins that operation *before* it can wait for the host slot.
     private static func officeCover(document: NoteDocument, store: NotesStore, size: CGSize,
                                     maximumSourceBytes: Int,
-                                    request: ((URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
+                                    request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
         guard let resourceID = document.officeResourceID, let fileName = document.officeFileName,
               let fileExtension = NotesOfficeThumbnailStaging.validatedExtension(of: fileName) else {
             return .init(image: nil, source: .unsupported,
                          diagnosis: String(localized: "notes.cover.office.invalidResource", defaultValue: "The Office file reference is invalid"))
         }
+        let key = officeResourceKey(document: document, store: store, fileExtension: fileExtension,
+                                    size: size, maximumSourceBytes: maximumSourceBytes)
+        return await NotesOfficeCoverFlights.shared.outcome(key: key) {
+            await renderOfficeResource(store: store, resourceID: resourceID,
+                                       fileExtension: fileExtension, size: size,
+                                       maximumSourceBytes: maximumSourceBytes, request: request)
+        }
+    }
+
+    /// The single-flight identity of one Office cover resource. It binds the
+    /// owning store, document id, immutable resource id, revision, validated
+    /// extension, requested cover size and the caller's source-byte bound, so
+    /// no call site can ever share a cover across stores, revisions, sizes or
+    /// caps. Internal so the service-path coalescing test can assert the exact
+    /// shared flight.
+    static func officeResourceKey(document: NoteDocument, store: NotesStore, fileExtension: String,
+                                  size: CGSize, maximumSourceBytes: Int) -> String {
+        "\(ObjectIdentifier(store)):\(document.id.uuidString):\(document.officeResourceID?.uuidString ?? "none"):\(document.revision):\(fileExtension):\(Int(size.width))x\(Int(size.height)):\(maximumSourceBytes)"
+    }
+
+    /// One resource operation, called exactly once per shared flight. It owns
+    /// the shared host slot and the single staged copy for its whole lifetime:
+    /// this body runs inside the service flight task, not inside a caller, so a
+    /// cancelled first waiter can never delete a staged copy another waiter
+    /// needs.
+    private static func renderOfficeResource(store: NotesStore, resourceID: UUID,
+                                             fileExtension: String, size: CGSize,
+                                             maximumSourceBytes: Int,
+                                             request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
         let source: URL
         do { source = try await store.resourceURL(resourceID) } catch {
             return .init(image: nil, source: .unsupported,
@@ -705,9 +925,10 @@ enum NotesDocumentCoverService {
         defer { NotesOfficeThumbnailStaging.remove(staged) }
 
         var diagnostics = NotesDocumentCoverDiagnostics()
-        let outcome = await NotesOfficeThumbnailGenerator.thumbnail(url: staged, size: size,
-                                                                    fileExtension: fileExtension,
-                                                                    request: request)
+        let outcome = await NotesOfficeThumbnailGenerator.thumbnail(
+            url: staged, size: size,
+            fileExtension: fileExtension,
+            request: request)
         diagnostics.quickLookAttempts = outcome.attempts
         diagnostics.quickLookTimedOut = outcome.timedOut
         diagnostics.quickLookErrorDomain = NotesDocumentCoverDiagnostics.boundedDomain(outcome.errorDomain)
