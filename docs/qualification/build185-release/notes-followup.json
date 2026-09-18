@@ -78,12 +78,25 @@
   "lifecycleFollowup": {
     "source": "2a907841b50a19b07488f5e9fff40dc4f3b9cf1f",
     "componentRun": 35301809882,
-    "status": "in_progress",
+    "status": "failure",
     "requestPolicy": "Remaining45-second budget per active resource operation; timed-out request is terminal; settled callback failures may retry within remaining budget",
     "sharing": "Whole resource operation coalesced before gate and staging; last waiter owns cancellation; 16 tracked flights maximum",
     "hostGate": "One slot; queue wait does not consume generator deadline",
     "fixture": "Created unsupported-format scratch directory before atomic write",
     "localChecks": "Current-source Swift6 typecheck and object emission passed; independent source review found no blockers",
-    "notYetProven": "Real component runtime behavior and full-App cold QuickLook success after this repair"
+    "notYetProven": "iPhone OCR regression repair and full-App cold Quick Look success; component run remains failed",
+    "artifact": 10530424224,
+    "iPad": {
+      "passed": 84,
+      "failed": 0,
+      "skipped": 0
+    },
+    "iPhone": {
+      "passed": 83,
+      "failed": 1,
+      "skipped": 0,
+      "failure": "NativeNotesTests/testScannedBilingualPageUsesRealVisionAndBecomesSearchable exceeded 120 seconds; Xcode later restarted the test host"
+    },
+    "verified": "Office Quick Look, CAS fallback and all new coalescing/cancellation cases passed on both device families"
   }
 }

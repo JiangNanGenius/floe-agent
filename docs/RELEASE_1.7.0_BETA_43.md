@@ -27,7 +27,9 @@ subsequent version changes do not modify those implementation files.
 - [Preview lifecycle](NOTES_OFFICE_PREVIEWS.md).
 - [GitHub Actions recovery](IDE_GITHUB_ACTIONS.md).
 - Component run [35301809882](https://github.com/JiangNanGenius/floe-agent/actions/runs/35301809882)
-  is in progress at preparation time. It is not full-App or physical-device acceptance.
+  failed: iPad 84/84; iPhone 83/84, with a 120-second scanned bilingual OCR timeout.
+  Office and new lifecycle cases passed on both devices. This remains a failed
+  component run, not full-App or physical-device acceptance.
 - Complete component verification, freeze an immutable source/tag, then run the
   release pipeline with both SDK App/Notes gates. Save the recoverable device
   artifact before signing and upload.

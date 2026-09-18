@@ -1,0 +1,38 @@
+{
+  "run": 35301809882,
+  "source": "2a907841b50a19b07488f5e9fff40dc4f3b9cf1f",
+  "artifact": 10530424224,
+  "scope": "Native Notes component host, iPad Air 13-inch (M4), not full-App UI acceptance",
+  "suiteOutcome": "iPad 84/84; iPhone 83/84 with scanned bilingual OCR timeout and subsequent host restart",
+  "visualReview": "Word and PowerPoint show bilingual source text, Excel shows small used cell range with truncated cell headings, DWG shows actual line/circle/text geometry. No generic file icon counted as content.",
+  "files": [
+    {
+      "kind": "word",
+      "path": "ipad/word.png",
+      "attachment": "5742432A-8BE2-4D3A-81D6-7B533770B665.png",
+      "sha256": "7e8fd9810489995e88c4d4559ce63dad9f041338a8df60c9aec24121d07f9398",
+      "edits": "none"
+    },
+    {
+      "kind": "excel",
+      "path": "ipad/excel.png",
+      "attachment": "D2F3FFA1-F525-4560-B1C6-7A2FB8EE055F.png",
+      "sha256": "127eb80782c9906c358ccc445eaa8d89bef9277f6376cec12870d5c85a89ae38",
+      "edits": "none"
+    },
+    {
+      "kind": "powerpoint",
+      "path": "ipad/powerpoint.png",
+      "attachment": "BC69FC2E-5A03-4BC3-B13D-7E923718416F.png",
+      "sha256": "006d66768187a3a041c54a3c6a616553263acf2d67cb3b33276518ece1a9f617",
+      "edits": "none"
+    },
+    {
+      "kind": "dwg",
+      "path": "ipad/dwg.png",
+      "attachment": "D406A091-8951-4066-B6F6-63A6260E2A26.png",
+      "sha256": "48453f0139ea9397a377fe7635aac520e399c67471f87373a0e78ed5a4881bdd",
+      "edits": "none"
+    }
+  ]
+}
