@@ -26,7 +26,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**178 仍是最后确认的内部 TestFlight 交付版本**（记录状态为 VALID／IN_BETA_TESTING）；本次 186 准备未重新查询 App Store Connect，正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**178 仍是最后确认的内部 TestFlight 交付版本**（记录状态为 VALID／IN_BETA_TESTING）；本次修复准备未重新查询 App Store Connect，正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
 当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
 
@@ -34,7 +34,7 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
 
-下一内部候选为 **186 / beta.43**，源码已固定为 `d421fea2` 并打标签 `v1.7.0-beta.43`；[发布 run 35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280) 正在并行执行手记组件与双 SDK App 验收，上传要求三者全部成功。本次加入 GitHub 云端构建的持久化与重开恢复，并改善手记中的 Word、Excel、PPT 预览。后续组件 run 35304310882 两端 OCR 通过，但 iPhone 83/84：一次直接读取暂存文件的 Word Quick Look 超时，而同一文件经真实封面服务通过；六个样例测试已改用真实 importer/CAS/封面服务路径，并在本次发布 run 首次实跑。178 仍是最后确认的内部版本，尚未上传、不可安装；iPad 本地模型普通聊天稳定性、原生 Office 与 Pencil 操作仍需真机验收。详见 [beta.43 候选记录](docs/RELEASE_1.7.0_BETA_43.md)。
+**187 正在准备，尚未打标签、构建或上传。** 本轮保留 App 自主管理的 GitHub CI 恢复与前台轮询，并加入渐进式 Office 封面：系统预览加载时先显示带标识的内容摘要。[186](docs/RELEASE_1.7.0_BETA_43.md) 验收失败：发布 SDK 的 App 回归通过 204/204（含 23 项 IDE 任务测试），但 Office 导航标识、一次系统预览超时和本地化键问题阻止了上传。[iPad/iPhone 真实 App 封面截图](docs/qualification/build186-release/app-ui/README.md)与未签名恢复包均已保留。详见 [187 准备记录](docs/RELEASE_1.7.0_BETA_44.md)。iPad 本地模型稳定性及原生 Office/Pencil 操作仍待真机验收。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 

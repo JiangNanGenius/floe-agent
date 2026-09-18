@@ -1,11 +1,75 @@
 # Notes Office / CAD cover acceptance
 
-Status: **source, tests and docs complete; Swift semantically type-checked with
-`swiftc -typecheck` against existing simulator build products and the
-iPhoneSimulator SDK; not built, launched or executed in this task.**
-No `xcodebuild`, simulator boot, device run, CI run, commit or push was performed.
-Treat everything below the "Observed evidence" section as an executable plan
-until the named CI/device job runs and reports back.
+Status: **acceptance record. Section 0 records the build 187 two-tier policy and
+the current source status. Sections 1–7 are retained history from the build
+183–186 passes; they are evidence records, not current policy where they
+conflict.** The build 187 preparation source has local type checks and Python
+fixture results only: no 187 build, simulator run, CI run or device run exists,
+and nothing below may be read as 187 acceptance. Build 186's final failed result
+is recorded in [the beta.43 record](RELEASE_1.7.0_BETA_43.md) and its retained
+qualification JSON is [here](qualification/build186-release/result.json).
+
+## 0. Build 187 acceptance policy (current)
+
+The changes in this section are deliberate policy decisions for build 187. They
+are not a claim that the earlier tests always behaved this way; historical
+results below remain unchanged and are never relabelled.
+
+### Office functional acceptance: real content, not source-only strictness
+
+- A Notes card is accepted only for real content: a system Quick Look content
+  representation (`.quickLookThumbnail`) **or** a native content summary
+  (`.officeContentSummary`) that is visibly labelled
+  (`notes.cover.badge.summary`) and verified by independent fixture-content
+  assertions (known text/cells, 320 × 420 geometry, wrong-document rejection).
+- Neither path accepts a displayed generic icon, missing image, `.unsupported`
+  or `.none`. Summary text, geometry and wrong-document checks are independent
+  fixture checks; they do not establish Quick Look layout or semantic fidelity.
+  For the known nonblank Quick Look fixtures, a bounded pixel-contrast check also
+  rejects uniform/transparent output; it does not recognize words or verify layout.
+  `icon=true` describes the failed Quick Look attempt, not the displayed summary: it
+  is rejected for a `quickLook` result, but preserved as diagnostic evidence when
+  a verified `officeContentSummary` is displayed.
+- The summary remains explicitly **not** an original-layout render. Accepting it
+  as functional content does not assert Office layout fidelity, and a card that
+  only ever shows a summary has not produced a system thumbnail.
+- The six component sample tests and the full-App UI test use this allowed set.
+  The full-App test additionally requires the summary badge and rejects
+  `icon=true` only for a `quickLook` result; it also still requires a strictly newer revision after rename and
+  the opener/relaunch path when those stages are reached.
+
+### Strict Quick Look-only diagnostics: separate and fail closed
+
+- The original strict content assertions (six per-sample plus one per-type) moved
+  into
+  `FloeAgent/Qualification/NativeNotes/Tests/NotesOfficeThumbnailDiagnosticsTests.swift`
+  (7 cases). The functional component step excludes that class with
+  `-skip-testing`; the workflow runs it in a separate `if: always()` diagnostic
+  step with its own `notes-diagnostic-<family>.xcresult`, log, status file and
+  original exit code. The three-format diagnostic alone has a 180-second
+  XCTest allowance to cover three sequential 45-second resource budgets; the
+  per-resource timeout and content assertions are unchanged.
+- Classification reads the real `xcresulttool` test-results structure through
+  `FloeAgent/scripts/verify_quicklook_diagnostics.py`; stdout/log text is never
+  the classifier.
+- Non-gating is allowed **only** for a complete 7/7 run with no skips, no runtime
+  warnings, no crash, and every failure carrying exactly one fixed marker on the
+  matching assertion shape: content source (`:content`), request deadline
+  (`:timeout`) or generic icon (`:icon`).
+- A missing bundle, zero/partial/extra cases, a skip, a throw/crash, a
+  summary/tree count mismatch, or any unmarked assertion failure classifies
+  `NOT_EXECUTED` and fails the diagnostic step. Functional failures always keep
+  the component job failed; no `continue-on-error` is used anywhere.
+
+### 187 status
+
+The progressive cover source and diagnostics separation are committed as
+`1a52dd31cbb5a1b293b525b25124cb12519bb623`. The Office header identifier fix was
+committed as `3dc4a2f81ac4b67800b70fd57f8f350debea66c9` after build 186 but has
+not been built or run. Local `swiftc` typecheck/object checks and Python fixture
+tests are recorded in the internal `Local/Private/build187-*` reports; **no 187
+build, component run, full-App run, CI run, tag, upload or physical-device run
+has executed**.
 
 ## 1. What a "real cover" means
 
@@ -17,20 +81,23 @@ source is a real render of the document's own bytes.
 
 | Document kind | Accepted real source | Explicitly **not** accepted |
 | --- | --- | --- |
-| Office (docx/xlsx/pptx) | `quickLook` — a system Quick Look content representation | generic file icon; accepted-summary-as-thumbnail |
+| Office (docx/xlsx/pptx) | `quickLook` — a system Quick Look content representation; build 187 policy also accepts a labelled `officeContentSummary` proven by independent content assertions (section 0) | generic file icon; unlabelled or unproven summary; absent image; `unsupported` |
 | Notebook | `notePage` | `unsupported`, icon |
 | Mind map | `mindMap` | `unsupported`, icon |
 | Engineering (DXF/DWG/STL/…) | `engineeringPreview` — bundled viewer pixels | `unsupported`, `quickLook`, icon |
 
-### Office: the summary fallback is not a thumbnail
+### Office: the summary is not an original-layout thumbnail
 
 `officeContentSummary` is a real, bounded native OOXML render that is labelled
 **Summary** on the card (`notes.cover.badge.summary`). It is a product fallback
 for environments where the system generator cannot render a format offline.
-It is explicitly **not** evidence of the original Office layout, and the
-full-App acceptance test does **not** accept it for Office. If a card only ever
-shows a summary, native Office thumbnail acceptance has failed even though the
-card is not blank.
+It is explicitly **not** evidence of the original Office layout. Under the build
+187 policy (section 0) it can pass *functional* library acceptance when the label
+and independent content assertions hold; a card that only ever shows a summary has
+still not produced a system thumbnail, and no original-layout claim is made. The
+build 185/186 full-App test required `.quickLookThumbnail` only; that stricter
+behavior is preserved as the separate diagnostic in section 0 instead of being
+silently deleted or converted into a pass.
 
 ### CAD: `unsupported` is not acceptance
 
@@ -93,7 +160,7 @@ DxfViewer's `preserveDrawingBuffer` option is real upstream: `dxf.js` accepts
 `preserveDrawingBuffer: config.thumbnail === true`, so only the offscreen
 thumbnail host pays for the readback.
 
-## 4. Tests added / updated
+## 4. Tests added / updated (historical: build 183–185; build 187 layout is in section 0)
 
 ### Component qualification (`FloeAgent/Qualification/NativeNotes/Tests/NotesOfficeThumbnailTests.swift`)
 
@@ -139,7 +206,7 @@ These run in the `FloeNotesNativeQualification` host, which bundles
   realized (starting from the top) instead of assuming every row exists on first
   query; `assertContentCover` and the rename path both go through it.
 
-## 5. Observed evidence (this task)
+## 5. Observed evidence (historical: build 183–185 type-check pass)
 
 | Check | Command | Result |
 | --- | --- | --- |
@@ -196,21 +263,25 @@ These remain component-host results: the pass confirms the cold-path symptom is
 repaired, it does **not** prove the original cold-bridge failure cause, and it is
 not full-App library-grid, physical-device or release-SDK acceptance.
 
-## 6. Evidence still required (not observed)
+## 6. Evidence status (build 186 final; build 187 pending)
 
-1. **Release-SDK component tests:** the development SDK component and geometry
-   assertions passed on both device families as recorded above. The compatibility
-   job was not selected; its component result remains unobserved.
-2. **Full-App UI** (device or simulator): scheme `FloeAgent`,
-   `FloeAgentUITests/NotesWorkspaceImportUITests.testNotesLibraryCardsShowRealContentCovers`.
-   Office `quickLook` content and CAD `engineeringPreview` are the pass criteria.
+1. **Build 186 development component (run 35306551280):** iPad 83/84 — one
+   strict Excel Quick Look case failed at its 45.679 s request deadline while a
+   real labelled summary was returned; iPhone 84/84. The compatibility component
+   leg was not selected. Raw xcresults and logs are retained internally.
+2. **Build 186 Full-App UI (same run):** both device legs executed 5 tests —
+   3 passed, 1 failed, 1 skipped. The failure was the back-control identifier at
+   `NotesWorkspaceImportUITests.swift:294`; the real button existed but its
+   identifier was overwritten by the parent `notes.office.header`. Real Word,
+   Excel and PowerPoint card covers were captured and visually verified; the
+   cover cold-relaunch phase was **not reached**, so it remains unobserved.
+   See [app UI evidence](qualification/build186-release/app-ui/README.md).
 3. **Physical-device acceptance:** Quick Look content availability and DWG
    conversion performance are device claims; a simulator pass is not a device
-   pass.
-4. **Project membership:** XcodeGen regenerated the main project with the new
-   renderer and test sources, and all app/extension build numbers are 185.
-   The generated project is included in the candidate diff. This establishes
-   membership, not successful cloud compilation.
+   pass. This remains unobserved.
+4. **Build 187:** all new source and test changes are unexecuted. The project
+   must still be regenerated, built, run and qualified under a frozen source
+   before any acceptance result exists.
 
 ## 7. Limitations
 
@@ -222,3 +293,8 @@ not full-App library-grid, physical-device or release-SDK acceptance.
   extremely low-contrast drawing could be rejected into the Quick Look /
   unsupported path rather than shown. This is preferred to a blank cover being
   claimed as content.
+- Build 187 summary bounds (verified from source, not runtime): modern OOXML up
+  to 48 MiB, at most 240 fields, Excel reads the first sheet only (grid drawing
+  uses at most the first 60 cells and a 5 × 10 cell area), and paragraph/grid
+  drawing truncates to the 320 × 420 card. These are product limits, not
+  provisional measurements; see [Office previews](NOTES_OFFICE_PREVIEWS.md).

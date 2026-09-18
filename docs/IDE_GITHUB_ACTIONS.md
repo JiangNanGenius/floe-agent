@@ -1,16 +1,27 @@
 # IDE cloud builds / IDE 云端构建
 
-Current candidate: build 186 / `v1.7.0-beta.43`, source
-`d421fea260523d063270e2d21d623bd011acd9ea`. The
-[release run `35306551280`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
-started at 2026-09-18 04:19:57 UTC; `prepare-release` passed and the NativeNotes
-development component, the SDK 27 build/verify job and the accepted-SDK build
-job run in parallel, with upload gated on all three. The run was still in
-progress at this record; no upload or availability is claimed. The IDE
-client/engine/store feature is unchanged from build 184, which compiled the App
-on both SDK lines and actually executed the 25 service fixtures and all 23 IDE
-engine cases (the separate build 184 Lua install/run failure made each App
-regression 203/204, so no upload occurred).
+Current status: build 186 / `v1.7.0-beta.43` completed as a **failed**
+qualification run on 2026-09-18 and was **not uploaded**. Build 187 / beta.44 has
+only version metadata prepared
+(`2438fdddc9a613a94d938c62148f9ca90bc440be`); no `v1.7.0-beta.44` tag, no new
+release workflow run and no upload exists. See
+[beta.43 final record](RELEASE_1.7.0_BETA_43.md) and
+[beta.44 preparation](RELEASE_1.7.0_BETA_44.md).
+
+Release run
+[`35306551280`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
+for build 186: `prepare-release` passed, then the NativeNotes development
+component, the SDK 27 build/verify job and the accepted-SDK job ran in parallel
+under source `d421fea260523d063270e2d21d623bd011acd9ea`. The focused accepted-SDK
+app regression passed **204/204, including all 23 IDE job cases**
+(`IDEGitHubActionsTests` executed=23 minimum=23). The overall run failed in the
+other gates, so the upload job never ran. The 23 cases are real App-test-host
+execution of the production client/engine/store recovery paths; the actual App
+relaunch by tapping through the UI flow is still not covered, and no TestFlight
+availability is claimed. The IDE client/engine/store feature itself is unchanged
+from build 184. Foreground recovery activates from the root scene and does not
+require opening the IDE panel; backgrounding pauses local polling while the remote
+run continues.
 
 Previous candidate: build 185 / `v1.7.0-beta.42`, source
 `42ecc4527fdbeb171dd0aed1d0776375770f1572`. The cloud qualification run
@@ -157,6 +168,19 @@ App test host successfully. Earlier mandatory SIL/object checks provide separate
 compiler evidence; those checks alone did not execute the tests.
 The only runtime repair in this candidate is the WASI environment contract
 (`f908cce1`), which is outside the GitHub Actions feature. Run `35292395886` is
-the current two-SDK qualification: both App regressions passed 204/204, but
-Office cover/navigation UI failures blocked upload. No App relaunch UI or
-TestFlight availability is implied.
+the two-SDK qualification for that candidate: both App regressions passed
+204/204, but Office cover/navigation UI failures blocked upload. No App relaunch
+UI or TestFlight availability is implied.
+
+### Build 186 result and build 187 preparation
+
+Build 186 executed the accepted-SDK focused regression at 204/204 with all 23
+`IDEGitHubActionsTests` cases passing. The run still failed and did not upload
+because of the other qualification gates (localization namespacing in the SDK 27
+module tests, one strict Excel cover case on the iPad component leg, and the
+Office back-control UI identifier on both full-App UI legs;
+[final record](RELEASE_1.7.0_BETA_43.md)). The IDE feature source is unchanged in
+build 187; the only prepared changes are version metadata and Notes-side source.
+No 187 tag, release run, signing or upload exists, and the actual App relaunch by
+tapping through the run list remains an open UI-level check rather than something
+these 23 host cases prove.

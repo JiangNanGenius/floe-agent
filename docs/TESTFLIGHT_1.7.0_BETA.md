@@ -1,17 +1,15 @@
 # Floe 1.7 TestFlight delivery
 
-## Candidate: 1.7.0 (186)
+## Preparation: 1.7.0 (187)
+
+Build metadata is prepared. No beta.44 tag, cloud run, signed IPA or TestFlight upload exists at this record. See the [preparation record](RELEASE_1.7.0_BETA_44.md).
+
+## Failed candidate: 1.7.0 (186)
 
 Tag `v1.7.0-beta.43`, source `d421fea260523d063270e2d21d623bd011acd9ea`.
-[Release run 35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
-started at 2026-09-18 04:19:57 UTC; `prepare-release` passed and the NativeNotes
-development component, the SDK 27 build/verify job and the accepted-SDK build
-job run in parallel, with upload gated on all three. The run was still in
-progress at this record. Follow-up component run `35304310882` failed overall (iPad 84/84,
-iPhone 83/84) on one direct staged Word Quick Look timeout while the same
-file passed through the real App cover service; OCR passed on both devices. Not
-uploaded and not installable; 178 remains the last confirmed delivery. See the
-[candidate record](RELEASE_1.7.0_BETA_43.md).
+[Run 35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280) finished with qualification failures; signing/upload were skipped. Accepted-SDK App regression passed 204/204, including all 23 IDE cases. Each Notes UI leg passed 3, failed 1 at the Office back-control identifier, and skipped the device-only native Office case. The component passed iPhone 84/84 and iPad 83/84 (one Excel Quick Look timeout with a working content summary). SDK 27 module tests rejected the non-namespaced back-navigation key.
+
+The source-verified unsigned device recovery archive was preserved before UI qualification. It is not a signed IPA. [Result](qualification/build186-release/result.json), [recovery identity](qualification/build186-release/device-recovery.json), [real App screenshots](qualification/build186-release/app-ui/README.md). Build 178 remains the last historically confirmed internal delivery; live Apple availability has not been re-queried here.
 
 ## Previous candidate: 1.7.0 (185)
 

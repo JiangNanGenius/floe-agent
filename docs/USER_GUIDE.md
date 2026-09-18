@@ -509,5 +509,23 @@ editable while the snapshot builds. This feature is still awaiting final-source
 cloud and interface qualification; see [the workflow guide](IDE_GITHUB_ACTIONS.md).
 
 Library cover qualification now explicitly includes Word, Excel, PowerPoint, DXF
-and DWG. A labelled Office summary is a fallback and does not establish a real
+and DWG. Functional acceptance requires real content: a system thumbnail or a
+labelled, independently verified Office summary; generic icons and blank cards
+still fail. The strict system-thumbnail-only checks are recorded separately and
+never turn a failure into a pass. A labelled summary does not establish an
 original-layout thumbnail. See [thumbnail acceptance](NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md).
+
+### Build 186 result and build 187 preparation (not uploaded)
+
+Build 186 / beta.43 failed qualification and was not uploaded: the focused app
+regression passed 204/204 including 23 IDE cases, the Notes component passed 84/84
+on iPhone and 83/84 on iPad (one strict Excel thumbnail case hit its 45-second
+deadline while a real labelled summary was returned), and both full-App Notes UI
+legs failed because an opened Office document's back button lost its
+accessibility identifier to the parent header — the button itself existed. The
+cover cold-relaunch phase was not reached. In the build 187 preparation, modern
+Office cards show a labelled content summary as soon as it is ready and upgrade
+to the system thumbnail when it arrives; a timeout keeps the labelled summary
+instead of a blank card. Summaries cover at most 240 fields and the first Excel
+sheet, and are not an original-layout render. Nothing in build 187 has been
+tagged, run or uploaded; see [beta.44 preparation](RELEASE_1.7.0_BETA_44.md).

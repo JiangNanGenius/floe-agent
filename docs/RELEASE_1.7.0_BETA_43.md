@@ -1,23 +1,50 @@
 # Floe 1.7.0 / Build 186 / beta.43 candidate
 
-Status: **fixed source frozen and tagged; release qualification in progress; not uploaded, not installable**.
+Status: **final: qualification failed; no upload; not signed, not installable.**
 
-Tag `v1.7.0-beta.43` was created and pushed on 2026-09-18; the annotated tag resolves to the
-unique source `d421fea260523d063270e2d21d623bd011acd9ea`, which is also the pushed branch head
-of the release run. Full release run
-[35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280) started at
-2026-09-18 04:19:57 UTC: `prepare-release` passed at 04:20:22 UTC, then the NativeNotes
-development component, the SDK 27 release build/verify job and the accepted-SDK build job run
-in parallel under the frozen SHA. The upload job needs all three to succeed; the
-expedited/direct/recovery TestFlight entries were skipped. At the status read
-(2026-09-18 04:20–04:22 UTC) all three qualification jobs were still in progress. This record
-claims no upload, Apple processing or installability.
+Tag `v1.7.0-beta.43` was created and pushed on 2026-09-18 and resolves to the
+immutable source `d421fea260523d063270e2d21d623bd011acd9ea`. Release run
+[35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
+started at 2026-09-18 04:19:57 UTC; `prepare-release` passed, then the NativeNotes
+development component, the SDK 27 build/verify job and the accepted-SDK job ran in
+parallel under the frozen SHA. The run finished as a failure on 2026-09-18; the
+upload job was skipped, and the expedited/direct/recovery TestFlight entries were
+not selected. No upload, Apple processing or installability exists for this build.
 
-The previous release attempt, build 185 / beta.42, failed Notes UI qualification;
-both SDK App regressions passed 204/204, but this did not authorize release.
-Its original binary and failure evidence remain preserved.
+## Final gate results
 
-## Candidate changes
+| Gate | Final result |
+| --- | --- |
+| SDK 27 build/verify (`build-verify-release`) | **Failed** in "Run Swift tests when exact-source CI cannot be reused": FloeCore `LocalizationCompletenessTests.Keys follow the dotted-namespacing convention` found the bare key `返回手记` (`LocalizationCompletenessTests.swift:91`). The SDK 27 line compiled and the module tests ran; this was a localization-completeness assertion failure, not a compile failure. |
+| NativeNotes development component | **Failed**: iPad 83/84 (one strict Excel Quick Look case failed at its 45.679 s request deadline while the same render returned a real labelled content summary); iPhone 84/84 passed. Both device xcresults and logs are retained. |
+| Accepted-SDK App | Focused app regression **204/204 passed, including all 23 IDE cases**. The Notes UI legs failed on **both** devices: 5 executed, 3 passed, 1 failed, 1 skipped (the device-only native Office case). Failure was `NotesWorkspaceImportUITests.swift:294` (`openedDocumentBackControl`): no `notes.back`/`office.editor.back` matched within 45 s. The retained accessibility hierarchy shows the real back button existed, but its identifier had been overwritten by the parent `notes.office.header` identifier — an accessibility-identifier collision, not a missing navigation control. |
+
+Because the gates failed, the upload job did not run: build 186 is not on
+TestFlight and no beta-testing availability is claimed.
+
+## Retained recovery and evidence
+
+- [Device recovery record](qualification/build186-release/device-recovery.json):
+  unsigned recoverable device build, artifact 10532236731, 811474118 bytes, sha256
+  `903e4be627b78781cbbeb92ccfef315d308404f5637fc2f8a3d8550e944ae93f`, bundle
+  identifiers and 1.7.0 (186) versions verified against the source SHA. This is
+  **not a signed IPA** and was not uploaded.
+- [Accepted-SDK regression summary](qualification/build186-release/accepted-app-regression.json):
+  204/204 including `IDEGitHubActionsTests` 23, with the machine-readable
+  [run result](qualification/build186-release/result.json) (conclusion failure,
+  `uploaded: false`).
+- [App UI covers](qualification/build186-release/app-ui/README.md): real Word,
+  Excel and PowerPoint card content on both simulator families, plus the renamed
+  Word revision 2; the release owner visually verified the unmodified exports. The
+  cover cold-relaunch phase was **not reached** after the back-control failure, so
+  no cold-relaunch result exists for build 186.
+- [Preflight record](qualification/build186-release/preflight.json) and
+  [Office previews](NOTES_OFFICE_PREVIEWS.md).
+- Full logs, raw xcresults and the failure accessibility hierarchy remain under
+  `Local/Artifacts/build186-release` and `Local/Private/build186-release`
+  (internal, intentionally not linked from public docs).
+
+## Candidate changes as tagged
 
 - Office summary reads the same extension-carrying staged resource as Quick Look.
 - The unavailable native Office editor retains Notes navigation.
@@ -28,54 +55,59 @@ Its original binary and failure evidence remain preserved.
   functional OCR/search case uses the existing 180-second ceiling and records
   elapsed time, after correct output arrived at 138 seconds beyond the earlier
   120-second effective allowance. This is not a product performance-fix claim.
-- The six Office cover sample tests (`b06b3082`) now import each generated
-  sample through `NoteFileImporter` → `NotesStore` CAS and render through the
-  real `NotesDocumentCoverService`, still asserting a real Quick Look content
-  image (`quickLookWasIconFallback == false`, `quickLookTimedOut == false`).
-  They have not executed yet; the first live result is this release run's
-  `notes-component` job.
+- The six Office cover sample tests (`b06b3082`) import each generated sample
+  through `NoteFileImporter` → `NotesStore` CAS and render through the real
+  `NotesDocumentCoverService`. This run was their first live execution: all passed
+  on iPhone; on iPad the strict Excel sample failed at 45.679 s by requiring
+  `.quickLookThumbnail` although a real `.officeContentSummary` was returned. That
+  strict assertion now lives in the separate build 187 diagnostics (see the
+  [acceptance policy](NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md)).
 - Component qualification attempts both device families and preserves failures.
-- App-owned GitHub build persistence and foreground recovery remain included.
+- App-owned GitHub build persistence and foreground recovery remain included;
+  see [IDE cloud builds](IDE_GITHUB_ACTIONS.md).
 
-App and all versioned extension targets are configured for 1.7.0 (186), and the
-checked-in Xcode project has been regenerated. Metadata checks pass. The tagged
-source passes the scoped compiler checks and independent review; component and
-both full-App SDK qualifications now run in parallel under the release
-controller. Upload depends on all three succeeding.
+App and all versioned extension targets were configured for 1.7.0 (186), the
+checked-in Xcode project was regenerated, and metadata checks passed. Passing
+metadata never substituted for the gates above.
 
-## Evidence and next gates
+## Fixes made after the failed run (not in the 186 binaries)
 
-- [Notes repair and diagnostic record](qualification/build185-release/notes-followup.json).
-- [Preview lifecycle](NOTES_OFFICE_PREVIEWS.md).
-- [GitHub Actions recovery](IDE_GITHUB_ACTIONS.md).
-- Component run [35301809882](https://github.com/JiangNanGenius/floe-agent/actions/runs/35301809882)
-  failed: iPad 84/84; iPhone 83/84, with a 120-second scanned bilingual OCR timeout.
-  Office and new lifecycle cases passed on both devices. This remains a failed
-  component run, not full-App or physical-device acceptance.
-- Follow-up component run [35304310882](https://github.com/JiangNanGenius/floe-agent/actions/runs/35304310882)
-  passed OCR on both devices (9.588 s / 82.388 s) with the enforced XCTest timer
-  reset from effective 120 s to 180 s proven from the exported session logs, but
-  remained failed: iPad 84/84; iPhone 83/84. The single failure was the direct
-  raw-staged Word request, which timed out at 45.0958 s, while the same file
-  passed through the actual App cover service on attempt 1 in 3.278 s earlier
-  in the same run; the iPad direct request needed a retry. The system-host stall
-  cause remains unproven; no retry or timeout was added. Independent review,
-  including the session-log proof, is retained at
-  `Local/Private/build186-final-review/REPORT.md`. Full-App cold-cover
-  reliability remains a required gate.
-- Tagged source contains the real importer/CAS/cover-service rewrite of the six
-  Office sample tests; the current release run is the first live execution and
-  must pass them before any upload.
-- Preserve a recoverable device artifact before optional tests and signing; all
-  three parallel jobs (Notes component, SDK 27 build/verify, accepted-SDK build)
-  must succeed before upload. Verify Apple processing and intended internal-group
-  availability separately. GitHub prerelease, Feather publication, documentation
-  and cleanup remain separate delivery steps. No production release or public-Beta
-  submission is implied.
+- `0d11957e03f278fb2ed508d8fb89629e30340d19` namespaced the bare `返回手记` key to
+  `notes.navigation.backToNotes` and added the standard-library-only preflight
+  [`validate_localization_catalog.py`](../FloeAgent/scripts/validate_localization_catalog.py),
+  called by [`release_preflight.sh`](../FloeAgent/scripts/release_preflight.sh) and
+  CI before any build, so a non-namespaced or incomplete bilingual entry fails
+  before a full compile instead of in module tests.
+- The Office header identifier collision (`.accessibilityElement(children: .contain)`
+  on the `notes.office.header` container) was committed as
+  `3dc4a2f81ac4b67800b70fd57f8f350debea66c9` after the failed run. It has not been
+  built, run or qualified by build 186, and no 187 qualification has executed it.
+- The progressive two-tier Office cover source is also a working-tree change; see
+  [beta.44 preparation](RELEASE_1.7.0_BETA_44.md) and
+  [Office previews](NOTES_OFFICE_PREVIEWS.md). It has no runtime evidence yet.
 
-[Bilingual candidate notes](RELEASE_NOTES_1.7.0_BUILD_186.md) and
-[TestFlight text draft](TESTFLIGHT_1.7_WHATS_NEW_BUILD_186.json) are prepared.
-Physical iPad local-model and native Office/Pencil acceptance remains user-owned;
-RDP is not declared a usable App feature.
+## Next gates
 
-The per-case allowance follows [Apple XCTest documentation](https://developer.apple.com/documentation/xctest/xctestcase/executiontimeallowance); timing remains recorded separately from functional assertions. Run 35304310882 XCTest session logs confirm the effective timer resets from 120 to 180 seconds on both devices; OCR/search passed, while the separate direct Word request still failed.
+- [Build 187 / beta.44 preparation](RELEASE_1.7.0_BETA_44.md) is versioned but
+  untagged, unrun and unuploaded.
+- Historical failures remain preserved: build 185 / beta.42 failed Notes UI
+  qualification with both SDK App regressions at 204/204
+  ([run 35292395886](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886));
+  build 184 failed each App regression at 203/204 on a Lua install/run failure.
+- Physical iPad local-model and native Office/Pencil acceptance remain user-owned;
+  RDP is not declared a usable App feature.
+
+[Bilingual candidate notes](RELEASE_NOTES_1.7.0_BUILD_186.md) remain as prepared;
+they were never uploaded.
+
+## 简体中文摘要
+
+Build 186 / beta.43 **最终失败，未上传、不可安装**。三项并行验收结果：SDK 27
+模块测试因本地化键 `返回手记` 未命名空间而失败；NativeNotes 组件 iPad 83/84
+（单条 Excel 严格 Quick Look 用例 45.679 秒超时，但真实内容摘要已返回），
+iPhone 84/84；accepted SDK 的 App 回归 204/204（含 23 条 IDE 用例）通过，但两端
+手记 UI 腿均 3 通过、1 失败、1 跳过，失败是返回按钮的辅助功能标识被父级
+`notes.office.header` 覆盖（真实按钮存在，并非导航缺失）。失败后未进入上传。
+未签名真机恢复包与源校验、App 封面截图均已留存；封面冷启动阶段未执行。运行后的修复
+（本地化键命名空间与纯 Python 预检 `0d11957e`、返回标识符容器修复、渐进封面源码）
+均未进入 186 二进制，也尚无 187 运行时证据。

@@ -1,10 +1,14 @@
 # Floe Agent 1.7.0 (186) / beta.43
 
 Tag `v1.7.0-beta.43`, source `d421fea260523d063270e2d21d623bd011acd9ea`; release run
-[35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280) is in
-progress with the Notes component and both SDK App gates in parallel. Not uploaded and not
-installable; build 178 remains the last confirmed internal release.
-Delivery status and evidence: [beta.43 candidate record](RELEASE_1.7.0_BETA_43.md).
+[35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
+**finished as a failure**: the SDK 27 module test, the iPad component leg and both
+full-App Notes UI legs failed (the iPhone component leg passed 84/84 and the
+focused accepted-SDK regression passed 204/204). No upload occurred and this build
+is not installable. These notes
+were the prepared candidate text and were never published. For the next prepared
+candidate see [build 187 notes](RELEASE_NOTES_1.7.0_BUILD_187.md). Delivery status
+and final evidence: [beta.43 final record](RELEASE_1.7.0_BETA_43.md).
 
 ## 简体中文
 

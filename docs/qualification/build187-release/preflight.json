@@ -1,0 +1,70 @@
+{
+  "codeCommit": "1a52dd31cbb5a1b293b525b25124cb12519bb623",
+  "build": 187,
+  "phase": "local_preflight_not_runtime_acceptance",
+  "sourceFiles": {
+    "FloeAgent/FloeApp/Notes/NotesDocumentThumbnail.swift": "ed7f90fd3c79086c35e2e1ec972cf52cde0a5c2a8308f1c7d3c9dab9957782bb",
+    "FloeAgent/FloeApp/Notes/NotesOfficeView.swift": "fa57fc47d35a24e85a9f13a5986f820601f2b95b2edd93235fc266ffdc83b237",
+    "FloeAgent/Qualification/NativeNotes/Tests/NotesOfficeThumbnailTests.swift": "ab5cdd56af7982e797d28c01b94d3d5c9d8ad84c2142ad5fd68fbb2a1ce28352",
+    "FloeAgent/Qualification/NativeNotes/Tests/NotesOfficeThumbnailDiagnosticsTests.swift": "236ed7e19b51a350f4f7c2090c42d0fef0063355d075e9144ec97b02e7d2b150",
+    "FloeAgent/Qualification/NativeNotes/Tests/NotesProgressiveCoverTests.swift": "b38920a382cebb13fa2b6b6fe3a1e8dda6bfda03388a29d84c8ffaeab810065a",
+    "FloeAgent/Tests/FloeAgentUITests/NotesWorkspaceImportUITests.swift": "9647811e15b56d1c5898b11d8489b1ef1711794ddf6c259e1c91d9dcd1a6656f",
+    "FloeAgent/scripts/verify_quicklook_diagnostics.py": "6813033b7be22b6982296d618f90eba78b9d073de7f8b5836cb5fe184ddd9660",
+    ".github/workflows/notes-native-qualification.yml": "d3f987a4ebf76e3dcaf02d47ba0b5997a9a68a0f1f8a16a8e22d0091c7d56e3f"
+  },
+  "checks": [
+    {
+      "name": "focused Swift6 semantic and object emission",
+      "passed": 6,
+      "failed": 0,
+      "target": "arm64-apple-ios26.0-simulator",
+      "toolchain": "Xcode-beta / SDK27",
+      "details": "Current product closure, NativeNotes tests and full-App Notes UI test file. Existing dependency modules reused; no App link or Simulator launch."
+    },
+    {
+      "name": "Office navigation closure typecheck and object",
+      "passed": 2,
+      "failed": 0,
+      "details": "Real Office/Notes sources with three narrow environment shims; comment-only cleanup after checks."
+    },
+    {
+      "name": "Python script suite",
+      "executed": 428,
+      "passed": 427,
+      "skipped": 1,
+      "failed": 0
+    },
+    {
+      "name": "diagnostic contract after final Swift test edits",
+      "executed": 32,
+      "passed": 32
+    },
+    {
+      "name": "actionlint",
+      "workflows": 3,
+      "result": "pass"
+    },
+    {
+      "name": "localization catalog",
+      "entries": 1008,
+      "result": "pass"
+    }
+  ],
+  "review": {
+    "independentReports": 2,
+    "rootConfirmedFindingsFixed": [
+      "Bound both summary copies and parsed snapshots across their full lifetime; restage inside Quick Look slot.",
+      "Structured exact-seven diagnostic classification; allowed assertion marker, source and method; exit65 only.",
+      "Keep valid summary when second-stage staging fails.",
+      "Distinguish failed Quick Look icon diagnostics from a displayed verified summary.",
+      "Preserve Office header child accessibility identifiers."
+    ],
+    "edgeWorker": "DeepSeek billing failure after partial edits; root completed review and final checks."
+  },
+  "limitations": [
+    "No build187 App/runtime/Quick Look/UI execution at this record.",
+    "Pixel contrast is a blank-image guard for known nonblank fixtures, not OCR or layout fidelity.",
+    "Physical-device local-model and native Office/Pencil acceptance remains pending.",
+    "No tag, archive upload, Apple processing or installability is proved by this file."
+  ]
+}

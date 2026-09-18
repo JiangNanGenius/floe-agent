@@ -6,7 +6,7 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-178 仍是最后确认的内部 TestFlight 交付基线（历史记录；本次 186 准备未重新查询 Apple 状态）。185 界面验收失败未上传；186 候选已固定源码 `d421fea2` 并创建/推送标签 `v1.7.0-beta.43`，发布 run `35306551280` 正在并行执行 Notes 组件与双 SDK App 验收，尚未上传、不可安装。完整包/模型交付仍有未完成项；真机验收由用户安装后执行，正式发布另行安排。历史发布、研究和测试记录保留原有日期与结论。
+178 仍是最后确认的内部 TestFlight 交付基线（历史记录；本次未重新查询 Apple）。186 的发布验收失败，未上传；187 正在准备，尚无标签、构建或上传。完整包/模型交付和部分真机验收仍未完成。历史记录保留原日期与结论。
 
 | 文档 | 阅读目的 |
 |---|---|
@@ -84,7 +84,7 @@
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
-186 候选源码已固定为 `d421fea2` 并打标签 `v1.7.0-beta.43`，发布验收进行中，尚未上传；最后确认交付基线为 178。旧版本说明和候选记录保留历史状态。
+当前为 [187 准备稿](RELEASE_1.7.0_BETA_44.md)，尚未构建或上传；[186 最终结果](qualification/build186-release/result.json)与[双端 App 封面截图](qualification/build186-release/app-ui/README.md)已保留。
 
 - [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。
 
@@ -93,7 +93,8 @@
 - [Build 177 historical candidate record](RELEASE_NOTES_1.7.0_BUILD_177.md): earlier personalization, CAD/IDE and UI qualification work; its recorded status is historical.
 - [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.
 
-- [Build 186 candidate](RELEASE_1.7.0_BETA_43.md): fixed source `d421fea2` tagged `v1.7.0-beta.43`; Office preview lifecycle repair, real importer/CAS/cover-service sample tests and OCR allowance calibration; release run `35306551280` in progress, not uploaded.
+- [Build 187 preparation](RELEASE_1.7.0_BETA_44.md): progressive content covers, navigation identity and pre-build localization checks; no tag/build/upload yet.
+- [Build 186 failed qualification](RELEASE_1.7.0_BETA_43.md): fixed source `d421fea2`, run `35306551280`; original evidence and unsigned recovery archive retained, not uploaded.
 - [Build 185 candidate](RELEASE_1.7.0_BETA_42.md): durable cloud jobs, WASI environment repair and content-cover qualification; both App regressions passed but UI failures blocked upload.
 - [Build 184 failed candidate](RELEASE_1.7.0_BETA_41.md): both SDK App builds passed; Lua runtime regression blocked upload.
 - [Build 183 candidate](RELEASE_1.7.0_BETA_40.md): durable IDE cloud builds, real library covers, runtime lifecycle checks; App compilation failed before upload.
