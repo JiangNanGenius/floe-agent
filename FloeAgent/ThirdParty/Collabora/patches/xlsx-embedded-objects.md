@@ -118,9 +118,21 @@ to `engine/oox/source/export/chartexport.cxx`:
 - Series names/categories/values are recorded while the existing series export
   runs and are written as `Sheet1!$...` ranges plus a matching workbook.
 - The workbook is packaged with the engine's own `ZipOutputStream`/`CRC32`
-  (`engine/package/inc`) instead of a duplicated zip writer, and written through
-  `XmlFilterBase::openFragmentStream` so the host package registers its content
-  type. Header-only `frozen` is already used by the pinned file.
+  (`engine/package/inc`, plus the `ZipEntry` definition that
+  `ZipOutputStream.hxx` only forward-declares) instead of a duplicated zip
+  writer, and written through `XmlFilterBase::openFragmentStream` so the host
+  package registers its content type.
+- Header-only `frozen` is used by the pinned file (`frozen/bits/defines.h`,
+  `frozen/unordered_map.h`). The qualified engine bundle does not carry the
+  unpacked tarball, so the overlay declares it as a hash-pinned header
+  dependency (`frozen-1.2.0`, upstream patch set in
+  `patches/frozen-upstream.patch`) like `mdds`. `ColorPropertySet.hxx` is a
+  quoted sibling include and is fetched with the sparse checkout.
+- Compile-driven fixes (first cloud compiles of the translation unit): pass a
+  materialized `OUString` to `OUStringToOString` (only the
+  `std::u16string_view` overload exists), include `com/sun/star/uno/Exception.hpp`
+  for the catch clause, and write the `Sequence<sal_Int8>` payload through
+  `getArray()` because `Sequence::operator[]` is const.
 - **Non-destructive gate:** a workbook is regenerated only when the chart has no
   external data path, or when the path is Floe's own generated name
   (`ppt/embeddings/floe-chart-data-*.xlsx`). An imported/advanced workbook
@@ -128,10 +140,11 @@ to `engine/oox/source/export/chartexport.cxx`:
   replaced by a regenerated Sheet1: the chart is exported without
   `c:externalData`, Floe's strict validation rejects the save, and the user's
   original file is preserved. Deliberate failure over silent degradation.
-- Qualification is still pending. The translation unit is not compiled or linked
-  here; the overlay build must compile it with the existing pipeline, and a real
-  save/close/reopen with edited and untouched charts is required before any
-  roundtrip claim.
+- Qualification is still pending. Earlier cloud overlay attempts failed on
+  missing headers and the C++ issues listed above; the current revision is
+  unverified until the overlay build receives `compilePassed` in its receipt.
+  A real save/close/reopen with edited and untouched charts is required before
+  any roundtrip claim.
 
 Generated decks must name their embedded workbook
 `ppt/embeddings/floe-chart-data-<n>.xlsx` (FloeDocuments integration request) so

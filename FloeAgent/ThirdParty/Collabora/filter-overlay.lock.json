@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "da41281035c08fb5d2ca2203c241f2dc1f57c54ee0365311576d2dfacc27587f",
+  "patchSHA256": "82196758ba7b49c5f813e44faa925b0ec94919a7a1981acc279bd490362e92fb",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -45,7 +45,7 @@
     },
     "engine/oox/source/export/chartexport.cxx": {
       "originalSHA256": "80d8b329acd92d386f49ead2c38da51f40df2fb8d7fe29fc41a62bd1950afd02",
-      "patchedSHA256": "d9c3698c319ae3d27f8c36b26904744abe56cc8bb9c7fea581dc373207f21bc0"
+      "patchedSHA256": "8e89a64e58ae5074e5f5415166cfb5d4de6012e5a454a62dd416f8dc252faf68"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
