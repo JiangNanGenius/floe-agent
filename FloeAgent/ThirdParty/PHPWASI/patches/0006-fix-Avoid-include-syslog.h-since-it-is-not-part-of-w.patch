@@ -1,0 +1,23 @@
+diff --git a/ext/gd/libgd/gd_errors.h b/ext/gd/libgd/gd_errors.h
+index 8a28bf6..e84cef4 100644
+--- a/ext/gd/libgd/gd_errors.h
++++ b/ext/gd/libgd/gd_errors.h
+@@ -1,11 +1,13 @@
+ #ifndef GD_ERRORS_H
+ #define GD_ERRORS_H
+ 
+-#ifndef _WIN32
+-# include <syslog.h>
+-#else
+-# include "win32/syslog.h"
+-#endif
++#ifndef __wasi__
++    #ifndef _WIN32
++    # include <syslog.h>
++    #else
++    # include "win32/syslog.h"
++    #endif
++#endif /* __wasi__ */
+ 
+ /*
+ LOG_EMERG      system is unusable

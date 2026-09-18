@@ -53,7 +53,17 @@ public actor CapabilityInstaller {
     ) {
         var merged = catalog
         if let wasmStore {
-            merged.entries += wasmStore.catalog.packages.map { .init(id: $0.id, kind: .wasmCommand, tier: .wasm, summary: "Signed WASI command " + $0.command, url: $0.url.absoluteString, sha256: $0.sha256, aliases: [$0.command]) }
+            merged.entries += wasmStore.catalog.packages.map { entry in
+                // Interpreter-class entries carry a raised signed ceiling; say so
+                // instead of presenting a 34 MiB interpreter as a small utility.
+                let interpreter = entry.resolvedModuleMaxBytes > WasmPackageLimits.defaultModuleMaxBytes
+                let summary = interpreter
+                    ? "Signed WASI interpreter \(entry.command) \(entry.version); first start can take seconds"
+                    : "Signed WASI command " + entry.command
+                let bare = entry.command.hasPrefix("floe-") ? String(entry.command.dropFirst("floe-".count)) : entry.command
+                return .init(id: entry.id, kind: .wasmCommand, tier: .wasm, summary: summary,
+                             url: entry.url.absoluteString, sha256: entry.sha256, aliases: [entry.command, bare])
+            }
         }
         self.catalog = merged
         self.wasmStore = wasmStore
@@ -151,7 +161,7 @@ public actor CapabilityInstaller {
                 .appendingPathComponent(entry.id.replacingOccurrences(of: "/", with: "-"))
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
-            _ = try await http.download(url: url, timeout: 90, maxBytes: 32 * 1024 * 1024, to: destination)
+            _ = try await http.download(url: url, timeout: 90, maxBytes: 32 * 1024 * 1024, to: destination, cancellation: cancellation)
             if let expected = entry.sha256 {
                 let actual = try FloeDigest.sha256Hex(ofFileAt: destination)
                 guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
@@ -235,7 +245,7 @@ public actor CapabilityInstaller {
     /// Fetches a catalog artifact (font/deb/wasm/data) to a directory without
     /// installing it. Python packages use network.download + the managed pip
     /// path instead.
-    public func download(id: String, to destinationDirectory: URL) async throws -> URL {
+    public func download(id: String, to destinationDirectory: URL, cancellation: CancellationToken? = nil) async throws -> URL {
         guard let entry = catalog.entry(id: id) else {
             throw FloeError.notFound("capability \(id) is not in the catalog")
         }
@@ -244,7 +254,7 @@ public actor CapabilityInstaller {
         }
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         let destination = destinationDirectory.appendingPathComponent(url.lastPathComponent)
-        _ = try await http.download(url: url, timeout: 120, maxBytes: 64 * 1024 * 1024, to: destination)
+        _ = try await http.download(url: url, timeout: 120, maxBytes: 64 * 1024 * 1024, to: destination, cancellation: cancellation)
         if let expected = entry.sha256 {
             let actual = try FloeDigest.sha256Hex(ofFileAt: destination)
             guard actual.caseInsensitiveCompare(expected) == .orderedSame else {

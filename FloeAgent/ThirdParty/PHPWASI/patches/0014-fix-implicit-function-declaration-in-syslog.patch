@@ -1,0 +1,17 @@
+diff --git a/main/php_syslog.c b/main/php_syslog.c
+index 68c7aac..a1d6a23 100644
+--- a/main/php_syslog.c
++++ b/main/php_syslog.c
+@@ -32,6 +32,12 @@
+ #define syslog std_syslog
+ #endif
+ 
++#ifdef __wasi__
++#define syslog(...)
++#define openlog(...)
++#define closelog()
++#endif
++
+ PHPAPI void php_syslog_str(int priority, const zend_string* message)
+ {
+ 	smart_string sbuf = {0};

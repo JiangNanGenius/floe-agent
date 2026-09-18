@@ -13,9 +13,11 @@ from pathlib import Path
 from unittest import mock
 
 import build
-from build import (MANIFEST, catalog_payload, check, place_immutable,
-                   artifact_bytes, build as build_catalog, sign_catalog,
-                   verify_catalog, verify_committed)
+import stage_artifact
+from build import (MANIFEST, CANDIDATES, catalog_payload, check, place_immutable,
+                   artifact_bytes, build as build_catalog, entry_limits, sign_catalog,
+                   status as catalog_status, validate_candidates, verify_catalog,
+                   verify_committed)
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
@@ -254,6 +256,190 @@ class CatalogBuildTests(unittest.TestCase):
         # The temporary test-key path still allows a placeholder revision.
         result = self._build(output, test_key=True, revision='main')
         self.assertIn('/main/capability-hub/', result['payload']['packages'][0]['url'])
+
+
+class CandidateLanguageTests(unittest.TestCase):
+    """Compilepending candidates are visible, pinned and never signed."""
+
+    def test_candidates_are_compilepending_and_disjoint_from_released(self):
+        candidates = validate_candidates()
+        released = {entry['id'] for entry in MANIFEST}
+        commands = {entry['command'] for entry in MANIFEST}
+        self.assertTrue(candidates)
+        for candidate in candidates:
+            self.assertEqual(candidate['status'], 'compilepending')
+            self.assertNotIn(candidate['id'], released)
+            self.assertNotIn(candidate['command'], commands)
+            self.assertRegex(candidate['command'], r'^floe-[a-z0-9][a-z0-9-]{0,63}$')
+            self.assertRegex(candidate['id'], r'^floe/[a-z0-9][a-z0-9-]{0,63}$')
+            self.assertRegex(candidate['version'], r'^[0-9]+[.][0-9]+[.][0-9]+$')
+            self.assertTrue(candidate['artifactGates'])
+            limits = entry_limits(candidate)
+            self.assertIsNotNone(limits)
+            self.assertLessEqual(limits['moduleMaxBytes'], build.LIMIT_RANGES['moduleMaxBytes'][1])
+            self.assertRegex(candidate['artifactPath'], r'^packages/[a-z0-9-]+/[0-9.]+/[a-z0-9-]+[.]wasm$')
+
+    def test_candidates_pin_real_source_digests(self):
+        by_id = {candidate['id']: candidate for candidate in CANDIDATES}
+        ruby = by_id['floe/ruby']
+        self.assertEqual(ruby['source']['sha256'],
+                         '440f9a48a3bae258c70de610f7a78cfc56b536bdb9b81ef750f8d3918382515e')
+        self.assertEqual(ruby['source']['memberSha256'],
+                         '348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11')
+        php = by_id['floe/php']
+        self.assertEqual(php['source']['sha256'],
+                         '9a525d4db1237ede408e454b46f5a93b9e45d83d71753592e3f921903d917e07')
+        self.assertIn(php['version'], php['source']['url'])
+        self.assertEqual(php['source']['wasiSdk']['sha256'],
+                         '7030139d495a19fbeccb9449150c2b1531e15d8fb74419872a719a7580aad0f9')
+        for candidate in CANDIDATES:
+            self.assertTrue(candidate['source']['url'].startswith('https://'))
+            self.assertTrue(candidate['source']['license'])
+            self.assertTrue(candidate['source']['provenance'].startswith('FloeAgent/ThirdParty/'))
+
+    def test_ready_status_is_rejected_for_a_candidate(self):
+        broken = (dict(CANDIDATES[0], status='ready'),)
+        with self.assertRaises(RuntimeError):
+            validate_candidates(candidates=broken)
+
+    def test_candidate_colliding_with_a_released_package_is_rejected(self):
+        broken = (dict(CANDIDATES[0], id='floe/lua'),)
+        with self.assertRaises(RuntimeError):
+            validate_candidates(candidates=broken)
+
+    def test_candidate_requires_explicit_reviewed_limits(self):
+        broken = (dict(CANDIDATES[0], limits={}),)
+        with self.assertRaises(RuntimeError):
+            validate_candidates(candidates=broken)
+        broken = (dict(CANDIDATES[0], limits={'moduleMaxBytes': 2 * 1024 * 1024 * 1024}),)
+        with self.assertRaises(RuntimeError):
+            validate_candidates(candidates=broken)
+
+    def test_status_reports_both_states_without_writing(self):
+        rows = catalog_status(base=build.ROOT)
+        states = {row[0] for row in rows}
+        self.assertEqual(states, {'ready', 'compilepending'})
+        ready = [row for row in rows if row[0] == 'ready']
+        self.assertEqual({row[1] for row in ready}, {entry['id'] for entry in MANIFEST})
+        pending = [row for row in rows if row[0] == 'compilepending']
+        self.assertEqual({row[1] for row in pending}, {candidate['id'] for candidate in CANDIDATES})
+
+    def test_committed_signed_catalog_never_contains_a_candidate(self):
+        payload = check()
+        signed_ids = {package['id'] for package in payload['packages']}
+        for candidate in CANDIDATES:
+            self.assertNotIn(candidate['id'], signed_ids)
+        self.assertEqual(signed_ids, {entry['id'] for entry in MANIFEST})
+
+    def test_catalog_payload_carries_declared_limits_only(self):
+        artifacts = {entry['id']: fake_module(entry['id'].encode()) for entry in MANIFEST}
+        payload = catalog_payload(artifacts, REVISION)
+        for package in payload['packages']:
+            entry = next(item for item in MANIFEST if item['id'] == package['id'])
+            limits = entry_limits(entry) or {}
+            self.assertEqual(package.get('moduleMaxBytes'), limits.get('moduleMaxBytes'))
+            self.assertEqual(package.get('defaultTimeoutSeconds'), limits.get('defaultTimeoutSeconds'))
+
+
+class StageArtifactTests(unittest.TestCase):
+    """Staging records immutable bytes; promotion and signing stay separate."""
+
+    CANDIDATE = {
+        'id': 'floe/testlang',
+        'command': 'floe-testlang',
+        'version': '1.0.0',
+        'minimumAppVersion': '1.7.1',
+        'status': 'compilepending',
+        'artifactPath': 'packages/floe-testlang/1.0.0/testlang.wasm',
+        'limits': {'moduleMaxBytes': 4 * 1024 * 1024, 'memoryMaxBytes': 64 * 1024 * 1024,
+                   'defaultTimeoutSeconds': 60},
+        'source': {
+            'kind': 'upstream-release',
+            'url': 'https://example.invalid/testlang.tar.gz',
+            'sha256': 'f' * 64,
+            'memberSha256': hashlib.sha256(fake_module(b'testlang')).hexdigest(),
+            'license': 'MIT',
+            'provenance': 'FloeAgent/ThirdParty/TestLang/runtime.lock.json',
+        },
+        'artifactGates': ['test gate'],
+    }
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.artifact = self.root / 'testlang.wasm'
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def _stage(self, candidate=None, artifact=None):
+        candidate = candidate or self.CANDIDATE
+        artifact = artifact or self.artifact
+        with mock.patch.object(build, 'CANDIDATES', (candidate,)):
+            return stage_artifact.stage(candidate['id'], artifact, base=self.root)
+
+    def test_stage_writes_immutable_artifact_and_record_only(self):
+        self.artifact.write_bytes(fake_module(b'testlang'))
+        record = self._stage()
+        staged = self.root / self.CANDIDATE['artifactPath']
+        self.assertEqual(staged.read_bytes(), fake_module(b'testlang'))
+        self.assertEqual(record['artifactSha256'], hashlib.sha256(fake_module(b'testlang')).hexdigest())
+        self.assertEqual(record['status'], 'compilepending')
+        self.assertFalse((self.root / 'catalog.json').exists())
+        self.assertFalse((self.root / 'catalog.sig').exists())
+        record_path = self.root / 'candidates/floe-testlang.json'
+        self.assertTrue(record_path.exists())
+        self.assertEqual(json.loads(record_path.read_text())['id'], 'floe/testlang')
+
+    def test_stage_refuses_different_bytes_at_the_same_path(self):
+        self.artifact.write_bytes(fake_module(b'testlang'))
+        self._stage()
+        self.artifact.write_bytes(fake_module(b'other'))
+        with self.assertRaises(RuntimeError):
+            self._stage()
+
+    def test_stage_refuses_a_wrong_member_digest_or_non_wasm_bytes(self):
+        self.artifact.write_bytes(fake_module(b'other'))
+        with self.assertRaises(RuntimeError):
+            self._stage()
+        self.artifact.write_bytes(b'not-wasm')
+        with self.assertRaises(RuntimeError):
+            self._stage()
+
+    def test_stage_refuses_a_payload_over_the_declared_limit(self):
+        oversize = dict(self.CANDIDATE, limits={'moduleMaxBytes': 1024 * 1024, 'memoryMaxBytes': 64 * 1024 * 1024,
+                                                'defaultTimeoutSeconds': 60})
+        self.artifact.write_bytes(WASM_MAGIC + b'x' * (2 * 1024 * 1024))
+        with mock.patch.object(build, 'CANDIDATES', (oversize,)):
+            with self.assertRaises(RuntimeError):
+                stage_artifact.stage('floe/testlang', self.artifact, base=self.root)
+
+    def test_stage_accepts_a_sapi_variant_filename(self):
+        self.artifact.write_bytes(fake_module(b'testlang'))
+        variant = self.root / 'testlang-cgi.wasm'
+        variant.write_bytes(fake_module(b'testlang'))
+        with mock.patch.object(build, 'CANDIDATES', (self.CANDIDATE,)):
+            record = stage_artifact.stage('floe/testlang', variant, base=self.root)
+        self.assertEqual(record['artifactPath'], 'packages/floe-testlang/1.0.0/testlang-cgi.wasm')
+        self.assertTrue((self.root / record['artifactPath']).exists())
+
+    def test_stage_rejects_a_filename_outside_the_command(self):
+        self.artifact.write_bytes(fake_module(b'testlang'))
+        wrong = self.root / 'other.wasm'
+        wrong.write_bytes(fake_module(b'testlang'))
+        with mock.patch.object(build, 'CANDIDATES', (self.CANDIDATE,)):
+            with self.assertRaises(RuntimeError):
+                stage_artifact.stage('floe/testlang', wrong, base=self.root)
+
+    def test_stage_records_evidence_digests(self):
+        self.artifact.write_bytes(fake_module(b'testlang'))
+        evidence = self.root / 'evidence'
+        evidence.mkdir()
+        (evidence / 'build.log').write_text('ok\n')
+        with mock.patch.object(build, 'CANDIDATES', (self.CANDIDATE,)):
+            record = stage_artifact.stage('floe/testlang', self.artifact, evidence=evidence, base=self.root)
+        self.assertEqual(record['evidence'],
+                         {'build.log': hashlib.sha256(b'ok\n').hexdigest()})
 
 
 if __name__ == '__main__':

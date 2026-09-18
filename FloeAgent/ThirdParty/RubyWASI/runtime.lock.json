@@ -1,0 +1,37 @@
+{
+  "status": "compilepending",
+  "version": "3.4.1",
+  "runtime": {
+    "project": "ruby/ruby.wasm",
+    "projectUrl": "https://github.com/ruby/ruby.wasm",
+    "release": "2.10.1",
+    "builtWith": "ruby.wasm 2.10.1 release pipeline (wasi-sdk); wasm32-unknown-wasip1 target",
+    "license": "ruby.wasm tooling: MIT (Yuta Saito); Ruby interpreter: Ruby license (BSD-2-Clause dual)",
+    "licenseUrl": "https://github.com/ruby/ruby.wasm/blob/main/LICENSE",
+    "interpreterLicenseUrl": "https://www.ruby-lang.org/en/about/license.txt"
+  },
+  "asset": {
+    "url": "https://github.com/ruby/ruby.wasm/releases/download/2.10.1/ruby-3.4-wasm32-unknown-wasip1-full.tar.gz",
+    "sha256": "440f9a48a3bae258c70de610f7a78cfc56b536bdb9b81ef750f8d3918382515e",
+    "sizeBytes": 25134606,
+    "member": "ruby-3.4-wasm32-unknown-wasip1-full/usr/local/bin/ruby",
+    "memberSha256": "348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11",
+    "memberSizeBytes": 34719962
+  },
+  "package": {
+    "command": "floe-ruby",
+    "alias": "ruby",
+    "artifactPath": "packages/floe-ruby/3.4.1/ruby.wasm",
+    "onlyMemberPackaged": "usr/local/bin/ruby (the interpreter); gem/irb/rake wrappers and libruby-static.a are not shipped"
+  },
+  "limits": {
+    "moduleMaxBytes": 67108864,
+    "memoryMaxBytes": 268435456,
+    "defaultTimeoutSeconds": 120
+  },
+  "gates": [
+    "language-runtimes.yml ruby job downloads and verifies the pinned release asset and member digest",
+    "RubyInterpreterTests qualify the interpreter through the production WasmKitCommandRuntime on the qualification host",
+    "stage_artifact.py records the staged digest; capability-hub.yml remains the only signer"
+  ]
+}

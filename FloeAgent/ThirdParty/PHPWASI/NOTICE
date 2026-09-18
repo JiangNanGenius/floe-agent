@@ -1,0 +1,16 @@
+VMware Labs WebAssembly Language Runtimes — NOTICE
+Source: https://github.com/vmware-labs/webassembly-language-runtimes
+Revision: dd26cd52f0cf5e15ba058d5e8c0c4354386570ca (php/v8.2.6/patches)
+
+Copyright 2022 VMware, Inc.
+
+This product is licensed to you under the Apache License, V2.0 (the "License").
+You may not use this product except in compliance with the License.
+
+The vendored files under ./patches are unmodified copies of the
+php/v8.2.6/patches directory of the upstream repository at the revision
+above. Each file's SHA-256 is pinned in runtime.lock.json; the build script
+refuses to apply a patch whose digest differs.
+
+PHP itself is distributed under the PHP License v3.01:
+https://www.php.net/license/3_01.txt

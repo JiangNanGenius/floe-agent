@@ -29,6 +29,15 @@ PUBLIC_KEY = ROOT.parent / 'skill-hub/public-key.json'
 DOMAIN = b'FLOE-CAPABILITY-CATALOG-V1\n'
 URL_PREFIX = 'https://raw.githubusercontent.com/JiangNanGenius/floe-agent'
 
+# Reviewed per-package ceilings. `WasmPackageLimits` in FloeExecution enforces
+# the same ranges at signature-verification time; a signed entry outside them
+# is rejected by the app instead of being executed.
+LIMIT_RANGES = {
+    'moduleMaxBytes': (64 * 1024, 64 * 1024 * 1024),
+    'memoryMaxBytes': (16 * 1024 * 1024, 1024 * 1024 * 1024),
+    'defaultTimeoutSeconds': (5, 600),
+}
+
 # Fixed manifest: no version, command, path, size or digest is discovered at
 # runtime. `floe/lua` is the committed 5.4.8 interpreter; `floe/wasm-text`
 # keeps its existing generated artifact.
@@ -53,6 +62,84 @@ MANIFEST = (
         'sizeBytes': 671143,
     },
 )
+
+# Candidate language runtimes that are NOT released and NOT signed into the
+# catalog. They carry the pinned upstream source, the real measured digest
+# where one exists, and the gates that must close before promotion. A
+# candidate can never appear in `catalog.json`: `build()` and `check()` only
+# read MANIFEST, and `validate_candidates()` rejects any id/command collision
+# with a released package. Promotion is a reviewed change that moves the entry
+# into MANIFEST with the staged hash after the workflow evidence passes.
+CANDIDATES = (
+    {
+        'id': 'floe/ruby',
+        'command': 'floe-ruby',
+        'version': '3.4.1',
+        'minimumAppVersion': '1.7.1',
+        'status': 'compilepending',
+        'artifactPath': 'packages/floe-ruby/3.4.1/ruby.wasm',
+        'limits': {
+            'moduleMaxBytes': 64 * 1024 * 1024,
+            'memoryMaxBytes': 256 * 1024 * 1024,
+            'defaultTimeoutSeconds': 120,
+        },
+        'source': {
+            'kind': 'upstream-release',
+            'url': 'https://github.com/ruby/ruby.wasm/releases/download/2.10.1/ruby-3.4-wasm32-unknown-wasip1-full.tar.gz',
+            'sha256': '440f9a48a3bae258c70de610f7a78cfc56b536bdb9b81ef750f8d3918382515e',
+            'member': 'ruby-3.4-wasm32-unknown-wasip1-full/usr/local/bin/ruby',
+            'memberSha256': '348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11',
+            'memberSizeBytes': 34719962,
+            'license': 'Ruby OR BSD-2-Clause',
+            'licenseUrl': 'https://github.com/ruby/ruby.wasm/blob/main/LICENSE',
+            'provenance': 'FloeAgent/ThirdParty/RubyWASI/runtime.lock.json',
+        },
+        'artifactGates': [
+            'language-runtimes.yml ruby job downloads the pinned release asset and verifies the lock digest',
+            'RubyInterpreterTests (qualification) pass through the production WasmKitCommandRuntime',
+            'stage_artifact.py records the staged digest and size; promotion edits MANIFEST in a reviewed change',
+        ],
+    },
+    {
+        'id': 'floe/php',
+        'command': 'floe-php',
+        'version': '8.2.33',
+        'minimumAppVersion': '1.7.1',
+        'status': 'compilepending',
+        'artifactPath': 'packages/floe-php/8.2.33/php.wasm',
+        'limits': {
+            'moduleMaxBytes': 32 * 1024 * 1024,
+            'memoryMaxBytes': 256 * 1024 * 1024,
+            'defaultTimeoutSeconds': 120,
+        },
+        'source': {
+            'kind': 'wasi-source-build',
+            'url': 'https://www.php.net/distributions/php-8.2.33.tar.gz',
+            'sha256': '9a525d4db1237ede408e454b46f5a93b9e45d83d71753592e3f921903d917e07',
+            'sizeBytes': 19264838,
+            'releaseDate': '2026-07-30',
+            'supportStatus': 'security support until 2026-12-31; 8.2.33 is the current security release',
+            'patches': 'https://github.com/vmware-labs/webassembly-language-runtimes/tree/dd26cd52f0cf5e15ba058d5e8c0c4354386570ca/php/v8.2.6/patches',
+            'patchRevision': 'dd26cd52f0cf5e15ba058d5e8c0c4354386570ca',
+            'patchRebase': 'replayed onto php-8.2.33; 19/19 patches apply with plain git apply; two deviations documented in ThirdParty/PHPWASI/runtime.lock.json',
+            'wasiSdk': {
+                'version': '20.0',
+                'url': 'https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz',
+                'sha256': '7030139d495a19fbeccb9449150c2b1531e15d8fb74419872a719a7580aad0f9',
+                'license': 'Apache-2.0 WITH LLVM-exception',
+            },
+            'license': 'PHP-3.01',
+            'licenseUrl': 'https://www.php.net/license/3_01.txt',
+            'provenance': 'FloeAgent/ThirdParty/PHPWASI/runtime.lock.json',
+        },
+        'artifactGates': [
+            'language-runtimes.yml php job builds php-src 8.2.33 with wasi-sdk 20 and the rebased pinned VMware Labs patch set',
+            'php-cgi/php-cli is validated with wasm-tools and the PHP interpreter qualification tests',
+            'security gate: 8.2.33 is the current 8.2 security release (supported until 2026-12-31); promotion requires the passing cloud build and recorded staged digest',
+        ],
+    },
+)
+
 
 
 def assemble(source, destination):
@@ -109,6 +196,75 @@ def artifact_bytes(entry, output, assembler=assemble):
     return data
 
 
+def entry_limits(entry):
+    """Validated optional per-package limits for one manifest entry."""
+    limits = entry.get('limits')
+    if limits is None:
+        return None
+    if not isinstance(limits, dict) or not limits:
+        raise RuntimeError(f"{entry['id']} limits must be a non-empty object")
+    validated = {}
+    for key, value in limits.items():
+        if key not in LIMIT_RANGES:
+            raise RuntimeError(f"{entry['id']} has an unknown limit {key}")
+        if not isinstance(value, int):
+            raise RuntimeError(f"{entry['id']} {key} must be an integer")
+        low, high = LIMIT_RANGES[key]
+        if not low <= value <= high:
+            raise RuntimeError(f"{entry['id']} {key} is outside the reviewed range")
+        validated[key] = value
+    return validated
+
+
+def validate_candidates(manifest=None, candidates=None):
+    """Candidates are compilepending work; they must never look released."""
+    manifest = MANIFEST if manifest is None else manifest
+    candidates = CANDIDATES if candidates is None else candidates
+    released_ids = {entry['id'] for entry in manifest}
+    released_commands = {entry['command'] for entry in manifest}
+    seen_ids, seen_commands = set(), set()
+    for candidate in candidates:
+        if candidate.get('status') != 'compilepending':
+            raise RuntimeError(f"{candidate.get('id')} must stay status=compilepending until promoted")
+        for key in ('id', 'command', 'version', 'minimumAppVersion'):
+            value = candidate.get(key)
+            if not isinstance(value, str) or not value:
+                raise RuntimeError(f"candidate {candidate.get('id')} lacks {key}")
+        if candidate['id'] in released_ids or candidate['id'] in seen_ids:
+            raise RuntimeError(f"candidate {candidate['id']} collides with a released or duplicate package")
+        if candidate['command'] in released_commands or candidate['command'] in seen_commands:
+            raise RuntimeError(f"candidate {candidate['command']} collides with a released or duplicate command")
+        seen_ids.add(candidate['id'])
+        seen_commands.add(candidate['command'])
+        limits = entry_limits(candidate)
+        if limits is None:
+            raise RuntimeError(f"candidate {candidate['id']} requires explicit limits")
+        source = candidate.get('source') or {}
+        digest = source.get('sha256')
+        if digest is not None and not re.fullmatch(r'[0-9a-f]{64}', digest):
+            raise RuntimeError(f"candidate {candidate['id']} source digest is not sha256")
+        if not str(source.get('url', '')).startswith('https://'):
+            raise RuntimeError(f"candidate {candidate['id']} source url must be https")
+        if not candidate.get('artifactGates'):
+            raise RuntimeError(f"candidate {candidate['id']} requires explicit promotion gates")
+    return candidates
+
+
+def status(base=None):
+    """Read-only ready/compilepending report; never signs or writes."""
+    base = Path(ROOT if base is None else base)
+    validate_candidates()
+    rows = []
+    for entry in MANIFEST:
+        rows.append(('ready', entry['id'], entry['command'], entry['version'],
+                     (base / entry['path']).exists(), entry_limits(entry)))
+    for candidate in validate_candidates():
+        staged = sorted((base / 'packages').glob(f"*/*/{candidate['command']}*.wasm")) if (base / 'packages').exists() else []
+        rows.append(('compilepending', candidate['id'], candidate['command'], candidate['version'],
+                     bool(staged), entry_limits(candidate)))
+    return rows
+
+
 def catalog_payload(artifacts, revision):
     """Canonical catalog payload for a committed revision.
 
@@ -118,14 +274,18 @@ def catalog_payload(artifacts, revision):
     packages = []
     for entry in MANIFEST:
         data = artifacts[entry['id']]
-        packages.append({
+        package = {
             'id': entry['id'],
             'version': entry['version'],
             'command': entry['command'],
             'minimumAppVersion': entry['minimumAppVersion'],
             'sha256': hashlib.sha256(data).hexdigest(),
             'url': f"{URL_PREFIX}/{revision}/capability-hub/{entry['path']}",
-        })
+        }
+        limits = entry_limits(entry)
+        if limits:
+            package.update(limits)
+        packages.append(package)
     return {'schemaVersion': 1, 'packages': packages}
 
 
@@ -177,8 +337,11 @@ def check(base=ROOT, public_key_path=None):
 
     Never signs, writes or rebuilds. The committed catalog must contain exactly
     the manifest packages, pin the same digests and use immutable full-SHA URLs.
+    Candidates are validated as compilepending and must never appear in the
+    signed catalog.
     """
     base = Path(base)
+    validate_candidates()
     catalog = (base / 'catalog.json').read_bytes()
     signature = (base / 'catalog.sig').read_text().strip()
     trusted = base64.b64decode(json.loads(Path(public_key_path or PUBLIC_KEY).read_text())['publicKey'])
@@ -187,10 +350,13 @@ def check(base=ROOT, public_key_path=None):
     if payload.get('schemaVersion') != 1:
         raise RuntimeError('Unsupported catalog schema version')
     expected = {entry['id']: entry for entry in MANIFEST}
+    candidate_ids = {candidate['id'] for candidate in CANDIDATES}
     revisions = set()
     for package in payload.get('packages', []):
         entry = expected.get(package.get('id'))
         if entry is None:
+            if package.get('id') in candidate_ids:
+                raise RuntimeError(f"Compilepending package {package.get('id')} must not be signed into the catalog")
             raise RuntimeError(f"Unexpected catalog entry {package.get('id')}")
         match = re.fullmatch(
             rf"{re.escape(URL_PREFIX)}/([0-9a-f]{{40}})/capability-hub/{re.escape(entry['path'])}",
@@ -201,6 +367,10 @@ def check(base=ROOT, public_key_path=None):
         for field in ('version', 'command', 'minimumAppVersion'):
             if package.get(field) != entry[field]:
                 raise RuntimeError(f"{entry['id']} catalog {field} does not match the manifest")
+        limits = entry_limits(entry)
+        for key in LIMIT_RANGES:
+            if package.get(key) != (limits or {}).get(key):
+                raise RuntimeError(f"{entry['id']} catalog {key} does not match the manifest limits")
         data = (base / entry['path']).read_bytes()
         if entry['kind'] == 'committed':
             verify_committed(entry, data)
@@ -220,12 +390,19 @@ if __name__ == '__main__':
     parser.add_argument('--test-key', action='store_true')
     parser.add_argument('--check', action='store_true',
                         help='read-only: verify the committed signed catalog against the fixed manifest')
+    parser.add_argument('--status', action='store_true',
+                        help='read-only: print ready and compilepending language packages; never signs')
     args = parser.parse_args()
+    if args.check and args.status:
+        parser.error('--check and --status are separate read-only reports')
     if args.check:
         if args.test_key:
             parser.error('--check verifies the committed catalog; do not pass --test-key')
         check()
         print('Committed signed catalog matches the fixed manifest; nothing written')
+    elif args.status:
+        for state, identifier, command, version, staged, limits in status():
+            print(f"{state:15} {identifier:14} {command:12} {version:10} staged={'yes' if staged else 'no ':3} limits={limits}")
     else:
         if args.test_key and args.output.resolve() == ROOT:
             parser.error('Test signatures must use a separate output directory')

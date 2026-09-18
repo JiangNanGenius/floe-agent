@@ -1,0 +1,14 @@
+diff --git a/ext/gd/libgd/gd_jpeg.c b/ext/gd/libgd/gd_jpeg.c
+index f3aa695..d9d613a 100644
+--- a/ext/gd/libgd/gd_jpeg.c
++++ b/ext/gd/libgd/gd_jpeg.c
+@@ -45,7 +45,9 @@ static const char *const GD_JPEG_VERSION = "1.0";
+ 
+ typedef struct _jmpbuf_wrapper
+ {
++#ifndef __wasi__
+ 	jmp_buf jmpbuf;
++#endif // __wasi__
+ 	int ignore_warning;
+ } jmpbuf_wrapper;
+ 

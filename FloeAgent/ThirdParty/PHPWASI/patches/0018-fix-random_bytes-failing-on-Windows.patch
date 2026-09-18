@@ -1,0 +1,37 @@
+diff --git a/ext/random/random.c b/ext/random/random.c
+index 576c841..76a5e32 100644
+--- a/ext/random/random.c
++++ b/ext/random/random.c
+@@ -511,7 +511,7 @@ PHPAPI int php_random_bytes(void *bytes, size_t size, bool should_throw)
+ #else
+ 	size_t read_bytes = 0;
+ 	ssize_t n;
+-# if (defined(__linux__) && defined(SYS_getrandom)) || (defined(__FreeBSD__) && __FreeBSD_version >= 1200000) || (defined(__DragonFly__) && __DragonFly_version >= 500700) || (defined(__sun) && defined(HAVE_GETRANDOM))
++# if (defined(__linux__) && defined(SYS_getrandom)) || (defined(__FreeBSD__) && __FreeBSD_version >= 1200000) || (defined(__DragonFly__) && __DragonFly_version >= 500700) || (defined(__sun) && defined(HAVE_GETRANDOM)) || defined(__wasi__)
+ 	/* Linux getrandom(2) syscall or FreeBSD/DragonFlyBSD getrandom(2) function*/
+ 	/* Keep reading until we get enough entropy */
+ 	while (read_bytes < size) {
+@@ -528,6 +528,14 @@ PHPAPI int php_random_bytes(void *bytes, size_t size, bool should_throw)
+ 		size_t amount_to_read = size - read_bytes;
+ #  if defined(__linux__)
+ 		n = syscall(SYS_getrandom, bytes + read_bytes, amount_to_read, 0);
++# elif defined(__wasi__)
++		// getentropy always reads the amount requested on success (0)
++		// and returns -1 otherwise
++		if (getentropy(bytes + read_bytes, amount_to_read) == 0) {
++		  n = amount_to_read;
++		} else {
++		  n = -1;
++		}
+ #  else
+ 		n = getrandom(bytes + read_bytes, amount_to_read, 0);
+ #  endif
+@@ -561,7 +569,7 @@ PHPAPI int php_random_bytes(void *bytes, size_t size, bool should_throw)
+ 
+ 		if (fd < 0) {
+ 			errno = 0;
+-# if HAVE_DEV_URANDOM
++# if defined(HAVE_DEV_URANDOM) && !defined(__wasi__)
+ 			fd = open("/dev/urandom", O_RDONLY);
+ # endif
+ 			if (fd < 0) {

@@ -93,8 +93,12 @@ enum BundledWasmCapabilities {
               let key = Data(base64Encoded: "qOMhhkiyMpw1tWRgbuNH79PjlL6nynbFGqBxeNX2Hco=") else { return nil }
         return try? SignedWasmCapabilityStore(catalogData: data, signature: signature, publicKey: key,
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0",
-            root: root.appendingPathComponent("wasm")) { url, destination in
-                _ = try await HTTPRequestService().download(url: url, timeout: 60, maxBytes: 4 * 1024 * 1024, to: destination)
-            }
+            root: root.appendingPathComponent("wasm"), boundedDownload: { url, destination, maxBytes, cancellation in
+                // The signed entry supplies its reviewed ceiling; the transport
+                // is additionally clamped to the catalog-wide maximum so a
+                // malformed entry cannot request an unbounded transfer.
+                let transportLimit = max(1, min(maxBytes, WasmPackageLimits.maximumDownloadBytes))
+                _ = try await HTTPRequestService().download(url: url, timeout: 120, maxBytes: transportLimit, to: destination, cancellation: cancellation)
+            })
     }
 }

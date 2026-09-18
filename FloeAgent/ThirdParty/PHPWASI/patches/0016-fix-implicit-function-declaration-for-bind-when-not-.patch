@@ -1,0 +1,31 @@
+diff --git a/main/network.c b/main/network.c
+index b0d87a9..99c210f 100644
+--- a/main/network.c
++++ b/main/network.c
+@@ -878,6 +878,9 @@ php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short
+ 		int *error_code, const char *bindto, unsigned short bindport, long sockopts
+ 		)
+ {
++#if defined(__wasi__) && !defined(WASM_RUNTIME_WASMEDGE)
++	return -1;
++#else
+ 	int num_addrs, n, fatal = 0;
+ 	php_socket_t sock;
+ 	struct sockaddr **sal, **psal, *sa;
+@@ -973,7 +976,7 @@ php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short
+ 				int val = 1;
+ #ifndef __wasi__
+ 				(void) setsockopt(sock, SOL_IP, IP_BIND_ADDRESS_NO_PORT, &val, sizeof(val));
+-#endif // !defined(__wasi__)o
++#endif // __wasi__
+ 			}
+ #endif
+ 			if (local_address_len == 0) {
+@@ -1054,6 +1057,7 @@ php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short
+ 	php_network_freeaddresses(psal);
+ 
+ 	return sock;
++#endif // __wasi__
+ }
+ /* }}} */
+ 

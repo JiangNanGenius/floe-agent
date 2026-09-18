@@ -300,7 +300,11 @@ enum FloeShellCommands {
     /// registered when the signed catalog carries its canonical `floe-*`
     /// entry, and it dispatches through the same store, context, task and
     /// cancellation lifecycle as that entry.
-    private static let wasmCommandAliases: [String: String] = ["floe-lua": "lua"]
+    private static let wasmCommandAliases: [String: String] = [
+        "floe-lua": "lua",
+        "floe-php": "php",
+        "floe-ruby": "ruby",
+    ]
 
     private static func registerWasm(_ registry: FloeShellCommandRegistry) {
         guard let store = registry.wasm else { return }
@@ -342,7 +346,7 @@ enum FloeShellCommands {
                 case .exited(let code, let out, let err, _, _, _):
                     FloeShellWrite(stdout, out); FloeShellWrite(stderr, err); return code
                 case .timedOut(let out, let err, _):
-                    FloeShellWrite(stdout, out); FloeShellWrite(stderr, err + "\nWASM command timed out\n"); return 124
+                    FloeShellWrite(stdout, out); FloeShellWrite(stderr, err + "\nWASM command timed out; interpreter startup may need a longer shell timeout (tool timeout up to 120s or jobs.submit)\n"); return 124
                 case .cancelled: return 130
                 case .failed(let message): FloeShellWrite(stderr, message + "\n"); return 1
                 }

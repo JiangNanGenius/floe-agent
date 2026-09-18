@@ -34,7 +34,7 @@ struct WasmCapabilityInstallerTests {
             publicKey: key.publicKey.rawRepresentation,
             appVersion: "1.6.7",
             root: root.appendingPathComponent("wasm", isDirectory: true)
-        ) { _, target in
+        ) { _, target, _ in
             try bytes.write(to: target)
         }
         return Fixture(store: store, entry: entry, moduleBytes: bytes)

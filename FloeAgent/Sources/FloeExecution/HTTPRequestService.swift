@@ -6,6 +6,8 @@
 
 import Foundation
 import Darwin
+import FloeCore
+import FloeTools
 
 /// Bounded result of one HTTP exchange.
 public struct HTTPResponse: Sendable, Equatable {
@@ -166,12 +168,19 @@ public struct HTTPRequestService: Sendable {
     /// revalidating session used by `send`. The payload is bounded by
     /// `maxBytes`: an oversized download is deleted and reported as an error
     /// instead of being partially kept.
+    ///
+    /// `cancellation` is observed while the transfer is in flight: the
+    /// underlying URLSession task is cancelled and `FloeError.cancelled` is
+    /// thrown, so a shell command that owns this download can stop promptly
+    /// instead of holding the engine's run gate until the network timeout.
     public func download(
         url: URL,
         timeout: TimeInterval,
         maxBytes: Int,
-        to destination: URL
+        to destination: URL,
+        cancellation: CancellationToken? = nil
     ) async throws -> DownloadResult {
+        try cancellation?.throwIfCancelled()
         if allowsPrivateNetwork {
             try DiagnosticNetworkTargetPolicy.validate(url)
         } else {
@@ -182,11 +191,29 @@ public struct HTTPRequestService: Sendable {
         request.timeoutInterval = max(1, min(timeout, 120))
 
         let (temporary, response): (URL, URLResponse)
+        let downloadTask = Task { try await self.session.download(for: request) }
+        // Cooperative cancellation: a shell command that owns this download
+        // must be able to stop the transfer and release the engine run gate
+        // instead of waiting for the URLSession timeout.
+        let watcher = Task {
+            while !Task.isCancelled {
+                if cancellation?.isCancelled == true {
+                    downloadTask.cancel()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+        }
+        defer { watcher.cancel() }
         do {
-            (temporary, response) = try await session.download(for: request)
+            (temporary, response) = try await downloadTask.value
+        } catch is CancellationError {
+            throw FloeError.cancelled
         } catch {
+            if cancellation?.isCancelled == true { throw FloeError.cancelled }
             throw HTTPRequestError.requestFailed(error.localizedDescription)
         }
+        try cancellation?.throwIfCancelled()
         return try Self.commitDownload(temporary: temporary, response: response, maxBytes: maxBytes, destination: destination)
     }
 

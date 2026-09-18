@@ -186,7 +186,7 @@ struct WasmCapabilityTests {
         let signature = try key.signature(for: Data("FLOE-CAPABILITY-CATALOG-V1\n".utf8) + data)
         #expect(throws: Error.self) { try SignedWasmCatalog.verify(data: data + Data([32]), signature: signature, publicKey: key.publicKey.rawRepresentation, appVersion: "1.6.7") }
         let installed = root.appendingPathComponent("installed")
-        let store = try SignedWasmCapabilityStore(catalogData: data, signature: signature, publicKey: key.publicKey.rawRepresentation, appVersion: "1.6.7", root: installed) { _, target in try bytes.write(to: target) }
+        let store = try SignedWasmCapabilityStore(catalogData: data, signature: signature, publicKey: key.publicKey.rawRepresentation, appVersion: "1.6.7", root: installed) { _, target, _ in try bytes.write(to: target) }
         try await store.install(id: entry.id, cancellation: nil)
         #expect(await store.installedIDs() == [entry.id])
         try Data("tampered".utf8).write(to: installed.appendingPathComponent("floe-test-1.0.0.wasm"))

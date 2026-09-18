@@ -9,7 +9,7 @@ import FloeTools
 public struct WasmKitCommandRuntime: WasmCommandRuntime {
     public init() {}
 
-    public func run(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String = ".", timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
+    public func run(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String = ".", timeout: TimeInterval, maxOutputBytes: Int, moduleMaxBytes: Int = WasmPackageLimits.defaultModuleMaxBytes, memoryMaxBytes: Int = WasmPackageLimits.defaultMemoryMaxBytes, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
         let taskCancellation = CancellationToken()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -19,7 +19,8 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
                 DispatchQueue(label: "org.floe.wasi.worker.\(UUID().uuidString)", qos: .userInitiated).async {
                     continuation.resume(returning: Self.execute(moduleURL: moduleURL, arguments: arguments,
                         stdin: stdin, environment: environment, rootURL: rootURL, workingDirectory: workingDirectory, timeout: timeout,
-                        maxOutputBytes: maxOutputBytes, cancellation: cancellation, taskCancellation: taskCancellation))
+                        maxOutputBytes: maxOutputBytes, moduleMaxBytes: moduleMaxBytes, memoryMaxBytes: memoryMaxBytes,
+                        cancellation: cancellation, taskCancellation: taskCancellation))
                 }
             }
         } onCancel: {
@@ -27,9 +28,9 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
         }
     }
 
-    private static func execute(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String, timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken?, taskCancellation: CancellationToken) -> ShellRunOutcome {
+    private static func execute(moduleURL: URL, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String, timeout: TimeInterval, maxOutputBytes: Int, moduleMaxBytes: Int, memoryMaxBytes: Int, cancellation: CancellationToken?, taskCancellation: CancellationToken) -> ShellRunOutcome {
         let started = DispatchTime.now().uptimeNanoseconds
-        let seconds = timeout.isFinite ? max(0.01, min(timeout, 120)) : 10
+        let seconds = timeout.isFinite ? max(0.01, min(timeout, WasmPackageLimits.maximumTimeoutSeconds)) : 10
         let budget = Budget(deadline: started + UInt64(seconds * 1_000_000_000), cancellations: [cancellation, taskCancellation].compactMap { $0 })
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("floe-wasi-" + UUID().uuidString)
         let captureBudget = CaptureBudget(maxBytes: max(1, min(maxOutputBytes, 256 * 1024)))
@@ -52,9 +53,17 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
                 throw FloeError.validationFailed("WASM argument bytes exceed 64 KiB")
             }
             try WasmEnvironmentContract.validate(environment)
+            // The signed catalog carries the reviewed per-package ceiling; the
+            // interpreter-class entries raise it above the utility default.
+            guard moduleMaxBytes >= WasmPackageLimits.minimumModuleMaxBytes, moduleMaxBytes <= WasmPackageLimits.maximumModuleMaxBytes else {
+                throw FloeError.validationFailed("WASM module limit is outside the reviewed range")
+            }
+            guard memoryMaxBytes >= WasmPackageLimits.minimumMemoryMaxBytes, memoryMaxBytes <= WasmPackageLimits.maximumMemoryMaxBytes else {
+                throw FloeError.validationFailed("WASM memory limit is outside the reviewed range")
+            }
             let attributes = try FileManager.default.attributesOfItem(atPath: moduleURL.path)
-            guard ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 4 * 1024 * 1024 else {
-                throw FloeError.validationFailed("WASM module exceeds 4 MiB")
+            guard ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= moduleMaxBytes else {
+                throw FloeError.validationFailed("WASM module exceeds its signed size limit")
             }
             let directory = try ShellInputValidation.directory(cwd: workingDirectory, root: rootURL)
             try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
@@ -65,7 +74,7 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
             // The patched token loop checks even pure WASM infinite loops.
             let engine = Engine(configuration: EngineConfiguration(threadingModel: .token, executionCheck: { try budget.check() }))
             let store = Store(engine: engine)
-            store.resourceLimiter = Limits()
+            store.resourceLimiter = Limits(memoryMaxBytes: memoryMaxBytes)
             let wasi = try WASIBridgeToHost(
                 args: [moduleURL.lastPathComponent] + arguments,
                 environment: environment,
@@ -111,8 +120,12 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
         }
     }
     private struct Limits: ResourceLimiter {
-        func limitMemoryGrowth(to desired: Int) throws -> Bool { desired <= 64 * 1024 * 1024 }
-        func limitTableGrowth(to desired: Int) throws -> Bool { desired <= 10_000 }
+        let memoryMaxBytes: Int
+        func limitMemoryGrowth(to desired: Int) throws -> Bool { desired <= memoryMaxBytes }
+        // Table growth scales with the reviewed memory ceiling so an
+        // interpreter that grows its function table is not rejected while a
+        // utility stays at the historical bound.
+        func limitTableGrowth(to desired: Int) throws -> Bool { desired <= max(10_000, memoryMaxBytes / 1024) }
     }
     private final class CaptureBudget: @unchecked Sendable {
         private let lock = NSLock()

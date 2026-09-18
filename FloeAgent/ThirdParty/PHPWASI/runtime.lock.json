@@ -1,0 +1,75 @@
+{
+  "status": "compilepending",
+  "version": "8.2.33",
+  "source": {
+    "kind": "release-tarball",
+    "url": "https://www.php.net/distributions/php-8.2.33.tar.gz",
+    "sha256": "9a525d4db1237ede408e454b46f5a93b9e45d83d71753592e3f921903d917e07",
+    "sizeBytes": 19264838,
+    "license": "PHP-3.01",
+    "licenseUrl": "https://www.php.net/license/3_01.txt",
+    "releaseDate": "2026-07-30",
+    "supportStatus": "PHP 8.2 is in security support until 2026-12-31 (active support ended 2024-12-31); 8.2.33 is the current security release"
+  },
+  "patches": {
+    "repository": "https://github.com/vmware-labs/webassembly-language-runtimes",
+    "revision": "dd26cd52f0cf5e15ba058d5e8c0c4354386570ca",
+    "directory": "php/v8.2.6/patches",
+    "license": "Apache-2.0",
+    "rebase": {
+      "baseline": "php-8.2.6",
+      "target": "php-8.2.33",
+      "method": "replayed hunk-by-hunk onto php-8.2.33; regenerated with git diff and verified to apply with plain `git apply` in order",
+      "deviations": [
+        "0001 main/network.c hunk 15 dropped: php-8.2.33 zero-initializes the local sockaddr (`local_address = {0}`), so the WASM_WASI memset guard is obsolete",
+        "0018 ext/random/random.c context updated for the 8.2.33 `defined(__sun) && defined(HAVE_GETRANDOM)` condition; the `|| defined(__wasi__)` clause is preserved"
+      ],
+      "tool": "Local/Private/build191-feedback/language-delivery/tools/{rebase_php_patches.sh,apply_patch_robust.py}"
+    },
+    "files": {
+      "0001-Initial-port-of-the-php-7.4.32-patch-for-php-8.2.6.patch": "f52e800e4f10f226de5a267962abe9e89cb9df7fd5c0df5d8b90725bf9177752",
+      "0002-feat-Incapacitate-fibers-when-compiling-for-WASI.patch": "d1abe81475cc67bd03de46f6f6402fa0b3875c97bb321907d8be215830715698",
+      "0003-fix-Add-more-ifdefs-for-php-8.2.0.patch": "2e15222aff87ef9b274d92bd5764c00bffc6c41e78b41158f5518bf93df49f47",
+      "0004-fix-Fix-memory-issues-and-introduce-WASM_WASMEDGE.patch": "4d7a8392449589755342aa1492f68423c3a3c02a65e04ab244501255af215789",
+      "0005-feat-Server-sockets-via-with-wasm-runtime-wasmedge.patch": "4575ac87625c9392b841a13e03a8db8f1613952a7203aa0b53d61d730f193eb4",
+      "0006-fix-Avoid-include-syslog.h-since-it-is-not-part-of-w.patch": "f8ca581e42e1738799fca6604d767e97d033c31588f631a48c8a07adccbd7e45",
+      "0007-fix-Avoid-setjmp-longjmp-in-gd_jpeg.patch": "bbab60805653b7cafe0250cc53d478238e10df33733de7996b1bf4ad7f0d2cd6",
+      "0008-fix-Avoid-tmpfile-in-gd_bmp.patch": "af535910ad481c4fb4dd194c36291d55ec77936380f76c37b36270247dee4691",
+      "0009-fix-Avoid-jmp_buf-in-gd_jpeg.patch": "836d9543083a3d91c06ce613a5f92c9867a14db9e58ef8d2081207a25b71f96c",
+      "0010-chore-Add-more-logs-in-wasi_socket_ext.patch": "1844a82b19461e9ce06bb7f0ae734bd23ff9220ec206b0c9b686a0c5bf573c15",
+      "0011-fix-fastcgi-server-in-php-cgi-for-wasmedge.patch": "12c950779a0417044193855f76917cd2d505fe6b1854f3ac8f4a8c454b99fa0d",
+      "0012-chore-Add-debug-logging-in-fastcgi.patch": "5ee11073946c856cadb4c5c2939e833979ce0825eed8870ea944511f5eec4bf1",
+      "0013-chore-Fixes-logs-getnameinfo-in-wasi-sock-sdk.patch": "d906054fa4316f53e4f8a8d558d3d21ff69ac4c53f36ced4c1d036cface59204",
+      "0014-fix-implicit-function-declaration-in-syslog.patch": "f23e4b4cd5092c528736d1cc7b78e9c889b270ea742d4716b70dd9c68f5ebb9a",
+      "0015-feat-Enable-mysqlnd-and-more-network-functions-with-.patch": "f00140d3608db872101cc4717acfa951b4e900e4310e6d0e97ce14c56a0bd381",
+      "0016-fix-implicit-function-declaration-for-bind-when-not-.patch": "31e73a7d65140ca78c7fa0267ef10d00c13351bba63913e942e9e93d10d9d299",
+      "0017-fix-Patch-for-is_readable-and-is_writable-to-bypass-.patch": "2458cdd7f8953e42595663a6a20f079554623dcc459399d7db5962477b1526de",
+      "0018-fix-random_bytes-failing-on-Windows.patch": "08a0267e5a80110189dcc534d0c27e697be0826603c2305bb4b1ff94704cca4d",
+      "0019-chore-Remove-wasmedge_stubs-and-use-libwasmedge_sock.patch": "b064538306c1a72a17b59051c2945be746cf6c983d4e1758d2b424516b492f3b"
+    }
+  },
+  "wasiSdk": {
+    "version": "20.0",
+    "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz",
+    "sha256": "7030139d495a19fbeccb9449150c2b1531e15d8fb74419872a719a7580aad0f9",
+    "sizeBytes": 79570956,
+    "license": "Apache-2.0 WITH LLVM-exception"
+  },
+  "build": {
+    "sapi": [
+      "cgi",
+      "cli"
+    ],
+    "notes": "Mirrors the VMware Labs wlr-build.sh non-wasmedge PHP 8.2.6 recipe, rebased onto php-8.2.33: --host=wasm32-wasi, _WASI_EMULATED_GETPID/SIGNAL/PROCESS_CLOCKS, -DHAVE_FORK=0 -DWASM_WASI, wasm-opt -O3 when binaryen is available."
+  },
+  "limits": {
+    "moduleMaxBytes": 33554432,
+    "memoryMaxBytes": 268435456,
+    "defaultTimeoutSeconds": 120
+  },
+  "gates": [
+    "language-runtimes.yml php job builds php-8.2.33 with wasi-sdk 20.0 and the rebased pinned patch set; no catalog signing happens there",
+    "security review: 8.2.33 is the current 8.2 security release (branch supported until 2026-12-31); the workflow build and qualification must pass before promotion",
+    "stage_artifact.py records the staged digest; capability-hub.yml remains the only signer"
+  ]
+}
