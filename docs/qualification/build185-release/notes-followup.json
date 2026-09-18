@@ -104,7 +104,29 @@
       "qualificationPolicy": "Only this functional case uses180s executionTimeAllowance, the existing workflow maximum; defaults and all text/search assertions remain unchanged",
       "timingEvidence": "Retain actual elapsed OCR/search timing as an attachment",
       "notClaimed": "This is an explicit test allowance adjustment, not a product performance fix or proof of a system-exclusive root cause",
-      "status": "Awaiting current-source cloud qualification"
+      "status": "Run35304310882 XCTest session logs confirm effective allowance resets120→180 on both devices; functional OCR/search passed9.588s on iPad and82.388s on iPhone. No performance-fix claim."
     }
+  },
+  "productionPathFollowup": {
+    "run": 35304310882,
+    "source": "8d303197de200ce0c775cc60c3ea1303417e5279",
+    "artifact": 10531588161,
+    "status": "failure",
+    "iPad": {
+      "passed": 84,
+      "failed": 0
+    },
+    "iPhone": {
+      "passed": 83,
+      "failed": 1
+    },
+    "failure": "Direct raw-staged 商务周报.docx Quick Look request timed out at45.096s; same bytes via production CoverService succeeded3.278s on same iPhone run",
+    "ocrElapsedSeconds": {
+      "iPad": 9.588,
+      "iPhone": 82.388
+    },
+    "correction": "All six Office samples now import into extensionless CAS and render through the actual shared cover service; original name/bytes, strict quickLookThumbnail source and nonempty image assertions remain required",
+    "notClaimed": "Different path outcomes do not establish the system-host stall root cause or prove App UI reliability. No timeout/retry change and no native-summary substitute for Quick Look.",
+    "review": "Independent review found no freeze blocker; product host stall cause remains unproven; rewritten six cases await cloud execution."
   }
 }

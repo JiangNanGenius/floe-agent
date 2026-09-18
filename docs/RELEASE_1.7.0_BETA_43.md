@@ -21,9 +21,9 @@ Its original binary and failure evidence remain preserved.
 - App-owned GitHub build persistence and foreground recovery remain included.
 
 App and all versioned extension targets are configured for 1.7.0 (186), and the
-checked-in Xcode project has been regenerated. Metadata checks pass. The pending
-component run uses code commit `2a907841b50a19b07488f5e9fff40dc4f3b9cf1f`;
-subsequent version changes do not modify those implementation files.
+checked-in Xcode project has been regenerated. Metadata checks pass. Source will be frozen after scoped compiler checks and
+independent review; component and both full-App SDK qualifications then run in
+parallel under the release controller. Upload depends on all three succeeding.
 
 ## Evidence and next gates
 
@@ -34,9 +34,16 @@ subsequent version changes do not modify those implementation files.
   failed: iPad 84/84; iPhone 83/84, with a 120-second scanned bilingual OCR timeout.
   Office and new lifecycle cases passed on both devices. This remains a failed
   component run, not full-App or physical-device acceptance.
-- Complete component verification, freeze an immutable source/tag, then run the
-  release pipeline with both SDK App/Notes gates. Save the recoverable device
-  artifact before signing and upload.
+- Follow-up component run [35304310882](https://github.com/JiangNanGenius/floe-agent/actions/runs/35304310882)
+  passed OCR on both devices (9.588 s / 82.388 s), but remained failed: iPad
+  84/84; iPhone 83/84. A direct raw-staged Word request timed out while the same
+  file passed through the actual App cover service. Six sample checks now use
+  the importer/CAS/shared cover service and still require actual Quick Look
+  images. The system-host stall cause remains unproven; no retry or timeout was
+  added. Full-App cold-cover reliability remains a required gate.
+- Freeze an immutable source/tag and run component plus both SDK App/Notes gates
+  in parallel. Preserve a recoverable device artifact before optional tests and
+  signing; all three jobs must succeed before upload.
 - Verify Apple processing and intended internal-group availability separately.
   GitHub prerelease, Feather publication, documentation and cleanup remain separate
   delivery steps. No production release or public-Beta submission is implied.
@@ -46,4 +53,4 @@ subsequent version changes do not modify those implementation files.
 Physical iPad local-model and native Office/Pencil acceptance remains user-owned;
 RDP is not declared a usable App feature.
 
-The per-case allowance follows [Apple XCTest documentation](https://developer.apple.com/documentation/xctest/xctestcase/executiontimeallowance); timing remains recorded separately from functional assertions. The next cloud run must confirm the effective allowance and actual outcome.
+The per-case allowance follows [Apple XCTest documentation](https://developer.apple.com/documentation/xctest/xctestcase/executiontimeallowance); timing remains recorded separately from functional assertions. Run 35304310882 XCTest session logs confirm the effective timer resets from 120 to 180 seconds on both devices; OCR/search passed, while the separate direct Word request still failed.

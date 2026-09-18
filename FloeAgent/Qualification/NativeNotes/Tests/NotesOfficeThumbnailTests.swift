@@ -6,6 +6,11 @@
 // They assert that:
 //  * the fixtures are real, inspectable OOXML packages that the shared importer
 //    accepts as `.office` documents pointing at an intact CAS resource;
+//  * every one of the six per-sample checks renders through the production card
+//    path — `NoteFileImporter` -> extensionless CAS resource -> shared
+//    `NotesDocumentCoverService` staging and host gate — while asserting the
+//    original file name, the exact source bytes and a real Quick Look content
+//    image. That is the path a Notes card actually uses;
 //  * Quick Look output is real document content, never a generic file icon;
 //  * the shared `NotesDocumentCoverService` returns a `.quickLookThumbnail`
 //    source for real Word/Excel/PPT packages;
@@ -141,31 +146,64 @@ final class NotesOfficeThumbnailTests: XCTestCase {
         }
     }
 
-    /// The view stages a copy with a validated extension and asks Quick Look
-    /// for a real representation through the shared bounded retry path. A
-    /// returned image must be non-empty and must not be the generic file-type
-    /// icon; the actual generator output is attached with `.keepAlways`.
+    /// One sample check through the exact production card path: the shared
+    /// importer stores the real package at the extensionless Notes CAS path,
+    /// the document keeps its original file name, and
+    /// `NotesDocumentCoverService` (single-flight + shared host gate) stages one
+    /// validated ASCII copy (`preview.<ext>`) before the system Quick Look
+    /// generator runs. A cover must be a real Quick Look content image; a
+    /// generic icon, the native content summary, `.unsupported` or `.none`
+    /// never satisfy this assertion.
     private func assertSampleRenders(_ fileName: String, file: StaticString = #filePath, line: UInt = #line) async throws {
         let root = makeScratchDirectory("quicklook")
         defer { try? FileManager.default.removeItem(at: root) }
         let urls = try PreviewFixtureFactory.writeSamples(to: root.appendingPathComponent("sources"))
-        let url = try XCTUnwrap(urls.first { $0.lastPathComponent == fileName }, file: file, line: line)
+        let source = try XCTUnwrap(urls.first { $0.lastPathComponent == fileName }, file: file, line: line)
+        let sourceBytes = try Data(contentsOf: source)
 
-        switch await Self.quickLookThumbnail(for: url) {
-        case .success(let outcome):
-            let image = try XCTUnwrap(outcome.image, file: file, line: line)
-            XCTAssertGreaterThan(image.size.width, 0, file: file, line: line)
-            XCTAssertGreaterThan(image.size.height, 0, file: file, line: line)
-            XCTAssertNotNil(image.cgImage, file: file, line: line)
-            XCTAssertFalse(outcome.wasIconFallback,
-                           "\(url.lastPathComponent) returned a generic file icon, not content", file: file, line: line)
-            let attachment = XCTAttachment(image: image)
-            attachment.name = "quicklook-thumbnail-\(url.lastPathComponent)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-        case .failure(let failure):
-            XCTFail("Quick Look failed to render \(url.lastPathComponent): \(failure)", file: file, line: line)
-        }
+        // The app path: import into the Notes store, then read back the exact
+        // immutable CAS resource the cover service stages from.
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let draft = try await NoteFileImporter.importFile(source, notebookID: nil, store: store)
+        let document = try await store.create(draft)
+        XCTAssertEqual(document.kind, .office, "\(fileName) must import as an Office document", file: file, line: line)
+        XCTAssertEqual(document.officeFileName, fileName,
+                       "the original file name must survive import", file: file, line: line)
+        let resourceID = try XCTUnwrap(document.officeResourceID, file: file, line: line)
+        let resource = try await store.resourceURL(resourceID)
+        XCTAssertTrue(resource.pathExtension.isEmpty,
+                      "the Notes resource must stay at the extensionless CAS path", file: file, line: line)
+        XCTAssertEqual(try Data(contentsOf: resource), sourceBytes,
+                       "the cover source must be the exact generated package", file: file, line: line)
+
+        let started = ContinuousClock.now
+        let outcome = await NotesDocumentCoverService.render(
+            document: document, store: store, size: CGSize(width: 320, height: 420),
+            maximumSourceBytes: 128 * 1024 * 1024)
+        let elapsed = started.duration(to: .now)
+
+        XCTAssertEqual(outcome.source, .quickLookThumbnail,
+                       "\(fileName) must come from a real Quick Look content representation, not \(outcome.source) (\(outcome.diagnosis))",
+                       file: file, line: line)
+        let image = try XCTUnwrap(outcome.image, file: file, line: line)
+        XCTAssertGreaterThan(image.size.width, 0, file: file, line: line)
+        XCTAssertGreaterThan(image.size.height, 0, file: file, line: line)
+        XCTAssertNotNil(image.cgImage, file: file, line: line)
+        let diagnostics = try XCTUnwrap(outcome.diagnostics, file: file, line: line)
+        XCTAssertFalse(diagnostics.quickLookWasIconFallback,
+                       "\(fileName) returned a generic file icon, not content", file: file, line: line)
+        XCTAssertFalse(diagnostics.quickLookTimedOut,
+                       "\(fileName) must settle with content, not the request deadline", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(diagnostics.quickLookAttempts, 1, file: file, line: line)
+
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "quicklook-thumbnail-\(fileName)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let evidence = XCTAttachment(string: "fileName=\(fileName) source=\(outcome.source.rawValue) diagnostics=\(diagnostics.summary) elapsed=\(elapsed) casBytes=\(sourceBytes.count)")
+        evidence.name = "quicklook-thumbnail-\(fileName)-evidence"
+        evidence.lifetime = .keepAlways
+        add(evidence)
     }
 
     // MARK: - Icon rejection and bounded fallback
@@ -616,37 +654,6 @@ final class NotesOfficeThumbnailTests: XCTestCase {
     }
 
     // MARK: - Helpers
-
-    private enum ThumbnailFailure: Error, CustomStringConvertible {
-        case staging(String)
-        case generator(NotesOfficeThumbnailGenerator.CardOutcome)
-
-        var description: String {
-            switch self {
-            case .staging(let detail): return detail
-            case .generator(let outcome):
-                return "attempts=\(outcome.attempts) elapsed=\(outcome.elapsed) diagnosis=\(outcome.diagnosis) iconFallback=\(outcome.wasIconFallback)"
-            }
-        }
-    }
-
-    private static func quickLookThumbnail(for source: URL,
-                                           size: CGSize = CGSize(width: 320, height: 420)) async -> Result<NotesOfficeThumbnailGenerator.CardOutcome, ThumbnailFailure> {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("notes-office-thumb-stage-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        } catch { return .failure(.staging("staging directory could not be created: \(error)")) }
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let copy = directory.appendingPathComponent("preview.\(source.pathExtension.lowercased())")
-        do { try FileManager.default.copyItem(at: source, to: copy) } catch { return .failure(.staging("staging copy failed: \(error)")) }
-
-        let outcome = await NotesOfficeThumbnailGenerator.thumbnail(url: copy, size: size,
-                                                                    fileExtension: source.pathExtension.lowercased())
-        if outcome.image != nil { return .success(outcome) }
-        return .failure(.generator(outcome))
-    }
 
     private func averageColor(of image: UIImage) -> UIColor {
         guard let cgImage = image.cgImage else { return .clear }
