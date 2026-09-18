@@ -487,6 +487,10 @@ jobs:
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
           test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "$NOTES_DEVICE" --family "${NOTES_DEVICE%% *}" --create)"
           test -n "$test_device"
+          # Finish simulator boot before XCTest starts its fixed App-launch
+          # deadline. Do not warm-launch the App or retry executed failures.
+          python3 scripts/prepare_ui_simulator.py --simulator-id "$test_device" \
+            --output-dir "$RUNNER_TEMP/${NOTES_EVIDENCE}Diagnostics/$NOTES_NAME-boot" || exit 1
           leg_attempt=1
           status=0
           while true; do
@@ -556,6 +560,10 @@ jobs:
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
           test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "$NOTES_DEVICE" --family "${NOTES_DEVICE%% *}" --create)"
           test -n "$test_device"
+          # Finish simulator boot before XCTest starts its fixed App-launch
+          # deadline. Do not warm-launch the App or retry executed failures.
+          python3 scripts/prepare_ui_simulator.py --simulator-id "$test_device" \
+            --output-dir "$RUNNER_TEMP/${NOTES_EVIDENCE}Diagnostics/$NOTES_NAME-boot" || exit 1
           leg_attempt=1
           status=0
           while true; do
@@ -992,6 +1000,10 @@ jobs:
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
           test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "$NOTES_DEVICE" --family "${NOTES_DEVICE%% *}" --create)"
           test -n "$test_device"
+          # Finish simulator boot before XCTest starts its fixed App-launch
+          # deadline. Do not warm-launch the App or retry executed failures.
+          python3 scripts/prepare_ui_simulator.py --simulator-id "$test_device" \
+            --output-dir "$RUNNER_TEMP/${NOTES_EVIDENCE}Diagnostics/$NOTES_NAME-boot" || exit 1
           leg_attempt=1
           status=0
           while true; do
@@ -1061,6 +1073,10 @@ jobs:
           floe_sdk_major="$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)"
           test_device="$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major "$floe_sdk_major" --name "$NOTES_DEVICE" --family "${NOTES_DEVICE%% *}" --create)"
           test -n "$test_device"
+          # Finish simulator boot before XCTest starts its fixed App-launch
+          # deadline. Do not warm-launch the App or retry executed failures.
+          python3 scripts/prepare_ui_simulator.py --simulator-id "$test_device" \
+            --output-dir "$RUNNER_TEMP/${NOTES_EVIDENCE}Diagnostics/$NOTES_NAME-boot" || exit 1
           leg_attempt=1
           status=0
           while true; do

@@ -54,6 +54,10 @@ python3() {
   case "$1" in
     -c) command python3 "$@" ;;
     *select_test_simulator.py) echo "00000000-0000-0000-0000-000000000000"; return 0 ;;
+    *prepare_ui_simulator.py)
+      printf '%s\n' "$*" >> "$FAKE_STATE/boot.calls"
+      if [ -f "$FAKE_STATE/boot.failure" ]; then return 1; fi
+      return 0 ;;
     *notes_ui_startup_retry.py)
       shift
       command python3 "$NOTES_RETRY_HELPER" "$@" ;;
@@ -293,6 +297,15 @@ class SharedReleaseHostTests(unittest.TestCase):
             self.assertNotIn('build-for-testing', calls)
             _, _, stable, _ = self.jobs()
             self.assertNotEqual(self.run_gate(stable, 'failure', 'success').returncode, 0)
+
+    def test_boot_failure_prevents_any_test_attempt(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write_state(root, ['0'], ['exited'], ['true'], logs=[PASS_LOG_LINE])
+            (Path(root) / 'state/boot.failure').touch()
+            result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue((Path(root) / 'state/boot.calls').exists())
+            self.assertFalse((Path(root) / 'state/run.calls').exists())
 
     def test_pre_test_stall_retries_once_in_a_fresh_directory(self):
         with tempfile.TemporaryDirectory() as root:
