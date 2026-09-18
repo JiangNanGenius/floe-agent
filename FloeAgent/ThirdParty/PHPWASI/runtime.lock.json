@@ -22,7 +22,8 @@
       "method": "replayed hunk-by-hunk onto php-8.2.33; regenerated with git diff and verified to apply with plain `git apply` in order",
       "deviations": [
         "0001 main/network.c hunk 15 dropped: php-8.2.33 zero-initializes the local sockaddr (`local_address = {0}`), so the WASM_WASI memset guard is obsolete",
-        "0018 ext/random/random.c context updated for the 8.2.33 `defined(__sun) && defined(HAVE_GETRANDOM)` condition; the `|| defined(__wasi__)` clause is preserved"
+        "0018 ext/random/random.c context updated for the 8.2.33 `defined(__sun) && defined(HAVE_GETRANDOM)` condition; the `|| defined(__wasi__)` clause is preserved",
+        "0020 added: php-8.2.33 moved the Unix-socket length check before the WASM_WASI guard and wasi-sdk 20 has no sun_path, so the guard now also covers the max_length computation (main/streams/xp_socket.c)"
       ],
       "tool": "Local/Private/build191-feedback/language-delivery/tools/{rebase_php_patches.sh,apply_patch_robust.py}"
     },
@@ -45,7 +46,8 @@
       "0016-fix-implicit-function-declaration-for-bind-when-not-.patch": "31e73a7d65140ca78c7fa0267ef10d00c13351bba63913e942e9e93d10d9d299",
       "0017-fix-Patch-for-is_readable-and-is_writable-to-bypass-.patch": "2458cdd7f8953e42595663a6a20f079554623dcc459399d7db5962477b1526de",
       "0018-fix-random_bytes-failing-on-Windows.patch": "08a0267e5a80110189dcc534d0c27e697be0826603c2305bb4b1ff94704cca4d",
-      "0019-chore-Remove-wasmedge_stubs-and-use-libwasmedge_sock.patch": "b064538306c1a72a17b59051c2945be746cf6c983d4e1758d2b424516b492f3b"
+      "0019-chore-Remove-wasmedge_stubs-and-use-libwasmedge_sock.patch": "b064538306c1a72a17b59051c2945be746cf6c983d4e1758d2b424516b492f3b",
+      "0020-fix-Guard-the-Unix-socket-length-check-on-WASI.patch": "166a07b0a4cf04d67bd3ef2832b3feefaab0483fac4d7837231dce4f05ddf143"
     }
   },
   "wasiSdk": {

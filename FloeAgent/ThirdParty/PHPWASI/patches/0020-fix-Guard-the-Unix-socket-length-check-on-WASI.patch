@@ -1,0 +1,18 @@
+diff --git a/main/streams/xp_socket.c b/main/streams/xp_socket.c
+index f4e72c3110..f50f30b12c 100644
+--- a/main/streams/xp_socket.c
++++ b/main/streams/xp_socket.c
+@@ -585,12 +585,12 @@ static inline int parse_unix_address(php_stream_xport_param *xparam, struct sock
+ 	memset(unix_addr, 0, sizeof(*unix_addr));
+ 	unix_addr->sun_family = AF_UNIX;
+ 
++#ifndef WASM_WASI
+ 	/* Abstract namespace does not need to be NUL-terminated, while path-based
+ 	 * sockets should be. */
+ 	bool is_abstract_ns = xparam->inputs.namelen > 0 && xparam->inputs.name[0] == '\0';
+ 	unsigned long max_length = is_abstract_ns ? sizeof(unix_addr->sun_path) : sizeof(unix_addr->sun_path) - 1;
+ 
+-#ifndef WASM_WASI
+ 	/* we need to be binary safe on systems that support an abstract
+ 	 * namespace */
+ 	if (xparam->inputs.namelen > max_length) {

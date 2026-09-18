@@ -71,6 +71,13 @@ available in git history at the previous commit of this directory.
   PCRE, date, SPL and standard stay available; XML/DOM, mbstring, sqlite and
   gd stay on the remote route and are listed as limitations below.
 
+* 2026-09-19, `language-runtimes.yml` run 35394556662 (commit c47ecb3c): with the
+  slim set the build reached `main/streams/xp_socket.c:591` and failed because
+  8.2.33 moved the Unix-socket length check before the WASM_WASI guard while
+  wasi-sdk 20's `struct sockaddr_un` has no `sun_path`. Fixed by patch `0020`,
+  which extends the guard to cover the `max_length` computation; the object
+  compiles locally with the macOS wasi-sdk 20 (`make main/streams/xp_socket.lo`).
+
 ## Compatibility evidence actually observed
 
 **2026-09-19, host macOS 27 arm64, PHP 8.2.6 published module (historical
