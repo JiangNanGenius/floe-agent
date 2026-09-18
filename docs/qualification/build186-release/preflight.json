@@ -1,0 +1,44 @@
+{
+  "schema": "floe.release.preflight/1",
+  "build": 186,
+  "tag": "v1.7.0-beta.43",
+  "source": "d421fea260523d063270e2d21d623bd011acd9ea",
+  "run": 35306551280,
+  "createdAt": "2026-09-18T04:19:57Z",
+  "checks": [
+    {
+      "name": "Swift6 scoped semantic and object checks",
+      "passed": 10,
+      "scope": "Office cover production source, qualification tests and native Office conditional UI paths",
+      "limitation": "Not a complete App build or runtime execution"
+    },
+    {
+      "name": "Release script fixtures after integrating parallel component gate",
+      "executed": 361,
+      "passed": 360,
+      "skipped": 1,
+      "failed": 0,
+      "command": "python3 -m unittest discover -s FloeAgent/scripts/tests -p 'test_*.py'"
+    },
+    {
+      "name": "actionlint",
+      "files": [
+        ".github/workflows/notes-native-qualification.yml",
+        ".github/workflows/release-unsigned-ipa.yml"
+      ],
+      "exitCode": 0
+    },
+    {
+      "name": "Immutable tag release preflight",
+      "command": "bash FloeAgent/scripts/release_preflight.sh v1.7.0-beta.43",
+      "exitCode": 0
+    },
+    {
+      "name": "Independent scoped review",
+      "result": "No freeze blocker; Office system-host stall cause remains unproven; rewritten strict Quick Look cases await execution"
+    }
+  ],
+  "qualificationPolicy": "NativeNotes development component and both full-App SDK qualifications execute in parallel against the fixed source; all three must succeed before signed upload. Explicit expedited paths not selected.",
+  "previousFailuresPreserved": "../build185-release/notes-followup.json",
+  "delivery": "No upload or installability established by this preflight record."
+}
