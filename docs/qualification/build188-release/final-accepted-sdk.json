@@ -1,0 +1,64 @@
+{
+  "build": 188,
+  "sourceSHA": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+  "runID": 35317532109,
+  "conclusion": "failure",
+  "testFlightUpload": "skipped",
+  "acceptedSDK": {
+    "appRegression": {
+      "result": "Passed",
+      "totalTestCount": 204,
+      "passedTests": 204,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    },
+    "iPadNotesUI": {
+      "result": "Failed",
+      "totalTestCount": 5,
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertTrue failed - card 封面验收-Word must be reachable in the library grid",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 2,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
+          "testName": "testNotesLibraryCardsShowRealContentCovers()"
+        }
+      ]
+    },
+    "iPhoneNotesUI": {
+      "result": "Failed",
+      "totalTestCount": 5,
+      "passedTests": 2,
+      "failedTests": 2,
+      "skippedTests": 1,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertTrue failed - card 封面验收-Word must be reachable in the library grid",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 2,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
+          "testName": "testNotesLibraryCardsShowRealContentCovers()"
+        },
+        {
+          "failureText": "Asynchronous wait failed: Exceeded timeout of 10 seconds, with unfulfilled expectations: \"Expect predicate `exists == 0` for object \"notes.ink.brush.fountainPen\" Button\".",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 4,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout",
+          "testName": "testPencilToolsAndFocusedLayout()"
+        }
+      ]
+    }
+  },
+  "notes": [
+    "Both accepted-SDK UI legs failed the Word card lookup; Build189 repairs nested card/thumbnail accessibility identity ownership.",
+    "Accepted-SDK iPhone also failed closing the brush options after selecting fountain pen. The final recording frame still shows the popover. Tap trace targets (313,94), inside the reported Done label frame (296,84,34,20). Root cause is not established; no timeout or assertion was relaxed. Compare Build189 same-flow result and investigate if repeated.",
+    "One device-only Office case skipped on each simulator; skipped is not passed."
+  ]
+}

@@ -53,3 +53,17 @@ device recovery package has been retained and its SHA-256, embedded source SHA,
 app/extension versions and SDK metadata checked
 ([recovery record](device-recovery.json)). It is an unsigned recovery package,
 not a signed IPA or a TestFlight upload. Full-App UI gates remain in progress.
+
+## Final result
+
+Run35317532109 ended in failure; TestFlight upload was skipped. Accepted-SDK
+App regression passed204/204, but Notes UI failed on both device families at
+the Word card lookup. iPhone additionally failed dismissal of the brush-options
+popover after selecting the fountain pen. The recording confirms it remained
+visible after the Done tap; this is not merely a stale accessibility assertion.
+The tap was inside the reported label bounds; the root cause remains unknown.
+Build189's card correction does not claim to fix this separate interaction.
+No assertions or timeouts were relaxed.
+
+[Structured final accepted-SDK evidence](final-accepted-sdk.json) ·
+[Recorded iPhone panel](iphone-brush-panel-close-failure.png).
