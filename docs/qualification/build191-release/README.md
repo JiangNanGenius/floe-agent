@@ -1,6 +1,9 @@
 # Build191 qualification
 
-Candidate1.7.0(191), tag `v1.7.0-beta.48`.
+Candidate1.7.0(191), tag `v1.7.0-beta.48`, immutable source
+`715cbc42e9402cf5ca691291fed5c201e61cf222`.
+[Cloud run35337960392](https://github.com/JiangNanGenius/floe-agent/actions/runs/35337960392)
+started once by tag push; all three normal qualification jobs are running.
 
 This candidate includes CI policy commit `a7b6dce0`: the complete
 NetworkDiagnosticToolsTests suite runs separately from unrelated Swift suites,
@@ -22,5 +25,5 @@ main merge remain separate pending deliverables. Public Beta is not submitted.
 
 Preflight on2026-09-18: script suite444 tests,443 passed and1 existing platform
 skip. All four project.yml targets and eight generated build configurations
-use191. Generated-project consistency is checked after the candidate commit.
+use191. Generated-project consistency passed after the candidate commit.
 No production Swift or UI code changed, so no duplicate local App build ran.
