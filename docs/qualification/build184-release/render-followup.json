@@ -1,0 +1,22 @@
+{
+  "appBaseline": "8e0cf69f6387333e768b90d56372e587eb297375",
+  "repairCommit": "f4435d2271d3036d263bea49e7d032688af2bc53",
+  "componentRun": 35290599088,
+  "state": "component_cloud_check_in_progress",
+  "checks": {
+    "realTCPBefore": "same driver / HEAD server: fragmented request 405, oversized/incomplete headers incorrectly accepted",
+    "realTCPAfter": "normal GET and HEAD, fragmented GET 200, oversized431, incomplete400, header-timeout408, path/token checks and stop cleanup passed",
+    "compiler": "renderer and server SDK27 Swift6 mandatory SIL/object passed; NativeNotes bounded helper isolated SIL passed",
+    "primaryReview": "removed mismatched diagnostic helper argument; preserved original 20s DOM, 10s image and 10s layout deadlines. Added separate bounded document-load observation."
+  },
+  "sourceFileSHA256": {
+    "FloeAgent/FloeApp/Notes/NotesEngineeringCoverRenderer.swift": "39d319509136a1163505ac82694031cf0796c5ab1cd0da99f42bcaebbac3e147",
+    "FloeAgent/FloeApp/Browser/LocalStaticFileServer.swift": "dd170994d01c2b3bd9e57f43de745230f3e8e44694c9869367f6982db1f03856",
+    "FloeAgent/Qualification/NativeNotes/Tests/NativeNotesTests.swift": "bf05f9abbc71be65a022aa8b74915b0e26b1e78cc9719e5a386badc947ad3426"
+  },
+  "limitations": [
+    "Original mind-map stall cause remains unproven; improved failure diagnostics are in the new component run.",
+    "TCP fragmentation defect reproduced; whether it alone caused the prior missing bridge is not established.",
+    "No new release tag or TestFlight upload for these repairs."
+  ]
+}
