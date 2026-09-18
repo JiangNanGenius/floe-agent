@@ -1,6 +1,8 @@
 # Floe language capability routes (WASI catalog)
 
-Updated 2026-09-19. This file describes what is installable today, what is
+Updated 2026-09-19. Signed bundle source: capability-hub.yml run 35399070312
+at commit 96be231e978354e7c15cdb909cf118ad7b415c23 (prepare=true, no publish);
+final main publication is coordinated by the primary. This file describes what is installable today, what is
 compilepending, and the exact promotion path. Only entries in the **signed**
 `catalog.json` can be installed on a device; syntax highlighting in the IDE is
 not a runtime and `CANDIDATES` entries are not installable.
