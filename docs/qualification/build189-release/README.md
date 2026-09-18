@@ -39,5 +39,18 @@ store. The frame predates completion of CAD covers and is not CAD acceptance.
   SHA-256, app/extension IDs and versions verified
   ([recovery record](device-recovery.json)).
 
-Full-App UI and accepted-SDK regression gates are still in progress. These
-results do not establish TestFlight upload or availability.
+- Accepted-SDK App regression:204/204, zero skips
+  ([structured result](accepted-app-regression.json)).
+
+The SDK27 iPad full-App UI gate failed after the cover test relaunched the
+App. Its live job log confirms all seven initial content-cover checks passed,
+including DXF and DWG, followed by a successful Word rename with revision
+1 → 2 and open/return cycle. The first card query after cold relaunch then
+timed out at `NotesWorkspaceImportUITests.swift:390`. This narrows the remaining
+failure; it does not establish cold-launch acceptance or its root cause.
+SDK27 iPhone has completed the cover/relaunch case successfully in the live
+log. Remaining tests and the completed diagnostic bundles are still pending.
+The accepted-SDK iPad UI step passed; its structured results will be retained
+when the parallel job publishes them. No retry or assertion change was made.
+
+These results do not establish TestFlight upload or availability.

@@ -1,0 +1,17 @@
+{
+  "build": 189,
+  "sourceSHA": "ba0271b247fd233ebfed9df3bd2353a9242d0cc7",
+  "runID": 35322816608,
+  "suite": "Accepted SDK App regression",
+  "result": {
+    "result": "Passed",
+    "totalTestCount": 204,
+    "passedTests": 204,
+    "failedTests": 0,
+    "skippedTests": 0,
+    "testFailures": []
+  },
+  "limitations": [
+    "Full-App UI verification and TestFlight distribution remain pending."
+  ]
+}
