@@ -4,6 +4,12 @@ name: IDE test host recovery
 # already compiled test host. It never rebuilds the App, never reacts to push
 # or pull requests, and never distributes. Each leg proves provenance, integrity
 # and toolchain from a trusted CI run before xcodebuild executes anything.
+#
+# The opt-in Notes diagnostic mode (notes_diagnostic=true) keeps the same trust
+# checks but runs one original Notes cover test on the iPad mini (A17 Pro) leg
+# only, streaming the ai.floe.notes office-thumbnail category plus narrow Quick
+# Look errors. It never builds, never uploads an App and never relaxes the
+# test's own assertions.
 on:
   workflow_dispatch:
     inputs:
@@ -35,6 +41,21 @@ on:
         required: false
         default: "abfc75f5d8b30de8c34b9a3e575efa24a8671e71f4d6f5e9508f4fd671d6d250"
         type: string
+      notes_diagnostic:
+        description: Run the bounded Notes cover diagnostic instead of the IDE suite
+        required: false
+        default: false
+        type: boolean
+      host_workflow_path:
+        description: Exact workflow path recorded for the pinned diagnostic host run (required in Notes diagnostic mode)
+        required: false
+        default: ""
+        type: string
+      diagnostic_products_sha256:
+        description: Optional pinned SHA-256 of the diagnostic host Products.tar.gz; empty relies on the verified embedded digest
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -47,6 +68,8 @@ concurrency:
 jobs:
   validate-controller:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -58,20 +81,34 @@ jobs:
         run: |
           python3 -m unittest discover -s FloeAgent/scripts/tests -p test_compiled_test_host_recovery.py
 
+      # The Notes diagnostic is deliberately bounded to the iPad mini (A17 Pro)
+      # leg; the default IDE recovery still attempts both devices.
+      - name: Select the requested device matrix
+        id: matrix
+        env:
+          NOTES_DIAGNOSTIC: ${{ inputs.notes_diagnostic }}
+        run: |
+          set -euo pipefail
+          ipad='{"device": "iPad mini (A17 Pro)", "name": "ipad"}'
+          iphone='{"device": "iPhone 17 Pro", "name": "iphone"}'
+          if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
+            printf 'matrix={"include":[%s]}\n' "$ipad" >> "$GITHUB_OUTPUT"
+            echo "Notes diagnostic mode: only the iPad mini (A17 Pro) leg, name: ipad"
+          else
+            printf 'matrix={"include":[%s,%s]}\n' "$ipad" "$iphone" >> "$GITHUB_OUTPUT"
+            echo "Default IDE recovery: name: ipad on iPad mini (A17 Pro) and name: iphone on iPhone 17 Pro"
+          fi
+
   recover-ide-ui:
     needs: validate-controller
     runs-on: xcode-27
     timeout-minutes: 75
     strategy:
-      # Both device families must be attempted; one UI failure never cancels
-      # the other leg.
+      # Both device families are attempted in the default IDE mode; the Notes
+      # diagnostic plans a single iPad mini (A17 Pro) leg. One failing leg never
+      # cancels the other.
       fail-fast: false
-      matrix:
-        include:
-          - device: iPad mini (A17 Pro)
-            name: ipad
-          - device: iPhone 17 Pro
-            name: iphone
+      matrix: ${{ fromJSON(needs.validate-controller.outputs.matrix) }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
@@ -84,6 +121,9 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           SOURCE_RUN: ${{ inputs.source_run }}
           SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+          NOTES_DIAGNOSTIC: ${{ inputs.notes_diagnostic }}
+          HOST_WORKFLOW_PATH: ${{ inputs.host_workflow_path }}
+          DIAGNOSTIC_PRODUCTS_SHA256: ${{ inputs.diagnostic_products_sha256 }}
         run: |
           case "$SOURCE_SHA" in
             *[!0-9a-f]*|'') echo "source_sha must be lowercase hex" >&2; exit 1 ;;
@@ -101,6 +141,28 @@ jobs:
           if [ "$SOURCE_ATTEMPT" -lt 1 ]; then
             echo "source_attempt must be at least 1" >&2
             exit 1
+          fi
+          case "$NOTES_DIAGNOSTIC" in
+            true|false) ;;
+            *) echo "notes_diagnostic must be a boolean" >&2; exit 1 ;;
+          esac
+          if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
+            # The exact workflow path recorded for the pinned host run is
+            # caller-pinned; the verifier still refuses any run whose recorded
+            # path differs, so a wrong pin fails before the artifact is opened.
+            if ! printf '%s\n' "$HOST_WORKFLOW_PATH" | grep -Eq '^\.github/workflows/[0-9a-z._-]+\.(yml|yaml)$'; then
+              echo "host_workflow_path must be an exact .github/workflows/*.yml path" >&2
+              exit 1
+            fi
+            if [ -n "$DIAGNOSTIC_PRODUCTS_SHA256" ]; then
+              case "$DIAGNOSTIC_PRODUCTS_SHA256" in
+                *[!0-9a-f]*) echo "diagnostic_products_sha256 must be lowercase hex" >&2; exit 1 ;;
+              esac
+              if [ "${#DIAGNOSTIC_PRODUCTS_SHA256}" -ne 64 ]; then
+                echo "diagnostic_products_sha256 must be a full SHA-256" >&2
+                exit 1
+              fi
+            fi
           fi
 
       # The archive only records the toolchain the host was built with. Before
@@ -198,7 +260,10 @@ jobs:
       - name: Download the compiled test host artifact
         uses: actions/download-artifact@v4
         with:
-          name: compiled-test-host-${{ inputs.source_sha }}
+          # The Notes diagnostic consumes the SDK 27 simulator host retained by
+          # the pinned controller run; the default IDE path keeps the trusted
+          # App-regression host contract.
+          name: ${{ inputs.notes_diagnostic && 'sdk27-simulator-host' || 'compiled-test-host' }}-${{ inputs.source_sha }}
           run-id: ${{ inputs.source_run }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/host-artifact
@@ -212,30 +277,69 @@ jobs:
           XCODE_VERSION: ${{ inputs.xcode_version }}
           XCODE_BUILD: ${{ inputs.xcode_build }}
           PRODUCTS_SHA256: ${{ inputs.products_sha256 }}
+          NOTES_DIAGNOSTIC: ${{ inputs.notes_diagnostic }}
+          HOST_WORKFLOW_PATH: ${{ inputs.host_workflow_path }}
+          DIAGNOSTIC_PRODUCTS_SHA256: ${{ inputs.diagnostic_products_sha256 }}
         run: |
-          python3 recovery-controller/FloeAgent/scripts/verify_compiled_test_host.py \
-            --metadata "$RUNNER_TEMP/host-metadata/host-metadata.json" \
-            --artifact-dir "$RUNNER_TEMP/host-artifact" \
-            --source-sha "$SOURCE_SHA" \
-            --source-run "$SOURCE_RUN" \
-            --source-attempt "$SOURCE_ATTEMPT" \
-            --xcode-version "$XCODE_VERSION" \
-            --xcode-build "$XCODE_BUILD" \
-            --products-sha256 "$PRODUCTS_SHA256" \
-            --extract-dir "$RUNNER_TEMP/host-products" \
-            --report "$RUNNER_TEMP/host-verification.json" \
+          set -euo pipefail
+          products_digest="$PRODUCTS_SHA256"
+          verify_args=(
+            --metadata "$RUNNER_TEMP/host-metadata/host-metadata.json"
+            --artifact-dir "$RUNNER_TEMP/host-artifact"
+            --source-sha "$SOURCE_SHA"
+            --source-run "$SOURCE_RUN"
+            --source-attempt "$SOURCE_ATTEMPT"
+            --xcode-version "$XCODE_VERSION"
+            --xcode-build "$XCODE_BUILD"
+            --extract-dir "$RUNNER_TEMP/host-products"
+            --report "$RUNNER_TEMP/host-verification.json"
             --github-output "$GITHUB_OUTPUT"
+          )
+          if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
+            # Same verifier, release-side host contract: the job, retain and
+            # upload steps that produced the SDK 27 simulator host are fixed
+            # here, the caller pins the recorded workflow path, and the digest
+            # is either the caller's own pin or the embedded digest that the
+            # verifier checks against the actual archive. The IDE digest
+            # default is never applied to this host.
+            products_digest="$DIAGNOSTIC_PRODUCTS_SHA256"
+            verify_args+=(
+              --workflow-path "$HOST_WORKFLOW_PATH"
+              --host-job build-verify-release
+              --retain-step "Retain the complete SDK 27 simulator test host"
+              --upload-step "Upload recoverable SDK 27 simulator test host"
+              --artifact-prefix sdk27-simulator-host
+            )
+          fi
+          verify_args+=(--products-sha256 "$products_digest")
+          python3 recovery-controller/FloeAgent/scripts/verify_compiled_test_host.py "${verify_args[@]}"
 
       - name: Run the three original IDE UI tests without rebuilding
         env:
           XCTESTRUN: ${{ steps.verify_host.outputs.xctestrun }}
           SIM_DEVICE: ${{ matrix.device }}
           SIM_NAME: ${{ matrix.name }}
+          NOTES_DIAGNOSTIC: ${{ inputs.notes_diagnostic }}
         run: |
           set -o pipefail
           test -n "$XCTESTRUN"
           cd original-source/FloeAgent
           status=0
+          log_pid=""
+          # This function is only invoked through the EXIT trap below, which the
+          # linter cannot see from the trap string.
+          # shellcheck disable=SC2329
+          stop_owned_streams() {
+            # The Notes log stream is a process this step owns; it is stopped on
+            # every exit path so a failed test can never leave it running.
+            if [ -n "$log_pid" ]; then
+              pkill -TERM -P "$log_pid" 2>/dev/null || true
+              kill -INT "$log_pid" 2>/dev/null || true
+              wait "$log_pid" 2>/dev/null || true
+              log_pid=""
+            fi
+            kill -INT "$recording_pid" 2>/dev/null || true
+          }
           xcrun simctl shutdown all || true
           test_device=$(xcrun simctl list devices available -j | python3 scripts/select_test_simulator.py --sdk-major 27 --name "$SIM_DEVICE" --family "${SIM_DEVICE%% *}" --create)
           test -n "$test_device"
@@ -244,29 +348,56 @@ jobs:
           mkdir -p FloeAgent-IDE-Recordings
           xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-IDE-Recordings/$SIM_NAME.mp4" > "FloeAgent-IDE-Recordings/$SIM_NAME.log" 2>&1 &
           recording_pid=$!
-          trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
+          trap stop_owned_streams EXIT
+          log_predicate='(subsystem == "ai.floe.notes" AND category == "office-thumbnail") OR (messageType == error AND (eventMessage CONTAINS[c] "quicklook" OR subsystem BEGINSWITH[c] "com.apple.quicklook")) OR (process == "quicklookd" AND eventMessage CONTAINS[c] "thumbnail")'
+          if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
+            test "$SIM_NAME" = "ipad"
+            diagnostic_dir="$RUNNER_TEMP/SwiftTestDiagnostics/notes-diagnostic-$SIM_NAME"
+            diagnostic_test_id="NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()"
+            mkdir -p "$diagnostic_dir"
+            # The stream starts before the test process exists so a zero-callback
+            # or early Quick Look failure is captured; --timeout is a hard bound
+            # and the EXIT trap stops this owned process on every exit path.
+            xcrun simctl spawn "$test_device" log stream --style compact --level info --timeout 30m --predicate "$log_predicate" > "$diagnostic_dir/notes-thumbnail-stream.log" 2>&1 &
+            log_pid=$!
+          fi
+          if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
+            result_bundle="FloeAgent-Notes-Diagnostic-$SIM_NAME.xcresult"
+            test_selection="-only-testing:FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers"
+            # The cover test keeps its own bounds and assertions; a diagnostic
+            # run never asks xcodebuild to retry a failure.
+            test_policy=(-test-timeouts-enabled YES -maximum-test-execution-time-allowance 360)
+          else
+            result_bundle="FloeAgent-IDE-$SIM_NAME.xcresult"
+            test_selection="-only-testing:FloeAgentUITests/WorkspaceIDEUITests"
+            test_policy=(-test-timeouts-enabled YES -maximum-test-execution-time-allowance 300 -retry-tests-on-failure -test-iterations 2)
+          fi
           leg_attempt=1
           while true; do
             leg_code=0
             diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/ide-$SIM_NAME-attempt-$leg_attempt"
+            run_log="FloeAgent-IDE-$SIM_NAME-attempt-$leg_attempt.log"
+            if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
+              diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/notes-diagnostic-$SIM_NAME-attempt-$leg_attempt"
+              run_log="FloeAgent-Notes-Diagnostic-$SIM_NAME-attempt-$leg_attempt.log"
+            fi
             python3 scripts/run_test_with_diagnostics.py \
               --output-dir "$diag_dir" \
               --timeout 900 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
               xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$XCTESTRUN" \
               -destination "platform=iOS Simulator,id=$test_device" \
-              -resultBundlePath "FloeAgent-IDE-$SIM_NAME.xcresult" \
-              -collect-test-diagnostics never -only-testing:FloeAgentUITests/WorkspaceIDEUITests \
-              -parallel-testing-enabled NO -test-timeouts-enabled YES \
-              -maximum-test-execution-time-allowance 300 \
-              -retry-tests-on-failure -test-iterations 2 \
-              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$SIM_NAME-attempt-$leg_attempt.log" || leg_code=$?
+              -resultBundlePath "$result_bundle" \
+              -collect-test-diagnostics never "$test_selection" \
+              -parallel-testing-enabled NO "${test_policy[@]}" \
+              CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$run_log" || leg_code=$?
             # One retry only when the runner stalled before any test started; a
-            # real executed failure can never be retried into a pass.
-            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
+            # real executed failure can never be retried into a pass. The Notes
+            # diagnostic never takes this retry.
+            if [ "$NOTES_DIAGNOSTIC" != "true" ] && [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
                python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
                  "$diag_dir/summary.json"; then
-              if test -d "FloeAgent-IDE-$SIM_NAME.xcresult"; then
-                mv "FloeAgent-IDE-$SIM_NAME.xcresult" "FloeAgent-IDE-$SIM_NAME-attempt-1.xcresult"
+              if test -d "$result_bundle"; then
+                mv "$result_bundle" "FloeAgent-IDE-$SIM_NAME-attempt-1.xcresult"
               fi
               leg_attempt=2
               kill -INT "$recording_pid" 2>/dev/null || true
@@ -276,15 +407,70 @@ jobs:
               xcrun simctl bootstatus "$test_device" -b
               xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-IDE-Recordings/$SIM_NAME-attempt-$leg_attempt.mp4" >> "FloeAgent-IDE-Recordings/$SIM_NAME.log" 2>&1 &
               recording_pid=$!
-              trap 'kill -INT "$recording_pid" 2>/dev/null || true' EXIT
+              trap stop_owned_streams EXIT
               continue
             fi
             [ "$leg_code" -ne 0 ] && status=1
             break
           done
+          if [ -n "$log_pid" ]; then
+            pkill -TERM -P "$log_pid" 2>/dev/null || true
+            kill -INT "$log_pid" 2>/dev/null || true
+            wait "$log_pid" 2>/dev/null || true
+            log_pid=""
+            # A bounded second read covers entries the live stream dropped.
+            xcrun simctl spawn "$test_device" log show --style compact --last 30m --predicate "$log_predicate" > "$diagnostic_dir/notes-thumbnail-show.log" 2>&1 || true
+          fi
           kill -INT "$recording_pid" 2>/dev/null || true
           wait "$recording_pid" || true
           trap - EXIT
+          if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
+            # The cover test's own result is the diagnostic outcome: no retry,
+            # no relaxed assertion and no summary-based reinterpretation.
+            if test -d "$result_bundle"; then
+              xcrun xcresulttool get test-results test-details --test-id "$diagnostic_test_id" \
+                --path "$result_bundle" --compact > "$diagnostic_dir/xcresult-test-details.json" \
+                2> "$diagnostic_dir/xcresult-test-details-error.txt" || rm -f "$diagnostic_dir/xcresult-test-details.json"
+              python3 - "$diagnostic_dir/xcresult-test-details.json" "$diagnostic_dir/raw-first-failure.txt" <<'PY' || true
+          import json, pathlib, sys
+          source, destination = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          if not source.is_file():
+              destination.write_text("test-details payload was not produced\n", encoding="utf-8")
+              raise SystemExit(0)
+          try:
+              payload = json.loads(source.read_text(encoding="utf-8"))
+          except Exception as error:
+              destination.write_text(f"first-failure extraction unavailable: {error}\n", encoding="utf-8")
+              raise SystemExit(0)
+          failures = []
+          def walk(node):
+              if isinstance(node, dict):
+                  name = node.get("name")
+                  location = node.get("sourceLocation")
+                  if (node.get("result") == "Failed" and isinstance(name, str) and name.strip()
+                          and isinstance(location, dict) and location.get("lineNumber") is not None):
+                      failures.append((name.strip(), location.get("filePath", ""), location.get("lineNumber", "")))
+                  for value in node.values():
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+          walk(payload)
+          if failures:
+              name, path, line = failures[0]
+              destination.write_text(f"first failure: {name}\nsource: {path}:{line}\n", encoding="utf-8")
+          else:
+              destination.write_text("no failed node with source location was recorded in the test-details payload\n", encoding="utf-8")
+          PY
+              mkdir -p "FloeAgent-Notes-Diagnostic-Screenshots/$SIM_NAME"
+              xcrun xcresulttool export attachments --path "$result_bundle" \
+                --output-path "FloeAgent-Notes-Diagnostic-Screenshots/$SIM_NAME" || true
+            else
+              echo "$result_bundle was never produced; the Notes diagnostic has no verifiable result." >&2
+              status=1
+            fi
+            exit "$status"
+          fi
           # The original verifier requires all three cases to pass with no
           # skips; a missing bundle is a leg failure, not a traceback.
           if test -d "FloeAgent-IDE-$SIM_NAME.xcresult"; then
@@ -305,7 +491,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ide-host-recovery-${{ matrix.name }}-${{ inputs.source_sha }}
+          name: ${{ inputs.notes_diagnostic && 'notes-quicklook-diagnostic' || 'ide-host-recovery' }}-${{ matrix.name }}-${{ inputs.source_sha }}
           path: |
             ${{ runner.temp }}/host-metadata/host-metadata.json
             ${{ runner.temp }}/host-verification.json
@@ -314,6 +500,7 @@ jobs:
             original-source/FloeAgent/FloeAgent-IDE-*.xcresult
             original-source/FloeAgent/FloeAgent-IDE-Screenshots
             original-source/FloeAgent/FloeAgent-IDE-Recordings
+            original-source/FloeAgent/FloeAgent-Notes-Diagnostic-*
             ${{ runner.temp }}/SwiftTestDiagnostics
           if-no-files-found: ignore
           retention-days: 7
