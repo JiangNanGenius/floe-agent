@@ -1,0 +1,79 @@
+{
+  "sourceSHA": "d77aa11f7b4933b987faf5cf65ebc817d520e15e",
+  "build": 187,
+  "runID": 35312393708,
+  "jobID": 105497014521,
+  "componentOnly": true,
+  "functionalGate": "failure",
+  "results": {
+    "notes-iPad": {
+      "result": "Failed",
+      "totalTestCount": 101,
+      "passedTests": 100,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertEqual failed: (\"2\") is not equal to (\"1\") - only the Quick Look copy may exist: the summary copy is deleted before the wait",
+          "targetName": "NativeNotesTests",
+          "testIdentifier": 67,
+          "testIdentifierString": "NotesProgressiveCoverTests/testSummaryGateBoundsCopiesAndReleasesBeforeTheQuickLookWait()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NotesProgressiveCoverTests/testSummaryGateBoundsCopiesAndReleasesBeforeTheQuickLookWait",
+          "testName": "testSummaryGateBoundsCopiesAndReleasesBeforeTheQuickLookWait()"
+        }
+      ]
+    },
+    "notes-iPhone": {
+      "result": "Failed",
+      "totalTestCount": 101,
+      "passedTests": 100,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertEqual failed: (\"2\") is not equal to (\"1\") - only the Quick Look copy may exist: the summary copy is deleted before the wait",
+          "targetName": "NativeNotesTests",
+          "testIdentifier": 67,
+          "testIdentifierString": "NotesProgressiveCoverTests/testSummaryGateBoundsCopiesAndReleasesBeforeTheQuickLookWait()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NotesProgressiveCoverTests/testSummaryGateBoundsCopiesAndReleasesBeforeTheQuickLookWait",
+          "testName": "testSummaryGateBoundsCopiesAndReleasesBeforeTheQuickLookWait()"
+        }
+      ]
+    },
+    "notes-diagnostic-iPad": {
+      "result": "Failed",
+      "totalTestCount": 7,
+      "passedTests": 6,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertEqual failed: (\"officeContentSummary\") is not equal to (\"quickLookThumbnail\") - design-review.pptx must come from a real Quick Look content representation, not officeContentSummary (native content summary) [floe-ql-diagnostic:content]",
+          "targetName": "NativeNotesTests",
+          "testIdentifier": 4,
+          "testIdentifierString": "NotesOfficeThumbnailDiagnosticsTests/testStrictQuickLookRendersPowerPointDesignReview()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NotesOfficeThumbnailDiagnosticsTests/testStrictQuickLookRendersPowerPointDesignReview",
+          "testName": "testStrictQuickLookRendersPowerPointDesignReview()"
+        }
+      ]
+    },
+    "notes-diagnostic-iPhone": {
+      "result": "Failed",
+      "totalTestCount": 7,
+      "passedTests": 6,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertEqual failed: (\"officeContentSummary\") is not equal to (\"quickLookThumbnail\") - 季度数据汇总.xlsx must come from a real Quick Look content representation, not officeContentSummary (native content summary) [floe-ql-diagnostic:content]",
+          "targetName": "NativeNotesTests",
+          "testIdentifier": 3,
+          "testIdentifierString": "NotesOfficeThumbnailDiagnosticsTests/testStrictQuickLookRendersExcelQuarterlySummary()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeNotesNativeQualification/NativeNotesTests/NotesOfficeThumbnailDiagnosticsTests/testStrictQuickLookRendersExcelQuarterlySummary",
+          "testName": "testStrictQuickLookRendersExcelQuarterlySummary()"
+        }
+      ]
+    }
+  },
+  "interpretation": "Both functional legs fail the same global staging-count assertion while a different summary is intentionally allowed to run. A FIFO fixture barrier is under repair; original failure remains. Strict Quick Look diagnostics independently executed7cases perdevice with one known content+timeout case each. This does not authorize uploading187."
+}

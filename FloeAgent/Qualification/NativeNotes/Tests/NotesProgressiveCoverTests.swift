@@ -597,7 +597,7 @@ final class NotesProgressiveCoverTests: XCTestCase {
             return NotesOfficeThumbnailGenerator.AttemptOutcome(
                 image: qlImage, diagnosis: "content", timedOut: false, elapsed: .zero)
         }
-        let tasks = documents.map { entry in
+        func renderTask(_ entry: (NotesStore, NoteDocument, URL)) -> Task<NotesDocumentCoverOutcome, Never> {
             Task { @MainActor in
                 await NotesDocumentCoverService.render(
                     document: entry.1, store: entry.0, size: self.coverSize,
@@ -605,10 +605,34 @@ final class NotesProgressiveCoverTests: XCTestCase {
                     onFirstPaint: { paints.append($0) })
             }
         }
+        var tasks = [renderTask(documents[0])]
+        await assertEventually("the first card must queue before the replacement holder") {
+            NotesOfficeThumbnailGate.summary.waiterCount == 1
+        }
+        // Reoccupy the first card's summary slot before another card can use
+        // it. Without this FIFO barrier, a second card legitimately stages a
+        // summary while the first card is in Quick Look, making a global
+        // single-copy assertion inspect two different operations.
+        var replacementAcquired = false
+        let replacementHolder = Task { @MainActor in
+            let acquired = await NotesOfficeThumbnailGate.summary.acquire(id: UUID())
+            guard acquired else { return }
+            guard !Task.isCancelled else {
+                NotesOfficeThumbnailGate.summary.release()
+                return
+            }
+            heldSlots += 1
+            replacementAcquired = true
+        }
+        await assertEventually("the replacement holder must queue ahead of later cards") {
+            NotesOfficeThumbnailGate.summary.waiterCount == 2
+        }
+        tasks.append(contentsOf: documents.dropFirst().map(renderTask))
         // A failed assertion must not leave a render suspended at the seam or
         // a card stuck in the summary queue for the next test.
         defer {
             if let pending = release { release = nil; pending.resume() }
+            replacementHolder.cancel()
             for task in tasks { task.cancel() }
         }
 
@@ -616,9 +640,9 @@ final class NotesProgressiveCoverTests: XCTestCase {
         // arrive and no system request may start, however many cards ask.
         let allQueued = await waitUntil {
             NotesOfficeThumbnailGate.summary.activeCount == 2 &&
-            NotesOfficeThumbnailGate.summary.waiterCount == 3
+            NotesOfficeThumbnailGate.summary.waiterCount == 4
         }
-        XCTAssertTrue(allQueued, "three cards must be queued behind the two summary slots")
+        XCTAssertTrue(allQueued, "three cards and the replacement holder must queue behind the two summary slots")
         XCTAssertTrue(paints.isEmpty, "no first paint may bypass the summary gate")
         XCTAssertEqual(stagedCoverDirectoryCount(), baseline,
                        "a gated summary must not stage a copy before it owns a slot")
@@ -629,11 +653,14 @@ final class NotesProgressiveCoverTests: XCTestCase {
         heldSlots -= 1
         NotesOfficeThumbnailGate.summary.release()
         await fulfillment(of: [started], timeout: 15)
+        await assertEventually("the replacement holder must retain the completed summary slot") {
+            replacementAcquired
+        }
         XCTAssertEqual(paints.count, 1)
         XCTAssertEqual(paints.first?.source, .officeContentSummary)
         XCTAssertEqual(NotesOfficeThumbnailGate.summary.activeCount, 2,
-                       "the released slot must immediately serve the next queued summary")
-        XCTAssertEqual(NotesOfficeThumbnailGate.summary.waiterCount, 1)
+                       "both summary slots are held externally while Quick Look is suspended")
+        XCTAssertEqual(NotesOfficeThumbnailGate.summary.waiterCount, 2)
         XCTAssertEqual(stagedCoverDirectoryCount(), baseline + 1,
                        "only the Quick Look copy may exist: the summary copy is deleted before the wait")
         if let stagedURL {
@@ -645,8 +672,10 @@ final class NotesProgressiveCoverTests: XCTestCase {
         // suspended. Both cards must get first paints without waiting for it,
         // and once their summaries are done no summary copy may exist while
         // their Quick Look requests queue behind the one in flight.
-        heldSlots -= 1
-        NotesOfficeThumbnailGate.summary.release()
+        while heldSlots > 0 {
+            heldSlots -= 1
+            NotesOfficeThumbnailGate.summary.release()
+        }
         let allPainted = await waitUntil { paints.count == 3 }
         XCTAssertTrue(allPainted,
                       "later cards' first paints must not wait for the suspended Quick Look request")
