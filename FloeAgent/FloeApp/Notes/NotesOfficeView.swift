@@ -179,7 +179,7 @@ struct NotesOfficeView: View {
     /// silently discarded.
     private var unavailableHeader: some View {
         HStack(spacing: 4) {
-            Button("返回手记", systemImage: "chevron.left") {
+            Button("notes.navigation.backToNotes", systemImage: "chevron.left") {
                 Task { await session.select(nil) }
             }
             .labelStyle(.iconOnly).frame(width: 44, height: 44)

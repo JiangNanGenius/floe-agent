@@ -261,6 +261,9 @@ jobs:
           python3 -m unittest discover -s scripts -p test_run_test_with_diagnostics.py
           python3 -m unittest discover -s scripts/tests -p test_ci_ide_only.py
           python3 -m unittest discover -s scripts/tests -p test_select_test_simulator.py
+          python3 scripts/validate_localization_catalog.py FloeApp/Resources/Localizable.xcstrings
+          python3 -m unittest discover -s scripts/tests -p test_localization_catalog.py
+          python3 -m unittest discover -s scripts/tests -p test_release_preflight_versions.py
 
       - name: Generate Xcode project
         run: |

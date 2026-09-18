@@ -1,4 +1,5 @@
 """Exercise release preflight against committed, tagged project fixtures."""
+import json
 import os
 from pathlib import Path
 import shutil
@@ -8,20 +9,25 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+CATALOG_KEY = "notes.navigation.backToNotes"
 
 @unittest.skipUnless(sys.platform == "darwin", "release preflight requires Apple's plutil")
 class ReleaseVersionPreflightTests(unittest.TestCase):
-    def run_preflight(self, transform=lambda text: text):
+    def run_preflight(self, transform=lambda text: text, catalog_transform=lambda text: text):
         with tempfile.TemporaryDirectory(prefix="floe-release-version-test-") as temp:
             root = Path(temp)
             app = root / "FloeAgent"
             for name in ("project.yml", "scripts/release_preflight.sh",
-                         "FloeAgent.xcodeproj/project.pbxproj", "FloeScreenShare/Info.plist"):
+                         "scripts/validate_localization_catalog.py",
+                         "FloeAgent.xcodeproj/project.pbxproj", "FloeScreenShare/Info.plist",
+                         "FloeApp/Resources/Localizable.xcstrings"):
                 target = app / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / name, target)
             project = app / "FloeAgent.xcodeproj/project.pbxproj"
             project.write_text(transform(project.read_text()))
+            catalog = app / "FloeApp/Resources/Localizable.xcstrings"
+            catalog.write_text(catalog_transform(catalog.read_text()))
             env = dict(os.environ, GIT_AUTHOR_NAME="Floe Test", GIT_COMMITTER_NAME="Floe Test",
                        GIT_AUTHOR_EMAIL="test@example.invalid", GIT_COMMITTER_EMAIL="test@example.invalid")
             for args in (("init", "-q"), ("add", "."), ("commit", "-qm", "fixture"),
@@ -35,6 +41,8 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
         result = self.run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("release preflight OK", result.stdout)
+        # The real catalog must clear the pre-build localization gate.
+        self.assertIn("localization catalog OK", result.stdout)
 
     def test_one_stale_extension_build_is_rejected(self):
         import re
@@ -54,6 +62,36 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
         result = self.run_preflight(lambda text: "// missing settings\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("generated Xcode project must match", result.stderr)
+
+    def test_unnamespaced_catalog_key_is_rejected(self):
+        result = self.run_preflight(catalog_transform=lambda text: text.replace(
+            f'"{CATALOG_KEY}"', '"backToNotes"'))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("error: localization catalog incomplete", result.stderr)
+        self.assertIn("non-namespaced key: 'backToNotes'", result.stderr)
+        self.assertNotIn("release preflight OK", result.stdout)
+
+    def test_catalog_missing_bilingual_value_is_rejected(self):
+        def drop_chinese(text):
+            catalog = json.loads(text)
+            del catalog["strings"][CATALOG_KEY]["localizations"]["zh-Hans"]
+            return json.dumps(catalog, ensure_ascii=False)
+
+        result = self.run_preflight(catalog_transform=drop_chinese)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"{CATALOG_KEY}: missing zh-Hans", result.stderr)
+        self.assertNotIn("release preflight OK", result.stdout)
+
+    def test_catalog_empty_bilingual_value_is_rejected(self):
+        def blank_english(text):
+            catalog = json.loads(text)
+            catalog["strings"][CATALOG_KEY]["localizations"]["en"]["stringUnit"]["value"] = "  "
+            return json.dumps(catalog, ensure_ascii=False)
+
+        result = self.run_preflight(catalog_transform=blank_english)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"{CATALOG_KEY}: en empty", result.stderr)
+        self.assertNotIn("release preflight OK", result.stdout)
 
 if __name__ == "__main__":
     unittest.main()

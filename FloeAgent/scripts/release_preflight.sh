@@ -20,6 +20,14 @@ if [[ "$SOURCE_SHA" != "$TAG_SHA" ]]; then
     exit 1
 fi
 
+# Same completeness requirement as FloeCoreTests' LocalizationCompletenessTests,
+# but cheap enough to run before any build: JSON validity, dotted key
+# namespaces, and non-empty en/zh-Hans values.
+if ! python3 scripts/validate_localization_catalog.py FloeApp/Resources/Localizable.xcstrings; then
+    echo "error: localization catalog completeness failed before build" >&2
+    exit 1
+fi
+
 setting() {
     local key="$1"
     awk -F': ' -v key="$key" '$1 ~ "^[[:space:]]*" key "$" {gsub(/[\"[:space:]]/, "", $2); print $2; exit}' project.yml

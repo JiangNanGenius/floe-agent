@@ -1,7 +1,7 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "返回手记": {
+    "notes.navigation.backToNotes": {
       "localizations": {
         "en": {
           "stringUnit": {
