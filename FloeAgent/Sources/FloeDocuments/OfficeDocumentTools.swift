@@ -77,8 +77,12 @@ public struct OfficeInspectTool: AgentTool {
             let lines = snapshot.fields.prefix(2_000).map {
                 "id=\($0.id) section=\($0.section) label=\($0.label) text=\($0.text.replacingOccurrences(of: "\n", with: "\\n"))"
             }
+            let note = snapshot.fields.isEmpty
+                ? "note=This document has no editable text fields. It may contain only images, drawings, charts, form controls or protected content; document.office.updateText will report unknownField for guessed IDs.\n"
+                : ""
             return OfficeToolSupport.output(
                 "kind=\(snapshot.kind.rawValue) sha256=\(digest) fields=\(snapshot.fields.count) entries=\(snapshot.packageEntries) bytes=\(snapshot.packageBytes)\n"
+                    + note
                     + lines.joined(separator: "\n")
             )
         } catch {
@@ -154,7 +158,9 @@ public struct DocumentCreateWordTool: AgentTool {
         do {
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: false)
             try OfficeDocumentBuilder.createWord(at: url, title: args.title, paragraphs: args.paragraphs)
-            return OfficeToolSupport.output("created=\(args.path) format=docx paragraphs=\(args.paragraphs.count + 1) verified=true")
+            // Generated Word files are plain styled paragraphs. Say so instead
+            // of implying fillable form fields exist.
+            return OfficeToolSupport.output("created=\(args.path) format=docx paragraphs=\(args.paragraphs.count + 1) fillableFields=0 titleStyle=Title verified=true note=Plain document; no fillable form fields. Use document.office.inspect/updateText for text edits.")
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
@@ -202,27 +208,100 @@ public struct PresentationCreateDeckTool: AgentTool {
     }
     public static let name = "document.presentation.createDeck"
     public static let toolDescription =
-        "Create a native 16:9 .pptx with slide titles, bullet text and optional speaker notes. Use supplied content; research with web.search/web.fetch only when additional source material is needed, and place supporting URLs in notes. This basic creation schema does not position objects, insert charts/images, or edit themes. Floe validates the OOXML package; use document.office.inspect/updateText for existing text fields. For an inline conversation table/chart/web preview use document.presentation.createInline."
-    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"New workspace-relative .pptx path"},"title":{"type":"string","maxLength":300},"slides":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"title":{"type":"string","maxLength":300},"bullets":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":1000}},"notes":{"type":"string","description":"Optional speaker notes including [Sources] URLs","maxLength":20000}},"required":["title","bullets"],"additionalProperties":false}}},"required":["path","title","slides"],"additionalProperties":false}"#
+        "Create a native 16:9 .pptx with slide titles, bullet text, optional speaker notes and positioned slide objects. Each slide may add text boxes, preset shapes, PNG/JPEG/GIF images and editable native bar/line/pie charts. Objects use EMU geometry (914400 EMU = 1 inch, canvas 12192000 x 6858000) or a layout preset (full/left/right/top/bottom/center); explicit EMU overrides the preset. Charts embed a real .xlsx workbook with Sheet1 cell references and relationships, so they stay editable charts rather than pictures. Images may be supplied as a workspace imagePath or inline imageBase64. Floe validates the OOXML package; use document.office.inspect/updateText for existing text fields. For an inline conversation table/chart/web preview use document.presentation.createInline."
+    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"New workspace-relative .pptx path"},"title":{"type":"string","maxLength":300},"slides":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"title":{"type":"string","maxLength":300},"bullets":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":1000}},"notes":{"type":"string","description":"Optional speaker notes including [Sources] URLs","maxLength":20000},"objects":{"type":"array","maxItems":32,"description":"Positioned objects on this slide","items":{"type":"object","properties":{"kind":{"type":"string","enum":["text","shape","image","chart"]},"name":{"type":"string","maxLength":120},"layout":{"type":"string","enum":["full","left","right","top","bottom","center"]},"x":{"type":"integer"},"y":{"type":"integer"},"width":{"type":"integer"},"height":{"type":"integer"},"text":{"type":"array","maxItems":20,"items":{"type":"string","maxLength":2000}},"shape":{"type":"string","enum":["rect","roundRect","ellipse","triangle","diamond","arrow","chevron","star5"]},"fillColor":{"type":"string","pattern":"^#?[0-9A-Fa-f]{6}$"},"lineColor":{"type":"string","pattern":"^#?[0-9A-Fa-f]{6}$"},"textColor":{"type":"string","pattern":"^#?[0-9A-Fa-f]{6}$"},"fontSize":{"type":"number","minimum":1,"maximum":200},"bold":{"type":"boolean"},"imagePath":{"type":"string","description":"Workspace-relative PNG/JPEG/GIF path; resolved before building"},"imageBase64":{"type":"string","description":"Inline PNG/JPEG/GIF bytes, max 8 MiB decoded"},"chart":{"type":"object","properties":{"chartType":{"type":"string","enum":["bar","line","pie"]},"title":{"type":"string","maxLength":300},"categories":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","maxLength":200}},"series":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"name":{"type":"string","maxLength":200},"values":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"number"}}},"required":["name","values"],"additionalProperties":false}}},"required":["chartType","categories","series"],"additionalProperties":false}},"required":["kind"],"additionalProperties":false}}},"required":["title","bullets"],"additionalProperties":false}}},"required":["path","title","slides"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true
     private let rootProvider: @Sendable () -> URL?
     public init(rootProvider: @escaping @Sendable () -> URL?) { self.rootProvider = rootProvider }
+
     public func validate(_ args: Arguments) throws {
         try OfficeToolSupport.validatePath(args.path, extension: "pptx")
         guard !args.title.isEmpty, args.title.count <= 300, !args.slides.isEmpty, args.slides.count <= 100,
               args.slides.allSatisfy({ !$0.title.isEmpty && $0.title.count <= 300 && $0.bullets.count <= 12 && $0.bullets.allSatisfy({ $0.count <= 1_000 }) && ($0.notes?.count ?? 0) <= 20_000 }) else {
             throw FloeError.validationFailed("Presentation exceeds the bounded creation limits")
         }
+        for (index, slide) in args.slides.enumerated() {
+            let objects = slide.objects ?? []
+            guard objects.count <= OfficeDocumentBuilder.maximumPresentationObjectsPerSlide else {
+                throw FloeError.validationFailed("Slide \(index + 1) exceeds \(OfficeDocumentBuilder.maximumPresentationObjectsPerSlide) objects")
+            }
+            for object in objects {
+                if let text = object.text, text.count > 20 || text.contains(where: { $0.utf8.count > 4_000 }) {
+                    throw FloeError.validationFailed("Slide \(index + 1) object text exceeds the bounded limits")
+                }
+                if object.kind == .image {
+                    let hasBase64 = !(object.imageBase64 ?? "").isEmpty
+                    let hasPath = !(object.imagePath ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    guard hasBase64 || hasPath else {
+                        throw FloeError.validationFailed("Slide \(index + 1) image object needs imagePath or imageBase64")
+                    }
+                    if let base64 = object.imageBase64, base64.utf8.count > OfficeDocumentBuilder.maximumImageBytes * 2 {
+                        throw FloeError.validationFailed("Slide \(index + 1) image exceeds the 8 MiB limit")
+                    }
+                }
+                if object.kind == .chart {
+                    guard let chart = object.chart else {
+                        throw FloeError.validationFailed("Slide \(index + 1) chart object needs a chart payload")
+                    }
+                    guard (1...OfficeDocumentBuilder.maximumChartCategories).contains(chart.categories.count),
+                          (1...OfficeDocumentBuilder.maximumChartSeries).contains(chart.series.count),
+                          chart.series.allSatisfy({ $0.values.count == chart.categories.count && $0.values.allSatisfy(\.isFinite) }) else {
+                        throw FloeError.validationFailed(
+                            "Slide \(index + 1) chart needs 1...\(OfficeDocumentBuilder.maximumChartCategories) categories, "
+                                + "1...\(OfficeDocumentBuilder.maximumChartSeries) series and one finite value per category"
+                        )
+                    }
+                }
+            }
+        }
     }
+
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         do {
+            try validate(args)
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: false)
-            try OfficeDocumentBuilder.createPresentation(at: url, title: args.title, slides: args.slides)
-            return OfficeToolSupport.output("created=\(args.path) format=pptx slides=\(args.slides.count) verified=true")
+            let slides = try resolveImages(args.slides, context: context)
+            try OfficeDocumentBuilder.createPresentation(at: url, title: args.title, slides: slides)
+            let objects = slides.compactMap(\.objects).flatMap { $0 }
+            let charts = objects.filter { $0.kind == .chart }.count
+            let images = objects.filter { $0.kind == .image }.count
+            return OfficeToolSupport.output(
+                "created=\(args.path) format=pptx slides=\(args.slides.count) objects=\(objects.count) charts=\(charts) images=\(images) verified=true"
+            )
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
+        }
+    }
+
+    /// Resolves workspace image paths to inline bytes. The builder has no
+    /// workspace context, so the tool owns the bounded file read.
+    private func resolveImages(_ slides: [OfficePresentationSlide], context: ToolContext) throws -> [OfficePresentationSlide] {
+        try slides.map { slide in
+            guard let objects = slide.objects, objects.contains(where: { $0.imagePath != nil }) else { return slide }
+            var copy = slide
+            copy.objects = try objects.map { object in
+                guard object.kind == .image,
+                      let path = object.imagePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !path.isEmpty,
+                      (object.imageBase64 ?? "").isEmpty else { return object }
+                let url = try OfficeToolSupport.resolve(path, context: context, fallback: rootProvider, mustExist: true)
+                let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard values.isRegularFile == true,
+                      let size = values.fileSize, size > 0, size <= OfficeDocumentBuilder.maximumImageBytes else {
+                    throw FloeError.validationFailed("Image \(path) must be a regular file of at most 8 MiB")
+                }
+                let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                guard data.count <= OfficeDocumentBuilder.maximumImageBytes else {
+                    throw FloeError.validationFailed("Image \(path) exceeds the 8 MiB limit")
+                }
+                var resolved = object
+                resolved.imageBase64 = data.base64EncodedString()
+                resolved.imagePath = nil
+                return resolved
+            }
+            return copy
         }
     }
 }

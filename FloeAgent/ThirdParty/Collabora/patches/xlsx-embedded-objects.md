@@ -1,4 +1,4 @@
-# XLSX live embedded-object export
+# XLSX live embedded-object export + PPTX chart workbook export
 
 Applies only to online.mirror `27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc`.
 The exact original and patched sources and original archive are recorded in
@@ -106,3 +106,35 @@ cell-resizing input still changes to 59.95x17.99 mm on first save; the second sa
 is stable. All six saved samples pass 29 attachment structure checks, and six
 exports retain original bytes. This does not qualify live row/column resizing,
 rotations, groups, full Floe or physical devices; precise cell-resize import is open.
+
+## PPTX chart workbook export (`chartexport.cxx`, Floe addition)
+
+The pinned PPTX exporter wrote internal data-provider labels for
+`<c:f>` and returned before `c:externalData`, so a Floe-generated chart lost its
+embedded workbook on engine save and `OfficeNativeSaveValidation` refused the
+save. The patch adds a per-chart recorder and a minimal `Sheet1` workbook writer
+to `engine/oox/source/export/chartexport.cxx`:
+
+- Series names/categories/values are recorded while the existing series export
+  runs and are written as `Sheet1!$...` ranges plus a matching workbook.
+- The workbook is packaged with the engine's own `ZipOutputStream`/`CRC32`
+  (`engine/package/inc`) instead of a duplicated zip writer, and written through
+  `XmlFilterBase::openFragmentStream` so the host package registers its content
+  type. Header-only `frozen` is already used by the pinned file.
+- **Non-destructive gate:** a workbook is regenerated only when the chart has no
+  external data path, or when the path is Floe's own generated name
+  (`ppt/embeddings/floe-chart-data-*.xlsx`). An imported/advanced workbook
+  (other sheet names, multiple sheets, formulas, other embeddings) is never
+  replaced by a regenerated Sheet1: the chart is exported without
+  `c:externalData`, Floe's strict validation rejects the save, and the user's
+  original file is preserved. Deliberate failure over silent degradation.
+- Qualification is still pending. The translation unit is not compiled or linked
+  here; the overlay build must compile it with the existing pipeline, and a real
+  save/close/reopen with edited and untouched charts is required before any
+  roundtrip claim.
+
+Generated decks must name their embedded workbook
+`ppt/embeddings/floe-chart-data-<n>.xlsx` (FloeDocuments integration request) so
+the engine can recognize its own workbook; without that marker an imported deck
+fails the save instead of degrading the workbook. Charts created inside the
+editor receive the same name on their first save.

@@ -25,6 +25,10 @@ SPARSE_PATHS = [
     '/engine/sc/source/filter/oox/worksheetfragment.cxx',
     '/engine/sc/source/filter/oox/worksheethelper.cxx',
     '/engine/oox/source/vml/vmlshape.cxx',
+    '/engine/oox/source/export/chartexport.cxx',
+    # chartexport.cxx packages the regenerated PPTX chart workbook with the
+    # engine's own ZipOutputStream/CRC32 instead of a duplicated zip writer.
+    '/engine/package/inc/',
     '/engine/officecfg/registry/cppheader.xsl',
     '/engine/officecfg/registry/component-schema.dtd',
     '/engine/officecfg/registry/schema/org/openoffice/Office/Common.xcs',
@@ -290,9 +294,13 @@ def build(bundle, source, output):
                 source / 'engine/sc/inc', source / 'engine/sc/source/filter/inc',
                 source / 'engine/sc/source/ui/inc',
                 source / 'engine/oox/inc',
+                source / 'engine/package/inc',
                 engine / 'workdir/UnoApiHeadersTarget/udkapi/comprehensive',
                 engine / 'workdir/UnoApiHeadersTarget/offapi/comprehensive',
-                engine / 'workdir/UnpackedTarball/boost']
+                engine / 'workdir/UnpackedTarball/boost',
+                # Header-only external already used by the pinned chartexport.cxx
+                # (frozen::make_unordered_map); absent directories are harmless.
+                engine / 'workdir/UnpackedTarball/frozen']
     for include in includes + header_includes:
         command += ['-I', str(include)]
     members = lock.get('members', {lock['member']: 'engine/sc/source/filter/xcl97/xcl97rec.cxx'})

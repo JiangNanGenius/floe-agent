@@ -2,6 +2,7 @@
 // Runtime startup adapted from the pinned Collabora Mobile AppDelegate (MPL-2.0).
 #import "config.h"
 #import "FloeOfficeNative.h"
+#import <WebKit/WebKit.h>
 #define LIBO_INTERNAL_ONLY
 #import <COKit/COKitInit.h>
 #include <comphelper/kit.hxx>
@@ -208,12 +209,18 @@ static NSString *FloeFullScreenEditScript() {
             const result = setPermission.apply(this, arguments);
             // Floe's fullscreen entry is already an explicit edit action. Honor
             // the initial engine grant via the normal mobile entry point, which
-            // retains edit-password checks. Never relax a readonly grant, a
-            // protected format, or a subsequent permission change.
+            // retains format/password/lock checks. The mobile app forces
+            // startreadonly=true for its viewing-first startup, so
+            // _shouldStartReadOnly() describes the initial UI mode, not a denied
+            // document; the backing permission (app.file.readOnly) is
+            // authoritative. Never relax a readonly/view grant, the PDF
+            // full-view mode, a non-native context or a later permission change.
+            const backendEditable = window.app && window.app.file && window.app.file.readOnly === false;
+            const startReadOnly = typeof this._shouldStartReadOnly === 'function' && this._shouldStartReadOnly();
             if (firstOpen && permission === 'edit' && this._permission === 'readonly' &&
-                window.ThisIsAMobileApp && typeof this._shouldStartReadOnly === 'function' &&
+                window.ThisIsAMobileApp && typeof this._switchToEditMode === 'function' &&
                 !(window.app && window.app.file && window.app.file.fileBasedView) &&
-                !this._shouldStartReadOnly() && typeof this._switchToEditMode === 'function')
+                (backendEditable || !startReadOnly))
                 this._switchToEditMode();
             return result;
         };
@@ -225,6 +232,104 @@ static NSString *FloeFullScreenEditScript() {
 )FLOE_JS"];
 }
 // FLOE_FULLSCREEN_EDIT_SCRIPT_END
+
+// FLOE_ENGINE_PERMISSION_BEGIN
+// Reads the engine's own backing permission and UI mode. app.file.readOnly is
+// set from the handshake permission (main.js) and only lowered by a real edit
+// grant; map.isEditMode()/_permission is the current mobile UI mode, which is
+// "readonly" while an editable document is still in its viewing-first startup.
+// A missing/unknown app.file.readOnly stays unknown (null → the ObjC caller
+// keeps retrying) and is never read as an editable grant.
+static NSString *FloeEnginePermissionProbeScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    try {
+        const app = window.app;
+        const map = app && app.map;
+        if (!app || !app.file || !map) return null;
+        if (typeof app.file.readOnly !== 'boolean') return null;
+        return {
+            backendReadOnly: app.file.readOnly,
+            uiEdit: typeof map.isEditMode === 'function' && map.isEditMode() === true,
+            pendingPassword: map._docHasPasswordToModify === true && map._modifyPasswordProvided !== true,
+        };
+    } catch (_) { return null; }
+})()
+)FLOE_JS"];
+}
+
+// Follows the engine's normal mobile edit entry. The engine itself challenges
+// the edit password and refuses non-editable formats; this never bypasses a
+// readonly backing permission.
+static NSString *FloeEngineEditEntryScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    try {
+        const app = window.app;
+        const map = app && app.map;
+        if (!app || !app.file || !map) return { ok: false, reason: 'not-ready' };
+        if (app.file.readOnly === true) return { ok: false, reason: 'readonly' };
+        if (typeof map.isEditMode === 'function' && map.isEditMode() === true)
+            return { ok: true, reason: 'already-editable', backendReadOnly: false, uiEdit: true, pendingPassword: false };
+        if (typeof map._switchToEditMode !== 'function') return { ok: false, reason: 'unsupported' };
+        map._switchToEditMode();
+        return {
+            ok: true,
+            reason: 'switched',
+            backendReadOnly: app.file.readOnly === true,
+            uiEdit: typeof map.isEditMode === 'function' && map.isEditMode() === true,
+            pendingPassword: map._docHasPasswordToModify === true && map._modifyPasswordProvided !== true,
+        };
+    } catch (_) { return { ok: false, reason: 'error' }; }
+})()
+)FLOE_JS"];
+}
+
+// Keeps the host's engine-truth state current without polling. The editor owns
+// app.setPermission; we only observe the resulting backing permission.
+static NSString *FloeEnginePermissionObserverScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    let attempts = 0;
+    const post = () => {
+        try {
+            const app = window.app;
+            const handlers = window.webkit && window.webkit.messageHandlers;
+            if (!app || !app.file || !handlers || !handlers.floePermission) return;
+            // A missing/unknown app.file.readOnly is not an edit grant: wait
+            // until the engine reports a real boolean instead of posting false.
+            if (typeof app.file.readOnly !== 'boolean') return;
+            handlers.floePermission.postMessage({ readOnly: app.file.readOnly });
+        } catch (_) {}
+    };
+    const install = () => {
+        const app = window.app;
+        if (!app || typeof app.setPermission !== 'function' || app.floePermissionObserverInstalled) {
+            if (attempts++ < 400) setTimeout(install, 50);
+            return;
+        }
+        app.floePermissionObserverInstalled = true;
+        const original = app.setPermission;
+        app.setPermission = function (permission) {
+            const result = original.apply(this, arguments);
+            post();
+            return result;
+        };
+        if (app.events && typeof app.events.on === 'function')
+            app.events.on('updatepermission', post);
+        post();
+    };
+    if (document.readyState === 'loading')
+        document.addEventListener('DOMContentLoaded', install, { once: true });
+    else install();
+})()
+)FLOE_JS"];
+}
+// FLOE_ENGINE_PERMISSION_END
+
+@interface FloeOfficeEnginePermissionObserver : NSObject <WKScriptMessageHandler>
+@property (nonatomic, weak) FloeOfficeNativeViewController *controller;
+@end
 
 typedef NS_ENUM(NSUInteger, FloeRuntimeState) {
     FloeRuntimeIdle, FloeRuntimeStarting, FloeRuntimeReady, FloeRuntimeFailed
@@ -473,13 +578,32 @@ static void ServerReady() {
 
 @interface FloeOfficeNativeViewController ()
 @property (nonatomic, readwrite, getter=isReadOnly) BOOL readOnly;
+@property (nonatomic, readwrite) BOOL sessionIsReadOnly;
 @property (nonatomic, copy, readwrite) NSURL *workingFileURL;
 @property DocumentViewController *editor;
 @property (nonatomic, strong) FloeSaveReceiptJoiner *saveReceipts;
+@property (nonatomic, strong) FloeOfficeEnginePermissionObserver *permissionObserver;
 @property (nonatomic) BOOL closing;
 @property (nonatomic) BOOL closed;
 @property (nonatomic) BOOL insertingAttachment;
 @property (nonatomic, strong) NSMutableArray *closeWaiters;
+- (void)enginePermissionDidUpdate:(BOOL)readOnly;
+- (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
+                               completion:(void (^)(BOOL known, BOOL readOnly))completion;
+- (void)attemptEngineEditEntryWithCompletion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion;
+@end
+
+@implementation FloeOfficeEnginePermissionObserver
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    NSNumber *readOnly = nil;
+    if ([message.body isKindOfClass:NSDictionary.class])
+        readOnly = ((NSDictionary *)message.body)[@"readOnly"];
+    else if ([message.body isKindOfClass:NSNumber.class])
+        readOnly = message.body;
+    if (![readOnly isKindOfClass:NSNumber.class]) return;
+    [self.controller enginePermissionDidUpdate:readOnly.boolValue];
+}
 @end
 
 @implementation FloeOfficeNativeViewController
@@ -501,6 +625,8 @@ static void ServerReady() {
     }
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _readOnly = readOnly;
+        // The App's requested grant until the engine reports its own permission.
+        _sessionIsReadOnly = readOnly;
         _workingFileURL = file;
         _saveReceipts = [FloeSaveReceiptJoiner new];
         _closeWaiters = [NSMutableArray array];
@@ -513,7 +639,36 @@ static void ServerReady() {
         __weak FloeOfficeNativeViewController *weakSelf = self;
         document.onOpened = ^(BOOL success) {
             FloeOfficeNativeViewController *host = weakSelf;
+            if (!host) return;
             if (host.onWorkingCopyOpened) host.onWorkingCopyOpened(success);
+            if (!success) {
+                host.sessionIsReadOnly = YES;
+                if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(NO, YES);
+                return;
+            }
+            [host probeEnginePermissionWithAttempts:0 completion:^(BOOL known, BOOL readOnly) {
+                FloeOfficeNativeViewController *probed = weakSelf;
+                if (!probed || probed.closed || probed.closing) return;
+                // A permission that never reported a boolean is unknown, not
+                // an edit grant: keep the conservative read-only state. The
+                // permission observer corrects it once the engine reports.
+                probed.sessionIsReadOnly = known ? readOnly : YES;
+                // An editable backing document that the mobile editor mounted in
+                // its viewing-first UI is not a denied document: follow the
+                // engine's own guarded entry once, then report the real state.
+                if (known && !readOnly && !probed.readOnly) {
+                    [probed attemptEngineEditEntryWithCompletion:^(BOOL stillReadOnly, BOOL pendingPassword) {
+                        FloeOfficeNativeViewController *entered = weakSelf;
+                        if (!entered || entered.closed || entered.closing) return;
+                        entered.sessionIsReadOnly = stillReadOnly;
+                        if (entered.onWorkingCopyOpenedWithPermission)
+                            entered.onWorkingCopyOpenedWithPermission(YES, stillReadOnly);
+                    }];
+                    return;
+                }
+                if (probed.onWorkingCopyOpenedWithPermission)
+                    probed.onWorkingCopyOpenedWithPermission(YES, probed.sessionIsReadOnly);
+            }];
         };
         document.floeSaveCompletion = ^(BOOL success) {
             FloeOfficeNativeViewController *host = weakSelf;
@@ -631,6 +786,90 @@ static void ServerReady() {
 - (void)cancelPendingSave {
     [self.saveReceipts cancel];
 }
+- (void)enginePermissionDidUpdate:(BOOL)readOnly {
+    NSAssert(NSThread.isMainThread, @"Office permission state is main-queue owned");
+    if (self.closing || self.closed || self.sessionIsReadOnly == readOnly) return;
+    self.sessionIsReadOnly = readOnly;
+    if (self.onEnginePermissionChanged) self.onEnginePermissionChanged(readOnly);
+}
+// Retries only until the editor has created its map. app.file.readOnly is the
+// backing permission; _permission/isReadOnlyMode() alone is the mobile UI mode.
+- (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
+                               completion:(void (^)(BOOL known, BOOL readOnly))completion {
+    NSAssert(NSThread.isMainThread, @"Office permission probes are main-queue owned");
+    if (self.closing || self.closed || !self.editor.webView) {
+        completion(NO, self.sessionIsReadOnly);
+        return;
+    }
+    __weak FloeOfficeNativeViewController *weakSelf = self;
+    [self.editor.webView evaluateJavaScript:FloeEnginePermissionProbeScript()
+                          completionHandler:^(id value, NSError *error) {
+        FloeOfficeNativeViewController *host = weakSelf;
+        if (!host) return;
+        NSDictionary *result = [value isKindOfClass:NSDictionary.class] ? value : nil;
+        NSNumber *backendReadOnly = [result[@"backendReadOnly"] isKindOfClass:NSNumber.class]
+            ? result[@"backendReadOnly"] : nil;
+        if (backendReadOnly) {
+            completion(YES, backendReadOnly.boolValue);
+            return;
+        }
+        if (attempts >= 40 || error) {
+            completion(NO, host.sessionIsReadOnly);
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [host probeEnginePermissionWithAttempts:attempts + 1 completion:completion];
+        });
+    }];
+}
+- (void)attemptEngineEditEntryWithCompletion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    if (self.closing || self.closed || !self.editor.webView) {
+        completion(YES, NO);
+        return;
+    }
+    __weak FloeOfficeNativeViewController *weakSelf = self;
+    [self.editor.webView evaluateJavaScript:FloeEngineEditEntryScript()
+                          completionHandler:^(id value, NSError *error) {
+        FloeOfficeNativeViewController *host = weakSelf;
+        if (!host) return;
+        NSDictionary *result = [value isKindOfClass:NSDictionary.class] ? value : nil;
+        if (!result) {
+            completion(YES, NO);
+            return;
+        }
+        BOOL backendReadOnly = [result[@"backendReadOnly"] isKindOfClass:NSNumber.class]
+            ? [result[@"backendReadOnly"] boolValue] : YES;
+        BOOL uiEdit = [result[@"uiEdit"] isKindOfClass:NSNumber.class] && [result[@"uiEdit"] boolValue];
+        BOOL pendingPassword = [result[@"pendingPassword"] isKindOfClass:NSNumber.class]
+            && [result[@"pendingPassword"] boolValue];
+        completion(backendReadOnly || !uiEdit, pendingPassword);
+    }];
+}
+- (void)enterEditModeWithCompletion:(void (^)(BOOL readOnly, NSError *error))completion {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    if (self.closing || self.closed || !self.editor.webView) {
+        completion(YES, OfficeError(40, @"Office is not ready to change the edit mode."));
+        return;
+    }
+    if (self.readOnly) {
+        // The App mounted this controller as read-only. That grant is never
+        // relaxed here; a caller that wants editing opens an editable session.
+        completion(YES, OfficeError(41, @"This session was opened as read-only. Reopen it for editing."));
+        return;
+    }
+    __weak FloeOfficeNativeViewController *weakSelf = self;
+    [self attemptEngineEditEntryWithCompletion:^(BOOL readOnly, BOOL pendingPassword) {
+        FloeOfficeNativeViewController *host = weakSelf;
+        if (!host) return;
+        host.sessionIsReadOnly = readOnly;
+        NSError *error = nil;
+        if (readOnly && pendingPassword)
+            error = OfficeError(42, @"The document requires its edit password. Enter it in the editor.");
+        completion(readOnly, error);
+    }];
+}
 - (void)insertAttachmentFromFileURL:(NSURL *)fileURL completion:(void (^)(NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office attachment requests are main-queue owned");
     if (self.readOnly || self.closing || self.closed || self.insertingAttachment || self.saveReceipts.activeRequestID ||
@@ -716,6 +955,8 @@ static void ServerReady() {
     self.closing = YES;
     [self.saveReceipts cancel];
     self.editor.view.userInteractionEnabled = NO;
+    if (self.editor.webView)
+        [self.editor.webView.configuration.userContentController removeScriptMessageHandlerForName:@"floePermission"];
     [self.editor bye];
 }
 - (void)listAttachmentsWithCompletion:(void (^)(NSArray<FloeOfficeAttachmentInfo *> *, NSError *))completion {
@@ -807,10 +1048,18 @@ static void ServerReady() {
     UIView *content = self.editor.view;
     // Add before viewWillAppear opens the document. At document start the
     // listener precedes the bundled editor's DOMContentLoaded callbacks.
+    WKUserContentController *contentController = self.editor.webView.configuration.userContentController;
     WKUserScript *script = [[WKUserScript alloc]
         initWithSource:self.readOnly ? FloeReadOnlyScript() : FloeFullScreenEditScript()
         injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
-    [self.editor.webView.configuration.userContentController addUserScript:script];
+    [contentController addUserScript:script];
+    FloeOfficeEnginePermissionObserver *observer = [FloeOfficeEnginePermissionObserver new];
+    observer.controller = self;
+    self.permissionObserver = observer;
+    [contentController addScriptMessageHandler:observer name:@"floePermission"];
+    [contentController addUserScript:[[WKUserScript alloc]
+        initWithSource:FloeEnginePermissionObserverScript()
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
     WKUserScript *drainScript = [[WKUserScript alloc] initWithSource:FloeNativeDrainScript()
         injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES];
     [self.editor.webView.configuration.userContentController addUserScript:drainScript];

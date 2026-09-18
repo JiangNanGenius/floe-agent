@@ -30,6 +30,17 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 @property (nonatomic, copy, readonly) NSURL *workingFileURL;
 /// UIDocument opened its private copy; this is not a rendered-document-ready event.
 @property (nonatomic, copy, nullable) void (^onWorkingCopyOpened)(BOOL success);
+/// Engine-reported backing permission of this session. This is not the App's
+/// requested grant and not the current mobile viewing/editing UI mode: the
+/// mobile editor starts editable documents in its viewing UI, so UI mode alone
+/// must never be treated as a denied document. Updated after open and whenever
+/// the editor reports a permission change.
+@property (nonatomic, readonly) BOOL sessionIsReadOnly;
+/// Open completion that also reports the engine's backing permission. The
+/// original onWorkingCopyOpened remains for callers that only need success.
+@property (nonatomic, copy, nullable) void (^onWorkingCopyOpenedWithPermission)(BOOL success, BOOL readOnly);
+/// Fired after open when the engine-reported backing permission changes.
+@property (nonatomic, copy, nullable) void (^onEnginePermissionChanged)(BOOL readOnly);
 /// Raw engine/autosave persistence event. NOT an explicit-save acknowledgement,
 /// original-file writeback result, or layout verification.
 @property (nonatomic, copy, nullable) void (^onWorkingCopySaved)(BOOL success);
@@ -49,6 +60,12 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// Stop waiting for an explicit save. An already running engine save may still
 /// finish in its private files; this never cancels or commits the original file.
 - (void)cancelPendingSave;
+/// Follow the engine's normal guarded mobile edit entry for a session the host
+/// opened for editing. The engine keeps its own format/password/lock checks.
+/// A controller mounted readOnly never relaxes that grant. The completion's
+/// readOnly is the engine state after the attempt; error code 42 means the
+/// engine is waiting for the edit password, not that the document was denied.
+- (void)enterEditModeWithCompletion:(void (^)(BOOL readOnly, NSError * _Nullable error))completion;
 /// Insert an attachment at the Word cursor, selected Excel cell, or centre of
 /// the active PowerPoint slide. Copies
 /// the authorized input into this private session; completion is insertion,

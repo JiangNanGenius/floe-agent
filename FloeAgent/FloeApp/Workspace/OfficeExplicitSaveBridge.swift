@@ -332,6 +332,75 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
     """#
     // FLOE_MODIFIED_STATUS_PROBE_END
 
+    // FLOE_PERMISSION_PROBE_BEGIN
+    /// Reads the pinned engine's *actual* permission state after a session is
+    /// mounted. `app.file.readOnly` is the backing permission (handshake
+    /// `permission` query, WOPI props, real edit grants); `map._permission` and
+    /// `_shouldStartReadOnly()` describe the mobile viewing-first UI, which the
+    /// editor forces for editable documents too, so they are not denial.
+    /// `nil`/absent fields mean "unknown" and are never treated as writable.
+    /// An unknown or missing `app.file.readOnly` stays `null`: only a real
+    /// boolean is reported, so a partially initialised engine can never be
+    /// read as an editable grant.
+    static let permissionProbeScript = #"""
+    (() => {
+        try {
+            const map = window.app && window.app.map;
+            if (!map) return null;
+            const file = window.app && window.app.file;
+            const backendReadOnly = file && typeof file.readOnly === 'boolean' ? file.readOnly : null;
+            const permission = typeof map._permission === 'string' ? map._permission : null;
+            const isEditMode = typeof map.isEditMode === 'function' ? map.isEditMode() === true : null;
+            const readOnlyMode = typeof map.isReadOnlyMode === 'function' ? map.isReadOnlyMode() === true : null;
+            const shouldStartReadOnly = typeof map._shouldStartReadOnly === 'function'
+                ? map._shouldStartReadOnly() === true : null;
+            let documentProtected = null;
+            const docLayer = map._docLayer || (map.getDocLayer && map.getDocLayer());
+            if (docLayer && docLayer._docInfo && typeof docLayer._docInfo.isProtected === 'boolean')
+                documentProtected = docLayer._docInfo.isProtected;
+            else if (typeof map._isDocProtected === 'boolean')
+                documentProtected = map._isDocProtected;
+            return { backendReadOnly, permission, isEditMode, readOnlyMode, shouldStartReadOnly, documentProtected };
+        } catch (_) {
+            return null;
+        }
+    })()
+    """#
+    // FLOE_PERMISSION_PROBE_END
+
+    // FLOE_ENTER_EDIT_MODE_BEGIN
+    /// Forces the pinned engine's own mobile edit entry after the host mounted
+    /// an editable session whose engine still reported readonly. This is the
+    /// engine's documented switch (`_switchToEditMode`), the same guarded path
+    /// the host's fullscreen script uses — the engine keeps its format/password/
+    /// lock checks. The backing permission decides denial; `_shouldStartReadOnly`
+    /// is the mobile viewing-first startup and must not block an editable file.
+    /// The caller re-probes afterwards and falls back to the preview session
+    /// when the engine still refuses.
+    static let enterEditModeScript = #"""
+    (() => {
+        try {
+            const map = window.app && window.app.map;
+            if (!map) return { ok: false, reason: 'not-ready' };
+            if (window.app && window.app.file && window.app.file.readOnly === true)
+                return { ok: false, reason: 'readonly' };
+            if (typeof map._switchToEditMode === 'function') {
+                map._switchToEditMode();
+                return { ok: true, reason: 'switch' };
+            }
+            const button = document.querySelector('#mobile-edit-button, .mobile-edit-button');
+            if (button && typeof button.click === 'function') {
+                button.click();
+                return { ok: true, reason: 'button' };
+            }
+            return { ok: false, reason: 'unsupported' };
+        } catch (_) {
+            return { ok: false, reason: 'error' };
+        }
+    })()
+    """#
+    // FLOE_ENTER_EDIT_MODE_END
+
     static func didCommit(controller: UIViewController) async {
         guard let webView = findWebView(in: controller.view) else { return }
         // Only the verified original-file commit clears this latch. Engine

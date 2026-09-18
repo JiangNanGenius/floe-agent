@@ -66,6 +66,7 @@ public enum OfficeDocumentError: LocalizedError, Sendable {
     case emptyDocument
     case revisionConflict
     case verificationFailed
+    case invalidContent(String)
 
     public var errorDescription: String? {
         switch self {
@@ -79,7 +80,8 @@ public enum OfficeDocumentError: LocalizedError, Sendable {
         case .unknownField(let field): "Office edit refers to an unknown field: \(field)"
         case .revisionConflict: "Office document changed since it was read. Reload before saving."
         case .verificationFailed: "Office edits did not survive reopening; the original file was preserved."
-        case .emptyDocument: "Office document has no editable text or cells"
+        case .emptyDocument: "This document has no editable text fields. It may contain only images, drawings, form controls or protected content; document.office.updateText cannot change it."
+        case .invalidContent(let detail): "Office content cannot be generated safely: \(detail)"
         }
     }
 }
@@ -389,9 +391,27 @@ private enum XMLTextCodec {
             return OfficeEditableField(
                 id: "\(entry)|p|\(index)",
                 section: section,
-                label: "Text \(index + 1)",
+                label: label(for: block, index: index, paragraphTag: paragraphTag),
                 text: text
             )
+        }
+    }
+
+    /// DOCX titles and headings carry a `w:pStyle`; map the generated `Title`
+    /// paragraph to a "Title" field label so edits can target it by name
+    /// instead of by ordinal only.
+    private static func label(for block: String, index: Int, paragraphTag: String) -> String {
+        guard paragraphTag == "w:p", let styleStart = block.range(of: "<w:pStyle") else {
+            return "Text \(index + 1)"
+        }
+        let element = String(block[styleStart.lowerBound...])
+        guard let value = XMLText.attribute("w:val", inOpeningElement: element), !value.isEmpty else {
+            return "Text \(index + 1)"
+        }
+        switch value {
+        case "Title": return "Title"
+        case let heading where heading.hasPrefix("Heading"): return heading
+        default: return "Text \(index + 1)"
         }
     }
 

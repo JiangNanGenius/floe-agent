@@ -4,6 +4,7 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import Combine
+import WebKit
 import FloeDocuments
 #if canImport(FloeOfficeNative)
 import FloeOfficeNative
@@ -24,10 +25,24 @@ final class OfficeFileSession: ObservableObject {
     @Published private(set) var inkPreferences: OfficeInkPreferences
     @Published private(set) var inkApplyOutcome: OfficeExplicitSaveBridge.InkApplyOutcome?
     @Published var inkError: String?
+    /// Set only when an explicit edit request could not be honoured by the
+    /// engine (protected document / backend refusal). While non-nil the session
+    /// stays in preview; Floe never fakes a writable document.
+    @Published private(set) var editUnavailableReason: String?
     private var workspace: SecurityScopedDocumentWorkspace?
     private var session: DocumentSession?
+    private var requestedURL: URL?
     private var operating = false
     private var releaseRequested = false
+    /// Terminal once `release()` is called (tab close / IDE close). A replayed
+    /// queued intent must never re-open a working copy on a released session.
+    private var released = false
+    /// Engine-reported backing permission for the mounted session. `nil` means
+    /// the host has not reported yet; it is never inferred from the App's own
+    /// requested grant.
+    private var engineSessionReadOnly: Bool?
+    private var intentQueue = OfficeEditIntentQueue()
+    private var intentWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
     private var expectedClose = false
     private var runtimeFailed = false
     private var runtimeFailureObservation: AnyCancellable?
@@ -294,10 +309,65 @@ final class OfficeFileSession: ObservableObject {
     }
 
     func open(_ url: URL) async {
-        guard !operating else { return }
-        if session?.originalURL == url, controller != nil, phase != .failed { return }
+        // An explicit open starts a new lifecycle: views such as
+        // FilePreviewView release on disappear and reopen on appear.
+        released = false
+        requestedURL = url
+        await performIntent(.preview)
+    }
+
+    /// Queued edit-intent entry point. While an open/save/attachment operation
+    /// owns the session the intent is remembered and replayed when it settles,
+    /// so tapping Edit on a loading document is never silently dropped. An
+    /// automatic preview reopen can never displace this explicit intent.
+    @discardableResult
+    func requestEditing() async -> Bool {
+        await performIntent(.edit)
+    }
+
+    func enterEditing() async {
+        _ = await requestEditing()
+    }
+
+    private func performIntent(_ intent: OfficeEditIntentQueue.Intent) async -> Bool {
+        guard !released else { return false }
+        switch intentQueue.begin(intent, isBusy: operating) {
+        case .ignorePreview:
+            return false
+        case .runNow:
+            return await execute(intent)
+        case .queued(let ticket):
+            if let superseded = ticket.supersededToken {
+                intentWaiters.removeValue(forKey: superseded)?.resume(returning: false)
+            }
+            return await withCheckedContinuation { continuation in
+                intentWaiters[ticket.token] = continuation
+            }
+        }
+    }
+
+    private func execute(_ intent: OfficeEditIntentQueue.Intent) async -> Bool {
+        guard !released else { return false }
+        guard !operating else {
+            // Defensive: no caller may run a second owning operation. Keep the
+            // intent for the current owner's finish instead of racing it.
+            let token = intentQueue.allocateToken()
+            intentQueue.restoreIfEmpty(intent: intent, token: token)
+            return false
+        }
         operating = true
         defer { finishOperation() }
+        switch intent {
+        case .preview:
+            return await executePreview()
+        case .edit:
+            return await executeEdit()
+        }
+    }
+
+    private func executePreview() async -> Bool {
+        guard let url = requestedURL else { return false }
+        if session?.originalURL == url, controller != nil, phase != .failed { return true }
         phase = .loading
         error = nil
         do {
@@ -305,7 +375,7 @@ final class OfficeFileSession: ObservableObject {
             // this next controller. Retain the existing file/CAS session.
             if session?.originalURL == url, controller == nil {
                 try await activate(readOnly: true)
-                return
+                return true
             }
             if session != nil { try await releaseCurrent() }
             let files = try SecurityScopedDocumentWorkspace()
@@ -314,18 +384,153 @@ final class OfficeFileSession: ObservableObject {
             session = opened
             hasUncommittedChanges = false
             try await activate(readOnly: true)
-        } catch { fail(error) }
+            return true
+        } catch { fail(error); return false }
     }
 
-    func enterEditing() async {
-        guard !operating, session != nil else { return }
-        if !readOnly, controller != nil, phase == .ready { return }
-        operating = true
-        defer { finishOperation() }
+    private func executeEdit() async -> Bool {
+        // No document yet: the open intent must complete first. A tap that
+        // arrives while the open owns the session is queued by performIntent.
+        guard session != nil else { return false }
+        if !readOnly, controller != nil, phase == .ready { return true }
+        phase = .loading
+        error = nil
+        editUnavailableReason = nil
         do {
             try await closeController()
             try await activate(readOnly: false)
-        } catch { fail(error) }
+            // Only a verified editable engine session clears preview. The
+            // probe result is the acknowledgement, never the requested flag.
+            try await acknowledgeEditPermission()
+            return !readOnly
+        } catch { fail(error); return false }
+    }
+
+    /// Reads the pinned engine's real permission after an edit activation and
+    /// attempts the engine's own mobile edit switch when it still reports
+    /// readonly. A protected document or a switch the engine refuses returns
+    /// to the preview controller with an explicit reason — the session never
+    /// pretends to be writable.
+    private func acknowledgeEditPermission() async throws {
+        #if canImport(FloeOfficeNative)
+        guard let native = controller as? FloeOfficeNativeViewController, native.isViewLoaded,
+              let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else { return }
+        var probe = await Self.permissionProbe(webView)
+        if probe.documentProtected {
+            try await fallBackToPreview(reason: OfficeInkText.t(
+                "该文档受保护，只能预览；未修改任何内容。",
+                "This document is protected. Preview only; nothing was changed."))
+            return
+        }
+        // The host reports the engine's verified backing permission; the JS
+        // probe is the fallback surface. An unverified (nil/unknown) state is
+        // never read as an editable grant.
+        var hostReadOnly = engineSessionReadOnly
+        if hostReadOnly == true || probe.isReadOnly {
+            // Follow the engine's own guarded mobile entry through the host
+            // API: it reports the engine state after the attempt and
+            // distinguishes an edit-password challenge (error 42) from a
+            // denied document. A read-only grant is never relaxed there.
+            let entry = await Self.enterEditMode(native)
+            if entry.pendingPassword {
+                // The engine is challenging for the edit password; that is a
+                // prompt, not a denial. Keep the editor mounted and explain,
+                // instead of bouncing to the preview. The engine's permission
+                // observer clears this once the password is supplied.
+                editUnavailableReason = OfficeInkText.t(
+                    "该文档需要编辑密码，请在编辑器中输入。",
+                    "This document requires its edit password. Enter it in the editor.")
+                return
+            }
+            hostReadOnly = entry.readOnly
+            for _ in 0..<10 {
+                if Task.isCancelled { break }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                probe = await Self.permissionProbe(webView)
+                if let reported = engineSessionReadOnly { hostReadOnly = reported }
+                if hostReadOnly == false { break }
+            }
+        }
+        // Only a verified state clears preview: the host's engine-truth report
+        // first, then a known engine probe. Unknown is never editable.
+        let verifiedEditable = hostReadOnly == false
+            || (hostReadOnly == nil && probe.isKnown && !probe.isReadOnly)
+        if !verifiedEditable {
+            try await fallBackToPreview(reason: OfficeInkText.t(
+                "编辑器以只读模式打开，无法安全进入编辑。可重试；若仍只读，请解除文档限制后重新打开。",
+                "The editor opened read-only and could not safely switch to edit. Retry, or remove the document restriction and reopen."))
+            return
+        }
+        engineSessionReadOnly = false
+        readOnly = false
+        editUnavailableReason = nil
+        #endif
+    }
+
+    /// Runs the host's guarded mobile edit entry. `readOnly` is the engine's
+    /// own state after the attempt; a pending edit password (error 42) is a
+    /// challenge, not a denial. A session the host mounted read-only refuses
+    /// (error 41) and stays read-only.
+    private static func enterEditMode(_ native: FloeOfficeNativeViewController) async -> (readOnly: Bool, pendingPassword: Bool) {
+        await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, Bool), Never>) in
+            native.enterEditMode { readOnly, error in
+                let pendingPassword = (error as NSError?)?.code == 42
+                continuation.resume(returning: (readOnly, pendingPassword))
+            }
+        }
+    }
+
+    private struct PermissionProbe {
+        let backendReadOnly: Bool?
+        let permission: String?
+        let isEditMode: Bool?
+        let isReadOnlyMode: Bool?
+        let shouldStartReadOnly: Bool?
+        let documentProtected: Bool?
+
+        /// No engine state at all (map missing, surface changed, JS error).
+        /// Unknown is never treated as writable; the caller attempts the
+        /// engine's guarded entry and re-probes before deciding.
+        var isKnown: Bool {
+            backendReadOnly != nil || permission != nil || isEditMode != nil || isReadOnlyMode != nil
+        }
+
+        var isReadOnly: Bool {
+            if documentProtected == true { return true }
+            if !isKnown { return true }
+            // The backing permission is authoritative. The mobile editor's
+            // viewing-first UI reports permission/isReadOnlyMode "readonly" for
+            // editable documents too, so those fields alone are not denial.
+            if backendReadOnly == true { return true }
+            if backendReadOnly == nil, isReadOnlyMode == true { return true }
+            if backendReadOnly == nil, permission == "readonly" { return true }
+            return false
+        }
+    }
+
+    private static func permissionProbe(_ webView: WKWebView) async -> PermissionProbe {
+        let raw = try? await webView.evaluateJavaScript(OfficeExplicitSaveBridge.permissionProbeScript)
+        guard let result = raw as? [String: Any] else {
+            return PermissionProbe(backendReadOnly: nil, permission: nil, isEditMode: nil, isReadOnlyMode: nil,
+                                   shouldStartReadOnly: nil, documentProtected: nil)
+        }
+        return PermissionProbe(
+            backendReadOnly: result["backendReadOnly"] as? Bool,
+            permission: result["permission"] as? String,
+            isEditMode: result["isEditMode"] as? Bool,
+            isReadOnlyMode: result["readOnlyMode"] as? Bool,
+            shouldStartReadOnly: result["shouldStartReadOnly"] as? Bool,
+            documentProtected: result["documentProtected"] as? Bool
+        )
+    }
+
+    /// Returns to the read-only preview controller with an honest reason. The
+    /// working copy is preserved; nothing is discarded or faked.
+    private func fallBackToPreview(reason: String) async throws {
+        readOnly = true
+        editUnavailableReason = reason
+        try await closeController()
+        try await activate(readOnly: true)
     }
 
     func saveAndReturn() async -> Bool {
@@ -562,7 +767,15 @@ final class OfficeFileSession: ObservableObject {
 
     /// View removal never deletes an unsettled edit or pretends it was saved.
     func release() async {
+        // Terminal from here on: a queued/replayed intent must never re-open
+        // a working copy on this session.
+        released = true
         guard !operating else { releaseRequested = true; return }
+        // Defensive: a queued intent can never run against a released session,
+        // and its waiter must be resumed instead of hanging.
+        if let token = intentQueue.cancelPending() {
+            intentWaiters.removeValue(forKey: token)?.resume(returning: false)
+        }
         operating = true
         defer { finishOperation() }
         do { try await releaseCurrent(); phase = .idle }
@@ -623,7 +836,25 @@ final class OfficeFileSession: ObservableObject {
         operating = false
         if releaseRequested {
             releaseRequested = false
+            // Release owns the session from here: a queued intent can never
+            // run, and its waiter must be resumed instead of hanging.
+            if let token = intentQueue.cancelPending() {
+                intentWaiters.removeValue(forKey: token)?.resume(returning: false)
+            }
             Task { await release() }
+            return
+        }
+        guard let next = intentQueue.takePending() else { return }
+        // Replay the queued intent now that the owning operation settled.
+        // The task re-checks `operating` before running so a newer operation
+        // that started in the same turn can never run concurrently with it.
+        Task { @MainActor in
+            if self.operating {
+                self.intentQueue.restoreIfEmpty(intent: next.intent, token: next.token)
+                return
+            }
+            let result = await self.execute(next.intent)
+            self.intentWaiters.removeValue(forKey: next.token)?.resume(returning: result)
         }
     }
     private func releaseCurrent() async throws {
@@ -650,10 +881,50 @@ final class OfficeFileSession: ObservableObject {
             workingFileURL: session.workingURL,
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
         runtimeFailed = false
+        engineSessionReadOnly = nil
+        // Readiness is claimed from the permission callback, not the raw
+        // working-copy event: the host verifies the engine's actual backing
+        // permission (and follows the guarded edit entry for an editable
+        // session) before it reports. The plain open event only reports a hard
+        // failure here.
         native.onWorkingCopyOpened = { [weak self, weak native] success in
             guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
-            if success { self.phase = .ready }
-            else { self.fail(CocoaError(.fileReadCorruptFile)) }
+            if !success { self.fail(CocoaError(.fileCorruptFile)) }
+        }
+        native.onWorkingCopyOpenedWithPermission = { [weak self, weak native] success, readOnly in
+            guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+            self.engineSessionReadOnly = readOnly
+            if !success {
+                self.fail(CocoaError(.fileCorruptFile))
+                return
+            }
+            if readOnly, !native.isReadOnly {
+                // The App asked for an editable session but the engine kept
+                // the document read-only (protected format, mounted grant or
+                // an edit password still pending). Never show an editable
+                // claim; keep the engine's actual surface and offer retry.
+                self.readOnly = true
+                if self.editUnavailableReason == nil {
+                    self.editUnavailableReason = OfficeInkText.t(
+                        "编辑器以只读模式打开，无法安全进入编辑。可重试；若仍只读，请解除文档限制后重新打开。",
+                        "The editor opened read-only and could not safely switch to edit. Retry, or remove the document restriction and reopen.")
+                }
+            } else if !readOnly, self.readOnly, !native.isReadOnly {
+                // The engine granted editing later (for example the edit
+                // password was supplied): return to the truthful editable
+                // state instead of keeping a stale read-only claim.
+                self.readOnly = false
+                self.editUnavailableReason = nil
+            }
+            self.phase = .ready
+        }
+        native.onEnginePermissionChanged = { [weak self, weak native] readOnly in
+            guard let self, let native, self.controller === native else { return }
+            self.engineSessionReadOnly = readOnly
+            if !readOnly, !native.isReadOnly, self.readOnly {
+                self.readOnly = false
+                self.editUnavailableReason = nil
+            }
         }
         native.onClosed = { [weak self, weak native] _ in
             guard let self, let native, self.controller === native, !self.expectedClose else { return }
@@ -804,7 +1075,28 @@ struct OfficeDocumentEditorView: View {
                     stableIdentity: stableInkIdentity,
                     workspaceIdentity: environment.workspaceCenter.currentWorkspace?.id.uuidString,
                     documentKey: relativePath)
-                await session.enterEditing()
+                // Queued intent: a tap that lands while the document is still
+                // opening is replayed instead of being dropped by `operating`.
+                await session.requestEditing()
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let reason = session.editUnavailableReason {
+                    HStack(spacing: 10) {
+                        Label(reason, systemImage: "lock")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        if session.phase == .ready {
+                            Button(OfficeInkText.t("重试编辑", "Retry editing")) {
+                                Task { await session.requestEditing() }
+                            }
+                            .font(.footnote)
+                            .accessibilityIdentifier("office.editor.retryEdit")
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.bar)
+                    .accessibilityIdentifier("office.editor.readonlyReason")
+                }
             }
             .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
             .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }

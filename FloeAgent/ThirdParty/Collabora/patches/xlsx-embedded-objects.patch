@@ -921,3 +921,465 @@ index 0960883..6ebdc6e 100644
      SaveFormControlObjects( *this, rStrm );
  }
  
+diff --git a/engine/oox/source/export/chartexport.cxx b/engine/oox/source/export/chartexport.cxx
+index dfca8cd..74f4bc0 100644
+--- a/engine/oox/source/export/chartexport.cxx
++++ b/engine/oox/source/export/chartexport.cxx
+@@ -22,6 +22,11 @@
+ #include <oox/token/tokens.hxx>
+ #include <oox/core/xmlfilterbase.hxx>
+ #include <oox/export/chartexport.hxx>
++#include <ZipOutputStream.hxx>
++#include <CRC32.hxx>
++#include <com/sun/star/io/XOutputStream.hpp>
++#include <rtl/math.hxx>
++#include <rtl/ustrbuf.hxx>
+ #include <oox/export/chartgeographyexport.hxx>
+ #include <oox/export/shapes.hxx>
+ #include <oox/token/relationship.hxx>
+@@ -37,6 +42,7 @@
+ #include <cmath>
+ #include <cstdio>
+ #include <limits>
++#include <memory>
+ 
+ #include <tools/UnitConversion.hxx>
+ 
+@@ -529,6 +535,324 @@ static ::std::vector< double > lcl_getAllValuesFromSequence( const Reference< ch
+     return aResult;
+ }
+ 
++// --- Floe chart workbook recorder (PPTX roundtrip) ---------------------------
++// Standard chart export writes <c:f> cell ranges for series names, categories
++// and values. For PPTX the pinned engine wrote internal data-provider labels
++// ("categories", "label 0", "0") and dropped c:externalData, so Floe's strict
++// save validation refused the save instead of committing a chart without its
++// workbook. Floe regenerates a workbook only for charts that never had one or
++// for workbooks Floe itself wrote (ppt/embeddings/floe-chart-data-*.xlsx).
++// An imported workbook is never replaced by a regenerated Sheet1: the save
++// still fails validation, so the user's original file is not degraded.
++
++namespace
++{
++
++constexpr size_t constChartWorkbookMaxColumns = 1024;
++
++bool lcl_isFloeChartWorkbookPath(const OUString& rPath)
++{
++    return rPath.startsWith("ppt/embeddings/floe-chart-data-") && rPath.endsWith(".xlsx");
++}
++
++OUString lcl_nextFloeChartWorkbookPath()
++{
++    static sal_Int32 nCounter = 0;
++    return "ppt/embeddings/floe-chart-data-" + OUString::number(++nCounter) + ".xlsx";
++}
++
++struct ChartWorkbookRecorder
++{
++    struct Column
++    {
++        OUString maLabel;
++        ::std::vector< double > maValues;
++    };
++
++    ::std::vector< OUString > maCategories;
++    ::std::vector< Column > maColumns;
++    sal_Int32 mnCurrentColumn = -1;
++    bool mbNamePending = false;
++    bool mbUsed = false;
++
++    void reset()
++    {
++        maCategories.clear();
++        maColumns.clear();
++        mnCurrentColumn = -1;
++        mbNamePending = false;
++        mbUsed = false;
++    }
++
++    static OUString columnName(sal_Int32 nZeroBased)
++    {
++        OUStringBuffer aResult;
++        sal_Int32 nValue = nZeroBased + 1;
++        while (nValue > 0)
++        {
++            nValue--;
++            aResult.insert(0, sal_Unicode('A' + (nValue % 26)));
++            nValue /= 26;
++        }
++        return aResult.makeStringAndClear();
++    }
++
++    static OUString cellRange(sal_Int32 nZeroBasedColumn, sal_Int32 nFirstRow, sal_Int32 nLastRow)
++    {
++        const OUString aColumn = columnName(nZeroBasedColumn);
++        OUString aResult = "Sheet1!$" + aColumn + "$" + OUString::number(nFirstRow);
++        if (nLastRow > nFirstRow)
++            aResult += ":$" + aColumn + "$" + OUString::number(nLastRow);
++        return aResult;
++    }
++
++    OUString rangeForSeriesName(const OUString& rLabel)
++    {
++        if (maColumns.size() >= constChartWorkbookMaxColumns)
++            return OUString();
++        Column aColumn;
++        aColumn.maLabel = rLabel;
++        maColumns.push_back(aColumn);
++        mnCurrentColumn = sal::static_int_cast<sal_Int32>(maColumns.size()) - 1;
++        mbNamePending = true;
++        mbUsed = true;
++        return cellRange(mnCurrentColumn + 1, 1, 1);
++    }
++
++    OUString rangeForValues(const ::std::vector< double >& rValues)
++    {
++        if (mnCurrentColumn < 0 || !mbNamePending)
++        {
++            if (maColumns.size() >= constChartWorkbookMaxColumns)
++                return OUString();
++            maColumns.push_back(Column());
++            mnCurrentColumn = sal::static_int_cast<sal_Int32>(maColumns.size()) - 1;
++        }
++        mbNamePending = false;
++        mbUsed = true;
++        maColumns[sal::static_int_cast<size_t>(mnCurrentColumn)].maValues = rValues;
++        const sal_Int32 nCount = sal::static_int_cast<sal_Int32>(rValues.size());
++        return cellRange(mnCurrentColumn + 1, 2, ::std::max<sal_Int32>(nCount, 1) + 1);
++    }
++
++    OUString rangeForCategories(const ::std::vector< OUString >& rCategories)
++    {
++        if (maCategories.empty())
++            maCategories = rCategories;
++        mbUsed = true;
++        const sal_Int32 nCount = sal::static_int_cast<sal_Int32>(maCategories.size());
++        return cellRange(0, 2, ::std::max<sal_Int32>(nCount, 1) + 1);
++    }
++};
++
++ChartWorkbookRecorder& lcl_chartWorkbookRecorder()
++{
++    static ChartWorkbookRecorder aRecorder;
++    return aRecorder;
++}
++
++bool lcl_isRegenerablePptxChart(const ChartExport& rExport)
++{
++    if (rExport.GetDocumentType() != DOCUMENT_PPTX)
++        return false;
++    const OUString aPath = rExport.GetExternalDataPath();
++    return aPath.isEmpty() || lcl_isFloeChartWorkbookPath(aPath);
++}
++
++// --- Minimal Sheet1 workbook generated from the recorded chart data ----------
++
++OUString lcl_escapeXMLText(const OUString& rText)
++{
++    OUString aResult = rText.replaceAll(u"&"_ustr, u"&amp;"_ustr);
++    aResult = aResult.replaceAll(u"<"_ustr, u"&lt;"_ustr);
++    aResult = aResult.replaceAll(u">"_ustr, u"&gt;"_ustr);
++    return aResult;
++}
++
++::std::string lcl_toUtf8(const OUString& rText)
++{
++    const OString aText = OUStringToOString(rText, RTL_TEXTENCODING_UTF8);
++    return ::std::string(aText.getStr(), sal::static_int_cast<size_t>(aText.getLength()));
++}
++
++::std::string lcl_cellReference(sal_Int32 nZeroBasedColumn, sal_Int32 nRow)
++{
++    const OString aCell = OUStringToOString(
++        ChartWorkbookRecorder::columnName(nZeroBasedColumn) + OUString::number(nRow),
++        RTL_TEXTENCODING_ASCII_US);
++    return ::std::string(aCell.getStr(), sal::static_int_cast<size_t>(aCell.getLength()));
++}
++
++void lcl_appendInlineStringCell(::std::string& rSheet, sal_Int32 nZeroBasedColumn, sal_Int32 nRow, const OUString& rText)
++{
++    rSheet += "<c r=\"";
++    rSheet += lcl_cellReference(nZeroBasedColumn, nRow);
++    rSheet += "\" t=\"inlineStr\"><is><t xml:space=\"preserve\">";
++    rSheet += lcl_toUtf8(lcl_escapeXMLText(rText));
++    rSheet += "</t></is></c>";
++}
++
++void lcl_appendNumberCell(::std::string& rSheet, sal_Int32 nZeroBasedColumn, sal_Int32 nRow, double nValue)
++{
++    if (rtl::math::isNan(nValue) || !rtl::math::isFinite(nValue))
++        return;
++    rSheet += "<c r=\"";
++    rSheet += lcl_cellReference(nZeroBasedColumn, nRow);
++    rSheet += "\"><v>";
++    rSheet += ::std::to_string(nValue);
++    rSheet += "</v></c>";
++}
++
++::std::string lcl_chartWorksheetXML(const ChartWorkbookRecorder& rRecorder)
++{
++    const sal_Int32 nCategoryCount = sal::static_int_cast<sal_Int32>(rRecorder.maCategories.size());
++    sal_Int32 nRowCount = nCategoryCount;
++    for (const auto& rColumn : rRecorder.maColumns)
++        nRowCount = ::std::max<sal_Int32>(nRowCount, sal::static_int_cast<sal_Int32>(rColumn.maValues.size()));
++
++    ::std::string aSheet = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>";
++    bool bHasLabel = false;
++    for (const auto& rColumn : rRecorder.maColumns)
++        bHasLabel = bHasLabel || !rColumn.maLabel.isEmpty();
++    if (bHasLabel)
++    {
++        aSheet += "<row r=\"1\">";
++        for (size_t nColumn = 0; nColumn < rRecorder.maColumns.size(); ++nColumn)
++        {
++            if (!rRecorder.maColumns[nColumn].maLabel.isEmpty())
++                lcl_appendInlineStringCell(aSheet, sal::static_int_cast<sal_Int32>(nColumn) + 1, 1,
++                                           rRecorder.maColumns[nColumn].maLabel);
++        }
++        aSheet += "</row>";
++    }
++    for (sal_Int32 nIndex = 0; nIndex < nRowCount; ++nIndex)
++    {
++        const sal_Int32 nRow = nIndex + 2;
++        aSheet += "<row r=\"";
++        aSheet += ::std::to_string(nRow);
++        aSheet += "\">";
++        if (nIndex < nCategoryCount && !rRecorder.maCategories[nIndex].isEmpty())
++            lcl_appendInlineStringCell(aSheet, 0, nRow, rRecorder.maCategories[nIndex]);
++        for (size_t nColumn = 0; nColumn < rRecorder.maColumns.size(); ++nColumn)
++        {
++            const auto& rValues = rRecorder.maColumns[nColumn].maValues;
++            if (nIndex < sal::static_int_cast<sal_Int32>(rValues.size()))
++                lcl_appendNumberCell(aSheet, sal::static_int_cast<sal_Int32>(nColumn) + 1, nRow, rValues[nIndex]);
++        }
++        aSheet += "</row>";
++    }
++    aSheet += "</sheetData></worksheet>";
++    return aSheet;
++}
++
++// --- Package the workbook with the engine's own zip writer -------------------
++
++void lcl_appendStoredEntry(ZipOutputStream& rZip, const char* pName, const ::std::string& rContent)
++{
++    CRC32 aCrc;
++    aCrc.updateSegment(reinterpret_cast<const sal_Int8*>(rContent.data()),
++                       sal::static_int_cast<sal_Int32>(rContent.size()));
++    ZipEntry aEntry;
++    aEntry.nVersion = 20;
++    aEntry.nFlag = 0;
++    aEntry.nMethod = 0; // STORED
++    aEntry.nTime = -1;
++    aEntry.nCrc = static_cast<sal_Int32>(aCrc.getValue());
++    aEntry.nSize = sal::static_int_cast<sal_Int64>(rContent.size());
++    aEntry.nCompressedSize = aEntry.nSize;
++    aEntry.nOffset = 0;
++    aEntry.nPathLen = 0;
++    aEntry.nExtraLen = 0;
++    aEntry.sPath = OStringToOUString(OString(pName), RTL_TEXTENCODING_UTF8);
++    ZipOutputStream::setEntry(aEntry);
++    rZip.writeLOC(::std::unique_ptr<ZipEntry>(new ZipEntry(aEntry)));
++    cpo::uno::Sequence<sal_Int8> aBytes(sal::static_int_cast<sal_Int32>(rContent.size()));
++    for (sal_Int32 nIndex = 0; nIndex < aBytes.getLength(); ++nIndex)
++        aBytes[nIndex] = static_cast<sal_Int8>(
++            static_cast<unsigned char>(rContent[sal::static_int_cast<size_t>(nIndex)]));
++    rZip.rawWrite(aBytes);
++    rZip.rawCloseEntry();
++}
++
++struct ChartWorkbookEntry
++{
++    const char* mpName;
++    ::std::string maContent;
++};
++
++bool lcl_writeChartWorkbook(XmlFilterBase* pFB, const OUString& rPath, const ChartWorkbookRecorder& rRecorder)
++{
++    if (!pFB || rPath.isEmpty() || !rRecorder.mbUsed || !lcl_isFloeChartWorkbookPath(rPath))
++        return false;
++
++    const ::std::string aWorksheetXML = lcl_chartWorksheetXML(rRecorder);
++    ::std::vector< ChartWorkbookEntry > aEntries {
++        { "[Content_Types].xml",
++          "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
++          "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
++          "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
++          "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
++          "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
++          "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
++          "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
++          "</Types>" },
++        { "_rels/.rels",
++          "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
++          "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
++          "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
++          "</Relationships>" },
++        { "xl/workbook.xml",
++          "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
++          "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
++          "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
++          "<bookViews><workbookView/></bookViews><sheets>"
++          "<sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\"/>"
++          "</sheets><calcPr calcId=\"191029\"/></workbook>" },
++        { "xl/_rels/workbook.xml.rels",
++          "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
++          "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
++          "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
++          "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
++          "</Relationships>" },
++        { "xl/styles.xml",
++          "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
++          "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
++          "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>"
++          "<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills>"
++          "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"
++          "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
++          "<cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs>"
++          "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
++          "</styleSheet>" },
++        { "xl/worksheets/sheet1.xml", aWorksheetXML },
++    };
++
++    try
++    {
++        css::uno::Reference< css::io::XOutputStream > xOut = pFB->openFragmentStream(
++            rPath, u"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"_ustr);
++        if (!xOut.is())
++            return false;
++        ZipOutputStream aZip(xOut);
++        for (const auto& rEntry : aEntries)
++            lcl_appendStoredEntry(aZip, rEntry.mpName, rEntry.maContent);
++        aZip.finish();
++        xOut->closeOutput();
++        return true;
++    }
++    catch (const css::uno::Exception&)
++    {
++        return false;
++    }
++    catch (const ::std::exception&)
++    {
++        return false;
++    }
++}
++
++} // anonymous namespace
++// --- end Floe chart workbook recorder ----------------------------------------
++
+ namespace
+ {
+ 
+@@ -1494,6 +1818,9 @@ void ChartExport::exportChartSpace( const Reference< css::chart::XChartDocument
+ 
+     const sal_Int32 nChartNS = bIsChartex ? XML_cx : XML_c;
+ 
++    if (!bIsChartex && GetDocumentType() == DOCUMENT_PPTX)
++        lcl_chartWorkbookRecorder().reset();
++
+     if (bIsChartex) {
+         pFS->startElement( FSNS( nChartNS, XML_chartSpace ),
+                 FSNS( XML_xmlns, XML_a ), pFB->getNamespaceURL(OOX_NS(dml)),
+@@ -2073,14 +2400,31 @@ OUString ChartExport::GetExternalDataPath() const
+ void ChartExport::exportExternalData(bool bIsChartex)
+ {
+     if (bIsChartex) return; // TODO!!
+-    // Embedded external data is grab bagged for docx file hence adding export part of
+-    // external data for docx files only.
+-    if(!mbLinkToExternalData || GetDocumentType() != DOCUMENT_DOCX)
++    // DOCX embeds the workbook through the writer filter and only needs the
++    // relationship here. PPTX has no such writer path, so Floe regenerates a
++    // workbook when the chart has none or when it is Floe's own generated
++    // workbook. An imported workbook is left alone: returning without a
++    // relationship makes Floe's strict save validation refuse the save
++    // instead of replacing the user's workbook with a regenerated Sheet1.
++    const DocumentType eDocumentType = GetDocumentType();
++    if(!mbLinkToExternalData
++        || (eDocumentType != DOCUMENT_DOCX && eDocumentType != DOCUMENT_PPTX))
+         return;
+ 
+-    const OUString externalDataPath = GetExternalDataPath();
+-    if(externalDataPath.isEmpty())
++    OUString externalDataPath = GetExternalDataPath();
++    if (eDocumentType == DOCUMENT_PPTX)
++    {
++        if (!externalDataPath.isEmpty() && !lcl_isFloeChartWorkbookPath(externalDataPath))
++            return;
++        if (externalDataPath.isEmpty())
++            externalDataPath = lcl_nextFloeChartWorkbookPath();
++        if (!lcl_writeChartWorkbook(GetFB(), externalDataPath, lcl_chartWorkbookRecorder()))
++            return;
++    }
++    else if (externalDataPath.isEmpty())
++    {
+         return;
++    }
+ 
+     // Here adding external data entry to relationship.
+     OUString relationPath = externalDataPath;
+@@ -4468,8 +4812,18 @@ void ChartExport::exportSeriesText( const Reference< chart2::data::XDataSequence
+     } else {
+         pFS->startElement(FSNS(XML_c, XML_tx));
+ 
+-        OUString aCellRange =  xValueSeq->getSourceRangeRepresentation();
+-        aCellRange = parseFormula( aCellRange );
++        OUString aCellRange;
++        bool bGeneratedRange = false;
++        if (lcl_isRegenerablePptxChart(*this))
++        {
++            aCellRange = lcl_chartWorkbookRecorder().rangeForSeriesName(aLabelString);
++            bGeneratedRange = !aCellRange.isEmpty();
++        }
++        if (!bGeneratedRange)
++        {
++            aCellRange = xValueSeq->getSourceRangeRepresentation();
++            aCellRange = parseFormula( aCellRange );
++        }
+         pFS->startElement(FSNS(XML_c, XML_strRef));
+ 
+         pFS->startElement(FSNS(XML_c, XML_f));
+@@ -4494,9 +4848,20 @@ void ChartExport::exportSeriesCategory( const Reference< chart2::data::XDataSequ
+     FSHelperPtr pFS = GetFS();
+     pFS->startElement(FSNS(XML_c, nValueType));
+ 
+-    OUString aCellRange = xValueSeq.is() ? xValueSeq->getSourceRangeRepresentation() : OUString();
+-    const Sequence< Sequence< OUString >> aFinalSplitSource = (nValueType == XML_cat) ? getSplitCategoriesList(aCellRange) : Sequence< Sequence< OUString>>(0);
+-    aCellRange = parseFormula( aCellRange );
++    OUString aCellRange;
++    bool bGeneratedRange = false;
++    if (lcl_isRegenerablePptxChart(*this))
++    {
++        ::std::vector< OUString > aGeneratedCategories;
++        lcl_fillCategoriesIntoStringVector(xValueSeq, aGeneratedCategories);
++        aCellRange = lcl_chartWorkbookRecorder().rangeForCategories(aGeneratedCategories);
++        bGeneratedRange = !aCellRange.isEmpty();
++    }
++    if (!bGeneratedRange)
++        aCellRange = xValueSeq.is() ? xValueSeq->getSourceRangeRepresentation() : OUString();
++    const Sequence< Sequence< OUString >> aFinalSplitSource = (!bGeneratedRange && nValueType == XML_cat) ? getSplitCategoriesList(aCellRange) : Sequence< Sequence< OUString>>(0);
++    if (!bGeneratedRange)
++        aCellRange = parseFormula( aCellRange );
+ 
+     if(aFinalSplitSource.getLength() > 1)
+     {
+@@ -4607,8 +4972,18 @@ void ChartExport::exportSeriesValues( const Reference< chart2::data::XDataSequen
+     FSHelperPtr pFS = GetFS();
+     pFS->startElement(FSNS(XML_c, nValueType));
+ 
+-    OUString aCellRange = xValueSeq.is() ? xValueSeq->getSourceRangeRepresentation() : OUString();
+-    aCellRange = parseFormula( aCellRange );
++    OUString aCellRange;
++    bool bGeneratedRange = false;
++    if (lcl_isRegenerablePptxChart(*this))
++    {
++        aCellRange = lcl_chartWorkbookRecorder().rangeForValues(lcl_getAllValuesFromSequence(xValueSeq));
++        bGeneratedRange = !aCellRange.isEmpty();
++    }
++    if (!bGeneratedRange)
++    {
++        aCellRange = xValueSeq.is() ? xValueSeq->getSourceRangeRepresentation() : OUString();
++        aCellRange = parseFormula( aCellRange );
++    }
+     // TODO: need to handle XML_multiLvlStrRef according to aCellRange
+     pFS->startElement(FSNS(XML_c, XML_numRef));
+ 
