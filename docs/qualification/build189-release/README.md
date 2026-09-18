@@ -28,3 +28,16 @@ the retained188 unsigned recovery package has been uploaded to TestFlight.
 Original188 evidence: [recorded library frame](../build188-release/ipad-cover-query-failure.png).
 Cloud raw logs, xcresult bundles and recordings remain in the private evidence
 store. The frame predates completion of CAD covers and is not CAD acceptance.
+
+## Cloud checkpoint — 2026-09-18
+
+- NativeNotes component: iPad101/101 and iPhone101/101, zero skips
+  ([structured result](notes-component.json)).
+- SDK27 App regression:204/204, zero skips
+  ([structured result](sdk27-app-regression.json)).
+- Exact-source accepted-SDK unsigned device recovery retained; source SHA,
+  SHA-256, app/extension IDs and versions verified
+  ([recovery record](device-recovery.json)).
+
+Full-App UI and accepted-SDK regression gates are still in progress. These
+results do not establish TestFlight upload or availability.
