@@ -140,13 +140,14 @@ jobs:
               swiftly use 6.4.0
               mkdir -p Sources
               cp source.txt Sources/main.swift
-              cat > Package.swift <<'SWIFT'
-              // swift-tools-version:6.0
-              import PackageDescription
-              let package = Package(name: "FloeCloudCommand", targets: [
-                  .executableTarget(name: "FloeCloudCommand", path: "Sources")
-              ])
-              SWIFT
+              # No heredoc here: a heredoc terminator cannot be indented inside
+              # the case branch of a YAML block scalar.
+              printf '%s\n' \
+                '// swift-tools-version:6.0' \
+                'import PackageDescription' \
+                'let package = Package(name: "FloeCloudCommand", targets: [' \
+                '    .executableTarget(name: "FloeCloudCommand", path: "Sources")' \
+                '])' > Package.swift
               swift build -c release --swift-sdk swift-6.4.0-RELEASE_wasm
               built="$(find .build -name 'FloeCloudCommand.wasm' -path '*release*' -print -quit)"
               test -n "$built"
