@@ -6,14 +6,21 @@ runs in its own 25-minute step with bounded stall diagnostics and a single
 pre-test retry, the other device still runs for evidence when one fails, and an
 explicit gate fails the job unless both legs strictly passed so no unsigned IPA
 or signed upload can come from a partial Notes run.
+
+The retry decision comes only from ``scripts/notes_ui_startup_retry.py``, which
+these tests execute for real: the leg shell has no inline fallback, so a missing
+helper, a missing/unreadable attempt log, malformed evidence, executed-test
+output or an App crash can never be retried into a pass.
 """
 from pathlib import Path
+import json
 import subprocess
 import tempfile
 import textwrap
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parents[3] / '.github/workflows/release-unsigned-ipa.yml'
+HELPER = Path(__file__).resolve().parents[1] / 'notes_ui_startup_retry.py'
 
 IPAD_STEP = "- name: Require Notes import on the iPad simulator with the"
 IPHONE_STEP = "- name: Require Notes import on the iPhone simulator with the"
@@ -28,7 +35,11 @@ def accepted_leg_run_block(name: str) -> str:
 
 
 # Controlled xcrun/xcodebuild/python3 drivers so the real leg shell can be
-# executed without a Mac, a simulator or a build.
+# executed without a Mac, a simulator or a build. The retry classifier is
+# executed for real from $NOTES_RETRY_HELPER (the leg runs in a temporary cwd,
+# so the relative workflow path cannot resolve), the diagnostics driver copies
+# the truthful per-call summary written by write_state, and each attempt log
+# line comes from the same state files.
 LEG_STUB = r'''
 xcrun() {
   case " $* " in
@@ -43,6 +54,9 @@ python3() {
   case "$1" in
     -c) command python3 "$@" ;;
     *select_test_simulator.py) echo "00000000-0000-0000-0000-000000000000"; return 0 ;;
+    *notes_ui_startup_retry.py)
+      shift
+      command python3 "$NOTES_RETRY_HELPER" "$@" ;;
     *run_test_with_diagnostics.py)
       printf '%s\n' "$*" >> "$FAKE_STATE/run.calls"
       call=$(( $(cat "$FAKE_STATE/calls" 2>/dev/null || echo 0) + 1 ))
@@ -57,19 +71,44 @@ python3() {
         esac
       done
       mkdir -p "$diag" "$bundle"
-      reason="$(sed -n "${call}p" "$FAKE_STATE/reasons")"
-      started="$(sed -n "${call}p" "$FAKE_STATE/started")"
       code="$(sed -n "${call}p" "$FAKE_STATE/codes")"
-      [ -n "$reason" ] || reason=exited
-      [ -n "$started" ] || started=true
       [ -n "$code" ] || code=0
-      printf '{"reason":"%s","testsStarted":%s}\n' "$reason" "$started" > "$diag/summary.json"
+      # Truthful summary.json exactly as run_test_with_diagnostics.py writes it.
+      sed -n "${call}p" "$FAKE_STATE/summaries" > "$diag/summary.json"
+      # The attempt log the classifier must judge; an empty entry produces an
+      # empty log, i.e. the missing/unreadable evidence shape.
+      log_line="$(sed -n "${call}p" "$FAKE_STATE/logs" 2>/dev/null || true)"
+      if [ -n "$log_line" ]; then printf '%s\n' "$log_line"; fi
       return "$code" ;;
     *verify_notes_ui_xcresult.py) return 0 ;;
     *) return 99 ;;
   esac
 }
 '''
+
+# Exact retained bootstrap-crash line from release run 35292395886 (job
+# 105437894361, SDK 27 iPhone Notes leg), without the surrounding context.
+BOOTSTRAP_LOG_LINE = (
+    "\tFloeAgentUITests-Runner (5415) encountered an error (Early unexpected "
+    "exit, operation never finished bootstrapping - no restart will be "
+    "attempted. (Underlying Error: The test runner crashed while preparing to "
+    "run tests: FloeAgentUITests-Runner at -[XCTWaiter(StallHandling) "
+    "handleStalledWait:]))")
+# Exact retained executed Office cover assertion line from the same run.
+EXECUTED_FAILURE_LOG_LINE = (
+    "/Users/runner/work/floe-agent/floe-agent/FloeAgent/Tests/FloeAgentUITests/"
+    "NotesWorkspaceImportUITests.swift:264: error: -[FloeAgentUITests."
+    "NotesWorkspaceImportUITests testNotesLibraryCardsShowRealContentCovers] : "
+    "XCTAssertTrue failed - office cover source 'unsupported' is not a real "
+    "content source [\"quickLook\"]")
+# Modeled (not observed): the App under test crashed during launch.
+APPLICATION_CRASH_LOG_LINE = (
+    "FloeAgentUITests-Runner (5415) encountered an error (Failed to launch the "
+    "test runner: The application 'Floe Agent' crashed during launch.)")
+# A harmless nonempty attempt log for pre-test infrastructure shapes.
+STALL_LOG_LINE = ("Command line invocation: xcodebuild -xctestrun host.xctestrun "
+                  "test-without-building")
+PASS_LOG_LINE = "Test Suite 'All tests' passed at 2026-09-18 01:48:12.968."
 
 
 class SharedReleaseHostTests(unittest.TestCase):
@@ -133,10 +172,16 @@ class SharedReleaseHostTests(unittest.TestCase):
                           '--simulator-without-office'):
                 self.assertIn(token, job)
             self.assertNotIn("-retry-tests-on-failure", job)
-            # Exactly one bounded retry, and it only retries a stall that never
-            # started a test: a real executed failure is not infrastructure.
+            # Exactly one bounded retry, and the real classifier is the only
+            # decision point: both evidence files are passed, there is no inline
+            # JSON fallback that could override a rejection.
+            self.assertEqual(job.count('python3 scripts/notes_ui_startup_retry.py'), 2)
+            self.assertEqual(job.count('--summary "$diag_dir/summary.json"'), 2)
             self.assertEqual(
-                job.count('reason")=="stalled" and not s.get("testsStarted")'), 2)
+                job.count('--log "$qualification/$NOTES_NAME-attempt-$leg_attempt.log"'), 2)
+            self.assertEqual(job.count('--attempt "$leg_attempt"'), 2)
+            self.assertNotIn('s.get("reason")=="stalled"', job)
+            self.assertNotIn('s.get("testsStarted")', job)
             self.assertEqual(job.count('leg_attempt=2'), 2)
             # The second device runs after the first fails, but never on cancel.
             self.assertIn("!cancelled() && steps.notes_ipad.outcome != 'skipped'", job)
@@ -189,8 +234,8 @@ class SharedReleaseHostTests(unittest.TestCase):
             self.assertNotEqual(self.run_gate(job, 'skipped', 'success').returncode, 0)
             self.assertNotEqual(self.run_gate(job, 'success', 'skipped').returncode, 0)
 
-    def run_leg(self, name, root, *, notes_name):
-        """Execute the real accepted-SDK leg shell with controlled drivers."""
+    def run_leg(self, name, root, *, notes_name, helper=HELPER):
+        """Execute the real leg shell with controlled drivers and real helper."""
         products = (Path(root) / 'FloeStableDeviceDerivedData' / 'Build' / 'Products')
         products.mkdir(parents=True, exist_ok=True)
         (products / 'FloeAgent.xctestrun').touch()
@@ -201,26 +246,38 @@ class SharedReleaseHostTests(unittest.TestCase):
             NOTES_NAME=notes_name,
             NOTES_DERIVED='FloeStableDeviceDerivedData',
             NOTES_EVIDENCE='FloeStable-Notes',
+            NOTES_RETRY_HELPER=str(helper),
             FAKE_STATE=str(Path(root) / 'state'),
         )
         return subprocess.run(
             ['bash', '-e', '-o', 'pipefail', '-c', LEG_STUB + accepted_leg_run_block(name)],
             cwd=root, env=env, capture_output=True, text=True)
 
-    def write_state(self, root, codes, reasons, started):
+    def write_state(self, root, codes, reasons, started, logs=None, summaries=None):
         state = Path(root) / 'state'
         state.mkdir(parents=True, exist_ok=True)
         (state / 'calls').unlink(missing_ok=True)
+        (state / 'run.calls').unlink(missing_ok=True)
         (state / 'codes').write_text('\n'.join(codes) + '\n')
         (state / 'reasons').write_text('\n'.join(reasons) + '\n')
         (state / 'started').write_text('\n'.join(started) + '\n')
+        if logs is None:
+            logs = [STALL_LOG_LINE] * len(codes)
+        (state / 'logs').write_text('\n'.join(logs) + '\n')
+        if summaries is None:
+            # Truthful summaries: the same exitCode the driver returns, plus
+            # the reason/testsStarted the driver observed.
+            summaries = ['{"reason":"%s","testsStarted":%s,"exitCode":%s}' % (r, s, c)
+                         for r, s, c in zip(reasons, started, codes)]
+        (state / 'summaries').write_text('\n'.join(summaries) + '\n')
 
     def test_strict_flow_runs_iphone_after_ipad_failure_and_still_gates(self):
         # A real executed iPad failure must (1) not stop the iPhone leg from
         # running for evidence and (2) still fail the strict gate, so the
         # signing/packaging path can never start.
         with tempfile.TemporaryDirectory() as root:
-            self.write_state(root, ['65', '0'], ['exited', 'exited'], ['true', 'true'])
+            self.write_state(root, ['65', '0'], ['exited', 'exited'], ['true', 'true'],
+                             logs=[EXECUTED_FAILURE_LOG_LINE, PASS_LOG_LINE])
             ipad = self.run_leg(IPAD_STEP, root, notes_name='ipad')
             self.assertNotEqual(ipad.returncode, 0, ipad.stderr)
             iphone = self.run_leg(IPHONE_STEP, root, notes_name='iphone')
@@ -239,17 +296,93 @@ class SharedReleaseHostTests(unittest.TestCase):
 
     def test_pre_test_stall_retries_once_in_a_fresh_directory(self):
         with tempfile.TemporaryDirectory() as root:
-            self.write_state(root, ['124', '0'], ['stalled', 'exited'], ['false', 'true'])
+            self.write_state(root, ['124', '0'], ['stalled', 'exited'], ['false', 'true'],
+                             logs=[STALL_LOG_LINE, PASS_LOG_LINE])
             result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((Path(root) / 'state/calls').read_text().strip(), '2')
             diag = Path(root) / 'FloeStable-NotesDiagnostics'
             self.assertTrue((diag / 'ipad-attempt-1').is_dir())
             self.assertTrue((diag / 'ipad-attempt-2').is_dir())
+            # The truthful attempt-1 summary the classifier accepted.
+            summary = json.loads((diag / 'ipad-attempt-1' / 'summary.json').read_text())
+            self.assertEqual(summary,
+                             {"reason": "stalled", "testsStarted": False, "exitCode": 124})
+
+    def test_observed_bootstrap_crash_retries_once_and_can_pass(self):
+        # The exact retained pre-test bootstrap crash (exit 65) is the second
+        # retryable shape; attempt 2 then passes.
+        with tempfile.TemporaryDirectory() as root:
+            self.write_state(root, ['65', '0'], ['exited', 'exited'], ['false', 'true'],
+                             logs=[BOOTSTRAP_LOG_LINE, PASS_LOG_LINE])
+            result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((Path(root) / 'state/calls').read_text().strip(), '2')
+            first_log = (Path(root) / 'FloeStable-Notes' / 'ipad-attempt-1.log').read_text()
+            self.assertIn('handleStalledWait:', first_log)
+
+    def test_bootstrap_crash_twice_is_bounded_to_two_attempts(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write_state(root, ['65', '65'], ['exited', 'exited'], ['false', 'false'],
+                             logs=[BOOTSTRAP_LOG_LINE, BOOTSTRAP_LOG_LINE])
+            result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual((Path(root) / 'state/calls').read_text().strip(), '2')
+
+    def test_contradictory_log_never_retries_a_stalled_summary(self):
+        # reason=stalled / testsStarted=false / exitCode=124 is exactly the
+        # legacy bypass shape: the real classifier must still reject it when
+        # the attempt log proves an executed failure, an executed run or an App
+        # crash, and the shell must not retry.
+        executed_only = ("Executed 5 tests, with 1 test skipped and 1 failure "
+                         "(0 unexpected) in 650.517 (650.531) seconds")
+        for label, log_line in (('xctassert', EXECUTED_FAILURE_LOG_LINE),
+                                ('executed', executed_only),
+                                ('app-crash', APPLICATION_CRASH_LOG_LINE)):
+            with self.subTest(label), tempfile.TemporaryDirectory() as root:
+                self.write_state(root, ['124'], ['stalled'], ['false'],
+                                 logs=[log_line])
+                result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
+                self.assertNotEqual(result.returncode, 0,
+                                    result.stdout + result.stderr)
+                self.assertEqual(
+                    (Path(root) / 'state/calls').read_text().strip(), '1')
+
+    def test_missing_classifier_helper_is_never_retried(self):
+        # No inline fallback: if notes_ui_startup_retry.py cannot run, the
+        # pre-test stall shape must fail closed, not retry.
+        with tempfile.TemporaryDirectory() as root:
+            self.write_state(root, ['124'], ['stalled'], ['false'],
+                             logs=[STALL_LOG_LINE])
+            result = self.run_leg(IPAD_STEP, root, notes_name='ipad',
+                                  helper=Path(root) / 'absent-helper.py')
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('absent-helper.py', result.stderr)
+            self.assertEqual((Path(root) / 'state/calls').read_text().strip(), '1')
+
+    def test_missing_attempt_log_is_never_retried(self):
+        # reason=stalled with no readable attempt log is not retryable.
+        with tempfile.TemporaryDirectory() as root:
+            self.write_state(root, ['124'], ['stalled'], ['false'], logs=[''])
+            result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((Path(root) / 'state/calls').read_text().strip(), '1')
+
+    def test_malformed_summary_is_never_retried(self):
+        # Exit status alone must not authorize a retry: the summary has to be
+        # well formed evidence (here it lacks exitCode).
+        with tempfile.TemporaryDirectory() as root:
+            self.write_state(root, ['124'], ['stalled'], ['false'],
+                             logs=[STALL_LOG_LINE],
+                             summaries=['{"reason":"stalled","testsStarted":false}'])
+            result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((Path(root) / 'state/calls').read_text().strip(), '1')
 
     def test_real_executed_failure_is_never_retried(self):
         with tempfile.TemporaryDirectory() as root:
-            self.write_state(root, ['65'], ['exited'], ['true'])
+            self.write_state(root, ['65'], ['exited'], ['true'],
+                             logs=[EXECUTED_FAILURE_LOG_LINE])
             result = self.run_leg(IPAD_STEP, root, notes_name='ipad')
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertEqual((Path(root) / 'state/calls').read_text().strip(), '1')

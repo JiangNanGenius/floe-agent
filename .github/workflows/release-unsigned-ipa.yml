@@ -317,6 +317,9 @@ jobs:
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes" --timeout 1200 -- swift test --package-path Qualification/Notes --scratch-path .build --force-resolved-versions --jobs 4
           grep -E 'Test run with [1-9][0-9]* tests? .*passed' platform-qualification.log
           node --test scripts/tests/node_host.test.cjs scripts/tests/notes_bridge.test.cjs
+          # The Notes retry classifier gates the UI legs below; its fixtures
+          # must pass before those legs can consume its verdict.
+          python3 scripts/tests/test_notes_ui_startup_retry.py
 
       - name: Preserve Swift regression output and stall diagnostics
         if: always()
@@ -466,12 +469,18 @@ jobs:
               -maximum-test-execution-time-allowance 360 \
               CODE_SIGNING_ALLOWED=NO test-without-building \
               2>&1 | tee "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" || leg_code=$?
-            # One retry only when the runner stalled before any test started and
-            # in a fresh diagnostics directory; a real executed failure is never
-            # retried into a pass.
-            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
-               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                 "$diag_dir/summary.json"; then
+            # One retry only, and only the classifier decides it: it accepts
+            # the pre-existing stalled shape or the narrowly known pre-test
+            # bootstrap crash, requiring testsStarted=false, no test case/suite
+            # execution and no App crash evidence. Executed failures and any
+            # other nonzero exit are never retried into a pass; a missing or
+            # unreadable helper, summary or attempt log fails closed too, as
+            # there is deliberately no inline fallback.
+            if [ "$leg_attempt" -eq 1 ] && \
+               python3 scripts/notes_ui_startup_retry.py \
+                 --summary "$diag_dir/summary.json" \
+                 --log "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" \
+                 --attempt "$leg_attempt"; then
               leg_attempt=2
               continue
             fi
@@ -529,9 +538,18 @@ jobs:
               -maximum-test-execution-time-allowance 360 \
               CODE_SIGNING_ALLOWED=NO test-without-building \
               2>&1 | tee "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" || leg_code=$?
-            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
-               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                 "$diag_dir/summary.json"; then
+            # One retry only, and only the classifier decides it: it accepts
+            # the pre-existing stalled shape or the narrowly known pre-test
+            # bootstrap crash, requiring testsStarted=false, no test case/suite
+            # execution and no App crash evidence. Executed failures and any
+            # other nonzero exit are never retried into a pass; a missing or
+            # unreadable helper, summary or attempt log fails closed too, as
+            # there is deliberately no inline fallback.
+            if [ "$leg_attempt" -eq 1 ] && \
+               python3 scripts/notes_ui_startup_retry.py \
+                 --summary "$diag_dir/summary.json" \
+                 --log "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" \
+                 --attempt "$leg_attempt"; then
               leg_attempt=2
               continue
             fi
@@ -956,12 +974,18 @@ jobs:
               -maximum-test-execution-time-allowance 360 \
               CODE_SIGNING_ALLOWED=NO test-without-building \
               2>&1 | tee "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" || leg_code=$?
-            # One retry only when the runner stalled before any test started and
-            # in a fresh diagnostics directory; a real executed failure is never
-            # retried into a pass.
-            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
-               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                 "$diag_dir/summary.json"; then
+            # One retry only, and only the classifier decides it: it accepts
+            # the pre-existing stalled shape or the narrowly known pre-test
+            # bootstrap crash, requiring testsStarted=false, no test case/suite
+            # execution and no App crash evidence. Executed failures and any
+            # other nonzero exit are never retried into a pass; a missing or
+            # unreadable helper, summary or attempt log fails closed too, as
+            # there is deliberately no inline fallback.
+            if [ "$leg_attempt" -eq 1 ] && \
+               python3 scripts/notes_ui_startup_retry.py \
+                 --summary "$diag_dir/summary.json" \
+                 --log "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" \
+                 --attempt "$leg_attempt"; then
               leg_attempt=2
               continue
             fi
@@ -1019,9 +1043,18 @@ jobs:
               -maximum-test-execution-time-allowance 360 \
               CODE_SIGNING_ALLOWED=NO test-without-building \
               2>&1 | tee "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" || leg_code=$?
-            if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
-               python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                 "$diag_dir/summary.json"; then
+            # One retry only, and only the classifier decides it: it accepts
+            # the pre-existing stalled shape or the narrowly known pre-test
+            # bootstrap crash, requiring testsStarted=false, no test case/suite
+            # execution and no App crash evidence. Executed failures and any
+            # other nonzero exit are never retried into a pass; a missing or
+            # unreadable helper, summary or attempt log fails closed too, as
+            # there is deliberately no inline fallback.
+            if [ "$leg_attempt" -eq 1 ] && \
+               python3 scripts/notes_ui_startup_retry.py \
+                 --summary "$diag_dir/summary.json" \
+                 --log "$qualification/$NOTES_NAME-attempt-$leg_attempt.log" \
+                 --attempt "$leg_attempt"; then
               leg_attempt=2
               continue
             fi
