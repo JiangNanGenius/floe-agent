@@ -86,6 +86,25 @@ jobs:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG"
 
+  # Normal qualified release path only. The NativeNotes component is qualified
+  # from the exact commit prepare-release froze, in parallel with the two SDK
+  # jobs. A component failure or unexpected skip leaves this job failed/skipped,
+  # and testflight needs all three gates, so no signing material is installed.
+  notes-component:
+    name: Qualify the NativeNotes development component in parallel
+    needs: prepare-release
+    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
+    permissions:
+      contents: read
+    # Branch-local reusable call at the caller's commit. sdk=development selects
+    # only the development component job and never compatibility; source_ref is
+    # the immutable SHA frozen by prepare-release, never a branch or tag. No
+    # secrets are passed to this call.
+    uses: ./.github/workflows/notes-native-qualification.yml
+    with:
+      sdk: development
+      source_ref: ${{ needs.prepare-release.outputs.source_sha }}
+
   build-verify-release:
     needs: prepare-release
     if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
@@ -1122,11 +1141,13 @@ jobs:
 
   testflight:
     name: Archive and upload the same commit to TestFlight
-    needs: [build-verify-release, accepted-sdk-build]
+    needs: [build-verify-release, accepted-sdk-build, notes-component]
     permissions:
       contents: read
       actions: read
-    # Both SDK qualifications must succeed before any signing key is installed.
+    # Both SDK qualifications and the exact-source NativeNotes component gate
+    # must succeed before any signing key is installed; a failed, cancelled or
+    # unexpectedly skipped notes-component job skips this upload entirely.
     # Reuse the already-qualified accepted-SDK device application byte-for-byte.
     runs-on: macos-26
     env:

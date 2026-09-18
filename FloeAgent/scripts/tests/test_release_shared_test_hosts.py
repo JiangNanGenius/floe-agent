@@ -140,14 +140,14 @@ class SharedReleaseHostTests(unittest.TestCase):
         self.assertNotIn('build-for-testing', upload)
         self.assertNotIn('            build\n', upload)
 
-    def test_sdk_jobs_share_frozen_source_and_upload_waits_for_both(self):
+    def test_sdk_jobs_share_frozen_source_and_upload_waits_for_all_gates(self):
         source, sdk27, stable, upload = self.jobs()
         for job in [sdk27, stable]:
             self.assertIn('needs: prepare-release', job)
             self.assertIn('ref: ${{ needs.prepare-release.outputs.source_sha }}', job)
             self.assertNotIn('secrets.APPLE_CERTIFICATE', job)
             self.assertNotIn('secrets.APP_STORE_CONNECT', job)
-        self.assertIn('needs: [build-verify-release, accepted-sdk-build]', upload)
+        self.assertIn('needs: [build-verify-release, accepted-sdk-build, notes-component]', upload)
         self.assertIn('needs.accepted-sdk-build.outputs.input_sha256', upload)
         self.assertIn('shasum -a 256 -c -', upload)
         self.assertIn('SOURCE-SHA.txt', upload)

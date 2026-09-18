@@ -10,6 +10,17 @@ on:
           - development
           - compatibility
         default: both
+  workflow_call:
+    inputs:
+      sdk:
+        description: 'Toolchain line to qualify: development (Xcode 27 beta), compatibility (Xcode 26), or both. An unsupported value runs both jobs instead of silently skipping every leg.'
+        required: false
+        type: string
+        default: both
+      source_ref:
+        description: 'Optional immutable 40-hex commit SHA to check out. Empty uses github.ref. A reusable caller must pass the exact source it already froze.'
+        required: false
+        type: string
   push:
     branches: ['codex/floe-1-7-integration-20260912']
     paths: ['.github/workflows/notes-native-qualification.yml', 'FloeAgent/Qualification/NativeNotes/**']
@@ -24,15 +35,47 @@ concurrency:
 # Keep xcresult, console logs and explicit image attachments. Skip optional
 # verbose sysdiagnose collection, which timed out for 600s after tests in
 # run 35180990348; this does not skip assertions or change test timeouts.
+#
+# The same file is a reusable workflow for the release controller, which calls
+# it with sdk=development and the immutable commit prepare-release froze. A
+# called workflow inherits the caller's `github` context, so `event_name` is the
+# caller's event and cannot be used to distinguish a call from a dispatch; job
+# selection below reads only the declared `sdk` input.
 jobs:
   development:
-    # A dispatch defaults to `both`; `development` starts exactly this job. Push
-    # runs stay unchanged and keep covering both toolchains.
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.sdk == 'development' || inputs.sdk == 'both' }}
+    # Push has no `inputs` context (`''`) and keeps covering both toolchains. A
+    # dispatch or reusable call defaults to `both`; `development` starts exactly
+    # this job. An unsupported value starts both jobs rather than skipping every
+    # leg, so the component gate can never pass by doing nothing.
+    if: ${{ inputs.sdk != 'compatibility' }}
     runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      # A pinned reusable call must resolve to exactly the frozen SHA; a branch,
+      # tag or malformed value fails this job before any qualification runs.
+      - name: Require the checked-out commit to be the caller-frozen SHA
+        if: ${{ inputs.source_ref != '' }}
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            *[!0-9a-f]*|'') echo "::error::source_ref must be a full 40-character lowercase commit SHA" >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_REF}" -ne 40 ]; then
+            echo "::error::source_ref must be a full 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+          checked="$(git rev-parse HEAD)"
+          if [ "$checked" != "$SOURCE_REF" ]; then
+            echo "::error::checked-out commit $checked does not match caller-frozen source_ref $SOURCE_REF" >&2
+            exit 1
+          fi
+          echo "source_ref=$SOURCE_REF verified at checkout"
       - name: Select the development Xcode toolchain
         shell: bash
         run: |
@@ -131,7 +174,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: notes-native-development-${{ github.sha }}
+          name: notes-native-development-${{ inputs.source_ref || github.sha }}
           path: |
             notes-*.xcresult
             notes-*.log
@@ -139,11 +182,38 @@ jobs:
             ${{ runner.temp }}/notes-cloud-gates/
           if-no-files-found: warn
   compatibility:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.sdk == 'compatibility' || inputs.sdk == 'both' }}
+    # Mirror of the development guard: push (''), dispatch/call `both` and
+    # `compatibility` keep this job, `development` alone must skip it.
+    if: ${{ inputs.sdk != 'development' }}
     runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      # Same exact-source pin as the development job. The reusable release call
+      # only requests the development toolchain, so this guard normally does not
+      # run there, but any future call must still prove the frozen SHA.
+      - name: Require the checked-out commit to be the caller-frozen SHA
+        if: ${{ inputs.source_ref != '' }}
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            *[!0-9a-f]*|'') echo "::error::source_ref must be a full 40-character lowercase commit SHA" >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_REF}" -ne 40 ]; then
+            echo "::error::source_ref must be a full 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+          checked="$(git rev-parse HEAD)"
+          if [ "$checked" != "$SOURCE_REF" ]; then
+            echo "::error::checked-out commit $checked does not match caller-frozen source_ref $SOURCE_REF" >&2
+            exit 1
+          fi
+          echo "source_ref=$SOURCE_REF verified at checkout"
       - name: Select the compatibility Xcode toolchain
         shell: bash
         run: |
@@ -242,7 +312,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: notes-native-compatibility-${{ github.sha }}
+          name: notes-native-compatibility-${{ inputs.source_ref || github.sha }}
           path: |
             notes-*.xcresult
             notes-*.log

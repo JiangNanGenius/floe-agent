@@ -96,7 +96,8 @@ retried into a pass.
   `sdk27-notes-ui-*` / `accepted-sdk-notes-ui-*` with `if: always()`.
 
 The downstream `testflight` job still `needs: [build-verify-release,
-accepted-sdk-build]`, so both SDK jobs must succeed before any signing key is
+accepted-sdk-build, notes-component]`, so both SDK jobs and the exact-source
+NativeNotes development component must succeed before any signing key is
 installed.
 
 ## 3. Compiled-host retention before tests
