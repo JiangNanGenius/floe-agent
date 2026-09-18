@@ -158,8 +158,16 @@ jobs:
                 '    .executableTarget(name: "FloeCloudCommand", path: "Sources")' \
                 '])' > Package.swift
               swift build -c release --swift-sdk swift-6.4.0-RELEASE_wasm
-              built="$(find .build -name 'FloeCloudCommand.wasm' -path '*release*' -print -quit)"
+              # SwiftPM 6.4 names the product directory Release-webassembly-wasm32
+              # and the wasm SDK may omit the .wasm suffix; find by product name.
+              echo "product candidates:"
+              find .build -name 'FloeCloudCommand*' -print || true
+              built="$(find .build -type f -name 'FloeCloudCommand.wasm' -print -quit)"
+              if [ -z "$built" ]; then
+                built="$(find .build -type f -name 'FloeCloudCommand' -print -quit)"
+              fi
               test -n "$built"
+              python3 -c "import sys; data = open(sys.argv[1], 'rb').read(4); assert data == b'\0asm', (sys.argv[1], data); print(sys.argv[1], 'is a WASM module')" "$built"
               cp "$built" "$RUNNER_TEMP/command.wasm" ;;
           esac
           test -f "$RUNNER_TEMP/command.wasm"
