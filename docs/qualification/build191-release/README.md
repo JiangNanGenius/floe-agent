@@ -53,3 +53,18 @@ The pending test correction selects that same named notebook card through the
 existing library-scoped helper and scrolls the same results grid. All body-match,
 existence, hittability, tap and opened-editor assertions and deadlines remain.
 It changes no shipping code and does not alter the immutable191 tag.
+
+## Explicit expedited internal distribution
+
+The user selected “upload Build191 first; I will test on device” after being
+informed of both SDK27 UI failures. The iPhone failure is the New-button
+enabled check in `testPencilToolsAndFocusedLayout`, before writing begins.
+The two failures remain recorded; signing and Apple validation remain required.
+[Distribution run35343019320](https://github.com/JiangNanGenius/floe-agent/actions/runs/35343019320)
+reuses the accepted-SDK artifact from35337960392 without rebuilding. The App
+source remains715cbc42e9402cf5ca691291fed5c201e61cf222; dispatch controller
+b18b3b1d is separate. No upload success or installability is claimed yet.
+
+The subsequent test-only toolbar query correction scopes New-button lookup to
+NotesRootView's navigation bars, retaining the same enabled check and10s limit.
+All six focused Swift semantic/object checks pass. It is not part of191.

@@ -23,7 +23,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         }
         let notes = app.staticTexts["sidebar.notes"].firstMatch
         XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
-        let create = app.buttons["notes.create"]
+        let create = creationControl(app)
         XCTAssertTrue(create.waitForExistence(timeout: 15))
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)], timeout: 10)
         create.tap(); app.buttons["Office"].tap()
@@ -304,7 +304,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(back.isHittable)
         capture("notes-content-cover-opened")
         back.tap()
-        XCTAssertTrue(app.buttons["notes.create"].waitForExistence(timeout: 30),
+        XCTAssertTrue(creationControl(app).waitForExistence(timeout: 30),
                       "returning from the opened document must resume the Notes library")
         assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: officeSources))
 
@@ -373,8 +373,16 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let notes = app.staticTexts["sidebar.notes"].firstMatch
         XCTAssertTrue(notes.waitForExistence(timeout: 15))
         notes.tap()
-        XCTAssertTrue(app.buttons["notes.create"].waitForExistence(timeout: 15))
+        XCTAssertTrue(creationControl(app).waitForExistence(timeout: 15))
         return app
+    }
+
+    private func creationControl(_ app: XCUIApplication) -> XCUIElement {
+        // NotesRootView owns this control in its NavigationStack toolbar. Keep
+        // readiness polling inside navigation bars instead of enumerating all
+        // document-card descendants. The enabled assertion and its deadline
+        // remain unchanged; a missing or disabled control must still fail.
+        app.navigationBars.buttons.matching(identifier: "notes.create").element(boundBy: 0)
     }
 
     private func cardElement(_ app: XCUIApplication, kind: String, title: String) -> XCUIElement {
@@ -521,7 +529,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let notes = app.staticTexts["sidebar.notes"].firstMatch
         XCTAssertTrue(notes.waitForExistence(timeout: 15))
         notes.tap()
-        let create = app.buttons["notes.create"]
+        let create = creationControl(app)
         XCTAssertTrue(create.waitForExistence(timeout: 15))
         let ready = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)
         wait(for: [ready], timeout: 10)
