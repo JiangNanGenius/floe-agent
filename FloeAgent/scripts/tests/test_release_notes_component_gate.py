@@ -555,8 +555,8 @@ class ReleaseComponentGateTests(unittest.TestCase):
                          "./.github/workflows/testflight-direct.yml")
         self.assertEqual(
             job_scalar(direct, "if"),
-            "github.event_name == 'workflow_dispatch' && inputs.direct_testflight "
-            "&& inputs.reuse_accepted_run == '' && inputs.component_recovery_run == ''")
+            "${{ !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.direct_testflight "
+            "&& inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}")
         self.assertIn("      tag: ${{ inputs.tag }}\n", direct)
 
         expedited = self.jobs["expedited-testflight"]
@@ -564,8 +564,10 @@ class ReleaseComponentGateTests(unittest.TestCase):
                          "./.github/workflows/testflight-from-artifact.yml")
         self.assertEqual(
             job_scalar(expedited, "if"),
-            "github.event_name == 'workflow_dispatch' && "
-            "inputs.reuse_accepted_run != '' && inputs.component_recovery_run == ''")
+            "${{ github.event_name == 'workflow_dispatch' && "
+            "inputs.reuse_accepted_run != '' && inputs.component_recovery_run == '' && "
+            "(!inputs.build191_ui_waiver || (inputs.tag == 'v1.7.0-beta.48' && "
+            "inputs.reuse_accepted_run == '35337960392' && !inputs.publish && !inputs.direct_testflight)) }}")
         self.assertIn("      source_run: ${{ inputs.reuse_accepted_run }}\n",
                       expedited)
         self.assertIn("      tag: ${{ inputs.tag }}\n", expedited)
@@ -575,7 +577,7 @@ class ReleaseComponentGateTests(unittest.TestCase):
                          "./.github/workflows/testflight-recovery.yml")
         self.assertEqual(
             job_scalar(recovery, "if"),
-            "${{ github.event_name == 'workflow_dispatch' && "
+            "${{ !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && "
             "inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && "
             "!inputs.publish && inputs.component_recovery_run == '' }}")
 
@@ -588,7 +590,7 @@ class ReleaseComponentGateTests(unittest.TestCase):
     def test_component_correction_uses_its_own_verification_before_upload(self):
         route = self.jobs["component-recovery"]
         self.assertEqual(job_scalar(route, "if"),
-                         "github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != ''")
+                         "${{ !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != '' }}")
         self.assertEqual(job_scalar(route, "uses"),
                          "./.github/workflows/component-only-release-recovery.yml")
         self.assertIn("      component_run: ${{ inputs.component_recovery_run }}\n", route)

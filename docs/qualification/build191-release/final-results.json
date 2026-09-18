@@ -1,0 +1,202 @@
+{
+  "source": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+  "run": 35337960392,
+  "nativeNotes": {
+    "iPad": {
+      "result": "Passed",
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 101
+    },
+    "iPhone": {
+      "result": "Passed",
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 101
+    }
+  },
+  "networkDeadlineSuite": {
+    "passed": 13,
+    "suiteSeconds": 0.255,
+    "eightWayRaceSeconds": 0.25,
+    "assertionLimitSeconds": 1.5
+  },
+  "tag": "v1.7.0-beta.48",
+  "build": 191,
+  "sourceRunConclusion": "failure",
+  "fullQualificationPassed": false,
+  "appRegression": {
+    "SDK27": {
+      "devicesAndConfigurations": [
+        {
+          "device": {
+            "architecture": "arm64",
+            "deviceId": "FA4E2F7A-87DE-46BF-82D5-AF1EF61F7869",
+            "deviceName": "iPad mini (A17 Pro)",
+            "modelName": "iPad mini (A17 Pro)",
+            "osBuildNumber": "24A434",
+            "osVersion": "27.0",
+            "platform": "iOS Simulator"
+          },
+          "expectedFailures": 0,
+          "failedTests": 0,
+          "passedTests": 205,
+          "skippedTests": 0,
+          "testPlanConfiguration": {
+            "configurationId": "1",
+            "configurationName": "Test Scheme Action"
+          }
+        }
+      ],
+      "environmentDescription": "FloeAgent · Built with macOS 27.0",
+      "expectedFailures": 0,
+      "failedTests": 0,
+      "finishTime": 1789731678.148,
+      "passedTests": 204,
+      "result": "Passed",
+      "runtimeWarnings": [],
+      "skippedTests": 0,
+      "startTime": 1789731282.215,
+      "statistics": [
+        {
+          "subtitle": "2 test runs",
+          "title": "1 test ran with dynamic parameters"
+        }
+      ],
+      "testFailures": [],
+      "title": "Test - FloeAgent",
+      "topInsights": [
+        {
+          "category": "Longest Test Runs",
+          "impact": "51% of duration",
+          "text": "4 longest test runs with outlier durations exceeding 9.55s (three standard deviations)"
+        }
+      ],
+      "totalTestCount": 204
+    },
+    "acceptedSDK": {
+      "devicesAndConfigurations": [
+        {
+          "device": {
+            "architecture": "arm64",
+            "deviceId": "1E926EE8-2A0B-4C47-B835-0C52B77DE728",
+            "deviceName": "iPad mini (A17 Pro)",
+            "modelName": "iPad mini (A17 Pro)",
+            "osBuildNumber": "23F77",
+            "osVersion": "26.5",
+            "platform": "iOS Simulator"
+          },
+          "expectedFailures": 0,
+          "failedTests": 0,
+          "passedTests": 205,
+          "skippedTests": 0,
+          "testPlanConfiguration": {
+            "configurationId": "1",
+            "configurationName": "Test Scheme Action"
+          }
+        }
+      ],
+      "environmentDescription": "FloeAgent · Built with macOS 26.6.2",
+      "expectedFailures": 0,
+      "failedTests": 0,
+      "finishTime": 1789732646.554,
+      "passedTests": 204,
+      "result": "Passed",
+      "runtimeWarnings": [],
+      "skippedTests": 0,
+      "startTime": 1789732330.828,
+      "statistics": [
+        {
+          "subtitle": "2 test runs",
+          "title": "1 test ran with dynamic parameters"
+        }
+      ],
+      "testFailures": [],
+      "title": "Test - FloeAgent",
+      "topInsights": [
+        {
+          "category": "Longest Test Runs",
+          "impact": "62% of duration",
+          "text": "5 longest test runs with outlier durations exceeding 9.69s (three standard deviations)"
+        }
+      ],
+      "totalTestCount": 204
+    }
+  },
+  "notesUI": {
+    "SDK27": {
+      "ipad": {
+        "result": "Failed",
+        "passedTests": 3,
+        "failedTests": 1,
+        "skippedTests": 1,
+        "totalTestCount": 5,
+        "testFailures": [
+          {
+            "failureText": "Failed to tap \"notes.card.notebook.预览验收.notePage#1\" Button: Timed out while evaluating UI query.",
+            "targetName": "FloeAgentUITests",
+            "testIdentifier": 1,
+            "testIdentifierString": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()",
+            "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch",
+            "testName": "testDocumentTabsAndBodySearch()"
+          }
+        ]
+      },
+      "iphone": {
+        "result": "Failed",
+        "passedTests": 3,
+        "failedTests": 1,
+        "skippedTests": 1,
+        "totalTestCount": 5,
+        "testFailures": [
+          {
+            "failureText": "Asynchronous wait failed: Exceeded timeout of 10 seconds, with unfulfilled expectations: \"Expect predicate `enabled == 1` for object \"notes.create\" Button\".",
+            "targetName": "FloeAgentUITests",
+            "testIdentifier": 4,
+            "testIdentifierString": "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout()",
+            "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout",
+            "testName": "testPencilToolsAndFocusedLayout()"
+          }
+        ]
+      }
+    },
+    "acceptedSDK": {
+      "ipad": {
+        "result": "Passed",
+        "passedTests": 4,
+        "failedTests": 0,
+        "skippedTests": 1,
+        "totalTestCount": 5,
+        "testFailures": []
+      },
+      "iphone": {
+        "result": "Failed",
+        "passedTests": 3,
+        "failedTests": 1,
+        "skippedTests": 1,
+        "totalTestCount": 5,
+        "testFailures": [
+          {
+            "failureText": "Asynchronous wait failed: Exceeded timeout of 10 seconds, with unfulfilled expectations: \"Expect predicate `enabled == 1` for object \"notes.assistant.restart\" Button\".",
+            "targetName": "FloeAgentUITests",
+            "testIdentifier": 5,
+            "testIdentifierString": "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant()",
+            "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant",
+            "testName": "testWorkspaceImportAndDocumentAssistant()"
+          }
+        ]
+      }
+    }
+  },
+  "distribution": {
+    "run": 35343019320,
+    "conclusion": "failure",
+    "failedStep": "Wait for the existing device artifact without rebuilding",
+    "reason": "Accepted SDK job did not pass",
+    "signingAttempted": false,
+    "uploaded": false,
+    "additionalAcceptedSDKUIWaiver": "awaiting_user_response"
+  }
+}

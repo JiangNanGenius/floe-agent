@@ -3,7 +3,7 @@
 Candidate1.7.0(191), tag `v1.7.0-beta.48`, immutable source
 `715cbc42e9402cf5ca691291fed5c201e61cf222`.
 [Cloud run35337960392](https://github.com/JiangNanGenius/floe-agent/actions/runs/35337960392)
-started once by tag push; all three normal qualification jobs are running.
+started once by tag push and finished with three UI test failures. See the final result below; early progress notes are historical.
 
 This candidate includes CI policy commit `a7b6dce0`: the complete
 NetworkDiagnosticToolsTests suite runs separately from unrelated Swift suites,
@@ -68,3 +68,26 @@ b18b3b1d is separate. No upload success or installability is claimed yet.
 The subsequent test-only toolbar query correction scopes New-button lookup to
 NotesRootView's navigation bars, retaining the same enabled check and10s limit.
 All six focused Swift semantic/object checks pass. It is not part of191.
+
+## Final result and stopped distribution — 2026-09-18
+
+[Final structured results](final-results.json): both SDK App regression bundles
+passed204/204, NativeNotes101/101 each device, and accepted-SDK iPad Notes UI
+passed4 with1 existing native-Office device-only skip. SDK27 iPad/iPhone and
+accepted-SDK iPhone each passed3, failed1, with that same existing skip.
+
+The newly completed accepted-SDK iPhone case
+`testWorkspaceImportAndDocumentAssistant` failed its initial10-second
+`notes.assistant.restart` enabled check, **before tapping restart**. Its recording
+shows the assistant sheet and blue restart control, but that visual observation
+does not prove the control was responsive or make the failed assertion pass.
+Original logs, xcresults and recordings are retained.
+
+Distribution35343019320 stopped before signing because the accepted-SDK job
+failed and no qualified distribution-input artifact was staged. Nothing was
+uploaded. The existing unsigned device recovery remains intact. A narrow
+recovery controller is prepared with pinned source/run/artifact digests and
+unchanged normalization, App regression, signing and Apple validation. It is
+disabled by default and has not been dispatched: the user has so far waived
+only the two SDK27 failures, and a question about the third failure is pending.
+No192 build, retagging, public Beta or production submission occurred.

@@ -1,0 +1,593 @@
+[
+  {
+    "id": 35337960392,
+    "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+    "head_branch": "v1.7.0-beta.48",
+    "run_attempt": 1,
+    "head_repository": {
+      "full_name": "JiangNanGenius/floe-agent"
+    },
+    "event": "push",
+    "path": ".github/workflows/release-unsigned-ipa.yml",
+    "status": "completed",
+    "conclusion": "failure"
+  },
+  {
+    "total_count": 11,
+    "jobs": [
+      {
+        "id": 105577087053,
+        "name": "prepare-release",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+            "conclusion": "success"
+          },
+          {
+            "name": "Freeze and validate the release source before parallel qualification",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 105577088172,
+        "name": "direct-testflight",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      },
+      {
+        "id": 105577088182,
+        "name": "expedited-testflight",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      },
+      {
+        "id": 105577088285,
+        "name": "recover-testflight",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      },
+      {
+        "id": 105577088335,
+        "name": "component-recovery",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      },
+      {
+        "id": 105577179456,
+        "name": "Qualify and build the accepted SDK in parallel",
+        "status": "completed",
+        "conclusion": "failure",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Check out the exact verified release commit",
+            "conclusion": "success"
+          },
+          {
+            "name": "Require the App Store accepted Xcode toolchain",
+            "conclusion": "success"
+          },
+          {
+            "name": "Restore bundled font cache",
+            "conclusion": "success"
+          },
+          {
+            "name": "Fetch and verify bundled fonts",
+            "conclusion": "success"
+          },
+          {
+            "name": "Select the job-local package cache",
+            "conclusion": "success"
+          },
+          {
+            "name": "Restore verified shell binary archives",
+            "conclusion": "success"
+          },
+          {
+            "name": "Prime the pinned shell artifact cache through GitHub API",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install accepted-SDK release tooling and generate the project",
+            "conclusion": "success"
+          },
+          {
+            "name": "Resolve Xcode package dependencies with bounded network retry",
+            "conclusion": "success"
+          },
+          {
+            "name": "Preserve accepted-SDK dependency-resolution evidence",
+            "conclusion": "success"
+          },
+          {
+            "name": "Rebuild the exact tag with the accepted App Store SDK",
+            "conclusion": "success"
+          },
+          {
+            "name": "Preserve the completed device build before simulator qualification",
+            "conclusion": "success"
+          },
+          {
+            "name": "Retain the device build even if later qualification fails",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build accepted-SDK simulator test hosts once",
+            "conclusion": "success"
+          },
+          {
+            "name": "Retain the compiled accepted-SDK simulator test host",
+            "conclusion": "success"
+          },
+          {
+            "name": "Upload recoverable accepted-SDK simulator host",
+            "conclusion": "success"
+          },
+          {
+            "name": "Verify focused app regressions with the accepted App Store SDK",
+            "conclusion": "success"
+          },
+          {
+            "name": "Preserve accepted-SDK App regression diagnostics",
+            "conclusion": "success"
+          },
+          {
+            "name": "Require Notes import on the iPad simulator with the accepted SDK",
+            "conclusion": "success"
+          },
+          {
+            "name": "Require Notes import on the iPhone simulator with the accepted SDK",
+            "conclusion": "failure"
+          },
+          {
+            "name": "Require both accepted-SDK Notes device legs to pass",
+            "conclusion": "failure"
+          },
+          {
+            "name": "Retain accepted-SDK Notes UI evidence before distribution",
+            "conclusion": "success"
+          },
+          {
+            "name": "Normalize reviewed App Store bundle defects before signing",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Stage the qualified accepted-SDK application without rebuilding it",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Retain the accepted-SDK distribution input",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Post Restore verified shell binary archives",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Post Restore bundled font cache",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Post Check out the exact verified release commit",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 105577179457,
+        "name": "build-verify-release",
+        "status": "completed",
+        "conclusion": "failure",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Check out tagged source",
+            "conclusion": "success"
+          },
+          {
+            "name": "Require Xcode 27.0 release toolchain",
+            "conclusion": "success"
+          },
+          {
+            "name": "Select the job-local package cache",
+            "conclusion": "success"
+          },
+          {
+            "name": "Restore verified shell binary archives",
+            "conclusion": "success"
+          },
+          {
+            "name": "Prime the pinned shell artifact cache through GitHub API",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install release tooling",
+            "conclusion": "success"
+          },
+          {
+            "name": "Generate project and validate tag",
+            "conclusion": "success"
+          },
+          {
+            "name": "Scan source history for credentials",
+            "conclusion": "success"
+          },
+          {
+            "name": "Reuse successful trusted CI for this exact source commit",
+            "conclusion": "success"
+          },
+          {
+            "name": "Resolve and verify pinned dependencies",
+            "conclusion": "success"
+          },
+          {
+            "name": "Resolve Xcode package dependencies with bounded network retry",
+            "conclusion": "success"
+          },
+          {
+            "name": "Preserve SDK 27 dependency-resolution evidence",
+            "conclusion": "success"
+          },
+          {
+            "name": "Restore bundled font cache",
+            "conclusion": "success"
+          },
+          {
+            "name": "Fetch and verify bundled fonts",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install pinned catalog verification dependency",
+            "conclusion": "success"
+          },
+          {
+            "name": "Prepare the pinned Lua WASI fixture",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swift tests when exact-source CI cannot be reused",
+            "conclusion": "success"
+          },
+          {
+            "name": "Qualify environment, package, media and Node release modules",
+            "conclusion": "success"
+          },
+          {
+            "name": "Preserve Swift regression output and stall diagnostics",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build SDK 27 simulator test hosts once",
+            "conclusion": "success"
+          },
+          {
+            "name": "Retain the complete SDK 27 simulator test host",
+            "conclusion": "success"
+          },
+          {
+            "name": "Upload recoverable SDK 27 simulator test host",
+            "conclusion": "success"
+          },
+          {
+            "name": "Verify Canvas, PiP, and timeline app regression contracts",
+            "conclusion": "success"
+          },
+          {
+            "name": "Preserve app regression evidence even if a later release step fails",
+            "conclusion": "success"
+          },
+          {
+            "name": "Require Notes import on the iPad simulator with the SDK 27",
+            "conclusion": "failure"
+          },
+          {
+            "name": "Require Notes import on the iPhone simulator with the SDK 27",
+            "conclusion": "failure"
+          },
+          {
+            "name": "Require both SDK 27 Notes device legs to pass",
+            "conclusion": "failure"
+          },
+          {
+            "name": "Retain SDK 27 Notes UI evidence before distribution",
+            "conclusion": "success"
+          },
+          {
+            "name": "Generate dependency and license artifacts",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Package the matching Floe remote agent",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Build unsigned device application",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Package and verify unsigned IPA",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Verify artifact metadata and scan built application",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Attest unsigned IPA provenance",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Upload verified build artifacts",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Post Restore bundled font cache",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Post Restore verified shell binary archives",
+            "conclusion": "skipped"
+          },
+          {
+            "name": "Post Check out tagged source",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 105577180017,
+        "name": "Qualify the NativeNotes development component in parallel / development",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v5",
+            "conclusion": "success"
+          },
+          {
+            "name": "Require the checked-out commit to be the caller-frozen SHA",
+            "conclusion": "success"
+          },
+          {
+            "name": "Select the development Xcode toolchain",
+            "conclusion": "success"
+          },
+          {
+            "name": "Check native Notes bridge contracts",
+            "conclusion": "success"
+          },
+          {
+            "name": "Generate native component project",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test iPad first, then iPhone",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run strict Quick Look diagnostics (diagnostic, non-gating)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Preserve results, logs and toolchain evidence",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v5",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 105577181214,
+        "name": "Qualify the NativeNotes development component in parallel / compatibility",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      },
+      {
+        "id": 105597278365,
+        "name": "Archive and upload the same commit to TestFlight",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      },
+      {
+        "id": 105597279780,
+        "name": "Publish GitHub assets after TestFlight transport accepts the upload",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      }
+    ]
+  },
+  {
+    "total_count": 11,
+    "artifacts": [
+      {
+        "id": 10546332654,
+        "name": "accepted-sdk-notes-ui-1.7.0-build191",
+        "digest": "sha256:66c92123650a5bd7d123d4c0cb39afa18e7a28d6e52f647c72c79c70b7b07726",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10545311253,
+        "name": "app-regression-SDK27-35337960392",
+        "digest": "sha256:5db2b4d0bcd0af6b73e4f9df639fba8ca85eb7d86a70ff8035b071d8281952b4",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10545243814,
+        "name": "accepted-sdk-app-diagnostics-1.7.0-build191",
+        "digest": "sha256:cfd9acfb6bc73ab74b6ef00e5f69be4d04b7c83f17b6344baa8a86aef0e69aef",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10545220479,
+        "name": "sdk27-simulator-host-715cbc42e9402cf5ca691291fed5c201e61cf222",
+        "digest": "sha256:639299ac0eda302579f7fb6b4b5e38fc6ebd7ccbccb26804aa36a1534930e53b",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10545143190,
+        "name": "accepted-sdk26-simulator-host-715cbc42e9402cf5ca691291fed5c201e61cf222",
+        "digest": "sha256:9cf771e73aa541e2bbdef579b7eb4390be402ac289fc99712a95c06ff0d029ec",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10544920387,
+        "name": "notes-native-development-715cbc42e9402cf5ca691291fed5c201e61cf222",
+        "digest": "sha256:b1091060725779ac05f9cdbfd9286134fccbf67aca8e39389b8bb0bd703475ed",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10544810724,
+        "name": "swift-regression-diagnostics-35337960392",
+        "digest": "sha256:01cb876e2ea45387cde7151ac2f71001beffd608bb8b19bace731e4531883cda",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10544799823,
+        "name": "sdk27-notes-ui-1.7.0-build191",
+        "digest": "sha256:8822686f46372783ad77b9a38cbf9802462131aa489a19cf4284f2034da7288f",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10544690160,
+        "name": "sdk27-dependency-transport-35337960392",
+        "digest": "sha256:1db711bac932d4a3ddbe9e4bb2b479be586774de54f762d2dc5f483e90e5dd93",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10544612762,
+        "name": "accepted-sdk-device-recovery-1.7.0-build191",
+        "digest": "sha256:d73db7af1378b9773c76ddf14c51c56a4a53b602e8c2f46fe0c5b261fe02d7ff",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      },
+      {
+        "id": 10544316054,
+        "name": "accepted-sdk-dependency-transport-35337960392",
+        "digest": "sha256:fb9e4ff44f5cf96b3789f6033b10968df0a09ae58901b0ef2abc23c78e6eb1ff",
+        "expired": false,
+        "workflow_run": {
+          "id": 35337960392,
+          "repository_id": 1332399543,
+          "head_repository_id": 1332399543,
+          "head_branch": "v1.7.0-beta.48",
+          "head_sha": "715cbc42e9402cf5ca691291fed5c201e61cf222"
+        }
+      }
+    ]
+  }
+]

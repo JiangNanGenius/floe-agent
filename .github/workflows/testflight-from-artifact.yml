@@ -8,6 +8,11 @@ on:
       tag:
         required: true
         type: string
+      build191_ui_waiver:
+        description: Narrow recovery of Build191 after explicit waiver of its three recorded UI failures
+        required: false
+        default: false
+        type: boolean
       component_recovery_report:
         description: Same-run proof artifact from the strict component-only recovery controller
         required: false
@@ -55,6 +60,7 @@ jobs:
           name: ${{ inputs.component_recovery_report }}
           path: ${{ runner.temp }}/ComponentRecoveryProof
       - name: Wait for the existing device artifact without rebuilding
+        if: ${{ !inputs.build191_ui_waiver }}
         env:
           APP_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           EXPECTED_ARTIFACT: accepted-sdk-input-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
@@ -109,6 +115,7 @@ jobs:
           echo 'Timed out waiting for the existing device artifact; no signing attempted.' >&2
           exit 1
       - name: Download the original accepted-SDK input
+        if: ${{ !inputs.build191_ui_waiver }}
         uses: actions/download-artifact@v5
         with:
           name: accepted-sdk-input-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
@@ -116,6 +123,7 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/AcceptedInput
       - name: Restore and check the exact retained application
+        if: ${{ !inputs.build191_ui_waiver }}
         env:
           APP_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           APP_VERSION: ${{ steps.source.outputs.version }}
@@ -135,6 +143,53 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "$APP_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "$APP_BUILD"
           python3 scripts/verify_app_regression_xcresult.py --result-bundle "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult"
+      - name: Check out the reviewed recovery controller separately
+        if: inputs.build191_ui_waiver
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          path: recovery-controller
+      - name: Verify and restore only the explicitly waived Build191 recovery
+        if: inputs.build191_ui_waiver
+        env:
+          COMPONENT_RECOVERY_REPORT: ${{ inputs.component_recovery_report }}
+          APP_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          APP_VERSION: ${{ steps.source.outputs.version }}
+          APP_BUILD: ${{ steps.source.outputs.build }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_RUN" = 35337960392
+          test "$RELEASE_TAG" = v1.7.0-beta.48
+          test "$APP_SOURCE_SHA" = 715cbc42e9402cf5ca691291fed5c201e61cf222
+          test "$APP_VERSION" = 1.7.0
+          test "$APP_BUILD" = 191
+          test -z "$COMPONENT_RECOVERY_REPORT"
+          controller="$GITHUB_WORKSPACE/recovery-controller/FloeAgent/scripts"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/reuse-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > "$RUNNER_TEMP/reuse-jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts?per_page=100" > "$RUNNER_TEMP/reuse-artifacts.json"
+          python3 "$controller/verify_build191_expedited.py" --directory "$RUNNER_TEMP" --acknowledge-three-ui-failures
+          # Hash the complete downloaded artifact before extraction, not just its sidecar.
+          for item in device regression; do
+            read -r artifact_id digest < <(python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["artifacts"][sys.argv[2]]; print(a[0],a[2])' "$RUNNER_TEMP/REUSE-PROVENANCE.json" "$item")
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/$item.zip"
+            test "$(shasum -a 256 "$RUNNER_TEMP/$item.zip" | cut -d ' ' -f 1)" = "$digest"
+            PYTHONPATH="$controller" python3 -c 'from verify_accepted_sdk_recovery import safe_extract_zip; from pathlib import Path; import sys; safe_extract_zip(Path(sys.argv[1]),Path(sys.argv[2]))' "$RUNNER_TEMP/$item.zip" "$RUNNER_TEMP/$item"
+          done
+          python3 "$controller/verify_accepted_sdk_recovery.py" device-archive \
+            --artifact-dir "$RUNNER_TEMP/device" --source-sha "$APP_SOURCE_SHA" \
+            --version "$APP_VERSION" --build "$APP_BUILD" \
+            --extract-dir "$RUNNER_TEMP/DevicePayload" --report "$RUNNER_TEMP/device-archive-verification.json"
+          test "$(shasum -a 256 "$RUNNER_TEMP/device/accepted-sdk-device-recovery.zip" | cut -d ' ' -f 1)" = 0e2b45887ab0745fbcd582dbb10a43609e68693471254861b3cea61f15efd9c9
+          ditto "$RUNNER_TEMP/DevicePayload/FloeSignedPayload" "$RUNNER_TEMP/FloeSignedPayload"
+          ditto "$RUNNER_TEMP/regression/FloeStable-AppRegressionTests.xcresult" "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult"
+          python3 scripts/verify_app_regression_xcresult.py \
+            --result-bundle "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
+            --summary-output "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt"
+          python3 scripts/prepare_app_store_bundle.py \
+            --app "$RUNNER_TEMP/FloeSignedPayload/Payload/Floe Agent.app" \
+            --report "$RUNNER_TEMP/bundle-normalization.json"
+
       - name: Install App Store Connect API key
         env:
           ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
@@ -278,7 +333,11 @@ jobs:
             echo "build=${{ steps.source.outputs.build }}"
             echo "commit=${{ steps.source.outputs.source_sha }}"
             echo "accepted_sdk_toolchain=$REQUIRED_XCODE_VERSION ($REQUIRED_XCODE_BUILD)"
-            echo "qualification_policy=user_requested_expedited_upload_without_SDK27_gate"
+            if [[ '${{ inputs.build191_ui_waiver }}' == true ]]; then
+              echo "qualification_policy=explicit_user_waiver_of_three_recorded_UI_failures_internal_TestFlight_only"
+            else
+              echo "qualification_policy=user_requested_expedited_upload_without_SDK27_gate"
+            fi
             echo "testflight_upload=accepted_by_transport"
             echo "apple_processing_state=not_verified"
             echo "floe_qa_visibility=not_verified"

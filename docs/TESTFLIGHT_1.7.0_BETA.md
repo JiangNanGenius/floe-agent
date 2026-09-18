@@ -1,6 +1,6 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (191) — pending upload
+## Current internal delivery: 1.7.0 (191) — additional waiver pending
 
 Immutable tag `v1.7.0-beta.48`, source `715cbc42e9402cf5ca691291fed5c201e61cf222`.
 User explicitly authorized internal delivery despite the two SDK27 UI failures:
@@ -8,7 +8,10 @@ iPad body-search result tap query and iPhone New-button readiness query.
 Both SDK App suites passed204/204; NativeNotes101/101 each. These results and
 the waiver do not constitute full acceptance. [Qualification evidence](qualification/build191-release/README.md).
 [Upload run35343019320](https://github.com/JiangNanGenius/floe-agent/actions/runs/35343019320)
-reuses source-run35337960392's artifact without an App rebuild. Signed upload,
+stopped before signing: accepted-SDK iPhone initial assistant restart-button
+readiness failed in addition to the two previously waived SDK27 UI cases.
+An additional waiver question is pending. Recovery reuses source-run35337960392's
+saved device artifact without an App rebuild; no recovery dispatch yet. Signed upload,
 Apple VALID/unexpired and Floe QA IN_BETA_TESTING are still pending.
 Read-only Apple discovery at2026-09-18 12:10UTC showed178 as the latest VALID
 upload. Builds188–190 did not upload; their failures and recovery packages are
