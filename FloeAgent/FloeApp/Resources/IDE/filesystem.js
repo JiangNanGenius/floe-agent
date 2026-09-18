@@ -3,6 +3,20 @@
 (function (scope) {
   'use strict';
   function createNativeFilesystem(BrowserFS, Buffer, rpc, onCommit = () => {}) {
+    const policy = scope.FloeIDEPolicy || {
+      // Minimal safety net if the policy script is ever missing: never treat
+      // NUL bytes or invalid UTF-8 as text. Path typing needs the policy file.
+      refusal: (path, bytes) => {
+        if (bytes) {
+          for (let index = 0; index < bytes.length; index += 1) {
+            if (bytes[index] === 0) return { code: 'ENOTSUP', message: `${path} is binary and cannot be opened as text` };
+          }
+          try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+          catch (_) { return { code: 'ENOTSUP', message: `${path} is binary and cannot be opened as text` }; }
+        }
+        return null;
+      }
+    };
     const sample = new BrowserFS.FileSystem.InMemory();
     const Stats = sample.statSync('/', false).constructor;
     const Base = Object.getPrototypeOf(BrowserFS.FileSystem.Editor.prototype).constructor;
@@ -36,6 +50,8 @@
       readFile(path, encoding, _flag, cb) {
         call({ operation: 'read', path }, cb, value => {
           const bytes = Buffer.from(value.contentBase64, 'base64');
+          const refused = policy.refusal(path, bytes);
+          if (refused) throw refused;
           return encoding ? bytes.toString(encoding) : bytes;
         });
       }
@@ -44,6 +60,10 @@
         if (flag && flag.getFlagString() !== 'w') { cb(error({code:'ENOTSUP',message:'Only complete text saves are supported'}, path)); return; }
         const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data, encoding || 'utf8');
         if (bytes.length > 4 * 1024 * 1024) { cb(error({code:'EFBIG',message:'Text file exceeds 4 MiB'}, path)); return; }
+        // Refuse before the RPC: a non-text target must never be overwritten
+        // even when the incoming bytes happen to decode as UTF-8 (xlsx case).
+        const refused = policy.refusal(path, bytes);
+        if (refused) { cb(error(refused, path)); return; }
         call({ operation: 'write', path, contentBase64: bytes.toString('base64') }, cb, () => onCommit(path, bytes.toString('utf8')));
       }
       mkdir(path, _mode, cb) { call({ operation: 'mkdir', path }, cb); }

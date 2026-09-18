@@ -89,6 +89,10 @@ public actor IDEWorkspaceSession {
             defer { try? handle.close() }
             let data = try handle.read(upToCount: Self.maximumFileBytes + 1) ?? Data()
             guard data.count <= Self.maximumFileBytes else { throw WorkspaceToolError.tooLarge(limit: Self.maximumFileBytes) }
+            // Typed refusal before any decode: the code workbench never sees
+            // Office/PDF/CAD/image/media/archive bytes, and never a file that
+            // sniffs as binary. Routed surfaces own those documents.
+            try Self.requireText(data, path: path)
             // Search and stat must not replace the original version beneath
             // an open dirty editor. A conflict requires an explicit reopen.
             if baselines[path] == nil {
@@ -103,6 +107,9 @@ public actor IDEWorkspaceSession {
                   let text = String(data: data, encoding: .utf8) else {
                 throw WorkspaceToolError.invalidArguments("IDE writes require a complete UTF-8 text file of at most 4 MiB")
             }
+            // A corrupt save is worse than a refused save: an Office/binary
+            // target is refused even when the incoming bytes are valid UTF-8.
+            try Self.requireText(data, path: path)
             let outcome: WriteOutcome
             if let baseline = baselines[path] {
                 outcome = try files.writeFile(path, content: text, expectedMtime: baseline.mtime, expectedSHA256: baseline.sha256)
@@ -139,6 +146,31 @@ public actor IDEWorkspaceSession {
             return Response()
         default:
             throw WorkspaceToolError.invalidArguments("Unsupported IDE filesystem operation")
+        }
+    }
+
+    /// Refuses any path/byte pair the text workbench must not read or write.
+    /// The thrown error carries the routing reason so the App can open the
+    /// right native surface instead of showing a decode failure.
+    private static func requireText(_ data: Data, path: String) throws {
+        switch WorkspaceTextPolicy.decision(forPath: path, data: data) {
+        case .allowed:
+            return
+        case .refusedNonTextPath(let kind):
+            throw WorkspaceToolError.unsupportedContent(
+                "\(path) is a \(kind.rawValue) document; open it in its native \(Self.surfaceName(for: kind))"
+            )
+        case .refusedBinaryContent:
+            throw WorkspaceToolError.unsupportedContent("\(path) is binary and cannot be opened as text")
+        }
+    }
+
+    private static func surfaceName(for kind: WorkspaceFileKind) -> String {
+        switch kind {
+        case .office: "Office editor"
+        case .pdf, .cad, .image: "viewer"
+        case .media: "media workbench"
+        default: "workspace viewer"
         }
     }
 

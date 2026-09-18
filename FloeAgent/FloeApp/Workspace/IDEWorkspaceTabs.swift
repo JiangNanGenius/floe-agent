@@ -1,0 +1,141 @@
+// FloeApp — Native tab model for the unified workspace IDE.
+//
+// SPDX-License-Identifier: MPL-2.0
+//
+// The IDE now hosts three surfaces in one native tab strip:
+//   • code      — the CodeBlitz/Monaco workbench (browser filesystem + CAS)
+//   • office    — one native OfficeFileSession per document, preview embedded
+//                 and fullscreen editing reusing the *same* session object
+//   • document  — typed viewer (PDF/CAD/image/binary) via FilePreviewView
+//
+// Text routing stays authoritative: an Office/PDF/CAD/image path can never
+// become a code tab, so the web workbench never sees bytes it would decode
+// and write back as UTF-8.
+
+#if canImport(SwiftUI) && canImport(UIKit)
+import SwiftUI
+import FloeWorkspace
+
+enum IDEWorkspaceTabKind: String, Equatable {
+    case code
+    case office
+    case document
+
+    var systemImage: String {
+        switch self {
+        case .code: "chevron.left.forwardslash.chevron.right"
+        case .office: "doc.richtext"
+        case .document: "doc.text.magnifyingglass"
+        }
+    }
+}
+
+@MainActor
+final class IDEWorkspaceTab: ObservableObject, Identifiable {
+    let relativePath: String
+    let kind: IDEWorkspaceTabKind
+    /// One Office session per Office tab. The embedded preview and the
+    /// fullscreen editor both read this same object, so there is exactly one
+    /// working copy, one save receipt and one conflict baseline per document.
+    let officeSession: OfficeFileSession?
+
+    var id: String { relativePath }
+    var title: String { (relativePath as NSString).lastPathComponent }
+
+    init(relativePath: String, kind: IDEWorkspaceTabKind) {
+        self.relativePath = relativePath
+        self.kind = kind
+        self.officeSession = kind == .office ? OfficeFileSession() : nil
+    }
+
+    /// True while this tab owns changes that a close would lose.
+    var hasUnsavedChanges: Bool {
+        guard let officeSession else { return false }
+        return officeSession.hasUncommittedChanges || (!officeSession.readOnly && officeSession.phase == .ready)
+    }
+
+    func release() async {
+        await officeSession?.release()
+    }
+}
+
+@MainActor
+final class IDEWorkspaceTabStore: ObservableObject {
+    @Published private(set) var tabs: [IDEWorkspaceTab] = []
+    @Published var activeTabID: String?
+    static let codeTabID = "__floe_code__"
+
+    init(initialRelativePath: String?) {
+        tabs = [codeTab(active: true)]
+        guard let initialRelativePath, !initialRelativePath.isEmpty else {
+            activeTabID = Self.codeTabID
+            return
+        }
+        switch WorkspaceFileRouter.destination(for: initialRelativePath) {
+        case .codeEditor:
+            activeTabID = Self.codeTabID
+        default:
+            _ = open(relativePath: initialRelativePath)
+        }
+    }
+
+    private func codeTab(active: Bool) -> IDEWorkspaceTab {
+        IDEWorkspaceTab(relativePath: Self.codeTabID, kind: .code)
+    }
+
+    var activeTab: IDEWorkspaceTab? {
+        guard let activeTabID else { return tabs.first }
+        return tabs.first { $0.id == activeTabID } ?? tabs.first
+    }
+
+    /// Opens (or activates) the routed tab for a path. Returns the tab, or nil
+    /// when the path must not be opened in the IDE at all.
+    @discardableResult
+    func open(relativePath: String) -> IDEWorkspaceTab? {
+        let kind: IDEWorkspaceTabKind
+        switch WorkspaceFileRouter.destination(for: relativePath) {
+        case .codeEditor:
+            // A text file stays inside the web workbench's own tab strip;
+            // the native code tab is the container for that surface.
+            activeTabID = Self.codeTabID
+            return tabs.first { $0.id == Self.codeTabID }
+        case .officeEditor:
+            kind = .office
+        case .documentViewer, .cadViewer, .imageViewer, .mediaEditor, .quickLook:
+            kind = .document
+        }
+        if let existing = tabs.first(where: { $0.id == relativePath }) {
+            activeTabID = existing.id
+            return existing
+        }
+        let tab = IDEWorkspaceTab(relativePath: relativePath, kind: kind)
+        tabs.append(tab)
+        activeTabID = tab.id
+        return tab
+    }
+
+    func activate(_ id: String) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        activeTabID = id
+    }
+
+    func close(_ id: String) async {
+        guard id != Self.codeTabID, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let tab = tabs[index]
+        tabs.remove(at: index)
+        if activeTabID == id {
+            let neighbour = tabs.indices.contains(index) ? tabs[index] : tabs.last
+            activeTabID = neighbour?.id ?? Self.codeTabID
+        }
+        await tab.release()
+    }
+
+    func releaseAll() async {
+        for tab in tabs where tab.kind == .office { await tab.release() }
+    }
+
+    func contains(_ relativePath: String) -> Bool {
+        tabs.contains { $0.id == relativePath }
+    }
+}
+#endif

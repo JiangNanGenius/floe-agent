@@ -59,6 +59,13 @@ final class HomeLaunchpadViewModel: ObservableObject {
     /// Latest run state per conversation (overview status pills).
     @Published private(set) var latestRunStates: [UUID: String] = [:]
     @Published private(set) var isLoading = false
+    /// Model actually used by the most recent run, refreshed by `load()`.
+    /// Used only as a fallback for the draft picker; running requests keep
+    /// their own model and are never re-routed by this value.
+    @Published private(set) var recentModelID: UUID?
+    /// Prevents duplicate default repairs while a save is in flight (the save
+    /// reloads the center, which triggers another reconciliation pass).
+    private var isRepairingDefault = false
 
     let center: ConversationCenter
     let environment: AppEnvironment
@@ -112,12 +119,12 @@ final class HomeLaunchpadViewModel: ObservableObject {
         defer { isLoading = false }
         await center.reload()
         await environment.workspaceCenter.reload()
-        if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
         // Nil is a deliberate private-chat scope. Never inherit whatever
         // project happens to be open in another task or inspector.
 
         var states: [UUID: String] = [:]
         var active: [ConversationRecord] = []
+        var newestRun: (date: Date, modelID: UUID)?
         for conversation in center.conversations {
             let runs = (try? await environment.runStore.runs(conversationID: conversation.id)) ?? []
             guard let latest = runs.sorted(by: { $0.startedAt > $1.startedAt }).first else { continue }
@@ -125,10 +132,46 @@ final class HomeLaunchpadViewModel: ObservableObject {
             if !RunStateLocalizer.isTerminal(latest.state) {
                 active.append(conversation)
             }
+            if let modelID = latest.modelID,
+               newestRun == nil || latest.startedAt > newestRun!.date {
+                newestRun = (latest.startedAt, modelID)
+            }
         }
+        recentModelID = newestRun?.modelID
         latestRunStates = states
         activeTasks = active
         recentConversations = center.conversations
+        reconcileModelSelection()
+    }
+
+    // MARK: - Model validation
+
+    /// Validates the draft selection against the models the picker actually
+    /// offers after a Settings change and repairs it in the fixed fallback
+    /// order. Only a *broken* persisted default is rewritten; a running
+    /// request keeps its provider/model pair untouched.
+    func reconcileModelSelection() {
+        let candidates = availableModels.map {
+            AgentModelCandidate(id: $0.id, isUsable: center.providerAndModel(modelID: $0.id) != nil)
+        }
+        let resolution = AgentModelSelectionResolver.resolve(
+            selected: selectedModelID,
+            defaultModel: center.modelPreferences.defaultAgentModelID,
+            recent: recentModelID,
+            candidates: candidates
+        )
+        if selectedModelID != resolution.modelID { selectedModelID = resolution.modelID }
+        guard let repaired = resolution.modelID else { return }
+        let stored = center.modelPreferences.defaultAgentModelID
+        let storedIsUsable = candidates.contains { $0.id == stored && $0.isUsable }
+        guard !storedIsUsable, !isRepairingDefault else { return }
+        // Repair the persisted default so Chat and other surfaces agree with
+        // Home. This never mutates an in-flight run's model.
+        isRepairingDefault = true
+        Task {
+            await center.setDefaultAgentModel(repaired)
+            isRepairingDefault = false
+        }
     }
 
     // MARK: - Task creation

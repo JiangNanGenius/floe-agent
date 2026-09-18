@@ -64,6 +64,40 @@ public struct GitRepositorySnapshot: Codable, Sendable, Hashable {
     }
 }
 
+/// Result of a merge (or merge-conflict resolution) operation.
+public struct GitMergeOutcome: Codable, Sendable, Hashable {
+    public enum Result: String, Codable, Sendable {
+        case upToDate
+        case fastForward
+        case merged
+        case conflicts
+    }
+
+    public let result: Result
+    public let message: String
+    public let conflictedPaths: [String]
+
+    public init(result: Result, message: String, conflictedPaths: [String] = []) {
+        self.result = result
+        self.message = message
+        self.conflictedPaths = conflictedPaths
+    }
+
+    public var isConflict: Bool { result == .conflicts }
+}
+
+/// Result of discarding working-tree changes. `recoveryPath` points at a
+/// private copy of everything that was about to be lost, when one was made.
+public struct GitDiscardOutcome: Codable, Sendable, Hashable {
+    public let discardedPaths: [String]
+    public let recoveryPath: String?
+
+    public init(discardedPaths: [String], recoveryPath: String?) {
+        self.discardedPaths = discardedPaths
+        self.recoveryPath = recoveryPath
+    }
+}
+
 public struct GitHubAccount: Codable, Sendable, Hashable {
     public let login: String
     public let name: String?

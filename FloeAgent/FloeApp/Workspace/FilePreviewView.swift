@@ -46,6 +46,11 @@ struct FilePreviewView: View {
     @State private var engineeringRoot: URL?
     @State private var cadDirty = false
     @State private var confirmDiscardCAD = false
+    @State private var shareURL: URL?
+    @State private var isPreparingShare = false
+    /// Sharing a cloud/network snapshot must not clear the preview copy that
+    /// currently owns the visible document, so it uses its own temp store.
+    @StateObject private var shareCopy = RemoteFilePreviewCopy()
 
     var body: some View {
         Group {
@@ -137,6 +142,10 @@ struct FilePreviewView: View {
             QuickLookView(url: url)
                 .ignoresSafeArea()
         }
+        .sheet(item: $shareURL) { url in
+            PreviewShareSheet(items: [url])
+                .ignoresSafeArea()
+        }
         .fullScreenCover(isPresented: $isOfficeEditorPresented, onDismiss: {
             Task { await load() }
         }) {
@@ -183,7 +192,7 @@ struct FilePreviewView: View {
     }
 
     private var isPDF: Bool {
-        (relativePath as NSString).pathExtension.lowercased() == "pdf"
+        WorkspaceFileType.isPDF(relativePath)
     }
 
     private var isMarkdown: Bool {
@@ -199,7 +208,7 @@ struct FilePreviewView: View {
     }
 
     private var isOfficeDocument: Bool {
-        ["docx", "xlsx", "pptx"].contains((relativePath as NSString).pathExtension.lowercased())
+        WorkspaceFileType.isOffice(relativePath)
     }
 
     private var officeEditingAvailable: Bool {
@@ -231,7 +240,7 @@ struct FilePreviewView: View {
                 }
                 .accessibilityIdentifier("file.preview.engineering.fullscreen")
             }
-            if ["mov", "mp4", "m4v"].contains(WorkspaceFileType.pathExtension(for: relativePath)),
+            if WorkspaceFileType.isMedia(relativePath),
                !center.isCloudWorkspacePath(relativePath), !center.isNetworkWorkspacePath(relativePath) {
                 Button {
                     do {
@@ -250,17 +259,20 @@ struct FilePreviewView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("file.preview.html")
             }
-            if let onAddToContext {
-                Button {
-                    onAddToContext()
-                } label: {
-                    Label("inspector.context.add", systemImage: "text.badge.plus")
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("inspector.context.add")
+            // Explicit share of the *current* file: the visible document is
+            // resolved through the guard (local) or snapshotted (cloud/network)
+            // and never re-decoded as text.
+            Button {
+                prepareShare()
+            } label: {
+                Label("file.preview.share", systemImage: "square.and.arrow.up")
             }
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .disabled(isPreparingShare || center.fileService == nil)
+            .accessibilityLabel("file.preview.share")
+            .accessibilityIdentifier("file.preview.share")
             if allowsIDEExpansion,
-               isTextual,
+               WorkspaceFileRouter.allowsCodeEditor(relativePath),
                content != nil,
                !center.isCloudWorkspacePath(relativePath),
                !center.isNetworkWorkspacePath(relativePath) {
@@ -273,15 +285,6 @@ struct FilePreviewView: View {
                 .accessibilityLabel("在编辑器中打开")
                 .accessibilityIdentifier("file.preview.openIDE")
             }
-            if !isTextual, nativeOfficeURL == nil, quickLookAvailable {
-                Button {
-                    presentQuickLook()
-                } label: {
-                    Label("inspector.preview.quicklook", systemImage: "eye")
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("inspector.preview.quicklook")
-            }
             if officeEditingAvailable {
                 Button {
                     isOfficeEditorPresented = true
@@ -292,6 +295,32 @@ struct FilePreviewView: View {
                 .accessibilityLabel("office.editor.open")
                 .disabled(!officeSession.canAct)
             }
+            // Low-frequency actions live behind More instead of occupying a
+            // permanent toolbar badge.
+            Menu {
+                if let onAddToContext {
+                    Button {
+                        onAddToContext()
+                    } label: {
+                        Label("inspector.context.add", systemImage: "text.badge.plus")
+                    }
+                    .accessibilityIdentifier("file.preview.addContext")
+                }
+                if !isTextual, nativeOfficeURL == nil, quickLookAvailable {
+                    Button {
+                        presentQuickLook()
+                    } label: {
+                        Label("inspector.preview.quicklook", systemImage: "eye")
+                    }
+                    .accessibilityIdentifier("file.preview.quicklook")
+                }
+            } label: {
+                Label("file.preview.more", systemImage: "ellipsis.circle")
+            }
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel("file.preview.more")
+            .accessibilityIdentifier("file.preview.more")
+            .disabled(onAddToContext == nil && (isTextual || nativeOfficeURL != nil || !quickLookAvailable))
         }
     }
 
@@ -458,6 +487,33 @@ struct FilePreviewView: View {
         }
     }
 
+    /// Shares the exact document currently on screen. Cloud/network paths are
+    /// snapshotted into a private temporary copy (never re-decoded as text),
+    /// and the visible preview copy is left untouched.
+    private func prepareShare() {
+        guard !isPreparingShare else { return }
+        isPreparingShare = true
+        Task {
+            defer { isPreparingShare = false }
+            let remote = center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath)
+            do {
+                if !remote, let pdfURL { shareURL = pdfURL; return }
+                if !remote, let binaryPreviewURL { shareURL = binaryPreviewURL; return }
+                if remote {
+                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    try Task.checkCancellation()
+                    shareURL = try shareCopy.store(bytes, fileName: fileName)
+                    return
+                }
+                guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+                let url = try service.guardResolver.resolve(relativePath)
+                try service.guardResolver.assertReadableSize(url)
+                shareURL = url
+            } catch is CancellationError {
+            } catch { previewError = error.localizedDescription }
+        }
+    }
+
     private func presentQuickLook() {
         Task {
             do {
@@ -491,6 +547,17 @@ struct FilePreviewView: View {
             }
         }
     }
+}
+
+/// Plain share sheet for the file currently shown by the preview.
+private struct PreviewShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 /// Lives through fullscreen/sheet presentation; never removes files merely

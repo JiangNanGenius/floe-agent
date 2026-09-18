@@ -11,6 +11,9 @@ import FloeWorkspace
     @Published var conflict: WorkspaceEditConflict?
     @Published var error: String?
     @Published var activePath: String?
+    /// A non-text path the workbench refused (ENOTSUP). The native IDE opens
+    /// it in its typed surface instead of showing a decode failure.
+    @Published var pendingNativePath: String?
     weak var web: WKWebView?
     let files: IDEWorkspaceSession?
     init(files: WorkspaceFileService?) { self.files = files.map { IDEWorkspaceSession(files: $0) } }
@@ -136,6 +139,14 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
                 replyHandler([:], nil)
             case "saved": replyHandler([:], nil)
             case "failed": state.error = body["message"] as? String; replyHandler([:], nil)
+            case "routing":
+                // The browser filesystem refused a non-text path. Route it to
+                // the native surface rather than retrying it as text.
+                if let path = body["path"] as? String, let relative = try? IDEWorkspaceSession.relativePath(path),
+                   WorkspaceFileRouter.destination(for: relative) != .codeEditor {
+                    state.pendingNativePath = relative
+                }
+                replyHandler([:], nil)
             default:
                 guard let data = try? JSONSerialization.data(withJSONObject: body),
                       let request = try? JSONDecoder().decode(IDEWorkspaceSession.Request.self, from: data) else {
@@ -157,6 +168,7 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
                             case .escapesRoot, .secretFile: code = "EACCES"
                             case .tooLarge: code = "EFBIG"
                             case .isDirectory: code = "EISDIR"
+                            case .unsupportedContent: code = "ENOTSUP"
                             default: code = "EINVAL"
                             }
                         } else if (error as NSError).code == NSFileNoSuchFileError || (error as NSError).code == NSFileReadNoSuchFileError {

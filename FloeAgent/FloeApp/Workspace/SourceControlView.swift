@@ -2,16 +2,35 @@
 import SwiftUI
 import FloeGit
 
-/// A deliberately lightweight source-control surface: repository state,
-/// changed files, diffs, commits and safe branch/network operations. It does
-/// not expose destructive reset, clean, force-push or history rewriting.
+/// The ordinary source-control surface: staged/unstaged changes with
+/// per-file stage, unstage and discard (recovery copy kept), working-tree and
+/// staged diffs, commits, branch switch/create, fetch/pull (fast-forward and
+/// merge variants), push, and merge-conflict resolution. It deliberately
+/// exposes no force-push, reset --hard, clean or rebase.
 struct SourceControlView: View {
     @ObservedObject var center: SourceControlCenter
     @State private var commitMessage = ""
-    @State private var selectedDiffPath: String?
+    @State private var diffRequest: DiffRequest?
     @State private var diffText = ""
     @State private var branchName = ""
     @State private var showBranches = false
+    @State private var conflictFile: GitConflictFile?
+    @State private var conflictText = ""
+    @State private var conflictNotice: String?
+    @State private var mergeNotice: String?
+    @State private var discardRequest: GitFileChange?
+    @State private var discardRecovery: String?
+
+    private struct DiffRequest: Identifiable {
+        let path: String
+        let staged: Bool
+        var id: String { (staged ? "staged:" : "worktree:") + path }
+    }
+
+    private struct GitConflictFile: Identifiable {
+        let path: String
+        var id: String { path }
+    }
 
     var body: some View {
         Group {
@@ -42,20 +61,97 @@ struct SourceControlView: View {
         } message: {
             Text(center.errorMessage ?? "")
         }
-        .sheet(isPresented: $showBranches) { branchSheet }
-        .sheet(isPresented: Binding(
-            get: { selectedDiffPath != nil },
-            set: { if !$0 { selectedDiffPath = nil; diffText = "" } }
+        .alert("合并", isPresented: Binding(
+            get: { mergeNotice != nil },
+            set: { if !$0 { mergeNotice = nil } }
         )) {
+            Button("好", role: .cancel) { mergeNotice = nil }
+        } message: {
+            Text(mergeNotice ?? "")
+        }
+        .alert("已保留恢复副本", isPresented: Binding(
+            get: { discardRecovery != nil },
+            set: { if !$0 { discardRecovery = nil } }
+        )) {
+            Button("好", role: .cancel) { discardRecovery = nil }
+        } message: {
+            Text(discardRecovery ?? "")
+        }
+        .confirmationDialog(
+            "放弃该文件的修改？未提交内容会先复制到 .git/floe-recovery。",
+            isPresented: Binding(
+                get: { discardRequest != nil },
+                set: { if !$0 { discardRequest = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let change = discardRequest {
+                Button("放弃修改", role: .destructive) {
+                    let path = change.path
+                    // A staged row reverts the path to HEAD (index + working
+                    // tree); an unstaged row only restores the working tree.
+                    let includeStaged = change.staged
+                    discardRequest = nil
+                    run {
+                        let outcome = try await center.discard(paths: [path], includeStaged: includeStaged)
+                        if let recovery = outcome.recoveryPath { discardRecovery = recovery }
+                    }
+                }
+            }
+            Button("取消", role: .cancel) { discardRequest = nil }
+        }
+        .sheet(isPresented: $showBranches) { branchSheet }
+        .sheet(item: $diffRequest) { request in
             NavigationStack {
                 Group {
                     if diffText.isEmpty { ContentUnavailableView("没有可显示的差异", systemImage: "doc.text.magnifyingglass") }
                     else { DiffView(diffText: diffText) }
                 }
-                .navigationTitle(selectedDiffPath ?? "工作区差异")
+                .navigationTitle(request.path)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("完成") { selectedDiffPath = nil; diffText = "" }
+                        Button("完成") { diffRequest = nil; diffText = "" }
+                    }
+                }
+            }
+        }
+        .sheet(item: $conflictFile) { file in
+            NavigationStack {
+                VStack(spacing: 0) {
+                    if let conflictNotice {
+                        Label(conflictNotice, systemImage: "exclamationmark.triangle")
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(.bar)
+                    }
+                    TextEditor(text: $conflictText)
+                        .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("sourceControl.conflict.editor")
+                }
+                .navigationTitle(file.path)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("取消") { conflictFile = nil; conflictNotice = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("标记已解决") {
+                            let path = file.path
+                            let content = conflictText
+                            run {
+                                let outcome = try await center.resolveConflict(path: path, content: content)
+                                if outcome.isConflict {
+                                    conflictNotice = "仍有冲突：" + outcome.conflictedPaths.joined(separator: ", ")
+                                } else {
+                                    conflictFile = nil
+                                    conflictNotice = nil
+                                    mergeNotice = outcome.message
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -85,6 +181,33 @@ struct SourceControlView: View {
                     sourceButton("推送", icon: "arrow.up.to.line") { try await center.push() }
                 }
                 .buttonStyle(.bordered)
+                Button {
+                    run {
+                        let outcome = try await center.pullMerge()
+                        mergeNotice = outcome.isConflict
+                            ? "拉取产生冲突：" + outcome.conflictedPaths.joined(separator: ", ")
+                            : outcome.message
+                    }
+                } label: {
+                    Label("拉取并合并", systemImage: "arrow.triangle.merge")
+                }
+                .disabled(center.isBusy)
+            }
+
+            if !conflictedChanges.isEmpty {
+                Section("冲突（\(conflictedChanges.count)）") {
+                    ForEach(conflictedChanges) { change in
+                        Button {
+                            openConflict(change.path)
+                        } label: {
+                            Label(change.path, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(FloeTheme.destructive)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button("中止合并", role: .destructive) { run { try await center.abortMerge() } }
+                        .disabled(center.isBusy)
+                }
             }
 
             Section("提交") {
@@ -105,26 +228,30 @@ struct SourceControlView: View {
                 }
             }
 
-            Section("更改（\(center.snapshot.changes.count)）") {
-                if center.snapshot.changes.isEmpty {
+            if !stagedChanges.isEmpty {
+                Section("已暂存（\(stagedChanges.count)）") {
+                    ForEach(stagedChanges) { change in
+                        changeRow(change, staged: true)
+                            .swipeActions(edge: .trailing) {
+                                Button("取消暂存") { run { try await center.unstage(paths: [change.path]) } }
+                                    .tint(.orange)
+                                Button("放弃修改", role: .destructive) { discardRequest = change }
+                            }
+                    }
+                }
+            }
+
+            Section("更改（\(unstagedChanges.count)）") {
+                if unstagedChanges.isEmpty {
                     Text("工作区干净").foregroundStyle(.secondary)
                 } else {
-                    ForEach(center.snapshot.changes) { change in
-                        Button { loadDiff(change.path) } label: {
-                            HStack(spacing: 10) {
-                                Text(change.kind.badge)
-                                    .font(.caption.monospaced().bold())
-                                    .foregroundStyle(change.kind.color)
-                                    .frame(width: 20)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(change.path).lineLimit(1).truncationMode(.middle)
-                                    if change.staged { Text("已暂存").font(.caption).foregroundStyle(.secondary) }
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    ForEach(unstagedChanges) { change in
+                        changeRow(change, staged: false)
+                            .swipeActions(edge: .trailing) {
+                                Button("暂存") { run { try await center.stage(paths: [change.path]) } }
+                                    .tint(.green)
+                                Button("放弃修改", role: .destructive) { discardRequest = change }
                             }
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -156,6 +283,37 @@ struct SourceControlView: View {
         }
     }
 
+    private func changeRow(_ change: GitFileChange, staged: Bool) -> some View {
+        Button { loadDiff(change.path, staged: staged) } label: {
+            HStack(spacing: 10) {
+                Text(change.kind.badge)
+                    .font(.caption.monospaced().bold())
+                    .foregroundStyle(change.kind.color)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(change.path).lineLimit(1).truncationMode(.middle)
+                    Text(staged ? "已暂存 · 查看暂存差异" : "未暂存 · 查看工作区差异")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var stagedChanges: [GitFileChange] {
+        center.snapshot.changes.filter { $0.staged && $0.kind != .conflicted }
+    }
+
+    private var unstagedChanges: [GitFileChange] {
+        center.snapshot.changes.filter { !$0.staged && $0.kind != .conflicted }
+    }
+
+    private var conflictedChanges: [GitFileChange] {
+        center.snapshot.changes.filter { $0.kind == .conflicted }
+    }
+
     private var branchSheet: some View {
         NavigationStack {
             List {
@@ -172,6 +330,21 @@ struct SourceControlView: View {
                             }
                         }
                         .disabled(branch == center.snapshot.branch)
+                    }
+                }
+                Section("合并到当前分支") {
+                    ForEach(center.snapshot.branches.filter { $0 != center.snapshot.branch }, id: \.self) { branch in
+                        Button {
+                            showBranches = false
+                            run {
+                                let outcome = try await center.merge(branch: branch)
+                                mergeNotice = outcome.isConflict
+                                    ? "合并产生冲突：" + outcome.conflictedPaths.joined(separator: ", ")
+                                    : outcome.message
+                            }
+                        } label: {
+                            Label("合并 \(branch)", systemImage: "arrow.triangle.merge")
+                        }
                     }
                 }
                 Section("新分支") {
@@ -206,12 +379,28 @@ struct SourceControlView: View {
         Task { await center.perform(operation) }
     }
 
-    private func loadDiff(_ path: String) {
-        selectedDiffPath = path
+    private func loadDiff(_ path: String, staged: Bool) {
+        diffRequest = DiffRequest(path: path, staged: staged)
         diffText = ""
         Task {
-            do { diffText = try await center.diff(path: path) }
-            catch { center.errorMessage = error.localizedDescription; selectedDiffPath = nil }
+            do {
+                diffText = staged
+                    ? try await center.diffStaged(path: path)
+                    : try await center.diff(path: path)
+            } catch {
+                center.errorMessage = error.localizedDescription
+                diffRequest = nil
+            }
+        }
+    }
+
+    private func openConflict(_ path: String) {
+        conflictNotice = nil
+        Task {
+            do {
+                conflictText = try await center.conflictFileContents(path: path)
+                conflictFile = GitConflictFile(path: path)
+            } catch { center.errorMessage = error.localizedDescription }
         }
     }
 }

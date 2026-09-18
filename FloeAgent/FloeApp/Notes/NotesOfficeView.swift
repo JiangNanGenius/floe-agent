@@ -216,8 +216,12 @@ struct NotesOfficeView: View {
             guard let staged = try await stageWorkingCopy(latest) else { return }
             apply(staged)
             await office.open(staged.target)
-            await office.enterEditing()
+            // Queued edit intent: the open above may still own the session; the
+            // intent is replayed when it settles and a refused read-only open
+            // reports the real reason instead of silently staying preview.
+            _ = await office.requestEditing()
             if let error = office.error { message = error }
+            else if let reason = office.editUnavailableReason { message = reason }
         } catch { message = error.localizedDescription }
     }
 

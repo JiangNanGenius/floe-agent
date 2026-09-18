@@ -214,6 +214,95 @@ final class SourceControlCenter: ObservableObject {
         snapshot = try await git.snapshot(at: root)
     }
 
+    func stage(paths: [String]) async throws {
+        let root = try workspaceRoot()
+        try await git.stage(paths: paths, at: root)
+        snapshot = try await git.snapshot(at: root)
+    }
+
+    func unstage(paths: [String]) async throws {
+        let root = try workspaceRoot()
+        try await git.unstage(paths: paths, at: root)
+        snapshot = try await git.snapshot(at: root)
+    }
+
+    /// Discards the selected file's changes after writing a private recovery
+    /// copy (working tree plus staged bytes when `includeStaged`). The returned
+    /// outcome carries the recovery path so the UI can offer it.
+    func discard(paths: [String], includeStaged: Bool = false) async throws -> GitDiscardOutcome {
+        let root = try workspaceRoot()
+        let outcome = try await git.discard(paths: paths, at: root, includeStaged: includeStaged)
+        snapshot = try await git.snapshot(at: root)
+        return outcome
+    }
+
+    /// Staged-vs-HEAD diff (`git diff --cached`).
+    func diffStaged(path: String?) async throws -> String {
+        try await git.diffStaged(at: workspaceRoot(), path: path)
+    }
+
+    func merge(branch: String) async throws -> GitMergeOutcome {
+        let root = try workspaceRoot()
+        let identity = try await gitIdentity()
+        let outcome = try await git.mergeRef(
+            at: root, refName: "refs/heads/\(branch)",
+            authorName: identity.name, authorEmail: identity.email
+        )
+        snapshot = try await git.snapshot(at: root)
+        return outcome
+    }
+
+    /// Fetches then merges the upstream (ordinary pull with merge fallback).
+    func pullMerge() async throws -> GitMergeOutcome {
+        let root = try workspaceRoot()
+        let identity = try await gitIdentity()
+        let outcome = try await git.pullMerge(
+            at: root, token: try credentials.token(),
+            authorName: identity.name, authorEmail: identity.email
+        )
+        snapshot = try await git.snapshot(at: root)
+        return outcome
+    }
+
+    func resolveConflict(path: String, content: String) async throws -> GitMergeOutcome {
+        let root = try workspaceRoot()
+        let identity = try await gitIdentity()
+        let outcome = try await git.resolveConflict(
+            at: root, path: path, content: content,
+            authorName: identity.name, authorEmail: identity.email
+        )
+        snapshot = try await git.snapshot(at: root)
+        return outcome
+    }
+
+    func abortMerge() async throws {
+        let root = try workspaceRoot()
+        try await git.abortMerge(at: root)
+        snapshot = try await git.snapshot(at: root)
+    }
+
+    func isMerging() async throws -> Bool {
+        try await git.isMerging(at: workspaceRoot())
+    }
+
+    /// Reads one conflicted file for the resolution editor. Path validation
+    /// keeps the read inside the workspace root.
+    func conflictFileContents(path: String) async throws -> String {
+        let root = try workspaceRoot()
+        guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else {
+            throw FloeError.validationFailed("Git path must stay inside the workspace")
+        }
+        let url = root.appendingPathComponent(path).standardizedFileURL
+        guard url.path.hasPrefix(root.standardizedFileURL.path + "/") else {
+            throw FloeError.validationFailed("Git path must stay inside the workspace")
+        }
+        let data = try Data(contentsOf: url)
+        guard data.count <= 4 * 1024 * 1024, let text = String(data: data, encoding: .utf8) else {
+            throw FloeError.validationFailed("冲突文件不是可编辑的 UTF-8 文本")
+        }
+        return text
+    }
+
     func commit(message: String) async throws {
         let root = try workspaceRoot()
         let identity = try await gitIdentity()

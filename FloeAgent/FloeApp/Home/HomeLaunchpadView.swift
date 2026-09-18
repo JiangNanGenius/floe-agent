@@ -72,6 +72,17 @@ struct HomeLaunchpadView: View {
                 viewModel.draft = pending
             }
         }
+        // A Settings change reloads the center asynchronously; both the stored
+        // default and the offered model list can change under an open Home
+        // screen. Re-validate against the fixed fallback order instead of
+        // leaving a disabled/deleted model selected (which used to disable
+        // send and show "no model configured").
+        .onChange(of: center.modelPreferences) { _, _ in
+            viewModel.reconcileModelSelection()
+        }
+        .onChange(of: center.availableAgentModels.map(\.id)) { _, _ in
+            viewModel.reconcileModelSelection()
+        }
         .refreshable { await viewModel.load() }
         .sheet(isPresented: $showsDraftPermissions) {
             DraftTaskPermissionsSheet(

@@ -31,6 +31,9 @@ public enum WorkspaceToolError: Error, Sendable, Equatable {
     case invalidPatch(String)
     /// Arguments failed schema-level validation.
     case invalidArguments(String)
+    /// The path or bytes are not a UTF-8 text document. The bridge surfaces
+    /// this as ENOTSUP so typed routing opens the native surface instead.
+    case unsupportedContent(String)
 }
 
 extension WorkspaceToolError: LocalizedError {
@@ -58,6 +61,8 @@ extension WorkspaceToolError: LocalizedError {
             "Invalid patch: \(reason)"
         case .invalidArguments(let reason):
             "Invalid arguments: \(reason)"
+        case .unsupportedContent(let reason):
+            "Not a text document: \(reason)"
         }
     }
 }
@@ -76,6 +81,7 @@ public extension WorkspaceToolError {
         case .unsupportedScope: "unsupportedScope"
         case .invalidPatch: "invalidPatch"
         case .invalidArguments: "invalidArguments"
+        case .unsupportedContent: "unsupportedContent"
         }
     }
 
@@ -87,7 +93,8 @@ public extension WorkspaceToolError {
              .notFound(let path), .alreadyExists(let path),
              .alreadyExistsOverwritable(let path),
              .isDirectory(let path), .unsupportedScope(let path),
-             .invalidPatch(let path), .invalidArguments(let path):
+             .invalidPatch(let path), .invalidArguments(let path),
+             .unsupportedContent(let path):
             payload["detail"] = path
         case .tooLarge(let limit):
             payload["limit"] = String(limit)

@@ -123,7 +123,7 @@ struct FileInspectorView: View {
                         .font(FloeTheme.Typography.section)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    openIDEButton
+                    if canOpenCodeWorkbenchForPreview { openIDEButton }
                     Button {
                         router.hideInspector()
                     } label: {
@@ -178,6 +178,9 @@ struct FileInspectorView: View {
             .navigationTitle("inspector.files")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { openIDEButton }
+                // The workspace-level IDE entry always routes the initial
+                // path itself; the preview header only exposes it for files
+                // the code workbench may actually open.
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         do {
@@ -219,6 +222,15 @@ struct FileInspectorView: View {
                 }
             }
         }
+    }
+
+    /// The code workbench must never be handed an Office/PDF/CAD/image path:
+    /// the previous unconditional button let an xlsx be decoded as UTF-8 and
+    /// saved back as text. Non-text previews expose their own native action
+    /// inside FilePreviewView instead.
+    private var canOpenCodeWorkbenchForPreview: Bool {
+        guard let previewPath else { return true }
+        return WorkspaceFileRouter.allowsCodeEditor(previewPath)
     }
 
     private var openIDEButton: some View {

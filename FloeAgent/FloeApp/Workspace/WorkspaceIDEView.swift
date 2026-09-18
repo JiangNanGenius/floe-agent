@@ -4,23 +4,38 @@ import SwiftUI
 import FloeWorkspace
 
 /// An IDE pins one workspace for its lifetime, including terminal ownership.
+///
+/// The IDE is a unified native tab host: the code workbench (CodeBlitz/Monaco)
+/// plus one tab per routed native document. Office documents get exactly one
+/// `OfficeFileSession` per tab, embedded as a preview and opened fullscreen for
+/// editing with that same session, so a tab close can always offer
+/// save / discard / cancel against one working copy.
 struct WorkspaceIDEView: View {
     @ObservedObject var center: WorkspaceCenter
     let initialRelativePath: String?
     let onSaved: () -> Void
     @StateObject private var state: IDEWorkbenchState
+    @StateObject private var tabs: IDEWorkspaceTabStore
     private let workspaceID: UUID?
     private let workspaceName: String
     private let root: URL?
     @Environment(\.dismiss) private var dismiss
     @State private var showsCloseConfirmation = false
     @State private var terminalOwner: LocalTerminalOwner?
+    @State private var showsTerminal = false
     @State private var runController: IDELanguageRunController?
     @State private var showsRunSheet = false
     @State private var showsRunTerminal = false
     @State private var pendingRunTerminal = false
-    @State private var preview: Preview?
-    private struct Preview: Identifiable { let id: String }
+    @State private var officeFullscreenTab: IDEWorkspaceTab?
+    @State private var officeCloseRequest: OfficeCloseRequest?
+    @State private var routingNotice: String?
+    @StateObject private var remoteOfficeCopy = RemoteFilePreviewCopy()
+
+    private struct OfficeCloseRequest: Identifiable {
+        let id: String
+        let tab: IDEWorkspaceTab
+    }
 
     init(initialRelativePath: String? = nil, center: WorkspaceCenter, onSaved: @escaping () -> Void = {}) {
         self.center = center; self.initialRelativePath = initialRelativePath; self.onSaved = onSaved
@@ -28,7 +43,9 @@ struct WorkspaceIDEView: View {
         self.workspaceName = center.currentWorkspace?.name ?? String(localized: "ide.workspace")
         self.root = center.currentRootURL
         _state = StateObject(wrappedValue: IDEWorkbenchState(files: center.fileService))
+        _tabs = StateObject(wrappedValue: IDEWorkspaceTabStore(initialRelativePath: initialRelativePath))
     }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -36,15 +53,32 @@ struct WorkspaceIDEView: View {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.callout).foregroundStyle(.red).padding(10)
                 }
+                if let routingNotice {
+                    Label(routingNotice, systemImage: "arrowshape.turn.up.right")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.bar)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 if root != nil {
-                    IDEWorkbenchWebView(state: state, initialPath: initialRelativePath)
+                    tabStrip
+                    Divider()
+                    content
+                    if showsTerminal, let terminalOwner {
+                        Divider()
+                        LocalTerminalView(owner: terminalOwner, embedded: true)
+                            .frame(height: 280)
+                            .background(FloeTheme.readingSurface)
+                            .accessibilityIdentifier("workspace.ide.terminalPanel")
+                    }
                 } else { ContentUnavailableView("ide.workspace.unavailable", systemImage: "folder.badge.questionmark") }
             }
             .navigationTitle(workspaceName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { Task { await state.refreshDirty(); if state.dirty { showsCloseConfirmation = true } else { close() } } } label: {
+                    Button { requestCloseIDE() } label: {
                         Label("ide.close", systemImage: "chevron.down")
                     }.frame(minWidth: 44, minHeight: 44).disabled(state.saving)
                     .accessibilityIdentifier("workspace.ide.close")
@@ -56,7 +90,7 @@ struct WorkspaceIDEView: View {
                     .frame(minWidth: 44, minHeight: 44)
                     .disabled(state.activePath == nil || root == nil || center.currentWorkspace?.id != workspaceID)
                     .accessibilityIdentifier("workspace.ide.run")
-                    Button { Task { if await state.saveAll() { onSaved() } } } label: {
+                    Button { Task { if await saveAllSurfaces() { onSaved() } } } label: {
                         Label("ide.save.all", systemImage: "square.and.arrow.down")
                     }.disabled(!state.ready || state.saving).accessibilityIdentifier("workspace.ide.save").keyboardShortcut("s", modifiers: .command)
                     if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
@@ -70,21 +104,18 @@ struct WorkspaceIDEView: View {
                         .accessibilityValue(state.lastInsertResult ?? "")
                     }
                     Button {
-                        if let path = state.activePath { preview = Preview(id: path) }
+                        openActiveInRoutedSurface()
                     } label: { Label("ide.open.editor", systemImage: "doc.richtext") }
-                    .disabled(state.activePath == nil || center.currentWorkspace?.id != workspaceID)
+                    .disabled(tabs.activeTab == nil || root == nil)
                     .accessibilityIdentifier("workspace.ide.richEditor")
                     Button {
-                        if let workspaceID, let root {
-                            terminalOwner = center.environment.localTerminals.owner(workspaceID: workspaceID, root: root)
-                        }
+                        toggleTerminal()
                     } label: { Label("ide.terminal", systemImage: "terminal") }
-                    .disabled(root == nil).accessibilityIdentifier("workspace.ide.terminal")
+                    .disabled(root == nil || workspaceID == nil).accessibilityIdentifier("workspace.ide.terminal")
                 }
             }
         }
-        .interactiveDismissDisabled(state.dirty || state.saving)
-        .sheet(item: $terminalOwner) { LocalTerminalView(owner: $0) }
+        .interactiveDismissDisabled(state.dirty || state.saving || hasOfficeEdits)
         .sheet(isPresented: $showsRunSheet, onDismiss: {
             if pendingRunTerminal {
                 pendingRunTerminal = false
@@ -102,18 +133,280 @@ struct WorkspaceIDEView: View {
                 if state.conflict == nil && !state.dirty { onSaved() }
             }, onCancel: { state.conflict = nil }).id(review.id)
         }
-        .fullScreenCover(item: $preview) { item in
-            NavigationStack {
-                FilePreviewView(relativePath: item.id, center: center, allowsIDEExpansion: false)
-                    .toolbar { ToolbarItem(placement: .topBarLeading) { Button("ide.back") { preview = nil } } }
+        .fullScreenCover(item: $officeFullscreenTab) { tab in
+            if let session = tab.officeSession {
+                NavigationStack {
+                    OfficeDocumentEditorView(relativePath: tab.relativePath,
+                                             session: session,
+                                             onClose: { officeFullscreenTab = nil })
+                }
             }
         }
         .confirmationDialog("ide.unsaved", isPresented: $showsCloseConfirmation, titleVisibility: .visible) {
-            Button("ide.save.close") { Task { if await state.saveAll() { close() } } }
-            Button("ide.discard.close", role: .destructive) { close() }
+            Button("ide.save.close") { Task { if await saveAllSurfaces() { await finishClose() } } }
+            Button("ide.discard.close", role: .destructive) { Task { await finishClose() } }
             Button("ide.continue", role: .cancel) {}
         }
+        .confirmationDialog(
+            IDELanguageRunText.t("关闭标签前处理修改？", "Handle changes before closing this tab?"),
+            isPresented: Binding(get: { officeCloseRequest != nil }, set: { if !$0 { officeCloseRequest = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let request = officeCloseRequest {
+                // A read-only preview cannot save; only an editable session is
+                // offered Save. A failed save/discard never closes the tab.
+                if request.tab.officeSession?.readOnly == false {
+                    Button(IDELanguageRunText.t("保存并关闭", "Save and close")) {
+                        Task {
+                            let saved = await request.tab.officeSession?.saveAndReturn() ?? false
+                            if saved { await tabs.close(request.id) }
+                            officeCloseRequest = nil
+                        }
+                    }
+                }
+                Button(IDELanguageRunText.t("放弃修改并关闭", "Discard and close"), role: .destructive) {
+                    Task {
+                        let discarded = await request.tab.officeSession?.discardAndReturn() ?? false
+                        if discarded { await tabs.close(request.id) }
+                        officeCloseRequest = nil
+                    }
+                }
+            }
+            Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { officeCloseRequest = nil }
+        }
+        .onChange(of: state.pendingNativePath) { _, value in
+            guard let value else { return }
+            tabs.open(relativePath: value)
+            showRoutingNotice(WorkspaceFileRouter.surfaceName(for: value))
+            state.pendingNativePath = nil
+        }
+        .onDisappear {
+            // A swipe-dismiss edge case must not strand an Office working copy.
+            Task { await tabs.releaseAll() }
+        }
     }
+
+    // MARK: - Tab strip
+
+    @ViewBuilder private var tabStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(tabs.tabs) { tab in
+                    tabButton(tab)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+        .background(.bar)
+        .accessibilityIdentifier("workspace.ide.tabs")
+    }
+
+    @ViewBuilder private func tabButton(_ tab: IDEWorkspaceTab) -> some View {
+        let active = tabs.activeTab?.id == tab.id
+        HStack(spacing: 6) {
+            Button {
+                tabs.activate(tab.id)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: tab.kind.systemImage)
+                        .font(.caption)
+                    Text(tab.kind == .code
+                         ? IDELanguageRunText.t("代码", "Code")
+                         : tab.title)
+                        .lineLimit(1)
+                    if tab.hasUnsavedChanges {
+                        Circle().fill(FloeTheme.primary).frame(width: 6, height: 6)
+                            .accessibilityLabel(IDELanguageRunText.t("有未保存的修改", "Unsaved changes"))
+                    }
+                }
+                .padding(.horizontal, 10)
+                .frame(minHeight: 36)
+                .background(active ? FloeTheme.primary.opacity(0.14) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("workspace.ide.tab.\(tab.kind.rawValue)")
+
+            if tab.kind != .code {
+                Button {
+                    requestClose(tab)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(IDELanguageRunText.t("关闭标签", "Close tab"))
+                .accessibilityIdentifier("workspace.ide.tab.close")
+            }
+        }
+        .padding(.leading, 2)
+        .padding(.trailing, tab.kind == .code ? 8 : 0)
+        .overlay(alignment: .bottom) {
+            if active {
+                Rectangle().fill(FloeTheme.primary).frame(height: 2)
+            }
+        }
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder private var content: some View {
+        ZStack {
+            // The web workbench stays mounted for the IDE lifetime so unsaved
+            // Monaco buffers survive native tab switches.
+            IDEWorkbenchWebView(state: state, initialPath: codeInitialPath)
+                .opacity(tabs.activeTab?.kind == .code ? 1 : 0)
+                .allowsHitTesting(tabs.activeTab?.kind == .code)
+                .accessibilityHidden(tabs.activeTab?.kind != .code)
+            if let tab = tabs.activeTab {
+                switch tab.kind {
+                case .code:
+                    EmptyView()
+                case .office:
+                    officeSurface(tab)
+                case .document:
+                    FilePreviewView(relativePath: tab.relativePath, center: center, allowsIDEExpansion: false)
+                        .id(tab.id)
+                }
+            }
+        }
+        // Office loading lives on the stable container, not on the branch the
+        // fullscreen placeholder replaces: presenting fullscreen while a
+        // document is still opening must not cancel the open. An edit intent
+        // raised by the fullscreen editor is serialized by the session queue.
+        .task(id: officeLoadKey) {
+            guard let tab = tabs.activeTab, tab.kind == .office,
+                  let session = tab.officeSession, Self.needsOfficeLoad(session) else { return }
+            do {
+                let url = try await resolveOfficeURL(relativePath: tab.relativePath)
+                await session.open(url)
+            } catch {
+                session.error = error.localizedDescription
+            }
+        }
+    }
+
+    /// Re-runs the office loader when the active office tab has no surface:
+    /// the first open, or a fullscreen editor that returned the session to
+    /// `.idle` (discard / keep changes) so the embedded read-only preview must
+    /// come back. The in-flight open itself is owned by the session, never by
+    /// this view, so a key change cannot cancel a load.
+    private var officeLoadKey: String {
+        guard let tab = tabs.activeTab, tab.kind == .office,
+              let session = tab.officeSession else { return "code" }
+        return "\(tab.id)#\(Self.needsOfficeLoad(session))"
+    }
+
+    private static func needsOfficeLoad(_ session: OfficeFileSession) -> Bool {
+        session.controller == nil && session.phase == .idle
+    }
+
+    /// Text files are handed to the workbench only when the typed router says
+    /// the code editor owns them.
+    private var codeInitialPath: String? {
+        guard let initialRelativePath else { return nil }
+        return WorkspaceFileRouter.destination(for: initialRelativePath) == .codeEditor ? initialRelativePath : nil
+    }
+
+    @ViewBuilder private func officeSurface(_ tab: IDEWorkspaceTab) -> some View {
+        if let session = tab.officeSession {
+            // The fullscreen editor re-parents the same native controller; a
+            // placeholder avoids mounting it in two hosts at once.
+            if officeFullscreenTab?.id == tab.id {
+                ContentUnavailableView(IDELanguageRunText.t("正在全屏编辑", "Editing fullscreen"),
+                                       systemImage: "doc.richtext")
+            } else {
+                VStack(spacing: 0) {
+                    if let reason = session.editUnavailableReason {
+                        HStack(spacing: 8) {
+                            Label(reason, systemImage: "lock")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            Button(IDELanguageRunText.t("重试编辑", "Retry editing")) {
+                                Task { await session.requestEditing() }
+                            }
+                            .font(.footnote)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.bar)
+                    }
+                    OfficeDocumentSurface(session: session)
+                    officeActionBar(tab: tab, session: session)
+                }
+            }
+        }
+    }
+
+    /// Local documents resolve straight through the guard; cloud/network
+    /// documents are snapshotted into a private temporary copy (never decoded
+    /// as text and never pointing at a network path the engine cannot read).
+    private func resolveOfficeURL(relativePath: String) async throws -> URL {
+        guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+        if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+            let bytes = try await center.readRemotePreview(relativePath: relativePath)
+            return try remoteOfficeCopy.store(bytes, fileName: (relativePath as NSString).lastPathComponent)
+        }
+        let url = try service.guardResolver.resolve(relativePath)
+        try service.guardResolver.assertReadableSize(url)
+        return url
+    }
+
+    @ViewBuilder private func officeActionBar(tab: IDEWorkspaceTab, session: OfficeFileSession) -> some View {
+        HStack(spacing: 10) {
+            if session.readOnly {
+                Button {
+                    Task { await session.requestEditing() }
+                } label: {
+                    Label(IDELanguageRunText.t("编辑", "Edit"), systemImage: "square.and.pencil")
+                        .frame(minHeight: 36)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!session.canAct)
+                .accessibilityIdentifier("workspace.ide.office.edit")
+            } else {
+                Button {
+                    Task { _ = await session.saveAndReturn() }
+                } label: {
+                    Label(IDELanguageRunText.t("保存", "Save"), systemImage: "checkmark")
+                        .frame(minHeight: 36)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!session.canAct)
+                .accessibilityIdentifier("workspace.ide.office.save")
+                Button {
+                    Task { _ = await session.discardAndReturn() }
+                } label: {
+                    Label(IDELanguageRunText.t("放弃修改", "Discard"), systemImage: "arrow.uturn.backward")
+                        .frame(minHeight: 36)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!session.canAct)
+            }
+            Spacer(minLength: 0)
+            Button {
+                officeFullscreenTab = tab
+            } label: {
+                Label(IDELanguageRunText.t("全屏", "Fullscreen"), systemImage: "arrow.up.left.and.arrow.down.right")
+                    .frame(minHeight: 36)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!session.canAct)
+            .accessibilityIdentifier("workspace.ide.office.fullscreen")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private var hasOfficeEdits: Bool {
+        tabs.tabs.contains { $0.hasUnsavedChanges }
+    }
+
+    // MARK: - Actions
+
     /// The run controller is created once per pinned workspace and reuses the
     /// same pinned values for every dispatch. A successful dispatch asks the
     /// IDE to reveal the run-owned output surface after the sheet closes —
@@ -132,11 +425,72 @@ struct WorkspaceIDEView: View {
         showsRunSheet = true
     }
 
-    private func close() {
+    private func toggleTerminal() {
+        guard let workspaceID, let root else { return }
+        if terminalOwner == nil {
+            terminalOwner = center.environment.localTerminals.owner(workspaceID: workspaceID, root: root)
+        }
+        withAnimation(.snappy) { showsTerminal.toggle() }
+    }
+
+    private func openActiveInRoutedSurface() {
+        if let active = tabs.activeTab, active.kind == .office {
+            officeFullscreenTab = active
+            return
+        }
+        if let path = state.activePath {
+            tabs.open(relativePath: path)
+            if tabs.activeTab?.kind == .office { officeFullscreenTab = tabs.activeTab }
+        }
+    }
+
+    private func requestClose(_ tab: IDEWorkspaceTab) {
+        guard let session = tab.officeSession else {
+            Task { await tabs.close(tab.id) }
+            return
+        }
+        if !session.readOnly || session.hasUncommittedChanges {
+            officeCloseRequest = OfficeCloseRequest(id: tab.id, tab: tab)
+        } else {
+            Task { await tabs.close(tab.id) }
+        }
+    }
+
+    private func requestCloseIDE() {
+        Task {
+            await state.refreshDirty()
+            if state.dirty || hasOfficeEdits {
+                showsCloseConfirmation = true
+            } else {
+                await finishClose()
+            }
+        }
+    }
+
+    private func saveAllSurfaces() async -> Bool {
+        var saved = true
+        if state.ready { saved = await state.saveAll() }
+        for tab in tabs.tabs {
+            guard let session = tab.officeSession, !session.readOnly else { continue }
+            if !(await session.saveInPlace()) { saved = false }
+        }
+        return saved
+    }
+
+    private func finishClose() async {
         // Do not leave a run-owned session behind when the IDE closes.
-        if let runController { Task { await runController.stop() } }
+        if let runController { await runController.stop() }
+        await tabs.releaseAll()
         onSaved()
         dismiss()
+    }
+
+    private func showRoutingNotice(_ text: String) {
+        withAnimation(.snappy) { routingNotice = text }
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation(.snappy) { routingNotice = nil }
+        }
     }
 }
 #endif

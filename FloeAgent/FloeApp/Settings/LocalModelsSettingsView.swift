@@ -72,12 +72,39 @@ final class LocalModelsCenter: ObservableObject {
                         runtimeState = .unloaded
                     }
                 }
+                if !isEnabled {
+                    // A disabled model must not stay the persisted default:
+                    // Home/Chat would resolve no provider for new tasks even
+                    // though other models are enabled. Repair only the broken
+                    // default and never touch a running request.
+                    try await repairDefaultModelIfNeeded(disabledModelID: model.id, configured: configured)
+                }
                 await refresh()
                 await onConfigurationChanged?()
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Clears the persisted default only when it points at the model that was
+    /// just disabled, choosing the first remaining enabled, primary-visible
+    /// chat model. Other surfaces (Home/Chat) reload and see a valid default
+    /// instead of an unusable one.
+    private func repairDefaultModelIfNeeded(
+        disabledModelID: UUID,
+        configured: [ModelProfile]
+    ) async throws {
+        var preferences = try await configurationStore.preferences()
+        guard preferences.defaultAgentModelID == disabledModelID else { return }
+        let replacement = configured.first(where: {
+            $0.id != disabledModelID && $0.isEnabled && $0.isVisibleInPrimaryPicker
+                && $0.supportsChatAgentSurface
+        })
+        preferences.defaultAgentModelID = replacement?.id
+        preferences.updatedAt = Date()
+        preferences.syncRevision += 1
+        try await configurationStore.savePreferences(preferences)
     }
 
     func isHiddenFromPrimaryPicker(remoteModelID: String) -> Bool {

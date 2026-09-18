@@ -4,40 +4,60 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import FloeWorkspace
 
 /// Shared file classification for the inspector and the full workspace IDE.
 /// Keeping this in one place prevents a file from opening as code in one
 /// surface while falling back to an unnumbered text view in another.
+///
+/// The extension tables live in `WorkspaceTextPolicy` (FloeWorkspace) because
+/// the IDE bridge applies the same decision natively before any byte reaches
+/// Monaco. This type is only the App-facing spelling of that shared policy.
 enum WorkspaceFileType {
-    private static let textExtensions: Set<String> = [
-        "txt", "md", "markdown", "json", "jsonc", "swift", "py",
-        "js", "mjs", "cjs", "jsx", "ts", "tsx", "c", "h", "m",
-        "mm", "cc", "cpp", "cxx", "hpp", "html", "htm", "css",
-        "scss", "xml", "yaml", "yml", "toml", "sh", "bash", "zsh",
-        "fish", "log", "csv", "rs", "go", "java", "kt", "kts",
-        "sql", "rb", "php", "pl", "lua", "dart", "vue", "svelte",
-        "gradle", "properties", "ini", "conf"
-    ]
-
-    private static let codeExtensions: Set<String> = [
-        "json", "jsonc", "swift", "py", "js", "mjs", "cjs", "jsx",
-        "ts", "tsx", "c", "h", "m", "mm", "cc", "cpp", "cxx",
-        "hpp", "html", "htm", "css", "scss", "xml", "yaml", "yml",
-        "toml", "sh", "bash", "zsh", "fish", "rs", "go", "java",
-        "kt", "kts", "sql", "rb", "php", "pl", "lua", "dart",
-        "vue", "svelte", "gradle", "properties", "ini", "conf"
-    ]
-
     static func pathExtension(for relativePath: String) -> String {
         (relativePath as NSString).pathExtension.lowercased()
     }
 
+    static func kind(for relativePath: String) -> WorkspaceFileKind {
+        WorkspaceTextPolicy.kind(forPath: relativePath)
+    }
+
     static func isText(_ relativePath: String) -> Bool {
-        textExtensions.contains(pathExtension(for: relativePath))
+        let kind = kind(for: relativePath)
+        return kind == .text || kind == .code
     }
 
     static func isCode(_ relativePath: String) -> Bool {
-        codeExtensions.contains(pathExtension(for: relativePath))
+        kind(for: relativePath) == .code
+    }
+
+    static func isOffice(_ relativePath: String) -> Bool {
+        kind(for: relativePath) == .office
+    }
+
+    static func isPDF(_ relativePath: String) -> Bool {
+        kind(for: relativePath) == .pdf
+    }
+
+    static func isCAD(_ relativePath: String) -> Bool {
+        kind(for: relativePath) == .cad
+    }
+
+    static func isImage(_ relativePath: String) -> Bool {
+        kind(for: relativePath) == .image
+    }
+
+    static func isMedia(_ relativePath: String) -> Bool {
+        kind(for: relativePath) == .media
+    }
+
+    /// The code workbench is the only editor allowed to read and write the
+    /// bytes of this file as text.
+    static func allowsCodeEditing(_ relativePath: String) -> Bool {
+        switch kind(for: relativePath) {
+        case .text, .code: true
+        default: false
+        }
     }
 
     static func isMarkdown(_ relativePath: String) -> Bool {

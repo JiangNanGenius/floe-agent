@@ -14,6 +14,7 @@
   function publishDirty() { const value = dirty.size > 0; if (value !== lastDirty) { lastDirty = value; notify('dirty', { dirty: value }); } }
   try {
     if (!bridge) throw new Error('Workspace connection unavailable');
+    const policy = window.FloeIDEPolicy;
     const { BrowserFS } = Alex.requireModule('@codeblitzjs/ide-sumi-core');
     const { Buffer } = Alex.requireModule('buffer');
     const NativeFilesystem = FloeNativeFilesystem(BrowserFS, Buffer, async request => {
@@ -22,6 +23,9 @@
         const key = pathKey(request.path);
         if (!contents.has(key)) contents.set(key, await signature(Buffer.from(result.contentBase64, 'base64').toString('utf8')));
       }
+      // Typed routing: a refused binary/Office read is handed to the native
+      // surface instead of being shown as a decode failure.
+      if (result.error && result.error.code === 'ENOTSUP') notify('routing', { path: pathKey(request.path) });
       return result;
     }, async (path, content) => {
       const key = pathKey(path), digest = await signature(content); contents.set(key, digest);
@@ -55,7 +59,11 @@
       },
       runtimeConfig: {
         scenario: null, unregisterActivityBarExtra: true,
-        defaultOpenFile: config.initialPath || undefined,
+        // Only a text/code file may be handed to Monaco. Native routing owns
+        // Office/PDF/CAD/image/media/archive documents; a non-text initial
+        // path would otherwise be decoded as garbage and saved back as text.
+        defaultOpenFile: (config.initialPath && (!policy || policy.isTextualPath(config.initialPath)))
+          ? config.initialPath : undefined,
         workspace: {
           filesystem: { fs: 'FloeNative', options: {} },
           async onDidChangeTextDocument({filepath, content}) {
@@ -111,6 +119,23 @@
         const documents = await editor.getAllOpenedDocuments();
         const document = documents.find(item => pathKey(item.uri.path.toString()) === pathKey(path));
         return document ? document.getText() : null;
+      },
+      // Per-file save for native tab close. The document model's own `save()`
+      // runs the verified BrowserFS write path (native CAS + digest check);
+      // `false` means there was nothing to save, never that a save failed.
+      savePath: async (path) => {
+        const documents = await editor.getAllOpenedDocuments();
+        const matches = documents.filter(item => pathKey(item.uri.path.toString()) === pathKey(path));
+        if (matches.length === 0) return false;
+        for (const document of matches) {
+          if (document.dirty) await document.save();
+        }
+        return true;
+      },
+      dirtyPath: async (path) => {
+        const documents = await editor.getAllOpenedDocuments();
+        return documents.some(item =>
+          pathKey(item.uri.path.toString()) === pathKey(path) && item.dirty === true);
       },
       destroy: () => app.destroy()
     };
