@@ -115,7 +115,7 @@ GitHub prereleases include an unsigned IPA for advanced testers and downstream p
 
 ### Feather source
 
-The current feedback release adds a [Feather source](docs/FEATHER_SOURCE.md). Its stable feed will be activated after the new qualified GitHub IPA is published.
+The current feedback release adds a [Feather source](docs/FEATHER_SOURCE.md). The stable feed and its independently verified publishing process are described there.
 
 ### Build from source
 

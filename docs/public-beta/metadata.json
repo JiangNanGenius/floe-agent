@@ -5,7 +5,7 @@
     "version": null,
     "build": null,
     "sourceCommit": null,
-    "afterBuild": "178"
+    "afterBuild": "191"
   },
   "websiteCandidate": "https://www.floe-agent.com/",
   "supportURL": null,
@@ -58,41 +58,39 @@
     "generatedVideoSecondsUsed": 0,
     "credentialMayBeSharedWithReviewers": false,
     "credentialIncludedInMaterials": false,
-    "successfulAppRecording": "Build175 /8958d8f1, iPad Simulator, run34949317123; actual tool calls created and reread Markdown. Not build187 evidence."
+    "successfulAppRecording": "Build175 /8958d8f1, iPad Simulator, run34949317123; actual tool calls created and reread Markdown. Historical evidence, not build191 acceptance."
   },
   "deliveredQualification": {
     "version": "1.7.0",
-    "build": "178",
-    "sourceCommit": "32acddd41f0f5735ac7f1cec2eb14feb1da28623",
-    "releaseRun": 35106710878,
-    "fullCIRun": 35083821490,
-    "testflightBuildID": "6e8cd002-e620-438a-ad10-c87c2bf33f27",
-    "availabilityRun": 35121747998,
-    "status": "uploaded_valid_internal_floe_qa_in_beta_testing"
+    "build": "191",
+    "sourceCommit": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+    "releaseRun": 35337960392,
+    "uploadRun": 35347141494,
+    "testflightBuildID": "637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9",
+    "availabilityRun": 35351900047,
+    "status": "uploaded_valid_unexpired_internal_floe_qa_in_beta_testing",
+    "fullUIAcceptance": false,
+    "waivedUITestFailures": 3
   },
   "candidateQualification": {
     "version": "1.7.0",
-    "build": "188",
-    "stage": "fixed_source_cloud_qualification_in_progress",
-    "tag": "v1.7.0-beta.45",
-    "tagObject": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
-    "appSourceCommit": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
-    "releaseRun": 35317532109,
-    "releaseRunStartedAt": "2026-09-18T07:02:10Z",
-    "status": "qualifying_no_upload_no_public_beta_submission",
+    "build": "191",
+    "tag": "v1.7.0-beta.48",
+    "appSourceCommit": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+    "releaseRun": 35337960392,
+    "status": "internal_delivery_available_public_review_not_submitted",
     "focusedEvidence": [
-      "Preflight:436 script cases,435pass/1existing platform skip;6focused Swift semantic/object checks plus complete NativeNotesTests typecheck and NotesRootView parse.",
-      "Cloud jobs are in progress; runtime results are not yet claimed.",
-      "Card value is supplied by the real thumbnail state, including summary badge and diagnostics; separate descendant query removed.",
-      "IDE CI lifecycle remains service-owned and durable."
+      "Both SDK App regressions 204/204 each; NativeNotes component 101/101 each.",
+      "Office/PPT/CAD card covers and cold relaunch passed across both SDKs and both device families.",
+      "Original three App UI failures remain failures; user waived them for internal testing."
     ],
     "limitations": [
-      "No upload or installability claimed. All three release gates must pass before signing.",
-      "Full-App relaunch with live GitHub run remains a UI acceptance item; older23App-host cases and28live CLI checks are distinct.",
-      "Physical iPad local-model ordinary-chat stability and native Office/Pencil remain unverified.",
-      "RDP and the complete signed package/model catalog are not delivered."
+      "Three UI failures: SDK27 iPad search-result interaction, SDK27 iPhone New control and accepted-SDK iPhone assistant restart control.",
+      "Full-App live GitHub dispatch and relaunch remains a separate acceptance item.",
+      "Physical iPad ordinary-chat local-model stability and native Office/Pencil remain unverified.",
+      "RDP and complete signed package/model catalogs are not delivered."
     ],
-    "officeCoverEvidence": "docs/qualification/build186-release/app-ui: real full-App simulator cards at build186; source-labelled, not188 acceptance"
+    "evidence": "docs/qualification/build191-release/final-results.json"
   },
   "previousBuild185CandidateQualification": {
     "version": "1.7.0",
@@ -229,5 +227,39 @@
       "RDP and the complete signed package/model catalog are not delivered."
     ],
     "officeCoverEvidence": "docs/qualification/build186-release/app-ui: real full-App simulator cards at build186; source-labelled, not187 acceptance"
+  },
+  "previousBuild178DeliveredQualification": {
+    "version": "1.7.0",
+    "build": "178",
+    "sourceCommit": "32acddd41f0f5735ac7f1cec2eb14feb1da28623",
+    "releaseRun": 35106710878,
+    "fullCIRun": 35083821490,
+    "testflightBuildID": "6e8cd002-e620-438a-ad10-c87c2bf33f27",
+    "availabilityRun": 35121747998,
+    "status": "uploaded_valid_internal_floe_qa_in_beta_testing"
+  },
+  "previousBuild188CandidateQualification": {
+    "version": "1.7.0",
+    "build": "188",
+    "stage": "fixed_source_cloud_qualification_in_progress",
+    "tag": "v1.7.0-beta.45",
+    "tagObject": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+    "appSourceCommit": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+    "releaseRun": 35317532109,
+    "releaseRunStartedAt": "2026-09-18T07:02:10Z",
+    "status": "failed; see docs/qualification/build188-release; original evidence retained",
+    "focusedEvidence": [
+      "Preflight:436 script cases,435pass/1existing platform skip;6focused Swift semantic/object checks plus complete NativeNotesTests typecheck and NotesRootView parse.",
+      "Cloud jobs are in progress; runtime results are not yet claimed.",
+      "Card value is supplied by the real thumbnail state, including summary badge and diagnostics; separate descendant query removed.",
+      "IDE CI lifecycle remains service-owned and durable."
+    ],
+    "limitations": [
+      "No upload or installability claimed. All three release gates must pass before signing.",
+      "Full-App relaunch with live GitHub run remains a UI acceptance item; older23App-host cases and28live CLI checks are distinct.",
+      "Physical iPad local-model ordinary-chat stability and native Office/Pencil remain unverified.",
+      "RDP and the complete signed package/model catalog are not delivered."
+    ],
+    "officeCoverEvidence": "docs/qualification/build186-release/app-ui: real full-App simulator cards at build186; source-labelled, not188 acceptance"
   }
 }

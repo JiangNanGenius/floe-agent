@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (178). Candidate: 1.7.0 (188). preparation draft; fixed source c5656276a3fed0cc0546d2ab360603e443b7f87e tagged v1.7.0-beta.45; release run35317532109 in progress; no upload; external review not submitted.
+Baseline: 1.7.0 (178). Candidate: 1.7.0 (191). preparation draft; fixed source 715cbc42e9402cf5ca691291fed5c201e61cf222 / v1.7.0-beta.48; internal Floe QA VALID and IN_BETA_TESTING; three UI failures waived by owner for internal testing only; external review not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 178, previously delivered to internal Floe QA. Pu
 
 基线：1.7.0（178），此前已交付 Floe QA 内部 TestFlight；尚未提交公开／外部 Beta 审核。
 
-Build188 is fixed at tag v1.7.0-beta.45 / c5656276. Run35317532109 is validating the Notes component and both SDK App builds. No upload or installability is claimed. Build187 passed204/204 SDK27 App regressions but failed Notes UI and component qualification; its device recovery and original failures are retained. Historical screenshots and the build175 Agent video keep their source labels.
+Build191 is fixed at v1.7.0-beta.48 / 715cbc42. Apple confirmed VALID, unexpired and IN_BETA_TESTING for private internal Floe QA (verify run35351900047). Both SDK App regression suites passed 204/204 and Notes component suites passed 101/101. Three App UI failures were explicitly waived for internal device testing only; this is not full acceptance. Historical screenshots and the build175 Agent video keep their source labels.
 
-188 固定于 v1.7.0-beta.45 / c5656276。run35317532109 正验证手记组件及双 SDK App，尚不宣称上传或可安装。187 的 SDK27 App 回归通过204/204，但手记界面和组件验收失败；设备恢复包及原始失败已保留。历史截图和175的 Agent 视频继续标明来源。
+191 固定于 v1.7.0-beta.48 / 715cbc42。Apple 已确认 VALID、未过期且在私有内部 Floe QA 中可测试（核实 run35351900047）。双 SDK App 回归各通过204/204，手记组件各通过101/101。三项 App 界面失败经用户豁免，仅供内部真机测试，不代表完整验收。历史截图及175的 Agent 视频保留来源标签。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -246,13 +246,13 @@ Source 955e346a passed SDK 27 App regressions and three Notes UI cases per devic
 
 955e346a 通过 SDK 27 App 回归及每端三项手记 UI 用例，原生 Office 跳过。随后 2e2a34c9 在 iPad、iPhone 各首次通过三项 IDE/CAD 用例（运行 35223435570）；原始失败记录保留。
 
-The build-178 release passed both SDK jobs and signed/uploaded successfully; its later GitHub publication step failed and was recovered separately. The older build-172 expedited simulator waiver does not apply to build 188 or public Beta review.
+Build191 was uploaded from its preserved device artifact without rebuilding (upload35347141494). Its three waived UI failures concern SDK27 iPad search-result interaction, SDK27 iPhone initial New control, and accepted-SDK iPhone initial assistant restart control. Original failures remain recorded; the waiver does not grant public Beta approval.
 
-178 发布的两套 SDK 验收及签名上传成功；其后 GitHub 发布步骤失败，另行恢复。较早 172 的加急模拟器豁免不适用于 188 或公开 Beta 审核。
+191 使用保留的设备工件完成上传，未重新编译（上传35347141494）。三项豁免涉及 SDK27 iPad 搜索结果交互、SDK27 iPhone 初始新建控件、发布 SDK iPhone 初始助手重开控件。原始失败已保留，豁免不等于公开 Beta 审核通过。
 
-Every screenshot identifies its original source. The retained captures show earlier full-App simulator runs, not physical Pencil acceptance or the final build-188 submission binary. Build 186 Office/PPT/CAD cover images under docs/qualification/build186-release/native-covers are component-host output, not full-App card layout; earlier PDF captures do not prove them.
+Every screenshot identifies its original source. Earlier full-App simulator captures do not prove physical Pencil acceptance or the final build191 binary. Build186 native-covers images are component-host output; its separately labelled App screenshots show real cards. Office content-summary covers do not claim original page-layout fidelity.
 
-每张截图标明原始来源。现有配图来自较早完整 App 模拟器运行，不代表 Pencil 真机验收或最终 188 安装包；186 的 Office／PPT／CAD 封面图位于 docs/qualification/build186-release/native-covers，属于组件宿主输出，不等于完整 App 卡片布局；早先 PDF 截图不能替代。
+每张截图标明原始来源。较早完整 App 模拟器截图不代表 Pencil 真机验收或最终191安装包。186的 native-covers 图是组件宿主输出；另行标注的 App 截图才是真实卡片。Office 内容摘要封面不宣称原始页面排版保真。
 
 Before submission, confirm the final build, review contact, feedback email, support/privacy URLs and accepted access arrangement. These real details are not yet completed; this document is a preparation draft.
 
@@ -294,9 +294,9 @@ Build 178 retains document conversation restart and live refresh after committed
 
 178 保留当前文档助手会话重开、提交编辑后实时刷新、iPad 完整助手栏和手机面板，并让已激活的 Soul／画像在下一次模型请求时生效。配图是已标注的较早源码，不是本候选版。
 
-Earlier dual-device IDE/CAD evidence remains valid only for its labelled source. The candidate adds real Office/PPT/CAD cover assertions, Node/Python service lifecycle cases and durable GitHub job tests. The original API transport fixture missed a query URL defect found by real-network validation; the corrected source requires a new cloud release gate.
+Build191 cloud evidence includes passing Office/PPT/CAD cover and cold-relaunch cases, Node/Python service lifecycle tests and durable GitHub job tests. Both SDK App regression suites passed 204/204. The three distinct UI failures remain recorded. Module tests do not replace live-account dispatch and App relaunch observations.
 
-此前双端 IDE/CAD 证据只对应各自标注源码。候选新增真实 Office/PPT/CAD 封面断言、Node/Python 服务生命周期及 GitHub 持久任务测试。原 API 模拟测试漏掉的查询地址缺陷由真实网络验证发现；修正源码需要重新完成云端发布验收。
+191云端证据包含通过的 Office/PPT/CAD 封面及冷启动用例、Node/Python 服务生命周期和 GitHub 持久任务测试；双 SDK App 回归各通过204/204。三项独立界面失败仍保留。模块测试不能替代真实账户提交与 App 重开观察。
 
 The candidate MLX runtime passed real-weight macOS inference and four shutdown memory gates with compiled traces disabled. This is host evidence, not proof that the reported iPad ordinary-chat crash is fixed.
 
@@ -320,9 +320,9 @@ No model sleep loop is needed. An uncertain submission must not create duplicate
 
 无需模型循环等待。提交结果不明时不能重复触发；取消需等待 GitHub 确认。读取日志、下载未过期产物；摘要不匹配时必须保留原有文件。
 
-These are candidate acceptance instructions. The exact build-188 UI, live-account dispatch and relaunch observations still need to be recorded before treating this feature as review-ready.
+These are acceptance instructions. Build191 is available for internal testing; live-account dispatch, closing the App and reopening with job recovery still need a recorded end-to-end observation before this flow is marked review-ready.
 
-以上是候选版验收操作。仍需记录 188 的界面、真实账户提交和重开观察，才能把此项标为送审就绪。
+以上是验收操作。191已可内部测试；真实账户提交、关闭 App、重新打开并恢复任务，仍需记录端到端观察后才能将此流程标为送审就绪。
 
 ## 13  演示结果与反馈 / Expected results and feedback
 
@@ -350,9 +350,9 @@ Public Beta testers use their own cloud services. Neither this PDF nor local AI 
 
 公开 Beta 测试者使用自己的云端服务；本 PDF 与本地覆盖均不保证 Apple 通过，额外访问要求需在用户不提供付费额度的前提下如实处理。
 
-Primary references: Apple App Review Guidelines; TestFlight test information; Floe Beta 35 release and repository evidence.
+Primary references: Apple App Review Guidelines; TestFlight test information; Floe Beta 48 release and repository evidence.
 
-主要依据：Apple 审核指南、TestFlight 测试信息、Floe Beta 35 发布页及仓库证据。
+主要依据：Apple 审核指南、TestFlight 测试信息、Floe Beta 48 发布页及仓库证据。
 
 ## 14  Word、Excel 与 PPT 封面实录 / Actual Office covers in the App
 
@@ -360,6 +360,6 @@ The retained App screenshot shows Word text, Excel cells and PowerPoint slide co
 
 这张完整 App 截图显示 Word 文字、Excel 单元格和 PPT 幻灯片内容，并同时显示 PDF、手写页、导图与 CAD 图纸；不再只用 PDF 证明预览。内容均为合成测试资料。
 
-Build186 failed at the Office back-control identifier; build187 later failed querying a cover child, before cold relaunch. Build188 publishes the actual thumbnail state on its file card and reads it there. Runtime acceptance is pending. The retained images do not prove build188 UI or original Office layout fidelity.
+Build191 passed the Office/PPT/CAD cover and cold-relaunch test across both SDKs and both device families. The image on this page remains the labelled build186 full-App capture. Three other UI cases failed and were waived only for internal testing. Office summary covers are not faithful page renders.
 
-186 在 Office 返回标识检查处失败；187 随后在封面子元素查询时失败，也未完成冷启动段。188 在文件卡片上直接提供并读取真实缩略图状态，运行验收待完成。现有图片不代表188界面通过，也不证明原始 Office 排版保真。
+191的 Office/PPT/CAD 封面与冷启动测试在双 SDK、双设备族通过。本页仍使用已标注的186完整 App 截图。其他三项界面用例失败，仅获内部测试豁免。Office 摘要封面不等于原始页面保真渲染。

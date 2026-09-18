@@ -6,15 +6,15 @@
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
-  "candidate": "1.7.0 (188), source c5656276a3fed0cc0546d2ab360603e443b7f87e, tag v1.7.0-beta.45, run35317532109 in progress; no upload",
+  "candidate": "1.7.0 (191), source 715cbc42e9402cf5ca691291fed5c201e61cf222, tag v1.7.0-beta.48; internal Floe QA available",
   "pages": 15,
-  "sha256": "86f6ab01e51f742e211105c95d5e077033b21e5340219221e4b7f0713c0eaabc",
-  "bytes": 3059627,
+  "sha256": "fa4487c8b0dd118c83bffeb154eacebca16ae3cee40c4dc10a0b28ac923bd291",
+  "bytes": 3058162,
   "textExtractionChecked": true,
   "layoutSizeChecks": "All15 A4 pages595x842; extraction includes baseline/candidate, source/run, Whisper, BYOK, RDP and Office types.",
   "screenshots": "Original source-labelled172,9e4434ca,955e346a full-App simulator captures; new page15 uses build186 full-App iPad simulator office-covers image at source d421fea2/run35306551280. Rotation only in PDF layout. The186 overall UI qualification failed; cold-relaunch section was not reached.",
-  "reviewStatus": "Preparation draft; all15 rendered pages visually reviewed, no observed overlap or clipping. Current release qualification pending; external review not submitted.",
-  "updatedAt": "2026-09-18T07:07:25.553036+00:00",
+  "reviewStatus": "Preparation draft; all 15 rendered pages visually reviewed; internal TestFlight available; three UI failures waived for internal testing only; external review not submitted.",
+  "updatedAt": "2026-09-18T14:16:10.467017+00:00",
   "currentRenderedPagesReviewed": [
     1,
     2,
@@ -32,23 +32,23 @@
     14,
     15
   ],
-  "visualReview": "Primary inspected all15 current pages at850px; source captions and preparation footers retained. No observed overlap, clipped text or displaced footer.",
-  "footerChange": "Baseline178/candidate188 qualification draft",
+  "visualReview": "Primary inspected every page at 1000px and rechecked revised page14; no observed clipping, overlap or footer displacement.",
+  "footerChange": "Historical baseline178 / internal candidate191",
   "sourceHashes": {
-    "review-walkthrough.json": "289d0f5e0ab978ebcab4e8ec51d05b04cde5a3f8c1a575d0cd9248aa4c22464c",
-    "review-walkthrough.md": "24d338571e3ba3cc73a2a5c76a6875e80c0c9c84ba98b12448fe2e5c584568d7"
+    "review-walkthrough.json": "e987ebf953faa1fcc1c38e97e61bf64fbb555d94a3d74fdac7d9b7ed977334ce",
+    "review-walkthrough.md": "6fa189a48b7581175fb843f5f1d089edc8ba65a45fbd51e5c0fa8bfb997e7dd0"
   },
   "previousPdf": {
-    "path": "Local/Private/build188-review-pdf/previous-187.pdf",
-    "sha256": "3f858d227458447f33024f1eb3c8981066ac8d03e3fe68cf30babf0be1d15bc2",
-    "pages": 15,
-    "validation": "Local/Private/build188-review-pdf/previous-187-validation.json"
+    "path": "Local/Private/build191-review-pdf/previous-188-floe-public-beta-review-guide.pdf",
+    "sha256": "86f6ab01e51f742e211105c95d5e077033b21e5340219221e4b7f0713c0eaabc",
+    "validation": "Local/Private/build191-review-pdf/previous-188-review-guide-validation.json"
   },
-  "latestEvidence": "187 SDK27 App regression204/204,23IDE cases passed, but component/UI gates failed;188 fixes card AX queries and bounds WebKit captures. New cloud run35317532109 in progress. No188 upload or publicBeta submission.",
+  "latestEvidence": "191 both SDK App regression204/204; NativeNotes101/101 each; three App UI failures explicitly waived for internal testing. Apple VALID/unexpired/Floe QA/IN_BETA_TESTING verified35351900047. Public Beta not submitted.",
   "iCloudCopy": {
-    "file": "Floe-公开Beta审核演示说明-188准备稿.pdf",
+    "file": "Floe-公开Beta审核演示说明.pdf",
+    "location": "iCloud Drive root",
     "matchesCurrentArtifact": true,
     "remoteSyncVerified": false,
-    "note": "Copied to iCloud Drive root and verified local SHA256; remote-device sync not observed."
+    "note": "Local copy SHA256 verified; remote-device sync not observed."
   }
 }

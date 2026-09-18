@@ -1,1 +1,12 @@
-{}
+{
+  "v1.7.0-beta.48": {
+    "sourceCommit": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+    "sourceRun": 35337960392,
+    "sourceArtifactID": 10544612762,
+    "sourceArtifactDigest": "d73db7af1378b9773c76ddf14c51c56a4a53b602e8c2f46fe0c5b261fe02d7ff",
+    "deviceArchiveSHA256": "0e2b45887ab0745fbcd582dbb10a43609e68693471254861b3cea61f15efd9c9",
+    "packagingController": "3102b37924861b2745742a0212d3c044824cb694",
+    "packagingRun": 35353929898,
+    "signerWorkflow": ".github/workflows/developer-ipa-from-recovery.yml"
+  }
+}

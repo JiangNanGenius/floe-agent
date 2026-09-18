@@ -130,3 +130,7 @@ IN_BETA_TESTING. Build1.7.0(191) is available to authorized internal testers.
 The three waived UI failures are still failures; device acceptance belongs to
 the user. No public Beta review or production submission occurred.
 GitHub prerelease, Feather and main integration remain separate pending work.
+
+## Developer prerelease recovered and published - 2026-09-18
+
+Run [35353929898](https://github.com/JiangNanGenius/floe-agent/actions/runs/35353929898) packaged the same original unsigned device artifact without compiling the App. [Beta48](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.48) is published. The IPA and its recovery record each have verified GitHub provenance, binding controller `3102b379` to App source `715cbc42` and the original device artifact. No signatures or provisioning profiles are included. See [developer-release.json](developer-release.json). Earlier pending entries above are chronological history. Feather publication and main integration are the remaining delivery steps.
