@@ -26,7 +26,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**178 仍是最后确认的内部 TestFlight 交付版本**（记录状态为 VALID／IN_BETA_TESTING）；2026-09-18 重新查询 Apple，最新 VALID 上传仍为 178，正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**191 是最后确认的内部 TestFlight 交付版本**（2026-09-18 13:43 UTC 核实 VALID／IN_BETA_TESTING）。Build192 修复候选仍在整合，尚未上传；正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
 当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
 
@@ -35,6 +35,8 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 [Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
 
 **Build191（`v1.7.0-beta.48`，源码 `715cbc42`）已在内部 TestFlight（Floe QA）可安装。** [成功的恢复上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/35347141494)复用固定源码工件，没有重编译。2026-09-18 13:43UTC 已核实 Apple VALID、未过期、Floe QA 私有内部组和 IN_BETA_TESTING；中英文测试说明均已保存。两个 SDK 的应用回归各通过 204/204，iPad、iPhone 手记组件各通过 101/101。三项界面失败均经用户明确同意先行内部真机测试，原失败证据保留，不代表完整验收通过。[当前证据](docs/qualification/build191-release/README.md)、[已留存封面截图](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png)。Office 封面可能是带标识的内容摘要，并非原始页面排版；本地模型与原生 Office/Pencil 的真机验收仍由测试者完成。
+
+**Build192 修复候选**正在整合 Office 编辑权限与 IDE 文件路由、Git 操作、终端及包管理、首页模型回退和普通对话视频工具。原生 Office 组件已通过云端编译，完整 App 尚未构建；本地模型闪退与真机交互仍需确认。详见[双语候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 

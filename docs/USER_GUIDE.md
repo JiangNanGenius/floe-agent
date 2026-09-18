@@ -2,11 +2,28 @@
 
 Current internal release: **1.7.0 (191) / beta.48**, installable in Floe QA. The GitHub developer IPA and Feather feed are published. Three UI failures were waived for internal device testing only; full acceptance is not claimed. [Delivery and limitations](qualification/build191-release/README.md). Historical screenshots retain their build labels.
 
+A build 192 repair candidate is being prepared in the working tree. It has not been built, uploaded or verified by Apple and is not installable; the [reserved Build 192 notes](RELEASE_NOTES_1.7.0_BUILD_192.md) separate implemented behavior, host-level validation and open device acceptance. Sections below that mention the "build 192 repair candidate" describe that work.
+
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide covers existing Floe workflows and the 1.7 internal beta (build 191). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
+This guide covers existing Floe workflows and the 1.7 internal beta (build 191, plus marked build 192 candidate repairs). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
 
 This guide includes the build 172 workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
+
+## Build 192 repair candidate (in preparation, not distributable)
+
+The following behavior is implemented in the current working tree and validated at host/fixture level, but not by an upload-SDK App build or a device run. Treat it as candidate behavior until a frozen build passes device acceptance. Build 191 remains the current internal TestFlight delivery.
+
+- **Office editability is the engine's truth.** An unknown or missing read-only flag never becomes editable; a protected or read-only document returns to preview with a reason, and an edit-password document prompts for the password. The native host behind this compiled in cloud run `35373122891`; save/close/reopen on a device is still pending. An imported workbook with its own formulas, sheets or embeddings is never silently rewritten — strict save validation may reject the save and keep your original file.
+- **The IDE routes by file type.** Every entry point sends text/code to the code workbench, Office to the Office editor, PDF, drawings, images and media to their viewers, and archives or unknown binaries to Quick Look. The code workbench refuses Office and binary bytes for both read and write. Code, Office and document files open as native tabs, and one Office tab keeps a single working copy between the embedded preview and the full-screen editor; closing a tab with unsaved changes asks first.
+- **File preview shares the visible document.** Cloud or network files are snapshotted locally before sharing, so the preview copy is untouched; lower-frequency actions moved into the **More** menu.
+- **Source control adds real Git recovery.** Fast-forward now updates HEAD and the working tree, conflicts list correctly, staged rows can be discarded with index and working-tree recovery in `.git/floe-recovery`, and merge conflicts can be edited or aborted. Reset/clean, force-push and history rewriting remain intentionally unavailable.
+- **Terminal and package commands are more honest.** An interactive session can no longer race a close or expiry; the last output of a fast command is kept; the IDE bottom panel hosts the local terminal without ending the shell when the panel closes. A busy engine reports exit 75 (not started) instead of a timeout, and a cancelled package command returns 130 without executing. Explicit `npm install`/`pnpm install` always uses the manager you named; project locks and preferences only guide automatic selection.
+- **Model fallback repairs a broken default.** Disabling, deleting or hiding the stored model selects another usable model in a fixed order (current selection, stored default, most recent run, first usable); a running request keeps its own model.
+- **Video generation works from ordinary chat.** `video.models`, `video.generate`, `video.status` and `video.cancel` list only enabled, adapter-backed models and accept one reference image (workspace path or conversation attachment; PNG/JPEG/WebP up to 8 MiB, sent inline). A replayed call reuses the existing job, cancellation wins over an in-flight submit, canceled downloads are not announced as ready, and expired results are labelled. GIF inspection and conversion use real frames and timing.
+- **Languages:** PHP 8.2.33, Ruby 3.4.1 and compiler-backed languages are undergoing cloud validation; the signed, published capability catalog determines installability.
+- **Local models:** MLX scoped error handling and GPU-drain changes are in place, but the build 191 iPad crash is not proven fixed. Export the current diagnostic log if it recurs.
+- **Release pipeline (internal):** preflight is portable (no `plutil`), the unsigned device artifact is retained before dSYM capture, reuse requires symbols evidence, and a duplicate accepted upload or a non-`-unsigned.ipa` Feather asset is rejected.
 
 ## Live Soul and profile updates
 
@@ -49,6 +66,10 @@ The development branch adds a media-workbench action to local MP4/MOV/M4V worksp
 
 Open a local MP4/MOV/M4V in workspace file preview, then choose the media workbench. The screenshot shows the source player and a restored 1–5 second trim range. Scroll down for edit and export settings. This is an iOS Simulator development preview, not release acceptance.
 
+### Video generation from chat (build 192 repair candidate)
+
+Ordinary conversations now expose `video.models`, `video.generate`, `video.status` and `video.cancel` for the configured cloud video suppliers (Google Veo/Omni, Volcengine Ark Seedance, Alibaba DashScope Wan). Only enabled, adapter-backed models are listed, together with their real parameter contract and reference-image support. One reference image may be supplied as a workspace path or a conversation attachment (PNG/JPEG/WebP, up to 8 MiB); it is read locally and sent inline, and a model without reference support rejects the argument instead of ignoring it. Jobs are durable and owned by the conversation: polling resumes after a relaunch and the finished video is downloaded into the conversation workspace with a notification. A replayed tool call attaches to the existing job, a new request creates a new job, a cancel wins over an in-flight submit, a canceled download is never announced as ready, and an expired result URL is reported as expired. GIF sources can be inspected (frame count, loop count, timing) and converted to a constant-rate video without a cloud call. Real provider acceptance with your own keys is still pending.
+
 ## 1. Install safely
 
 Use TestFlight when a testing invitation is available. If you use the community unsigned IPA, verify its SHA-256 and provenance, inspect the source, and sign it with your own certificate. Never import a certificate, API key, SSH key, or provisioning profile supplied by an unknown distributor.
@@ -68,6 +89,8 @@ Credentials should be stored in Keychain. Diagnostics and exported reports redac
 Each provider and each model has its own routing switch. Turning one off keeps its endpoint, credential and model metadata editable in Settings while removing it from the New Task model picker. The picker groups Apple/downloaded local models separately and groups cloud models by provider, so duplicate model names remain distinguishable.
 
 An enabled model also has a separate **Hide from primary model picker** switch, off by default. Use it for a model that should stay available as an auxiliary/internal model without cluttering the Home/New Task LLM menu. Existing tasks that explicitly reference the model remain resolvable.
+
+If the stored default or the Home draft points at a model that was disabled, deleted or hidden, the build 192 repair candidate selects another usable model in a fixed order (current selection, stored default, most recent run, first usable). A running request keeps its own model, and **Not configured** is reported only when no usable model remains.
 
 ## 3. Configure auxiliary image models
 
@@ -116,7 +139,7 @@ Attach files or images, write the request, and send. The draft becomes a persist
 
 ### Lightweight source control
 
-Open the workspace Files inspector and select **Source Control**. A non-repository workspace can be initialized in place. For a repository you can inspect status, per-file diffs and recent commits; stage all changes; commit; create or switch branches; fetch; fast-forward pull; and push. Floe intentionally omits destructive reset/clean, force-push and history rewriting.
+Open the workspace Files inspector and select **Source Control**. A non-repository workspace can be initialized in place. For a repository you can inspect status, per-file diffs and recent commits; stage or unstage individual files; commit; create or switch branches; fetch; fast-forward pull or merge; push; and resolve merge conflicts in a bounded editor. Discarding a file first writes a recovery copy to `.git/floe-recovery`, including the staged bytes when the row is staged. The build 192 repair candidate makes fast-forward actually update HEAD and the working tree, fixes conflict-path listing, and discards staged rows from both the index and the working tree. Floe intentionally omits destructive reset/clean, force-push and history rewriting.
 
 Open **Settings → GitHub & Source Control** to sign in through GitHub's official device authorization page. Floe shows a one-time code and polls only at GitHub's returned interval. Fine-grained token entry remains available as a fallback. The resulting credential is validated against GitHub, stored only in the device Keychain, and never added to a remote URL, repository file, log or model prompt. After connection you can list accessible repositories, clone one into a subfolder of the current workspace, or create a public/private repository. Grant only the repository access needed for the intended operations.
 
@@ -202,7 +225,7 @@ Floe publishes **Run Floe Task** and **Schedule Floe Task** App Intents. Add **R
 
 ## 12. Local Python, packages and code editing
 
-Signed builds include CPython 3.13. In the repair candidate, `pip install`, `pip3` and `python3 -m pip` use the same environment-scoped installer as Settings. Compatible pure-Python dependencies are resolved before installation, verified and staged; a failed operation preserves the old generation. Installed native libraries can satisfy dependencies, but downloading arbitrary native extensions or launching Linux system executables is unsupported. Normal task permissions and package review still apply where required by the calling tool.
+Signed builds include CPython 3.13. In the repair candidate, `pip install`, `pip3` and `python3 -m pip` use the same environment-scoped installer as Settings. Compatible pure-Python dependencies are resolved before installation, verified and staged; a failed operation preserves the old generation. The build 192 repair candidate keeps the environment's writable dependency path ahead of the managed baseline and evicts retired managed-root modules before user code runs, so an import resolves to the version installed in the activated environment. Installed native libraries can satisfy dependencies, but downloading arbitrary native extensions or launching Linux system executables is unsupported. Normal task permissions and package review still apply where required by the calling tool.
 
 NumPy, Pillow and pandas, along with the qualified wheelhouse packages, are available according to the current runtime probe. The next repair adds pinned lxml 6.1.3, python-docx 1.2.0 and python-pptx 1.0.2; their iOS testbed Office round trips passed, while full-App integration is still under validation. SciPy, scikit-learn and Matplotlib remain unqualified for the bundled native runtime; use only a separately verified browser or trusted remote route. This is a current build limitation, not a claim that iOS native compilation is permanently impossible.
 
@@ -217,7 +240,7 @@ An installed skill may include bounded UTF-8 `.py` scripts and exact-version pur
 
 Open Python, JavaScript, MJS or CJS files from the workspace to use the structured editor with line numbers, syntax highlighting, search/replace, symbols, undo/redo and bounded local execution where supported.
 
-The Build 179 candidate also installs Lua 5.4.8 as a signed WASM capability: in Shell, `apt install floe/lua` installs it app-wide with `apt search`, `apt list` and `apt show` support and a `lua` alias; mixed WASM and Debian package changes in one command are rejected before any change. App-wide WASM capabilities are separate from environment-layer packages. PHP is not shipped in this candidate (the browser prototype remains a private experiment), and Rust/Swift/C/C++ are not locally compiled — route them to a configured host as described under Run the current file.
+The Build 179 candidate also installs Lua 5.4.8 as a signed WASM capability: in Shell, `apt install floe/lua` installs it app-wide with `apt search`, `apt list` and `apt show` support and a `lua` alias; mixed WASM and Debian package changes in one command are rejected before any change. App-wide WASM capabilities are separate from environment-layer packages. The build 192 repair candidate adds Ruby and PHP as **compilepending candidates only** — their assets passed a host-level suite, but there is no signed artifact and they cannot be installed on a device; do not expect `ruby` or `php` aliases until a signed catalog entry exists. Interpreter startup can exceed the default shell timeout, so raise `timeout` or use `jobs.submit`. Rust/Swift/C/C++ are not locally compiled — route them to a configured host as described under Run the current file.
 
 ## 13. Create and manually edit Office documents
 
@@ -226,6 +249,8 @@ The Agent can create native DOCX, XLSX and PPTX files with `document.createWord`
 For manual revision, open the file from the workspace or Notes and enter the full-screen Office editor. Builds with the embedded Office engine provide document layout and editing controls for Word, spreadsheets and presentations; the document menu includes drawing/annotation and presentation controls where applicable. Notes keeps document tabs and access to its assistant. The repair candidate consolidates the outer controls into one row and moves compact-screen actions into a menu. Saving checks the original version and preserves recoverable drafts after conflicts or errors. Advanced macros, animations and exact desktop Office formatting are not guaranteed.
 
 Build 179 candidate updates Office font selection, saving and closing. If another editor changes the document, Floe keeps your draft and asks you to resolve the conflict. Saving, reopening and native controls still need device verification.
+
+The build 192 repair candidate makes editability truthful. An unknown or missing engine permission is never treated as editable; a protected or read-only document returns to preview with a reason, and a document that needs its edit password prompts for it. An imported workbook with its own formulas, sheets or embeddings may have its save rejected instead of being silently rewritten; the original file is preserved. Native chart round-trip, save, close and reopen on a device are still pending.
 
 PDF is separate from Office: open it directly from the file list, read it in the wide-screen inspector, then expand to fullscreen. The shared reading session retains page and zoom state; changed local files reload. Remote previews are downloaded read-only snapshots. Office saves check the file version and retain your draft when saving fails or conflicts.
 
@@ -424,11 +449,11 @@ floe-service restart JOB_ID
 
 Scripts bind `127.0.0.1` and use the supplied `PORT` environment variable. Additional script arguments follow `--`. Start returns a job ID; the preview URL appears only once HTTP responds. Closing previews or switching conversations keeps the service running. iOS may suspend execution in the background; app termination interrupts it and requires explicit restart. Stopping waits for the actual worker to exit. This supports managed Node/Python HTTP scripts, not arbitrary Linux daemon processes.
 
-For environment JavaScript dependencies, choose **Automatic / npm / pnpm** on the package page. Automatic follows the owning project's `packageManager` and single lockfile; conflicting hints need an explicit choice or project cleanup. This selects the bundled manager for the environment installation; it does not change the project's manifests, lockfiles or requested CLI version. Switching managers creates and validates a staged tree before replacing the installed generation. Failed installs keep the previous dependencies. Shell `npm` and `pnpm` remain explicit commands for project work.
+For environment JavaScript dependencies, choose **Automatic / npm / pnpm** on the package page. Automatic follows the owning project's `packageManager` and single lockfile; conflicting hints need an explicit choice or project cleanup. This selects the bundled manager for the environment installation; it does not change the project's manifests, lockfiles or requested CLI version. Switching managers creates and validates a staged tree before replacing the installed generation. Failed installs keep the previous dependencies. Shell `npm` and `pnpm` remain explicit commands for project work; the build 192 repair candidate makes that authoritative — an explicit `npm install`/`pnpm install` is never silently replaced by the other manager because of a project lock or preference.
 
 Office documents inside Notes share one top row for back, document tabs and actions. On compact screens, attachment, drawing and presentation controls move into the document menu. The assistant menu also opens document-linked mind maps.
 
-Shell `npm install` and `pnpm install` use the selected session/project environment and the same rollback path as Settings. Without package arguments, they read the current package.json dependencies and devDependencies. Project manifests/lockfiles are preserved; this environment installation is not a reproduction of a project's frozen lock. Both `require` and ES module imports can locate the resolved environment dependencies.
+Shell `npm install` and `pnpm install` use the selected session/project environment and the same rollback path as Settings. Without package arguments, they read the current package.json dependencies and devDependencies. Project manifests/lockfiles are preserved; this environment installation is not a reproduction of a project's frozen lock. Both `require` and ES module imports can locate the resolved environment dependencies. A cancelled package command returns exit 130 without executing.
 
 Python packages can also be managed with `pip`, `pip3` or `python3 -m pip`: install a compatible package, uninstall one environment-owned distribution, or inspect dependencies with list/show/freeze/check. The commands use the same managed installer as Settings. An unavailable native extension requires a compatible App build; installing its pure Python wrapper alone does not make it usable.
 
@@ -457,6 +482,10 @@ Both editors remain available. If a text file changes before saving, review the 
 In the full-screen IDE, open a code file and choose **Run**. The run panel shows the selected runtime or SSH host and the command before execution. Floe saves the editor first; unresolved conflicts or a failed save prevent running an older revision. Installed Python, Node, Shell and Lua use the local runtime. Rust, Swift, C/C++, PHP, Ruby, Go, Java and Kotlin need a configured host with the corresponding executable.
 
 Remote Run transfers and verifies only the current file, up to 1 MiB; it requires the Floe remote agent and does not copy project dependencies. Stop can cancel preparation or request cancellation of a running program. Remote process exit and cleanup are shown as unconfirmed when they cannot be observed. Closing the IDE stops its owned local run. These additions have focused code tests; full-App and real-host qualification are still pending.
+
+### Local terminal (build 192 repair candidate)
+
+The IDE bottom panel can host the local terminal. It reuses the app-lifetime shell session, so closing the panel does not end the shell; the standalone terminal keeps its restart and end-session actions. The repair candidate fixes a descriptor race between an interactive session and a concurrent close or expiry, and preserves the last output of a command that exits immediately. When the engine is still running another command, a new command reports exit 75 (not started) instead of a fabricated timeout. A native command that ignores cooperative cancellation can still hold the engine until it stops; wait for it to finish or restart the app rather than assuming the command ran.
 
 The Office editor also adds **Annotate** settings for color, width and transparency. **0% transparency is solid**. Settings are saved per document; deselect an existing drawing object before changing pen defaults. A pending-confirmation message means the engine has not confirmed the settings yet. Native drawing, export and save/reopen acceptance remain pending.
 

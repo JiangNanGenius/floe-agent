@@ -8,9 +8,12 @@
 
 当前内部 TestFlight 为 **1.7.0（191）**，已核实 Apple VALID、未过期及 Floe QA 可测试。[beta.48](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.48) 开发者包与 [Feather 源](FEATHER_SOURCE.md)均已发布；三项界面失败仅获内部测试豁免。完整包/模型、RDP App 集成和部分真机验收仍未完成。[191交付证据](qualification/build191-release/README.md)，历史记录保持原结论。
 
+**Build 192 为下一预留构建号**：标签 `v1.7.0-beta.49` 尚未创建，未做上传 SDK App 构建、未打标签、未上传、未经 Apple 处理。工作区包含 191 反馈修复，[预留发布说明](RELEASE_NOTES_1.7.0_BUILD_192.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_192.json)已准备但尚未附加到任何构建。语言运行时（Ruby/PHP）等到签名工件证据后才能称为可安装；该后续任务完成前，本索引中的语言状态以 [LANGUAGES.md](../capability-hub/LANGUAGES.md) 的 `ready` 与 `compilepending` 为准。
+
 | 文档 | 阅读目的 |
 |---|---|
 | [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
+| [Build 192 预留说明](RELEASE_NOTES_1.7.0_BUILD_192.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（未构建/未上传） |
 | [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 本轮改动、已验证范围与发布状态 |
 | [当前手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
 | [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 本轮改动与分发前剩余工作 |
@@ -49,6 +52,7 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
+- [RELEASE_NOTES_1.7.0_BUILD_192.md](RELEASE_NOTES_1.7.0_BUILD_192.md) — 下一预留候选的完整说明（未构建／未上传，191 交付记录保持原样）
 - `RELEASE_VERIFICATION_<版本>.md`、`TESTFLIGHT_<版本>.md` — 对应核验与上传记录
 - `RELEASE_CODE_AUDIT_20260909.md` — 1.6.1 代码审计
 - [evidence/](evidence/) — 逐版本证据包
