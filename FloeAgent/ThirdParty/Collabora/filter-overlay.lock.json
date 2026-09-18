@@ -51,7 +51,7 @@
   "archive": "source/engine/instdir/program/libscfiltlo.a",
   "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
   "member": "xcl97rec.o",
-  "qualificationStatus": "xlsx-modern-ole-anchor-import-compile-runtime-pending+pptx-chart-workbook-overlay-uncompiled",
+  "qualificationStatus": "xlsx-modern-ole-anchor-import-compile-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "members": {
     "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
     "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx",
