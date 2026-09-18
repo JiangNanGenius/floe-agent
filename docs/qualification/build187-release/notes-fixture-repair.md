@@ -23,6 +23,24 @@ copies after completion. Cancellation releases the replacement holder as well.
 
 No product source, timeout, retry, expected copy count, or release gate changed.
 Six focused Swift6 semantic/object checks passed against existing SDK27 modules,
-targeting iOS26; this is not execution. A dedicated cloud component rerun is the
-next required check. The original build187 release remains blocked, even if this
+targeting iOS26; this is not execution. Dedicated cloud component run35314763193 at source
+920132dcc88b448a5877fca3d61ea911afb69566 is executing the full component suite on
+both devices, with the strict Quick Look diagnostics retained. The original build187 release remains blocked, even if this
 new test source passes separately.
+
+## Artifact-only recovery conditions
+
+A separate distribution controller is being prepared for this exact source pair.
+It requires the original SDK27 and accepted-SDK jobs to finish successfully, the
+original component failure to be exactly the reviewed case on both devices, and
+the corrected component run to finish with101/101 and no skipped or expected
+failures on both devices. The checker pins both commits and both fixture hashes,
+and rejects any changed product source, resource, dependency, setting or workflow.
+Only the reviewed test file and documentation differ. It also requires the
+original upload to have been skipped, preventing an automatic duplicate upload.
+
+This preserves the immutable App tag and reuses its qualified accepted-SDK input;
+the supplementary test source and original failure remain explicitly recorded.
+It is not the expedited path and grants no testing waiver. Signing, bundle/profile
+checks and Apple validation remain the existing upload workflow. The original
+release still reports failure; a successful recovery would be a separate run.

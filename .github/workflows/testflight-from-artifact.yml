@@ -8,6 +8,11 @@ on:
       tag:
         required: true
         type: string
+      component_recovery_report:
+        description: Same-run proof artifact from the strict component-only recovery controller
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
   actions: read
@@ -43,13 +48,21 @@ jobs:
           XCODE_VERSION="$(xcodebuild -version)"
           printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
           printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+      - name: Read same-run component recovery proof when supplied
+        if: inputs.component_recovery_report != ''
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ inputs.component_recovery_report }}
+          path: ${{ runner.temp }}/ComponentRecoveryProof
       - name: Wait for the existing device artifact without rebuilding
         env:
           APP_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           EXPECTED_ARTIFACT: accepted-sdk-input-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
+          COMPONENT_RECOVERY_REPORT: ${{ inputs.component_recovery_report }}
         run: |
           set -euo pipefail
           for attempt in {1..50}; do
+            printf 'Artifact check %s/50\n' "$attempt"
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/reuse-run.json"
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > "$RUNNER_TEMP/reuse-jobs.json"
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts?per_page=100" > "$RUNNER_TEMP/reuse-artifacts.json"
@@ -71,7 +84,19 @@ jobs:
               assert job['conclusion']=='success', 'Accepted SDK job did not pass'
               assets=[a for a in artifacts if a['name']==os.environ['EXPECTED_ARTIFACT'] and not a['expired']]
               assert len(assets)==1, 'Missing or ambiguous retained artifact'
-              report={'sourceRun':run['id'],'sourceCommit':run['head_sha'],'sourceTag':os.environ['RELEASE_TAG'],'acceptedSDKJob':job['id'],'artifactId':assets[0]['id'],'artifactDigest':assets[0].get('digest'),'policy':'User requested expedited TestFlight without waiting for SDK 27. Accepted-SDK artifact is reused; no rebuilding.'}
+              report={'sourceRun':run['id'],'sourceCommit':run['head_sha'],'sourceTag':os.environ['RELEASE_TAG'],'acceptedSDKJob':job['id'],'artifactId':assets[0]['id'],'artifactDigest':assets[0].get('digest')}
+              if os.environ.get('COMPONENT_RECOVERY_REPORT'):
+                  assert os.environ['COMPONENT_RECOVERY_REPORT']=='component-recovery-proof', 'Unexpected qualification proof'
+                  proof=json.loads((root/'ComponentRecoveryProof'/'qualification.json').read_text())
+                  assert proof['qualificationMode']=='all_gates_with_test_only_component_repair', 'Unexpected qualification mode'
+                  assert (proof['sourceRun'],proof['sourceCommit'],proof['sourceTag'])==(run['id'],run['head_sha'],os.environ['RELEASE_TAG']), 'Qualification proof source mismatch'
+                  for expected_name in ('build-verify-release','Qualify and build the accepted SDK in parallel'):
+                      passed=[j for j in jobs if j['name']==expected_name and j['status']=='completed' and j['conclusion']=='success']
+                      assert len(passed)==1 and passed[0]['id'] in proof['sdkJobIDs'], 'Missing original SDK qualification'
+                  report['qualification']=proof
+                  report['policy']=proof['policy']
+              else:
+                  report['policy']='User requested expedited TestFlight without waiting for SDK 27. Accepted-SDK artifact is reused; no rebuilding.'
               (root/'REUSE-PROVENANCE.json').write_text(json.dumps(report,indent=2)+'\n')
               print('ready')
           else:

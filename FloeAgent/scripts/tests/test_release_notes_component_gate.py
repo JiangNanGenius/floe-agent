@@ -19,7 +19,8 @@ These tests pin the integration without dispatching any workflow:
   pin.
 * the release workflow wires ``sdk: development`` and
   ``needs.prepare-release.outputs.source_sha`` and makes ``testflight`` need all
-  three gates, while the explicit direct/reuse/recovery flows stay untouched.
+  three gates. Explicit direct/reuse/recovery flows keep their original scope
+  and cannot run alongside the separately verified component correction path.
 
 Everything is local: no network, no CI dispatch, no secret value and no App or
 simulator build.
@@ -481,7 +482,7 @@ class ReleaseComponentGateTests(unittest.TestCase):
         cls.jobs = {
             name: job_block(cls.release, name)
             for name in ("direct-testflight", "expedited-testflight",
-                         "recover-testflight", "prepare-release",
+                         "recover-testflight", "component-recovery", "prepare-release",
                          "notes-component", "build-verify-release",
                          "accepted-sdk-build", "testflight", "publish-release")
         }
@@ -548,14 +549,14 @@ class ReleaseComponentGateTests(unittest.TestCase):
                          ["build-verify-release", "testflight"])
         self.assertIn("inputs.publish", job_scalar(publish, "if"))
 
-    def test_direct_reuse_and_recovery_flows_are_unchanged(self):
+    def test_direct_reuse_and_recovery_flows_exclude_component_correction(self):
         direct = self.jobs["direct-testflight"]
         self.assertEqual(job_scalar(direct, "uses"),
                          "./.github/workflows/testflight-direct.yml")
         self.assertEqual(
             job_scalar(direct, "if"),
             "github.event_name == 'workflow_dispatch' && inputs.direct_testflight "
-            "&& inputs.reuse_accepted_run == ''")
+            "&& inputs.reuse_accepted_run == '' && inputs.component_recovery_run == ''")
         self.assertIn("      tag: ${{ inputs.tag }}\n", direct)
 
         expedited = self.jobs["expedited-testflight"]
@@ -564,7 +565,7 @@ class ReleaseComponentGateTests(unittest.TestCase):
         self.assertEqual(
             job_scalar(expedited, "if"),
             "github.event_name == 'workflow_dispatch' && "
-            "inputs.reuse_accepted_run != ''")
+            "inputs.reuse_accepted_run != '' && inputs.component_recovery_run == ''")
         self.assertIn("      source_run: ${{ inputs.reuse_accepted_run }}\n",
                       expedited)
         self.assertIn("      tag: ${{ inputs.tag }}\n", expedited)
@@ -576,13 +577,30 @@ class ReleaseComponentGateTests(unittest.TestCase):
             job_scalar(recovery, "if"),
             "${{ github.event_name == 'workflow_dispatch' && "
             "inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && "
-            "!inputs.publish }}")
+            "!inputs.publish && inputs.component_recovery_run == '' }}")
 
         # The new gate never widens those explicit flows.
         component = self.jobs["notes-component"]
         self.assertNotIn("direct-testflight", needs_list(component))
         self.assertNotIn("expedited-testflight", needs_list(component))
         self.assertNotIn("recover-testflight", needs_list(component))
+
+    def test_component_correction_uses_its_own_verification_before_upload(self):
+        route = self.jobs["component-recovery"]
+        self.assertEqual(job_scalar(route, "if"),
+                         "github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != ''")
+        self.assertEqual(job_scalar(route, "uses"),
+                         "./.github/workflows/component-only-release-recovery.yml")
+        self.assertIn("      component_run: ${{ inputs.component_recovery_run }}\n", route)
+        self.assertIn("      source_run: ${{ inputs.reuse_accepted_run }}\n", route)
+        self.assertIn("      tag: ${{ inputs.tag }}\n", route)
+        for name in ["prepare-release", "notes-component", "build-verify-release"]:
+            self.assertIn("inputs.component_recovery_run == ''", job_scalar(self.jobs[name], "if"))
+        controller = (REPO_ROOT / ".github/workflows/component-only-release-recovery.yml").read_text()
+        self.assertIn("    needs: qualify\n", controller)
+        self.assertIn("verify_component_only_recovery.py", controller)
+        self.assertNotIn("continue-on-error", controller)
+        self.assertNotIn("xcodebuild", controller)
 
 
 if __name__ == "__main__":

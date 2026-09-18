@@ -1,0 +1,25 @@
+{
+  "sourceSHA": "d77aa11f7b4933b987faf5cf65ebc817d520e15e",
+  "runID": 35312393708,
+  "build": 187,
+  "file": "accepted-sdk-device-recovery.zip",
+  "bytes": 811479694,
+  "sha256": "254091991b056b833413a7ec59fd688fe725842aae34ec3022239cd746395899",
+  "bundles": [
+    {
+      "CFBundleIdentifier": "org.floeagent.ios.screenshare",
+      "CFBundleShortVersionString": "1.7.0",
+      "CFBundleVersion": "187",
+      "DTSDKName": "iphoneos26.5",
+      "DTXcodeBuild": "17F113"
+    },
+    {
+      "CFBundleIdentifier": "org.floeagent.ios",
+      "CFBundleShortVersionString": "1.7.0",
+      "CFBundleVersion": "187",
+      "DTSDKName": "iphoneos26.5",
+      "DTXcodeBuild": "17F113"
+    }
+  ],
+  "stage": "unsigned_device_recovery_not_signed_IPA_not_uploaded"
+}

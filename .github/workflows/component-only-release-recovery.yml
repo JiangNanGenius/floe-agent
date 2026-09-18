@@ -1,0 +1,119 @@
+name: Recover release after reviewed component fixture correction
+
+# No App build and no qualification waiver. The original tag's SDK jobs must
+# both pass. A separate passing component run must differ only by the reviewed
+# fixture correction and documentation, proven before credentials are installed.
+on:
+  workflow_call:
+    inputs:
+      source_run:
+        required: true
+        type: string
+      component_run:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Original immutable release run
+        required: true
+        type: string
+      component_run:
+        description: Passing standalone component correction run
+        required: true
+        type: string
+      tag:
+        description: Original immutable release tag
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: floe-component-recovery-beta44
+  cancel-in-progress: false
+jobs:
+  qualify:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      COMPONENT_RUN: ${{ inputs.component_run }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_SHA: d77aa11f7b4933b987faf5cf65ebc817d520e15e
+      COMPONENT_SHA: 920132dcc88b448a5877fca3d61ea911afb69566
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+      - name: Read original and replacement provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COMPONENT_RUN" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p "$RUNNER_TEMP/component-recovery"
+          for kind in source component; do
+            run="$SOURCE_RUN"
+            if [[ "$kind" == component ]]; then run="$COMPONENT_RUN"; fi
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" > "$RUNNER_TEMP/component-recovery/$kind-run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" > "$RUNNER_TEMP/component-recovery/$kind-jobs.json"
+          done
+      - name: Download original component evidence
+        uses: actions/download-artifact@v5
+        with:
+          name: notes-native-development-d77aa11f7b4933b987faf5cf65ebc817d520e15e
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/component-original
+      - name: Download replacement component evidence
+        uses: actions/download-artifact@v5
+        with:
+          name: notes-native-development-920132dcc88b448a5877fca3d61ea911afb69566
+          run-id: ${{ inputs.component_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/component-replacement
+      - name: Verify structured results and identical product source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d /Applications/Xcode_27.0.app ]]; then
+            export DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer
+          else
+            export DEVELOPER_DIR=/Applications/Xcode_27_beta_6.app/Contents/Developer
+          fi
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          for kind in ('original', 'replacement'):
+              for family in ('iPad', 'iPhone'):
+                  bundles = list((root / ('component-' + kind)).rglob('notes-' + family + '.xcresult'))
+                  if len(bundles) != 1:
+                      raise SystemExit('Missing or ambiguous component result bundle')
+                  result = subprocess.check_output(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', str(bundles[0])])
+                  json.loads(result)
+                  (root / 'component-recovery' / (kind + '-' + family + '.json')).write_bytes(result)
+          PY
+          python3 FloeAgent/scripts/verify_component_only_recovery.py \
+            --evidence "$RUNNER_TEMP/component-recovery" --repository . \
+            --tag "$RELEASE_TAG" --source-sha "$SOURCE_SHA" --component-sha "$COMPONENT_SHA" \
+            --output "$RUNNER_TEMP/component-recovery/qualification.json"
+      - name: Retain qualification proof and original failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: component-recovery-proof
+          path: ${{ runner.temp }}/component-recovery/
+          if-no-files-found: error
+  upload:
+    needs: qualify
+    uses: ./.github/workflows/testflight-from-artifact.yml
+    with:
+      source_run: ${{ inputs.source_run }}
+      tag: ${{ inputs.tag }}
+      component_recovery_report: component-recovery-proof
+    secrets: inherit

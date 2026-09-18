@@ -19,6 +19,10 @@ on:
         description: Reuse an existing exact-tag accepted-SDK artifact and upload without waiting for SDK 27 qualification
         required: false
         type: string
+      component_recovery_run:
+        description: Supplement reuse_accepted_run with the reviewed passing component correction; requires both original SDK jobs and identical product source, without a waiver
+        required: false
+        type: string
       recover_build_156:
         description: Retry only distribution of qualified immutable build 156
         required: false
@@ -39,7 +43,7 @@ concurrency:
 
 jobs:
   direct-testflight:
-    if: github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == ''
+    if: github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == ''
     permissions:
       contents: read
       actions: read
@@ -49,7 +53,7 @@ jobs:
     secrets: inherit
 
   expedited-testflight:
-    if: github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != ''
+    if: github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != '' && inputs.component_recovery_run == ''
     permissions:
       contents: read
       actions: read
@@ -60,15 +64,27 @@ jobs:
     secrets: inherit
 
   recover-testflight:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/testflight-recovery.yml
     secrets: inherit
 
+  component-recovery:
+    if: github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/component-only-release-recovery.yml
+    with:
+      source_run: ${{ inputs.reuse_accepted_run }}
+      component_run: ${{ inputs.component_recovery_run }}
+      tag: ${{ inputs.tag }}
+    secrets: inherit
+
   prepare-release:
-    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
+    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     runs-on: macos-26
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -93,7 +109,7 @@ jobs:
   notes-component:
     name: Qualify the NativeNotes development component in parallel
     needs: prepare-release
-    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
+    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
     # Branch-local reusable call at the caller's commit. sdk=development selects
@@ -107,7 +123,7 @@ jobs:
 
   build-verify-release:
     needs: prepare-release
-    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' }}
+    if: ${{ !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     # Verify the complete iOS 27 source path here. The upload job below
     # separately rebuilds this exact tag with the App Store accepted SDK.
     runs-on: xcode-27
