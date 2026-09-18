@@ -1,0 +1,226 @@
+name: Qualify PHP and Ruby WASI interpreter runtimes
+on:
+  workflow_dispatch:
+    inputs:
+      runtimes:
+        description: Pinned interpreter routes to qualify
+        type: choice
+        options: [both, ruby, php]
+        default: both
+      stage:
+        description: Stage verified artifacts and promotion records on main (never signs)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: language-runtimes-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  artifact-ruby:
+    if: ${{ inputs.runtimes != 'php' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch and verify the pinned ruby.wasm release module
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/ruby-wasi"
+          bash FloeAgent/ThirdParty/RubyWASI/fetch_runtime.sh "$RUNNER_TEMP/ruby-wasi" 2>&1 | tee "$RUNNER_TEMP/ruby-wasi/fetch.log"
+          python3 - "$RUNNER_TEMP/ruby-wasi/ruby.wasm" <<'PY'
+          import hashlib, sys
+          data = open(sys.argv[1], 'rb').read()
+          digest = hashlib.sha256(data).hexdigest()
+          assert digest == '348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11', digest
+          assert data[:4] == b'\0asm', 'not a WASM module'
+          print(f'ruby.wasm {len(data)} bytes sha256 {digest}')
+          PY
+      - name: Preserve the verified module and fetch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-wasm-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ruby-wasi/ruby.wasm
+            ${{ runner.temp }}/ruby-wasi/evidence
+            ${{ runner.temp }}/ruby-wasi/fetch.log
+          if-no-files-found: error
+          retention-days: 30
+
+  artifact-php:
+    if: ${{ inputs.runtimes != 'ruby' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool bison re2c pkg-config curl git patch \
+            binaryen wabt
+          wabt_validate="$(command -v wasm-validate || true)"
+          test -n "$wabt_validate"
+      - name: Build the pinned PHP 8.2.33 WASI interpreter
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/php-wasi"
+          bash FloeAgent/ThirdParty/PHPWASI/build_wasi.sh "$RUNNER_TEMP/php-wasi" 2>&1 | tee "$RUNNER_TEMP/php-wasi/build.log"
+      - name: Structural validation and WASI-only import check
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/php-wasi"
+          for artifact in php.wasm php-cgi.wasm; do
+            if [ -f "$artifact" ]; then
+              wasm-validate "$artifact"
+              imports="$(wasm-objdump -x "$artifact" | grep -oE 'module=[^ ]+' | sort -u || true)"
+              echo "$artifact imports:"; echo "$imports"
+              if [ -n "$imports" ] && echo "$imports" | grep -vq 'module=wasi_snapshot_preview1'; then
+                echo "::error::$artifact imports a non-WASI module and cannot run in the Floe WASI runtime"
+                exit 1
+              fi
+            fi
+          done
+          test -f php.wasm -o -f php-cgi.wasm
+      - name: Preserve the built module, digests and original failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-wasm-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/php-wasi/php.wasm
+            ${{ runner.temp }}/php-wasi/php-cgi.wasm
+            ${{ runner.temp }}/php-wasi/evidence
+            ${{ runner.temp }}/php-wasi/build.log
+          retention-days: 30
+
+  qualify-ruby:
+    needs: artifact-ruby
+    if: ${{ needs.artifact-ruby.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: ruby-wasm-${{ github.sha }}
+          path: ${{ runner.temp }}/ruby-wasi
+      - name: Require the integrated Ruby interpreter tests
+        run: |
+          set -euo pipefail
+          test -f FloeAgent/Qualification/Tests/WasmCommandTests/RubyInterpreterTests.swift || {
+            echo "::error::RubyInterpreterTests.swift is not integrated yet; copy it from Local/Private/build191-feedback/languages/tests/ into FloeAgent/Qualification/Tests/WasmCommandTests/ before running this gate"
+            exit 1
+          }
+      - name: Run the interpreter through the production WASI command runtime
+        run: |
+          set -o pipefail
+          cd FloeAgent/Qualification
+          FLOE_RUBY_WASI="$RUNNER_TEMP/ruby-wasi/ruby.wasm" swift test --package-path . --scratch-path .build \
+            --force-resolved-versions --jobs 4 --filter '(RubyInterpreterTests|WasmPackageLimitsTests|WasmCapabilityTests)' 2>&1 | tee "$RUNNER_TEMP/ruby-tests.log"
+      - name: Preserve test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/ruby-tests.log
+          retention-days: 30
+
+  qualify-php:
+    needs: artifact-php
+    if: ${{ needs.artifact-php.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: php-wasm-${{ github.sha }}
+          path: ${{ runner.temp }}/php-wasi
+      - name: Require the integrated PHP interpreter tests
+        run: |
+          set -euo pipefail
+          test -f FloeAgent/Qualification/Tests/WasmCommandTests/PhpInterpreterTests.swift || {
+            echo "::error::PhpInterpreterTests.swift is not integrated yet; copy it from Local/Private/build191-feedback/languages/tests/ into FloeAgent/Qualification/Tests/WasmCommandTests/ before running this gate"
+            exit 1
+          }
+      - name: Select the interpreter the build produced
+        run: |
+          set -euo pipefail
+          artifact=""
+          sapi="cli"
+          for candidate in php.wasm php-cgi.wasm; do
+            if [ -f "$RUNNER_TEMP/php-wasi/$candidate" ]; then
+              artifact="$candidate"
+              [ "$candidate" = "php-cgi.wasm" ] && sapi="cgi"
+            fi
+          done
+          test -n "$artifact"
+          echo "FLOE_PHP_ARTIFACT=$artifact" >> "$GITHUB_ENV"
+          echo "FLOE_PHP_SAPI=$sapi" >> "$GITHUB_ENV"
+      - name: Run the interpreter through the production WASI command runtime
+        run: |
+          set -o pipefail
+          cd FloeAgent/Qualification
+          FLOE_PHP_WASI="$RUNNER_TEMP/php-wasi/$FLOE_PHP_ARTIFACT" swift test --package-path . --scratch-path .build \
+            --force-resolved-versions --jobs 4 --filter '(PhpInterpreterTests|WasmPackageLimitsTests|WasmCapabilityTests)' 2>&1 | tee "$RUNNER_TEMP/php-tests.log"
+      - name: Preserve test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/php-tests.log
+          retention-days: 30
+
+  stage:
+    if: ${{ always() && inputs.stage && github.ref == 'refs/heads/main' }}
+    needs: [qualify-ruby, qualify-php]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: ruby-wasm-${{ github.sha }}
+          path: ${{ runner.temp }}/ruby-wasi
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: php-wasm-${{ github.sha }}
+          path: ${{ runner.temp }}/php-wasi
+        continue-on-error: true
+      - name: Stage verified artifacts without signing
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/ruby-wasi/ruby.wasm" ] && [ "${{ needs.qualify-ruby.result }}" = "success" ]; then
+            python3 capability-hub/stage_artifact.py --id floe/ruby --artifact "$RUNNER_TEMP/ruby-wasi/ruby.wasm" \
+              --evidence "$RUNNER_TEMP/ruby-wasi/evidence"
+          fi
+          if [ "${{ needs.qualify-php.result }}" = "success" ]; then
+            for candidate in php.wasm php-cgi.wasm; do
+              if [ -f "$RUNNER_TEMP/php-wasi/$candidate" ]; then
+                python3 capability-hub/stage_artifact.py --id floe/php --artifact "$RUNNER_TEMP/php-wasi/$candidate" \
+                  --evidence "$RUNNER_TEMP/php-wasi/evidence"
+                break
+              fi
+            done
+          fi
+      - name: Commit staged bytes and promotion records
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add capability-hub/packages capability-hub/candidates
+          if git diff --cached --quiet; then echo "nothing staged"; exit 0; fi
+          git commit -m "Stage verified language runtime artifacts without signing [skip ci]"
+          git push origin HEAD:main
+      - name: Confirm nothing was signed
+        run: |
+          git status --short capability-hub/catalog.json capability-hub/catalog.sig || true
+          test -z "$(git status --short capability-hub/catalog.json capability-hub/catalog.sig)"

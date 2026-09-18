@@ -1,0 +1,293 @@
+name: Cloud compile to WASI artifact
+# Reviewed cloud route for Rust / C / C++ / Go / Swift sources. The workflow
+# compiles one bounded source file to a wasm32-wasip1 module, structurally
+# validates it, requires WASI-only imports (the Floe device runtime has no JS
+# glue), smoke-runs it with wasmtime, and publishes a digest-addressed artifact
+# plus artifact.json. It never signs the capability catalog and never edits
+# MANIFEST: staging writes to capability-hub/cloud-staging for human promotion.
+#
+# Device path after promotion: capability-hub.yml signs the catalog, the app
+# installs the command with `apt install <name>` and runs `<command>`, which
+# executes locally through WasmKitCommandRuntime. Sources that need unsupported
+# OS features, native extensions or non-WASI syscalls stay on the remote host /
+# cloud workspace route instead of being advertised as locally executable.
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: Source language
+        type: choice
+        options: [rust, c, cpp, go, swift]
+      name:
+        description: Capability id, e.g. floe/hello-rust
+        type: string
+      command:
+        description: Command name, e.g. floe-hello-rust
+        type: string
+      version:
+        description: Semver version, e.g. 1.0.0
+        type: string
+      source_base64:
+        description: Base64 of one source file (max 64 KiB decoded)
+        type: string
+      smoke_args:
+        description: Optional space-separated smoke arguments
+        type: string
+        default: ""
+      stage:
+        description: Stage the verified artifact under capability-hub/cloud-staging on main (never signs)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: cloud-language-compile-${{ github.ref }}-${{ inputs.command }}
+  cancel-in-progress: false
+jobs:
+  compile:
+    runs-on: ${{ inputs.language == 'swift' && 'macos-26' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    env:
+      FLOE_NAME: ${{ inputs.name }}
+      FLOE_COMMAND: ${{ inputs.command }}
+      FLOE_VERSION: ${{ inputs.version }}
+      FLOE_LANGUAGE: ${{ inputs.language }}
+      FLOE_SMOKE_ARGS: ${{ inputs.smoke_args }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate dispatch inputs
+        env:
+          FLOE_SOURCE: ${{ inputs.source_base64 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, os, re
+          name = os.environ['FLOE_NAME']
+          command = os.environ['FLOE_COMMAND']
+          version = os.environ['FLOE_VERSION']
+          assert re.fullmatch(r'floe/[a-z0-9][a-z0-9-]{0,63}', name), name
+          assert re.fullmatch(r'floe-[a-z0-9][a-z0-9-]{0,63}', command), command
+          assert re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+', version), version
+          source = base64.b64decode(os.environ['FLOE_SOURCE'], validate=True)
+          assert 0 < len(source) <= 64 * 1024, f'source must be 1..65536 bytes, got {len(source)}'
+          open('source.b64', 'w').write(os.environ['FLOE_SOURCE'])
+          print(f'{name} {command} {version} {os.environ["FLOE_LANGUAGE"]} source {len(source)} bytes')
+          PY
+          python3 -c "import base64; open('source.txt','wb').write(base64.b64decode(open('source.b64').read(), validate=True))"
+          case "$FLOE_LANGUAGE" in
+            rust) mkdir -p src;;
+            c) cp source.txt src.c;;
+            cpp) cp source.txt src.cpp;;
+            go) cp source.txt main.go;;
+            swift) mkdir -p Sources;;
+            *) echo "::error::unsupported language"; exit 1;;
+          esac
+      - name: Install pinned wasi-sdk (C and C++)
+        if: ${{ inputs.language == 'c' || inputs.language == 'cpp' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/wasi-sdk-20.0-linux.tar.gz" \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz
+          echo "7030139d495a19fbeccb9449150c2b1531e15d8fb74419872a719a7580aad0f9  $RUNNER_TEMP/wasi-sdk-20.0-linux.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/wasi-sdk"
+          tar -xzf "$RUNNER_TEMP/wasi-sdk-20.0-linux.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/wasi-sdk"
+      - name: Install pinned Rust toolchain
+        if: ${{ inputs.language == 'rust' }}
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --target wasm32-wasip1
+          rustup target add wasm32-wasip1 --toolchain 1.98.1
+      - name: Install pinned Go toolchain
+        if: ${{ inputs.language == 'go' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+      - name: Install pinned Swift toolchain and the official WASM SDK
+        if: ${{ inputs.language == 'swift' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/swiftly.tar.gz https://download.swift.org/swiftly/darwin/swiftly.tar.gz
+          tar -xzf /tmp/swiftly.tar.gz -C /tmp
+          /tmp/swiftly init --quiet-shell-followup --assume-yes
+          . "$HOME/.local/share/swiftly/env.sh"
+          swiftly install 6.4.0 --assume-yes
+          swiftly use 6.4.0
+          swift sdk install https://download.swift.org/swift-6.4.0-release/wasm-sdk/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE_wasm.artifactbundle.tar.gz \
+            --checksum f07b7be3c586d92d7a07051fc6d303b87ebea67eadc40640ba59d5a8b79aa86d
+          swift sdk list
+      - name: Build the WASI module
+        run: |
+          set -euo pipefail
+          case "$FLOE_LANGUAGE" in
+            rust)
+              cargo init --name floe_cloud_command --bin . >/dev/null 2>&1 || true
+              cp source.txt src/main.rs
+              cargo generate-lockfile
+              cargo build --release --locked --target wasm32-wasip1
+              cp target/wasm32-wasip1/release/floe_cloud_command.wasm "$RUNNER_TEMP/command.wasm" ;;
+            c|cpp)
+              compiler="$RUNNER_TEMP/wasi-sdk/bin/clang"
+              source_file=src.c
+              if [ "$FLOE_LANGUAGE" = "cpp" ]; then
+                compiler="$RUNNER_TEMP/wasi-sdk/bin/clang++"
+                source_file=src.cpp
+              fi
+              "$compiler" --sysroot="$RUNNER_TEMP/wasi-sdk/share/wasi-sysroot" -O2 \
+                -o "$RUNNER_TEMP/command.wasm" "$source_file" ;;
+            go)
+              GOOS=wasip1 GOARCH=wasm GOFLAGS=-trimpath go build -o "$RUNNER_TEMP/command.wasm" main.go ;;
+            swift)
+              . "$HOME/.local/share/swiftly/env.sh"
+              swiftly use 6.4.0
+              mkdir -p Sources
+              cp source.txt Sources/main.swift
+              cat > Package.swift <<'SWIFT'
+              // swift-tools-version:6.0
+              import PackageDescription
+              let package = Package(name: "FloeCloudCommand", targets: [
+                  .executableTarget(name: "FloeCloudCommand", path: "Sources")
+              ])
+              SWIFT
+              swift build -c release --swift-sdk swift-6.4.0-RELEASE_wasm
+              built="$(find .build -name 'FloeCloudCommand.wasm' -path '*release*' -print -quit)"
+              test -n "$built"
+              cp "$built" "$RUNNER_TEMP/command.wasm" ;;
+          esac
+          test -f "$RUNNER_TEMP/command.wasm"
+      - name: Structural validation and WASI-only import check
+        run: |
+          set -euo pipefail
+          if [ "$(uname -s)" = "Darwin" ]; then
+            brew install wabt
+          else
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends wabt
+          fi
+          wasm-validate "$RUNNER_TEMP/command.wasm"
+          imports="$(wasm-objdump -x "$RUNNER_TEMP/command.wasm" | grep -oE 'module=[^ ]+' | sort -u || true)"
+          echo "$imports"
+          if [ -n "$imports" ] && echo "$imports" | grep -vq 'module=wasi_snapshot_preview1'; then
+            echo "::error::the module imports a non-WASI namespace; it cannot run on the device WASI runtime"
+            exit 1
+          fi
+      - name: Smoke-run the artifact with pinned wasmtime
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/wasmtime"
+          "$RUNNER_TEMP/wasmtime/bin/pip" install --quiet wasmtime==33.0.0
+          mkdir -p "$RUNNER_TEMP/smoke"
+          # wasmtime mounts a host directory at the same guest path; the smoke
+          # run proves the module starts and exits, not the device path jail.
+          cd "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/wasmtime/bin/wasmtime" run --dir . "$RUNNER_TEMP/command.wasm" $FLOE_SMOKE_ARGS \
+            | tee "$RUNNER_TEMP/smoke.log"
+      - name: Emit artifact.json
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/command.wasm" "$RUNNER_TEMP/artifact.json" <<'PY'
+          import hashlib, json, os, sys
+          module = open(sys.argv[1], 'rb').read()
+          record = {
+              'name': os.environ['FLOE_NAME'],
+              'command': os.environ['FLOE_COMMAND'],
+              'version': os.environ['FLOE_VERSION'],
+              'language': os.environ['FLOE_LANGUAGE'],
+              'sha256': hashlib.sha256(module).hexdigest(),
+              'sizeBytes': len(module),
+              'sourceSha256': hashlib.sha256(open('source.txt', 'rb').read()).hexdigest(),
+              'smokeArgs': os.environ.get('FLOE_SMOKE_ARGS', ''),
+              'runId': os.environ.get('GITHUB_RUN_ID', ''),
+              'commit': os.environ.get('GITHUB_SHA', ''),
+              'status': 'artifact-verified-unpromoted',
+              'deviceRuntime': 'WasmKit WASI preview1, token dispatch, workspace preopen jail',
+              'notes': 'wasm-validate, WASI-only import check and the wasmtime smoke run must all pass before promotion',
+          }
+          open(sys.argv[2], 'w').write(json.dumps(record, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+      - name: Preserve the artifact, record and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-wasm-${{ github.sha }}-${{ inputs.command }}
+          path: |
+            ${{ runner.temp }}/command.wasm
+            ${{ runner.temp }}/artifact.json
+            ${{ runner.temp }}/smoke.log
+          retention-days: 30
+
+  qualify:
+    needs: compile
+    if: ${{ needs.compile.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: cloud-wasm-${{ github.sha }}-${{ inputs.command }}
+          path: ${{ runner.temp }}/cloud-wasm
+      - name: Require the integrated cloud artifact tests
+        run: |
+          set -euo pipefail
+          test -f FloeAgent/Qualification/Tests/WasmCommandTests/CloudCompiledArtifactTests.swift || {
+            echo "::error::CloudCompiledArtifactTests.swift is not integrated in FloeAgent/Qualification/Tests/WasmCommandTests/"
+            exit 1
+          }
+      - name: Run the compiled module through the production WASI command runtime
+        run: |
+          set -o pipefail
+          cd FloeAgent/Qualification
+          FLOE_CLOUD_WASI="$RUNNER_TEMP/cloud-wasm/command.wasm" \
+          FLOE_CLOUD_ARGS="alpha beta" \
+          swift test --package-path . --scratch-path .build --force-resolved-versions --jobs 4 \
+            --filter 'CloudCompiledArtifactTests' 2>&1 | tee "$RUNNER_TEMP/cloud-qualify.log"
+      - name: Preserve qualification output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-qualify-${{ github.sha }}-${{ inputs.command }}
+          path: ${{ runner.temp }}/cloud-qualify.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  stage:
+    if: ${{ inputs.stage && github.ref == 'refs/heads/main' }}
+    needs: [compile, qualify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: cloud-wasm-${{ github.sha }}-${{ inputs.command }}
+          path: ${{ runner.temp }}/cloud-wasm
+      - name: Stage the verified artifact for human promotion
+        run: |
+          set -euo pipefail
+          target="capability-hub/cloud-staging/${{ inputs.name }}/${{ inputs.version }}"
+          mkdir -p "$target"
+          cp "$RUNNER_TEMP/cloud-wasm/command.wasm" "$target/${{ inputs.command }}.wasm"
+          cp "$RUNNER_TEMP/cloud-wasm/artifact.json" "$target/artifact.json"
+          python3 - "$target" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          target = Path(sys.argv[1])
+          module = (target / '${{ inputs.command }}.wasm').read_bytes()
+          record = json.loads((target / 'artifact.json').read_text())
+          assert record['sha256'] == hashlib.sha256(module).hexdigest(), 'digest drift while staging'
+          record['status'] = 'staged-unpromoted'
+          (target / 'artifact.json').write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
+          print(f"staged {target} {len(module)} bytes")
+          PY
+          echo "No signing, no MANIFEST edit: promotion requires a reviewed capability-hub change." > "$target/PROMOTION.txt"
+      - name: Commit staged bytes only
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add capability-hub/cloud-staging
+          if git diff --cached --quiet; then echo "nothing staged"; exit 0; fi
+          git commit -m "Stage cloud-compiled WASI artifact without signing [skip ci]"
+          git push origin HEAD:main
