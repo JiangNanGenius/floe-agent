@@ -29,7 +29,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             var code: Int32 = 125
             let escaped = request.command.replacingOccurrences(of: "'", with: "'\\''")
             let command = "dash -c '\(escaped)'"
-            let status = FloeShellRunCommand(command, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.stdin.map { Data($0.utf8) }, request.timeout, UInt(max(1, request.maxOutputBytes)), { cancellation?.isCancelled == true }, &stdout, &stderr, &code)
+            let status = FloeShellRunCommand(command, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.stdin.map { Data($0.utf8) }, request.timeout, request.gateTimeout, UInt(max(1, request.maxOutputBytes)), { cancellation?.isCancelled == true }, &stdout, &stderr, &code)
             let duration = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
             let out = stdout as String? ?? "", err = stderr as String? ?? ""
             if cancellation?.isCancelled == true { return .cancelled }
@@ -37,6 +37,8 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             case .OK: return .exited(code: code, stdout: out, stderr: err, truncated: out.utf8.count >= request.maxOutputBytes, stderrTruncated: err.utf8.count >= request.maxOutputBytes, durationMs: duration)
             case .timedOut: return .timedOut(partialStdout: out, partialStderr: err, durationMs: duration)
             case .cancelled: return .cancelled
+            case .busy:
+                return .notStarted(reason: "The local shell is still stopping another command; nothing was started (exit 75). Retry after it stops. " + FloeShellRunGateDiagnostics())
             default: return .failed(message: "Local shell could not start")
             }
     }
@@ -67,10 +69,31 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
                 FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID)
                 throw FloeError.cancelled
             }
+            let text = initial as String? ?? ""
+            guard FloeShellSessionAlive(request.sessionID) else {
+                // The program exited during the bounded readiness window.
+                // Return the drained output and let the session center close
+                // the record; no pump is started for a dead process.
+                FloeShellCloseSession(request.sessionID)
+                FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID)
+                return ShellOpenResult(sessionID: request.sessionID, initialOutput: text, alive: false, terminalOutput: Data(text.utf8))
+            }
+            // Claim ownership before constructing the pump: a concurrent close
+            // or expiry may already have removed the record and closed these
+            // descriptors, and SessionIO's fcntl/read on a recycled descriptor
+            // number would corrupt an unrelated file. Only after a successful
+            // claim does the pump own read/write and teardown.
+            guard FloeShellClaimSessionDescriptors(request.sessionID) else {
+                FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID)
+                throw FloeError.cancelled
+            }
             let io = SessionIO(id: request.sessionID, input: inputFD, output: outputFD)
+            io.onFinish = { [weak self] id in
+                guard let self else { return }
+                _ = self.lock.withLock { self.sessions.removeValue(forKey: id) }
+            }
             lock.withLock { sessions[request.sessionID] = io }
             io.start()
-            let text = initial as String? ?? ""
             return ShellOpenResult(sessionID: request.sessionID, initialOutput: text, alive: true, terminalOutput: Data(text.utf8))
     }
 
@@ -111,6 +134,12 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         private var finished = false
         private var closing = false
         private var exitCode: Int32?
+        private var bytesRead = 0
+        private var bytesWritten = 0
+        private var descriptorsClosed = false
+        /// Called once the pump has stopped and the descriptors are closed, so
+        /// the backend can forget the finished session without a second owner.
+        var onFinish: (@Sendable (String) -> Void)?
         var alive: Bool { lock.withLock { !finished && !closing } }
         var hasOutput: Bool { lock.withLock { !buffered.isEmpty } }
         init(id: String, input: Int32, output: Int32) {
@@ -133,7 +162,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
                     let inputData = lock.withLock { pendingInput }
                     if !inputData.isEmpty {
                         let written = inputData.withUnsafeBytes { Darwin.write(input, $0.baseAddress, $0.count) }
-                        if written > 0 { lock.withLock { pendingInput.removeFirst(written) } }
+                        if written > 0 { lock.withLock { pendingInput.removeFirst(written); bytesWritten += written } }
                         else if written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR { break }
                     }
                     var chunk = [UInt8](repeating: 0, count: 16 * 1024)
@@ -142,6 +171,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
                         lock.withLock {
                             buffered.append(contentsOf: chunk.prefix(count))
                             if buffered.count > 256 * 1024 { buffered = Data(buffered.suffix(256 * 1024)) }
+                            bytesRead += count
                         }
                     } else if count == 0 { break }
                     else if errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR { break }
@@ -149,16 +179,31 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
                 }
                 var code: Int32 = 0
                 let hasCode = FloeShellSessionExitCode(id, &code)
-                lock.withLock { finished = true; exitCode = hasCode ? code : nil }
-                FloeShellCloseSession(id)
+                lock.withLock {
+                    finished = true
+                    exitCode = hasCode ? code : nil
+                    closeDescriptorsLocked()
+                }
+                // Descriptor teardown already happened in the pump thread, so
+                // the bridge only forgets the record. Closing a descriptor
+                // from another thread while this pump reads it can hand back a
+                // recycled descriptor and corrupt unrelated files.
+                FloeShellEndSession(id)
                 FloeShellCommandRegistry.shared.unbind(sessionID: id)
+                onFinish?(id)
             }
+        }
+        private func closeDescriptorsLocked() {
+            guard !descriptorsClosed else { return }
+            descriptorsClosed = true
+            Darwin.close(input)
+            Darwin.close(output)
         }
         func drain(maxBytes: Int) -> ShellExchangeResult {
             lock.withLock {
                 let data = Data(buffered.prefix(max(1, min(maxBytes, 256 * 1024))))
                 buffered.removeFirst(data.count)
-                return ShellExchangeResult(output: String(decoding: data, as: UTF8.self), alive: !finished || !buffered.isEmpty, exitCode: exitCode, terminalOutput: data)
+                return ShellExchangeResult(output: String(decoding: data, as: UTF8.self), alive: !finished || !buffered.isEmpty, exitCode: exitCode, terminalOutput: data, bytesRead: bytesRead, bytesWritten: bytesWritten)
             }
         }
         func close() {

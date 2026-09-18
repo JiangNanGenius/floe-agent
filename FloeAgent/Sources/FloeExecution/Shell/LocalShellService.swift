@@ -12,6 +12,10 @@ public actor LocalShellService {
         public var defaultTimeout: TimeInterval
         public var maxTimeout: TimeInterval
         public var backgroundTimeout: TimeInterval
+        /// How long a caller queues behind another engine worker before the
+        /// command is reported as not-started. Kept separate from the
+        /// execution timeout so gate starvation never fakes a run timeout.
+        public var gateWaitTimeout: TimeInterval
         public var defaultMaxOutputBytes: Int
         public var maxOutputBytes: Int
         public var maximumStdinBytes: Int
@@ -21,6 +25,7 @@ public actor LocalShellService {
             defaultTimeout: TimeInterval = 10,
             maxTimeout: TimeInterval = 120,
             backgroundTimeout: TimeInterval = 600,
+            gateWaitTimeout: TimeInterval = 5,
             defaultMaxOutputBytes: Int = 64 * 1024,
             maxOutputBytes: Int = 256 * 1024,
             maximumStdinBytes: Int = 256 * 1024,
@@ -29,6 +34,7 @@ public actor LocalShellService {
             self.defaultTimeout = defaultTimeout
             self.maxTimeout = maxTimeout
             self.backgroundTimeout = backgroundTimeout
+            self.gateWaitTimeout = gateWaitTimeout
             self.defaultMaxOutputBytes = defaultMaxOutputBytes
             self.maxOutputBytes = maxOutputBytes
             self.maximumStdinBytes = maximumStdinBytes
@@ -76,6 +82,15 @@ public actor LocalShellService {
     public nonisolated func normalizedOutputCap(_ requested: Int?) -> Int {
         let value = requested ?? configuration.defaultMaxOutputBytes
         return max(1, min(value, configuration.maxOutputBytes))
+    }
+
+    /// Clamps the caller's gate queue window. It is intentionally independent
+    /// from the execution timeout: a busy engine must report "nothing was
+    /// started" promptly instead of pretending the command ran and timed out.
+    public nonisolated func normalizedGateWait(_ requested: TimeInterval?) -> TimeInterval {
+        let ceiling = max(0.25, min(configuration.gateWaitTimeout, 30))
+        let value = requested.flatMap { $0.isFinite ? $0 : nil } ?? ceiling
+        return max(0.25, min(value, ceiling))
     }
 
     public func run(
@@ -130,6 +145,7 @@ public actor LocalShellService {
             environment: mergedEnvironment,
             stdin: stdin,
             timeout: normalizedTimeout(timeout, isBackground: isBackground),
+            gateTimeout: normalizedGateWait(nil),
             maxOutputBytes: normalizedOutputCap(maxOutputBytes),
             sessionID: context.toolCallID ?? context.runID.uuidString,
             runID: context.runID,
@@ -194,6 +210,21 @@ public actor LocalShellService {
                 truncated: false,
                 durationMs: durationMs,
                 outcome: "cancelled",
+                approvalGrantID: context.approvalGrantID?.uuidString
+            )
+        case .notStarted(let reason):
+            entry = ShellOperationJournal.Entry(
+                runID: context.runID.uuidString,
+                toolCallID: context.toolCallID,
+                sessionID: context.toolCallID ?? context.runID.uuidString,
+                commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
+                cwd: cwd,
+                exitCode: nil,
+                stdoutBytes: 0,
+                stderrBytes: 0,
+                truncated: false,
+                durationMs: durationMs,
+                outcome: "notStarted:\(reason.prefix(120))",
                 approvalGrantID: context.approvalGrantID?.uuidString
             )
         case .failed(let message):

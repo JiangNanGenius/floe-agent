@@ -383,6 +383,7 @@ static BOOL FloeEnsurePython(NSError **error) {
         "_floe_context=_json.loads(_floe_context_json)\n"
         "_floe_cwd=_os.getcwd(); _floe_env=dict(_os.environ); _floe_path=list(_sys.path); _floe_stdin=_sys.stdin; _floe_argv=_sys.argv\n"
         "_floe_search=[p for p in _floe_context.get('environment',{}).get('PYTHONPATH','').split(_os.pathsep) if p]\n"
+        "_floe_managed_suffixes=('/floe-python/site-packages','/PythonPackages')\n"
         // pip configures process-global logging. Restore it before removing
         // installer modules so later HTTP clients never call stale Rich handlers.
         "import logging as _floe_logging\n"
@@ -399,6 +400,21 @@ static BOOL FloeEnsurePython(NSError **error) {
         // Package transactions replace directory generations. The persistent
         // interpreter may retain a negative finder for a previously absent root.
         " __import__('importlib').invalidate_caches()\n"
+        // One interpreter serves every environment. A module cached from a
+        // managed site-packages root that this run no longer searches would
+        // keep shadowing the active environment (the observed
+        // importlib.metadata 0.9.0 / tabulate 0.10.0 split). Evict only
+        // managed-root modules that are not reachable from the current
+        // sys.path; bundled runtime modules are never touched.
+        " _floe_retired=[]\n"
+        " for _floe_name,_floe_module in list(_sys.modules.items()):\n"
+        "  _floe_file=getattr(_floe_module,'__file__',None) or ''\n"
+        "  if not any((_floe_suffix in _floe_file) for _floe_suffix in _floe_managed_suffixes): continue\n"
+        "  _floe_live=any(_floe_file==_floe_root or _floe_file.startswith(_floe_root.rstrip('/')+'/') for _floe_root in _sys.path if _floe_root)\n"
+        "  if not _floe_live: _floe_retired.append(_floe_name)\n"
+        " for _floe_name in _floe_retired:\n"
+        "  _sys.modules.pop(_floe_name,None)\n"
+        " if _floe_retired: __import__('importlib').invalidate_caches()\n"
         " if 'standardInput' in _floe_context: _sys.stdin=_io.TextIOWrapper(_io.BytesIO(_floe_context['standardInput'].encode('utf-8')),encoding='utf-8')\n"
         " if 'arguments' in _floe_context: _sys.argv=_floe_context['arguments']\n"
         " _floe_globals={'__builtins__':__builtins__,'__name__':'__main__','printJSON':_floe_printJSON}\n"

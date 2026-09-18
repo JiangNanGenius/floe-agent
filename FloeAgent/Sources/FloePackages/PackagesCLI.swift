@@ -1,6 +1,7 @@
 import FloeEnvironments
 import Foundation
 import FloeCore
+import FloeTools
 
 /// Linux-style apt/dpkg command surface. The app registers `apt`,
 /// `apt-get`, `apt-cache`, `apt-mark`, `dpkg` and `dpkg-deb` as replacement
@@ -44,10 +45,14 @@ public struct PackagesCLI: Sendable {
         self.wasmRouter = wasmRouter
     }
 
-    public func run(command: String, arguments: [String]) async -> Result {
+    public func run(command: String, arguments: [String], cancellation: CancellationToken? = nil) async -> Result {
+        // A cancelled invocation performs no work and reports the shell's
+        // cancellation status instead of running a command whose downloads
+        // would immediately abort anyway.
+        if cancellation?.isCancelled == true { return Result(output: "", exitCode: 130) }
         switch command {
         case "apt", "apt-get":
-            return await runApt(arguments)
+            return await runApt(arguments, cancellation: cancellation)
         case "apt-cache":
             return await runAptCache(arguments)
         case "apt-mark":
@@ -63,7 +68,7 @@ public struct PackagesCLI: Sendable {
 
     // MARK: - apt
 
-    private func runApt(_ arguments: [String]) async -> Result {
+    private func runApt(_ arguments: [String], cancellation: CancellationToken?) async -> Result {
         if arguments.dropFirst().contains("--help") || arguments.dropFirst().contains("-h") {
             return Result(output: "Floe APT-compatible package manager\napt [--yes] update | list [--installed] | search QUERY | show PACKAGE | install PACKAGE[=VERSION] | remove PACKAGE | upgrade\nSources and trust are configured in the environment package settings. Signed WASM capabilities (floe/* ids, e.g. floe/lua) install app-wide through the same command and are never Debian packages. Unsupported flags fail before making changes.")
         }
@@ -99,7 +104,7 @@ public struct PackagesCLI: Sendable {
         }
         switch subcommand {
         case "update":
-            let report = await engine.update(container: context.container, sources: context.sources)
+            let report = await engine.update(container: context.container, sources: context.sources, cancellation: cancellation)
             var lines = ["Get:1 floe \(report.sources) source(s), \(report.packages) packages"]
             for failure in report.failures { lines.append("W: \(failure)") }
             lines.append("Reading package lists... Done")
@@ -191,7 +196,7 @@ public struct PackagesCLI: Sendable {
             if wasmInstalls.isEmpty {
                 // Unchanged Debian-only path.
                 do {
-                    let steps = try await engine.install(operands, container: context.container)
+                    let steps = try await engine.install(operands, container: context.container, cancellation: cancellation)
                     var lines = ["Reading package lists... Done", "Building dependency tree... Done"]
                     for step in steps {
                         lines.append("Setting up \(step.package) (\(step.version)) ...")
@@ -212,7 +217,7 @@ public struct PackagesCLI: Sendable {
             var installFailures: [String] = []
             for info in wasmInstalls {
                 do {
-                    let detail = try await router.install(id: info.id, cancellation: nil)
+                    let detail = try await router.install(id: info.id, cancellation: cancellation)
                     installLines.append("Setting up \(info.id) (\(info.version)) ...")
                     if !detail.isEmpty { installLines.append(detail) }
                 } catch is CancellationError {
@@ -278,7 +283,7 @@ public struct PackagesCLI: Sendable {
             catch { return Result(output: "E: \(error)", exitCode: 100) }
             guard !plan.isEmpty else { return Result(output: "0 upgraded, 0 newly installed, 0 to remove.") }
             do {
-                let steps = try await engine.install(plan.map(\.package), container: context.container)
+                let steps = try await engine.install(plan.map(\.package), container: context.container, cancellation: cancellation)
                 return Result(output: (["Installing upgrades:"] + steps.map { "  \($0.package) -> \($0.version)" }).joined(separator: "\n"))
             } catch {
                 return Result(output: "E: \(error.localizedDescription)", exitCode: 100)
@@ -372,7 +377,7 @@ public struct PackagesCLI: Sendable {
             }
             return Result(output: lines.joined(separator: "\n"))
         case "policy":
-            return await runApt(["apt", "policy"] + operands)
+            return await runApt(["apt", "policy"] + operands, cancellation: nil)
         default:
             return Result(output: "E: Invalid operation \(subcommand)", exitCode: 100)
         }

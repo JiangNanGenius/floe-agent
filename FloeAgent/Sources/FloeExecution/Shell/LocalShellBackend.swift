@@ -22,6 +22,10 @@ public struct ShellRunRequest: Sendable {
     public var stdin: String?
     /// Wall-clock timeout in seconds.
     public var timeout: TimeInterval
+    /// Bounded wait for the engine's process-wide run gate. A command that
+    /// cannot start inside this window is reported as not-started, never as an
+    /// execution timeout. It does not consume `timeout`.
+    public var gateTimeout: TimeInterval
     /// Combined stdout/stderr cap in bytes.
     public var maxOutputBytes: Int
     /// Stable session identity; backends that keep per-session state use it.
@@ -36,6 +40,7 @@ public struct ShellRunRequest: Sendable {
         environment: [String: String] = [:],
         stdin: String? = nil,
         timeout: TimeInterval = 10,
+        gateTimeout: TimeInterval = 5,
         maxOutputBytes: Int = 64 * 1024,
         sessionID: String,
         runID: UUID? = nil,
@@ -47,6 +52,7 @@ public struct ShellRunRequest: Sendable {
         self.environment = environment
         self.stdin = stdin
         self.timeout = timeout
+        self.gateTimeout = gateTimeout
         self.maxOutputBytes = maxOutputBytes
         self.sessionID = sessionID
         self.runID = runID
@@ -67,6 +73,10 @@ public enum ShellRunOutcome: Sendable, Equatable {
     )
     case timedOut(partialStdout: String, partialStderr: String, durationMs: Int)
     case cancelled
+    /// The engine could not start the command because another worker still
+    /// owns the process-wide runtime gate. Distinct from `timedOut`: nothing
+    /// of this command ran, and no partial output exists.
+    case notStarted(reason: String)
     /// The backend could not start the command (missing engine, session
     /// bookkeeping failure). Distinct from a non-zero command exit.
     case failed(message: String)
@@ -143,12 +153,20 @@ public struct ShellExchangeResult: Sendable, Equatable {
     public var terminalOutput: Data?
     public var alive: Bool
     public var exitCode: Int32?
+    /// Cumulative bytes read from the session's output descriptor. Zero after
+    /// an interactive prompt means the program never wrote anything, which is
+    /// different from output that was drained but not returned.
+    public var bytesRead: Int
+    /// Cumulative bytes accepted onto the session's input descriptor.
+    public var bytesWritten: Int
 
-    public init(output: String, alive: Bool, exitCode: Int32? = nil, terminalOutput: Data? = nil) {
+    public init(output: String, alive: Bool, exitCode: Int32? = nil, terminalOutput: Data? = nil, bytesRead: Int = 0, bytesWritten: Int = 0) {
         self.output = output
-        self.terminalOutput = terminalOutput
         self.alive = alive
         self.exitCode = exitCode
+        self.terminalOutput = terminalOutput
+        self.bytesRead = bytesRead
+        self.bytesWritten = bytesWritten
     }
 }
 

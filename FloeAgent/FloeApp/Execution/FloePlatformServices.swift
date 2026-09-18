@@ -159,7 +159,11 @@ final class FloePlatformServices: @unchecked Sendable {
         let cli = PackagesCLI(engine: aptEngine, contextProvider: contextProvider, wasmRouter: ShellWasmCapabilityRouter())
         for name in ["apt", "apt-get", "pkg", "apt-cache", "apt-mark", "dpkg", "dpkg-deb"] {
             commandRegistry.register(name) { arguments, stdout, stderr in
-                let result = await cli.run(command: name == "pkg" ? "apt" : name, arguments: arguments)
+                // The shell invocation's token reaches URLSession-backed
+                // downloads, so a timed-out or cancelled shell command stops
+                // its transfer instead of holding the engine run gate.
+                let result = await cli.run(command: name == "pkg" ? "apt" : name, arguments: arguments,
+                    cancellation: FloeShellCommandRegistry.shared.context?.cancellation)
                 if !result.output.isEmpty {
                     let newline = result.output.hasSuffix("\n") ? "" : "\n"
                     FloeShellWrite(result.exitCode == 0 ? stdout : stderr, result.output + newline)
@@ -207,8 +211,16 @@ final class FloePlatformServices: @unchecked Sendable {
                             guard let languageManagement, let environment = context.environment else {
                                 throw FloeError.invalidConfiguration("当前 Shell 未绑定可安装依赖的环境")
                             }
+                            // The shell command named its manager explicitly.
+                            // The configured environment default and the
+                            // project's lock are automatic-selection hints
+                            // for the UI/agent path; they must not silently
+                            // substitute a different manager here, so
+                            // `npm install` stays npm even in a pnpm project.
+                            let selected = try NodePackageManagerPolicy.resolve(
+                                .explicit(manager), workspace: context.rootURL)
                             let output = try await languageManagement.changeNodeFromShell(environment: environment,
-                                change: change, manager: manager, cancellation: context.cancellation)
+                                change: change, manager: selected, cancellation: context.cancellation)
                             if !output.isEmpty { FloeShellWrite(stdout, output + "\n") }
                             return 0
                         }

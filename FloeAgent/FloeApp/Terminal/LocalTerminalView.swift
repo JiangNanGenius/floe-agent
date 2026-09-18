@@ -26,7 +26,7 @@ final class LocalTerminalOwner: Identifiable {
     private let sessions: ShellSessionCenter
     private(set) var sessionID: String?
     private(set) var output = Data()
-    private(set) var status = "尚未启动"
+    private(set) var status = String(localized: "terminal.status.not_started")
     private(set) var alive = false
     private(set) var opening = false
     private var token = CancellationToken()
@@ -40,13 +40,30 @@ final class LocalTerminalOwner: Identifiable {
         opening = true
         defer { opening = false }
         token = CancellationToken()
+        sessionID = nil
+        output = Data()
+        status = String(localized: "terminal.status.starting")
         do {
             let result = try await sessions.open(command: "", cwd: ".", environment: [:], columns: columns, rows: rows, runID: id, rootURL: root, cancellation: token, forTerminal: true)
             sessionID = result.sessionID
             alive = result.alive
-            status = alive ? "运行中" : "已结束"
+            status = alive ? String(localized: "terminal.status.running") : String(localized: "terminal.status.exited")
             append(result.terminalOutput ?? Data(result.initialOutput.utf8))
-        } catch { status = String(describing: error) }
+        } catch {
+            status = String(describing: error)
+        }
+    }
+
+    /// The IDE embeds this view and expects a started shell; an already-live
+    /// session is never restarted just because the panel was re-shown.
+    func startIfNeeded() async {
+        guard sessionID == nil, !opening else { return }
+        await open()
+    }
+
+    func resetAndStart() async {
+        await close()
+        await open()
     }
 
     func pollWhileVisible() async {
@@ -78,7 +95,7 @@ final class LocalTerminalOwner: Identifiable {
         if let sessionID { await sessions.close(sessionID: sessionID, runID: id) }
         alive = false
         sessionID = nil
-        status = "已关闭"
+        status = String(localized: "terminal.status.closed")
     }
 
     private func exchange(_ input: String?) async {
@@ -87,7 +104,16 @@ final class LocalTerminalOwner: Identifiable {
             let result = try await sessions.exchange(sessionID: sessionID, input: input, waitMs: 50, maxBytes: 64 * 1024, runID: id, cancellation: token, forTerminal: true)
             append(result.terminalOutput ?? Data(result.output.utf8))
             alive = result.alive
-            if !alive { status = result.exitCode.map { "已结束（\($0)）" } ?? "已结束" }
+            if !alive {
+                status = result.exitCode.map { String(format: String(localized: "terminal.status.exited_code"), Int64($0)) } ?? String(localized: "terminal.status.exited")
+                self.sessionID = nil
+            } else if result.bytesRead == 0 {
+                // Distinguishes a live shell that has not written anything
+                // yet from output that was read but not returned.
+                status = String(localized: "terminal.status.waiting_output")
+            } else {
+                status = String(localized: "terminal.status.running")
+            }
         } catch {
             alive = false
             status = String(describing: error)
@@ -102,31 +128,85 @@ final class LocalTerminalOwner: Identifiable {
 
 struct LocalTerminalView: View {
     let owner: LocalTerminalOwner
+    /// Embedded panels (the IDE bottom panel) must not create their own
+    /// navigation chrome; the panel owns placement and the hide affordance.
+    /// Session lifetime is unaffected by either presentation: the owner comes
+    /// from the app-lifetime `LocalTerminalStore`, so closing the panel never
+    /// stops the shell.
+    var embedded: Bool = false
     @Environment(\.dismiss) private var dismiss
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                HStack {
-                    Text(owner.status).font(.caption)
-                    Spacer()
-                    Button("Ctrl-C") { Task { await owner.interrupt() } }.disabled(!owner.alive)
-                }.padding()
-                SSHEmulatorView(output: owner.output, isInteractive: owner.alive,
-                    onSend: { data in Task { await owner.send(data) } },
-                    onResize: { columns, rows in Task { await owner.resize(columns: columns, rows: rows) } })
-                if !owner.alive {
-                    Button(owner.opening ? "正在启动…" : "启动本地终端") { Task { await owner.open() } }
-                        .buttonStyle(.borderedProminent).disabled(owner.opening).padding()
-                }
+        if embedded {
+            content
+        } else {
+            NavigationStack {
+                content
+                    .navigationTitle(String(localized: "terminal.title"))
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button(String(localized: "terminal.hide")) { dismiss() } }
+                        ToolbarItemGroup(placement: .primaryAction) {
+                            Button {
+                                Task { await owner.resetAndStart() }
+                            } label: { Label(String(localized: "terminal.restart"), systemImage: "arrow.clockwise") }
+                                .disabled(owner.opening)
+                            Button(role: .destructive) {
+                                Task { await owner.close() }
+                            } label: { Label(String(localized: "terminal.end_session"), systemImage: "stop.circle") }
+                                .disabled(!owner.alive)
+                        }
+                    }
             }
-            .navigationTitle("本地终端")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("收起") { dismiss() } }
-                ToolbarItem(placement: .destructiveAction) {
-                    Button("结束会话", role: .destructive) { Task { await owner.close() } }.disabled(!owner.alive)
+        }
+    }
+
+    private var content: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(owner.alive ? Color.green : (owner.opening ? Color.orange : Color.secondary))
+                    .frame(width: 8, height: 8)
+                Text(owner.status).font(.caption).lineLimit(1)
+                Spacer(minLength: 8)
+                if embedded {
+                    Button {
+                        Task { await owner.resetAndStart() }
+                    } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.borderless)
+                        .disabled(owner.opening)
+                        .accessibilityLabel(String(localized: "terminal.restart"))
+                    Button(role: .destructive) {
+                        Task { await owner.close() }
+                    } label: { Image(systemName: "stop.circle") }
+                        .buttonStyle(.borderless)
+                        .disabled(!owner.alive)
+                        .accessibilityLabel(String(localized: "terminal.end_session"))
                 }
+                Button("Ctrl-C") { Task { await owner.interrupt() } }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .disabled(!owner.alive)
             }
-            .task { await owner.pollWhileVisible() }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            Divider()
+            SSHEmulatorView(output: owner.output, isInteractive: owner.alive,
+                onSend: { data in Task { await owner.send(data) } },
+                onResize: { columns, rows in Task { await owner.resize(columns: columns, rows: rows) } })
+            if !owner.alive {
+                Button(owner.opening ? String(localized: "terminal.starting") : String(localized: "terminal.start")) { Task { await owner.open() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(owner.opening)
+                    .padding()
+            }
+        }
+        .task {
+            // Opening a shell here is the explicit intent of presenting this
+            // panel; a live session is reused, never restarted. Cancelling
+            // this task on panel close only stops polling.
+            await owner.startIfNeeded()
+            await owner.pollWhileVisible()
         }
     }
 }

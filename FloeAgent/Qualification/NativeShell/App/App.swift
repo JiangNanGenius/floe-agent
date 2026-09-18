@@ -32,7 +32,7 @@ func runSmoke() {
   let input = index == 1 ? Data(String(repeating: "a", count: 32768).utf8) : nil
   let sessionID = UUID().uuidString
   let started = Date()
-  let status = FloeShellRunCommand(command, root.path, root.path, sessionID, env, input, (index == 8 || index == 20) ? 0.2 : 5, 100, { index == 6 && Date().timeIntervalSince(started) > 0.2 }, &out, &err, &code)
+  let status = FloeShellRunCommand(command, root.path, root.path, sessionID, env, input, (index == 8 || index == 20) ? 0.2 : 5, 5, 100, { index == 6 && Date().timeIntervalSince(started) > 0.2 }, &out, &err, &code)
   let deadline = Date().addingTimeInterval(3)
   while FloeShellHasActiveWorker(sessionID) && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
   results.append(["index":index,"status":status.rawValue,"exit":code,"stdout":out ?? "","stderr":err ?? "", "workerStopped": !FloeShellHasActiveWorker(sessionID)])

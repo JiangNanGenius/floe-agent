@@ -104,14 +104,64 @@ public struct ManagedPythonInstallService: Sendable {
         let outcome = await python.run(request, cancellation: cancellation)
         switch outcome {
         case .ok(_, let stdout, let stderr, _, _, _):
+            let verification = await verifyInstalled(specs: uniqueSpecs, environment: environment, cancellation: cancellation)
             await packagesChanged()
-            return .ok(output: stderr.isEmpty ? stdout : stdout + "\n" + stderr)
+            let base = stderr.isEmpty ? stdout : stdout + "\n" + stderr
+            return .ok(output: verification.isEmpty ? base : base + "\n" + verification)
         case .jsException(let message, let stdout):
             return .failed(message: message + (stdout.isEmpty ? "" : "\n" + stdout))
         case .timedOut(_, let partialStdout):
             return .timedOut(partialOutput: partialStdout)
         case .cancelled:
             return .cancelled
+        }
+    }
+
+    /// States which copy actually resolved after an install. A persistent
+    /// interpreter with several site-packages roots can otherwise satisfy an
+    /// import from a read-only bundled copy while pip reports success for the
+    /// writable layer; the line names the exact `__file__` location.
+    private func verifyInstalled(specs: [String], environment: ToolEnvironment?, cancellation: CancellationToken?) async -> String {
+        struct Payload: Encodable { let names: [String] }
+        let names = specs.map { spec -> String in
+            spec.split(separator: "=", maxSplits: 1).first.map(String.init) ?? spec
+        }
+        guard let data = try? JSONEncoder().encode(Payload(names: names)),
+              let json = String(data: data, encoding: .utf8) else { return "installVerify=unavailable" }
+        let source = """
+        import importlib.metadata as _metadata, json as _json, os as _os, re as _re
+        _target = _os.environ.get('FLOE_PYTHON_PACKAGE_TARGET') or ''
+        _rows = []
+        for _name in input['names']:
+            _key = _re.sub(r'[-_.]+', '-', _name).lower()
+            _match = None
+            for _distribution in _metadata.distributions():
+                _candidate = _distribution.metadata.get('Name')
+                if _candidate and _re.sub(r'[-_.]+', '-', _candidate).lower() == _key:
+                    _match = _distribution
+                    break
+            if _match is None:
+                _rows.append({'name': _name, 'version': None, 'location': None, 'writable': False})
+                continue
+            _location = str(_match.locate_file(''))
+            _writable = bool(_target) and _os.path.commonpath([_os.path.realpath(_location), _os.path.realpath(_target)]) == _os.path.realpath(_target)
+            _rows.append({'name': _match.metadata['Name'], 'version': _match.version, 'location': _location, 'writable': _writable})
+        print('installVerify=' + _json.dumps(_rows, ensure_ascii=False))
+        """
+        let result = await python.run(.init(script: source, inputJSON: json, timeout: 15, maxOutputBytes: 16 * 1024,
+            pythonContext: Self.executionContext(environment)), cancellation: cancellation)
+        switch result {
+        case .ok(_, let stdout, let stderr, _, _, _):
+            if let line = stdout.split(separator: "\n").first(where: { $0.hasPrefix("installVerify=") }) {
+                return String(line)
+            }
+            return "installVerify=unavailable" + (stderr.isEmpty ? "" : " " + String(stderr.prefix(200)))
+        case .timedOut:
+            return "installVerify=timedOut"
+        case .cancelled:
+            return "installVerify=cancelled"
+        case .jsException(let message, _):
+            return "installVerify=unavailable " + String(message.prefix(200))
         }
     }
 

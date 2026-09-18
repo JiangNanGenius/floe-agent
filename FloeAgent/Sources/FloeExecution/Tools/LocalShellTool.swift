@@ -58,7 +58,7 @@ public struct LocalShellTool: AgentTool {
 
     public static let name = "exec.shell"
     public static let toolDescription =
-        "Execute local Unix commands or a multi-line POSIX shell script. Use for file/text processing, batch edits, loops, pipelines, redirections, globs, variables and &&/||; compose commands in one script when appropriate. Includes text/archive/hash commands, python3, node, git, network diagnostics and managed package commands in the current task workspace. Check unfamiliar commands with command -v. Use jobs.submit for long-running commands, or shell.open/shell.exchange for a persistent session. Output is capped; inspect exit status (124 timeout, 126 blocked, 127 not found). This is the iOS-hosted POSIX command environment; sudo and native Linux ELF binaries are unavailable."
+        "Execute local Unix commands or a multi-line POSIX shell script. Use for file/text processing, batch edits, loops, pipelines, redirections, globs, variables and &&/||; compose commands in one script when appropriate. Includes text/archive/hash commands, python3, node, git, network diagnostics and managed package commands in the current task workspace. Check unfamiliar commands with command -v. Use jobs.submit for long-running commands, or shell.open/shell.exchange for a persistent session. Output is capped; inspect exit status (124 timeout, 126 blocked, 127 not found, 75 busy/not started — retry after the current command stops). This is the iOS-hosted POSIX command environment; sudo and native Linux ELF binaries are unavailable."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "command":{"type":"string","description":"Shell command line (max 16 KiB). Pipelines and redirections supported."},
@@ -215,6 +215,11 @@ public struct LocalShellTool: AgentTool {
             return Self.output(text, exitStatus: 124)
         case .cancelled:
             return Self.output("exit=130 status=cancelled cwd=\(cwd)", exitStatus: 130)
+        case .notStarted(let reason):
+            // The engine gate was still owned by another worker. Nothing of
+            // this command ran, so there is no exit code and no output to
+            // report: say so instead of returning a timeout with empty stdout.
+            return Self.output(prefix() + "exit=75 status=notStarted cwd=\(cwd)\n\(reason)", exitStatus: 75)
         case .failed(let message):
             return Self.output(prefix() + "exit=125 status=engineUnavailable\n\(message)", exitStatus: 125)
         }

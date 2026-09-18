@@ -69,6 +69,28 @@ public struct LayerManifest: Codable, Sendable {
     }
 }
 
+/// Composes the effective PYTHONPATH for one environment.
+public enum PythonEnvironmentPath {
+    /// Entries for the interpreter, top layer first.
+    ///
+    /// The writable layer's install target is included even before it exists.
+    /// `ResolvedLayerStack.pythonSearchPaths()` filters missing directories,
+    /// so dropping the path at prepare time made the first `pip install`
+    /// invisible to the very next import (the bundled copy shadowed it; see
+    /// the importlib.metadata 0.9.0 / tabulate 0.10.0 split in build 191).
+    /// Python skips nonexistent sys.path entries, so keeping the path is safe.
+    public static func entries(writableLayerURL: URL, stackedSitePackages: [URL]) -> [String] {
+        let writableSite = writableLayerURL
+            .appendingPathComponent("usr/lib/floe-python/site-packages")
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        var paths = stackedSitePackages.map(\.path)
+        if !paths.contains(writableSite) { paths.insert(writableSite, at: 0) }
+        return paths
+    }
+}
+
 /// Resolved ordered stack for one container: session > project > shared >
 /// base. Path lookup merges the layers in that order.
 public struct ResolvedLayerStack: Sendable {

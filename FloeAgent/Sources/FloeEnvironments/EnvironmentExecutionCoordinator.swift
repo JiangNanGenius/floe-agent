@@ -76,6 +76,16 @@ public actor EnvironmentExecutionCoordinator {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         let binPaths = stack.searchPaths("usr/local/bin") + stack.searchPaths("usr/bin")
+        // The writable layer's site-packages is the pip install target. It is
+        // included even before the first install creates it: `pythonSearchPaths`
+        // filters existing directories, and dropping the path at prepare time
+        // made a freshly installed distribution resolve to the bundled copy
+        // instead (for example importlib.metadata 0.9.0 over 0.10.0). Python
+        // skips nonexistent sys.path entries, so keeping the path is safe.
+        let pythonPaths = PythonEnvironmentPath.entries(
+            writableLayerURL: writable,
+            stackedSitePackages: stack.pythonSearchPaths()
+        )
         var context = original
         context.environmentID = record.id
         context.environment = ToolEnvironment(id: record.id, writableLayerURL: writable,
@@ -83,7 +93,7 @@ public actor EnvironmentExecutionCoordinator {
                 "FLOE_ENVIRONMENT_ID": record.id,
                 "HOME": home.path, "TMPDIR": temporary.path,
                 "PATH": (binPaths.map(\.path) + ["/usr/bin", "/bin"]).joined(separator: ":"),
-                "PYTHONPATH": stack.pythonSearchPaths().map(\.path).joined(separator: ":"),
+                "PYTHONPATH": pythonPaths.joined(separator: ":"),
                 "NODE_PATH": stack.nodeModulePaths().map(\.path).joined(separator: ":")
             ])
         let leaseID = UUID()

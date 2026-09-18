@@ -31,9 +31,18 @@ typedef NS_ENUM(NSInteger, FloeShellBridgeStatus) {
     FloeShellBridgeStatusEngineUnavailable = 1,
     FloeShellBridgeStatusTimedOut = 2,
     FloeShellBridgeStatusCancelled = 3,
+    /// The engine's serial run gate was still owned when `gateTimeout`
+    /// elapsed. The command never started: this is NOT an execution timeout.
+    FloeShellBridgeStatusBusy = 4,
 };
 
 /// One-shot command execution with captured stdout/stderr.
+///
+/// `gateTimeout` bounds only the wait for the process-wide engine gate. A
+/// command that cannot start inside that window returns `Busy` with its
+/// output untouched; `timeout` bounds the execution itself once the gate is
+/// owned. The worker that owns the gate always keeps it until it has actually
+/// stopped: callers never release another worker's global runtime state.
 FloeShellBridgeStatus FloeShellRunCommand(
     NSString *command,
     NSString *rootPath,
@@ -42,12 +51,17 @@ FloeShellBridgeStatus FloeShellRunCommand(
     NSDictionary<NSString *, NSString *> *environment,
     NSData * _Nullable stdinData,
     NSTimeInterval timeout,
+    NSTimeInterval gateTimeout,
     NSUInteger maxOutputBytes,
     BOOL (^ _Nullable shouldCancel)(void),
     NSString * _Nullable * _Nullable outStdout,
     NSString * _Nullable * _Nullable outStderr,
     int32_t *outExitCode
 );
+
+/// One-line, bounded diagnostics for the engine run gate (owner, held time,
+/// waiters, busy returns). Safe to log; contains no command or user content.
+NSString *FloeShellRunGateDiagnostics(void);
 
 /// Opens a persistent interactive session. On success, `outInputFD` is the
 /// write end of the session's stdin pipe and `outOutputFD` is the read end of
@@ -69,11 +83,30 @@ BOOL FloeShellOpenSession(
 /// Requests engine interruption. INT/TERM/KILL never become process signals.
 void FloeShellSignalSession(NSString *sessionID, int signalNumber);
 
-/// Closes all descriptors for a session and forgets it.
+/// Transfers descriptor ownership for an interactive session to the caller's
+/// output pump. After a successful claim the bridge never closes the session's
+/// pipe descriptors: the pump reads/writes and closes them after its loop ends.
+/// Returns NO when the session record no longer exists (closed or expired while
+/// the caller was still between open and claim); in that case the descriptors
+/// are already closed and the caller must not touch them.
+BOOL FloeShellClaimSessionDescriptors(NSString *sessionID);
+
+/// Closes all descriptors for a session and forgets it. For a session whose
+/// descriptors are pump-owned this only requests cooperative interruption;
+/// the pump performs teardown and calls FloeShellEndSession.
 void FloeShellCloseSession(NSString *sessionID);
+
+/// Forgets a session after its owning pump has drained and closed its own
+/// descriptors. Never closes descriptors and never signals.
+void FloeShellEndSession(NSString *sessionID);
+
 void FloeShellResizeSession(NSString *sessionID, NSInteger columns, NSInteger rows);
 /// True until native work has actually unwound, including after timeout/close.
 BOOL FloeShellHasActiveWorker(NSString *sessionID);
+/// True while the interactive session record exists and its command thread
+/// has not finished. Distinguishes a ready prompt from an immediately-exited
+/// program at open time.
+BOOL FloeShellSessionAlive(NSString *sessionID);
 BOOL FloeShellSessionExitCode(NSString *sessionID, int32_t *code);
 
 /// Sets the mini-root confinement for a session's future resolves.

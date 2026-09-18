@@ -11,6 +11,7 @@
 #import <signal.h>
 #import <unistd.h>
 #import <fcntl.h>
+#import <os/log.h>
 #import <stdio.h>
 #import <stdlib.h>
 #import <string.h>
@@ -39,6 +40,9 @@ extern "C" {
 @property (nonatomic, strong) NSThread *thread;
 @property (atomic, assign) BOOL closed;
 @property (atomic, assign) BOOL finished;
+/// Set by the caller's output pump after open. Descriptor teardown then
+/// belongs to the pump, which serializes close with its own reads/writes.
+@property (atomic, assign) BOOL pumpOwnsDescriptors;
 @property (atomic, assign) int32_t exitCode;
 @property (nonatomic, assign) char *engineSessionKey;
 @end
@@ -88,6 +92,79 @@ static dispatch_semaphore_t FloeShellRunGate(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{ gate = dispatch_semaphore_create(1); });
     return gate;
+}
+
+namespace {
+
+/// Bounded diagnostics for the process-wide engine gate. Owners are recorded
+/// by session id only; no command text, paths or environment ever enter here.
+struct FloeRunGateCounters {
+    std::mutex lock;
+    int64_t waiters = 0;
+    int64_t acquisitions = 0;
+    int64_t busyReturns = 0;
+    int64_t waitMsTotal = 0;
+    std::string ownerSession;
+    double ownerStarted = 0;
+};
+
+FloeRunGateCounters &FloeRunGateCountersRef(void) {
+    static FloeRunGateCounters counters;
+    return counters;
+}
+
+void FloeRecordGateAcquired(NSString *sessionID) {
+    FloeRunGateCounters &counters = FloeRunGateCountersRef();
+    std::lock_guard<std::mutex> guard(counters.lock);
+    counters.acquisitions += 1;
+    counters.ownerSession = sessionID.length > 0 ? sessionID.UTF8String : "";
+    counters.ownerStarted = NSProcessInfo.processInfo.systemUptime;
+}
+
+void FloeRecordGateReleased(NSString *sessionID) {
+    FloeRunGateCounters &counters = FloeRunGateCountersRef();
+    std::lock_guard<std::mutex> guard(counters.lock);
+    if (sessionID.length == 0 || counters.ownerSession == sessionID.UTF8String) {
+        counters.ownerSession.clear();
+        counters.ownerStarted = 0;
+    }
+}
+
+void FloeRecordGateWait(NSTimeInterval waited) {
+    FloeRunGateCounters &counters = FloeRunGateCountersRef();
+    std::lock_guard<std::mutex> guard(counters.lock);
+    counters.waitMsTotal += (int64_t)MAX(0.0, waited * 1000.0);
+}
+
+void FloeRecordGateBusy(void) {
+    FloeRunGateCounters &counters = FloeRunGateCountersRef();
+    std::lock_guard<std::mutex> guard(counters.lock);
+    counters.busyReturns += 1;
+}
+
+} // namespace
+
+NSString *FloeShellRunGateDiagnostics(void) {
+    FloeRunGateCounters &counters = FloeRunGateCountersRef();
+    std::lock_guard<std::mutex> guard(counters.lock);
+    NSString *owner = counters.ownerSession.empty()
+        ? @"none"
+        : [NSString stringWithUTF8String:counters.ownerSession.c_str()];
+    int64_t heldMs = counters.ownerStarted > 0
+        ? (int64_t)MAX(0.0, (NSProcessInfo.processInfo.systemUptime - counters.ownerStarted) * 1000.0)
+        : 0;
+    return [NSString stringWithFormat:
+            @"gate owner=%@ heldMs=%lld waiters=%lld acquisitions=%lld busyReturns=%lld waitMsTotal=%lld",
+            owner ?: @"none", (long long)heldMs, (long long)counters.waiters,
+            (long long)counters.acquisitions, (long long)counters.busyReturns,
+            (long long)counters.waitMsTotal];
+}
+
+static os_log_t FloeShellLogGate(void) {
+    static os_log_t log;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ log = os_log_create("com.floeagent.shell", "run-gate"); });
+    return log;
 }
 
 #pragma mark - Engine bootstrap
@@ -209,7 +286,10 @@ struct FloeRunContext {
         if (originalDirectory) [[NSFileManager defaultManager] changeCurrentDirectoryPath:originalDirectory];
         if (temporaryDirectory) [[NSFileManager defaultManager] removeItemAtPath:temporaryDirectory error:nil];
         if (trackedSessionID) FloeWorkerFinished(trackedSessionID);
-        if (ownsRunGate) dispatch_semaphore_signal(FloeShellRunGate());
+        if (ownsRunGate) {
+            FloeRecordGateReleased(trackedSessionID);
+            dispatch_semaphore_signal(FloeShellRunGate());
+        }
     }
 };
 
@@ -263,6 +343,7 @@ FloeShellBridgeStatus FloeShellRunCommand(
     NSDictionary<NSString *, NSString *> *environment,
     NSData *stdinData,
     NSTimeInterval timeout,
+    NSTimeInterval gateTimeout,
     NSUInteger maxOutputBytes,
     BOOL (^shouldCancel)(void),
     NSString **outStdout,
@@ -273,16 +354,39 @@ FloeShellBridgeStatus FloeShellRunCommand(
         return FloeShellBridgeStatusEngineUnavailable;
     }
     FloeEnsureEngineInitialized();
-    const NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
-    while (dispatch_semaphore_wait(FloeShellRunGate(), dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC)) != 0) {
-        if (shouldCancel && shouldCancel()) return FloeShellBridgeStatusCancelled;
-        if (NSProcessInfo.processInfo.systemUptime - started >= timeout) return FloeShellBridgeStatusTimedOut;
+    const NSTimeInterval requestedAt = NSProcessInfo.processInfo.systemUptime;
+    const NSTimeInterval gateWindow = MAX(0.05, MIN(gateTimeout, 120.0));
+    // Distinguish gate queue time from execution time. A command that never
+    // acquired the gate must not be reported as an execution timeout: the
+    // worker that owns the gate keeps global runtime state (cwd, mini root,
+    // environment, engine session) until it has actually stopped.
+    BOOL acquiredGate = NO;
+    {
+        FloeRunGateCounters &counters = FloeRunGateCountersRef();
+        { std::lock_guard<std::mutex> guard(counters.lock); counters.waiters += 1; }
+        while (true) {
+            long waited = dispatch_semaphore_wait(FloeShellRunGate(), dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC));
+            if (waited == 0) { acquiredGate = YES; break; }
+            if (shouldCancel && shouldCancel()) { break; }
+            if (NSProcessInfo.processInfo.systemUptime - requestedAt >= gateWindow) { break; }
+        }
+        { std::lock_guard<std::mutex> guard(counters.lock); counters.waiters -= 1; }
     }
+    FloeRecordGateWait(NSProcessInfo.processInfo.systemUptime - requestedAt);
+    if (!acquiredGate) {
+        if (shouldCancel && shouldCancel()) { return FloeShellBridgeStatusCancelled; }
+        FloeRecordGateBusy();
+        os_log_error(FloeShellLogGate(), "floeShellRunGateBusy %{public}@", FloeShellRunGateDiagnostics());
+        return FloeShellBridgeStatusBusy;
+    }
+    const NSTimeInterval executionStarted = NSProcessInfo.processInfo.systemUptime;
     // Ownership follows the actual worker, including after a caller's deadline.
     // Another one-shot must not reset cwd/root while that worker is still alive.
     auto context = std::make_shared<FloeRunContext>();
     context->ownsRunGate = true;
-    if (shouldCancel && shouldCancel()) return FloeShellBridgeStatusCancelled;
+    context->trackedSessionID = sessionID;
+    FloeRecordGateAcquired(sessionID);
+    if (shouldCancel && shouldCancel()) { return FloeShellBridgeStatusCancelled; }
     {
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSString *tempRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
@@ -337,7 +441,7 @@ FloeShellBridgeStatus FloeShellRunCommand(
         BOOL cancelled = NO;
         while (!context->finished.load(std::memory_order_acquire)) {
             cancelled = shouldCancel && shouldCancel();
-            if (cancelled || NSProcessInfo.processInfo.systemUptime - started > timeout) {
+            if (cancelled || NSProcessInfo.processInfo.systemUptime - executionStarted > timeout) {
                 timedOut = !cancelled;
                 FloeInterruptEngine(context->sessionKey);
                 break;
@@ -354,7 +458,15 @@ FloeShellBridgeStatus FloeShellRunCommand(
         if (context->finished.load(std::memory_order_acquire)) {
             pthread_join(thread, NULL);
         } else {
+            // The worker outlived its caller's deadline. It keeps the gate and
+            // its engine resources until it actually stops; a later caller
+            // reports Busy/not-started instead of a fabricated timeout. There
+            // is deliberately no thread kill: releasing global runtime state
+            // while the worker still uses it is unsafe.
             pthread_detach(thread);
+            os_log_error(FloeShellLogGate(), "floeShellWorkerDetached session=%{public}@ waitedMs=%lld %{public}@",
+                         sessionID, (long long)((NSProcessInfo.processInfo.systemUptime - requestedAt) * 1000.0),
+                         FloeShellRunGateDiagnostics());
         }
 
 
@@ -389,6 +501,11 @@ void *FloeSessionThreadMain(void *rawContext) {
     @autoreleasepool {
         FILE *input = fdopen(context->inputReadFD, "r");
         FILE *output = fdopen(context->outputWriteFD, "w");
+        // Interactive prompts and command echo must reach the caller as they
+        // are written. stdio picks full buffering for a pipe, so `dash -i`'s
+        // prompt would sit in the FILE* until flush/exit and the terminal
+        // would appear to produce no output at all.
+        if (output) { setvbuf(output, NULL, _IONBF, 0); }
         ios_switchSession(context->sessionKey);
         ios_setContext(context->sessionKey);
         // ios_fork holds the engine PID mutex until the creating thread
@@ -479,16 +596,46 @@ BOOL FloeShellOpenSession(
     FloeWorkerStarted(sessionID);
     [thread start];
 
-    // Give the program a moment to print its banner/prompt.
-    [NSThread sleepForTimeInterval:0.4];
+    // Bounded readiness wait: drain the banner until the program has gone
+    // quiet after its first output, exited, or the budget expires. `dash -i`
+    // on a pipe may print no prompt at all; that must still return a live
+    // session instead of waiting forever for output that will never come.
+    const NSTimeInterval readinessStarted = NSProcessInfo.processInfo.systemUptime;
+    const NSTimeInterval readinessBudget = 3.0;
     int flags = fcntl(outputPipe[0], F_GETFL, 0);
     fcntl(outputPipe[0], F_SETFL, flags | O_NONBLOCK);
     NSMutableData *banner = [NSMutableData data];
+    NSTimeInterval lastOutputAt = 0;
+    NSTimeInterval finishedDrainDeadline = 0;
     uint8_t buffer[4096];
-    ssize_t count = 0;
-    while ((count = read(outputPipe[0], buffer, sizeof(buffer))) > 0) {
-        [banner appendBytes:buffer length:(NSUInteger)count];
-        if (banner.length > 64 * 1024) { break; }
+    while (YES) {
+        ssize_t count = read(outputPipe[0], buffer, sizeof(buffer));
+        if (count > 0) {
+            if (banner.length < 64 * 1024) {
+                [banner appendBytes:buffer length:MIN((NSUInteger)count, (NSUInteger)(64 * 1024) - banner.length)];
+            }
+            lastOutputAt = NSProcessInfo.processInfo.systemUptime;
+            continue;
+        }
+        NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+        if (count == 0) {
+            // EOF: every write end of the program's output stream is closed,
+            // so no further byte can arrive.
+            break;
+        }
+        if (record.finished) {
+            // The command thread has finished but may still be flushing the
+            // program's FILE* before fclose. Keep draining for a short bounded
+            // grace so a fast command's final output is not dropped.
+            if (finishedDrainDeadline == 0) { finishedDrainDeadline = now + 0.25; }
+            if (now >= finishedDrainDeadline) { break; }
+            [NSThread sleepForTimeInterval:0.01];
+            continue;
+        }
+        if (lastOutputAt > 0 && now - lastOutputAt >= 0.12) { break; }
+        if (lastOutputAt == 0 && now - readinessStarted >= 0.5) { break; }
+        if (now - readinessStarted >= readinessBudget) { break; }
+        [NSThread sleepForTimeInterval:0.02];
     }
     if (outInitialOutput) {
         *outInitialOutput = [[NSString alloc] initWithData:banner encoding:NSUTF8StringEncoding] ?: @"";
@@ -496,6 +643,26 @@ BOOL FloeShellOpenSession(
     if (outInputFD) { *outInputFD = inputPipe[1]; }
     if (outOutputFD) { *outOutputFD = outputPipe[0]; }
     return YES;
+}
+
+BOOL FloeShellClaimSessionDescriptors(NSString *sessionID) {
+    @synchronized (FloeShellSessions()) {
+        FloeShellSessionRecord *record = FloeShellSessions()[sessionID];
+        if (record == nil) {
+            // A concurrent close already removed the record and closed the
+            // descriptors. The caller must not fcntl/read/close those numbers
+            // again: they may already have been recycled by another pipe.
+            return NO;
+        }
+        record.pumpOwnsDescriptors = YES;
+        return YES;
+    }
+}
+
+void FloeShellEndSession(NSString *sessionID) {
+    @synchronized (FloeShellSessions()) {
+        [FloeShellSessions() removeObjectForKey:sessionID];
+    }
 }
 
 void FloeShellSignalSession(NSString *sessionID, int signalNumber) {
@@ -507,15 +674,22 @@ void FloeShellSignalSession(NSString *sessionID, int signalNumber) {
     if (!record.finished) FloeInterruptEngine(record.engineSessionKey);
 }
 
-void FloeShellCloseSession(NSString *sessionID) {    FloeShellSessionRecord *record = nil;
+void FloeShellCloseSession(NSString *sessionID) {
+    FloeShellSessionRecord *record = nil;
     @synchronized (FloeShellSessions()) {
         record = FloeShellSessions()[sessionID];
-        [FloeShellSessions() removeObjectForKey:sessionID];
+        if (record == nil || !record.pumpOwnsDescriptors) {
+            [FloeShellSessions() removeObjectForKey:sessionID];
+        }
     }
     if (record == nil) { return; }
     if (record.commandThread != 0 && !record.finished) {
         FloeInterruptEngine(record.engineSessionKey);
     }
+    // A pump-owned session keeps its descriptors: the pump closes them only
+    // after its read/write loop has stopped, so no file descriptor is closed
+    // underneath a concurrent read or a recycled descriptor is reused.
+    if (record.pumpOwnsDescriptors) { return; }
     if (record.inputWriteFD >= 0) { close(record.inputWriteFD); }
     if (record.outputReadFD >= 0) { close(record.outputReadFD); }
 }
@@ -524,6 +698,13 @@ void FloeShellResizeSession(NSString *sessionID, NSInteger columns, NSInteger ro
     @synchronized (FloeShellSessions()) {
         FloeShellSessionRecord *record = FloeShellSessions()[sessionID];
         if (record && !record.finished) ios_setWindowSize((int)columns, (int)rows, record.engineSessionKey);
+    }
+}
+
+BOOL FloeShellSessionAlive(NSString *sessionID) {
+    @synchronized (FloeShellSessions()) {
+        FloeShellSessionRecord *record = FloeShellSessions()[sessionID];
+        return record != nil && !record.finished;
     }
 }
 BOOL FloeShellSessionExitCode(NSString *sessionID, int32_t *code) {

@@ -1,6 +1,7 @@
 import FloeEnvironments
 import Foundation
 import FloeCore
+import FloeTools
 
 /// apt/dpkg orchestration for one container layer. Network, script execution
 /// and progress reporting are injected so the module stays platform-neutral.
@@ -25,9 +26,15 @@ public actor AptEngine {
 
     public struct Downloader: Sendable {
         public enum Failure: Error { case notFound }
-        public var fetch: @Sendable (_ url: URL, _ maxBytes: Int) async throws -> Data
+        public var fetch: @Sendable (_ url: URL, _ maxBytes: Int, _ cancellation: CancellationToken?) async throws -> Data
+        /// Legacy closure. The token is accepted by callers but this overload
+        /// cannot observe it; adopt `init(cancellableFetch:)` to let a shell
+        /// invocation abort an in-flight index or package transfer.
         public init(fetch: @escaping @Sendable (URL, Int) async throws -> Data) {
-            self.fetch = fetch
+            self.fetch = { url, maxBytes, _ in try await fetch(url, maxBytes) }
+        }
+        public init(cancellableFetch: @escaping @Sendable (URL, Int, CancellationToken?) async throws -> Data) {
+            self.fetch = cancellableFetch
         }
     }
 
@@ -99,13 +106,14 @@ public actor AptEngine {
     // MARK: - apt update
 
     @discardableResult
-    public func update(container: Container, sources: [AptSource]) async -> UpdateReport {
+    public func update(container: Container, sources: [AptSource], cancellation: CancellationToken? = nil) async -> UpdateReport {
         var packageCount = 0
         var failures: [String] = []
         var index: [String: [AptPackage]] = [:]
         for source in sources {
             do {
-                let releaseText = try await fetchRelease(source: source, container: container)
+                try cancellation?.throwIfCancelled()
+                let releaseText = try await fetchRelease(source: source, container: container, cancellation: cancellation)
                 let release = Deb822.parse(stanza: releaseText)
                 guard let parsedRelease = AptRelease.parse(release) else { throw AptError.untrusted(source.uri) }
                 if !parsedRelease.isValid() {
@@ -115,7 +123,7 @@ public actor AptEngine {
                 for component in source.components {
                     guard let url = source.packagesURL(component: component, architecture: "all")
                         ?? source.packagesURL(component: component, architecture: container.architecture) else { continue }
-                    let data = try await downloader.fetch(url, 64 * 1024 * 1024)
+                    let data = try await downloader.fetch(url, 64 * 1024 * 1024, cancellation)
                     guard let releaseRoot = source.releaseURL()?.deletingLastPathComponent().path else { throw AptError.untrusted(source.uri) }
                     let prefix = releaseRoot + "/"
                     guard url.path.hasPrefix(prefix) else { throw AptError.untrusted(source.uri) }
@@ -139,7 +147,7 @@ public actor AptEngine {
         return UpdateReport(sources: sources.count, packages: packageCount, failures: failures)
     }
 
-    private func fetchRelease(source: AptSource, container: Container) async throws -> String {
+    private func fetchRelease(source: AptSource, container: Container, cancellation: CancellationToken?) async throws -> String {
         var trustedKeys = self.trustedKeys
         if let signedBy = source.signedBy {
             guard signedBy.hasPrefix("etc/apt/keyrings/"), !signedBy.split(separator: "/").contains("..") else { throw AptError.untrusted(source.uri) }
@@ -154,14 +162,14 @@ public actor AptEngine {
         }
         let data: Data
         do {
-            data = try await downloader.fetch(inReleaseURL, 32 * 1024 * 1024)
+            data = try await downloader.fetch(inReleaseURL, 32 * 1024 * 1024, cancellation)
         } catch Downloader.Failure.notFound {
             let releaseURL = inReleaseURL.deletingLastPathComponent().appendingPathComponent("Release")
-            let release = try await downloader.fetch(releaseURL, 32 * 1024 * 1024)
+            let release = try await downloader.fetch(releaseURL, 32 * 1024 * 1024, cancellation)
             guard let signatureURL = source.releaseGPGURL() else { throw AptError.untrusted(source.uri) }
             let signatureData: Data
             do {
-                signatureData = try await downloader.fetch(signatureURL, 1_048_576)
+                signatureData = try await downloader.fetch(signatureURL, 1_048_576, cancellation)
             } catch Downloader.Failure.notFound {
                 // Only confirmed absence permits explicit unsigned trust.
                 // Network errors and invalid signatures must never downgrade.
@@ -283,10 +291,12 @@ public actor AptEngine {
     public func install(
         _ names: [String],
         container: Container,
-        packageReview: @Sendable (_ package: AptPackage) -> Bool = { _ in true }
+        packageReview: @Sendable (_ package: AptPackage) -> Bool = { _ in true },
+        cancellation: CancellationToken? = nil
     ) async throws -> [Step] {
         guard mutating.insert(container.id).inserted else { throw AptError.conflict("another package transaction is active") }
         defer { mutating.remove(container.id) }
+        try cancellation?.throwIfCancelled()
         try PackageTransaction.recover(root: container.layerURL)
         let installed = DpkgDatabase.readStatus(at: container.layerURL)
         let installedVersions = Dictionary(uniqueKeysWithValues: installed.filter(\.isInstalled).map { ($0.name, $0.version) })
@@ -307,7 +317,7 @@ public actor AptEngine {
             _ = try PackageDependencyResolver.Requirement(package.name)
             if let base = package.requiresBase, base != container.baseRevision { throw AptError.conflict("\(package.name) requires base \(base)") }
             guard let packageURL = URL(string: package.filename.hasPrefix("https://") ? package.filename : repositoryURL(for: package)) else { throw AptError.unresolved(package.filename) }
-            let data = try await downloader.fetch(packageURL, 256 * 1024 * 1024)
+            let data = try await downloader.fetch(packageURL, 256 * 1024 * 1024, cancellation)
             try Task.checkCancellation()
             try AptIndex.validateDeb(data: data, package: package, digest: { FloeDigest.sha256Hex(Data($0)) })
             let payload = try DebArchive.read(data: data)

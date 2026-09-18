@@ -9,8 +9,23 @@ public enum NodePackageManagerPreference: String, Codable, CaseIterable, Sendabl
     case automatic, npm, pnpm
 }
 
+/// Who selected the manager for one package change.
+public enum NodePackageManagerRequest: Sendable {
+    /// The typed shell command named the manager (`npm install`, `pnpm add`).
+    /// It is authoritative: the configured default and the project's lock
+    /// file are automatic-selection hints, never grounds to run a different
+    /// manager behind the user's back.
+    case explicit(NodePackageManager)
+    /// A UI or agent install that did not name a manager. Only this path may
+    /// consult the configured preference and the project's declaration/lock.
+    case automatic(preference: NodePackageManagerPreference)
+}
+
 /// Read-only project hints. Environment installs never rewrite a project's lock.
 public enum NodePackageManagerPolicy {
+    /// Resolves an automatic (unnamed) selection: the configured environment
+    /// preference, then the project's declared `packageManager` or single lock
+    /// file, then npm.
     public static func resolve(preference: NodePackageManagerPreference, workspace: URL?) throws -> NodePackageManager {
         if preference == .npm { return .npm }
         if preference == .pnpm { return .pnpm }
@@ -39,11 +54,23 @@ public enum NodePackageManagerPolicy {
         guard locks.count <= 1, declared == nil || locks.isEmpty || locks.contains(declared!) else {
             throw FloeError.validationFailed("项目的 packageManager 与锁文件冲突。请整理项目，或明确选择本环境使用的 npm / pnpm；环境安装不会改写项目锁文件。")
         }
-        let selected = declared ?? locks.first ?? "npm"
+        let selected = declared ?? locks.first
+        guard let selected else { return .npm }
         guard let manager = NodePackageManager(rawValue: selected) else {
             throw FloeError.validationFailed("项目要求 \(selected)。本环境支持 npm / pnpm，请明确选择；原项目锁文件会保留。")
         }
         return manager
+    }
+
+    /// Resolves one package change. Explicit shell commands are returned
+    /// unchanged; only `.automatic` consults the preference and the project.
+    public static func resolve(_ request: NodePackageManagerRequest, workspace: URL?) throws -> NodePackageManager {
+        switch request {
+        case .explicit(let manager):
+            return manager
+        case .automatic(let preference):
+            return try resolve(preference: preference, workspace: workspace)
+        }
     }
 }
 
