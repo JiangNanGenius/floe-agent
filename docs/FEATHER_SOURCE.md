@@ -3,7 +3,7 @@
 The source began with build172. Build191 / GitHub Beta48 uses the verified
 unsigned device artifact from the same App source as internal TestFlight,
 repackaged without recompiling. TestFlight uses its separate signed package.
-The source update is published and verified independently of the prerelease.
+The feed now serves build191; publishing run35355328174 passed and the live source was read back with the matching IPA hash and size.
 
 The stable source URL is:
 

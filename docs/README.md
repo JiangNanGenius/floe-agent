@@ -6,7 +6,7 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-178 仍是最后确认的内部 TestFlight 交付基线（历史记录；本次未重新查询 Apple）。186 的发布验收失败，未上传；187 已固定标签 beta.44 / d77aa11f，云端 run35312393708 进行中，尚未上传。完整包/模型交付和部分真机验收仍未完成。历史记录保留原日期与结论。
+当前内部 TestFlight 为 **1.7.0（191）**，已核实 Apple VALID、未过期及 Floe QA 可测试。[beta.48](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.48) 开发者包与 [Feather 源](FEATHER_SOURCE.md)均已发布；三项界面失败仅获内部测试豁免。完整包/模型、RDP App 集成和部分真机验收仍未完成。[191交付证据](qualification/build191-release/README.md)，历史记录保持原结论。
 
 | 文档 | 阅读目的 |
 |---|---|

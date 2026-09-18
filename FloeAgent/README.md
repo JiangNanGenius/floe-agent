@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe 1.7. Minimum deployment is iOS/iPadOS 26.0; database schema is v40. Heavy App builds and archives run in cloud CI. Build 178 is the last historically confirmed internal TestFlight release; Apple state has not been re-queried for this preparation.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe 1.7. Minimum deployment is iOS/iPadOS 26.0; database schema is v40. Heavy App builds and archives run in cloud CI. Build191 is the current internal TestFlight delivery; Apple VALID, unexpired status and private Floe QA availability were verified by run35351900047. GitHub beta.48 and Feather are also published.
 
 Build 186 (`d421fea2`, `v1.7.0-beta.43`, [run 35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)) failed qualification and was not uploaded. The accepted-SDK App regression passed 204/204 including all 23 IDE cases. Both Notes UI legs failed the Office back-control identifier check; the Notes component had one iPad Excel Quick Look timeout, while the actual content-summary fallback worked. SDK 27 module tests rejected one non-namespaced localization key. Original evidence and the source-verified unsigned device recovery archive are retained.
 

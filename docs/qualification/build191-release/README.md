@@ -1,5 +1,7 @@
 # Build191 qualification
 
+**Current delivery:** internal TestFlight191, GitHub beta.48 and Feather191 are available. Main includes this work. The dated entries below preserve the original failures and intermediate states; three UI failures remain waived only for internal testing. Public Beta is not submitted.
+
 Candidate1.7.0(191), tag `v1.7.0-beta.48`, immutable source
 `715cbc42e9402cf5ca691291fed5c201e61cf222`.
 [Cloud run35337960392](https://github.com/JiangNanGenius/floe-agent/actions/runs/35337960392)
@@ -134,3 +136,7 @@ GitHub prerelease, Feather and main integration remain separate pending work.
 ## Developer prerelease recovered and published - 2026-09-18
 
 Run [35353929898](https://github.com/JiangNanGenius/floe-agent/actions/runs/35353929898) packaged the same original unsigned device artifact without compiling the App. [Beta48](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.48) is published. The IPA and its recovery record each have verified GitHub provenance, binding controller `3102b379` to App source `715cbc42` and the original device artifact. No signatures or provisioning profiles are included. See [developer-release.json](developer-release.json). Earlier pending entries above are chronological history. Feather publication and main integration are the remaining delivery steps.
+
+## Final distribution readback
+
+Feather run35355328174 succeeded. The live stable URL returns build191, source715cbc42 and SHA256 `fd0e2f13e01015a2743f501d6ff4b7094107ccdc626efa58947725ec21fa4c99`; its immutable asset URL returned HTTP200 with810746117bytes. Main fast-forwarded to reviewed documentation/provenance commitd5fc3174, then feed commit36c77335. No App recompilation or repeat Apple upload. The refreshed15-page bilingual review PDF remains a draft; iCloud Drive root received the locally hash-matching copy, with remote-device sync unobserved.

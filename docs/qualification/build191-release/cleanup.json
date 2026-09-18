@@ -1,0 +1,147 @@
+{
+  "targets": [
+    {
+      "path": "FloeAgent/.build/native-notes/Build",
+      "allocatedBytes": 197804032,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes/ModuleCache.noindex",
+      "allocatedBytes": 142987264,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes/SDKExplicitPrecompiledModules",
+      "allocatedBytes": 260984832,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes/Index.noindex",
+      "allocatedBytes": 72835072,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes/SDKStatCaches.noindex",
+      "allocatedBytes": 1617920,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes/CompilationCache.noindex",
+      "allocatedBytes": 28672,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes-device/Build",
+      "allocatedBytes": 16879616,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes-device/ModuleCache.noindex",
+      "allocatedBytes": 39546880,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes-device/SDKExplicitPrecompiledModules",
+      "allocatedBytes": 96559104,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes-device/Index.noindex",
+      "allocatedBytes": 29523968,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes-device/SDKStatCaches.noindex",
+      "allocatedBytes": 1581056,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/native-notes-device/CompilationCache.noindex",
+      "allocatedBytes": 28672,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/out/ModuleCache.noindex",
+      "allocatedBytes": 712990720,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/out/SDKExplicitPrecompiledModules",
+      "allocatedBytes": 675786752,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/out/SDKStatCaches.noindex",
+      "allocatedBytes": 76529664,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "FloeAgent/.build/out/CompilationCache.noindex",
+      "allocatedBytes": 28672,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "Local/Scratch/npm-cache",
+      "allocatedBytes": 87408640,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "Local/Scratch/mlx-policy-module-cache",
+      "allocatedBytes": 37289984,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    },
+    {
+      "path": "Local/Scratch/node-compile-cache",
+      "allocatedBytes": 2576384,
+      "reason": "finished generated build products or compiler/package cache; regenerate from pinned project and dependencies",
+      "removed": true
+    }
+  ],
+  "apps": [
+    {
+      "path": "FloeAgent/.build/native-notes/Build/Products/Debug-iphonesimulator/NativeNotesUITests-Runner.app",
+      "bundleID": "org.floeagent.notes.uitests.xctrunner",
+      "version": "1.0",
+      "build": "1",
+      "purpose": "obsolete local qualification host; cloud evidence and current IPA retained"
+    },
+    {
+      "path": "FloeAgent/.build/native-notes/Build/Products/Debug-iphonesimulator/FloeNotesNativeQualification.app",
+      "bundleID": "org.floeagent.notes.qualification",
+      "version": null,
+      "build": null,
+      "purpose": "obsolete local qualification host; cloud evidence and current IPA retained"
+    }
+  ],
+  "allocatedBytes": 2452987904,
+  "freeBefore": 7164583936,
+  "keep": [
+    "all Local/Artifacts release and recovery files",
+    "all xcresult/logs/Private evidence",
+    "FloeAgent/.build/out/Products and Intermediates (Lua harness)",
+    "dependency source/checkouts/toolchains",
+    "unrelated worktrees and user data"
+  ],
+  "freeAfter": 9631490048,
+  "measuredFreeIncreaseBytes": 2466906112,
+  "completedAt": "2026-09-18T14:20:04.421550+00:00",
+  "method": "Removed exact regenerable generated targets after handle checks; no Trash, simulator, source, credentials or recovery deletion."
+}

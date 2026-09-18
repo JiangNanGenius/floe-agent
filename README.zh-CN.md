@@ -226,4 +226,4 @@ Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方�
 
 ### Feather 安装源
 
-使用自行签名安装的用户可添加 [Floe Feather 源](docs/FEATHER_SOURCE.md)。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。
+使用自行签名安装的用户可添加 [Floe Feather 源](docs/FEATHER_SOURCE.md)，当前版本为191。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。

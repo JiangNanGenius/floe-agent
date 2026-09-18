@@ -1,14 +1,16 @@
 # Floe Agent User Guide
 
+Current internal release: **1.7.0 (191) / beta.48**, installable in Floe QA. The GitHub developer IPA and Feather feed are published. Three UI failures were waived for internal device testing only; full acceptance is not claimed. [Delivery and limitations](qualification/build191-release/README.md). Historical screenshots retain their build labels.
+
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide covers existing Floe workflows and the 1.7 internal beta (build 178). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
+This guide covers existing Floe workflows and the 1.7 internal beta (build 191). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
 
 This guide includes the build 172 workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
 
-## Live Soul and profile updates (development candidate)
+## Live Soul and profile updates
 
-In Settings → Memory and personalization, save, generate or activate a Soul/profile revision. The active revision applies automatically to the next new model request, including a running Agent after its current tool step. You do not need to save again or restart the conversation. An already streaming answer and retries of the same network request keep their original context. Workspace-specific documents take precedence over global ones; automatic drafts marked as awaiting confirmation remain inactive until accepted. Notes and Canvas assistants use the same active preference lookup while keeping their own conversations and document scope. This change is not yet in a newly uploaded TestFlight build.
+In Settings → Memory and personalization, save, generate or activate a Soul/profile revision. The active revision applies automatically to the next new model request, including a running Agent after its current tool step. You do not need to save again or restart the conversation. An already streaming answer and retries of the same network request keep their original context. Workspace-specific documents take precedence over global ones; automatic drafts marked as awaiting confirmation remain inactive until accepted. Notes and Canvas assistants use the same active preference lookup while keeping their own conversations and document scope. This behavior is included in the internal build191; physical-device verification remains separate.
 
 ## Current repair candidate: content search and workspace imports
 
@@ -20,7 +22,7 @@ Build 172 adds eight native brushes with independent color, width and opacity, p
 
 These unedited SDK 27 full-App simulator captures accompany passing iPad and iPhone Notes UI cases. [Capture provenance](evidence/floe-1.7/release-172/screenshots/manifest.json). Physical Pencil gestures remain for device testing.
 
-These instructions describe the development branch, not a newly delivered TestFlight build. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
+These instructions include features delivered in internal build191; screenshots and prior test results refer only to their labelled sources. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
 
 <img src="validation/floe-156-feedback/screenshots/full-app-build164-sdk27/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">
 
@@ -531,10 +533,12 @@ sheet, and are not an original-layout render. Build 187 is tagged `v1.7.0-beta.4
 cloud run `35312393708`; it has not uploaded. See [beta.44 record](RELEASE_1.7.0_BETA_44.md).
 
 
-### Build188 cloud candidate
+### Historical Build188 cloud candidate
 
 Build187 passed204/204 SDK27 App regressions but failed Notes UI and the original
 component fixture. It was not uploaded. Build188 fixes cover-card accessibility
 queries and bounds WebKit screenshot waits; source `c5656276a3fed0cc0546d2ab360603e443b7f87e`,
 [run35317532109](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109).
 Cloud verification is in progress; no upload or installability is claimed.
+
+The preceding candidate entries are dated history: builds188-190 were not delivered; build191 is internally available. Use the current191 delivery record above.
