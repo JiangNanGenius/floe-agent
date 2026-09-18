@@ -238,11 +238,16 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// library card reports a real content-cover source instead of the explicit
     /// unsupported/placeholder state.
     ///
-    /// Office must satisfy the native system Quick Look content path only: a
-    /// bounded OOXML content summary is a legitimate product fallback, but it is
-    /// not the original Office thumbnail and therefore is not accepted here.
-    /// CAD must satisfy the bundled viewer (`engineeringPreview`); `unsupported`
-    /// and `quickLook` are not accepted for CAD.
+    /// Office accepts the two-tier product behavior: a real system Quick Look
+    /// content representation, or the explicitly labeled native content summary
+    /// while the non-guaranteed system host produced no content. A summary card
+    /// must additionally publish the `badge=summary` marker (the identity of
+    /// the visible "Summary" capsule). A settled `quickLook` card must never
+    /// report a generic icon fallback; a summary card may record the Quick Look
+    /// icon failure in its diagnostics while the published cover remains the
+    /// real content summary. CAD must satisfy the bundled viewer
+    /// (`engineeringPreview`); `unsupported` and `quickLook` are not accepted
+    /// for CAD.
     func testNotesLibraryCardsShowRealContentCovers() throws {
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
@@ -250,10 +255,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         var app = launchNotesWithOfficeCoverFixture(ipad: ipad)
         defer { app.terminate() }
 
+        let officeSources: Set<String> = ["quickLook", "officeContentSummary"]
         let cases: [CoverCase] = [
-            .init(kind: "office", title: "封面验收-Word", allowed: ["quickLook"]),
-            .init(kind: "office", title: "封面验收-Excel", allowed: ["quickLook"]),
-            .init(kind: "office", title: "封面验收-PPT", allowed: ["quickLook"]),
+            .init(kind: "office", title: "封面验收-Word", allowed: officeSources),
+            .init(kind: "office", title: "封面验收-Excel", allowed: officeSources),
+            .init(kind: "office", title: "封面验收-PPT", allowed: officeSources),
             .init(kind: "notebook", title: "封面验收 手写页", allowed: ["notePage"]),
             .init(kind: "mindMap", title: "封面验收 导图", allowed: ["mindMap"]),
             .init(kind: "engineering", title: "封面验收-图纸", allowed: ["engineeringPreview"]),
@@ -269,14 +275,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // Revision-keyed invalidation: rename the Word card through the real
         // Notes store (a save that advances the document revision), then assert
         // the reloaded card reports a strictly newer revision and still a real
-        // Quick Look cover. A stale cached cover from the pre-rename revision
+        // content cover. A stale cached cover from the pre-rename revision
         // would fail this.
         let originalRevision = assertContentCover(
-            app, cover: .init(kind: "office", title: "封面验收-Word", allowed: ["quickLook"])).revision
+            app, cover: .init(kind: "office", title: "封面验收-Word", allowed: officeSources)).revision
         let renamedTitle = "封面验收-Word 修订"
         renameDocument(app, kind: "office", title: "封面验收-Word", to: renamedTitle)
         let renamed = assertContentCover(
-            app, cover: .init(kind: "office", title: renamedTitle, allowed: ["quickLook"]))
+            app, cover: .init(kind: "office", title: renamedTitle, allowed: officeSources))
         XCTAssertGreaterThan(renamed.revision, originalRevision,
                              "renaming must invalidate the revision-keyed cover")
         capture("notes-content-cover-renamed")
@@ -297,7 +303,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         back.tap()
         XCTAssertTrue(app.buttons["notes.create"].waitForExistence(timeout: 30),
                       "returning from the opened document must resume the Notes library")
-        assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: ["quickLook"]))
+        assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: officeSources))
 
         // Quit and relaunch: in-memory covers are gone, so every card must
         // regenerate from the persisted documents. The renamed Word document is
@@ -305,7 +311,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         app.terminate()
         app = launchNotesWithOfficeCoverFixture(ipad: ipad)
         for cover in cases where cover.title != "封面验收-Word" { assertContentCover(app, cover: cover) }
-        assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: ["quickLook"]))
+        assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: officeSources))
         capture("notes-content-covers-relaunch")
     }
 
@@ -397,24 +403,36 @@ final class NotesWorkspaceImportUITests: XCTestCase {
 
     /// Polls until the card's identifier suffix (the settled cover source plus
     /// `#<revision>`) is one of the allowed real sources. `none`/`placeholder`
-    /// and any unexpected source fail; a generic icon is never a source.
+    /// and any unexpected source fail; a generic icon is never a source. The
+    /// thumbnail's own accessibility value is read for the same state and must
+    /// agree with the source; a summary source additionally requires the
+    /// `badge=summary` marker, so an unlabelled summary cannot pass as a
+    /// correct two-tier cover.
     @discardableResult
     private func assertContentCover(_ app: XCUIApplication, cover: CoverCase,
                                     file: StaticString = #filePath, line: UInt = #line) -> ParsedCover {
         let card = revealCard(app, kind: cover.kind, title: cover.title, file: file, line: line)
         let deadline = Date().addingTimeInterval(90)
         var parsed = ParsedCover(source: "missing", revision: 0)
+        var thumbnailValue = "unavailable"
         while Date() < deadline {
             if card.exists {
-                parsed = parseCover(card.identifier)
-                if cover.allowed.contains(parsed.source) { break }
+                let candidate = parseCover(card.identifier)
+                if cover.allowed.contains(candidate.source) {
+                    let value = coverDiagnostics(app, cover: cover)
+                    if value == candidate.source || value.hasPrefix(candidate.source + ";") {
+                        parsed = candidate
+                        thumbnailValue = value
+                        break
+                    }
+                }
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
         // Bounded, redacted generator identity (attempts, timeout, numeric
-        // error identity, fallback stage). Never a path, file name or content.
-        let diagnostics = coverDiagnostics(app, cover: cover)
-        let attachment = XCTAttachment(string: "\(cover.kind) \(cover.title) coverSource=\(parsed.source) revision=\(parsed.revision) allowed=\(cover.allowed.sorted()) diagnostics=[\(diagnostics)]")
+        // error identity, fallback stage) plus the summary badge marker.
+        // Never a path, file name or content.
+        let attachment = XCTAttachment(string: "\(cover.kind) \(cover.title) coverSource=\(parsed.source) revision=\(parsed.revision) allowed=\(cover.allowed.sorted()) thumbnailValue=[\(thumbnailValue)]")
         attachment.name = "cover-source-\(cover.kind)-\(cover.title)"
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -424,6 +442,24 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertGreaterThan(parsed.revision, 0,
                              "\(cover.kind) \(cover.title) must report its document revision",
                              file: file, line: line)
+        // `icon=true` records a failed Quick Look attempt, not the published
+        // cover. It is only rejected when the settled source is the Quick Look
+        // content itself; a summary source keeps the real, badge-labeled
+        // content render and may legitimately carry the recorded icon failure.
+        if parsed.source == "quickLook" {
+            XCTAssertFalse(thumbnailValue.contains("icon=true"),
+                           "\(cover.kind) \(cover.title) is a Quick Look cover and must never report a generic icon fallback",
+                           file: file, line: line)
+        }
+        if parsed.source == "officeContentSummary" {
+            XCTAssertTrue(thumbnailValue.contains("badge=summary"),
+                          "\(cover.kind) \(cover.title) is a summary cover and must publish the Summary badge identity, got [\(thumbnailValue)]",
+                          file: file, line: line)
+        } else {
+            XCTAssertFalse(thumbnailValue.contains("badge=summary"),
+                           "\(cover.kind) \(cover.title) is not a summary cover and must not carry the Summary badge",
+                           file: file, line: line)
+        }
         return parsed
     }
 

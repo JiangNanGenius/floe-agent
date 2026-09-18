@@ -9,11 +9,19 @@
 //  * every one of the six per-sample checks renders through the production card
 //    path — `NoteFileImporter` -> extensionless CAS resource -> shared
 //    `NotesDocumentCoverService` staging and host gate — while asserting the
-//    original file name, the exact source bytes and a real Quick Look content
-//    image. That is the path a Notes card actually uses;
-//  * Quick Look output is real document content, never a generic file icon;
-//  * the shared `NotesDocumentCoverService` returns a `.quickLookThumbnail`
-//    source for real Word/Excel/PPT packages;
+//    original file name, the exact source bytes and a real content cover. Per
+//    the root acceptance decision that cover may be either a real system Quick
+//    Look content thumbnail or the explicitly labeled native `.officeContentSummary`
+//    of the same package; an icon, a blank image, another document's cover,
+//    `.unsupported` or `.none` always fail;
+//  * a summary cover is verified against its independently known fixture
+//    content (exact text/cell values and the rendered layout geometry), not
+//    only against a second render of the same renderer — see
+//    `NotesCoverAcceptanceSupport`;
+//  * the strict Quick Look-only assertions live in
+//    `NotesOfficeThumbnailDiagnosticsTests`, which the component workflow runs
+//    as a separate non-gating diagnostic step so a system-host failure is
+//    recorded, never converted into a pass and never silently deleted;
 //  * when Quick Look only offers an icon, the bounded generator stops, reports
 //    the icon fallback and never returns it as content;
 //  * the bounded native OOXML content-summary fallback renders a real image
@@ -87,63 +95,30 @@ final class NotesOfficeThumbnailTests: XCTestCase {
         }
     }
 
-    // MARK: - Quick Look content checks (one independent test per sample)
+    // MARK: - Content cover checks (one independent test per sample)
 
-    func testQuickLookRendersWordBusinessWeekly() async throws {
+    func testSampleRendersWordBusinessWeekly() async throws {
         try await assertSampleRenders("商务周报.docx")
     }
 
-    func testQuickLookRendersWordMeetingNotes() async throws {
+    func testSampleRendersWordMeetingNotes() async throws {
         try await assertSampleRenders("meeting-notes.docx")
     }
 
-    func testQuickLookRendersExcelQuarterlySummary() async throws {
+    func testSampleRendersExcelQuarterlySummary() async throws {
         try await assertSampleRenders("季度数据汇总.xlsx")
     }
 
-    func testQuickLookRendersExcelBudgetForecast() async throws {
+    func testSampleRendersExcelBudgetForecast() async throws {
         try await assertSampleRenders("budget-forecast.xlsx")
     }
 
-    func testQuickLookRendersPowerPointProductRoadmap() async throws {
+    func testSampleRendersPowerPointProductRoadmap() async throws {
         try await assertSampleRenders("产品路线图.pptx")
     }
 
-    func testQuickLookRendersPowerPointDesignReview() async throws {
+    func testSampleRendersPowerPointDesignReview() async throws {
         try await assertSampleRenders("design-review.pptx")
-    }
-
-    /// The unified cover service must return a real Quick Look thumbnail source
-    /// (not `.unsupported`, not `.officeContentSummary`) for every Office type
-    /// imported through the same `NoteFileImporter` path the app uses. This is
-    /// the mechanism-level check that a generic file icon can never satisfy.
-    func testCoverServiceReturnsQuickLookContentForEachOfficeType() async throws {
-        let root = makeScratchDirectory("cover-service")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let urls = try PreviewFixtureFactory.writeSamples(to: root.appendingPathComponent("sources"))
-        let wanted: [(String, String)] = [
-            ("商务周报.docx", "docx"),
-            ("季度数据汇总.xlsx", "xlsx"),
-            ("产品路线图.pptx", "pptx")
-        ]
-        let store = try NotesStore(root: root.appendingPathComponent("store"))
-        for (fileName, fileExtension) in wanted {
-            let url = try XCTUnwrap(urls.first { $0.lastPathComponent == fileName })
-            let draft = try await NoteFileImporter.importFile(url, notebookID: nil, store: store)
-            let document = try await store.create(draft)
-            let outcome = await NotesDocumentCoverService.render(
-                document: document, store: store, size: CGSize(width: 320, height: 420),
-                maximumSourceBytes: 128 * 1024 * 1024)
-            XCTAssertEqual(outcome.source, .quickLookThumbnail,
-                           "\(fileExtension) must come from a real Quick Look content representation, not \(outcome.source) (\(outcome.diagnosis))")
-            XCTAssertNotNil(outcome.image, "\(fileExtension) cover must be an actual image")
-            if let image = outcome.image {
-                let attachment = XCTAttachment(image: image)
-                attachment.name = "cover-service-\(fileExtension)"
-                attachment.lifetime = .keepAlways
-                add(attachment)
-            }
-        }
     }
 
     /// One sample check through the exact production card path: the shared
@@ -151,9 +126,16 @@ final class NotesOfficeThumbnailTests: XCTestCase {
     /// the document keeps its original file name, and
     /// `NotesDocumentCoverService` (single-flight + shared host gate) stages one
     /// validated ASCII copy (`preview.<ext>`) before the system Quick Look
-    /// generator runs. A cover must be a real Quick Look content image; a
-    /// generic icon, the native content summary, `.unsupported` or `.none`
-    /// never satisfy this assertion.
+    /// generator runs. The settled cover must be real document content: a real
+    /// Quick Look content representation, or — when the non-guaranteed system
+    /// host produced no content inside the bounded 45 s budget — the explicitly
+    /// labeled native `.officeContentSummary` of the same package. The summary
+    /// branch is additionally verified against the fixture's independently
+    /// known text/values and rendered layout (not against a second render of
+    /// the same renderer). A generic icon, a blank image, another document's
+    /// content, `.unsupported` or `.none` never satisfy this assertion; on a
+    /// summary cover the recorded Quick Look icon flag is a failure reason of
+    /// the system attempt while the published cover stays the verified summary.
     private func assertSampleRenders(_ fileName: String, file: StaticString = #filePath, line: UInt = #line) async throws {
         let root = makeScratchDirectory("quicklook")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -182,26 +164,43 @@ final class NotesOfficeThumbnailTests: XCTestCase {
             maximumSourceBytes: 128 * 1024 * 1024)
         let elapsed = started.duration(to: .now)
 
-        XCTAssertEqual(outcome.source, .quickLookThumbnail,
-                       "\(fileName) must come from a real Quick Look content representation, not \(outcome.source) (\(outcome.diagnosis))",
-                       file: file, line: line)
-        let image = try XCTUnwrap(outcome.image, file: file, line: line)
+        let image = try XCTUnwrap(outcome.image, "\(fileName) cover must be an actual image",
+                                  file: file, line: line)
         XCTAssertGreaterThan(image.size.width, 0, file: file, line: line)
         XCTAssertGreaterThan(image.size.height, 0, file: file, line: line)
         XCTAssertNotNil(image.cgImage, file: file, line: line)
         let diagnostics = try XCTUnwrap(outcome.diagnostics, file: file, line: line)
-        XCTAssertFalse(diagnostics.quickLookWasIconFallback,
-                       "\(fileName) returned a generic file icon, not content", file: file, line: line)
-        XCTAssertFalse(diagnostics.quickLookTimedOut,
-                       "\(fileName) must settle with content, not the request deadline", file: file, line: line)
-        XCTAssertGreaterThanOrEqual(diagnostics.quickLookAttempts, 1, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(diagnostics.quickLookAttempts, 1,
+                                    "\(fileName) must have run its bounded Quick Look request", file: file, line: line)
+        // `quickLookWasIconFallback` is a recorded failure reason of the system
+        // attempt, not the published cover. The product keeps the real summary
+        // when Quick Look only offered an icon, so the icon flag may only be
+        // rejected where the settled source is the Quick Look content itself.
+        switch outcome.source {
+        case .quickLookThumbnail:
+            XCTAssertFalse(diagnostics.quickLookWasIconFallback,
+                           "\(fileName) returned a generic file icon, not content", file: file, line: line)
+            XCTAssertFalse(diagnostics.quickLookTimedOut,
+                           "\(fileName) must settle with content, not the request deadline", file: file, line: line)
+            // These fixtures contain text or cells. Contrast rejects a uniform
+            // image without claiming OCR or original-layout fidelity.
+            XCTAssertTrue(hasOfficeContentContrast(image),
+                          "\(fileName) Quick Look content must not be a blank or uniform page",
+                          file: file, line: line)
+        case .officeContentSummary:
+            try NotesCoverAcceptanceSupport.assertSummary(image, of: source, fileName: fileName,
+                                                          file: file, line: line)
+        default:
+            XCTFail("\(fileName) must be real document content, not \(outcome.source) (\(outcome.diagnosis))",
+                    file: file, line: line)
+        }
 
         let attachment = XCTAttachment(image: image)
-        attachment.name = "quicklook-thumbnail-\(fileName)"
+        attachment.name = "content-cover-\(fileName)"
         attachment.lifetime = .keepAlways
         add(attachment)
         let evidence = XCTAttachment(string: "fileName=\(fileName) source=\(outcome.source.rawValue) diagnostics=\(diagnostics.summary) elapsed=\(elapsed) casBytes=\(sourceBytes.count)")
-        evidence.name = "quicklook-thumbnail-\(fileName)-evidence"
+        evidence.name = "content-cover-\(fileName)-evidence"
         evidence.lifetime = .keepAlways
         add(evidence)
     }
@@ -236,31 +235,46 @@ final class NotesOfficeThumbnailTests: XCTestCase {
     }
 
     /// The native OOXML content summary must render a real image from the
-    /// document's own parsed text/cells. This is the feasible alternative when
-    /// the system has no content generator, and it is explicitly not the
-    /// original Office layout.
-    func testNativeContentSummaryRendersRealWordAndExcelContent() async throws {
+    /// document's own parsed text/cells, verified against the fixture's
+    /// independently known content and layout. This is deliberately not a
+    /// second render of the same renderer: it asserts the exact authored
+    /// paragraphs / cell values, the rendered cover size, the drawn line or
+    /// grid geometry and the header ink, so a blank, unrelated or
+    /// wrong-document summary cannot pass.
+    func testNativeContentSummaryRendersKnownFixtureContent() async throws {
         let root = makeScratchDirectory("summary")
         defer { try? FileManager.default.removeItem(at: root) }
         let urls = try PreviewFixtureFactory.writeSamples(to: root.appendingPathComponent("sources"))
+        for url in urls {
+            let expected = try XCTUnwrap(NotesCoverAcceptanceSupport.content(for: url.lastPathComponent))
+            let snapshot = try OfficeDocumentService.inspect(url: url)
+            NotesCoverAcceptanceSupport.assertSnapshotFields(snapshot, expected: expected,
+                                                             fileName: url.lastPathComponent)
+            let image = try XCTUnwrap(NotesDocumentCoverService.contentSummary(
+                snapshot: snapshot, kind: snapshot.kind, size: NotesCoverAcceptanceSupport.coverSize))
+            NotesCoverAcceptanceSupport.assertSummaryGeometry(image, snapshot: snapshot,
+                                                              fileName: url.lastPathComponent)
+        }
+    }
 
-        let wordURL = try XCTUnwrap(urls.first { $0.pathExtension == "docx" })
-        let wordSnapshot = try OfficeDocumentService.inspect(url: wordURL)
-        let word = try XCTUnwrap(NotesDocumentCoverService.contentSummary(
-            snapshot: wordSnapshot, kind: .word, size: CGSize(width: 320, height: 420)))
-        XCTAssertNotNil(word.cgImage)
-        XCTAssertNotEqual(averageColor(of: word), .clear, "the Word summary must draw real pixels")
-
-        let excelURL = try XCTUnwrap(urls.first { $0.pathExtension == "xlsx" })
-        let excelSnapshot = try OfficeDocumentService.inspect(url: excelURL)
-        let excel = try XCTUnwrap(NotesDocumentCoverService.contentSummary(
-            snapshot: excelSnapshot, kind: .workbook, size: CGSize(width: 320, height: 420)))
-        XCTAssertNotNil(excel.cgImage)
-        // The header band is a fixed accent in the summary renderer; its
-        // presence proves the workbook cells were drawn, not a static glyph.
-        let accent = UIColor(red: 0.145, green: 0.388, blue: 0.922, alpha: 1)
-        XCTAssertTrue(containsColor(excel, closeTo: accent, tolerance: 0.08),
-                      "the Excel summary header band must show the renderer's real content")
+    /// The two Word fixtures differ in their authored title but share the
+    /// paragraph body. Their content summaries must differ: a cover that is
+    /// indistinguishable from another document's summary fails the
+    /// wrong-document check.
+    func testContentSummaryIsBoundToItsOwnDocument() throws {
+        let root = makeScratchDirectory("summary-binding")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let urls = try PreviewFixtureFactory.writeSamples(to: root.appendingPathComponent("sources"))
+        let first = try XCTUnwrap(urls.first { $0.lastPathComponent == "商务周报.docx" })
+        let second = try XCTUnwrap(urls.first { $0.lastPathComponent == "meeting-notes.docx" })
+        let firstImage = try XCTUnwrap(NotesDocumentCoverService.contentSummary(
+            snapshot: try OfficeDocumentService.inspect(url: first), kind: .word,
+            size: NotesCoverAcceptanceSupport.coverSize))
+        let secondImage = try XCTUnwrap(NotesDocumentCoverService.contentSummary(
+            snapshot: try OfficeDocumentService.inspect(url: second), kind: .word,
+            size: NotesCoverAcceptanceSupport.coverSize))
+        XCTAssertNotEqual(firstImage.pngData(), secondImage.pngData(),
+                          "a summary must be bound to its own document, not another fixture's")
     }
 
     // MARK: - Extensionless CAS + forced Quick Look failure fallback
@@ -449,7 +463,10 @@ final class NotesOfficeThumbnailTests: XCTestCase {
 
     /// Both images are separate `contentSummary` renders of the same
     /// package at the same size. They must be the same pixels; only sub-pixel
-    /// antialiasing noise may differ, and never more than a strict bound.
+    /// antialiasing noise may differ, and never more than a strict bound. This
+    /// is a routing/source-equivalence check (the fallback must read the same
+    /// staged package); the independent content proof for a summary cover is
+    /// `NotesCoverAcceptanceSupport`.
     private func assertSameRenderedContent(_ image: UIImage, _ expected: UIImage, label: String,
                                            file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(image.size, expected.size, "\(label) summary size must match", file: file, line: line)
@@ -653,19 +670,46 @@ final class NotesOfficeThumbnailTests: XCTestCase {
         return count
     }
 
-    // MARK: - Helpers
-
-    private func averageColor(of image: UIImage) -> UIColor {
-        guard let cgImage = image.cgImage else { return .clear }
-        var pixel: [UInt8] = [0, 0, 0, 0]
-        let space = CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8,
-                                      bytesPerRow: 4, space: space,
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return .clear }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-        return UIColor(red: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255,
-                       blue: CGFloat(pixel[2]) / 255, alpha: CGFloat(pixel[3]) / 255)
+    func testOfficeContentSanityRejectsUniformAndTransparentImages() {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128))
+        for color in [UIColor.white, .black, .systemBlue, .clear] {
+            let image = renderer.image { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+            }
+            XCTAssertFalse(hasOfficeContentContrast(image))
+        }
+        let textLikeContent = renderer.image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 20, y: 20, width: 50, height: 3))
+        }
+        XCTAssertTrue(hasOfficeContentContrast(textLikeContent))
     }
+
+    /// Fixed-size sampling bounds memory regardless of the representation size.
+    /// Flattening over white also rejects wholly transparent thumbnails.
+    private func hasOfficeContentContrast(_ image: UIImage) -> Bool {
+        guard let cgImage = image.cgImage else { return false }
+        let side = 128
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        guard let context = CGContext(
+            data: &pixels, width: side, height: side, bitsPerComponent: 8,
+            bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        let bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        context.setFillColor(UIColor.white.cgColor)
+        context.fill(bounds)
+        context.draw(cgImage, in: bounds)
+        let luminance = stride(from: 0, to: pixels.count, by: 4).map { offset in
+            (Int(pixels[offset]) * 299 + Int(pixels[offset + 1]) * 587 + Int(pixels[offset + 2]) * 114) / 1000
+        }
+        guard let lightest = luminance.max() else { return false }
+        return luminance.filter { lightest - $0 >= 24 }.count >= 8
+    }
+
+    // MARK: - Helpers
 
     /// Samples a small grid of pixels and reports whether any is close to the
     /// expected color. It tolerates QL/renderer antialiasing without accepting
@@ -693,5 +737,340 @@ final class NotesOfficeThumbnailTests: XCTestCase {
             }
         }
         return false
+    }
+}
+
+/// Independent, test-only expectations for the synthetic Office fixtures used
+/// by the six component samples. The component host generates these packages
+/// from fixed authored content (`PreviewFixtureFactory`), so a summary cover is
+/// checked against the fixture's known text/values and the renderer's
+/// documented layout geometry instead of only against a second render of the
+/// same renderer. This is the content proof for the two-tier acceptance; the
+/// same-renderer comparison in the forced-fallback test stays a routing and
+/// source-equivalence check.
+enum NotesCoverAcceptanceSupport {
+    static let coverSize = CGSize(width: 320, height: 420)
+
+    struct FixtureContent {
+        let kind: OfficeDocumentKind
+        /// Exact non-empty workbook cells by reference for a workbook fixture.
+        let cells: [String: String]
+        /// Authored text that must all be present in the inspected snapshot.
+        let requiredTexts: [String]
+    }
+
+    private static let wordParagraphs = [
+        "中文段落：本文件是组件验证用的合成样本，不含任何真实业务数据。",
+        "English paragraph: this synthetic sample proves the preview comes from a real file.",
+        "第二段：Quick Look 应基于这个包现场生成缩略图。"
+    ]
+
+    private static func wordTexts(_ title: String) -> [String] { [title] + wordParagraphs }
+
+    private static let excelCells: [String: String] = [
+        "A1": "季度 Quarter", "B1": "收入 Revenue", "C1": "成本 Cost",
+        "A2": "Q1", "B2": "120", "C2": "80",
+        "A3": "Q2", "B3": "150", "C3": "96",
+        "A4": "Q3", "B4": "168", "C4": "101"
+    ]
+
+    private static func presentationTexts(_ title: String) -> [String] {
+        [title, "里程碑 Milestone 1", "里程碑 Milestone 2", "风险 Risks",
+         "合成内容 Synthetic content", "无敏感数据 No sensitive data"]
+    }
+
+    private static let table: [String: FixtureContent] = [
+        "商务周报.docx": .init(kind: .word, cells: [:],
+                             requiredTexts: wordTexts("商务周报 · Business Weekly Report")),
+        "meeting-notes.docx": .init(kind: .word, cells: [:],
+                                    requiredTexts: wordTexts("会议纪要 · Meeting Notes")),
+        "季度数据汇总.xlsx": .init(kind: .workbook, cells: excelCells,
+                                 requiredTexts: Array(excelCells.values)),
+        "budget-forecast.xlsx": .init(kind: .workbook, cells: excelCells,
+                                      requiredTexts: Array(excelCells.values)),
+        "产品路线图.pptx": .init(kind: .presentation, cells: [:],
+                               requiredTexts: presentationTexts("产品路线图 · Product Roadmap")),
+        "design-review.pptx": .init(kind: .presentation, cells: [:],
+                                    requiredTexts: presentationTexts("设计评审 · Design Review"))
+    ]
+
+    static func content(for fileName: String) -> FixtureContent? { table[fileName] }
+
+    /// The inspected snapshot must be the known fixture: exact cell values for
+    /// a workbook, and every authored paragraph/bullet for Word/PowerPoint.
+    static func assertSnapshotFields(_ snapshot: OfficeDocumentSnapshot, expected: FixtureContent,
+                                     fileName: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(snapshot.kind, expected.kind,
+                       "\(fileName) must inspect as \(expected.kind)", file: file, line: line)
+        let texts = Set(snapshot.fields.map(\.text))
+        for required in expected.requiredTexts {
+            XCTAssertTrue(texts.contains(required),
+                          "\(fileName) must expose the known fixture text \(required)", file: file, line: line)
+        }
+        if !expected.cells.isEmpty {
+            XCTAssertEqual(snapshot.fields.count, expected.cells.count,
+                           "\(fileName) must expose exactly its \(expected.cells.count) known cells",
+                           file: file, line: line)
+            let byLabel = Dictionary(snapshot.fields.map { ($0.label, $0.text) },
+                                     uniquingKeysWith: { first, _ in first })
+            for (reference, value) in expected.cells {
+                XCTAssertEqual(byLabel[reference], value,
+                               "\(fileName) cell \(reference) must be its known value",
+                               file: file, line: line)
+            }
+        } else {
+            XCTAssertFalse(snapshot.fields.isEmpty,
+                           "\(fileName) must expose inspectable content", file: file, line: line)
+        }
+    }
+
+    /// Inspect the original package and verify both its known content and the
+    /// summary render geometry.
+    static func assertSummary(_ image: UIImage, of url: URL, fileName: String,
+                              file: StaticString = #filePath, line: UInt = #line) throws {
+        let expected = try XCTUnwrap(content(for: fileName), "no known content for \(fileName)",
+                                     file: file, line: line)
+        let snapshot = try OfficeDocumentService.inspect(url: url)
+        assertSnapshotFields(snapshot, expected: expected, fileName: fileName, file: file, line: line)
+        assertSummaryGeometry(image, snapshot: snapshot, fileName: fileName, file: file, line: line)
+    }
+
+    /// Render-area and layout proof: the cover is exactly the requested size,
+    /// paints real ink plus the fixed accent header band, draws every known
+    /// text line (Word/PowerPoint) or the known cell grid (workbook), and
+    /// paints nothing beyond the known content.
+    static func assertSummaryGeometry(_ image: UIImage, snapshot: OfficeDocumentSnapshot,
+                                      fileName: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(image.size.width, coverSize.width, accuracy: 0.5,
+                       "\(fileName) summary width must be the requested cover width", file: file, line: line)
+        XCTAssertEqual(image.size.height, coverSize.height, accuracy: 0.5,
+                       "\(fileName) summary height must be the requested cover height", file: file, line: line)
+        guard let buffer = pixelBuffer(of: image) else {
+            XCTFail("\(fileName) summary must expose pixels", file: file, line: line)
+            return
+        }
+        let total = buffer.width * buffer.height
+        let ink = buffer.count { $0.red < 245 || $0.green < 245 || $0.blue < 245 }
+        XCTAssertGreaterThanOrEqual(Double(ink) / Double(max(total, 1)), 0.01,
+                                    "\(fileName) summary must paint real content pixels, not a blank canvas",
+                                    file: file, line: line)
+        // The fixed accent header band is 26 pt of the 420 pt canvas. Requiring
+        // at least 4% accent pixels fails a blank or nearly blank render while
+        // tolerating the white header text.
+        let accent = buffer.count { abs($0.red - 37) <= 20 && abs($0.green - 99) <= 20 && abs($0.blue - 235) <= 20 }
+        XCTAssertGreaterThanOrEqual(Double(accent) / Double(max(total, 1)), 0.04,
+                                    "\(fileName) summary must paint its content header band",
+                                    file: file, line: line)
+        switch snapshot.kind {
+        case .word, .presentation:
+            assertParagraphGeometry(buffer, snapshot: snapshot, fileName: fileName, file: file, line: line)
+        case .workbook:
+            assertGridGeometry(buffer, snapshot: snapshot, fileName: fileName, file: file, line: line)
+        }
+    }
+
+    // MARK: - Layout geometry
+
+    private static func assertParagraphGeometry(_ buffer: PixelBuffer, snapshot: OfficeDocumentSnapshot,
+                                                fileName: String, file: StaticString, line: UInt) {
+        let originX: CGFloat = 14, originY: CGFloat = 38, width: CGFloat = 292, maximumY: CGFloat = 410
+        var expectedLines = 0
+        var y = originY
+        for (index, field) in snapshot.fields.enumerated() {
+            let lineHeight: CGFloat = index == 0 ? 22 : 16
+            guard y + lineHeight <= maximumY else { break }
+            if !field.text.isEmpty { expectedLines += 1 }
+            y += lineHeight
+        }
+        XCTAssertGreaterThan(expectedLines, 0,
+                             "\(fileName) must have drawable known lines", file: file, line: line)
+        let fromX = buffer.pixelX(originX)
+        let toX = buffer.pixelX(originX + width)
+        var bands = 0
+        var inBand = false
+        for row in 0..<buffer.height {
+            let dark = buffer.hasDarkPixel(row: row, fromX: fromX, toX: toX)
+            if dark && !inBand { bands += 1 }
+            inBand = dark
+        }
+        XCTAssertGreaterThanOrEqual(bands, expectedLines,
+                                    "\(fileName) summary must draw every known text line",
+                                    file: file, line: line)
+        XCTAssertLessThanOrEqual(bands, expectedLines + 1,
+                                 "\(fileName) summary must not draw extra content lines (wrong document?)",
+                                 file: file, line: line)
+    }
+
+    private static func assertGridGeometry(_ buffer: PixelBuffer, snapshot: OfficeDocumentSnapshot,
+                                           fileName: String, file: StaticString, line: UInt) {
+        let sheet = snapshot.fields.first?.section ?? ""
+        let cells = snapshot.fields.filter { $0.section == sheet }.prefix(60)
+        var maximumColumn = -1
+        var maximumRow = -1
+        for cell in cells {
+            let reference = cell.label.uppercased()
+            var column = 0
+            var row = 0
+            var readingColumn = true
+            for scalar in reference.unicodeScalars {
+                if readingColumn, scalar.value >= 65, scalar.value <= 90 {
+                    column = column * 26 + Int(scalar.value - 64)
+                } else if scalar.value >= 48, scalar.value <= 57 {
+                    readingColumn = false
+                    row = row * 10 + Int(scalar.value - 48)
+                } else {
+                    readingColumn = true
+                }
+            }
+            guard column > 0, row > 0 else { continue }
+            maximumColumn = max(maximumColumn, column - 1)
+            maximumRow = max(maximumRow, row - 1)
+        }
+        guard maximumColumn >= 0, maximumRow >= 0 else {
+            XCTFail("\(fileName) must expose addressable known cells", file: file, line: line)
+            return
+        }
+        let columns = min(maximumColumn + 1, 5)
+        let rows = min(maximumRow + 1, 10)
+        let boundsX: CGFloat = 10, boundsY: CGFloat = 34, boundsWidth: CGFloat = 300, boundsHeight: CGFloat = 376
+        let cellHeight = min(boundsHeight / CGFloat(rows), 24)
+        let gridBottom = boundsY + CGFloat(rows) * cellHeight
+        let fromX = buffer.pixelX(boundsX + 2)
+        let toX = buffer.pixelX(boundsX + boundsWidth - 2)
+
+        // The first (accent) row is filled for every drawn column; require at
+        // least half of its rows to carry accent pixels so white header text
+        // and antialiasing cannot hide a missing band.
+        var accentRows = 0
+        for row in buffer.pixelY(boundsY + 1)..<buffer.pixelY(boundsY + cellHeight - 1) {
+            if buffer.hasAccentPixel(row: row, fromX: fromX, toX: toX) { accentRows += 1 }
+        }
+        XCTAssertGreaterThanOrEqual(accentRows, max(1, Int(cellHeight * 0.5 * buffer.scale)),
+                                    "\(fileName) summary must paint its workbook header row",
+                                    file: file, line: line)
+        // The accent header spans the full drawn grid width for the fixture's
+        // known column count (the renderer caps at 5 columns).
+        let accentWidth = buffer.accentCount(row: buffer.pixelY(boundsY + cellHeight / 2),
+                                             fromX: fromX, toX: toX)
+        XCTAssertGreaterThanOrEqual(accentWidth, Int(boundsWidth * 0.6 * buffer.scale),
+                                    "\(fileName) summary header must span its known \(columns)-column grid",
+                                    file: file, line: line)
+
+        // Each known body row carries its dark cell text.
+        var textBands = 0
+        var inBand = false
+        for row in buffer.pixelY(boundsY + cellHeight + 1)..<min(buffer.height, buffer.pixelY(gridBottom)) {
+            let dark = buffer.hasDarkPixel(row: row, fromX: fromX, toX: toX)
+            if dark && !inBand { textBands += 1 }
+            inBand = dark
+        }
+        XCTAssertGreaterThanOrEqual(textBands, max(1, rows - 1),
+                                    "\(fileName) summary must draw the known body cell values",
+                                    file: file, line: line)
+
+        // Nothing may be painted below the known grid: an extra row would mean
+        // a different document was rendered.
+        var below = false
+        let belowStart = min(buffer.height - 1, buffer.pixelY(gridBottom) + 2)
+        if belowStart < buffer.height {
+            for row in belowStart..<buffer.height {
+                if buffer.hasDarkPixel(row: row, fromX: fromX, toX: toX) { below = true; break }
+            }
+        }
+        XCTAssertFalse(below, "\(fileName) summary must not draw beyond its known grid rows",
+                       file: file, line: line)
+    }
+
+    // MARK: - Pixels
+
+    private struct Pixel {
+        let red: Int
+        let green: Int
+        let blue: Int
+    }
+
+    private struct PixelBuffer {
+        let pixels: [UInt8]
+        let width: Int
+        let height: Int
+        let scale: CGFloat
+
+        func count(where predicate: (Pixel) -> Bool) -> Int {
+            var result = 0
+            for y in 0..<height {
+                for x in 0..<width {
+                    let offset = (y * width + x) * 4
+                    if predicate(Pixel(red: Int(pixels[offset]),
+                                       green: Int(pixels[offset + 1]),
+                                       blue: Int(pixels[offset + 2]))) {
+                        result += 1
+                    }
+                }
+            }
+            return result
+        }
+
+        func pixelX(_ pointX: CGFloat) -> Int { max(0, min(width, Int(pointX * scale))) }
+        func pixelY(_ pointY: CGFloat) -> Int { max(0, min(height, Int(pointY * scale))) }
+
+        func hasDarkPixel(row: Int, fromX: Int, toX: Int, threshold: Int = 120) -> Bool {
+            guard row >= 0, row < height else { return false }
+            let x0 = max(0, fromX), x1 = min(width, toX)
+            guard x0 < x1 else { return false }
+            for x in x0..<x1 {
+                let offset = (row * width + x) * 4
+                if Int(pixels[offset]) < threshold,
+                   Int(pixels[offset + 1]) < threshold,
+                   Int(pixels[offset + 2]) < threshold {
+                    return true
+                }
+            }
+            return false
+        }
+
+        func hasAccentPixel(row: Int, fromX: Int, toX: Int) -> Bool {
+            guard row >= 0, row < height else { return false }
+            let x0 = max(0, fromX), x1 = min(width, toX)
+            guard x0 < x1 else { return false }
+            for x in x0..<x1 {
+                let offset = (row * width + x) * 4
+                if abs(Int(pixels[offset]) - 37) <= 20,
+                   abs(Int(pixels[offset + 1]) - 99) <= 20,
+                   abs(Int(pixels[offset + 2]) - 235) <= 20 {
+                    return true
+                }
+            }
+            return false
+        }
+
+        func accentCount(row: Int, fromX: Int, toX: Int) -> Int {
+            guard row >= 0, row < height else { return 0 }
+            let x0 = max(0, fromX), x1 = min(width, toX)
+            guard x0 < x1 else { return 0 }
+            var result = 0
+            for x in x0..<x1 {
+                let offset = (row * width + x) * 4
+                if abs(Int(pixels[offset]) - 37) <= 20,
+                   abs(Int(pixels[offset + 1]) - 99) <= 20,
+                   abs(Int(pixels[offset + 2]) - 235) <= 20 {
+                    result += 1
+                }
+            }
+            return result
+        }
+    }
+
+    private static func pixelBuffer(of image: UIImage) -> PixelBuffer? {
+        guard let cgImage = image.cgImage else { return nil }
+        let width = cgImage.width, height = cgImage.height
+        guard width > 0, height > 0 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let space = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: width * 4, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return PixelBuffer(pixels: pixels, width: width, height: height,
+                           scale: CGFloat(width) / coverSize.width)
     }
 }

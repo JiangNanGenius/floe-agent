@@ -359,6 +359,121 @@ class SourcePinTests(unittest.TestCase):
                         self.assertIn("::error::", rejected.stderr)
 
 
+class DiagnosticSeparationTests(unittest.TestCase):
+    """The strict Quick Look class stays real, separate and honestly recorded.
+
+    The component workflow excludes ``NotesOfficeThumbnailDiagnosticsTests``
+    from the functional legs and runs it in an explicit diagnostic step with
+    its own xcresult/log/original exit code. The step classifies through
+    ``FloeAgent/scripts/verify_quicklook_diagnostics.py``, which reads the real
+    xcresult summary/tests structures: only a complete 7/7 run with xcodebuild's
+    test-failure exit 65 whose failures are all fixed-marker Quick Look
+    content/timeout/icon assertions is non-gating; an empty selector, a
+    partial/skipped run, a missing result bundle, a runner/host crash, a forged
+    log, a timeout/kill exit or any other assertion failure fails the
+    diagnostic step as a coverage gap. Functional failures still fail the job
+    and no global ``continue-on-error`` softens any leg.
+    """
+
+    FUNCTIONAL_STEP = "Test iPad first, then iPhone"
+    DIAGNOSTIC_STEP = "Run strict Quick Look diagnostics (diagnostic, non-gating)"
+    STRICT_CLASS = "NotesOfficeThumbnailDiagnosticsTests"
+    DIAGNOSTIC_CASES = 7
+
+    @classmethod
+    def setUpClass(cls):
+        cls.notes = NOTES_WORKFLOW.read_text(encoding="utf-8")
+        cls.jobs = {
+            job: job_block(cls.notes, job)
+            for job in ("development", "compatibility")}
+        cls.functional = {
+            job: step_run(block, cls.FUNCTIONAL_STEP)
+            for job, block in cls.jobs.items()}
+        cls.diagnostic = {
+            job: step_run(block, cls.DIAGNOSTIC_STEP)
+            for job, block in cls.jobs.items()}
+
+    def test_functional_legs_exclude_the_strict_class_and_stay_gating(self):
+        for job, script in self.functional.items():
+            with self.subTest(job=job):
+                self.assertIn(
+                    "-skip-testing:NativeNotesTests/{}".format(self.STRICT_CLASS),
+                    script)
+                self.assertNotIn("-only-testing:", script)
+                self.assertNotIn("test-without-building", script)
+                self.assertIn("::error::", script)
+                self.assertIn('exit "$first_failure"', script)
+
+    def test_diagnostic_step_runs_only_the_strict_class_without_rebuilding(self):
+        for job, script in self.diagnostic.items():
+            with self.subTest(job=job):
+                self.assertIn(
+                    "-only-testing:NativeNotesTests/{}".format(self.STRICT_CLASS),
+                    script)
+                self.assertIn("CODE_SIGNING_ALLOWED=NO test-without-building", script)
+                self.assertIn(
+                    '-resultBundlePath "notes-diagnostic-$family.xcresult"', script)
+                self.assertIn("notes-diagnostic-$family.log", script)
+                self.assertIn("notes-diagnostic-$family.status", script)
+                self.assertIn("diagnostic non-gating", script)
+                self.assertIn("for family in iPad iPhone; do", script)
+                self.assertIn(
+                    '"$GITHUB_WORKSPACE/FloeAgent/scripts/verify_quicklook_diagnostics.py"',
+                    script)
+
+    def test_guard_classifies_from_real_xcresult_structures_not_log_text(self):
+        for job, script in self.diagnostic.items():
+            with self.subTest(job=job):
+                # The independent stdlib helper receives the bundle, the
+                # original exit code and the evidence outputs.
+                self.assertIn(
+                    '--result-bundle "notes-diagnostic-$family.xcresult"', script)
+                self.assertIn('--original-exit "$result"', script)
+                self.assertIn('--family "$family"', script)
+                self.assertIn(
+                    '--status-output "$evidence_dir/notes-diagnostic-$family.status"', script)
+                self.assertIn(
+                    '--failures-output "$evidence_dir/notes-diagnostic-$family.status.failures.txt"',
+                    script)
+                self.assertIn("NOT_EXECUTED", script)
+                self.assertIn("ASSERTION_FAILURE", script)
+                # No embedded log-text classifier may remain in the workflow.
+                self.assertNotIn("Executed (\\d+) tests", script)
+                self.assertNotIn("import pathlib, re, sys", script)
+                # Coverage gaps fail this step; only a complete assertion
+                # failure is a warning.
+                self.assertIn('exit "$incomplete"', script)
+                self.assertIn('::error::', script)
+                self.assertIn('::warning::', script)
+
+    def test_diagnostic_step_is_non_gating_and_never_hides_functional_failures(self):
+        self.assertNotRegex(self.notes, r"(?m)^\s+continue-on-error\s*:")
+        for job, block in self.jobs.items():
+            with self.subTest(job=job):
+                self.assertIn("if: always()", block)
+                script = self.diagnostic[job]
+                self.assertTrue(
+                    script.rstrip().endswith('exit "$incomplete"'),
+                    "the diagnostic step status must carry the coverage result")
+        # Functional status is still carried by the functional step only.
+        self.assertIn('exit "$first_failure"', self.functional["development"])
+        self.assertIn('exit "$first_failure"', self.functional["compatibility"])
+
+    def test_diagnostic_results_are_a_separate_artifact_set(self):
+        self.assertEqual(
+            self.notes.count("notes-diagnostic-$family.xcresult"), 4,
+            "each job's xcodebuild and its classifier name the bundle")
+        self.assertEqual(self.notes.count("notes-diagnostic-$family.log"), 4,
+                         "each job tees the diagnostic log and passes it to the classifier")
+        self.assertEqual(self.notes.count(
+            '--status-output "$evidence_dir/notes-diagnostic-$family.status"'), 2)
+        self.assertEqual(self.notes.count(
+            '--failures-output "$evidence_dir/notes-diagnostic-$family.status.failures.txt"'), 2)
+        # The existing functional artifact upload step is unchanged.
+        self.assertEqual(self.notes.count("notes-*.xcresult"), 2)
+        self.assertEqual(self.notes.count("notes-*.log"), 2)
+
+
 class ReleaseComponentGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -208,10 +208,15 @@ struct NotesDocumentThumbnail: View {
     /// the bounded, redacted generator identity is appended so an acceptance
     /// artifact can name the exact failure stage (attempts, timeout, numeric
     /// error identity, fallback stage) without any path, file name or content.
+    /// The `badge=summary` marker is the test-visible identity of the visible
+    /// "Summary" capsule: it is appended only when this card is actually
+    /// publishing `.officeContentSummary`, so an acceptance run can reject an
+    /// unlabelled summary instead of trusting the source string alone.
     private var accessibilityCoverValue: String {
-        guard ProcessInfo.processInfo.arguments.contains("-ui-testing"),
-              let diagnostics else { return source.rawValue }
-        return "\(source.rawValue); \(diagnostics.summary)"
+        guard ProcessInfo.processInfo.arguments.contains("-ui-testing") else { return source.rawValue }
+        let badge = source == .officeContentSummary ? "; badge=summary" : ""
+        guard let diagnostics else { return source.rawValue + badge }
+        return "\(source.rawValue)\(badge); \(diagnostics.summary)"
     }
 
     /// Document identity + immutable resource + revision; never reuse a stale key.
@@ -259,8 +264,12 @@ struct NotesDocumentThumbnail: View {
         }
     }
 
-    /// Adopt the key of the newest task and drop the previous card's pixels
-    /// before any suspension, so a changed revision never shows the old image.
+    /// Load one cover. For a modern Office document the service publishes a
+    /// real content summary as a provisional first paint before the bounded
+    /// Quick Look request settles, so a card never waits out the 45 s Quick
+    /// Look budget to show document content. The final outcome replaces it and
+    /// is the only value cached; a cancelled or superseded task can never apply
+    /// either phase to a newer card (the key guard below).
     private func load() async {
         let key = thumbnailKey
         currentKey = key
@@ -279,12 +288,29 @@ struct NotesDocumentThumbnail: View {
         guard !Task.isCancelled else { return }
         let outcome = await NotesDocumentCoverService.render(document: document, store: store,
                                                              size: Self.thumbnailSize,
-                                                             maximumSourceBytes: Self.maximumThumbnailSourceBytes)
+                                                             maximumSourceBytes: Self.maximumThumbnailSourceBytes,
+                                                             onFirstPaint: { update in
+            applyFirstPaint(update, key: key)
+        })
         guard !Task.isCancelled else { return }
         if let value = outcome.image {
             NotesDocumentThumbnailCache.shared.store(.init(image: value, source: outcome.source), for: key)
         }
         apply(outcome, key: key)
+    }
+
+    /// Publish the service's provisional content-summary first paint. It is
+    /// never cached, so the settled Quick Look upgrade can still land for this
+    /// revision; a stale revision (key mismatch) or a non-content phase is
+    /// dropped before it can touch the card.
+    private func applyFirstPaint(_ outcome: NotesDocumentCoverOutcome, key: String) {
+        guard key == currentKey, outcome.source == .officeContentSummary,
+              let value = outcome.image else { return }
+        image = value
+        source = outcome.source
+        diagnostics = nil
+        unsupportedDetail = nil
+        onSource?(outcome.source, document.revision)
     }
 
     /// Publish the settled cover only when this task still owns the card. A
@@ -565,6 +591,14 @@ enum NotesOfficeThumbnailGenerator {
 /// can never cancel work another card still needs. Entries are removed as soon
 /// as they settle; beyond `maximumEntries` a new resource runs without
 /// coalescing rather than growing the registry without bound.
+///
+/// The registry also owns the progressive first paint: the shared operation
+/// publishes one provisional content summary to every waiter that is joined at
+/// that moment, and remembers it so a waiter joining later receives the same
+/// image without re-reading or re-rendering the resource. A first paint is
+/// only ever broadcast through the exact `Flight` instance that produced it,
+/// so a superseded or cancelled operation whose task outlives its registry
+/// entry can never deliver into a newer flight for the same key.
 @MainActor
 final class NotesOfficeCoverFlights {
     static let shared = NotesOfficeCoverFlights()
@@ -574,31 +608,46 @@ final class NotesOfficeCoverFlights {
     static let maximumEntries = 16
 
     private final class Flight {
-        let task: Task<NotesDocumentCoverOutcome, Never>
+        var task: Task<NotesDocumentCoverOutcome, Never>?
         var waiters: Set<UUID> = []
-        init(task: Task<NotesDocumentCoverOutcome, Never>) { self.task = task }
+        /// Settled provisional summary, remembered for late joiners.
+        var firstPaint: NotesDocumentCoverOutcome?
+        var firstPaintWaiters: [(UUID, @MainActor (NotesDocumentCoverOutcome) -> Void)] = []
     }
 
     private var flights: [String: Flight] = [:]
 
+    /// Runs one shared resource operation and delivers its optional first paint
+    /// to every waiter. `perform` receives an emit closure it may call at most
+    /// once, before it returns the final outcome.
     func outcome(key: String,
-                 perform: @escaping @MainActor () async -> NotesDocumentCoverOutcome) async -> NotesDocumentCoverOutcome {
+                 onFirstPaint: (@MainActor (NotesDocumentCoverOutcome) -> Void)? = nil,
+                 perform: @escaping @MainActor (@escaping @MainActor (NotesDocumentCoverOutcome) -> Void) async -> NotesDocumentCoverOutcome) async -> NotesDocumentCoverOutcome {
         let token = UUID()
         let flight: Flight
         if let existing = flights[key] {
             flight = existing
         } else if flights.count < Self.maximumEntries {
-            let task = Task { @MainActor in await perform() }
-            flight = Flight(task: task)
+            flight = Flight()
+            flight.task = Task { @MainActor [weak self] in
+                await perform { outcome in
+                    self?.publishFirstPaint(key: key, flight: flight, outcome: outcome)
+                }
+            }
             flights[key] = flight
         } else {
             // Bounded fallback: no coalescing beyond the cap.
-            return await perform()
+            return await perform { outcome in onFirstPaint?(outcome) }
         }
         flight.waiters.insert(token)
+        if let firstPaint = flight.firstPaint {
+            onFirstPaint?(firstPaint)
+        } else if let onFirstPaint {
+            flight.firstPaintWaiters.append((token, onFirstPaint))
+        }
         let task = flight.task
         let value = await withTaskCancellationHandler {
-            await task.value
+            await task?.value ?? NotesDocumentCoverOutcome(image: nil, source: .none, diagnosis: "cancelled")
         } onCancel: {
             Task { @MainActor in self.leave(key: key, token: token) }
         }
@@ -612,13 +661,26 @@ final class NotesOfficeCoverFlights {
         flights[key]?.waiters.count ?? 0
     }
 
+    /// Broadcasts the provisional first paint of `flight` exactly once. The
+    /// identity check is what stops an old operation (whose entry was already
+    /// removed and replaced) from writing into a newer flight for the same key.
+    private func publishFirstPaint(key: String, flight: Flight, outcome: NotesDocumentCoverOutcome) {
+        guard flights[key] === flight, flight.firstPaint == nil else { return }
+        flight.firstPaint = outcome
+        let waiters = flight.firstPaintWaiters
+        flight.firstPaintWaiters.removeAll()
+        for (_, deliver) in waiters { deliver(outcome) }
+    }
+
     /// Removes one waiter; when the last waiter leaves, the shared request is
     /// cancelled (at most once) and the entry is dropped. Idempotent: the
-    /// normal path and the cancellation handler both call it.
+    /// normal path and the cancellation handler both call it. A waiter that
+    /// leaves before the first paint is never delivered it afterwards.
     private func leave(key: String, token: UUID) {
         guard let flight = flights[key], flight.waiters.remove(token) != nil else { return }
+        flight.firstPaintWaiters.removeAll { $0.0 == token }
         if flight.waiters.isEmpty {
-            flight.task.cancel()
+            flight.task?.cancel()
             flights[key] = nil
         }
     }
@@ -687,9 +749,25 @@ enum NotesOfficeThumbnailStaging {
 @MainActor
 final class NotesOfficeThumbnailGate {
     static let shared = NotesOfficeThumbnailGate(limit: 1)
+    /// Bounds the transient staged copy, the bounded OOXML read and the render
+    /// of the progressive summary phase. Quick Look still owns `shared`; this
+    /// slot exists only because the summary must not wait behind a hung system
+    /// request, so the copy and the bounded OOXML read get their own small
+    /// limit instead of the host slot. The slot is held for exactly the summary
+    /// phase: the staged copy is removed and the slot released before the
+    /// operation waits for the shared host slot, so one card's system request
+    /// can never delay another card's first paint. Two slots bound the
+    /// simultaneous summary copies (and their parsed snapshots) to two; the
+    /// single host slot bounds the Quick Look copy to one.
+    static let summary = NotesOfficeThumbnailGate(limit: 2)
     private let limit: Int
     private var active = 0
     private var waiters: [(UUID, CheckedContinuation<Bool, Never>)] = []
+
+    /// Test-visible occupancy of the slots currently held.
+    var activeCount: Int { active }
+    /// Test-visible occupancy of the acquisitions currently queued.
+    var waiterCount: Int { waiters.count }
 
     init(limit: Int = 2) { self.limit = max(1, limit) }
 
@@ -789,15 +867,18 @@ final class NotesThumbnailRequestState {
 }
 
 /// One bounded, cancellable cover render for any supported `NoteDocument`.
-/// Every kind has a real source: Office uses a system content thumbnail or a
-/// bounded native OOXML summary; notebooks render their first page; mind maps
-/// render their node tree; engineering drawings render through the bundled
-/// viewer and only fall back to Quick Look if the bundled viewer cannot paint
-/// its own geometry. When no real source exists the outcome is explicitly
-/// `.unsupported` with a diagnosis — never an icon pretending to be content.
+/// Every kind has a real source: modern Office documents publish a bounded
+/// native OOXML content summary first (labeled `.officeContentSummary`) and
+/// upgrade to the system Quick Look thumbnail when it settles, while legacy
+/// Office formats keep the original Quick Look-first path. Notebooks render
+/// their first page; mind maps render their node tree; engineering drawings
+/// render through the bundled viewer and only fall back to Quick Look if the
+/// bundled viewer cannot paint its own geometry. When no real source exists the
+/// outcome is explicitly `.unsupported` with a diagnosis — never an icon
+/// pretending to be content.
 @MainActor
 enum NotesDocumentCoverService {
-    private nonisolated static let maximumSummaryFields = 240
+    nonisolated static let maximumSummaryFields = 240
     /// The native OOXML summary is a fallback; parsing a huge package in the UI
     /// process is never worth it, so it is capped well below the Quick Look
     /// bound and always runs off the main actor.
@@ -808,9 +889,18 @@ enum NotesDocumentCoverService {
     /// generator. It exists so a qualification test can force the "no system
     /// content" branch for one render without a process-global mock that would
     /// contaminate parallel cards.
+    ///
+    /// `onFirstPaint` receives the provisional native content summary for a
+    /// modern Office document before the bounded Quick Look request settles, so
+    /// a card shows real document content instead of waiting out the 45 s
+    /// system budget. It is a labeled `.officeContentSummary` and never a
+    /// substitute for the settled source: the returned outcome is still exactly
+    /// `.quickLookThumbnail` or `.officeContentSummary`, and an icon/blank can
+    /// never be published through either phase.
     static func render(document: NoteDocument, store: NotesStore?, size: CGSize,
                        maximumSourceBytes: Int,
-                       request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
+                       request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil,
+                       onFirstPaint: (@MainActor (NotesDocumentCoverOutcome) -> Void)? = nil) async -> NotesDocumentCoverOutcome {
         guard let store else {
             return .init(image: nil, source: .unsupported,
                          diagnosis: String(localized: "notes.cover.error.storeUnavailable", defaultValue: "Notes storage is not ready"))
@@ -818,7 +908,8 @@ enum NotesDocumentCoverService {
         switch document.kind {
         case .office:
             return await officeCover(document: document, store: store, size: size,
-                                     maximumSourceBytes: maximumSourceBytes, request: request)
+                                     maximumSourceBytes: maximumSourceBytes, request: request,
+                                     onFirstPaint: onFirstPaint)
         case .notebook:
             return await notePageCover(document: document, store: store)
         case .mindMap:
@@ -831,13 +922,16 @@ enum NotesDocumentCoverService {
     // MARK: - Office
 
     /// One Office cover per resource. Validation and the single-flight key are
-    /// computed first; the whole resource operation (shared host slot, staging,
-    /// Quick Look, native fallback) then runs once inside
-    /// `NotesOfficeCoverFlights`, so a second concurrent card for the same
-    /// resource joins that operation *before* it can wait for the host slot.
+    /// computed first; the whole resource operation (staging, the provisional
+    /// summary, the shared host slot, Quick Look, native fallback) then runs
+    /// once inside `NotesOfficeCoverFlights`, so a second concurrent card for
+    /// the same resource joins that operation *before* it can wait for the host
+    /// slot and also receives its provisional summary without re-reading the
+    /// package.
     private static func officeCover(document: NoteDocument, store: NotesStore, size: CGSize,
                                     maximumSourceBytes: Int,
-                                    request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
+                                    request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil,
+                                    onFirstPaint: (@MainActor (NotesDocumentCoverOutcome) -> Void)? = nil) async -> NotesDocumentCoverOutcome {
         guard let resourceID = document.officeResourceID, let fileName = document.officeFileName,
               let fileExtension = NotesOfficeThumbnailStaging.validatedExtension(of: fileName) else {
             return .init(image: nil, source: .unsupported,
@@ -845,10 +939,11 @@ enum NotesDocumentCoverService {
         }
         let key = officeResourceKey(document: document, store: store, fileExtension: fileExtension,
                                     size: size, maximumSourceBytes: maximumSourceBytes)
-        return await NotesOfficeCoverFlights.shared.outcome(key: key) {
+        return await NotesOfficeCoverFlights.shared.outcome(key: key, onFirstPaint: onFirstPaint) { emitFirstPaint in
             await renderOfficeResource(store: store, resourceID: resourceID,
                                        fileExtension: fileExtension, size: size,
-                                       maximumSourceBytes: maximumSourceBytes, request: request)
+                                       maximumSourceBytes: maximumSourceBytes, request: request,
+                                       emitFirstPaint: emitFirstPaint)
         }
     }
 
@@ -863,15 +958,30 @@ enum NotesDocumentCoverService {
         "\(ObjectIdentifier(store)):\(document.id.uuidString):\(document.officeResourceID?.uuidString ?? "none"):\(document.revision):\(fileExtension):\(Int(size.width))x\(Int(size.height)):\(maximumSourceBytes)"
     }
 
-    /// One resource operation, called exactly once per shared flight. It owns
-    /// the shared host slot and the single staged copy for its whole lifetime:
-    /// this body runs inside the service flight task, not inside a caller, so a
-    /// cancelled first waiter can never delete a staged copy another waiter
-    /// needs.
+    /// The exact modern OOXML formats the native summary understands; every
+    /// other extension keeps the original Quick Look-first path.
+    static func summaryDocumentKind(for fileExtension: String) -> OfficeDocumentKind? {
+        switch fileExtension {
+        case "docx": .word
+        case "xlsx": .workbook
+        case "pptx": .presentation
+        default: nil
+        }
+    }
+
+    /// One resource operation, called exactly once per shared flight. The
+    /// operation — and not an individual caller — owns every staged copy, so a
+    /// cancelled first waiter can never delete a copy another waiter needs. A
+    /// modern OOXML package within the native summary bound takes the
+    /// two-phase progressive path (gated summary copy, then gated Quick Look
+    /// copy); everything else keeps the original Quick Look-first path. The
+    /// over-cap, non-coalesced fallback in `NotesOfficeCoverFlights` runs this
+    /// same body, so its copies and requests are bounded by the same gates.
     private static func renderOfficeResource(store: NotesStore, resourceID: UUID,
                                              fileExtension: String, size: CGSize,
                                              maximumSourceBytes: Int,
-                                             request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
+                                             request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil,
+                                             emitFirstPaint: @escaping @MainActor (NotesDocumentCoverOutcome) -> Void) async -> NotesDocumentCoverOutcome {
         let source: URL
         do { source = try await store.resourceURL(resourceID) } catch {
             return .init(image: nil, source: .unsupported,
@@ -894,9 +1004,185 @@ enum NotesDocumentCoverService {
             return .init(image: nil, source: .none, diagnosis: "cancelled")
         }
 
-        // The shared slot is acquired BEFORE staging: a staged copy can be up
-        // to 128 MiB, so copying must be bounded by the same gate as
-        // generation. It also bounds the native OOXML summary digest below.
+        if summaryDocumentKind(for: fileExtension) != nil, sourceBytes <= maximumSummarySourceBytes {
+            return await renderProgressiveResource(source: source, fileExtension: fileExtension,
+                                                   size: size, request: request,
+                                                   emitFirstPaint: emitFirstPaint)
+        }
+        return await renderQuickLookFirstResource(source: source, fileExtension: fileExtension,
+                                                  size: size, sourceBytes: sourceBytes, request: request)
+    }
+
+    /// Progressive path for a modern OOXML package inside the native summary
+    /// bound. It has two bounded phases, each owning its own staged copy for
+    /// exactly its own scope:
+    ///
+    ///  * the summary phase runs entirely under the two-slot
+    ///    `NotesOfficeThumbnailGate.summary`; it stages one copy, parses and
+    ///    renders the bounded summary, deletes the copy and releases the slot
+    ///    before returning. At most two summary copies (and two parsed
+    ///    snapshots) exist, and neither survives into the Quick Look wait, so
+    ///    the summary never holds a slot or memory across the system request.
+    ///  * the Quick Look phase waits for the original single shared host slot,
+    ///    stages a fresh copy from the same immutable CAS source, runs exactly
+    ///    one bounded Quick Look request and deletes that copy on every exit.
+    ///    At most one Quick Look copy exists; the legacy path below keeps its
+    ///    original single 128 MiB copy bound.
+    ///
+    /// The extra bounded copy is the price of a real bound: previously the
+    /// summary copy and its snapshot were retained while waiting for Quick
+    /// Look, so the "two summary copies" limit was not enforced. The Quick Look
+    /// policy (attempts, 45 s deadline, single cancel, no restart after
+    /// timeout) is unchanged. The summary image is re-used as the settled
+    /// fallback, so a failed or timed-out system request never re-reads or
+    /// re-renders the package.
+    private static func renderProgressiveResource(source: URL, fileExtension: String, size: CGSize,
+                                                  request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil,
+                                                  emitFirstPaint: @escaping @MainActor (NotesDocumentCoverOutcome) -> Void) async -> NotesDocumentCoverOutcome {
+        // Phase 1: bounded native OOXML summary in its own gated scope. Only
+        // the rendered image crosses this boundary; the staged copy and the
+        // parsed snapshot are gone before any Quick Look wait starts.
+        let summary: UIImage?
+        let summaryFailureStage: NotesDocumentCoverDiagnostics.FallbackStage
+        switch await renderProgressiveSummary(source: source, fileExtension: fileExtension, size: size) {
+        case .cancelled:
+            return .init(image: nil, source: .none, diagnosis: "cancelled")
+        case .summary(let image):
+            summary = image
+            summaryFailureStage = .quickLook
+        case .unavailable(let stage):
+            summary = nil
+            summaryFailureStage = stage
+        }
+        if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
+        if let summary {
+            emitFirstPaint(.init(image: summary, source: .officeContentSummary,
+                                 diagnosis: "native content summary", diagnostics: nil))
+        }
+
+        // Phase 2: the unchanged bounded Quick Look request, now under the
+        // shared host slot and on its own fresh copy of the immutable source.
+        let slotID = UUID()
+        guard await NotesOfficeThumbnailGate.shared.acquire(id: slotID) else {
+            return .init(image: nil, source: .none, diagnosis: "cancelled")
+        }
+        defer { NotesOfficeThumbnailGate.shared.release() }
+        if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
+        let staged: URL
+        do {
+            staged = try await NotesOfficeThumbnailStaging.stage(source: source, fileExtension: fileExtension)
+        } catch is CancellationError {
+            return .init(image: nil, source: .none, diagnosis: "cancelled")
+        } catch {
+            var diagnostics = NotesDocumentCoverDiagnostics()
+            diagnostics.fallbackStage = .staging
+            // The summary already crossed the phase boundary and (for the card
+            // path) reached the first paint. A later staging failure — a full
+            // disk, a permission change, a vanished source — must not clear a
+            // real render of this resource and must never publish placeholder
+            // pixels. Keep the same `UIImage` and label the fallback stage.
+            guard let summary else {
+                return .init(image: nil, source: .unsupported,
+                             diagnosis: String(localized: "notes.cover.office.quickLookUnavailable",
+                                               defaultValue: "Quick Look is unavailable"),
+                             diagnostics: diagnostics)
+            }
+            return .init(image: summary, source: .officeContentSummary,
+                         diagnosis: "native content summary",
+                         diagnostics: diagnostics)
+        }
+        defer { NotesOfficeThumbnailStaging.remove(staged) }
+        if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
+
+        var diagnostics = NotesDocumentCoverDiagnostics()
+        let outcome = await NotesOfficeThumbnailGenerator.thumbnail(
+            url: staged, size: size,
+            fileExtension: fileExtension,
+            request: request)
+        diagnostics.quickLookAttempts = outcome.attempts
+        diagnostics.quickLookTimedOut = outcome.timedOut
+        diagnostics.quickLookErrorDomain = NotesDocumentCoverDiagnostics.boundedDomain(outcome.errorDomain)
+        diagnostics.quickLookErrorCode = outcome.errorCode
+        diagnostics.quickLookWasIconFallback = outcome.wasIconFallback
+        if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
+        if let image = outcome.image {
+            NotesOfficeThumbnailGenerator.logSuccess(fileExtension: fileExtension, attempt: outcome.attempts,
+                                                     elapsed: outcome.elapsed)
+            return .init(image: image, source: .quickLookThumbnail, diagnosis: "quick look",
+                         diagnostics: diagnostics)
+        }
+        NotesOfficeThumbnailGenerator.logUnavailable(fileExtension: fileExtension, outcome: outcome)
+        let quickLookDiagnosis = outcome.wasIconFallback
+            ? String(localized: "notes.cover.office.iconOnly", defaultValue: "Quick Look returned only a generic icon")
+            : String(localized: "notes.cover.office.noQuickLook", defaultValue: "Quick Look did not produce a content thumbnail")
+        // The settled fallback is the already-rendered summary image; nothing
+        // is read or parsed a second time.
+        guard let summary else {
+            diagnostics.fallbackStage = summaryFailureStage
+            return .init(image: nil, source: .unsupported, diagnosis: quickLookDiagnosis,
+                         diagnostics: diagnostics)
+        }
+        return .init(image: summary, source: .officeContentSummary, diagnosis: "native content summary",
+                     diagnostics: diagnostics)
+    }
+
+    /// The outcome of the isolated summary phase. `.summary` carries only the
+    /// rendered image; the snapshot and the staged copy never leave the phase.
+    private enum ProgressiveSummaryResult {
+        case summary(UIImage)
+        case unavailable(NotesDocumentCoverDiagnostics.FallbackStage)
+        case cancelled
+    }
+
+    /// Phase 1 of the progressive path and the only place a summary copy
+    /// exists. The two-slot summary gate bounds concurrent summary copies (and
+    /// parsed snapshots) to two; the function-scope `defer`s delete the staged
+    /// copy and release the slot on every exit, including cancellation. Only
+    /// the rendered `UIImage` crosses the phase boundary, so the
+    /// `OfficeDocumentSnapshot` is never retained while waiting for Quick Look.
+    private static func renderProgressiveSummary(source: URL, fileExtension: String, size: CGSize) async -> ProgressiveSummaryResult {
+        guard let kind = summaryDocumentKind(for: fileExtension) else {
+            return .unavailable(.unsupportedType)
+        }
+        let slotID = UUID()
+        guard await NotesOfficeThumbnailGate.summary.acquire(id: slotID) else {
+            return .cancelled
+        }
+        defer { NotesOfficeThumbnailGate.summary.release() }
+        if Task.isCancelled { return .cancelled }
+
+        let staged: URL
+        do {
+            staged = try await NotesOfficeThumbnailStaging.stage(source: source, fileExtension: fileExtension)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .unavailable(.staging)
+        }
+        defer { NotesOfficeThumbnailStaging.remove(staged) }
+        if Task.isCancelled { return .cancelled }
+
+        let snapshot: OfficeDocumentSnapshot? = await Task.detached(priority: .utility) {
+            try? OfficeDocumentService.inspect(url: staged)
+        }.value
+        if Task.isCancelled { return .cancelled }
+        guard let snapshot, !snapshot.fields.isEmpty else { return .unavailable(.inspect) }
+        let summary: UIImage? = await Task.detached(priority: .utility) {
+            contentSummary(snapshot: snapshot, kind: kind, size: size)
+        }.value
+        if Task.isCancelled { return .cancelled }
+        guard let summary else { return .unavailable(.render) }
+        return .summary(summary)
+    }
+
+    /// Original Quick Look-first path for legacy/binary/OpenDocument formats
+    /// and for modern OOXML above the native summary bound. The shared host
+    /// slot is acquired BEFORE staging: a staged copy can be up to 128 MiB, so
+    /// copying must be bounded by the same gate as generation. It also bounds
+    /// the native OOXML summary digest below.
+    private static func renderQuickLookFirstResource(source: URL, fileExtension: String, size: CGSize,
+                                                     sourceBytes: Int,
+                                                     request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil) async -> NotesDocumentCoverOutcome {
         let slotID = UUID()
         guard await NotesOfficeThumbnailGate.shared.acquire(id: slotID) else {
             return .init(image: nil, source: .none, diagnosis: "cancelled")

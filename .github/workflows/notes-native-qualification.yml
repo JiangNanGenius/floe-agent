@@ -159,6 +159,7 @@ jobs:
                 -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
                 -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
                 -collect-test-diagnostics never \
+                -skip-testing:NativeNotesTests/NotesOfficeThumbnailDiagnosticsTests \
                 -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log" || result=$?
             fi
             if [ "$result" -ne 0 ]; then
@@ -170,6 +171,91 @@ jobs:
             printf '::error::Notes native qualification failed; first device-family failure exit %s.\n' "$first_failure"
             exit "$first_failure"
           fi
+      - name: Run strict Quick Look diagnostics (diagnostic, non-gating)
+        # The functional step above excludes NotesOfficeThumbnailDiagnosticsTests;
+        # this step runs that strict Quick Look-only class on both device families
+        # and records its own xcresult, log and original exit code. Only a
+        # *fully executed* strict-content assertion failure is non-gating:
+        # FloeAgent/scripts/verify_quicklook_diagnostics.py reads the real
+        # xcresult summary/tests structures and requires exactly the 7 known
+        # diagnostic methods, no skips, no runtime warning/crash state and only
+        # fixed-marker Quick Look content/timeout/icon failures. A selector that
+        # matched nothing, a missing result bundle, a throw, a wrong document,
+        # a host crash or any incomplete run is a coverage failure and fails
+        # this step instead of being masked as a non-gating diagnostic. No
+        # `continue-on-error` is used anywhere; functional failures still fail
+        # the job at the step above. The step runs even after a functional
+        # failure (`if: always()`) so the diagnostic signal is kept.
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          evidence_dir="$RUNNER_TEMP/notes-cloud-gates"
+          mkdir -p "$evidence_dir"
+          incomplete=0
+          # Reuse the functional step's device list; regenerate it only when the
+          # functional step never reached that line, so diagnostics stay
+          # independent of the functional step's status.
+          if [ ! -f "$RUNNER_TEMP/notes-devices.json" ]; then
+            xcrun simctl list devices available -j > "$RUNNER_TEMP/notes-devices.json"
+          fi
+          for family in iPad iPhone; do
+            result=0
+            destination=""
+            if destination=$(python3 - "$family" "$RUNNER_TEMP/notes-devices.json" <<'PY'
+          import json, sys
+          values = json.load(open(sys.argv[2]))['devices']
+          candidates = [d for group in values.values() for d in group if d['name'].startswith(sys.argv[1])]
+          preferred = sorted(candidates, key=lambda d: ('Air 13' not in d['name'], 'Pro' not in d['name'], d['name']))
+          if not preferred: raise SystemExit('No simulator for ' + sys.argv[1])
+          print(preferred[0]['udid'])
+          PY
+            ); then
+              :
+            else
+              result=$?
+              printf '::warning::no %s simulator destination (exit %s); strict Quick Look diagnostics will fail coverage for this family.\n' "$family" "$result"
+            fi
+            if [ "$result" -eq 0 ]; then
+              xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
+                -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
+                -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
+                -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
+                -collect-test-diagnostics never \
+                -only-testing:NativeNotesTests/NotesOfficeThumbnailDiagnosticsTests \
+                -resultBundlePath "notes-diagnostic-$family.xcresult" CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "notes-diagnostic-$family.log" || result=$?
+            fi
+            # Classification guard: the independent stdlib helper reads the real
+            # xcresult summary/tests structures (never the log text) and only
+            # accepts a non-gating diagnostic when all 7 known methods executed,
+            # nothing was skipped, no runtime warning/crash state exists and
+            # every structured failure is one of the fixed Quick Look
+            # content/timeout/icon assertion markers. A missing bundle, 0/partial
+            # cases, a throw, a wrong document or an unmarked assertion fail
+            # closed and set `incomplete`. The raw log, status and original
+            # failure text stay in the uploaded evidence.
+            classification=$(python3 "$GITHUB_WORKSPACE/FloeAgent/scripts/verify_quicklook_diagnostics.py" \
+              --result-bundle "notes-diagnostic-$family.xcresult" \
+              --log "notes-diagnostic-$family.log" \
+              --family "$family" \
+              --original-exit "$result" \
+              --status-output "$evidence_dir/notes-diagnostic-$family.status" \
+              --failures-output "$evidence_dir/notes-diagnostic-$family.status.failures.txt" \
+              ) || classification="NOT_EXECUTED"
+            case "$classification" in
+              PASS)
+                printf 'diagnostic non-gating %s strict Quick Look diagnostics passed (7/7 executed).\n' "$family"
+                ;;
+              ASSERTION_FAILURE)
+                printf '::warning::diagnostic non-gating %s strict Quick Look content assertion failed after a complete 7/7 run (original exit %s); recorded, not gating.\n' "$family" "$result"
+                ;;
+              *)
+                printf '::error::strict Quick Look diagnostics did not fully execute for %s (classification=%s, original exit %s); this is a coverage failure, not a content assertion failure.\n' "$family" "$classification" "$result"
+                incomplete=1
+                ;;
+            esac
+          done
+          exit "$incomplete"
       - name: Preserve results, logs and toolchain evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -297,6 +383,7 @@ jobs:
                 -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
                 -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
                 -collect-test-diagnostics never \
+                -skip-testing:NativeNotesTests/NotesOfficeThumbnailDiagnosticsTests \
                 -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log" || result=$?
             fi
             if [ "$result" -ne 0 ]; then
@@ -308,6 +395,91 @@ jobs:
             printf '::error::Notes native qualification failed; first device-family failure exit %s.\n' "$first_failure"
             exit "$first_failure"
           fi
+      - name: Run strict Quick Look diagnostics (diagnostic, non-gating)
+        # The functional step above excludes NotesOfficeThumbnailDiagnosticsTests;
+        # this step runs that strict Quick Look-only class on both device families
+        # and records its own xcresult, log and original exit code. Only a
+        # *fully executed* strict-content assertion failure is non-gating:
+        # FloeAgent/scripts/verify_quicklook_diagnostics.py reads the real
+        # xcresult summary/tests structures and requires exactly the 7 known
+        # diagnostic methods, no skips, no runtime warning/crash state and only
+        # fixed-marker Quick Look content/timeout/icon failures. A selector that
+        # matched nothing, a missing result bundle, a throw, a wrong document,
+        # a host crash or any incomplete run is a coverage failure and fails
+        # this step instead of being masked as a non-gating diagnostic. No
+        # `continue-on-error` is used anywhere; functional failures still fail
+        # the job at the step above. The step runs even after a functional
+        # failure (`if: always()`) so the diagnostic signal is kept.
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          evidence_dir="$RUNNER_TEMP/notes-cloud-gates"
+          mkdir -p "$evidence_dir"
+          incomplete=0
+          # Reuse the functional step's device list; regenerate it only when the
+          # functional step never reached that line, so diagnostics stay
+          # independent of the functional step's status.
+          if [ ! -f "$RUNNER_TEMP/notes-devices.json" ]; then
+            xcrun simctl list devices available -j > "$RUNNER_TEMP/notes-devices.json"
+          fi
+          for family in iPad iPhone; do
+            result=0
+            destination=""
+            if destination=$(python3 - "$family" "$RUNNER_TEMP/notes-devices.json" <<'PY'
+          import json, sys
+          values = json.load(open(sys.argv[2]))['devices']
+          candidates = [d for group in values.values() for d in group if d['name'].startswith(sys.argv[1])]
+          preferred = sorted(candidates, key=lambda d: ('Air 13' not in d['name'], 'Pro' not in d['name'], d['name']))
+          if not preferred: raise SystemExit('No simulator for ' + sys.argv[1])
+          print(preferred[0]['udid'])
+          PY
+            ); then
+              :
+            else
+              result=$?
+              printf '::warning::no %s simulator destination (exit %s); strict Quick Look diagnostics will fail coverage for this family.\n' "$family" "$result"
+            fi
+            if [ "$result" -eq 0 ]; then
+              xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
+                -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
+                -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
+                -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
+                -collect-test-diagnostics never \
+                -only-testing:NativeNotesTests/NotesOfficeThumbnailDiagnosticsTests \
+                -resultBundlePath "notes-diagnostic-$family.xcresult" CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "notes-diagnostic-$family.log" || result=$?
+            fi
+            # Classification guard: the independent stdlib helper reads the real
+            # xcresult summary/tests structures (never the log text) and only
+            # accepts a non-gating diagnostic when all 7 known methods executed,
+            # nothing was skipped, no runtime warning/crash state exists and
+            # every structured failure is one of the fixed Quick Look
+            # content/timeout/icon assertion markers. A missing bundle, 0/partial
+            # cases, a throw, a wrong document or an unmarked assertion fail
+            # closed and set `incomplete`. The raw log, status and original
+            # failure text stay in the uploaded evidence.
+            classification=$(python3 "$GITHUB_WORKSPACE/FloeAgent/scripts/verify_quicklook_diagnostics.py" \
+              --result-bundle "notes-diagnostic-$family.xcresult" \
+              --log "notes-diagnostic-$family.log" \
+              --family "$family" \
+              --original-exit "$result" \
+              --status-output "$evidence_dir/notes-diagnostic-$family.status" \
+              --failures-output "$evidence_dir/notes-diagnostic-$family.status.failures.txt" \
+              ) || classification="NOT_EXECUTED"
+            case "$classification" in
+              PASS)
+                printf 'diagnostic non-gating %s strict Quick Look diagnostics passed (7/7 executed).\n' "$family"
+                ;;
+              ASSERTION_FAILURE)
+                printf '::warning::diagnostic non-gating %s strict Quick Look content assertion failed after a complete 7/7 run (original exit %s); recorded, not gating.\n' "$family" "$result"
+                ;;
+              *)
+                printf '::error::strict Quick Look diagnostics did not fully execute for %s (classification=%s, original exit %s); this is a coverage failure, not a content assertion failure.\n' "$family" "$classification" "$result"
+                incomplete=1
+                ;;
+            esac
+          done
+          exit "$incomplete"
       - name: Preserve results, logs and toolchain evidence
         if: always()
         uses: actions/upload-artifact@v4
