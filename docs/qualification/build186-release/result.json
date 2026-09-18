@@ -1,0 +1,62 @@
+{
+  "sourceSHA": "d421fea260523d063270e2d21d623bd011acd9ea",
+  "build": 186,
+  "tag": "v1.7.0-beta.43",
+  "runID": 35306551280,
+  "conclusion": "failure",
+  "uploaded": false,
+  "acceptedAppRegression": {
+    "passed": 204,
+    "total": 204,
+    "IDEGitHubActions": 23
+  },
+  "acceptedNotesUI": {
+    "ipad": {
+      "result": "Failed",
+      "totalTestCount": 5,
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertTrue failed - an opened Office document must expose a usable back control (notes.back or office.editor.back)",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 2,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
+          "testName": "testNotesLibraryCardsShowRealContentCovers()"
+        }
+      ]
+    },
+    "iphone": {
+      "result": "Failed",
+      "totalTestCount": 5,
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertTrue failed - an opened Office document must expose a usable back control (notes.back or office.editor.back)",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 2,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
+          "testName": "testNotesLibraryCardsShowRealContentCovers()"
+        }
+      ]
+    }
+  },
+  "component": {
+    "ipad": "83/84; Excel Quick Look timed out; actual native content summary returned",
+    "iphone": "84/84"
+  },
+  "sdk27ModuleFailure": "LocalizationCompletenessTests: non-namespaced key 返回手记",
+  "recovery": "device-recovery.json",
+  "limitations": [
+    "UI cover relaunch and back navigation completion were not reached.",
+    "Native Office engine test skipped in each simulator leg because it is device-only.",
+    "No build187 validation, signed IPA or TestFlight upload is represented by this record."
+  ]
+}

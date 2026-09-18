@@ -1,0 +1,26 @@
+{
+  "artifact": 10532236731,
+  "run": 35306551280,
+  "expectedSource": "d421fea260523d063270e2d21d623bd011acd9ea",
+  "bytes": 811474118,
+  "sha256": "903e4be627b78781cbbeb92ccfef315d308404f5637fc2f8a3d8550e944ae93f",
+  "metadata": {
+    "FloeSignedPayload/Payload/Floe Agent.app/PlugIns/Floe Screen Share.appex/Info.plist": {
+      "CFBundleIdentifier": "org.floeagent.ios.screenshare",
+      "CFBundleShortVersionString": "1.7.0",
+      "CFBundleVersion": "186",
+      "DTXcodeBuild": "17F113",
+      "DTSDKName": "iphoneos26.5"
+    },
+    "FloeSignedPayload/Payload/Floe Agent.app/Info.plist": {
+      "CFBundleIdentifier": "org.floeagent.ios",
+      "CFBundleShortVersionString": "1.7.0",
+      "CFBundleVersion": "186",
+      "DTXcodeBuild": "17F113",
+      "DTSDKName": "iphoneos26.5"
+    },
+    "FloeSignedPayload/SOURCE-SHA.txt": "d421fea260523d063270e2d21d623bd011acd9ea\n"
+  },
+  "status": "Recoverable unsigned device build; not signed IPA and not uploaded; qualification failed elsewhere.",
+  "verifiedSourceAndBundleVersions": true
+}

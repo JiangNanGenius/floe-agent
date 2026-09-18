@@ -1,0 +1,39 @@
+{
+  "sourceSHA": "d421fea260523d063270e2d21d623bd011acd9ea",
+  "build": 186,
+  "runID": 35306551280,
+  "artifactID": 10533132032,
+  "artifactName": "accepted-sdk-notes-ui-1.7.0-build186",
+  "status": "qualification_failed_not_uploaded",
+  "images": [
+    {
+      "file": "ipad-office-covers.png",
+      "sourceAttachment": "506AC42D-FCE6-4280-8FC5-585C3B6B0700.png",
+      "deviceFamily": "ipad",
+      "sha256": "f90df47bc05ba6bc560a6059fa860dcc1745bd7648bb2bcf9f58716000726736",
+      "reviewed": true
+    },
+    {
+      "file": "ipad-renamed-word.png",
+      "sourceAttachment": "A9DF2482-A361-476D-869A-2D1A20F2822C.png",
+      "deviceFamily": "ipad",
+      "sha256": "cd798c51f1593067c41be6416828a39968467a18bf3a8eb656a6788f9401672a",
+      "reviewed": true
+    },
+    {
+      "file": "iphone-office-covers.png",
+      "sourceAttachment": "2D76AF2B-6BBF-4FA1-90C9-708FD2EA14F7.png",
+      "deviceFamily": "iphone",
+      "sha256": "32968e0e6dc5bcee4597ba5782199f5f211981ce16dda82947a240a0693faa8b",
+      "reviewed": true
+    }
+  ],
+  "observations": [
+    "Real Word text, Excel cells and PowerPoint slide content visible in full-App simulator cards.",
+    "Renamed Word source regenerated at revision 2.",
+    "Both device legs failed at back-control identifier lookup; actual button existed with the inherited notes.office.header identifier.",
+    "The cover cold-relaunch phase was not reached after that failure.",
+    "Screenshots retain original framing and synthetic fixtures; no content edits.",
+    "Native Office engine is device-only and was not exercised by this simulator run."
+  ]
+}
