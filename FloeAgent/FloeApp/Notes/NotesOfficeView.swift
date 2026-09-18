@@ -199,6 +199,9 @@ struct NotesOfficeView: View {
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(.bar)
         .buttonStyle(NotesToolbarButtonStyle())
+        // Scope the header identifier to its own accessibility container so
+        // the back button, tabs and assistant keep their individual identities.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("notes.office.header")
     }
 
