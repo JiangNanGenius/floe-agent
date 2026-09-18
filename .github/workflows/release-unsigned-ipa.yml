@@ -338,13 +338,17 @@ jobs:
             cp -R "$LLAMA_FRAMEWORK" "$PRODUCTS_DIR/PackageFrameworks/"
           done < <(find .build -type d -path '*/Products/Debug')
           find "$BIN_PATH/PackageFrameworks/llama.framework" -name '._*' -delete
-          # Isolate JavaScriptCore deadline tests from the concurrent suite so
+          # Isolate wall-clock deadline suites from unrelated concurrent tests so
           # shared-runner load cannot distort their wall-clock assertions.
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/full" -- swift test \
             --skip 'FloeExecutionTests.JavaScriptEngineTests' \
-            --skip 'FloeExecutionTests.JavaScriptExecutionToolTests'
+            --skip 'FloeExecutionTests.JavaScriptExecutionToolTests' \
+            --skip 'FloeExecutionTests.NetworkDiagnosticToolsTests'
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/javascript-engine" -- swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/javascript-tool" -- swift test --filter 'FloeExecutionTests.JavaScriptExecutionToolTests'
+          # Keep the eight-way blocking lookup race, but isolate its wall-clock
+          # deadline from unrelated suites competing for the cooperative pool.
+          python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/network-deadlines" -- swift test --filter 'FloeExecutionTests.NetworkDiagnosticToolsTests'
 
       - name: Qualify environment, package, media and Node release modules
         run: |

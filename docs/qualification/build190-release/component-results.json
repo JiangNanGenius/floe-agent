@@ -1,0 +1,20 @@
+{
+  "sourceSHA": "5183112af7388b2a0c8742057176e584e76cc733",
+  "runID": 35329733708,
+  "results": {
+    "iPad": {
+      "result": "Passed",
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    },
+    "iPhone": {
+      "result": "Passed",
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    }
+  }
+}

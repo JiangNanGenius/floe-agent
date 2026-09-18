@@ -37,3 +37,27 @@ Project generation updates all four target build numbers and their generated
 configurations. No local full-App build, simulator or paid worker was used.
 
 Cloud results remain required. No190 upload or installability is claimed.
+
+## SDK27 Swift gate failure — 2026-09-18
+
+Run35329733708 SDK27 job105551136529 failed before building its full-App UI
+host. `NetworkDiagnosticToolsTests.concurrentDeadlines` measured1.947162125s
+against the unchanged1.5s requirement. The177-test run reported
+1 issue; the original diagnostics and job log are retained privately.
+The other SDK and component jobs are allowed to finish for evidence.
+
+The failed log has many unrelated suites finishing around2s. A small local
+probe copied the original deadline helper and first four tests verbatim,
+substituting only the `FloeError` enum to avoid rebuilding the full dependency
+graph. All four passed; the eight-way race completed in0.106s. This probe is
+not full-module or cloud acceptance and does not prove the original failure
+harmless. Scheduler contention remains a hypothesis.
+
+The proposed CI correction runs the complete network-diagnostics suite in a
+separate mandatory invocation, like the existing JavaScript deadline suites.
+The eight-operation concurrency,1.5s assertion and all other assertions remain
+unchanged. A workflow-coverage test requires every excluded latency suite to
+appear exactly once as a separate invocation with retained diagnostics and no
+failure bypass. Do not rerun the original unchanged workflow or relabel this
+failed run as a pass; wait for the remaining UI evidence before fixing the
+next immutable candidate.
