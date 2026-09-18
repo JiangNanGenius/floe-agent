@@ -1,11 +1,19 @@
 # Floe 1.7 TestFlight delivery
 
-## Current candidate: 1.7.0 (184)
+## Candidate: 1.7.0 (185)
+
+Prepared for cloud qualification, not uploaded. Durable IDE GitHub Actions jobs,
+Lua environment limits and Office/CAD content covers are covered in the
+[candidate record](RELEASE_1.7.0_BETA_42.md).
+
+## Failed candidate: 1.7.0 (184)
 
 Tag `v1.7.0-beta.41`, source `8e0cf69f6387333e768b90d56372e587eb297375`.
 [Run 35287358993](https://github.com/JiangNanGenius/floe-agent/actions/runs/35287358993)
-is performing two-SDK cloud qualification. No package, upload or availability is
-claimed yet. [Candidate record](RELEASE_1.7.0_BETA_41.md).
+compiled the App on both SDK lines. Both App regression runs passed 203/204 tests,
+with the same Lua environment-limit failure. An unsigned device recovery archive
+was retained; UI gates, signing and upload were skipped.
+[Original candidate record](RELEASE_1.7.0_BETA_41.md).
 
 ## Failed candidate: 1.7.0 (183)
 

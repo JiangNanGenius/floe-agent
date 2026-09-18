@@ -1,0 +1,22 @@
+{
+  "run": 35290599088,
+  "sourceCommit": "f4435d2271d3036d263bea49e7d032688af2bc53",
+  "toolchain": "Xcode27.0 (27A266a)",
+  "kind": "NativeNotes component host, not full App",
+  "iPad": {
+    "device": "iPad Air 13-inch (M4)",
+    "total": 72,
+    "passed": 72,
+    "failed": 0,
+    "skipped": 0
+  },
+  "iPhone": {
+    "device": "iPhone18 Pro",
+    "total": 72,
+    "passed": 72,
+    "failed": 0,
+    "skipped": 0
+  },
+  "compatibilityJob": "not selected by development-only dispatch",
+  "visualReview": "Primary inspected all21 exported images per device. Office/CAD content and map/PDF captures are present. iPhone literal-text map snapshot is a black frame despite DOM assertions passing; excluded from accepted visual proof. Later map image has visible rendered content. Full-App UI gates remain required."
+}

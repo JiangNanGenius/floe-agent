@@ -1,0 +1,1 @@
+Content captures from NativeNotes component run35290599088, source f4435d2271d3036d263bea49e7d032688af2bc53. Both devices passed72/72. These are actual cover-service outputs for Word, Excel, PowerPoint, DXF and DWG; not full-App library-grid screenshots or physical-device acceptance. See ../native-notes-followup.json.

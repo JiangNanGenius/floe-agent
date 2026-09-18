@@ -1,6 +1,6 @@
 # Floe Agent 1.7.0 (184) — beta.41 candidate
 
-**Cloud qualification in progress; not uploaded.**
+**Cloud qualification failed; signing and upload skipped.**
 
 Tag `v1.7.0-beta.41`, App source `8e0cf69f6387333e768b90d56372e587eb297375`.
 [Run 35287358993](https://github.com/JiangNanGenius/floe-agent/actions/runs/35287358993).
@@ -36,14 +36,17 @@ compilation and App/Notes UI gates remain required before internal TestFlight.
 Both dependency resolutions passed on attempt 1. SDK 27 module gates and App
 test-host compilation passed; the accepted SDK device build passed and its
 [unsigned recovery archive](qualification/build184-release/device-recovery.json)
-was retained with its hash and bundle metadata verified. App/UI execution and
-signing/upload remain unfinished.
+was retained with its hash and bundle metadata verified. Both SDK App regression
+runs completed with 203/204 tests passing; the same Lua install/run test failed
+on the old WASI environment limit. UI gates, signing and upload were skipped.
 
 The separate [NativeNotes component run](qualification/build184-release/native-notes/README.md)
 failed: 70 passed and 2 failed on iPad; iPhone was not reached. Office Quick Look
 and direct CAD geometry cases supplied real images, but the cold CAD cover
-service and bundled mind-map text case failed. Follow-up repairs are under
-review; these results do not establish release readiness.
+service and bundled mind-map text case failed. Follow-up source `f4435d22` passed the subsequent development-SDK component
+run [35290599088](https://github.com/JiangNanGenius/floe-agent/actions/runs/35290599088)
+on both iPad and iPhone. That separate repair is not part of immutable build 184;
+full release qualification remains required.
 
 ## 本轮验收
 

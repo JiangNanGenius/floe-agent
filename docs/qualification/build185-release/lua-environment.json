@@ -1,0 +1,30 @@
+{
+  "date": "2026-09-18",
+  "kind": "macOS focused production-source harness, not App or iPad acceptance",
+  "sourceFiles": {
+    "FloeAgent/Sources/FloeExecution/Packages/WasmEnvironmentContract.swift": "6551d3c071d44f7ae4b09f77656b25549cba1a27e68f4876b58f3da095ed9f18",
+    "FloeAgent/Sources/FloeExecution/Packages/WasmKitCommandRuntime.swift": "32dd3903500f99591d9f53a00f32a2e256e51b9ef9e111a7b0f7552270d4496e",
+    "FloeAgent/Tests/FloeExecutionTests/WasmEnvironmentContractTests.swift": "e22ddec08a69beb27b502aca037fbf8211e9fa0f603215f9c3d4a0c948c7b5a4"
+  },
+  "toolchain": "Xcode 27 beta / Swift 6, mandatory SIL and object emission",
+  "tests": {
+    "actualSwiftTestingCases": 7,
+    "passed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "durationSeconds": 0.344,
+    "manualBoundaryAndLuaChecks": 11,
+    "manualChecksPassed": 11
+  },
+  "fixture": {
+    "path": "capability-hub/packages/floe-lua/5.4.8/lua.wasm",
+    "sha256": "81ad32f4eca06d232598ad7bf6f4f92bab4864a5b5d0f4da036e159b2efdf049"
+  },
+  "legacyReproduction": "Archived old runtime rejects68 legitimate exported variables with generic WASM input exceeds limits; current runtime executes real Lua and reads probe=7. The CI simulator actual variable count was not recorded.",
+  "harnessBoundary": "Production runtime gains only import FloeExecution to link against retained real dependency modules; no App build or Simulator was started locally.",
+  "releaseScriptTests": 13,
+  "limitations": [
+    "New candidate full App and native UI gates remain required.",
+    "Existing deprecation warning on WASIBridgeToHost initializer is unchanged."
+  ]
+}

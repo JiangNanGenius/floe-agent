@@ -1,0 +1,42 @@
+# Floe Agent 1.7.0 (185) — beta.42 candidate
+
+**Prepared for cloud qualification; not uploaded.**
+
+This candidate completes durable IDE GitHub Actions job ownership: submission
+intent is persisted before dispatch; relaunch and foreground entry reload jobs
+and resume bounded polling. An unknown dispatch response is reconciled instead
+of submitted again; cancellation waits for the remote terminal result. Closing
+the App does not stop GitHub Actions. iOS may suspend local polling while the App
+is inactive; foreground recovery reads the current remote state.
+
+The previous build 184 compiled on both SDK lines, but both full-App regression
+runs failed the same Lua test (203/204 passed). Its unsigned device recovery
+archive is preserved; signing and upload were skipped. The WASI environment
+contract now accepts realistic export sets with bounded count/bytes and precise,
+content-free diagnostics. Seven actual Swift Testing cases passed against the
+production runtime, including real Lua and WASM environment reads.
+[Focused evidence](qualification/build185-release/lua-environment.json).
+
+The HTTP preview server now reads complete, bounded request headers; engineering
+covers await the viewer bridge with cancellation and a real deadline. The
+follow-up NativeNotes component run
+[35290599088](https://github.com/JiangNanGenius/floe-agent/actions/runs/35290599088)
+on source `f4435d2271d3036d263bea49e7d032688af2bc53` passed both iPad and iPhone.
+These are component-host results, not final full-App UI acceptance.
+
+## 本轮内容
+
+- IDE 云端构建由 App 保存并恢复任务，重开后主动回读与轮询；不依赖模型反复 sleep。
+- 云端取消须回读确认；响应不明不会盲目重复提交。
+- 修复 Lua 被旧环境变量上限拦截的问题，保留参数、大小和输出的明确边界。
+- 修复预览 HTTP 分段请求与 CAD 封面准备时序，继续验证 Word、Excel、PPT、DXF、DWG 的真实内容缩略图。
+- 复用已通过的定向检查，完整 App 构建、双 SDK 回归和双端界面验收仍在云端进行。
+
+## Delivery boundaries
+
+Build 178 remains the last confirmed internal TestFlight release until the new
+build is uploaded, processed and available to the existing internal Floe QA group.
+Public Beta material remains a draft for user review, without a developer-funded
+API key. Physical iPad local-model chat stability and Pencil/Office interaction
+remain separate acceptance. Local PHP, full RDP App integration and the entire
+native package/model catalogs are not claimed as delivered in this candidate.

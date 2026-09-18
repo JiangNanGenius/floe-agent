@@ -10,7 +10,7 @@
   "skipped": 0,
   "failures": [
     {
-      "failureText": "Expectation failed: executed.code == 0\nexecuted.code → 1: floe-lua failed:\n\nWASM command failed: validationFailed(\"WASM input exceeds limits\")\n",
+      "failureText": "Expectation failed: executed.code == 0\nexecuted.code \u2192 1: floe-lua failed:\n\nWASM command failed: validationFailed(\"WASM input exceeds limits\")\n",
       "targetName": "FloeAppTests",
       "testIdentifier": 143,
       "testIdentifierString": "LuaShellInstallTests/aptInstallRunsLuaAndRemoveDisablesIt()",
@@ -25,6 +25,6 @@
   "limitations": [
     "UI gates skipped after App regression failure.",
     "No TestFlight signing or upload.",
-    "Accepted SDK job still running at this snapshot."
+    "Accepted SDK also completed with the same one failed Lua test; 203/204 tests passed."
   ]
 }

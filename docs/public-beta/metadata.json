@@ -72,19 +72,19 @@
   },
   "candidateQualification": {
     "version": "1.7.0",
-    "build": "184",
-    "appSourceCommit": "8e0cf69f6387333e768b90d56372e587eb297375",
-    "tag": "v1.7.0-beta.41",
-    "releaseRun": 35287358993,
-    "status": "cloud_qualification_in_progress_not_uploaded",
+    "build": "185",
+    "appSourceCommit": null,
+    "tag": "v1.7.0-beta.42",
+    "releaseRun": null,
+    "status": "prepared_for_cloud_qualification_not_uploaded",
     "focusedEvidence": [
-      "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
-      "real disk store and engine recovery across two processes without redispatch",
-      "23 formal engine test cases Swift 6 typechecked; actual-source harness passed"
+      "Build184 actual25 service fixtures and23 IDE App tests passed",
+      "Current Lua/WASI production source:7/7 real Swift Testing cases passed plus11 boundary checks",
+      "NativeNotes development component repair:72/72 on iPad and72/72 on iPhone, run35290599088"
     ],
     "limitations": [
-      "Full App and native UI gates remain pending.",
-      "Focused compiler checks do not establish runtime or TestFlight availability."
+      "Full candidate App and native UI release gates remain required.",
+      "Component images and focused CLI tests do not establish App relaunch UI or TestFlight availability."
     ]
   },
   "earlierIDEQualification": {
@@ -109,22 +109,19 @@
   },
   "previousFailedCandidateQualification": {
     "version": "1.7.0",
-    "build": "182",
-    "appSourceCommit": "4f8cce1bbb42dbefbe59c3418c63043ae966896f",
-    "tag": "v1.7.0-beta.39",
-    "releaseRun": 35248979573,
-    "status": "cloud_qualification_failed_not_uploaded",
+    "build": "184",
+    "appSourceCommit": "8e0cf69f6387333e768b90d56372e587eb297375",
+    "tag": "v1.7.0-beta.41",
+    "releaseRun": 35287358993,
+    "status": "both_sdk_app_regressions_failed_same_lua_test_upload_skipped",
     "focusedEvidence": [
       "production GitHub API URLSession read-only calls, pagination, digest-matched small artifact",
       "real disk store and engine recovery across two processes without redispatch",
       "23 formal engine test cases Swift 6 typechecked; actual-source harness passed"
     ],
     "limitations": [
-      "SDK 27 dependency resolution and accepted-SDK App compilation failed; simulator UI gates were not reached.",
-      "Native iPad ordinary-chat local-model crash acceptance remains pending.",
-      "Native Office and Pencil interaction require physical-device verification.",
-      "Build 175 Agent recording is earlier-source demonstration evidence.",
-      "Actual App live-account dispatch/relaunch UI observation pending."
+      "Full App and native UI gates remain pending.",
+      "Focused compiler checks do not establish runtime or TestFlight availability."
     ]
   },
   "reviewMaterialPolicy": {
