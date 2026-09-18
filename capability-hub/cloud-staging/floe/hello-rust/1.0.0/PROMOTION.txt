@@ -1,0 +1,3 @@
+Cloud-compiled WASI artifact qualified by cloud-language-compile.yml
+run 35395954508 at commit b08b9bfa91f0bf49164ea13077686cb6748d1a0e.
+Staged without signing; promotion requires a reviewed capability-hub change.

@@ -31,9 +31,9 @@ timeout; use a longer `timeout` or a background job.
 | Capability | Route | Status |
 | --- | --- | --- |
 | `floe/wasm-text` 1.0.0, `floe/lua` 5.4.8 | committed signed WASI modules | **ready**; install with `apt install floe/lua` |
-| `floe/ruby` 3.4.1 | pinned [ruby/ruby.wasm](https://github.com/ruby/ruby.wasm) release asset, fetched and verified by `language-runtimes.yml` | **compilepending**; candidate metadata in `build.py`, lock in `FloeAgent/ThirdParty/RubyWASI/runtime.lock.json` |
-| `floe/php` 8.2.33 | pinned php-src 8.2.33 security release + vendored Apache-2.0 VMware Labs patch series replayed onto it + wasi-sdk 20.0, built by `language-runtimes.yml` | **compilepending**; promotion waits for the passing cloud build, interpreter qualification and staged digest (8.2 security support runs until 2026-12-31) |
-| Rust / C / C++ / Go / Swift sources | `.github/workflows/cloud-language-compile.yml` compiles one bounded source file to wasm32-wasip1, requires WASI-only imports, smoke-runs with wasmtime and stages under `capability-hub/cloud-staging/` | **prepared, not run**; no artifact is presented as ready |
+| `floe/ruby` 3.4.1 | pinned [ruby/ruby.wasm](https://github.com/ruby/ruby.wasm) release asset, fetched and verified by `language-runtimes.yml`; 34,719,962 B, sha256 `348305ee…afff11` | **qualified and promoted**; run 35396385874 passed the interpreter, limit and capability suites through the production runtime; staged at `packages/floe-ruby/3.4.1/` and signed by the catalog signing run |
+| `floe/php` 8.2.33 | pinned php-src 8.2.33 security release + 21 vendored Apache-2.0 VMware Labs patches replayed onto it + wasi-sdk 20.0; CLI SAPI 4,077,894 B, sha256 `c76afbda…c73f` | **qualified and promoted**; run 35397034902 built the CLI SAPI and 18 interpreter/limit/capability tests passed (the retried commit carries the stream-agnostic error assertion); 8.2 security support runs until 2026-12-31 |
+| Rust / C / C++ / Go / Swift sources | `.github/workflows/cloud-language-compile.yml` compiles one bounded source file to wasm32-wasip1, requires WASI-only imports, smoke-runs with pinned wasmtime and qualifies through the production runtime | **qualified** (runs 35395954508 / 35395961045 / 35395966796 / 35395972559 / 35397154942); hello/fileIO/args/error fixtures staged-unpromoted under `cloud-staging/`, not signed |
 | Native ELF/Mach-O binaries, WASIX packages, Emscripten modules with JS glue | none | **not supported**; the import check in the workflow rejects non-WASI imports |
 
 ## Cloud compile to local WASI (no device compiler)
@@ -69,9 +69,9 @@ gh workflow run language-runtimes.yml -f runtimes=both
 #    also be run locally against a verified file)
 python3 capability-hub/stage_artifact.py --id floe/ruby --artifact ruby.wasm --evidence evidence/
 # 3. Reviewed change: move the entry from CANDIDATES to MANIFEST in build.py
-#    with the staged digest/size/limits, then verify and sign
-python3 capability-hub/build.py --check
-python3 capability-hub/build.py   # requires FLOE_SKILL_HUB_SIGNING_KEY
+#    with the staged digest/size/limits, then sign and verify
+gh workflow run capability-hub.yml -f prepare=true       # signs at the fixed commit
+python3 capability-hub/build.py --check                  # verifies the signed catalog
 ```
 
 Promotion rules:

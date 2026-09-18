@@ -1,0 +1,15 @@
+{
+  "command": "floe-hello-c",
+  "commit": "b08b9bfa91f0bf49164ea13077686cb6748d1a0e",
+  "deviceRuntime": "WasmKit WASI preview1, token dispatch, workspace preopen jail",
+  "language": "c",
+  "name": "floe/hello-c",
+  "notes": "wasm-validate, WASI-only import check and the wasmtime smoke run must all pass before promotion",
+  "runId": "35395961045",
+  "sha256": "899549a0cc94b3589f7b48b16e4bdd739a40b8c9bb675658fcad0924cd652f8c",
+  "sizeBytes": 43082,
+  "smokeArgs": "alpha beta",
+  "sourceSha256": "9307179170c5da281dc5e11fb165e6fa92a6e4ebd3d456eae0c32aa36a979c03",
+  "status": "staged-unpromoted",
+  "version": "1.0.0"
+}

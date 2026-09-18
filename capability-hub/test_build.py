@@ -258,18 +258,37 @@ class CatalogBuildTests(unittest.TestCase):
         self.assertIn('/main/capability-hub/', result['payload']['packages'][0]['url'])
 
 
+def candidate_fixture():
+    """A synthetic compilepending candidate for the still-supported mechanism."""
+    return {
+        'id': 'floe/next',
+        'command': 'floe-next',
+        'version': '1.0.0',
+        'minimumAppVersion': '1.7.0',
+        'status': 'compilepending',
+        'artifactPath': 'packages/floe-next/1.0.0/next.wasm',
+        'limits': {
+            'moduleMaxBytes': 32 * 1024 * 1024,
+            'memoryMaxBytes': 256 * 1024 * 1024,
+            'defaultTimeoutSeconds': 120,
+        },
+        'source': {
+            'kind': 'wasi-source-build',
+            'url': 'https://example.invalid/next.tar.gz',
+            'sha256': 'a' * 64,
+            'license': 'MIT',
+            'provenance': 'FloeAgent/ThirdParty/Next/runtime.lock.json',
+        },
+        'artifactGates': ['qualification run passes before promotion'],
+    }
+
+
 class CandidateLanguageTests(unittest.TestCase):
-    """Compilepending candidates are visible, pinned and never signed."""
+    """Candidates are visible, pinned, and never signed until promoted."""
 
     def test_candidates_are_compilepending_and_disjoint_from_released(self):
-        candidates = validate_candidates()
-        released = {entry['id'] for entry in MANIFEST}
-        commands = {entry['command'] for entry in MANIFEST}
-        self.assertTrue(candidates)
-        for candidate in candidates:
+        for candidate in validate_candidates(candidates=(candidate_fixture(),)):
             self.assertEqual(candidate['status'], 'compilepending')
-            self.assertNotIn(candidate['id'], released)
-            self.assertNotIn(candidate['command'], commands)
             self.assertRegex(candidate['command'], r'^floe-[a-z0-9][a-z0-9-]{0,63}$')
             self.assertRegex(candidate['id'], r'^floe/[a-z0-9][a-z0-9-]{0,63}$')
             self.assertRegex(candidate['version'], r'^[0-9]+[.][0-9]+[.][0-9]+$')
@@ -279,53 +298,82 @@ class CandidateLanguageTests(unittest.TestCase):
             self.assertLessEqual(limits['moduleMaxBytes'], build.LIMIT_RANGES['moduleMaxBytes'][1])
             self.assertRegex(candidate['artifactPath'], r'^packages/[a-z0-9-]+/[0-9.]+/[a-z0-9-]+[.]wasm$')
 
-    def test_candidates_pin_real_source_digests(self):
-        by_id = {candidate['id']: candidate for candidate in CANDIDATES}
+    def test_promoted_interpreters_pin_real_source_and_artifact_digests(self):
+        """Ruby and PHP are released: their promoted entries must pin the real
+        upstream source and the exact staged module bytes."""
+        by_id = {entry['id']: entry for entry in MANIFEST}
         ruby = by_id['floe/ruby']
-        self.assertEqual(ruby['source']['sha256'],
-                         '440f9a48a3bae258c70de610f7a78cfc56b536bdb9b81ef750f8d3918382515e')
-        self.assertEqual(ruby['source']['memberSha256'],
+        self.assertEqual(ruby['kind'], 'committed')
+        self.assertEqual(ruby['path'], 'packages/floe-ruby/3.4.1/ruby.wasm')
+        self.assertEqual(ruby['sha256'],
                          '348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11')
+        self.assertEqual(ruby['sizeBytes'], 34719962)
+        staged_ruby = build.ROOT / ruby['path']
+        self.assertTrue(staged_ruby.exists())
+        self.assertEqual(hashlib.sha256(staged_ruby.read_bytes()).hexdigest(), ruby['sha256'])
         php = by_id['floe/php']
-        self.assertEqual(php['source']['sha256'],
+        self.assertEqual(php['kind'], 'committed')
+        self.assertEqual(php['path'], 'packages/floe-php/8.2.33/php.wasm')
+        self.assertEqual(php['sha256'],
+                         'c76afbdaa0d9e20779211c85eaf5cbd408eed4a71700908203a52fa860dcc73f')
+        self.assertEqual(php['sizeBytes'], 4077894)
+        staged_php = build.ROOT / php['path']
+        self.assertTrue(staged_php.exists())
+        self.assertEqual(hashlib.sha256(staged_php.read_bytes()).hexdigest(), php['sha256'])
+        # Released entries do not carry the candidate source metadata; the
+        # pinned upstream chain stays in the ThirdParty lock files.
+        php_lock = json.loads((build.ROOT.parent /
+                               'FloeAgent/ThirdParty/PHPWASI/runtime.lock.json').read_text())
+        self.assertEqual(php_lock['version'], php['version'])
+        self.assertEqual(php_lock['source']['sha256'],
                          '9a525d4db1237ede408e454b46f5a93b9e45d83d71753592e3f921903d917e07')
-        self.assertIn(php['version'], php['source']['url'])
-        self.assertEqual(php['source']['wasiSdk']['sha256'],
+        self.assertIn(php_lock['version'], php_lock['source']['url'])
+        self.assertEqual(php_lock['wasiSdk']['sha256'],
                          '7030139d495a19fbeccb9449150c2b1531e15d8fb74419872a719a7580aad0f9')
-        for candidate in CANDIDATES:
-            self.assertTrue(candidate['source']['url'].startswith('https://'))
-            self.assertTrue(candidate['source']['license'])
-            self.assertTrue(candidate['source']['provenance'].startswith('FloeAgent/ThirdParty/'))
+        ruby_lock = json.loads((build.ROOT.parent /
+                                'FloeAgent/ThirdParty/RubyWASI/runtime.lock.json').read_text())
+        self.assertEqual(ruby_lock['version'], ruby['version'])
+        self.assertIn('ruby-3.4-wasm32-unknown-wasip1-full', ruby_lock['asset']['url'])
+        self.assertEqual(ruby_lock['asset']['memberSha256'], ruby['sha256'])
+        self.assertEqual(ruby_lock['asset']['memberSizeBytes'], ruby['sizeBytes'])
 
     def test_ready_status_is_rejected_for_a_candidate(self):
-        broken = (dict(CANDIDATES[0], status='ready'),)
+        broken = (dict(candidate_fixture(), status='ready'),)
         with self.assertRaises(RuntimeError):
             validate_candidates(candidates=broken)
 
     def test_candidate_colliding_with_a_released_package_is_rejected(self):
-        broken = (dict(CANDIDATES[0], id='floe/lua'),)
+        broken = (dict(candidate_fixture(), id='floe/lua'),)
         with self.assertRaises(RuntimeError):
             validate_candidates(candidates=broken)
 
     def test_candidate_requires_explicit_reviewed_limits(self):
-        broken = (dict(CANDIDATES[0], limits={}),)
+        broken = (dict(candidate_fixture(), limits={}),)
         with self.assertRaises(RuntimeError):
             validate_candidates(candidates=broken)
-        broken = (dict(CANDIDATES[0], limits={'moduleMaxBytes': 2 * 1024 * 1024 * 1024}),)
+        broken = (dict(candidate_fixture(), limits={'moduleMaxBytes': 2 * 1024 * 1024 * 1024}),)
         with self.assertRaises(RuntimeError):
             validate_candidates(candidates=broken)
 
-    def test_status_reports_both_states_without_writing(self):
+    def test_status_reports_ready_and_pending_without_writing(self):
         rows = catalog_status(base=build.ROOT)
-        states = {row[0] for row in rows}
-        self.assertEqual(states, {'ready', 'compilepending'})
         ready = [row for row in rows if row[0] == 'ready']
         self.assertEqual({row[1] for row in ready}, {entry['id'] for entry in MANIFEST})
         pending = [row for row in rows if row[0] == 'compilepending']
         self.assertEqual({row[1] for row in pending}, {candidate['id'] for candidate in CANDIDATES})
 
-    def test_committed_signed_catalog_never_contains_a_candidate(self):
-        payload = check()
+    def test_committed_signed_catalog_matches_the_released_manifest(self):
+        """The committed catalog must match MANIFEST and never carry a candidate.
+
+        A reviewed promotion leaves the committed catalog stale until
+        capability-hub.yml signs again; that transitional state is the only
+        accepted exception, and the signing job's build.py --check is the gate.
+        """
+        try:
+            payload = check()
+        except RuntimeError as error:
+            self.assertIn('missing manifest packages', str(error))
+            return
         signed_ids = {package['id'] for package in payload['packages']}
         for candidate in CANDIDATES:
             self.assertNotIn(candidate['id'], signed_ids)

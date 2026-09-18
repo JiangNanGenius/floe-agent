@@ -1,0 +1,15 @@
+{
+  "command": "floe-hello-rust",
+  "commit": "b08b9bfa91f0bf49164ea13077686cb6748d1a0e",
+  "deviceRuntime": "WasmKit WASI preview1, token dispatch, workspace preopen jail",
+  "language": "rust",
+  "name": "floe/hello-rust",
+  "notes": "wasm-validate, WASI-only import check and the wasmtime smoke run must all pass before promotion",
+  "runId": "35395954508",
+  "sha256": "82a4f65a75a8b1ccc3c0ce44c28279e93d7f53c981d278c514e7cd3fab922dbd",
+  "sizeBytes": 93940,
+  "smokeArgs": "alpha beta",
+  "sourceSha256": "4dcbeb84f5cccf44ad904793a3d14dff5d4cb9d21c5fccedf5306437183dc4fb",
+  "status": "staged-unpromoted",
+  "version": "1.0.0"
+}

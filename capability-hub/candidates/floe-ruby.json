@@ -1,0 +1,34 @@
+{
+  "artifactPath": "packages/floe-ruby/3.4.1/ruby.wasm",
+  "artifactSha256": "348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11",
+  "artifactSizeBytes": 34719962,
+  "command": "floe-ruby",
+  "evidence": {
+    "ruby-interpreter-license.txt": "f5eb1b2956d5f7a67b2e5722a3749bc2fe86f9c580f2e3f5a08519cf073b5864",
+    "ruby.wasm-LICENSE-MIT.txt": "90357d3794c968704914d42a52354a83f2d8b10cb43df3b63ef1ca0e5bbc0bf2",
+    "ruby.wasm.sha256": "1954ceedee15f28daba52f42945a4c07eb7c69a0003581fc2f5afa11b00c78f4",
+    "runtime.lock.json": "4fab385e318b90ee3a4430c1298ba67f4b75e004171c82d5acc852f60a36f4b5"
+  },
+  "id": "floe/ruby",
+  "limits": {
+    "defaultTimeoutSeconds": 120,
+    "memoryMaxBytes": 268435456,
+    "moduleMaxBytes": 67108864
+  },
+  "minimumAppVersion": "1.7.0",
+  "note": "staged only; promotion into MANIFEST is a reviewed change and signing stays in capability-hub.yml",
+  "source": {
+    "kind": "upstream-release",
+    "license": "Ruby OR BSD-2-Clause",
+    "licenseUrl": "https://github.com/ruby/ruby.wasm/blob/main/LICENSE",
+    "member": "ruby-3.4-wasm32-unknown-wasip1-full/usr/local/bin/ruby",
+    "memberSha256": "348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11",
+    "memberSizeBytes": 34719962,
+    "provenance": "FloeAgent/ThirdParty/RubyWASI/runtime.lock.json",
+    "sha256": "440f9a48a3bae258c70de610f7a78cfc56b536bdb9b81ef750f8d3918382515e",
+    "url": "https://github.com/ruby/ruby.wasm/releases/download/2.10.1/ruby-3.4-wasm32-unknown-wasip1-full.tar.gz"
+  },
+  "stagedAt": "2026-09-18T21:39:38.611508+00:00",
+  "status": "compilepending",
+  "version": "3.4.1"
+}

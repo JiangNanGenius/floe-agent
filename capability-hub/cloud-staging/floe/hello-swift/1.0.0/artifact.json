@@ -1,0 +1,15 @@
+{
+  "command": "floe-hello-swift",
+  "commit": "475e4c9f3a1707df0f2f7ddac48ecf51166962eb",
+  "deviceRuntime": "WasmKit WASI preview1, token dispatch, workspace preopen jail",
+  "language": "swift",
+  "name": "floe/hello-swift",
+  "notes": "wasm-validate, WASI-only import check and the wasmtime smoke run must all pass before promotion",
+  "runId": "35397154942",
+  "sha256": "2708713f979113071dfe95f901a0d8bb57efad99fb1ea5ca04be43303e339035",
+  "sizeBytes": 7170120,
+  "smokeArgs": "alpha beta",
+  "sourceSha256": "28d4d48517b942b2cec5cb95f4b95c8442ec8a8e5cc6525207af5d10a47a649a",
+  "status": "staged-unpromoted",
+  "version": "1.0.0"
+}

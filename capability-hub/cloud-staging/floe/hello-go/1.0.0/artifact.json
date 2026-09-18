@@ -1,0 +1,15 @@
+{
+  "command": "floe-hello-go",
+  "commit": "b08b9bfa91f0bf49164ea13077686cb6748d1a0e",
+  "deviceRuntime": "WasmKit WASI preview1, token dispatch, workspace preopen jail",
+  "language": "go",
+  "name": "floe/hello-go",
+  "notes": "wasm-validate, WASI-only import check and the wasmtime smoke run must all pass before promotion",
+  "runId": "35395972559",
+  "sha256": "2f870422f5b783310f2ae69f2e4f5f2b0885c1d4daead8365bb620ef223c2b50",
+  "sizeBytes": 2757443,
+  "smokeArgs": "alpha beta",
+  "sourceSha256": "7d1de2264441dd1749ce23a130fe15e94c92c2954c52fb8ab710340ccaded37b",
+  "status": "staged-unpromoted",
+  "version": "1.0.0"
+}

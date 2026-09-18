@@ -61,6 +61,42 @@ MANIFEST = (
         'sha256': '81ad32f4eca06d232598ad7bf6f4f92bab4864a5b5d0f4da036e159b2efdf049',
         'sizeBytes': 671143,
     },
+    {
+        # Promoted after language-runtimes.yml run 35396385874 qualify-ruby
+        # passed through the production WASI runtime and stage_artifact.py
+        # verified the pinned ruby.wasm member digest.
+        'id': 'floe/ruby',
+        'command': 'floe-ruby',
+        'version': '3.4.1',
+        'minimumAppVersion': '1.7.0',
+        'kind': 'committed',
+        'path': 'packages/floe-ruby/3.4.1/ruby.wasm',
+        'sha256': '348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11',
+        'sizeBytes': 34719962,
+        'limits': {
+            'moduleMaxBytes': 64 * 1024 * 1024,
+            'memoryMaxBytes': 256 * 1024 * 1024,
+            'defaultTimeoutSeconds': 120,
+        },
+    },
+    {
+        # Promoted after language-runtimes.yml run 35397034902 built the CLI
+        # SAPI with patch 0021 and the interpreter qualification passed. The
+        # CGI SAPI remains available as evidence but the CLI module is shipped.
+        'id': 'floe/php',
+        'command': 'floe-php',
+        'version': '8.2.33',
+        'minimumAppVersion': '1.7.0',
+        'kind': 'committed',
+        'path': 'packages/floe-php/8.2.33/php.wasm',
+        'sha256': 'c76afbdaa0d9e20779211c85eaf5cbd408eed4a71700908203a52fa860dcc73f',
+        'sizeBytes': 4077894,
+        'limits': {
+            'moduleMaxBytes': 32 * 1024 * 1024,
+            'memoryMaxBytes': 256 * 1024 * 1024,
+            'defaultTimeoutSeconds': 120,
+        },
+    },
 )
 
 # Candidate language runtimes that are NOT released and NOT signed into the
@@ -70,76 +106,10 @@ MANIFEST = (
 # read MANIFEST, and `validate_candidates()` rejects any id/command collision
 # with a released package. Promotion is a reviewed change that moves the entry
 # into MANIFEST with the staged hash after the workflow evidence passes.
-CANDIDATES = (
-    {
-        'id': 'floe/ruby',
-        'command': 'floe-ruby',
-        'version': '3.4.1',
-        'minimumAppVersion': '1.7.0',
-        'status': 'compilepending',
-        'artifactPath': 'packages/floe-ruby/3.4.1/ruby.wasm',
-        'limits': {
-            'moduleMaxBytes': 64 * 1024 * 1024,
-            'memoryMaxBytes': 256 * 1024 * 1024,
-            'defaultTimeoutSeconds': 120,
-        },
-        'source': {
-            'kind': 'upstream-release',
-            'url': 'https://github.com/ruby/ruby.wasm/releases/download/2.10.1/ruby-3.4-wasm32-unknown-wasip1-full.tar.gz',
-            'sha256': '440f9a48a3bae258c70de610f7a78cfc56b536bdb9b81ef750f8d3918382515e',
-            'member': 'ruby-3.4-wasm32-unknown-wasip1-full/usr/local/bin/ruby',
-            'memberSha256': '348305ee0b4e4cdb84ec169223e33721899548577a42a421725b71e481afff11',
-            'memberSizeBytes': 34719962,
-            'license': 'Ruby OR BSD-2-Clause',
-            'licenseUrl': 'https://github.com/ruby/ruby.wasm/blob/main/LICENSE',
-            'provenance': 'FloeAgent/ThirdParty/RubyWASI/runtime.lock.json',
-        },
-        'artifactGates': [
-            'language-runtimes.yml ruby job downloads the pinned release asset and verifies the lock digest',
-            'RubyInterpreterTests (qualification) pass through the production WasmKitCommandRuntime',
-            'stage_artifact.py records the staged digest and size; promotion edits MANIFEST in a reviewed change',
-        ],
-    },
-    {
-        'id': 'floe/php',
-        'command': 'floe-php',
-        'version': '8.2.33',
-        'minimumAppVersion': '1.7.0',
-        'status': 'compilepending',
-        'artifactPath': 'packages/floe-php/8.2.33/php.wasm',
-        'limits': {
-            'moduleMaxBytes': 32 * 1024 * 1024,
-            'memoryMaxBytes': 256 * 1024 * 1024,
-            'defaultTimeoutSeconds': 120,
-        },
-        'source': {
-            'kind': 'wasi-source-build',
-            'url': 'https://www.php.net/distributions/php-8.2.33.tar.gz',
-            'sha256': '9a525d4db1237ede408e454b46f5a93b9e45d83d71753592e3f921903d917e07',
-            'sizeBytes': 19264838,
-            'releaseDate': '2026-07-30',
-            'supportStatus': 'security support until 2026-12-31; 8.2.33 is the current security release',
-            'patches': 'https://github.com/vmware-labs/webassembly-language-runtimes/tree/dd26cd52f0cf5e15ba058d5e8c0c4354386570ca/php/v8.2.6/patches',
-            'patchRevision': 'dd26cd52f0cf5e15ba058d5e8c0c4354386570ca',
-            'patchRebase': 'replayed onto php-8.2.33; 19/19 patches apply with plain git apply; two deviations documented in ThirdParty/PHPWASI/runtime.lock.json',
-            'buildConfiguration': 'slim: --disable-all without libxml/sqlite; XML/DOM, mbstring, sqlite and gd stay on the remote route',
-            'wasiSdk': {
-                'version': '20.0',
-                'url': 'https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz',
-                'sha256': '7030139d495a19fbeccb9449150c2b1531e15d8fb74419872a719a7580aad0f9',
-                'license': 'Apache-2.0 WITH LLVM-exception',
-            },
-            'license': 'PHP-3.01',
-            'licenseUrl': 'https://www.php.net/license/3_01.txt',
-            'provenance': 'FloeAgent/ThirdParty/PHPWASI/runtime.lock.json',
-        },
-        'artifactGates': [
-            'language-runtimes.yml php job builds php-src 8.2.33 with wasi-sdk 20 and the rebased pinned VMware Labs patch set',
-            'php-cgi/php-cli is validated with wasm-tools and the PHP interpreter qualification tests',
-            'security gate: 8.2.33 is the current 8.2 security release (supported until 2026-12-31); promotion requires the passing cloud build and recorded staged digest',
-        ],
-    },
-)
+CANDIDATES = ()
+# The candidate mechanism stays for the next language. Ruby and PHP were
+# promoted into MANIFEST after their qualification runs passed; the staged
+# bytes and their promotion records are in packages/ and candidates/.
 
 
 
