@@ -1,21 +1,21 @@
-# Floe Agent 1.7.0 (192) / beta.49 — frozen internal-testing candidate
+# Floe Agent 1.7.0 (193) / beta.50 — frozen internal-testing candidate
 
-> **Status: not uploaded.** This frozen candidate stopped in the accepted-SDK App
-> compile on `FloeAgent/Sources/FloeLocalModels/MLXTextEngine.swift` with a Swift
-> 6 region-isolation error ("sending 'input' risks causing data races"). The
-> immutable tag `v1.7.0-beta.49` remains at
-> `1dc6577a9975519af292d2a871706a663f25026e` as the failed-freeze record, and the
-> reserved build number 192 is retired; build 193 (`v1.7.0-beta.50`) carries the
-> compile fix and proceeds.
+Build 193 carries the build 191 feedback repair plus the accepted-SDK compile fix
+for the first freeze: build 192 (`v1.7.0-beta.49`, frozen at
+`1dc6577a9975519af292d2a871706a663f25026e`) stopped in the accepted-SDK App
+compile on `FloeLocalModels/MLXTextEngine.swift` with a Swift 6 region-isolation
+error ("sending 'input' risks causing data races") and was **never uploaded**;
+that immutable tag and its failure evidence stay recorded. Build 193 builds the
+chat input in the same region as the `consuming sending` tokenizer call and is
+the candidate that proceeds.
 
-Build 192 carries the build 191 feedback repair. The release pipeline creates the
-reserved tag `v1.7.0-beta.49` at the frozen commit this document ships in,
-performs the **single** accepted-upload-SDK App build (Xcode 26.6 / 17F113), and
-retains the unsigned device IPA with its matching private symbols **before**
-signing or upload; reuse of a retained exact artifact is preferred over a
-rebuild. It then uploads to the internal TestFlight build and, after the upload
-is accepted, publishes the attested unsigned GitHub prerelease and requests the
-Feather source publication.
+The release pipeline creates the reserved tag `v1.7.0-beta.50` at the frozen
+commit this document ships in, performs the **single** accepted-upload-SDK App
+build (Xcode 26.6 / 17F113), and retains the unsigned device IPA with its matching
+private symbols **before** signing or upload; reuse of a retained exact artifact is
+preferred over a rebuild. It then uploads to the internal TestFlight build and,
+after the upload is accepted, publishes the attested unsigned GitHub prerelease
+and requests the Feather source publication.
 
 - the frozen source is one immutable commit; the tag is created at that commit
   by `release-unsigned-ipa.yml` and is never moved or re-pointed;

@@ -25,6 +25,25 @@ available to internal testers. See
 retained in their qualification records. No public Beta submission is included.
 
 
+## Failed candidate: 1.7.0 (192)
+
+Tag `v1.7.0-beta.49` is fixed at `1dc6577a9975519af292d2a871706a663f25026e`.
+[Run 35400024357](https://github.com/JiangNanGenius/floe-agent/actions/runs/35400024357)
+created the tag and stopped in the accepted-SDK App build: the
+`FloeLocalModels/MLXTextEngine.swift` tokenizer call passed a task-isolated chat
+input as a `consuming sending` parameter and the Swift 6 region pass rejected it
+("sending 'input' risks causing data races"). No App artifact, signing or upload
+occurred; the immutable tag is retained as the failed-freeze record and the
+reserved build number 192 is retired.
+
+## Preparing: 1.7.0 (193)
+
+Build 193 constructs the chat input in the same region as the tokenizer transfer
+and carries the rest of the build 192 freeze. The single accepted-SDK App build
+and internal TestFlight upload are performed by the release workflow at the
+frozen commit; Apple processing and Floe QA visibility are verified separately
+before this build is called installable.
+
 ## Preparing: 1.7.0 (188)
 
 Build188 keeps the IDE service-owned CI recovery/polling work and repairs Notes

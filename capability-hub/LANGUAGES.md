@@ -85,7 +85,7 @@ Promotion rules:
 * the signed catalog may add limits only within `LIMIT_RANGES` in `build.py`
   and `WasmPackageLimits` in FloeExecution;
 * the bundled copy under `FloeAgent/FloeApp/Resources/Capabilities` is written
-  by the signing step in `capability-hub.yml`; the build 192 source imports the
+  by the signing step in `capability-hub.yml`; the build 193 source imports the
   prepare-signed copies from run 35399070312 (revision `96be231e`) verbatim so
   the device ships the Ruby/PHP entries, and the main-only publish job re-runs
   the signing step and verifies the same bytes.

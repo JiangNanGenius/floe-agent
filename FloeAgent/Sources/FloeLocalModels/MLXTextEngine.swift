@@ -246,20 +246,17 @@ public actor MLXTextEngine {
             try data.write(to: url, options: .atomic)
             return .url(url)
         }
-        let input = UserInput(
-            chat: [
-                .system(instructions),
-                .user(prompt, images: imageInputs)
-            ],
-            tools: tools.compactMap(Self.toolSpec),
-            // Qwen 3.x templates enable thinking by default. Floe routes
-            // reasoning privately and the on-device path has a tight context,
-            // so explicitly disable it instead of relying on a textual
-            // /no_think suffix that some VLM templates ignore.
-            additionalContext: ["enable_thinking": false]
-        )
         let prepared: LMInput
-        let prepareDiagnostic = "localInferencePrepareStarted trace=\(diagnosticTraceID ?? "none") promptCharacters=\(input.prompt.description.count) images=\(input.images.count) tools=\(input.tools?.count ?? 0) batchSize=\(resourceProfile.batchSize) contextSize=\(resourceProfile.contextSize) kvBits=\(resourceProfile.tier == .constrained ? 4 : 8) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
+        // The tokenizer call consumes its chat input with `consuming sending`,
+        // so the value must be built in the same region as the transfer.
+        // Building it in the actor and closing over it here made the value
+        // task-isolated to the async error scope and the Swift 6.4 region pass
+        // rejected the send ("sending 'input' risks causing data races"). Keep
+        // the diagnostic on primitive values only and construct the chat input
+        // inside the scope where it is consumed.
+        let toolSchemas = tools.compactMap(Self.toolSpec)
+        let promptCharacters = instructions.count + 1 + prompt.count
+        let prepareDiagnostic = "localInferencePrepareStarted trace=\(diagnosticTraceID ?? "none") promptCharacters=\(promptCharacters) images=\(imageInputs.count) tools=\(toolSchemas.count) batchSize=\(resourceProfile.batchSize) contextSize=\(resourceProfile.contextSize) kvBits=\(resourceProfile.tier == .constrained ? 4 : 8) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
         FloeLogger(category: .providers).info(prepareDiagnostic)
         do {
             // Tokenizer template + chat-template application. The scoped
@@ -267,6 +264,19 @@ public actor MLXTextEngine {
             // instead of letting MLX's default handler exit the process.
             prepared = try await MLX.withError { errors in
                 do {
+                    let input = UserInput(
+                        chat: [
+                            .system(instructions),
+                            .user(prompt, images: imageInputs)
+                        ],
+                        tools: toolSchemas,
+                        // Qwen 3.x templates enable thinking by default. Floe
+                        // routes reasoning privately and the on-device path has
+                        // a tight context, so explicitly disable it instead of
+                        // relying on a textual /no_think suffix that some VLM
+                        // templates ignore.
+                        additionalContext: ["enable_thinking": false]
+                    )
                     let value = try await container.prepare(input: input)
                     try errors.check()
                     return value
