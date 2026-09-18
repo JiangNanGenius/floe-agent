@@ -1,0 +1,13 @@
+{
+  "run": 35287358993,
+  "sourceCommit": "8e0cf69f6387333e768b90d56372e587eb297375",
+  "artifactID": 10525204023,
+  "archiveBytes": 811440631,
+  "sha256": "7e3f2ba1975effb4b90990b68aa38b0be95ea8aa66acdccd1410367c11c43a8a",
+  "bundleIdentifier": "org.floeagent.ios",
+  "version": "1.7.0",
+  "build": "184",
+  "sdk": "iphoneos26.5",
+  "xcodeBuild": "17F113",
+  "status": "unsigned device recovery archive, not uploaded"
+}

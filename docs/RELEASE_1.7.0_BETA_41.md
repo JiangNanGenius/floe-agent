@@ -31,6 +31,20 @@ execute the tests. [Focused evidence](qualification/build184-release/focused-com
 Complete two-SDK cloud
 compilation and App/Notes UI gates remain required before internal TestFlight.
 
+## Newly observed results
+
+Both dependency resolutions passed on attempt 1. SDK 27 module gates and App
+test-host compilation passed; the accepted SDK device build passed and its
+[unsigned recovery archive](qualification/build184-release/device-recovery.json)
+was retained with its hash and bundle metadata verified. App/UI execution and
+signing/upload remain unfinished.
+
+The separate [NativeNotes component run](qualification/build184-release/native-notes/README.md)
+failed: 70 passed and 2 failed on iPad; iPhone was not reached. Office Quick Look
+and direct CAD geometry cases supplied real images, but the cold CAD cover
+service and bundled mind-map text case failed. Follow-up repairs are under
+review; these results do not establish release readiness.
+
 ## 本轮验收
 
 - 重开 App 后恢复 GitHub 构建记录并主动轮询；提交结果不明不重复触发，取消等待远端确认。
