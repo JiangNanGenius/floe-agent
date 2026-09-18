@@ -1,6 +1,9 @@
 # Build190 preflight — bounded Notes UI queries and simulator readiness
 
-Candidate1.7.0(190), tag `v1.7.0-beta.47` (immutable source recorded after commit).
+Candidate1.7.0(190), tag `v1.7.0-beta.47` source
+`5183112af7388b2a0c8742057176e584e76cc733`.
+[Cloud run35329733708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35329733708)
+was started once by the immutable tag push.
 This changes test infrastructure and the build number; the shipping Notes
 implementation remains that of189.
 
