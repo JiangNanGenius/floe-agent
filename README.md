@@ -26,7 +26,7 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Floe 1.7 internal beta
 
-Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified speech, image/video workbenches and project/session environments. **Version 1.7.0 (178) is available in the internal Floe QA TestFlight group, verified as VALID / IN_BETA_TESTING.** Production release remains separate. See the [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md).
+Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified speech, image/video workbenches and project/session environments. **Build 178 remains the last confirmed internal Floe QA TestFlight release** (recorded status VALID / IN_BETA_TESTING); App Store Connect was not re-queried for this preparation, and production release remains separate. See the [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md).
 
 The [Build 156 feedback repair release](docs/FLOE_156_FEEDBACK_REPAIR.md) adds background-only browser operations with explicit human handoff, direct HTTP/API workflows, shared HTTPS certificate configuration, configured-only search discovery, and shell/Python/Node reliability repairs. Build 172 is now available in TestFlight; the SDK 27 source passed 1,270 Swift test executions and 159 full-App regressions. Physical-device acceptance remains with the tester.
 
@@ -34,7 +34,7 @@ Notes also adds **＋ → From Floe Workspace**: select a document generated in 
 
 The [build 172 feedback repair is delivered as build 178](docs/FLOE_172_REPAIR_EXECUTION.md): dedicated Notes assistants gain a full-height iPad column, conversation restart and automatic refresh after committed edits, Soul/profile changes apply at the next model request, and the full-screen IDE adds conflict-aware saving with DXF/DWG editing and AI review. Build 178 passed 178/178 focused regressions and iPad/iPhone Notes UI on both SDKs before signed upload.
 
-The next internal candidate is **build 185 / beta.42, UI qualification failed; not uploaded**. Both SDKs passed 204/204 App regressions, including durable IDE cloud-job recovery and Lua execution. Full-App UI tests still found Office cover and unavailable-editor navigation failures. Build 179's SDK 27 package was retained, but its accepted-SDK Notes step timed out before upload. IDE saves already passed both simulator layouts in the separate targeted run; that does not qualify the new candidate. See [candidate notes](docs/RELEASE_1.7.0_BETA_42.md), [thumbnail acceptance](docs/NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md), and [the repair record](docs/FLOE_BUILD178_FEEDBACK_REPAIR.md). Build 178 is the last confirmed internal TestFlight release; the reported physical iPad local-model chat crash remains unconfirmed.
+The next internal candidate is **build 186 / beta.43, in preparation and not uploaded**. It adds durable GitHub cloud-build recovery and improves Word, Excel and PowerPoint previews in Notes. Focused verification is still running; prior full-App failures and the current OCR timing observation remain recorded in the [candidate notes](docs/RELEASE_1.7.0_BETA_43.md) and [repair evidence](docs/qualification/build185-release/notes-followup.json). Build 178 remains the last confirmed internal release. Physical iPad local-model chat stability and native Office/Pencil acceptance are still pending.
 
 The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
 

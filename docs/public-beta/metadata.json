@@ -72,6 +72,27 @@
   },
   "candidateQualification": {
     "version": "1.7.0",
+    "build": "186",
+    "tag": null,
+    "status": "component_qualification_in_progress_no_tag_no_upload_no_public_beta_submission",
+    "appSourceCommit": "8d303197de200ce0c775cc60c3ea1303417e5279",
+    "componentRun": 35304310882,
+    "officeLifecycleFixSourceCommit": "2a907841b50a19b07488f5e9fff40dc4f3b9cf1f",
+    "focusedEvidence": [
+      "Component run35301809882 at source2a907841: iPad84/84, iPhone83/84; the only iPhone failure was a real scanned bilingual OCR/search case exceeding120 seconds, not Office lifecycle",
+      "Current source8d303197 applies the existing180-second per-case executionTimeAllowance to that single functional case with a fixed pixel-identical1536x2048 fixture; text/search assertions unchanged; not a product performance claim",
+      "Component run35304310882 at source8d303197 is in progress at preparation time; final outcome not yet recorded"
+    ],
+    "limitations": [
+      "No tag, signed upload or TestFlight availability;178 remains the last confirmed internal build",
+      "Native iPad local-model chat stability and native Office/Pencil operation remain physical-device acceptance",
+      "RDP is not delivered as a usable App feature",
+      "App Store Connect was not re-queried for this preparation"
+    ],
+    "componentCovers": "docs/qualification/build186-release/native-covers - native Notes component-host output, not full-App UI or release acceptance"
+  },
+  "previousBuild185CandidateQualification": {
+    "version": "1.7.0",
     "build": "185",
     "appSourceCommit": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
     "tag": "v1.7.0-beta.42",

@@ -6,7 +6,7 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-1.7.0（178）为上一版内部 TestFlight 交付基线；179 正在进行修复验证，尚未上传。完整包/模型交付仍有未完成项；真机验收由用户安装后执行，正式发布另行安排。历史发布、研究和测试记录保留原有日期与结论。
+178 仍是最后确认的内部 TestFlight 交付基线（历史记录；本次 186 准备未重新查询 Apple 状态）。185 界面验收失败未上传；186 候选仅处于组件验收阶段，尚无标签或上传。完整包/模型交付仍有未完成项；真机验收由用户安装后执行，正式发布另行安排。历史发布、研究和测试记录保留原有日期与结论。
 
 | 文档 | 阅读目的 |
 |---|---|
@@ -84,7 +84,7 @@
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
-179 修复候选尚未交付；上一版交付基线为 178。旧版本说明和候选记录保留历史状态。
+186 候选仍在组件验收，尚无标签或上传；最后确认交付基线为 178。旧版本说明和候选记录保留历史状态。
 
 - [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。
 
@@ -93,6 +93,7 @@
 - [Build 177 historical candidate record](RELEASE_NOTES_1.7.0_BUILD_177.md): earlier personalization, CAD/IDE and UI qualification work; its recorded status is historical.
 - [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.
 
+- [Build 186 candidate](RELEASE_1.7.0_BETA_43.md): Office preview lifecycle repair and OCR fixture/allowance calibration; preparation only, component qualification in progress, no tag or upload.
 - [Build 185 candidate](RELEASE_1.7.0_BETA_42.md): durable cloud jobs, WASI environment repair and content-cover qualification; both App regressions passed but UI failures blocked upload.
 - [Build 184 failed candidate](RELEASE_1.7.0_BETA_41.md): both SDK App builds passed; Lua runtime regression blocked upload.
 - [Build 183 candidate](RELEASE_1.7.0_BETA_40.md): durable IDE cloud builds, real library covers, runtime lifecycle checks; App compilation failed before upload.

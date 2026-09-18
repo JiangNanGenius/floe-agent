@@ -72,6 +72,14 @@ successful original-layout Quick Look thumbnail.
 
 ## Verification / 验证
 
+Run [35301809882](https://github.com/JiangNanGenius/floe-agent/actions/runs/35301809882)
+executed all 21 Office cases and 11 lifecycle/gate cases successfully on each
+device. The overall component run failed because an iPhone scanned-page OCR
+case exceeded its execution allowance; its original result remains preserved.
+[Unedited iPad content outputs](qualification/build186-release/native-covers/README.md)
+include Word, Excel, PowerPoint and DWG. These do not establish full-App UI or
+physical-device acceptance.
+
 - Deterministic lifecycle tests cover timeout, one-shot cancellation, late
   callbacks, settled-failure retries and production-service request sharing.
 - Actual Word/Excel/PPT imports exercise extensionless content-addressed storage,

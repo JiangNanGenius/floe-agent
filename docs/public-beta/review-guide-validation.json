@@ -1,15 +1,16 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (178)",
-  "candidate": "1.7.0 (185), cloud qualification in progress; not uploaded",
+  "candidate": "1.7.0 (186), component qualification in progress; no tag or upload",
   "pages": 14,
-  "sha256": "b371ae26c556e03ac5da5ea0ae002a40a821dfcf20c512445611fa70c556d8ec",
-  "bytes": 2759686,
+  "sha256": "ba01b2c8cd056ff21fc41bf73132b5972147f433bf0731ee8049f079cb9f6334",
+  "bytes": 2759927,
   "textExtractionChecked": true,
-  "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout",
+  "layoutSizeChecks": "All14 A4 pages595x842, readable text and preparation footers; required tokens186,178,Whisper,lantern garden472,星河手记验证,BYOK,RDP,component-host verified.",
+  "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout. Build186 component covers under docs/qualification/build186-release/native-covers are not included and are not full-App UI evidence.",
   "reviewStatus": "draft, external review not submitted",
-  "reviewerCloudCredits": "none authorized; demonstration credentials excluded",
-  "localInference": "Apple Foundation Models user-reported working; MLX macOS host memory/inference passes do not clear iPad chat crash",
+  "reviewerCloudCredits": "none authorized; demonstration credentials excluded; no developer API key provided to Apple",
+  "localInference": "Apple Foundation Models user-reported working; MLX macOS host memory/inference passes do not clear the pending iPad chat crash; physical-device acceptance remains",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
   "updatedAt": "2026-09-18",
   "currentRenderedPagesReviewed": [
@@ -29,9 +30,21 @@
     14
   ],
   "unchangedPageTextComparedToPreviouslyReviewedPDF": [],
-  "footerChange": "Baseline178/candidate185 preparation draft",
+  "footerChange": "Baseline178/candidate186 preparation draft",
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
-  "latestEvidence": "Release run35292395886 source42ecc452 in progress. Current Lua tests7/7; NativeNotes component72/72 per device. Full candidate App/UI gates pending.",
-  "visualReview": "All14 pages checked in current contact sheet; pages1,10,12,13 inspected individually at1200px. No overlap or clipping. Original source-labelled screenshots retained."
+  "latestEvidence": "Build186 component run35304310882 at source8d303197 in progress; previous component run35301809882: iPad84/84, iPhone83/84 with the real scanned bilingual OCR/search case exceeding120s (not Office). Build185 failed Notes UI qualification after both SDK App regressions204/204. No tag, signed upload or public Beta submission.",
+  "visualReview": "Primary viewed all14 rendered pages at1000px on2026-09-18; no observed overlap, clipped content or detached footers; original screenshot labels retained.",
+  "previousPdf": {
+    "path": "Local/Private/build186-review-pdf/previous-185.pdf",
+    "sha256": "b371ae26c556e03ac5da5ea0ae002a40a821dfcf20c512445611fa70c556d8ec",
+    "pages": 14,
+    "bytes": 2759686,
+    "validation": "Local/Private/build186-review-pdf/review-guide-validation-build185.json"
+  },
+  "iCloudCopy": {
+    "file": "Floe-公开Beta审核演示说明-186准备稿.pdf",
+    "localHashMatched": true,
+    "remoteSyncVerified": false
+  }
 }
