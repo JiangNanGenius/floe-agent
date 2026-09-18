@@ -1,6 +1,6 @@
 # Complete review walkthrough / 完整审核演示说明
 
-Baseline: 1.7.0 (178). Candidate: 1.7.0 (187). preparation draft; fixed source d77aa11f7b4933b987faf5cf65ebc817d520e15e tagged v1.7.0-beta.44; release run35312393708 in progress; no upload; external review not submitted.
+Baseline: 1.7.0 (178). Candidate: 1.7.0 (188). preparation draft; fixed source c5656276a3fed0cc0546d2ab360603e443b7f87e tagged v1.7.0-beta.45; release run35317532109 in progress; no upload; external review not submitted.
 
 ## Floe Agent 公开 Beta 审核演示说明 / Public Beta Review Walkthrough
 
@@ -8,9 +8,9 @@ Baseline: version 1.7.0, build 178, previously delivered to internal Floe QA. Pu
 
 基线：1.7.0（178），此前已交付 Floe QA 内部 TestFlight；尚未提交公开／外部 Beta 审核。
 
-Build187 is a fixed-source candidate: tag v1.7.0-beta.44 resolves to d77aa11f. Release run35312393708 is qualifying the Notes component and both SDK App builds in parallel. No upload or installability is claimed. Build186 passed 204/204 accepted-SDK App regressions but failed Notes UI and component qualification; its recovery archive and actual Office cover screenshots are retained. Historical screenshots and the build175 Agent video keep their original source labels.
+Build188 is fixed at tag v1.7.0-beta.45 / c5656276. Run35317532109 is validating the Notes component and both SDK App builds. No upload or installability is claimed. Build187 passed204/204 SDK27 App regressions but failed Notes UI and component qualification; its device recovery and original failures are retained. Historical screenshots and the build175 Agent video keep their source labels.
 
-187 已固定源码：v1.7.0-beta.44 对应 d77aa11f。发布 run35312393708 正并行验证手记组件与双 SDK App，尚不宣称上传或可安装。186 的发布 SDK App 回归通过 204/204，但手记界面与组件验收失败；恢复包及真实 Office 封面截图已保留。历史截图与 175 的 Agent 视频继续标明原始来源。
+188 固定于 v1.7.0-beta.45 / c5656276。run35317532109 正验证手记组件及双 SDK App，尚不宣称上传或可安装。187 的 SDK27 App 回归通过204/204，但手记界面和组件验收失败；设备恢复包及原始失败已保留。历史截图和175的 Agent 视频继续标明来源。
 
 Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.
 
@@ -246,13 +246,13 @@ Source 955e346a passed SDK 27 App regressions and three Notes UI cases per devic
 
 955e346a 通过 SDK 27 App 回归及每端三项手记 UI 用例，原生 Office 跳过。随后 2e2a34c9 在 iPad、iPhone 各首次通过三项 IDE/CAD 用例（运行 35223435570）；原始失败记录保留。
 
-The build-178 release passed both SDK jobs and signed/uploaded successfully; its later GitHub publication step failed and was recovered separately. The older build-172 expedited simulator waiver does not apply to build 187 or public Beta review.
+The build-178 release passed both SDK jobs and signed/uploaded successfully; its later GitHub publication step failed and was recovered separately. The older build-172 expedited simulator waiver does not apply to build 188 or public Beta review.
 
-178 发布的两套 SDK 验收及签名上传成功；其后 GitHub 发布步骤失败，另行恢复。较早 172 的加急模拟器豁免不适用于 187 或公开 Beta 审核。
+178 发布的两套 SDK 验收及签名上传成功；其后 GitHub 发布步骤失败，另行恢复。较早 172 的加急模拟器豁免不适用于 188 或公开 Beta 审核。
 
-Every screenshot identifies its original source. The retained captures show earlier full-App simulator runs, not physical Pencil acceptance or the final build-187 submission binary. Build 186 Office/PPT/CAD cover images under docs/qualification/build186-release/native-covers are component-host output, not full-App card layout; earlier PDF captures do not prove them.
+Every screenshot identifies its original source. The retained captures show earlier full-App simulator runs, not physical Pencil acceptance or the final build-188 submission binary. Build 186 Office/PPT/CAD cover images under docs/qualification/build186-release/native-covers are component-host output, not full-App card layout; earlier PDF captures do not prove them.
 
-每张截图标明原始来源。现有配图来自较早完整 App 模拟器运行，不代表 Pencil 真机验收或最终 187 安装包；186 的 Office／PPT／CAD 封面图位于 docs/qualification/build186-release/native-covers，属于组件宿主输出，不等于完整 App 卡片布局；早先 PDF 截图不能替代。
+每张截图标明原始来源。现有配图来自较早完整 App 模拟器运行，不代表 Pencil 真机验收或最终 188 安装包；186 的 Office／PPT／CAD 封面图位于 docs/qualification/build186-release/native-covers，属于组件宿主输出，不等于完整 App 卡片布局；早先 PDF 截图不能替代。
 
 Before submission, confirm the final build, review contact, feedback email, support/privacy URLs and accepted access arrangement. These real details are not yet completed; this document is a preparation draft.
 
@@ -320,9 +320,9 @@ No model sleep loop is needed. An uncertain submission must not create duplicate
 
 无需模型循环等待。提交结果不明时不能重复触发；取消需等待 GitHub 确认。读取日志、下载未过期产物；摘要不匹配时必须保留原有文件。
 
-These are candidate acceptance instructions. The exact build-187 UI, live-account dispatch and relaunch observations still need to be recorded before treating this feature as review-ready.
+These are candidate acceptance instructions. The exact build-188 UI, live-account dispatch and relaunch observations still need to be recorded before treating this feature as review-ready.
 
-以上是候选版验收操作。仍需记录 187 的界面、真实账户提交和重开观察，才能把此项标为送审就绪。
+以上是候选版验收操作。仍需记录 188 的界面、真实账户提交和重开观察，才能把此项标为送审就绪。
 
 ## 13  演示结果与反馈 / Expected results and feedback
 
@@ -360,6 +360,6 @@ The retained App screenshot shows Word text, Excel cells and PowerPoint slide co
 
 这张完整 App 截图显示 Word 文字、Excel 单元格和 PPT 幻灯片内容，并同时显示 PDF、手写页、导图与 CAD 图纸；不再只用 PDF 证明预览。内容均为合成测试资料。
 
-Build186 still failed at the Office back-control identifier check, so the later cold-relaunch test was not reached. Build187 corrects that identifier and adds labelled summary-first Office previews; its final runtime result must be recorded separately. A summary is not original Office layout fidelity.
+Build186 failed at the Office back-control identifier; build187 later failed querying a cover child, before cold relaunch. Build188 publishes the actual thumbnail state on its file card and reads it there. Runtime acceptance is pending. The retained images do not prove build188 UI or original Office layout fidelity.
 
-186 仍在 Office 返回按钮标识检查处失败，后续冷启动恢复测试尚未执行。187 修正标识，并为 Office 加入带标注的摘要首帧；最终运行结果须另行记录。摘要不等于原始 Office 排版。
+186 在 Office 返回标识检查处失败；187 随后在封面子元素查询时失败，也未完成冷启动段。188 在文件卡片上直接提供并读取真实缩略图状态，运行验收待完成。现有图片不代表188界面通过，也不证明原始 Office 排版保真。

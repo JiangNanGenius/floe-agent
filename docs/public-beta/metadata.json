@@ -72,19 +72,19 @@
   },
   "candidateQualification": {
     "version": "1.7.0",
-    "build": "187",
+    "build": "188",
     "stage": "fixed_source_cloud_qualification_in_progress",
-    "tag": "v1.7.0-beta.44",
-    "tagObject": "91cbedbd7694b1bf9d6168fd284a955212fc6990",
-    "appSourceCommit": "d77aa11f7b4933b987faf5cf65ebc817d520e15e",
-    "releaseRun": 35312393708,
-    "releaseRunStartedAt": "2026-09-18T05:50:30Z",
+    "tag": "v1.7.0-beta.45",
+    "tagObject": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+    "appSourceCommit": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+    "releaseRun": 35317532109,
+    "releaseRunStartedAt": "2026-09-18T07:02:10Z",
     "status": "qualifying_no_upload_no_public_beta_submission",
     "focusedEvidence": [
-      "Preflight:428 script cases,427pass/1existing platform skip;6focused Swift semantic/object checks;32diagnostic-parser fixtures pass.",
+      "Preflight:436 script cases,435pass/1existing platform skip;6focused Swift semantic/object checks plus complete NativeNotesTests typecheck and NotesRootView parse.",
       "Cloud jobs are in progress; runtime results are not yet claimed.",
-      "Progressive Office content summaries are explicitly labelled and bounded; they do not claim original document layout.",
-      "Existing App-owned GitHub task persistence/recovery/foreground polling remains in this immutable source."
+      "Card value is supplied by the real thumbnail state, including summary badge and diagnostics; separate descendant query removed.",
+      "IDE CI lifecycle remains service-owned and durable."
     ],
     "limitations": [
       "No upload or installability claimed. All three release gates must pass before signing.",
@@ -92,7 +92,7 @@
       "Physical iPad local-model ordinary-chat stability and native Office/Pencil remain unverified.",
       "RDP and the complete signed package/model catalog are not delivered."
     ],
-    "officeCoverEvidence": "docs/qualification/build186-release/app-ui: real full-App simulator cards at build186; source-labelled, not187 acceptance"
+    "officeCoverEvidence": "docs/qualification/build186-release/app-ui: real full-App simulator cards at build186; source-labelled, not188 acceptance"
   },
   "previousBuild185CandidateQualification": {
     "version": "1.7.0",
@@ -206,5 +206,28 @@
       "The original results are in docs/qualification/build186-release/result.json; not build187 evidence."
     ],
     "componentCovers": "docs/qualification/build186-release/native-covers - native Notes component-host output, not full-App UI or release acceptance"
+  },
+  "previousBuild187CandidateQualification": {
+    "version": "1.7.0",
+    "build": "187",
+    "stage": "fixed_source_cloud_qualification_in_progress",
+    "tag": "v1.7.0-beta.44",
+    "tagObject": "91cbedbd7694b1bf9d6168fd284a955212fc6990",
+    "appSourceCommit": "d77aa11f7b4933b987faf5cf65ebc817d520e15e",
+    "releaseRun": 35312393708,
+    "releaseRunStartedAt": "2026-09-18T05:50:30Z",
+    "status": "qualification_failed_no_upload",
+    "focusedEvidence": [
+      "SDK27 App regression204/204,23IDE cases passed.",
+      "Original component staging fixture failed both devices; corrected fixture passed both, but subsequent iPad WebKit timeout blocked the component rerun.",
+      "SDK27 UI query into Office thumbnail timed out on both families; original evidence and unsigned device recovery retained."
+    ],
+    "limitations": [
+      "No upload or installability claimed. All three release gates must pass before signing.",
+      "Full-App relaunch with live GitHub run remains a UI acceptance item; older23App-host cases and28live CLI checks are distinct.",
+      "Physical iPad local-model ordinary-chat stability and native Office/Pencil remain unverified.",
+      "RDP and the complete signed package/model catalog are not delivered."
+    ],
+    "officeCoverEvidence": "docs/qualification/build186-release/app-ui: real full-App simulator cards at build186; source-labelled, not187 acceptance"
   }
 }

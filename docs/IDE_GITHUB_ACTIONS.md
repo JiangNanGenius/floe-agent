@@ -1,13 +1,13 @@
-> Build187 update: tagged `v1.7.0-beta.44` at `d77aa11f7b4933b987faf5cf65ebc817d520e15e`; [run35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708) is qualifying in cloud CI. No upload is claimed. Earlier preparation and build186 results below retain their original provenance.
+> Build188 update: tagged `v1.7.0-beta.45` at `c5656276a3fed0cc0546d2ab360603e443b7f87e`; [run35317532109](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109) is qualifying in cloud CI. No upload is claimed. Earlier preparation and build186 results below retain their original provenance.
 
 # IDE cloud builds / IDE 云端构建
 
-Current status: build 187 / `v1.7.0-beta.44` is qualifying at fixed source
-`d77aa11f7b4933b987faf5cf65ebc817d520e15e` in
-[run 35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708).
+Current status: build 188 / `v1.7.0-beta.45` is qualifying at fixed source
+`c5656276a3fed0cc0546d2ab360603e443b7f87e` in
+[run 35317532109](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109).
 It has not uploaded. Build 186 failed qualification and was not uploaded; see
 [beta.43 final record](RELEASE_1.7.0_BETA_43.md) and
-[beta.44 live record](RELEASE_1.7.0_BETA_44.md).
+[beta.45 live record](RELEASE_1.7.0_BETA_45.md).
 
 Release run
 [`35306551280`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)

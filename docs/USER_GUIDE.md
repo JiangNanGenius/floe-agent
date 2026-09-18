@@ -515,7 +515,7 @@ still fail. The strict system-thumbnail-only checks are recorded separately and
 never turn a failure into a pass. A labelled summary does not establish an
 original-layout thumbnail. See [thumbnail acceptance](NOTES_OFFICE_THUMBNAIL_ACCEPTANCE.md).
 
-### Build 186 result and build 187 cloud qualification (not uploaded)
+### Build 186 and build 187 qualification records (not uploaded)
 
 Build 186 / beta.43 failed qualification and was not uploaded: the focused app
 regression passed 204/204 including 23 IDE cases, the Notes component passed 84/84
@@ -527,5 +527,14 @@ cover cold-relaunch phase was not reached. In build 187, modern
 Office cards show a labelled content summary as soon as it is ready and upgrade
 to the system thumbnail when it arrives; a timeout keeps the labelled summary
 instead of a blank card. Summaries cover at most 240 fields and the first Excel
-sheet, and are not an original-layout render. Build 187 is tagged `v1.7.0-beta.44` at `d77aa11f` and is qualifying in
+sheet, and are not an original-layout render. Build 187 is tagged `v1.7.0-beta.44` at `d77aa11f` and encountered component/UI failures in
 cloud run `35312393708`; it has not uploaded. See [beta.44 record](RELEASE_1.7.0_BETA_44.md).
+
+
+### Build188 cloud candidate
+
+Build187 passed204/204 SDK27 App regressions but failed Notes UI and the original
+component fixture. It was not uploaded. Build188 fixes cover-card accessibility
+queries and bounds WebKit screenshot waits; source `c5656276a3fed0cc0546d2ab360603e443b7f87e`,
+[run35317532109](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109).
+Cloud verification is in progress; no upload or installability is claimed.
