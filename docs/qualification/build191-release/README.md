@@ -91,3 +91,13 @@ unchanged normalization, App regression, signing and Apple validation. It is
 disabled by default and has not been dispatched: the user has so far waived
 only the two SDK27 failures, and a question about the third failure is pending.
 No192 build, retagging, public Beta or production submission occurred.
+
+## Additional waiver and recovery dispatch — 12:49UTC
+
+The user explicitly answered “skip” to the additional accepted-SDK iPhone
+failure. All three recorded UI failures are now waived for this internal
+device-testing delivery only. [Recovery upload35346684753](https://github.com/JiangNanGenius/floe-agent/actions/runs/35346684753)
+uses controller0b97fa4e and the original715cbc42 App, with no compilation.
+The recovery policy and related gates passed108 local Python checks and
+actionlint; those controller checks are not application UI acceptance.
+Signing, Apple processing and group availability remain pending.

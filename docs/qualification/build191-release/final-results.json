@@ -197,6 +197,15 @@
     "reason": "Accepted SDK job did not pass",
     "signingAttempted": false,
     "uploaded": false,
-    "additionalAcceptedSDKUIWaiver": "awaiting_user_response"
+    "additionalAcceptedSDKUIWaiver": "user_explicitly_authorized_skip_2026-09-18"
+  },
+  "recoveryDistribution": {
+    "run": 35346684753,
+    "controller": "0b97fa4e412ab1b9d2f2fc190ad127fd1f1769e6",
+    "dispatchedAt": "2026-09-18T12:49:00Z",
+    "appSource": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+    "status": "in_progress",
+    "rebuilt": false,
+    "allThreeUIFailuresWaived": true
   }
 }

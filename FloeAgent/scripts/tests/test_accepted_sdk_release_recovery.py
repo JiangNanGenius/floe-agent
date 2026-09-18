@@ -417,6 +417,27 @@ def make_device_artifact(root: Path, *, source_sha=SOURCE_SHA, stage=recovery.RE
 
 
 class DeviceArchiveTests(unittest.TestCase):
+    def test_zip_restores_executable_permissions_without_special_bits(self):
+        binary = device_entry("Payload/test-binary")
+        binary.create_system = 3
+        binary.external_attr = (stat.S_IFREG | 0o6755) << 16
+        archive = self.root / "executable.zip"
+        write_zip(archive, [(binary.filename, binary, b"executable")])
+        recovery.safe_extract_zip(archive, self.extract)
+        self.assertEqual((self.extract / binary.filename).stat().st_mode & 0o7777, 0o755)
+
+    def test_stage_record_matches_release_producer(self):
+        workflow = (SCRIPTS.parents[1] / ".github/workflows/release-unsigned-ipa.yml").read_text()
+        marker = "stage=" + recovery.RECOVERY_STAGE
+        self.assertIn("'" + marker + "'", workflow)
+        artifact, _ = make_device_artifact(self.root, stage=marker)
+        self.assertEqual(self.verify(artifact)["recovery_stage"], recovery.RECOVERY_STAGE)
+
+    def test_keyed_wrong_stage_rejected(self):
+        artifact, _ = make_device_artifact(self.root, stage="stage=normalized")
+        with self.assertRaises(recovery.RecoveryVerificationError):
+            self.verify(artifact)
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)

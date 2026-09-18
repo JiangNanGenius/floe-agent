@@ -359,6 +359,13 @@ def safe_extract_zip(zip_path: Path, dest: Path) -> int:
                      "archive expands beyond the allowed uncompressed size")
         # Validation already refused every non-file/directory member.
         archive.extractall(dest, members=members)
+        # zipfile does not restore Unix permissions. Retained app/framework
+        # executables must keep their execute bits for distribution. Never
+        # restore setuid/setgid/sticky bits; apply directory modes last.
+        for info in sorted(members, key=lambda item: item.filename.count("/"), reverse=True):
+            mode = info.external_attr >> 16
+            if info.create_system == 3 and stat.S_IFMT(mode) in (stat.S_IFREG, stat.S_IFDIR):
+                dest.joinpath(*info.filename.rstrip("/").split("/")).chmod(mode & 0o777)
     return len(members)
 
 
@@ -392,6 +399,10 @@ def verify_device_archive(artifact_dir: Path, *, source_sha: str, version: str,
     stage_file = payload / "RECOVERY-STAGE.txt"
     _require(stage_file.is_file(), "device zip did not record RECOVERY-STAGE.txt")
     stage = stage_file.read_text(encoding="utf-8").strip()
+    # The release producer writes a key=value record. Older recovery fixtures
+    # used the bare value; accept both exact representations, never other stages.
+    if stage.startswith("stage="):
+        stage = stage[len("stage="):]
     _require(stage == RECOVERY_STAGE,
              f"device zip recovery stage {stage!r} is not the pre-normalization device build")
 
