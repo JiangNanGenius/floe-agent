@@ -11,7 +11,6 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG_KEY = "notes.navigation.backToNotes"
 
-@unittest.skipUnless(sys.platform == "darwin", "release preflight requires Apple's plutil")
 class ReleaseVersionPreflightTests(unittest.TestCase):
     def run_preflight(self, transform=lambda text: text, catalog_transform=lambda text: text):
         with tempfile.TemporaryDirectory(prefix="floe-release-version-test-") as temp:
