@@ -79,6 +79,15 @@
       "patch": "patches/mdds-gcc12-upstream.patch",
       "patchSHA256": "3411f0814815e06914ea1fbf50c5428af86cbed68c82c0481e09dd62bc8a22c6",
       "upstreamPatch": "engine/external/mdds/gcc-12-silence-use-after-free.patch.1"
+    },
+    "frozen": {
+      "url": "https://dev-www.libreoffice.org/src/frozen-1.2.0.tar.gz",
+      "sha256": "ed8339c017d7c5fe019ac2c642477f435278f0dc643c1d69d3f3b1e95915e823",
+      "root": "frozen-1.2.0",
+      "include": "include",
+      "patch": "patches/frozen-upstream.patch",
+      "patchSHA256": "52c173cd07880abd7ba3163fe95635d640ddd46382f90604ef86f685426acb4b",
+      "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
     }
   }
 }
