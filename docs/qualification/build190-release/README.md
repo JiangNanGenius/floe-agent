@@ -61,3 +61,14 @@ appear exactly once as a separate invocation with retained diagnostics and no
 failure bypass. Do not rerun the original unchanged workflow or relabel this
 failed run as a pass; wait for the remaining UI evidence before fixing the
 next immutable candidate.
+
+## Saved device recovery — 2026-09-18
+
+The accepted-SDK job preserved its unsigned device build before normalization
+and tests. The local copy is811,490,471 bytes; its SHA-256 matches the cloud
+sidecar. Embedded source matches5183112a, and both App and Screen Share extension
+report1.7.0(190), iPhoneOS26.5, Xcode build17F113.
+[Recovery verification](device-recovery.json) records the exact hash and metadata.
+This is a recoverable build artifact, not a signed IPA or a TestFlight upload.
+The accepted-SDK simulator-host build remains in progress; the SDK27 gate
+failure still prevents release. No duplicate download or build was started.

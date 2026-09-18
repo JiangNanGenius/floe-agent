@@ -1,0 +1,28 @@
+{
+  "artifact": "accepted-sdk-device-recovery-1.7.0-build190/accepted-sdk-device-recovery.zip",
+  "bytes": 811490471,
+  "sha256": "87acd3e5cdd27fb2b7ff7707c8122bdac3367b9c0b4ca93d58d43d0b64fe6de3",
+  "sidecarMatches": true,
+  "metadata": {
+    "FloeSignedPayload/SOURCE-SHA.txt": "5183112af7388b2a0c8742057176e584e76cc733",
+    "FloeSignedPayload/RECOVERY-STAGE.txt": "stage=unsigned_device_build_before_normalization_and_tests"
+  },
+  "bundles": {
+    "FloeSignedPayload/Payload/Floe Agent.app/PlugIns/Floe Screen Share.appex/Info.plist": {
+      "CFBundleIdentifier": "org.floeagent.ios.screenshare",
+      "CFBundleShortVersionString": "1.7.0",
+      "CFBundleVersion": "190",
+      "DTSDKName": "iphoneos26.5",
+      "DTXcodeBuild": "17F113"
+    },
+    "FloeSignedPayload/Payload/Floe Agent.app/Info.plist": {
+      "CFBundleIdentifier": "org.floeagent.ios",
+      "CFBundleShortVersionString": "1.7.0",
+      "CFBundleVersion": "190",
+      "DTSDKName": "iphoneos26.5",
+      "DTXcodeBuild": "17F113"
+    }
+  },
+  "sourceRun": 35329733708,
+  "distributionStatus": "unsigned recovery; not normalized, signed, uploaded or installable"
+}
