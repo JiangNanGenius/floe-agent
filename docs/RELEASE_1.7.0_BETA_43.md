@@ -13,6 +13,10 @@ Its original binary and failure evidence remain preserved.
 - Shared Office resource operations begin before queueing/staging. Timeout does
   not restart an outstanding system request; late callbacks settle at most once.
 - RTF unsupported-format fixture creates its scratch directory before writing.
+- Scanned OCR fixtures use the same original pixels on both devices. The single
+  functional OCR/search case uses the existing 180-second ceiling and records
+  elapsed time, after correct output arrived at 138 seconds beyond the earlier
+  120-second effective allowance. This is not a product performance-fix claim.
 - Component qualification attempts both device families and preserves failures.
 - App-owned GitHub build persistence and foreground recovery remain included.
 
@@ -41,3 +45,5 @@ subsequent version changes do not modify those implementation files.
 [TestFlight text draft](TESTFLIGHT_1.7_WHATS_NEW_BUILD_186.json) are prepared.
 Physical iPad local-model and native Office/Pencil acceptance remains user-owned;
 RDP is not declared a usable App feature.
+
+The per-case allowance follows [Apple XCTest documentation](https://developer.apple.com/documentation/xctest/xctestcase/executiontimeallowance); timing remains recorded separately from functional assertions. The next cloud run must confirm the effective allowance and actual outcome.

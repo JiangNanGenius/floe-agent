@@ -11,10 +11,22 @@ import FloeDocuments
 
 @MainActor final class NativeNotesTests: XCTestCase {
     func testScannedBilingualPageUsesRealVisionAndBecomesSearchable() async throws {
+        // Functional OCR/search qualification, not a latency benchmark. Run
+        // 35301809882 returned correct text at 138 s on the cold iPhone simulator
+        // after the default allowance rounded to 120 s. Use the existing 180 s
+        // workflow ceiling for this case only; retain timing evidence below.
+        executionTimeAllowance = 180
+        let started = ContinuousClock.now
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try NotesStore(root: root)
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 768, height: 1024)).image { context in
+        // Qualification fixture must be device-independent: UIGraphicsImageRenderer's
+        // default format tracks the display scale (3x on iPhone -> 2304x3072 PNG,
+        // 2x on iPad -> 1536x2048 PNG in the build 185/186 artifacts). Pin 2x so both
+        // device families feed the same real Vision input and the same importer path.
+        let fixtureFormat = UIGraphicsImageRendererFormat()
+        fixtureFormat.scale = 2
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 768, height: 1024), format: fixtureFormat).image { context in
             UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 768, height: 1024))
             ("边际成本\nOpportunity cost\nEnglish and Chinese" as NSString).draw(in: CGRect(x: 40, y: 80, width: 680, height: 500), withAttributes: [.font: UIFont.systemFont(ofSize: 42), .foregroundColor: UIColor.black])
         }
@@ -30,6 +42,8 @@ import FloeDocuments
         XCTAssertEqual(hits.map(\.id), [document.id])
         let attachment = XCTAttachment(image: image); attachment.name = "bilingual-scanned-page-original"; attachment.lifetime = .keepAlways; add(attachment)
         let output = XCTAttachment(string: text); output.name = "bilingual-Vision-OCR-output"; output.lifetime = .keepAlways; add(output)
+        let timing = XCTAttachment(string: "functional OCR/search elapsed: \(started.duration(to: .now)); fixture: 1536x2048 pixels; allowance: 180 seconds")
+        timing.name = "bilingual-Vision-OCR-timing"; timing.lifetime = .keepAlways; add(timing)
     }
 
     func testWorkspaceOfficeAndTextImportsIndexContents() async throws {

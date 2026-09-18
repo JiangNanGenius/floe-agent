@@ -97,6 +97,14 @@
       "skipped": 0,
       "failure": "NativeNotesTests/testScannedBilingualPageUsesRealVisionAndBecomesSearchable exceeded 120 seconds; Xcode later restarted the test host"
     },
-    "verified": "Office Quick Look, CAS fallback and all new coalescing/cancellation cases passed on both device families"
+    "verified": "Office Quick Look, CAS fallback and all new coalescing/cancellation cases passed on both device families",
+    "ocrFollowup": {
+      "originalFailure": "Functional scanned-page OCR/search test exceeded effective120s, then returned correct output at138.338s; XCTest later terminated the host with SIGTERM",
+      "fixtureChange": "Pin original fixture1536x2048 pixels on both devices; production composite already capped at2048 and unchanged",
+      "qualificationPolicy": "Only this functional case uses180s executionTimeAllowance, the existing workflow maximum; defaults and all text/search assertions remain unchanged",
+      "timingEvidence": "Retain actual elapsed OCR/search timing as an attachment",
+      "notClaimed": "This is an explicit test allowance adjustment, not a product performance fix or proof of a system-exclusive root cause",
+      "status": "Awaiting current-source cloud qualification"
+    }
   }
 }
