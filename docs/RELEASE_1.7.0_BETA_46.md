@@ -3,7 +3,7 @@
 Tag `v1.7.0-beta.46` fixes source
 `ba0271b247fd233ebfed9df3bd2353a9242d0cc7`.
 [Cloud run35322816608](https://github.com/JiangNanGenius/floe-agent/actions/runs/35322816608)
-is executing normal component and full-App dual-SDK qualification.
+ended with a failed SDK27 UI gate; no distribution was attempted.
 
 This candidate repairs Notes library accessibility ownership after build188
 failed the Word cover-card lookup. Embedded thumbnails no longer install a

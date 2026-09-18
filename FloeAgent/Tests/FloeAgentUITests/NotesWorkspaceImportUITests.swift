@@ -375,7 +375,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     }
 
     private func cardElement(_ app: XCUIApplication, kind: String, title: String) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "notes.card.\(kind).\(title).")).firstMatch
+        // Scope enumeration to the library. SDK27's global firstMatch query
+        // stalled inside XCTFilteringTransformerIterator after cold relaunch,
+        // while the recording showed the library continuing to render. A
+        // bounded-index query avoids that lazy global traversal without
+        // changing which card, cover source or revision must be verified.
+        app.scrollViews["notes.library.scroll"].buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "notes.card.\(kind).\(title)."))
+            .element(boundBy: 0)
     }
 
     /// The library is a `LazyVGrid` inside a `ScrollView`, so an offscreen card

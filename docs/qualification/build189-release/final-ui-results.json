@@ -1,0 +1,77 @@
+{
+  "build": 189,
+  "sourceSHA": "ba0271b247fd233ebfed9df3bd2353a9242d0cc7",
+  "runID": 35322816608,
+  "conclusion": "failure",
+  "testFlightUploaded": false,
+  "acceptedSDK": {
+    "ipad": {
+      "totalTestCount": 5,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "tests": {
+        "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers": "Passed",
+        "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen": "Skipped",
+        "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant": "Passed",
+        "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch": "Passed",
+        "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout": "Passed"
+      },
+      "result": "Passed",
+      "nativeOfficeAccepted": false,
+      "coverage": "simulator-notes-and-content-covers"
+    },
+    "iphone": {
+      "totalTestCount": 5,
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "expectedFailures": 0,
+      "tests": {
+        "NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant": "Passed",
+        "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers": "Passed",
+        "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch": "Passed",
+        "NotesWorkspaceImportUITests/testOfficeHeaderAssistantSaveAndReopen": "Skipped",
+        "NotesWorkspaceImportUITests/testPencilToolsAndFocusedLayout": "Passed"
+      },
+      "result": "Passed",
+      "nativeOfficeAccepted": false,
+      "coverage": "simulator-notes-and-content-covers"
+    }
+  },
+  "sdk27": {
+    "ipad": {
+      "result": "Failed",
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "testFailures": [
+        {
+          "failureText": "Failed to get matching snapshots: Timed out while evaluating UI query.",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 2,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
+          "testName": "testNotesLibraryCardsShowRealContentCovers()"
+        }
+      ]
+    },
+    "iphone": {
+      "result": "Failed",
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "testFailures": [
+        {
+          "failureText": "Failed to launch <XCUIApplicationImpl: 0x1099b4f00 org.floeagent.ios at /Users/runner/work/_temp/FloeAppRegressionDerivedData/Build/Products/Debug-iphonesimulator/Floe Agent.app> via Xcode: Timed out while launching application via Xcode.",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 1,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testDocumentTabsAndBodySearch",
+          "testName": "testDocumentTabsAndBodySearch()"
+        }
+      ]
+    }
+  }
+}

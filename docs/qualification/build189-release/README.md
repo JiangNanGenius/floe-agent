@@ -54,3 +54,34 @@ The accepted-SDK iPad UI step passed; its structured results will be retained
 when the parallel job publishes them. No retry or assertion change was made.
 
 These results do not establish TestFlight upload or availability.
+
+## Final result and retained failure diagnosis
+
+Run35322816608 ended **failure**. The accepted-SDK job passed: both iPad and
+iPhone UI results are4 passed,0 failed,1 existing device-only Office skip.
+SDK27 has3 passed,1 failed,1 Office skip on each family. Its iPad failed the
+cold-relaunch card query; iPhone failed the first App launch in the body-search
+case, before that case could interact with Floe. Its subsequent cover test,
+including cold relaunch, passed. All four Pencil flows passed this time;
+this does not prove the older188 intermittent panel-close failure is fixed.
+See [structured final results](final-ui-results.json).
+
+The SDK27 iPad recording at120s and170s shows the library rendering covers and
+updating relative time while the XCTest query is stalled. The process sample
+at08:54:48Z shows the main thread inside
+`XCTElementQuery._firstMatchingSnapshotForInput` /
+`XCTFilteringTransformerIterator.nextMatch`, interleaved with Quick Look and
+SwiftUI work. It does not establish an application deadlock. A later blank
+watchdog screenshot alone would give an incomplete account; both originals
+remain in the private artifact store.
+
+- [SDK27 iPad during the failed query](sdk27-ipad-during-query-timeout.png)
+- [Accepted-SDK iPad covers after successful relaunch](accepted-ipad-covers-after-relaunch.png)
+
+The next candidate scopes the card query to the Notes library and uses indexed
+matching rather than a global lazy first match. Simulator boot completes in a
+bounded recorded preparation step before XCTest's App-launch deadline starts.
+It does not pre-launch the App or retry executed failures. All cover sources,
+revision, rename, open/return, cold-relaunch and dual-device assertions remain
+required. This is a proposed harness correction, not a retrospective pass.
+No189 signed upload, GitHub prerelease or Feather release occurred.
