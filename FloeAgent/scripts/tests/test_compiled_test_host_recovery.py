@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,109 @@ import verify_compiled_test_host as host  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ide-host-recovery.yml"
+PLATFORM_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "platform-test-diagnostics.yml")
+
+
+def parse_trigger_inputs(source: str, trigger: str) -> dict:
+    """Return the declared ``inputs`` mapping of one workflow trigger.
+
+    The fixtures run on a clean CI runner, so this is a small indentation
+    parser rather than a PyYAML dependency.
+    """
+    section = source.split(f"\n  {trigger}:", 1)[1]
+    # Stop at the next trigger (two-space key) and at the top-level keys after
+    # the ``on:`` block.
+    section = re.split(r"\n  [a-z_]+:", section, maxsplit=1)[0]
+    section = section.split("\npermissions:", 1)[0]
+    if "inputs:" not in section:
+        return {}
+    entries = {}
+    current = None
+    for line in section.split("inputs:", 1)[1].splitlines():
+        if re.fullmatch(r"      [a-z0-9_]+:", line):
+            current = line.strip()[:-1]
+            entries[current] = {}
+        elif current is not None and re.match(r"^        [a-z]+:", line):
+            key, _, value = line.strip().partition(":")
+            entries[current][key] = value.strip()
+    return entries
+
+
+def typed_default(entry: dict):
+    """Resolve a parsed ``default:`` scalar against the declared input type."""
+    raw = entry.get("default")
+    if raw is None:
+        return None
+    if raw in ('""', "''"):
+        return ""
+    if entry.get("type") == "boolean":
+        return raw == "true"
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return raw
+
+
+def job_guard(source: str, marker: str) -> str:
+    """Extract the job-level ``if:`` expression after ``marker``."""
+    job = source.split(marker, 1)[1]
+    match = re.search(r"^    if: (.+)$", job, re.MULTILINE)
+    if match is None:
+        raise AssertionError(f"no job guard after {marker!r}")
+    return match.group(1).strip()
+
+
+def evaluate_notes_guard(expression: str, inputs: dict) -> bool:
+    """Evaluate the platform controller's real job guard for one payload.
+
+    ``{}`` models a push payload, where the ``inputs`` context is absent and a
+    missing ``notes_diagnostic`` key must read as "not opted in".
+    """
+    match = re.fullmatch(
+        r"\$\{\{\s*(?P<negated>!?)\s*inputs\.notes_diagnostic\s*\}\}",
+        expression.strip())
+    if match is None:
+        raise AssertionError(f"unexpected controller guard {expression!r}")
+    opted_in = bool(inputs.get("notes_diagnostic")) if inputs else False
+    return (not opted_in) if match.group("negated") else opted_in
+
+
+def parse_with_block(job: str) -> dict:
+    entries = {}
+    for line in job.split("\n    with:", 1)[1].splitlines():
+        match = re.match(r"^      ([a-z0-9_]+): (.+)$", line)
+        if match:
+            value = match.group(2).strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            entries[match.group(1)] = value
+        elif entries and not line.startswith("      "):
+            break
+    return entries
+
+
+def job_permissions(job: str) -> dict:
+    entries = {}
+    for line in job.split("\n    permissions:", 1)[1].splitlines():
+        match = re.match(r"^      ([a-z-]+): (\S+)$", line)
+        if match:
+            entries[match.group(1)] = match.group(2)
+        elif entries and not line.startswith("      "):
+            break
+    return entries
+
+
+def workflow_permissions(source: str) -> dict:
+    block = source.split("\npermissions:", 1)[1]
+    for boundary in ("\njobs:", "\nconcurrency:"):
+        if boundary in block:
+            block = block.split(boundary, 1)[0]
+    entries = {}
+    for line in block.splitlines():
+        match = re.match(r"^  ([a-z-]+): (\S+)$", line)
+        if match:
+            entries[match.group(1)] = match.group(2)
+    return entries
 
 SOURCE_SHA = "2e2a34c9f9d6a06d10b804df81ee1d92ec3f1381"
 SOURCE_RUN = "35223435570"
@@ -665,6 +769,156 @@ class RecoveryWorkflowTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0,
                          result.stdout + result.stderr)
+
+
+class ReusableWorkflowContractTests(unittest.TestCase):
+    """The recovery workflow stays directly dispatchable and gains exactly the
+    same typed contract for the registered root controller."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = WORKFLOW.read_text(encoding="utf-8")
+        cls.dispatch_inputs = parse_trigger_inputs(cls.source, "workflow_dispatch")
+        cls.call_inputs = parse_trigger_inputs(cls.source, "workflow_call")
+
+    def test_workflow_is_still_dispatchable_and_now_reusable(self):
+        on_block = self.source.split("\non:", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("workflow_dispatch:", on_block)
+        self.assertIn("workflow_call:", on_block)
+        self.assertNotIn("push:", on_block)
+        self.assertNotIn("pull_request", on_block)
+
+    def test_call_inputs_match_dispatch_inputs_exactly(self):
+        self.assertTrue(self.dispatch_inputs)
+        self.assertEqual(sorted(self.dispatch_inputs), sorted(self.call_inputs))
+        for name in sorted(self.dispatch_inputs):
+            with self.subTest(input=name):
+                self.assertEqual(self.dispatch_inputs[name],
+                                 self.call_inputs[name],
+                                 f"{name} drifted between the triggers")
+
+    def test_notes_mode_typed_defaults_are_unchanged(self):
+        notes = self.dispatch_inputs["notes_diagnostic"]
+        self.assertEqual(notes.get("type"), "boolean")
+        self.assertEqual(notes.get("required"), "false")
+        self.assertIs(typed_default(notes), False)
+        self.assertEqual(typed_default(self.dispatch_inputs["source_attempt"]), "1")
+        self.assertEqual(typed_default(self.dispatch_inputs["xcode_version"]), "27.0")
+        self.assertEqual(typed_default(self.dispatch_inputs["xcode_build"]),
+                         "27A5252f")
+        self.assertEqual(self.dispatch_inputs["source_sha"].get("required"), "true")
+        self.assertEqual(
+            typed_default(self.dispatch_inputs["products_sha256"]),
+            "abfc75f5d8b30de8c34b9a3e575efa24a8671e71f4d6f5e9508f4fd671d6d250")
+
+
+class RegisteredControllerDispatchTests(unittest.TestCase):
+    """platform-test-diagnostics.yml is the registered root workflow
+    (id 356794392); it keeps its platform job as the default and delegates the
+    Notes diagnostic to the branch-local recovery workflow with pinned inputs
+    instead of duplicating it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = PLATFORM_WORKFLOW.read_text(encoding="utf-8")
+        cls.platform_job = cls.source.split("\n  platform:", 1)[1].split(
+            "\n  notes-diagnostic:", 1)[0]
+        cls.notes_job = cls.source.split("\n  notes-diagnostic:", 1)[1]
+
+    def test_registered_name_and_platform_job_are_unchanged(self):
+        # The workflow name is how ``gh workflow run`` resolves the registered
+        # id; the platform job keeps its reviewed steps and stays the default.
+        self.assertIn("name: Diagnose platform test execution", self.source)
+        for marker in (
+                "python3 FloeAgent/scripts/run_test_with_diagnostics.py",
+                "swift test --package-path FloeAgent/Qualification",
+                "platform-diagnostics-${{ github.sha }}",
+                "Install pinned catalog verification dependency",
+                "Prepare the pinned Lua WASI fixture"):
+            self.assertIn(marker, self.platform_job, marker)
+        self.assertNotIn("ide-host-recovery", self.platform_job)
+        self.assertEqual(job_guard(self.source, "\n  platform:"),
+                         "${{ !inputs.notes_diagnostic }}")
+
+    def test_notes_diagnostic_is_one_optional_boolean_dispatch_input(self):
+        inputs = parse_trigger_inputs(self.source, "workflow_dispatch")
+        self.assertEqual(list(inputs), ["notes_diagnostic"])
+        entry = inputs["notes_diagnostic"]
+        self.assertEqual(entry.get("type"), "boolean")
+        self.assertEqual(entry.get("required"), "false")
+        self.assertIs(typed_default(entry), False)
+
+    def test_notes_job_calls_the_branch_local_reviewed_controller(self):
+        # A caller-local ``uses`` with no ``@ref`` resolves the workflow at the
+        # dispatch ref, so the registered default-branch controller can run the
+        # branch copy even though it is not registered on its own.
+        self.assertIn("uses: ./.github/workflows/ide-host-recovery.yml",
+                      self.notes_job)
+        self.assertNotRegex(self.notes_job, r"uses: [^\n]+@")
+
+    def test_notes_job_pins_the_immutable_build_185_host(self):
+        self.assertEqual(parse_with_block(self.notes_job), {
+            "source_sha": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
+            "source_run": "35292395886",
+            "source_attempt": "1",
+            "xcode_version": "27.0",
+            "xcode_build": "27A266a",
+            "notes_diagnostic": "true",
+            "host_workflow_path": ".github/workflows/release-unsigned-ipa.yml",
+        })
+
+    def test_actions_read_is_granted_to_the_call_only(self):
+        # The default platform job keeps the existing least privilege; the
+        # artifact-fetching call needs actions:read and nothing more.
+        self.assertEqual(workflow_permissions(self.source),
+                         {"contents": "read"})
+        self.assertEqual(job_permissions(self.notes_job),
+                         {"contents": "read", "actions": "read"})
+        called = workflow_permissions(WORKFLOW.read_text(encoding="utf-8"))
+        self.assertEqual(called, {"contents": "read", "actions": "read"})
+        self.assertTrue(set(called.items())
+                        <= set(job_permissions(self.notes_job).items()))
+
+    def test_controller_does_not_duplicate_the_recovery_workflow(self):
+        self.assertNotIn("test-without-building", self.source)
+        self.assertNotIn("xcodebuild", self.source)
+        self.assertEqual(
+            self.source.count("./.github/workflows/ide-host-recovery.yml"), 1)
+        self.assertLess(len(self.source.splitlines()), 150)
+
+    def test_actionlint_passes_and_resolves_the_local_reusable_workflow(self):
+        actionlint = shutil.which("actionlint")
+        if actionlint is None:
+            self.skipTest("actionlint is not installed")
+        result = subprocess.run([actionlint, str(PLATFORM_WORKFLOW)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout + result.stderr)
+
+
+class PlatformDispatchModeTests(unittest.TestCase):
+    """Execute the controller's real job guards for both manual modes and for
+    push, so the default path cannot be silently broken."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = PLATFORM_WORKFLOW.read_text(encoding="utf-8")
+        cls.platform_guard = job_guard(source, "\n  platform:")
+        cls.notes_guard = job_guard(source, "\n  notes-diagnostic:")
+
+    def test_default_manual_dispatch_runs_only_the_platform_job(self):
+        inputs = {"notes_diagnostic": False}
+        self.assertTrue(evaluate_notes_guard(self.platform_guard, inputs))
+        self.assertFalse(evaluate_notes_guard(self.notes_guard, inputs))
+
+    def test_opted_in_manual_dispatch_runs_only_the_notes_diagnostic(self):
+        inputs = {"notes_diagnostic": True}
+        self.assertFalse(evaluate_notes_guard(self.platform_guard, inputs))
+        self.assertTrue(evaluate_notes_guard(self.notes_guard, inputs))
+
+    def test_push_without_inputs_keeps_the_platform_job(self):
+        self.assertTrue(evaluate_notes_guard(self.platform_guard, {}))
+        self.assertFalse(evaluate_notes_guard(self.notes_guard, {}))
 
 
 if __name__ == "__main__":

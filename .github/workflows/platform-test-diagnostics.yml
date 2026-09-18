@@ -1,6 +1,14 @@
 name: Diagnose platform test execution
 on:
   workflow_dispatch:
+    inputs:
+      # Opt-in only: the default manual dispatch and the push trigger keep
+      # running the original platform job below.
+      notes_diagnostic:
+        description: Reuse the immutable build 185 SDK 27 host for the original Notes cover diagnostic instead of platform tests
+        required: false
+        default: false
+        type: boolean
   push:
     branches: ['codex/floe-1-7-integration-20260912']
     paths: ['.github/workflows/platform-test-diagnostics.yml']
@@ -8,6 +16,9 @@ permissions:
   contents: read
 jobs:
   platform:
+    # Default mode: step body unchanged, still runs on push and on a manual
+    # dispatch that does not opt in to the Notes diagnostic.
+    if: ${{ !inputs.notes_diagnostic }}
     runs-on: xcode-27
     timeout-minutes: 25
     env:
@@ -39,3 +50,23 @@ jobs:
         with:
           name: platform-diagnostics-${{ github.sha }}
           path: ${{ runner.temp }}/platform-diagnostics
+  # Opt-in mode: delegate to the reviewed recovery controller at this commit.
+  # The call is branch-local (no @ref), so a dispatch against a branch uses
+  # that branch's reviewed copy even though this root workflow is the
+  # registered entry point. The host is pinned to the immutable build 185
+  # SDK 27 host; the call never builds and never releases, and no line of the
+  # recovery workflow is duplicated here.
+  notes-diagnostic:
+    if: ${{ inputs.notes_diagnostic }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ide-host-recovery.yml
+    with:
+      source_sha: 42ecc4527fdbeb171dd0aed1d0776375770f1572
+      source_run: "35292395886"
+      source_attempt: "1"
+      xcode_version: "27.0"
+      xcode_build: "27A266a"
+      notes_diagnostic: true
+      host_workflow_path: .github/workflows/release-unsigned-ipa.yml

@@ -90,8 +90,9 @@ version/build mismatch or an SDK major other than 27 before any artifact is
 downloaded or extracted. The three original cases
 (native workbench save/cold reopen, engineering DXF inline/full screen, DWG
 edit save/cold reopen) must all pass with zero skips; the original
-`verify_ide_ui_xcresult.py` enforces that. The only retry is a stall before any
-test started. Per-attempt logs, xcresults, screenshots, recordings, the run
+`verify_ide_ui_xcresult.py` enforces that. The IDE mode retains its configured Xcode test retry (at most two
+iterations), plus one wrapper retry for a stall before any test started.
+These retries must remain visible in the retained evidence. Per-attempt logs, xcresults, screenshots, recordings, the run
 metadata and the verification report are uploaded as
 `ide-host-recovery-<device>-<source_sha>` for seven days.
 
@@ -148,3 +149,30 @@ run the Notes or App-regression phases, does not touch `ci.yml` or any test
 assertion, and does not publish to TestFlight, GitHub or Feather. A
 `GITHUB_TOKEN`-created release still would not guarantee a Feather update; that
 is out of scope here.
+
+## Build 185 Notes-only diagnostic / 手记定向诊断
+
+The optional `notes_diagnostic` mode reuses the release workflow’s saved SDK 27
+test host and runs only the original Notes content-cover UI test on iPad. It
+collects the Notes thumbnail log category, narrow Quick Look errors, the
+xcresult, screenshots and recording. It does not retry failed assertions, build
+the App, sign or distribute a package. The normal IDE mode remains separate.
+
+GitHub currently registers `platform-test-diagnostics.yml` on the default branch;
+`ide-host-recovery.yml` is not registered there yet. After the reviewed branch
+changes are pushed, the registered controller calls the reusable diagnostic:
+
+```sh
+gh workflow run platform-test-diagnostics.yml --ref codex/build178-feedback -f notes_diagnostic=true
+```
+
+This opt-in controller pins build 185 source
+`42ecc4527fdbeb171dd0aed1d0776375770f1572`, run `35292395886`, attempt 1,
+artifact `10526564633`, and Xcode 27.0 build `27A266a`. The source workflow,
+retention/upload step names, artifact identity, archive digest and toolchain
+are checked before execution. No IDE-host digest from an older build is reused.
+The artifact expires on 2026-09-25; expired or unavailable inputs fail explicitly.
+
+手记诊断复用已经保存的完整 App 测试包，只跑失败路径并保留原始日志、截图和录屏。
+旧测试包只能解释旧版本的问题，不能证明新的源码修复有效。修改源码后必须编译新版本，
+不能把诊断成功当作发布通过。默认平台测试入口不受此可选模式影响。

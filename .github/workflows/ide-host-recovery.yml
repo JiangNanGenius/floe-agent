@@ -10,8 +10,61 @@ name: IDE test host recovery
 # only, streaming the ai.floe.notes office-thumbnail category plus narrow Quick
 # Look errors. It never builds, never uploads an App and never relaxes the
 # test's own assertions.
+#
+# The same typed input contract is exposed to workflow_call so the registered
+# root controller (platform-test-diagnostics.yml, workflow id 356794392) can
+# run this reviewed controller from a branch where this file is not itself
+# registered. A branch-local reusable call resolves the workflow at the
+# caller's commit, so no second copy of this 500-line file is kept. Both entry
+# points must declare identical inputs; test_compiled_test_host_recovery.py
+# compares them field by field.
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-hex SHA of the trusted CI commit that built the host
+        required: true
+        type: string
+      source_run:
+        description: Trusted CI workflow run id that uploaded the host
+        required: true
+        type: string
+      source_attempt:
+        description: Run attempt that uploaded the host
+        required: false
+        default: "1"
+        type: string
+      xcode_version:
+        description: Exact Xcode version recorded in the host archive
+        required: false
+        default: "27.0"
+        type: string
+      xcode_build:
+        description: Exact Xcode build recorded in the host archive
+        required: false
+        default: "27A5252f"
+        type: string
+      products_sha256:
+        description: Pinned SHA-256 of Products.tar.gz (empty skips the independent pin)
+        required: false
+        default: "abfc75f5d8b30de8c34b9a3e575efa24a8671e71f4d6f5e9508f4fd671d6d250"
+        type: string
+      notes_diagnostic:
+        description: Run the bounded Notes cover diagnostic instead of the IDE suite
+        required: false
+        default: false
+        type: boolean
+      host_workflow_path:
+        description: Exact workflow path recorded for the pinned diagnostic host run (required in Notes diagnostic mode)
+        required: false
+        default: ""
+        type: string
+      diagnostic_products_sha256:
+        description: Optional pinned SHA-256 of the diagnostic host Products.tar.gz; empty relies on the verified embedded digest
+        required: false
+        default: ""
+        type: string
+  workflow_call:
     inputs:
       source_sha:
         description: Full 40-hex SHA of the trusted CI commit that built the host
