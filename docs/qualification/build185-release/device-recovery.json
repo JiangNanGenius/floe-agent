@@ -1,0 +1,26 @@
+{
+  "run": 35292395886,
+  "sourceCommit": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
+  "artifactID": 10527600618,
+  "archiveBytes": 811449698,
+  "sha256": "9009a3eac686d8cfd97a4a2a663fab23f66981055500261b8941814c51a68ee2",
+  "bundleIdentifier": "org.floeagent.ios",
+  "version": "1.7.0",
+  "build": "185",
+  "sdk": "iphoneos26.5",
+  "xcodeBuild": "17F113",
+  "status": "unsigned device recovery archive, not uploaded",
+  "embeddedAppAndExtensions": [
+    {
+      "id": "org.floeagent.ios.screenshare",
+      "version": "1.7.0",
+      "build": "185"
+    },
+    {
+      "id": "org.floeagent.ios",
+      "version": "1.7.0",
+      "build": "185"
+    }
+  ],
+  "bundleScope": "Matches project.yml App dependencies: main App plus Screen Share. Declared Share/Widgets targets are not embedded by this release configuration."
+}

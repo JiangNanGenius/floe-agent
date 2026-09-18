@@ -1,0 +1,36 @@
+{
+  "sourceCommit": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
+  "run": 35292395886,
+  "job": 105437894411,
+  "target": "Accepted SDK26.5 full App host on iPad simulator",
+  "result": "Passed",
+  "totals": {
+    "total": 204,
+    "passed": 204,
+    "failed": 0,
+    "skipped": 0,
+    "expected_failures": 0
+  },
+  "suites": {
+    "CanvasTouchInteractionTests": 5,
+    "CanvasSavedImageBatchAtomicityTests": 9,
+    "CanvasAgentToolContractTests": 8,
+    "CrashAndFeedbackRegressionTests": 52,
+    "ThreadTimelineTests": 31,
+    "HomeChatSeparationTests": 6,
+    "HomeTaskCreationTests": 2,
+    "BrowserProtocolTests": 9,
+    "MailConnectorTests": 5,
+    "SkillLifecycleTests": 25,
+    "LocalPythonRuntimeTests": 8,
+    "LocalShellRuntimeTests": 16,
+    "LocalServiceLifecycleTests": 2,
+    "LuaShellInstallTests": 1,
+    "IDEGitHubActionsTests": 23,
+    "EnvironmentLanguagePackageTests": 2
+  },
+  "limitations": [
+    "App UI gates still pending at this snapshot.",
+    "Simulator acceptance does not clear physical iPad local-model or Pencil issues."
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "run": 35292395886,
+  "sourceCommit": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
+  "target": "SDK27 macOS Swift module qualification, not App UI",
+  "stages": {
+    "full": {
+      "exitCode": 0,
+      "elapsedSeconds": 120.812,
+      "passedRunTestCounts": [
+        71,
+        21,
+        41,
+        13,
+        40,
+        83,
+        8,
+        100,
+        132,
+        15,
+        9,
+        29,
+        40,
+        17,
+        29,
+        177,
+        43,
+        118,
+        268
+      ],
+      "sumOfReportedTests": 1254,
+      "logSHA256": "a3a99f3a987d9f428bb141e1c8395de8151ea9e1c5f2e0ce17b40a2b82ed7084"
+    },
+    "javascript-engine": {
+      "exitCode": 0,
+      "elapsedSeconds": 22.443,
+      "passedRunTestCounts": [
+        12
+      ],
+      "sumOfReportedTests": 12,
+      "logSHA256": "dc2a0d4de9098c3498e4ddeecf07d41536bc75e780f03a20f1adf92afb53d9cb"
+    },
+    "javascript-tool": {
+      "exitCode": 0,
+      "elapsedSeconds": 20.994,
+      "passedRunTestCounts": [
+        12
+      ],
+      "sumOfReportedTests": 12,
+      "logSHA256": "e5159786ecc3fc7895711ced21c7bbe85b0fa82830ad01aaf2f7ee6021c8fe98"
+    },
+    "platform": {
+      "exitCode": 0,
+      "elapsedSeconds": 200.235,
+      "passedRunTestCounts": [
+        13,
+        1,
+        3,
+        24,
+        16,
+        13,
+        18,
+        4
+      ],
+      "sumOfReportedTests": 92,
+      "logSHA256": "3e4a98c7a3004d0687c352d175e26e9f1bb3a076ce1bfb3215f9f261f2ca686e"
+    },
+    "notes": {
+      "exitCode": 0,
+      "elapsedSeconds": 24.216,
+      "passedRunTestCounts": [
+        42
+      ],
+      "sumOfReportedTests": 42,
+      "logSHA256": "b2a6a26511f26c7a1c153dd52623a3d9a2ddfbe88a2f495eae9a619b3b02e096"
+    }
+  },
+  "wasiEnvironmentCases": {
+    "acceptsRealisticShellExportSets": "passed",
+    "distinguishesVariableCountFromTotalBytes": "passed",
+    "rejectsEachStructuralBoundary": "passed",
+    "runtimeAcceptsShellEnvironmentBeyondTheOldCap": "passed",
+    "runtimeGuestReadsEnvironmentValues": "passed",
+    "realLuaReadsManyEnvironmentVariables": "passed",
+    "runtimeRejectsOversizedEnvironmentWithoutLeakingContent": "passed"
+  },
+  "notes": "All7 new environment cases actually ran, including signed Lua. Per-run counts summed only within each stage; stages may exercise shared dependencies. App compilation, app regression and UI gates are separately tracked."
+}

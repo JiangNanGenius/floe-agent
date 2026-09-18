@@ -27,6 +27,23 @@ follow-up NativeNotes component run
 on source `f4435d2271d3036d263bea49e7d032688af2bc53` passed both iPad and iPhone.
 These are component-host results, not final full-App UI acceptance.
 
+## Observed cloud results
+
+Both SDK lines compiled the App. Both full-App regression summaries now report
+**204/204 passed, zero failed/skipped/expected failures**, including the repaired
+Lua case and23 IDE cloud-job cases. The SDK27 module stages also passed:
+1,254 main-suite tests, two JavaScript groups of12,92 platform cases and42 Notes
+cases; all7 new WASI cases actually executed. These are separate stage counts,
+not a deduplicated product-wide total.
+
+- [Development App regression](qualification/build185-release/sdk27-app-regression.json)
+- [Accepted-SDK App regression](qualification/build185-release/accepted-app-regression.json)
+- [Module execution](qualification/build185-release/cloud-modules.json)
+- [Verified device recovery](qualification/build185-release/device-recovery.json)
+
+The unsigned device recovery archive is retained locally and in CI. Both SDK
+Notes UI legs, signing/upload and Apple availability remain pending here.
+
 ## 本轮内容
 
 - IDE 云端构建由 App 保存并恢复任务，重开后主动回读与轮询；不依赖模型反复 sleep。
