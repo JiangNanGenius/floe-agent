@@ -1,0 +1,78 @@
+{
+  "source": "8c83b1e22dc45b0747f1e28133ee134f5599ac88",
+  "status": "component_fixture_failure_and_original_quicklook_timeouts_under_repair",
+  "changes": [
+    "One extension-carrying staged Office resource survives Quick Look and native summary fallback; all exits clean staging",
+    "OfficeKind derived from staged URL, not invalid enum raw value",
+    "No-engine Office view retains Notes back/tabs/assistant controls",
+    "Per-call forced Quick Look failure tests for Word, Excel and PowerPoint CAS resources",
+    "Bounded redacted cover failure identity retained for UI qualification"
+  ],
+  "localChecks": {
+    "toolchain": "Xcode 27 beta, iOS 26 simulator deployment target",
+    "method": "Swift 6 typecheck and object emission of current-source focused closures; native Office ON/OFF checked",
+    "result": "PASS",
+    "runtimeTestsExecuted": false
+  },
+  "independentReview": {
+    "blockingFindings": 0,
+    "followups": "Clarified shared-renderer comparison scope and replaced fragile field substring assertion with exact diagnostic schema"
+  },
+  "cloud": {
+    "original185Diagnostic": {
+      "run": 35299378662,
+      "source": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
+      "rebuild": false,
+      "status": "failure",
+      "limitation": "Old binary only. Timing and cancellation interaction is evidenced; exclusive root cause is not established.",
+      "artifact": 10529446777,
+      "observed": {
+        "word": "quickLook on attempt2 at19.96 seconds",
+        "firstFailure": "Excel unsupported cover at NotesWorkspaceImportUITests.swift:264",
+        "appTimeouts": "15 seconds per attempt, 45 seconds total",
+        "systemExtension": "over60 seconds then QLExtensionHostContextThumbnailOperation code1 and QLThumbnailErrorDomain code0"
+      },
+      "screenshot": {
+        "path": "app-ui/diagnostic-word-cover.png",
+        "attachment": "A8C0583E-19A4-467C-891E-1817006B528C.png",
+        "sha256": "8859c822ad091fc48506bd61111c641f286cb7b7533c14455e4d660716b25ec3",
+        "edits": "none",
+        "observation": "Word real cover; Excel and PPT do not yet show content at this capture; final Excel failure is supported by the later assertion."
+      }
+    },
+    "repairedNativeNotes": {
+      "run": 35299478950,
+      "source": "8c83b1e22dc45b0747f1e28133ee134f5599ac88",
+      "sdk": "development",
+      "devices": [
+        "iPad",
+        "iPhone"
+      ],
+      "status": "failure",
+      "limitation": "Component-host qualification, not complete App acceptance",
+      "xcodeBuild": "27A266a",
+      "iPad": {
+        "xctest": {
+          "executed": 57,
+          "passed": 56,
+          "failed": 1
+        },
+        "swiftTesting": {
+          "executed": 19,
+          "passed": 19
+        },
+        "uiTests": {
+          "executed": 1,
+          "passed": 1
+        },
+        "failure": "Unsupported-format fixture writes into a temporary directory that was not created",
+        "casFallbacks": "Word, Excel and PowerPoint forced-failure cases all passed"
+      },
+      "iPhone": {
+        "executed": false,
+        "reason": "Workflow exited after iPad failure"
+      }
+    }
+  },
+  "release": "No signed upload or new TestFlight availability from this follow-up."
+}
