@@ -45,7 +45,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   compile:
-    runs-on: ${{ inputs.language == 'swift' && 'macos-26' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       FLOE_NAME: ${{ inputs.name }}
@@ -105,9 +105,14 @@ jobs:
         if: ${{ inputs.language == 'swift' }}
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/swiftly.tar.gz https://download.swift.org/swiftly/darwin/swiftly.tar.gz
-          tar -xzf /tmp/swiftly.tar.gz -C /tmp
-          /tmp/swiftly init --quiet-shell-followup --assume-yes
+          # Swift 6.4.0 ships with Xcode 27.0 (no macos-26 runner toolchain).
+          # The official Linux toolchain plus the 6.4.0 WASM SDK build the same
+          # wasm32-wasip1 module on ubuntu-24.04.
+          curl -fsSL -o /tmp/swiftly.tar.gz https://download.swift.org/swiftly/linux/swiftly-x86_64.tar.gz
+          echo "243af08fa4a216a1d57f62851ae2a6b6eed215130779ce4635fd03adb230044f  /tmp/swiftly.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/swiftly"
+          tar -xzf /tmp/swiftly.tar.gz -C "$RUNNER_TEMP/swiftly"
+          "$RUNNER_TEMP/swiftly/swiftly" init --quiet-shell-followup --assume-yes
           . "$HOME/.local/share/swiftly/env.sh"
           swiftly install 6.4.0 --assume-yes
           swiftly use 6.4.0
@@ -119,19 +124,23 @@ jobs:
           set -euo pipefail
           case "$FLOE_LANGUAGE" in
             rust)
-              cargo init --name floe_cloud_command --bin . >/dev/null 2>&1 || true
+              cargo +1.98.1 init --name floe_cloud_command --bin . >/dev/null 2>&1 || true
               cp source.txt src/main.rs
-              cargo generate-lockfile
-              cargo build --release --locked --target wasm32-wasip1
+              cargo +1.98.1 generate-lockfile
+              cargo +1.98.1 build --release --locked --target wasm32-wasip1
               cp target/wasm32-wasip1/release/floe_cloud_command.wasm "$RUNNER_TEMP/command.wasm" ;;
             c|cpp)
               compiler="$RUNNER_TEMP/wasi-sdk/bin/clang"
               source_file=src.c
+              extra_flags=()
               if [ "$FLOE_LANGUAGE" = "cpp" ]; then
                 compiler="$RUNNER_TEMP/wasi-sdk/bin/clang++"
                 source_file=src.cpp
+                # wasi-sdk 20's libc++abi does not ship the C++ exception
+                # personality, so exceptions cannot link; document and disable.
+                extra_flags=(-fno-exceptions)
               fi
-              "$compiler" --sysroot="$RUNNER_TEMP/wasi-sdk/share/wasi-sysroot" -O2 \
+              "$compiler" --sysroot="$RUNNER_TEMP/wasi-sdk/share/wasi-sysroot" -O2 "${extra_flags[@]}" \
                 -o "$RUNNER_TEMP/command.wasm" "$source_file" ;;
             go)
               GOOS=wasip1 GOARCH=wasm GOFLAGS=-trimpath go build -o "$RUNNER_TEMP/command.wasm" main.go ;;
@@ -172,13 +181,18 @@ jobs:
       - name: Smoke-run the artifact with pinned wasmtime
         run: |
           set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/wasmtime"
-          "$RUNNER_TEMP/wasmtime/bin/pip" install --quiet wasmtime==33.0.0
+          # The PyPI wasmtime package has no CLI; use the pinned release tarball
+          # (the digest below is the verified sha256 of the linux asset).
+          curl -fsSL -o "$RUNNER_TEMP/wasmtime.tar.xz" \
+            https://github.com/bytecodealliance/wasmtime/releases/download/v33.0.0/wasmtime-v33.0.0-x86_64-linux.tar.xz
+          echo "075d491ad2c9855c6247b7ca4284a833d1f3b51e85339e0f6be4e64620ea7f40  $RUNNER_TEMP/wasmtime.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/wasmtime.tar.xz" -C "$RUNNER_TEMP"
+          wasmtime="$RUNNER_TEMP/wasmtime-v33.0.0-x86_64-linux/wasmtime"
           mkdir -p "$RUNNER_TEMP/smoke"
-          # wasmtime mounts a host directory at the same guest path; the smoke
-          # run proves the module starts and exits, not the device path jail.
+          # Mount the host smoke dir as the guest workspace so the fixture's
+          # file IO takes the same /workspace path the device jail uses.
           cd "$RUNNER_TEMP/smoke"
-          "$RUNNER_TEMP/wasmtime/bin/wasmtime" run --dir . "$RUNNER_TEMP/command.wasm" $FLOE_SMOKE_ARGS \
+          "$wasmtime" run --dir "$RUNNER_TEMP/smoke::/workspace" "$RUNNER_TEMP/command.wasm" $FLOE_SMOKE_ARGS \
             | tee "$RUNNER_TEMP/smoke.log"
       - name: Emit artifact.json
         run: |

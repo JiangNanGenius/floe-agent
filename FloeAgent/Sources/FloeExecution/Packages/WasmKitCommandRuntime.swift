@@ -98,7 +98,7 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
         let duration = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
         switch failure {
         case BudgetFailure.cancelled?: return .cancelled
-        case BudgetFailure.deadline?, BudgetFailure.fuel?:
+        case BudgetFailure.deadline?:
             return .timedOut(partialStdout: stdout.text, partialStderr: stderr.text, durationMs: duration)
         case let failure?: return .failed(message: "WASM command failed: \(failure)")
         case nil:
@@ -106,17 +106,19 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
         }
     }
 
-    private enum BudgetFailure: Error { case deadline, cancelled, fuel }
+    private enum BudgetFailure: Error { case deadline, cancelled }
     private final class Budget: @unchecked Sendable {
+        // The patched token loop calls `check()` every 1024 instructions, so
+        // the wall-clock deadline and the cancellation flag bound pure loops
+        // without capping the total instruction count. A fixed instruction
+        // budget was wrong here: it killed interpreter startup (Ruby 3.4 needs
+        // far more than the old 51M-instruction ceiling before it prints).
         let deadline: UInt64
         let cancellations: [CancellationToken]
-        private var checks = 0 // Used only on the invocation's interpreter thread.
         init(deadline: UInt64, cancellations: [CancellationToken]) { self.deadline = deadline; self.cancellations = cancellations }
         func check() throws {
             if cancellations.contains(where: \.isCancelled) { throw BudgetFailure.cancelled }
             if DispatchTime.now().uptimeNanoseconds >= deadline { throw BudgetFailure.deadline }
-            checks += 1
-            if checks > 50_000 { throw BudgetFailure.fuel }
         }
     }
     private struct Limits: ResourceLimiter {
