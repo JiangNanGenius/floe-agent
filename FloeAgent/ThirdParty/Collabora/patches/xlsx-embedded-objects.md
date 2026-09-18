@@ -130,9 +130,10 @@ to `engine/oox/source/export/chartexport.cxx`:
   quoted sibling include and is fetched with the sparse checkout.
 - Compile-driven fixes (first cloud compiles of the translation unit): pass a
   materialized `OUString` to `OUStringToOString` (only the
-  `std::u16string_view` overload exists), include `com/sun/star/uno/Exception.hpp`
-  for the catch clause, and write the `Sequence<sal_Int8>` payload through
-  `getArray()` because `Sequence::operator[]` is const.
+  `std::u16string_view` overload exists), catch `cpo::uno::Exception` like the
+  rest of the pinned translation unit, include `ZipEntry.hxx` for the
+  `ZipOutputStream` entry definition, and write the `Sequence<sal_Int8>`
+  payload through `getArray()` because `Sequence::operator[]` is const.
 - **Non-destructive gate:** a workbook is regenerated only when the chart has no
   external data path, or when the path is Floe's own generated name
   (`ppt/embeddings/floe-chart-data-*.xlsx`). An imported/advanced workbook

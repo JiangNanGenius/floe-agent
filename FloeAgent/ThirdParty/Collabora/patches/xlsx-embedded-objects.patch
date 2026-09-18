@@ -922,10 +922,10 @@ index 0960883..6ebdc6e 100644
  }
  
 diff --git a/engine/oox/source/export/chartexport.cxx b/engine/oox/source/export/chartexport.cxx
-index dfca8cd..93a50e2 100644
+index dfca8cd..866eaef 100644
 --- a/engine/oox/source/export/chartexport.cxx
 +++ b/engine/oox/source/export/chartexport.cxx
-@@ -22,6 +22,13 @@
+@@ -22,6 +22,12 @@
  #include <oox/token/tokens.hxx>
  #include <oox/core/xmlfilterbase.hxx>
  #include <oox/export/chartexport.hxx>
@@ -933,13 +933,12 @@ index dfca8cd..93a50e2 100644
 +#include <ZipOutputStream.hxx>
 +#include <CRC32.hxx>
 +#include <com/sun/star/io/XOutputStream.hpp>
-+#include <com/sun/star/uno/Exception.hpp>
 +#include <rtl/math.hxx>
 +#include <rtl/ustrbuf.hxx>
  #include <oox/export/chartgeographyexport.hxx>
  #include <oox/export/shapes.hxx>
  #include <oox/token/relationship.hxx>
-@@ -37,6 +44,7 @@
+@@ -37,6 +43,7 @@
  #include <cmath>
  #include <cstdio>
  #include <limits>
@@ -947,7 +946,7 @@ index dfca8cd..93a50e2 100644
  
  #include <tools/UnitConversion.hxx>
  
-@@ -529,6 +537,327 @@ static ::std::vector< double > lcl_getAllValuesFromSequence( const Reference< ch
+@@ -529,6 +536,327 @@ static ::std::vector< double > lcl_getAllValuesFromSequence( const Reference< ch
      return aResult;
  }
  
@@ -1259,7 +1258,7 @@ index dfca8cd..93a50e2 100644
 +        xOut->closeOutput();
 +        return true;
 +    }
-+    catch (const css::uno::Exception&)
++    catch (const cpo::uno::Exception&)
 +    {
 +        return false;
 +    }
@@ -1275,7 +1274,7 @@ index dfca8cd..93a50e2 100644
  namespace
  {
  
-@@ -1494,6 +1823,9 @@ void ChartExport::exportChartSpace( const Reference< css::chart::XChartDocument
+@@ -1494,6 +1822,9 @@ void ChartExport::exportChartSpace( const Reference< css::chart::XChartDocument
  
      const sal_Int32 nChartNS = bIsChartex ? XML_cx : XML_c;
  
@@ -1285,7 +1284,7 @@ index dfca8cd..93a50e2 100644
      if (bIsChartex) {
          pFS->startElement( FSNS( nChartNS, XML_chartSpace ),
                  FSNS( XML_xmlns, XML_a ), pFB->getNamespaceURL(OOX_NS(dml)),
-@@ -2073,14 +2405,31 @@ OUString ChartExport::GetExternalDataPath() const
+@@ -2073,14 +2404,31 @@ OUString ChartExport::GetExternalDataPath() const
  void ChartExport::exportExternalData(bool bIsChartex)
  {
      if (bIsChartex) return; // TODO!!
@@ -1322,7 +1321,7 @@ index dfca8cd..93a50e2 100644
  
      // Here adding external data entry to relationship.
      OUString relationPath = externalDataPath;
-@@ -4468,8 +4817,18 @@ void ChartExport::exportSeriesText( const Reference< chart2::data::XDataSequence
+@@ -4468,8 +4816,18 @@ void ChartExport::exportSeriesText( const Reference< chart2::data::XDataSequence
      } else {
          pFS->startElement(FSNS(XML_c, XML_tx));
  
@@ -1343,7 +1342,7 @@ index dfca8cd..93a50e2 100644
          pFS->startElement(FSNS(XML_c, XML_strRef));
  
          pFS->startElement(FSNS(XML_c, XML_f));
-@@ -4494,9 +4853,20 @@ void ChartExport::exportSeriesCategory( const Reference< chart2::data::XDataSequ
+@@ -4494,9 +4852,20 @@ void ChartExport::exportSeriesCategory( const Reference< chart2::data::XDataSequ
      FSHelperPtr pFS = GetFS();
      pFS->startElement(FSNS(XML_c, nValueType));
  
@@ -1367,7 +1366,7 @@ index dfca8cd..93a50e2 100644
  
      if(aFinalSplitSource.getLength() > 1)
      {
-@@ -4607,8 +4977,18 @@ void ChartExport::exportSeriesValues( const Reference< chart2::data::XDataSequen
+@@ -4607,8 +4976,18 @@ void ChartExport::exportSeriesValues( const Reference< chart2::data::XDataSequen
      FSHelperPtr pFS = GetFS();
      pFS->startElement(FSNS(XML_c, nValueType));
  
