@@ -1,0 +1,23 @@
+{
+  "version": "1.7.0",
+  "build": "191",
+  "source": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+  "tag": "v1.7.0-beta.48",
+  "uploadRun": 35347141494,
+  "controller": "6f6df7a3394104cd609c735a109809761ec94b21",
+  "transportAccepted": true,
+  "signedIPASHA256": "74b4f3eaf57842c2bf2fb3578578297fa1568e4bdfe60defb4ef82538ee7c1c6",
+  "signedIPABytes": 813234582,
+  "bundleID": "org.floeagent.ios",
+  "toolchain": "17F113",
+  "appleUploadID": "637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9",
+  "appleState": "PROCESSING",
+  "appleErrors": [],
+  "appleWarnings": [],
+  "appleCheckedAt": "2026-09-18T13:27:47Z",
+  "appleDiscoveryRun": 35350326982,
+  "appleBuildID": null,
+  "floeQAInstallability": "not_yet_verified",
+  "fullUIAcceptance": false,
+  "waivedUITestFailures": 3
+}

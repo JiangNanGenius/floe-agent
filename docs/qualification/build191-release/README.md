@@ -101,3 +101,20 @@ uses controller0b97fa4e and the original715cbc42 App, with no compilation.
 The recovery policy and related gates passed108 local Python checks and
 actionlint; those controller checks are not application UI acceptance.
 Signing, Apple processing and group availability remain pending.
+
+## Upload accepted; Apple processing — 13:27UTC
+
+[Recovery run35347141494](https://github.com/JiangNanGenius/floe-agent/actions/runs/35347141494)
+completed successfully. The signed IPA and transport receipt are retained
+privately. Its source/version/bundle and SHA-256 are recorded in
+[testflight-delivery.json](testflight-delivery.json); signing profiles are not
+published. Apple now reports upload191 as PROCESSING with no errors/warnings
+and no build ID yet. Floe QA availability is still unverified.
+
+The first recovery attempt35346684753 failed before signing because the old
+verifier expected a bare recovery-stage value instead of the producer's exact
+`stage=value` record. Controller6f6df7a3 accepts both exact encodings and
+restores Unix executable permissions during safe ZIP extraction. Its68 recovery
+tests passed; the original191 archive was also verified directly (18,922
+entries, App/extension executables0755). The local regenerated extraction was
+removed afterward; original recovery, signed delivery and failure evidence remain.

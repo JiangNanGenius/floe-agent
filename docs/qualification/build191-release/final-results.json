@@ -214,7 +214,7 @@
     "controller": "6f6df7a3394104cd609c735a109809761ec94b21",
     "appSource": "715cbc42e9402cf5ca691291fed5c201e61cf222",
     "rebuilt": false,
-    "status": "signing_validation_upload_in_progress",
+    "status": "success_transport_accepted",
     "correction": "Parse exact stage record and preserve executable file modes while safely extracting",
     "localRealArtifactVerification": {
       "entries": 18922,
@@ -222,5 +222,15 @@
       "appAndExtensionBuild": "191",
       "appAndExtensionExecutableMode": "0755"
     }
+  },
+  "appleProcessing": {
+    "appleUploadID": "637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9",
+    "appleState": "PROCESSING",
+    "appleErrors": [],
+    "appleWarnings": [],
+    "appleCheckedAt": "2026-09-18T13:27:47Z",
+    "appleDiscoveryRun": 35350326982,
+    "appleBuildID": null,
+    "floeQAInstallability": "not_yet_verified"
   }
 }
