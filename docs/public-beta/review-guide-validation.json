@@ -1,20 +1,54 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (178)",
-  "candidate": "1.7.0 (186), component qualification in progress; no tag or upload",
+  "candidate": "1.7.0 (186), fixed source d421fea2, tag v1.7.0-beta.43, release run35306551280 in progress; no upload",
   "pages": 14,
-  "sha256": "ba01b2c8cd056ff21fc41bf73132b5972147f433bf0731ee8049f079cb9f6334",
-  "bytes": 2759927,
+  "sha256": "2f0b6afdaa45e3659c451718eabf9a0a2774bf9373094abf9235bc8395ad5683",
+  "bytes": 2760699,
   "textExtractionChecked": true,
-  "layoutSizeChecks": "All14 A4 pages595x842, readable text and preparation footers; required tokens186,178,Whisper,lantern garden472,星河手记验证,BYOK,RDP,component-host verified.",
+  "layoutSizeChecks": "All14 A4 pages595x842, readable text and preparation footers; required tokens186,178,Whisper,lantern garden472,星河手记验证,BYOK,RDP,component-host verified; new status tokens v1.7.0-beta.43,d421fea2,35306551280,fixed-source present.",
   "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout. Build186 component covers under docs/qualification/build186-release/native-covers are not included and are not full-App UI evidence.",
-  "reviewStatus": "draft, external review not submitted",
+  "reviewStatus": "Draft, external review not submitted; mechanical checks and changed-page visual review passed; release qualification pending.",
   "reviewerCloudCredits": "none authorized; demonstration credentials excluded; no developer API key provided to Apple",
   "localInference": "Apple Foundation Models user-reported working; MLX macOS host memory/inference passes do not clear the pending iPad chat crash; physical-device acceptance remains",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
   "updatedAt": "2026-09-18",
+  "regeneratedAt": "2026-09-18T04:23:57Z",
   "currentRenderedPagesReviewed": [
-    1,
+    1
+  ],
+  "visualReview": "Primary viewed changed page1 at1000px; rendered PNG pages2–14 are byte-identical to the prior artifact reviewed page-by-page. No overlap, clipping or footer displacement observed.",
+  "priorVisualReview": {
+    "sha256": "ba01b2c8cd056ff21fc41bf73132b5972147f433bf0731ee8049f079cb9f6334",
+    "bytes": 2759927,
+    "pages": 14,
+    "review": "Primary viewed all14 rendered pages at1000px on2026-09-18; no observed overlap, clipped content or detached footers; original screenshot labels retained.",
+    "validationAtReview": "Local/Private/build186-release-docs/review-guide-validation.pre-186-status.json"
+  },
+  "footerChange": "Baseline178/candidate186 fixed-source qualification draft",
+  "sourceHashes": {
+    "review-walkthrough.json": "44a656f6a2a2a951c004a401261c5c3ecaec7bafc1dc36ed223a4be51ded6b14",
+    "review-walkthrough.md": "b9baceadc154947da2dca278bb52b3d52ea7304e76c2ff9209d94813be64c676"
+  },
+  "previousPdf": {
+    "docsCopyPath": "Local/Private/build186-release-docs/floe-public-beta-review-guide.docs-copy.pre-186-status.pdf",
+    "artifactCopyPath": "Local/Private/build186-release-docs/floe-public-beta-review-guide.artifact-copy.pre-186-status.pdf",
+    "sha256": "ba01b2c8cd056ff21fc41bf73132b5972147f433bf0731ee8049f079cb9f6334",
+    "pages": 14,
+    "bytes": 2759927,
+    "validation": "Local/Private/build186-release-docs/review-guide-validation.pre-186-status.json"
+  },
+  "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
+  "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
+  "latestEvidence": "Fixed source d421fea260523d063270e2d21d623bd011acd9ea tagged v1.7.0-beta.43 (annotated tag object31ba6f7c) and pushed; release run35306551280 started2026-09-18T04:19:57Z, prepare-release success04:20:22Z, notes-component development/build-verify-release/accepted-sdk-build in progress at record, upload gated on all three, expedited/direct/recovery skipped. Component35304310882 at source8d303197: iPad84/84, iPhone83/84 on one direct staged Word QuickLook timeout (45.0958s) while the same file passed the real NotesDocumentCoverService on attempt1 in3.278s; OCR passed both devices with the enforced timer reset120→180 proven from session logs; the six rewritten importer/CAS/service sample tests first execute in the current release run. Build185 failed Notes UI qualification after both SDK App regressions204/204. No upload, Apple processing or public Beta submission.",
+  "iCloudCopy": {
+    "file": "Floe-公开Beta审核演示说明-186准备稿.pdf",
+    "matchesPreviousArtifact": false,
+    "matchesCurrentArtifact": true,
+    "note": "Primary copied current PDF to iCloud Drive root and verified local hash; remote-device sync not observed.",
+    "remoteSyncVerified": false
+  },
+  "unchangedRenderedPagesVerified": [
     2,
     3,
     4,
@@ -28,23 +62,5 @@
     12,
     13,
     14
-  ],
-  "unchangedPageTextComparedToPreviouslyReviewedPDF": [],
-  "footerChange": "Baseline178/candidate186 preparation draft",
-  "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
-  "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
-  "latestEvidence": "Build186 component run35304310882 at source8d303197 in progress; previous component run35301809882: iPad84/84, iPhone83/84 with the real scanned bilingual OCR/search case exceeding120s (not Office). Build185 failed Notes UI qualification after both SDK App regressions204/204. No tag, signed upload or public Beta submission.",
-  "visualReview": "Primary viewed all14 rendered pages at1000px on2026-09-18; no observed overlap, clipped content or detached footers; original screenshot labels retained.",
-  "previousPdf": {
-    "path": "Local/Private/build186-review-pdf/previous-185.pdf",
-    "sha256": "b371ae26c556e03ac5da5ea0ae002a40a821dfcf20c512445611fa70c556d8ec",
-    "pages": 14,
-    "bytes": 2759686,
-    "validation": "Local/Private/build186-review-pdf/review-guide-validation-build185.json"
-  },
-  "iCloudCopy": {
-    "file": "Floe-公开Beta审核演示说明-186准备稿.pdf",
-    "localHashMatched": true,
-    "remoteSyncVerified": false
-  }
+  ]
 }

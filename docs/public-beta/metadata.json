@@ -73,18 +73,26 @@
   "candidateQualification": {
     "version": "1.7.0",
     "build": "186",
-    "tag": null,
-    "status": "component_qualification_in_progress_no_tag_no_upload_no_public_beta_submission",
-    "appSourceCommit": "8d303197de200ce0c775cc60c3ea1303417e5279",
+    "stage": "fixed_source_build_acceptance_in_progress",
+    "tag": "v1.7.0-beta.43",
+    "tagObject": "31ba6f7c2fc4fbe86e68ea9de4ca9316edcd28ea",
+    "appSourceCommit": "d421fea260523d063270e2d21d623bd011acd9ea",
+    "releaseRun": 35306551280,
+    "releaseRunStartedAt": "2026-09-18T04:19:57Z",
+    "releaseRunStateAtRecord": "in_progress: prepare-release succeeded 04:20:22Z; notes-component development, build-verify-release and accepted-sdk-build were in progress; expedited/direct/recovery entries skipped",
+    "status": "tag_created_release_qualification_in_progress_no_upload_no_public_beta_submission",
     "componentRun": 35304310882,
     "officeLifecycleFixSourceCommit": "2a907841b50a19b07488f5e9fff40dc4f3b9cf1f",
     "focusedEvidence": [
       "Component run35301809882 at source2a907841: iPad84/84, iPhone83/84; the only iPhone failure was a real scanned bilingual OCR/search case exceeding120 seconds, not Office lifecycle",
-      "Current source8d303197 applies the existing180-second per-case executionTimeAllowance to that single functional case with a fixed pixel-identical1536x2048 fixture; text/search assertions unchanged; not a product performance claim",
-      "Component run35304310882 at source8d303197 is in progress at preparation time; final outcome not yet recorded"
+      "Component run35304310882 at source8d303197: OCR/search passed on both devices (9.588s/82.388s) with the enforced XCTest timer reset120→180 proven from exported session logs; the only failure was one direct raw-staged Word request timing out at45.0958s while the same file passed through the real NotesDocumentCoverService on attempt1 in3.278s (iPad direct request passed after retry)",
+      "Six Office sample tests were rewritten (commit b06b3082, contained in the tagged source) to import through NoteFileImporter/NotesStore CAS and render through NotesDocumentCoverService with strict real-Quick-Look assertions; not yet executed anywhere, the current release run notes-component job is their first live result",
+      "Independent review with failure text and session-log locations: Local/Private/build186-final-review/REPORT.md"
     ],
     "limitations": [
-      "No tag, signed upload or TestFlight availability;178 remains the last confirmed internal build",
+      "No upload, Apple processing or TestFlight availability;178 remains the last confirmed internal build",
+      "Release run35306551280 was still in progress at this record; all three parallel jobs (Notes component, SDK27 build/verify, accepted-SDK build) must succeed before upload",
+      "The unproven simulator WebKit host stall can still fail a strict sample assertion; no retry or timeout masking was added",
       "Native iPad local-model chat stability and native Office/Pencil operation remain physical-device acceptance",
       "RDP is not delivered as a usable App feature",
       "App Store Connect was not re-queried for this preparation"

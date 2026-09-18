@@ -16,7 +16,7 @@ The latest available [full-App Notes captures](../qualification/build178-feedbac
 
 ## Complete walkthrough
 
-The [13-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, IDE/CAD review, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes the delivered build 178 baseline from the build 179 candidate and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
+The [14-page bilingual walkthrough](floe-public-beta-review-guide.pdf) covers navigation, Notes, Pencil, Office/PDF, Agent, limited local AI/BYOK, Canvas/maps/media, speech/environments/network, IDE/CAD review, evidence and feedback. [Editable text](review-walkthrough.md), [artifact checks](review-guide-validation.json). It distinguishes the delivered build 178 baseline from the build 186 fixed-source candidate (tag `v1.7.0-beta.43`, release run `35306551280` in progress) and remains a review-preparation draft. Candidate checks and failures are explicitly labelled. The updated pages have only mechanical checks; a page-by-page visual review is still required. The editable JSON is rendered with `FloeAgent/scripts/render_public_beta_review_guide.py`; review every rendered page after changes.
 
 ## Prepared sample
 

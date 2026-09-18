@@ -1,6 +1,19 @@
 # Floe 1.7 TestFlight delivery
 
-## Candidate: 1.7.0 (185)
+## Candidate: 1.7.0 (186)
+
+Tag `v1.7.0-beta.43`, source `d421fea260523d063270e2d21d623bd011acd9ea`.
+[Release run 35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
+started at 2026-09-18 04:19:57 UTC; `prepare-release` passed and the NativeNotes
+development component, the SDK 27 build/verify job and the accepted-SDK build
+job run in parallel, with upload gated on all three. The run was still in
+progress at this record. Follow-up component run `35304310882` failed overall (iPad 84/84,
+iPhone 83/84) on one direct staged Word Quick Look timeout while the same
+file passed through the real App cover service; OCR passed on both devices. Not
+uploaded and not installable; 178 remains the last confirmed delivery. See the
+[candidate record](RELEASE_1.7.0_BETA_43.md).
+
+## Previous candidate: 1.7.0 (185)
 
 Tag `v1.7.0-beta.42`, source `42ecc4527fdbeb171dd0aed1d0776375770f1572`.
 [Cloud run 35292395886](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886)

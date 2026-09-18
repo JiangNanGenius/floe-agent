@@ -1,16 +1,25 @@
 # IDE cloud builds / IDE 云端构建
 
-Build 185 candidate, source `42ecc4527fdbeb171dd0aed1d0776375770f1572`. The
-cloud qualification run
+Current candidate: build 186 / `v1.7.0-beta.43`, source
+`d421fea260523d063270e2d21d623bd011acd9ea`. The
+[release run `35306551280`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
+started at 2026-09-18 04:19:57 UTC; `prepare-release` passed and the NativeNotes
+development component, the SDK 27 build/verify job and the accepted-SDK build
+job run in parallel, with upload gated on all three. The run was still in
+progress at this record; no upload or availability is claimed. The IDE
+client/engine/store feature is unchanged from build 184, which compiled the App
+on both SDK lines and actually executed the 25 service fixtures and all 23 IDE
+engine cases (the separate build 184 Lua install/run failure made each App
+regression 203/204, so no upload occurred).
+
+Previous candidate: build 185 / `v1.7.0-beta.42`, source
+`42ecc4527fdbeb171dd0aed1d0776375770f1572`. The cloud qualification run
 [`35292395886`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886)
 finished with UI qualification failures; signing and upload were skipped. Both
 SDK App regressions passed 204/204, including all 23 IDE job cases. This page
-describes the implemented flow, not a TestFlight availability claim. The IDE
-client/engine/store feature is unchanged from build 184, which compiled the App
-on both SDK lines but whose two App regressions each passed 203/204 tests with
-the same Lua install/run failure, so no upload occurred. The build 182 section
-below records the original live dispatch/recovery; build 184 re-ran the
-production client/engine/disk-store CLI against the same existing run
+describes the implemented flow, not a TestFlight availability claim. The build
+182 section below records the original live dispatch/recovery; build 184 re-ran
+the production client/engine/disk-store CLI against the same existing run
 (`35247779223`) with 28 passing checks and zero redispatch, but that is CLI
 evidence, not App UI acceptance.
 
@@ -72,7 +81,7 @@ cancel-before-association, retry/backoff, terminal-state preservation during an
 artifact refresh, redirect authorization handling, digest mismatch, and an
 actual GitHub run continued across App relaunch. The local state-machine and
 transport fixtures provide focused evidence; they do not replace full-App UI or
-real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_42.md)
+real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_43.md)
 for current delivery status.
 
 Observed before the build-180 tag: the production center/engine/store/policy and

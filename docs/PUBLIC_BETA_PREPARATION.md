@@ -1,8 +1,8 @@
 # 下一版公开 TestFlight Beta：材料准备
 
-状态：材料草稿已更新，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。当前已上传基线为 1.7.0（178），下一候选为 179；179 尚未上传，IDE/CAD 双端各三项测试已首次通过（运行 35223435570），待最终发布验收。版本冻结和安装包验证完成后才能作为最终送审材料。
+状态：材料草稿已更新，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。当前已上传基线为 1.7.0（178）；下一候选为 1.7.0（186），固定源码 `d421fea2` 已打标签 `v1.7.0-beta.43`，发布 run `35306551280` 正在并行执行 Notes 组件与双 SDK App 验收，尚未上传、不可安装。只有版本冻结与安装包验证完成后才能作为最终送审材料。（179 的双端 IDE/CAD 三项测试记录保留为历史。）
 
-[13 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf)已更新，保留[Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。新增源码 955e346a 的手记截图，并说明原生 Office 测试跳过、IDE/CAD 双端测试已通过及 iPad 下载模型聊天闪退仍需复核。所有页面已重新检查排版；校验摘要见[验证记录](public-beta/review-guide-validation.json)。新版已另存到 iCloud Drive 根目录「Floe-公开Beta审核演示说明-179准备稿.pdf」，本机副本摘要一致；保留旧 PDF，其他设备同步状态尚未观测。
+[14 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf)已把候选阶段同步为“固定源码构建验收中”，保留[Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。配图仍为带来源标注的 955e346a 手记截图；175 的真实 Agent 演示不是 186 证据，iPad 下载模型聊天闪退仍需真机复核。本次仅做机械校验（页数、尺寸、文本提取、哈希），**新版 PDF 尚未经 root 逐页视觉验收**；校验摘要见[验证记录](public-beta/review-guide-validation.json)。旧 PDF 已备份到 `Local/Private/build186-release-docs/`；iCloud 副本由 root 另行复制，本文件不声明同步状态。
 
 ## 可直接使用的材料
 

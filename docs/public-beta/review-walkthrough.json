@@ -1,6 +1,6 @@
 {
   "baseline": "1.7.0 (178)",
-  "status": "preparation draft; build186 component qualification in progress; no tag or upload; external review not submitted",
+  "status": "preparation draft; build186 fixed source d421fea260523d063270e2d21d623bd011acd9ea tagged v1.7.0-beta.43; release run35306551280 in progress (Notes component plus both SDK App gates in parallel; upload requires all three); no upload; external review not submitted",
   "sections": [
     {
       "title": "Floe Agent 公开 Beta 审核演示说明",
@@ -11,8 +11,8 @@
           "chinese": "基线：1.7.0（178），此前已交付 Floe QA 内部 TestFlight；尚未提交公开／外部 Beta 审核。"
         },
         {
-          "english": "Build186 is a preparation candidate, without a release tag or upload. Its cloud verification is still running. Build185 passed both SDK App regressions but failed Notes UI qualification and was not uploaded. Historical screenshots and the build175 Agent demonstration retain their original provenance; they are not final-build acceptance.",
-          "chinese": "186 仍是准备中的候选版本，尚无发布标签或上传，云端验证仍在进行。185 虽通过双 SDK App 回归，但手记界面验收失败，未上传。历史截图和 175 的 Agent 演示均保留原始来源，不作为最终版本验收。"
+          "english": "Build186 is now a fixed-source candidate: tag v1.7.0-beta.43 resolves to d421fea2. Release run35306551280 is running the Notes component and both SDK App gates in parallel; upload requires all three, and no upload or installability is claimed. Build185 passed both SDK App regressions but failed Notes UI qualification and was not uploaded. Historical screenshots and the build175 Agent demonstration retain their original provenance; they are not final-build acceptance.",
+          "chinese": "186 已是固定源码候选：标签 v1.7.0-beta.43 唯一对应 d421fea2。发布 run35306551280 正并行执行手记组件与双 SDK App 验收，上传要求三者全部成功；本次不宣称已上传或可安装。185 虽通过双 SDK App 回归，但手记界面验收失败，未上传。历史截图和 175 的 Agent 演示均保留原始来源，不作为最终版本验收。"
         },
         {
           "english": "Floe is an iPad-first workspace for AI tasks, Notes, documents and creative canvases, with iPhone compatibility. Cloud providers are configured by the user.",

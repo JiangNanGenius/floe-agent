@@ -1,7 +1,10 @@
 # Floe Agent 1.7.0 (186) / beta.43
 
-Draft: planned tag `v1.7.0-beta.43` has not been created or uploaded.
-Delivery status and evidence: [beta.43 preparation record](RELEASE_1.7.0_BETA_43.md).
+Tag `v1.7.0-beta.43`, source `d421fea260523d063270e2d21d623bd011acd9ea`; release run
+[35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280) is in
+progress with the Notes component and both SDK App gates in parallel. Not uploaded and not
+installable; build 178 remains the last confirmed internal release.
+Delivery status and evidence: [beta.43 candidate record](RELEASE_1.7.0_BETA_43.md).
 
 ## 简体中文
 
