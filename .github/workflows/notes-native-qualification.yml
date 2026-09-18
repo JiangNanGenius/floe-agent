@@ -85,8 +85,18 @@ jobs:
           xcodebuild -version | tee "$evidence_dir/xcodebuild-version-development.txt"
           echo "DEVELOPER_DIR=$DEVELOPER_DIR" | tee -a "$evidence_dir/xcodebuild-version-development.txt"
           xcrun simctl list devices available -j > "$RUNNER_TEMP/notes-devices.json"
+          # Both device families are attempted even when the first family
+          # fails; the first failure is preserved and becomes the step status
+          # after the loop. `bash -e -o pipefail` stays in force: each
+          # pipeline whose failure must not abort the step is captured in its
+          # own `||` guard instead of a global `set +e`, and no leg is retried.
+          first_failure=0
           for family in iPad iPhone; do
-            destination=$(python3 - "$family" "$RUNNER_TEMP/notes-devices.json" <<'PY'
+            result=0
+            destination=""
+            # A missing simulator fails this family explicitly instead of
+            # aborting the loop before the other family is attempted.
+            if destination=$(python3 - "$family" "$RUNNER_TEMP/notes-devices.json" <<'PY'
           import json, sys
           values = json.load(open(sys.argv[2]))['devices']
           candidates = [d for group in values.values() for d in group if d['name'].startswith(sys.argv[1])]
@@ -94,16 +104,29 @@ jobs:
           if not preferred: raise SystemExit('No simulator for ' + sys.argv[1])
           print(preferred[0]['udid'])
           PY
-          )
-            xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
-              -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
-              -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
-              -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
-              -collect-test-diagnostics never \
-              -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log"
-            result=${PIPESTATUS[0]}
-            if [ "$result" -ne 0 ]; then exit "$result"; fi
+            ); then
+              :
+            else
+              result=$?
+              printf '::error::No %s simulator destination resolved (exit %s); the %s leg fails and the other family still runs.\n' "$family" "$result" "$family"
+            fi
+            if [ "$result" -eq 0 ]; then
+              xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
+                -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
+                -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
+                -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
+                -collect-test-diagnostics never \
+                -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log" || result=$?
+            fi
+            if [ "$result" -ne 0 ]; then
+              printf '::error::%s leg failed with exit %s; its result bundle/log are preserved and the other device family still runs.\n' "$family" "$result"
+              if [ "$first_failure" -eq 0 ]; then first_failure=$result; fi
+            fi
           done
+          if [ "$first_failure" -ne 0 ]; then
+            printf '::error::Notes native qualification failed; first device-family failure exit %s.\n' "$first_failure"
+            exit "$first_failure"
+          fi
       - name: Preserve results, logs and toolchain evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -173,8 +196,18 @@ jobs:
           xcodebuild -version | tee "$evidence_dir/xcodebuild-version-compatibility.txt"
           echo "DEVELOPER_DIR=$DEVELOPER_DIR" | tee -a "$evidence_dir/xcodebuild-version-compatibility.txt"
           xcrun simctl list devices available -j > "$RUNNER_TEMP/notes-devices.json"
+          # Both device families are attempted even when the first family
+          # fails; the first failure is preserved and becomes the step status
+          # after the loop. `bash -e -o pipefail` stays in force: each
+          # pipeline whose failure must not abort the step is captured in its
+          # own `||` guard instead of a global `set +e`, and no leg is retried.
+          first_failure=0
           for family in iPad iPhone; do
-            destination=$(python3 - "$family" "$RUNNER_TEMP/notes-devices.json" <<'PY'
+            result=0
+            destination=""
+            # A missing simulator fails this family explicitly instead of
+            # aborting the loop before the other family is attempted.
+            if destination=$(python3 - "$family" "$RUNNER_TEMP/notes-devices.json" <<'PY'
           import json, sys
           values = json.load(open(sys.argv[2]))['devices']
           candidates = [d for group in values.values() for d in group if d['name'].startswith(sys.argv[1])]
@@ -182,16 +215,29 @@ jobs:
           if not preferred: raise SystemExit('No simulator for ' + sys.argv[1])
           print(preferred[0]['udid'])
           PY
-          )
-            xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
-              -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
-              -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
-              -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
-              -collect-test-diagnostics never \
-              -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log"
-            result=${PIPESTATUS[0]}
-            if [ "$result" -ne 0 ]; then exit "$result"; fi
+            ); then
+              :
+            else
+              result=$?
+              printf '::error::No %s simulator destination resolved (exit %s); the %s leg fails and the other family still runs.\n' "$family" "$result" "$family"
+            fi
+            if [ "$result" -eq 0 ]; then
+              xcodebuild -project FloeAgent/Qualification/NativeNotes/FloeNotesNativeQualification.xcodeproj \
+                -scheme FloeNotesNativeQualification -destination "platform=iOS Simulator,id=$destination" \
+                -derivedDataPath "$RUNNER_TEMP/notes-build" -parallel-testing-enabled NO \
+                -test-timeouts-enabled YES -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 180 \
+                -collect-test-diagnostics never \
+                -resultBundlePath "notes-$family.xcresult" CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "notes-$family.log" || result=$?
+            fi
+            if [ "$result" -ne 0 ]; then
+              printf '::error::%s leg failed with exit %s; its result bundle/log are preserved and the other device family still runs.\n' "$family" "$result"
+              if [ "$first_failure" -eq 0 ]; then first_failure=$result; fi
+            fi
           done
+          if [ "$first_failure" -ne 0 ]; then
+            printf '::error::Notes native qualification failed; first device-family failure exit %s.\n' "$first_failure"
+            exit "$first_failure"
+          fi
       - name: Preserve results, logs and toolchain evidence
         if: always()
         uses: actions/upload-artifact@v4
