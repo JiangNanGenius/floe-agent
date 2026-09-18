@@ -87,6 +87,15 @@ available in git history at the previous commit of this directory.
   (preferred: `-r`, plain stdin) can build; both CLI objects compile locally
   with the macOS wasi-sdk 20.
 
+* 2026-09-19, `language-runtimes.yml` run 35398237226 (commit aab3ea8d): the
+  21-patch CLI build and the **qualification** both passed (18 tests through
+  the production runtime). The shipped module is exactly this run's
+  `php.wasm`: 4,077,891 bytes, SHA-256
+  `d5a5e9b1cd61848182fb82ca87e3a81e3a1df80b0922df0f347b4519c21fe0aa`. Note
+  that PHP rebuilds are not byte-identical (two runs produced 4,077,894 and
+  4,077,891 bytes); the staged digest is always the one from the green run and
+  the catalog pins that digest.
+
 ## Compatibility evidence actually observed
 
 **2026-09-19, host macOS 27 arm64, PHP 8.2.6 published module (historical

@@ -89,8 +89,8 @@ MANIFEST = (
         'minimumAppVersion': '1.7.0',
         'kind': 'committed',
         'path': 'packages/floe-php/8.2.33/php.wasm',
-        'sha256': 'c76afbdaa0d9e20779211c85eaf5cbd408eed4a71700908203a52fa860dcc73f',
-        'sizeBytes': 4077894,
+        'sha256': 'd5a5e9b1cd61848182fb82ca87e3a81e3a1df80b0922df0f347b4519c21fe0aa',
+        'sizeBytes': 4077891,
         'limits': {
             'moduleMaxBytes': 32 * 1024 * 1024,
             'memoryMaxBytes': 256 * 1024 * 1024,

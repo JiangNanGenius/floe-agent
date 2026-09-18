@@ -315,8 +315,8 @@ class CandidateLanguageTests(unittest.TestCase):
         self.assertEqual(php['kind'], 'committed')
         self.assertEqual(php['path'], 'packages/floe-php/8.2.33/php.wasm')
         self.assertEqual(php['sha256'],
-                         'c76afbdaa0d9e20779211c85eaf5cbd408eed4a71700908203a52fa860dcc73f')
-        self.assertEqual(php['sizeBytes'], 4077894)
+                         'd5a5e9b1cd61848182fb82ca87e3a81e3a1df80b0922df0f347b4519c21fe0aa')
+        self.assertEqual(php['sizeBytes'], 4077891)
         staged_php = build.ROOT / php['path']
         self.assertTrue(staged_php.exists())
         self.assertEqual(hashlib.sha256(staged_php.read_bytes()).hexdigest(), php['sha256'])

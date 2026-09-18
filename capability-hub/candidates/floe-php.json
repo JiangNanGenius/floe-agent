@@ -1,7 +1,7 @@
 {
   "artifactPath": "packages/floe-php/8.2.33/php.wasm",
-  "artifactSha256": "c76afbdaa0d9e20779211c85eaf5cbd408eed4a71700908203a52fa860dcc73f",
-  "artifactSizeBytes": 4077894,
+  "artifactSha256": "d5a5e9b1cd61848182fb82ca87e3a81e3a1df80b0922df0f347b4519c21fe0aa",
+  "artifactSizeBytes": 4077891,
   "command": "floe-php",
   "evidence": {
     "0001-Initial-port-of-the-php-7.4.32-patch-for-php-8.2.6.patch": "f52e800e4f10f226de5a267962abe9e89cb9df7fd5c0df5d8b90725bf9177752",
@@ -26,7 +26,7 @@
     "0020-fix-Guard-the-Unix-socket-length-check-on-WASI.patch": "166a07b0a4cf04d67bd3ef2832b3feefaab0483fac4d7837231dce4f05ddf143",
     "0021-fix-Stub-the-CLI-built-in-server-listener-on-WASI.patch": "6199dc4204bb08e5deb721a57e36e322df8887d27054db76e634f5d56a48c56b",
     "PHP-LICENSE-3.01.txt": "4618a58f990bbfb46fd055095adff7c44361062ec75f89500cb126f0fdb4e209",
-    "php.wasm.sha256": "72e4a7d217670b10c2bd9a124eddb25779e6480aff1ed9a429d77240dc63472f",
+    "php.wasm.sha256": "fc38b2aefcb1a52cd4568aa23e68f487ccf170131790777e29006f37f9e4c33a",
     "runtime.lock.json": "8f376edb3fbe9517139c794bfcae7c8df61c6fee3b5d7dcb9c34044abd79abaf",
     "toolchain.txt": "bc9da07af34ca4a9b525a38a9ef17102e160ecbdd300339c19230e8456fab4cf",
     "wasi-sdk-version.txt": "33168bbc0d9b379ef9f67536b7ce978d8ba5bc45fb7f10a67456d84b50a119c2"
@@ -38,7 +38,7 @@
     "moduleMaxBytes": 33554432
   },
   "minimumAppVersion": "1.7.0",
-  "note": "staged only; promotion into MANIFEST is a reviewed change and signing stays in capability-hub.yml",
+  "note": "staged only; promotion into MANIFEST is a reviewed change and signing stays in capability-hub.yml; these bytes are from language-runtimes run 35398237226 whose qualify-php job passed at aab3ea8d",
   "source": {
     "buildConfiguration": "slim: --disable-all without libxml/sqlite; XML/DOM, mbstring, sqlite and gd stay on the remote route",
     "kind": "wasi-source-build",
@@ -60,7 +60,7 @@
       "version": "20.0"
     }
   },
-  "stagedAt": "2026-09-18T21:40:17.078768+00:00",
+  "stagedAt": "2026-09-18T21:54:13.694432+00:00",
   "status": "compilepending",
   "version": "8.2.33"
 }
