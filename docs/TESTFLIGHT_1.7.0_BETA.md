@@ -11,7 +11,10 @@ the waiver do not constitute full acceptance. [Qualification evidence](qualifica
 stopped before signing: accepted-SDK iPhone initial assistant restart-button
 readiness failed in addition to the two previously waived SDK27 UI cases.
 The user subsequently waived this additional failure. Recovery run35346684753
-(controller0b97fa4e) started12:49UTC, reusing source-run35337960392's saved
+stopped before signing on a producer/verifier stage-record format mismatch.
+Controller6f6df7a3 fixes that parser and preserves executable permissions;
+the real saved artifact was verified locally and its disposable extraction
+removed. Retry35347141494 now signs/uploads source-run35337960392's saved
 device artifact without an App rebuild. Signed upload,
 Apple VALID/unexpired and Floe QA IN_BETA_TESTING are still pending.
 Read-only Apple discovery at2026-09-18 12:10UTC showed178 as the latest VALID

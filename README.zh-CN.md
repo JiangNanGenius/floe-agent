@@ -34,7 +34,7 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
 
-**Build191（`v1.7.0-beta.48`，源码 `715cbc42`）的上传在签名前停止，正等待新增界面测试失败的处理选择。** [首次工件复用上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/35343019320)因发布 SDK 的 iPhone 助手按钮就绪检查新增失败而停止，未上传。新增豁免待用户选择；原设备工件完整保留，无需重编译 App。两个 SDK 的应用回归各通过 204/204，iPad、iPhone 手记组件各通过 101/101。两项 SDK27 界面失败仍保留，用户明确同意先行内部真机测试，不代表完整验收通过。签名、Apple 处理和 Floe QA 可安装状态仍待核实。[当前证据](docs/qualification/build191-release/README.md)、[已留存封面截图](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png)。Office 封面可能是带标识的内容摘要，并非原始页面排版；本地模型与原生 Office/Pencil 的真机验收仍由测试者完成。
+**Build191（`v1.7.0-beta.48`，源码 `715cbc42`）已获用户同意跳过三项界面失败，正加急分发内部测试版。** [首次工件复用上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/35343019320)因发布 SDK 的 iPhone 助手按钮就绪检查新增失败而停止，未上传。用户已同意跳过新增失败；[修正后的恢复上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/35347141494)复用原工件，无需重编译 App。两个 SDK 的应用回归各通过 204/204，iPad、iPhone 手记组件各通过 101/101。两项 SDK27 界面失败仍保留，用户明确同意先行内部真机测试，不代表完整验收通过。签名、Apple 处理和 Floe QA 可安装状态仍待核实。[当前证据](docs/qualification/build191-release/README.md)、[已留存封面截图](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png)。Office 封面可能是带标识的内容摘要，并非原始页面排版；本地模型与原生 Office/Pencil 的真机验收仍由测试者完成。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 

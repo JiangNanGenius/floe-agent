@@ -84,7 +84,7 @@
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
-当前为 [191 加急内部交付](qualification/build191-release/README.md)：原上传因发布 SDK 新增 iPhone 助手界面失败而在签名前停止；此前仅豁免两项 SDK27 失败，新增豁免待用户选择。恢复工件完整，尚未上传。[190 最终结果](qualification/build190-release/final-results.json)与[封面截图](qualification/build190-release/accepted-ipad-covers-after-relaunch.png)均已保留。
+当前为 [191 加急内部交付](qualification/build191-release/README.md)：原上传因发布 SDK 新增 iPhone 助手界面失败而在签名前停止；用户现已同意跳过全部三项失败，修正后的恢复任务35347141494进入签名上传；Apple 可安装状态仍待确认。[190 最终结果](qualification/build190-release/final-results.json)与[封面截图](qualification/build190-release/accepted-ipad-covers-after-relaunch.png)均已保留。
 
 - [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。
 

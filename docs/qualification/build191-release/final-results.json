@@ -204,8 +204,23 @@
     "controller": "0b97fa4e412ab1b9d2f2fc190ad127fd1f1769e6",
     "dispatchedAt": "2026-09-18T12:49:00Z",
     "appSource": "715cbc42e9402cf5ca691291fed5c201e61cf222",
-    "status": "in_progress",
+    "status": "failure_before_signing",
     "rebuilt": false,
-    "allThreeUIFailuresWaived": true
+    "allThreeUIFailuresWaived": true,
+    "reason": "Legacy verifier expected bare stage value but producer wrote stage=value"
+  },
+  "recoveryUploadRetry": {
+    "run": 35347141494,
+    "controller": "6f6df7a3394104cd609c735a109809761ec94b21",
+    "appSource": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+    "rebuilt": false,
+    "status": "signing_validation_upload_in_progress",
+    "correction": "Parse exact stage record and preserve executable file modes while safely extracting",
+    "localRealArtifactVerification": {
+      "entries": 18922,
+      "sha256": "0e2b45887ab0745fbcd582dbb10a43609e68693471254861b3cea61f15efd9c9",
+      "appAndExtensionBuild": "191",
+      "appAndExtensionExecutableMode": "0755"
+    }
   }
 }
