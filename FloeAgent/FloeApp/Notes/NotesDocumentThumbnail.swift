@@ -174,14 +174,35 @@ struct NotesDocumentThumbnail: View {
     /// A card must not ask Quick Look to decode an arbitrarily large file.
     private static let maximumThumbnailSourceBytes = 128 * 1024 * 1024
 
-    init(document: NoteDocument, store: NotesStore?,
+    private let exposesAccessibility: Bool
+
+    init(document: NoteDocument, store: NotesStore?, exposesAccessibility: Bool = true,
          onSource: ((NotesDocumentCoverSource, Int, String) -> Void)? = nil) {
         self.document = document
         self.store = store
+        self.exposesAccessibility = exposesAccessibility
         self.onSource = onSource
     }
 
     var body: some View {
+        Group {
+            if exposesAccessibility {
+                thumbnailContent
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("notes.thumbnail.\(document.kind.rawValue).\(document.title)")
+                    .accessibilityLabel(placeholderTitle)
+                    .accessibilityValue(accessibilityCoverValue)
+            } else {
+                // A library button already exposes the title and real cover
+                // state. Do not install a nested identifier which SwiftUI can
+                // propagate onto that button while merging its label.
+                thumbnailContent.accessibilityHidden(true)
+            }
+        }
+        .task(id: thumbnailKey) { await load() }
+    }
+
+    private var thumbnailContent: some View {
         ZStack(alignment: .bottomTrailing) {
             Color(uiColor: .secondarySystemBackground)
             if let image {
@@ -197,11 +218,6 @@ struct NotesDocumentThumbnail: View {
                     .accessibilityHidden(true)
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier("notes.thumbnail.\(document.kind.rawValue).\(document.title)")
-        .accessibilityLabel(placeholderTitle)
-        .accessibilityValue(accessibilityCoverValue)
-        .task(id: thumbnailKey) { await load() }
     }
 
     /// Production accessibility keeps the plain cover source. Under UI testing

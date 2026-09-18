@@ -243,7 +243,7 @@ struct NotesRootView: View {
                     } label: {
                         let layout = showsCovers ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
                         layout {
-                            NotesDocumentThumbnail(document: document, store: session.store) { source, revision, detail in
+                            NotesDocumentThumbnail(document: document, store: session.store, exposesAccessibility: false) { source, revision, detail in
                                 let value = CoverState(identity: "\(source.rawValue)#\(revision)", value: detail)
                                 if coverSources[document.id] != value {
                                     coverSources[document.id] = value
@@ -273,11 +273,9 @@ struct NotesRootView: View {
                         }.padding(.vertical, 6)
                     }
                     .buttonStyle(.plain)
-                    // A document is one actionable card. SwiftUI may merge a
-                    // Button's thumbnail child, so publish its actual cover
-                    // identity on the card instead of depending on child AX.
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(document.title)
+                    // Keep the native Button and its text/snippet semantics;
+                    // the decorative thumbnail does not create a second AX
+                    // identity. Report its actual render state on this button.
                     .accessibilityIdentifier("notes.card.\(document.kind.rawValue).\(document.title).\(coverSources[document.id]?.identity ?? "none")")
                     .accessibilityValue(coverSources[document.id]?.value ?? "none")
                     .multilineTextAlignment(.leading)

@@ -1,0 +1,59 @@
+{
+  "build": 188,
+  "sourceSHA": "c5656276a3fed0cc0546d2ab360603e443b7f87e",
+  "runID": 35317532109,
+  "jobID": 105512451363,
+  "conclusion": "failure",
+  "results": {
+    "ipad-attempt-1": {
+      "result": "Failed",
+      "totalTestCount": 5,
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "testFailures": [
+        {
+          "failureText": "Failed to get matching snapshots: Timed out while evaluating UI query.",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 2,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
+          "testName": "testNotesLibraryCardsShowRealContentCovers()"
+        }
+      ]
+    },
+    "iphone-attempt-1": {
+      "result": "Failed",
+      "totalTestCount": 1,
+      "passedTests": 0,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "Early unexpected exit, operation never finished bootstrapping - no restart will be attempted. (Underlying Error: The test runner crashed while preparing to run tests: FloeAgentUITests-Runner at -[XCTWaiter(StallHandling) handleStalledWait:])",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 1,
+          "testIdentifierString": "FloeAgentUITests-Runner (46101) encountered an error",
+          "testName": "FloeAgentUITests-Runner (46101) encountered an error"
+        }
+      ]
+    },
+    "iphone-attempt-2": {
+      "result": "Failed",
+      "totalTestCount": 5,
+      "passedTests": 3,
+      "failedTests": 1,
+      "skippedTests": 1,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertTrue failed - card 封面验收-Word must be reachable in the library grid",
+          "targetName": "FloeAgentUITests",
+          "testIdentifier": 2,
+          "testIdentifierString": "NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()",
+          "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAgentUITests/NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers",
+          "testName": "testNotesLibraryCardsShowRealContentCovers()"
+        }
+      ]
+    }
+  }
+}

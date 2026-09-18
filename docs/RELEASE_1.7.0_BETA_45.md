@@ -1,7 +1,7 @@
 # Floe1.7.0 build188 — candidate beta45
 
 Tag `v1.7.0-beta.45` fixes source `c5656276a3fed0cc0546d2ab360603e443b7f87e`.
-[Cloud run35317532109](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109) is executing the three release gates.
+[Cloud run35317532109](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109) has failed its SDK27 full-App Notes UI gate; remaining accepted-SDK evidence is still being collected.
 
 This candidate follows blocked build187. It retains durable IDE GitHub CI jobs:
 submission is persisted before network dispatch; App launch/foreground recovers
