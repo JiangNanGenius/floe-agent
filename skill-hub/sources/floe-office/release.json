@@ -1,9 +1,9 @@
 {
   "description": "Word, Excel and PowerPoint creation, existing text edits, and file conversion with explicit capability limits.",
-  "minimumAppVersion": "1.6.7",
+  "minimumAppVersion": "1.7.0",
   "name": "Office Documents",
   "releaseNotes": {
-    "zh-Hans": "使用统一 document.presentation 工具命名。",
-    "en": "Use the unified document.presentation tool names."
+    "zh-Hans": "createDeck 支持文本框、形状、图片与可编辑的柱状/折线/饼图等定位对象；图表工作簿在 Office 编辑器内的往返仍待资格确认，编辑后需重开核验。",
+    "en": "createDeck now supports positioned text boxes, shapes, images and editable bar/line/pie charts. Chart workbook roundtrip in the Office editor remains in qualification: reopen and verify after editing."
   }
 }
