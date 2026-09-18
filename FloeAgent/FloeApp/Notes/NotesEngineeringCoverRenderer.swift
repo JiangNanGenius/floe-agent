@@ -35,6 +35,9 @@ final class NotesEngineeringCoverRenderer: NSObject {
     /// navigation would keep `ensureHost` suspended forever: `perRequestTimeout`
     /// only covers the JS bridge, not `WKWebView.load`.
     static let navigationTimeout: Duration = .seconds(15)
+    /// The first-load failure showed an absent bridge after navigation. Check
+    /// actual module readiness with a bounded, cancellable probe.
+    static let viewerReadinessTimeout: Duration = .seconds(6)
     /// The bundled viewer streams a base64 package through JavaScript. Card
     /// covers are far smaller than the full 20 MB preview limit, and this bounds
     /// both the JSON materialization and the web process memory.
@@ -260,6 +263,90 @@ final class NotesEngineeringCoverRenderer: NSObject {
         webView.scrollView.isScrollEnabled = false
         web = webView
         try await loadPage(webView, url: session.url)
+        // A cold WebKit process can report completion before the bundled module
+        // has defined its bridge entry point (observed as
+        // `window.floeEngineeringThumbnail is not a function`). Wait for the
+        // real readiness predicate within one bounded deadline; a page whose
+        // module never executes fails fast instead of being retried blindly.
+        guard await viewerBridgeIsReady(on: webView) else {
+            logger.error("[engineering-cover] viewer bridge absent after bounded wait")
+            throw CoverError.viewerUnavailable
+        }
+    }
+
+    /// One readiness probe result, normalized on the main actor so no
+    /// non-Sendable `Any` crosses the continuation boundary.
+    private enum ViewerReadiness: Sendable {
+        case ready
+        case absent
+        case timedOut
+        case cancelled
+    }
+
+    /// Waits, bounded and cancellable, for the bundled viewer's bridge function
+    /// to exist. This is a real readiness predicate, not a fixed delay: a page
+    /// whose module failed to execute can never satisfy it.
+    ///
+    /// The async form of `WKWebView.evaluateJavaScript` is awaited directly in
+    /// the naive version, so a web process that never invokes its completion
+    /// handler keeps the task suspended forever and neither the deadline nor
+    /// cancellation is ever observed. Each probe here instead races that
+    /// callback against a single-resume gate and a timeout task; the outer loop
+    /// only ever waits on a probe bounded by the remaining deadline, so the
+    /// whole wait is at most `viewerReadinessTimeout`.
+    private func viewerBridgeIsReady(on webView: WKWebView) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: Self.viewerReadinessTimeout)
+        while true {
+            let now = ContinuousClock.now
+            guard now < deadline, !Task.isCancelled else { return false }
+            switch await probeViewerBridge(on: webView, timeout: now.duration(to: deadline)) {
+            case .ready:
+                return true
+            case .cancelled, .timedOut:
+                // The probe exhausted the shared deadline (or the caller went
+                // away): stop without another unbounded wait.
+                return false
+            case .absent:
+                // Bounded pause between probes so a cold module gets a chance
+                // to evaluate without spinning the web process.
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    /// Runs exactly one bounded `typeof window.floeEngineeringThumbnail`
+    /// probe. The JS callback, the deadline and cancellation all race through
+    /// `ViewerProbeState`, so success, JS failure, timeout and a late callback
+    /// are each safe and the continuation is resumed exactly once.
+    private func probeViewerBridge(on webView: WKWebView, timeout: Duration) async -> ViewerReadiness {
+        let state = ViewerProbeState()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<ViewerReadiness, Never>) in
+                guard state.attach(continuation) else { return }
+                webView.evaluateJavaScript(
+                    "typeof window.floeEngineeringThumbnail === 'function'",
+                    in: nil,
+                    in: .page
+                ) { result in
+                    // The completion handler is main-actor isolated, so the raw
+                    // `Any` is normalized to a Sendable value here.
+                    switch result {
+                    case .success(let value):
+                        let present = (value as? NSNumber)?.boolValue ?? (value as? Bool) ?? false
+                        state.finish(present ? .ready : .absent)
+                    case .failure:
+                        state.finish(.absent)
+                    }
+                }
+                state.timeoutTask = Task { @MainActor in
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+                    state.finish(.timedOut)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in state.finish(.cancelled) }
+        }
     }
 
     /// Loads the viewer page with a hard timeout and single-resume semantics.
@@ -334,6 +421,38 @@ final class NotesEngineeringCoverRenderer: NSObject {
             let continuation = continuation
             self.continuation = nil
             continuation?.resume(with: result)
+        }
+    }
+
+    /// Single-resume gate for one bounded viewer-readiness probe. The JS
+    /// callback, the probe deadline and task cancellation can all finish it;
+    /// the first wins and every later call is a safe no-op. A result that
+    /// arrives before `attach` is retained and delivered on attach, so a probe
+    /// that fails synchronously cannot orphan the continuation.
+    @MainActor
+    private final class ViewerProbeState {
+        private var continuation: CheckedContinuation<ViewerReadiness, Never>?
+        private var pending: ViewerReadiness?
+        private var finished = false
+        var timeoutTask: Task<Void, Never>?
+
+        func attach(_ continuation: CheckedContinuation<ViewerReadiness, Never>) -> Bool {
+            guard !finished else {
+                continuation.resume(returning: pending ?? .absent)
+                return false
+            }
+            self.continuation = continuation
+            return true
+        }
+
+        func finish(_ result: ViewerReadiness) {
+            guard !finished else { return }
+            finished = true
+            pending = result
+            timeoutTask?.cancel(); timeoutTask = nil
+            let continuation = continuation
+            self.continuation = nil
+            continuation?.resume(returning: result)
         }
     }
 

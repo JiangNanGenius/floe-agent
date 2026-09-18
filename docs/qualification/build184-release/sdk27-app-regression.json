@@ -1,0 +1,30 @@
+{
+  "sourceCommit": "8e0cf69f6387333e768b90d56372e587eb297375",
+  "run": 35287358993,
+  "job": 105422616168,
+  "target": "SDK 27 full App test host on iPad simulator",
+  "result": "Failed",
+  "total": 204,
+  "passed": 203,
+  "failed": 1,
+  "skipped": 0,
+  "failures": [
+    {
+      "failureText": "Expectation failed: executed.code == 0\nexecuted.code → 1: floe-lua failed:\n\nWASM command failed: validationFailed(\"WASM input exceeds limits\")\n",
+      "targetName": "FloeAppTests",
+      "testIdentifier": 143,
+      "testIdentifierString": "LuaShellInstallTests/aptInstallRunsLuaAndRemoveDisablesIt()",
+      "testIdentifierURL": "test://com.apple.xcode/FloeAgent/FloeAppTests/LuaShellInstallTests/aptInstallRunsLuaAndRemoveDisablesIt()",
+      "testName": "aptInstallRunsLuaAndRemoveDisablesIt()"
+    }
+  ],
+  "knownPassingSuites": [
+    "IDEGitHubActionsTests",
+    "FloeApp.LocalServiceLifecycle"
+  ],
+  "limitations": [
+    "UI gates skipped after App regression failure.",
+    "No TestFlight signing or upload.",
+    "Accepted SDK job still running at this snapshot."
+  ]
+}

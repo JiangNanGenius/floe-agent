@@ -203,11 +203,26 @@ import FloeDocuments
             if let web = view as? WKWebView { return web }
             return view.subviews.lazy.compactMap(find).first
         }
+        // Bounded wait for the committed file document. A cold component host
+        // can still be committing its bundled file URL when polling starts, so
+        // this waits on a real state predicate (not a fixed delay) before the
+        // first DOM read.
+        let loadDeadline = Date().addingTimeInterval(30)
+        while Date() < loadDeadline {
+            if let web = find(host.view), !web.isLoading, web.url?.isFileURL == true { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        // Every DOM read is individually bounded: `callAsyncJavaScript` can
+        // suspend forever if the web process never calls back, and an unbounded
+        // await would stall the test for minutes. A `nil` result means the probe
+        // timed out or the script threw, and is reported as a failed assertion,
+        // never as a fabricated success.
         let deadline = Date().addingTimeInterval(20)
         while Date() < deadline {
-            if let web = find(host.view), let text = try? await web.callAsyncJavaScript("return document.querySelector('me-tpc .text')?.textContent", arguments: [:], in: nil, contentWorld: .page) as? String,
+            if let web = find(host.view),
+               let text = await boundedString(web, "return document.querySelector('me-tpc .text')?.textContent"),
                text == title {
-                let images = try await web.callAsyncJavaScript("return document.querySelectorAll('me-tpc img').length", arguments: [:], in: nil, contentWorld: .page) as? Int
+                let images = await boundedInt(web, "return document.querySelectorAll('me-tpc img').length")
                 XCTAssertEqual(images, 0)
                 let screenshot = try await web.takeSnapshot(configuration: nil)
                 let attachment = XCTAttachment(image: screenshot)
@@ -225,7 +240,7 @@ import FloeDocuments
                 let imageDeadline = Date().addingTimeInterval(10)
                 var imageLoaded = false
                 while Date() < imageDeadline {
-                    imageLoaded = (try? await web.callAsyncJavaScript("return Array.from(document.querySelectorAll('me-tpc img')).some(img => img.src.startsWith('data:image/png;') && img.naturalWidth === expectedWidth && img.naturalHeight === expectedHeight)", arguments: ["expectedWidth": picture.cgImage!.width, "expectedHeight": picture.cgImage!.height], in: nil, contentWorld: .page)) as? Bool == true
+                    imageLoaded = await boundedBool(web, "return Array.from(document.querySelectorAll('me-tpc img')).some(img => img.src.startsWith('data:image/png;') && img.naturalWidth === expectedWidth && img.naturalHeight === expectedHeight)", arguments: ["expectedWidth": picture.cgImage!.width, "expectedHeight": picture.cgImage!.height]) == true
                     if imageLoaded { break }
                     try await Task.sleep(for: .milliseconds(100))
                 }
@@ -250,7 +265,7 @@ import FloeDocuments
                 let layoutDeadline = Date().addingTimeInterval(10)
                 var arranged = false
                 while Date() < layoutDeadline {
-                    arranged = (try? await web.callAsyncJavaScript("""
+                    arranged = await boundedBool(web, """
                         const tree = document.querySelector('me-root')?.parentElement;
                         const topics = Array.from(document.querySelectorAll('me-tpc'));
                         if (!tree?.classList.contains('down') || topics.length !== 7) return false;
@@ -258,7 +273,7 @@ import FloeDocuments
                         return boxes.every((a, i) => a.width > 0 && a.height > 0 &&
                           boxes.every((b, j) => i === j || a.right <= b.left + 1 ||
                             b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));
-                        """, arguments: [:], in: nil, contentWorld: .page)) as? Bool == true
+                        """) == true
                     if arranged { break }
                     try await Task.sleep(for: .milliseconds(100))
                 }
@@ -267,7 +282,116 @@ import FloeDocuments
             }
             try await Task.sleep(for: .milliseconds(100))
         }
+        // The root cause of a cold first-instance stall is not assumed here:
+        // capture the committed URL, loading state, bundle resource and bridge
+        // state so the cloud run can distinguish a packaging fault from a slow
+        // web process instead of the test masking it with a longer delay.
+        let diagnostics = await mindMapDiagnostics(find(host.view))
+        let diagnosticAttachment = XCTAttachment(string: diagnostics)
+        diagnosticAttachment.name = "Notes mind map failure diagnostics"
+        diagnosticAttachment.lifetime = .keepAlways
+        add(diagnosticAttachment)
         XCTFail("Bundled map did not render the native document")
+    }
+
+    /// Outcome of one bounded DOM probe. `WKWebView.callAsyncJavaScript` can
+    /// suspend forever if the web process never invokes its completion handler,
+    /// so each probe is raced against a deadline through a single-resume gate;
+    /// a late callback after the deadline or a cancellation is a safe no-op.
+    @MainActor
+    private final class BoundedProbe<Value: Sendable> {
+        private var continuation: CheckedContinuation<Value?, Never>?
+        private var finished = false
+        var timeoutTask: Task<Void, Never>?
+
+        func attach(_ continuation: CheckedContinuation<Value?, Never>) -> Bool {
+            guard !finished else {
+                continuation.resume(returning: nil)
+                return false
+            }
+            self.continuation = continuation
+            return true
+        }
+
+        func settle(_ value: Value?) {
+            guard !finished else { return }
+            finished = true
+            timeoutTask?.cancel(); timeoutTask = nil
+            let continuation = continuation
+            self.continuation = nil
+            continuation?.resume(returning: value)
+        }
+    }
+
+    @MainActor
+    private func boundedJS<Value: Sendable>(
+        _ web: WKWebView,
+        _ script: String,
+        arguments: [String: Any] = [:],
+        timeout: Duration = .seconds(5),
+        convert: @escaping @MainActor @Sendable (Any?) -> Value?
+    ) async -> Value? {
+        let probe = BoundedProbe<Value>()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Value?, Never>) in
+                guard probe.attach(continuation) else { return }
+                web.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { result in
+                    switch result {
+                    case .success(let value): probe.settle(convert(value))
+                    case .failure: probe.settle(nil)
+                    }
+                }
+                probe.timeoutTask = Task { @MainActor in
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+                    probe.settle(nil)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in probe.settle(nil) }
+        }
+    }
+
+    @MainActor
+    private func boundedString(_ web: WKWebView, _ script: String, timeout: Duration = .seconds(5)) async -> String? {
+        await boundedJS(web, script, timeout: timeout) { $0 as? String }
+    }
+
+    @MainActor
+    private func boundedInt(_ web: WKWebView, _ script: String, timeout: Duration = .seconds(5)) async -> Int? {
+        await boundedJS(web, script, timeout: timeout) { ($0 as? NSNumber)?.intValue ?? ($0 as? Int) }
+    }
+
+    @MainActor
+    private func boundedBool(_ web: WKWebView, _ script: String, arguments: [String: Any] = [:], timeout: Duration = .seconds(5)) async -> Bool? {
+        await boundedJS(web, script, arguments: arguments, timeout: timeout) { ($0 as? NSNumber)?.boolValue ?? ($0 as? Bool) }
+    }
+
+    /// Natively-readable failure context plus bounded JS probes. Every probe is
+    /// itself bounded, so diagnostics can never hang the test they explain.
+    @MainActor
+    private func mindMapDiagnostics(_ web: WKWebView?) async -> String {
+        var lines: [String] = []
+        if let root = Bundle.main.url(forResource: "MindElixir", withExtension: nil) {
+            let index = root.appendingPathComponent("index.html")
+            lines.append("MindElixir bundle: \(root.path)")
+            lines.append("index.html exists: \(FileManager.default.fileExists(atPath: index.path))")
+        } else {
+            lines.append("MindElixir bundle: MISSING from Bundle.main")
+        }
+        guard let web else {
+            lines.append("WKWebView: not found in host hierarchy")
+            return lines.joined(separator: "\n")
+        }
+        lines.append("url: \(web.url?.absoluteString ?? "nil")")
+        lines.append("isLoading: \(web.isLoading)")
+        lines.append("estimatedProgress: \(web.estimatedProgress)")
+        lines.append("title: \(web.title ?? "nil")")
+        lines.append("readyState: \(await boundedString(web, "return document.readyState", timeout: .seconds(3)) ?? "<no reply>")")
+        lines.append("typeof floeRender: \(await boundedString(web, "return typeof window.floeRender", timeout: .seconds(3)) ?? "<no reply>")")
+        lines.append("me-tpc count: \(await boundedInt(web, "return document.querySelectorAll('me-tpc').length", timeout: .seconds(3)) ?? -1)")
+        lines.append("body[0..300]: \(await boundedString(web, "return document.body ? document.body.innerHTML.slice(0, 300) : null", timeout: .seconds(3)) ?? "<no reply>")")
+        return lines.joined(separator: "\n")
     }
     func testLongBilingualAnswerPaginatesWithoutLosingEditableText() throws {
         let answer = String(repeating: "普通话与 English learning，保留全部解释。\n", count: 400)
