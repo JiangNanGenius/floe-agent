@@ -73,11 +73,14 @@ struct PhpInterpreterTests {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("<?php throw new RuntimeException('boom');".utf8).write(to: root.appendingPathComponent("boom.php"))
-        guard case .exited(let code, _, let stderr, _, _, _) = try await run(["-q", "/workspace/boom.php"], root: root) else {
+        guard case .exited(let code, let stdout, let stderr, _, _, _) = try await run(["-q", "/workspace/boom.php"], root: root) else {
             Issue.record("PHP did not start"); return
         }
         #expect(code != 0)
-        #expect(stderr.contains("boom"))
+        // The CGI SAPI writes the fatal error into the response body and the
+        // CLI may use either stream; the exit code plus the recorded fatal text
+        // is the contract, not a specific stream.
+        #expect(stdout.contains("boom") || stderr.contains("boom"))
     }
 
     @Test func stdinOnlyForTheCLISAPI() async throws {
