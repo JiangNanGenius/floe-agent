@@ -34,7 +34,7 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
 
-**187 正在准备，尚未打标签、构建或上传。** 本轮保留 App 自主管理的 GitHub CI 恢复与前台轮询，并加入渐进式 Office 封面：系统预览加载时先显示带标识的内容摘要。[186](docs/RELEASE_1.7.0_BETA_43.md) 验收失败：发布 SDK 的 App 回归通过 204/204（含 23 项 IDE 任务测试），但 Office 导航标识、一次系统预览超时和本地化键问题阻止了上传。[iPad/iPhone 真实 App 封面截图](docs/qualification/build186-release/app-ui/README.md)与未签名恢复包均已保留。详见 [187 准备记录](docs/RELEASE_1.7.0_BETA_44.md)。iPad 本地模型稳定性及原生 Office/Pencil 操作仍待真机验收。
+**187 已固定为 `v1.7.0-beta.44` / `d77aa11f`，[云端验收](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708)进行中，尚未上传。** 本轮保留 App 自主管理的 GitHub CI 恢复与前台轮询，并加入渐进式 Office 封面：系统预览加载时先显示带标识的内容摘要。[186](docs/RELEASE_1.7.0_BETA_43.md) 验收失败：发布 SDK 的 App 回归通过 204/204（含 23 项 IDE 任务测试），但 Office 导航标识、一次系统预览超时和本地化键问题阻止了上传。[iPad/iPhone 真实 App 封面截图](docs/qualification/build186-release/app-ui/README.md)与未签名恢复包均已保留。详见 [187 准备记录](docs/RELEASE_1.7.0_BETA_44.md)。iPad 本地模型稳定性及原生 Office/Pencil 操作仍待真机验收。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 

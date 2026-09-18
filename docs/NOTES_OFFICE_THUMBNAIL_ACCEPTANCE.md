@@ -4,7 +4,7 @@ Status: **acceptance record. Section 0 records the build 187 two-tier policy and
 the current source status. Sections 1–7 are retained history from the build
 183–186 passes; they are evidence records, not current policy where they
 conflict.** The build 187 preparation source has local type checks and Python
-fixture results only: no 187 build, simulator run, CI run or device run exists,
+fixture results only: the tagged187 cloud run is active, with no completed runtime or device result,
 and nothing below may be read as 187 acceptance. Build 186's final failed result
 is recorded in [the beta.43 record](RELEASE_1.7.0_BETA_43.md) and its retained
 qualification JSON is [here](qualification/build186-release/result.json).
@@ -67,9 +67,7 @@ The progressive cover source and diagnostics separation are committed as
 `1a52dd31cbb5a1b293b525b25124cb12519bb623`. The Office header identifier fix was
 committed as `3dc4a2f81ac4b67800b70fd57f8f350debea66c9` after build 186 but has
 not been built or run. Local `swiftc` typecheck/object checks and Python fixture
-tests are recorded in the internal `Local/Private/build187-*` reports; **no 187
-build, component run, full-App run, CI run, tag, upload or physical-device run
-has executed**.
+tests are recorded in the internal `Local/Private/build187-*` reports; **the tagged187 cloud run is active; no completed runtime, upload or physical-device acceptance is claimed**.
 
 ## 1. What a "real cover" means
 

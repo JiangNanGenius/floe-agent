@@ -1,54 +1,22 @@
 {
   "file": "floe-public-beta-review-guide.pdf",
   "baseline": "1.7.0 (178)",
-  "candidate": "1.7.0 (186), fixed source d421fea2, tag v1.7.0-beta.43, release run35306551280 in progress; no upload",
-  "pages": 14,
-  "sha256": "2f0b6afdaa45e3659c451718eabf9a0a2774bf9373094abf9235bc8395ad5683",
-  "bytes": 2760699,
-  "textExtractionChecked": true,
-  "layoutSizeChecks": "All14 A4 pages595x842, readable text and preparation footers; required tokens186,178,Whisper,lantern garden472,星河手记验证,BYOK,RDP,component-host verified; new status tokens v1.7.0-beta.43,d421fea2,35306551280,fixed-source present.",
-  "screenshots": "Original source-labelled 172, 9e4434ca and 955e346a full-App simulator captures; rotation only in PDF layout. Build186 component covers under docs/qualification/build186-release/native-covers are not included and are not full-App UI evidence.",
-  "reviewStatus": "Draft, external review not submitted; mechanical checks and changed-page visual review passed; release qualification pending.",
   "reviewerCloudCredits": "none authorized; demonstration credentials excluded; no developer API key provided to Apple",
   "localInference": "Apple Foundation Models user-reported working; MLX macOS host memory/inference passes do not clear the pending iPad chat crash; physical-device acceptance remains",
   "createdAt": "2026-09-15T04:19:13.568491+00:00",
-  "updatedAt": "2026-09-18",
-  "regeneratedAt": "2026-09-18T04:23:57Z",
-  "currentRenderedPagesReviewed": [
-    1
-  ],
-  "visualReview": "Primary viewed changed page1 at1000px; rendered PNG pages2–14 are byte-identical to the prior artifact reviewed page-by-page. No overlap, clipping or footer displacement observed.",
-  "priorVisualReview": {
-    "sha256": "ba01b2c8cd056ff21fc41bf73132b5972147f433bf0731ee8049f079cb9f6334",
-    "bytes": 2759927,
-    "pages": 14,
-    "review": "Primary viewed all14 rendered pages at1000px on2026-09-18; no observed overlap, clipped content or detached footers; original screenshot labels retained.",
-    "validationAtReview": "Local/Private/build186-release-docs/review-guide-validation.pre-186-status.json"
-  },
-  "footerChange": "Baseline178/candidate186 fixed-source qualification draft",
-  "sourceHashes": {
-    "review-walkthrough.json": "44a656f6a2a2a951c004a401261c5c3ecaec7bafc1dc36ed223a4be51ded6b14",
-    "review-walkthrough.md": "b9baceadc154947da2dca278bb52b3d52ea7304e76c2ff9209d94813be64c676"
-  },
-  "previousPdf": {
-    "docsCopyPath": "Local/Private/build186-release-docs/floe-public-beta-review-guide.docs-copy.pre-186-status.pdf",
-    "artifactCopyPath": "Local/Private/build186-release-docs/floe-public-beta-review-guide.artifact-copy.pre-186-status.pdf",
-    "sha256": "ba01b2c8cd056ff21fc41bf73132b5972147f433bf0731ee8049f079cb9f6334",
-    "pages": 14,
-    "bytes": 2759927,
-    "validation": "Local/Private/build186-release-docs/review-guide-validation.pre-186-status.json"
-  },
   "realAgentVideo": "agent-demo-build175/floe-real-agent-demo-build175.mp4",
   "realAgentVideoSource": "8958d8f1482c3236f73172076b76adc83da86f5f, Build 175, iPad Simulator",
-  "latestEvidence": "Fixed source d421fea260523d063270e2d21d623bd011acd9ea tagged v1.7.0-beta.43 (annotated tag object31ba6f7c) and pushed; release run35306551280 started2026-09-18T04:19:57Z, prepare-release success04:20:22Z, notes-component development/build-verify-release/accepted-sdk-build in progress at record, upload gated on all three, expedited/direct/recovery skipped. Component35304310882 at source8d303197: iPad84/84, iPhone83/84 on one direct staged Word QuickLook timeout (45.0958s) while the same file passed the real NotesDocumentCoverService on attempt1 in3.278s; OCR passed both devices with the enforced timer reset120→180 proven from session logs; the six rewritten importer/CAS/service sample tests first execute in the current release run. Build185 failed Notes UI qualification after both SDK App regressions204/204. No upload, Apple processing or public Beta submission.",
-  "iCloudCopy": {
-    "file": "Floe-公开Beta审核演示说明-186准备稿.pdf",
-    "matchesPreviousArtifact": false,
-    "matchesCurrentArtifact": true,
-    "note": "Primary copied current PDF to iCloud Drive root and verified local hash; remote-device sync not observed.",
-    "remoteSyncVerified": false
-  },
-  "unchangedRenderedPagesVerified": [
+  "candidate": "1.7.0 (187), source d77aa11f7b4933b987faf5cf65ebc817d520e15e, tag v1.7.0-beta.44, run35312393708 in progress; no upload",
+  "pages": 15,
+  "sha256": "3f858d227458447f33024f1eb3c8981066ac8d03e3fe68cf30babf0be1d15bc2",
+  "bytes": 3059118,
+  "textExtractionChecked": true,
+  "layoutSizeChecks": "All15 A4 pages595x842; extraction includes baseline/candidate, source/run, Whisper, BYOK, RDP and Office types.",
+  "screenshots": "Original source-labelled172,9e4434ca,955e346a full-App simulator captures; new page15 uses build186 full-App iPad simulator office-covers image at source d421fea2/run35306551280. Rotation only in PDF layout. The186 overall UI qualification failed; cold-relaunch section was not reached.",
+  "reviewStatus": "Preparation draft; all15 rendered pages visually reviewed, no observed overlap or clipping. Current release qualification pending; external review not submitted.",
+  "updatedAt": "2026-09-18T06:02:42.507992+00:00",
+  "currentRenderedPagesReviewed": [
+    1,
     2,
     3,
     4,
@@ -61,6 +29,27 @@
     11,
     12,
     13,
-    14
-  ]
+    14,
+    15
+  ],
+  "visualReview": "Primary inspected each current rendered page at1000px. Screenshot source captions and preparation footers retained; no observed overlap, clipped text or displaced footer.",
+  "footerChange": "Baseline178/candidate187 qualification draft",
+  "sourceHashes": {
+    "review-walkthrough.json": "07a31de2486c4d05e3815f3ee2333d2367c6a68b0f2aac3d73dd36f32d8e464a",
+    "review-walkthrough.md": "246a2b370a7f658a1ff3473492db015033c8d1b8d7bbeb73114a36ea754890a1"
+  },
+  "previousPdf": {
+    "path": "Local/Private/build187-review-pdf/previous-186.pdf",
+    "sha256": "2f0b6afdaa45e3659c451718eabf9a0a2774bf9373094abf9235bc8395ad5683",
+    "pages": 14,
+    "bytes": 2760699,
+    "validation": "Local/Private/build187-review-pdf/previous-186-validation.json"
+  },
+  "latestEvidence": "186 failed qualification with accepted-SDK App regressions204/204 including23 IDE job cases; unsigned device recovery preserved.187 fixed progressive Office covers and header child accessibility IDs; tagged atd77aa11f and release run35312393708 now qualifying. No187 upload, Apple processing, installability or public Beta submission.",
+  "iCloudCopy": {
+    "file": "Floe-公开Beta审核演示说明-187准备稿.pdf",
+    "matchesCurrentArtifact": true,
+    "remoteSyncVerified": false,
+    "note": "Copied to iCloud Drive root and verified local SHA256; remote-device sync not observed."
+  }
 }

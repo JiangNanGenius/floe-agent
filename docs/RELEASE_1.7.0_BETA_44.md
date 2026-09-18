@@ -1,15 +1,12 @@
-# Floe 1.7.0 / Build 187 / beta.44 preparation
+# Floe 1.7.0 / Build 187 / beta.44 qualification
 
-Status: **preparation only: no tag, no release workflow run, no upload, not installable.**
+Status: **tagged and qualifying in cloud CI; no upload or installability claim.**
 
-Source `2438fdddc9a613a94d938c62148f9ca90bc440be` set the app and all versioned
-extension targets to 1.7.0 (187) and regenerated the checked-in Xcode project
-(`FloeAgent/project.yml`, `FloeAgent/FloeAgent.xcodeproj/project.pbxproj`). No
-`v1.7.0-beta.44` tag exists, no release workflow has been dispatched for build 187,
-and no TestFlight upload, Apple processing or installability is claimed. Build 186
-remains the latest attempted release and it [failed](RELEASE_1.7.0_BETA_43.md).
+Tag `v1.7.0-beta.44` resolves to source `d77aa11f7b4933b987faf5cf65ebc817d520e15e`. [Release run 35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708) started on 2026-09-18 at 05:50:30 UTC. Source preparation passed; the Notes development component and both SDK App build/verification jobs run in parallel. All three must pass before signing and upload. No expedited gate was selected.
 
-## Implemented candidate changes (not tagged)
+Version metadata was set by `2438fddd`. Product fixes are in `1a52dd31` and `3dc4a2f8`; the tag also contains the candidate documentation. [Local preflight evidence](qualification/build187-release/preflight.json) records 428 script cases (427 passed, one existing platform skip), six focused Swift semantic/object checks, localization and workflow validation. This is not runtime or device acceptance.
+
+## Implemented candidate changes
 
 1. **Progressive two-tier Office covers.** For modern docx/xlsx/pptx within 48 MiB,
    the cover service publishes a visible, labelled native content summary as the
@@ -35,7 +32,7 @@ remains the latest attempted release and it [failed](RELEASE_1.7.0_BETA_43.md).
    identifier now stays on a real accessibility container so child controls keep
    their own identifiers (`notes.back`); build 186 failed exactly on that
    identifier collision (`NotesWorkspaceImportUITests.swift:294`). Committed as
-   `3dc4a2f81ac4b67800b70fd57f8f350debea66c9`; it has not been built or run.
+   `3dc4a2f81ac4b67800b70fd57f8f350debea66c9`; focused semantic/object checks passed, while full-App runtime acceptance is pending.
 4. **Localization preflight.** `0d11957e03f278fb2ed508d8fb89629e30340d19` namespaces
    the bare `返回手记` key and adds a pure-Python catalog check
    ([`validate_localization_catalog.py`](../FloeAgent/scripts/validate_localization_catalog.py))
@@ -43,10 +40,7 @@ remains the latest attempted release and it [failed](RELEASE_1.7.0_BETA_43.md).
 
 ## Pending acceptance (not observed)
 
-No 187 App build, component run, Full-App UI run, CI run, tag, signing or upload has
-been executed. Local preparation checks are recorded in [preflight evidence](qualification/build187-release/preflight.json); runtime and delivery gates remain pending.
-Build 186 evidence is retained and must not be relabelled as 187 evidence. The 187
-version metadata alone does not constitute qualification.
+The cloud run is active. App and component runtime results, full-App UI evidence, signing and upload remain pending. Build186 evidence stays attributed to build186 and must not be relabelled as187 evidence. A source tag or version number does not establish TestFlight availability.
 
 ## Historical context
 
@@ -58,15 +52,8 @@ version metadata alone does not constitute qualification.
   recovery retained.
 
 [Bilingual candidate notes](RELEASE_NOTES_1.7.0_BUILD_187.md) and the
-[TestFlight text draft](TESTFLIGHT_1.7_WHATS_NEW_BUILD_187.json) are prepared for a
-future run; they are not published release text.
+[TestFlight text draft](TESTFLIGHT_1.7_WHATS_NEW_BUILD_187.json) accompany the current run; they are not yet published release text.
 
 ## 简体中文摘要
 
-Build 187 / beta.44 **仅准备**：版号已由 `2438fddd` 设为 1.7.0 (187)，但**没有
-beta.44 标签、没有新的发布 CI、没有上传**，不可安装。已提交的候选变更包括：现代
-OOXML 渐进封面（先显示带 Summary 标注的真实摘要，再升级系统 Quick Look；老格式与
-超过 48 MiB 的文件路径不变）、功能验收口径改为“真实内容（Quick Look 或明确标注
-摘要）+ 独立内容断言”，7 条严格 Quick Look 用例移入独立非阻断诊断且只有完整执行、
-失败均为固定标记时才可能非阻断；返回按钮标识符容器修复；本地化纯 Python 预检。
-以上均无 187 运行时证据，本地定向检查已留证，云端运行及分发结果仍待验证。
+Build 187 / beta.44 已固定为 `d77aa11f7b4933b987faf5cf65ebc817d520e15e`，run35312393708 于 2026-09-18 05:50:30 UTC 启动云端验收。候选包含渐进 Office 封面、准确的摘要与系统预览来源标识、返回按钮标识修复、本地化预检，以及 App 自主管理的 GitHub CI 恢复与前台轮询。三个验收作业全部通过后才签名上传；目前不宣称上传或可安装。

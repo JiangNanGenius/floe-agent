@@ -1,9 +1,10 @@
 # Floe Agent 1.7.0 (187) / beta.44 candidate
 
-Source metadata `2438fdddc9a613a94d938c62148f9ca90bc440be`; **preparation only** —
-no tag, no release workflow run, no upload, not installable. Build 186 / beta.43
+Fixed source `d77aa11f7b4933b987faf5cf65ebc817d520e15e`, tagged
+`v1.7.0-beta.44`. [Release run 35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708)
+is qualifying in cloud CI; no upload or installability is claimed. Build 186 / beta.43
 failed qualification and was not uploaded ([final record](RELEASE_1.7.0_BETA_43.md)).
-Delivery status: [beta.44 preparation](RELEASE_1.7.0_BETA_44.md).
+Delivery status: [beta.44 record](RELEASE_1.7.0_BETA_44.md).
 
 ## 简体中文
 

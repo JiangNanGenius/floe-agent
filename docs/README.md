@@ -6,7 +6,7 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-178 仍是最后确认的内部 TestFlight 交付基线（历史记录；本次未重新查询 Apple）。186 的发布验收失败，未上传；187 正在准备，尚无标签、构建或上传。完整包/模型交付和部分真机验收仍未完成。历史记录保留原日期与结论。
+178 仍是最后确认的内部 TestFlight 交付基线（历史记录；本次未重新查询 Apple）。186 的发布验收失败，未上传；187 已固定标签 beta.44 / d77aa11f，云端 run35312393708 进行中，尚未上传。完整包/模型交付和部分真机验收仍未完成。历史记录保留原日期与结论。
 
 | 文档 | 阅读目的 |
 |---|---|
@@ -84,7 +84,7 @@
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
-当前为 [187 准备稿](RELEASE_1.7.0_BETA_44.md)，尚未构建或上传；[186 最终结果](qualification/build186-release/result.json)与[双端 App 封面截图](qualification/build186-release/app-ui/README.md)已保留。
+当前为 [187 云端验收](RELEASE_1.7.0_BETA_44.md)，run35312393708 进行中，尚未上传；[186 最终结果](qualification/build186-release/result.json)与[双端 App 封面截图](qualification/build186-release/app-ui/README.md)已保留。
 
 - [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。
 
@@ -93,7 +93,7 @@
 - [Build 177 historical candidate record](RELEASE_NOTES_1.7.0_BUILD_177.md): earlier personalization, CAD/IDE and UI qualification work; its recorded status is historical.
 - [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.
 
-- [Build 187 preparation](RELEASE_1.7.0_BETA_44.md): progressive content covers, navigation identity and pre-build localization checks; no tag/build/upload yet.
+- [Build 187 preparation](RELEASE_1.7.0_BETA_44.md): progressive content covers, navigation identity and pre-build localization checks; tagged d77aa11f; run35312393708 in progress, no upload yet.
 - [Build 186 failed qualification](RELEASE_1.7.0_BETA_43.md): fixed source `d421fea2`, run `35306551280`; original evidence and unsigned recovery archive retained, not uploaded.
 - [Build 185 candidate](RELEASE_1.7.0_BETA_42.md): durable cloud jobs, WASI environment repair and content-cover qualification; both App regressions passed but UI failures blocked upload.
 - [Build 184 failed candidate](RELEASE_1.7.0_BETA_41.md): both SDK App builds passed; Lua runtime regression blocked upload.

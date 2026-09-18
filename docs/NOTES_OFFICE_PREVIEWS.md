@@ -4,7 +4,8 @@ Implementation history: `2a907841b50a19b07488f5e9fff40dc4f3b9cf1f` (request
 coalescing) and `d421fea260523d063270e2d21d623bd011acd9ea` (build 186 candidate).
 The build 187 progressive two-tier cover described below is committed as
 `1a52dd31cbb5a1b293b525b25124cb12519bb623`: it has local type-check/object
-and Python fixture results only, no build, simulator, CI or device execution.
+and Python fixture results only, no completed build187 runtime or device result.
+The [fixed-source cloud run](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708) is now active.
 Build 186's final failed qualification is recorded in
 [the beta.43 record](RELEASE_1.7.0_BETA_43.md); build 187 is only
 [preparation](RELEASE_1.7.0_BETA_44.md). This page documents candidate code and

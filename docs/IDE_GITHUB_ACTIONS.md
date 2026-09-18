@@ -1,12 +1,13 @@
+> Build187 update: tagged `v1.7.0-beta.44` at `d77aa11f7b4933b987faf5cf65ebc817d520e15e`; [run35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708) is qualifying in cloud CI. No upload is claimed. Earlier preparation and build186 results below retain their original provenance.
+
 # IDE cloud builds / IDE 云端构建
 
-Current status: build 186 / `v1.7.0-beta.43` completed as a **failed**
-qualification run on 2026-09-18 and was **not uploaded**. Build 187 / beta.44 has
-only version metadata prepared
-(`2438fdddc9a613a94d938c62148f9ca90bc440be`); no `v1.7.0-beta.44` tag, no new
-release workflow run and no upload exists. See
+Current status: build 187 / `v1.7.0-beta.44` is qualifying at fixed source
+`d77aa11f7b4933b987faf5cf65ebc817d520e15e` in
+[run 35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708).
+It has not uploaded. Build 186 failed qualification and was not uploaded; see
 [beta.43 final record](RELEASE_1.7.0_BETA_43.md) and
-[beta.44 preparation](RELEASE_1.7.0_BETA_44.md).
+[beta.44 live record](RELEASE_1.7.0_BETA_44.md).
 
 Release run
 [`35306551280`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
@@ -172,7 +173,7 @@ the two-SDK qualification for that candidate: both App regressions passed
 204/204, but Office cover/navigation UI failures blocked upload. No App relaunch
 UI or TestFlight availability is implied.
 
-### Build 186 result and build 187 preparation
+### Build 186 result and build 187 cloud qualification
 
 Build 186 executed the accepted-SDK focused regression at 204/204 with all 23
 `IDEGitHubActionsTests` cases passing. The run still failed and did not upload
@@ -180,7 +181,7 @@ because of the other qualification gates (localization namespacing in the SDK 27
 module tests, one strict Excel cover case on the iPad component leg, and the
 Office back-control UI identifier on both full-App UI legs;
 [final record](RELEASE_1.7.0_BETA_43.md)). The IDE feature source is unchanged in
-build 187; the only prepared changes are version metadata and Notes-side source.
-No 187 tag, release run, signing or upload exists, and the actual App relaunch by
-tapping through the run list remains an open UI-level check rather than something
-these 23 host cases prove.
+build 187; its fixes concern Notes covers, navigation, localization and qualification.
+The tagged build is now running the cloud gates, with signing and upload still pending.
+Actual App relaunch by tapping through the run list remains an open UI-level check
+rather than something these 23 host cases prove.

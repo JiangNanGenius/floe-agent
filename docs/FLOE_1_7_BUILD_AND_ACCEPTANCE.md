@@ -57,7 +57,7 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 ### 186 最终结果与 187 准备（2026-09-18）
 
 - 186 固定源码 `d421fea260523d063270e2d21d623bd011acd9ea` / `v1.7.0-beta.43` 的 run `35306551280` 已失败。发布 SDK App 回归 204/204；双端 Notes UI 均 3 通过、1 失败、1 原生 Office 预期跳过；组件 iPad 83/84、iPhone 84/84；SDK 27 模块发现一个本地化键错误。签名与上传未执行，[原始结果](qualification/build186-release/result.json)与恢复包身份均已留存。
-- 187 处于准备期，尚无标签或云端构建。新版封面采用摘要首帧加系统预览升级；严格 Quick Look 诊断单列记录，缺失、漏跑、崩溃与非预期失败仍阻断。新的本地化预检先于重型构建执行。详见 [187 记录](RELEASE_1.7.0_BETA_44.md)。
+- 187 已固定 `v1.7.0-beta.44` / `d77aa11f`，云端 run35312393708 进行中，尚无完成验收或上传结果。新版封面采用摘要首帧加系统预览升级；严格 Quick Look 诊断单列记录，缺失、漏跑、崩溃与非预期失败仍阻断。新的本地化预检先于重型构建执行。详见 [187 记录](RELEASE_1.7.0_BETA_44.md)。
 - 组件 run `35304310882`（源码 `8d303197`）iPad 84/84、iPhone 83/84：唯一失败是直接读取暂存文件的 Word 请求 45.0958 s 超时；同一文件经真实封面服务（`NotesDocumentCoverService`）在同一次运行中以 3.278 s 首次尝试通过（iPad 直连请求经重试通过）。两端 OCR 用例通过，导出的 XCTest 会话日志证实有效计时器由 120 s 重置为 180 s（[保留的验收记录](qualification/build185-release/notes-followup.json)）。系统宿主停滞原因仍未证实，未加入重试或超时掩盖；完整 App 冷启动封面可靠性仍是必要门槛。
 - 标签源码中的六个 Office 样例测试（`b06b3082`）已改为真实 importer/CAS/封面服务路径，仍严格要求真实 Quick Look 内容图（非回退摘要或图标）；它们尚未在任何地方执行，本次发布 run 的 Notes 组件作业是首次实跑结果。
 - 历史记录不改写：组件 `35301809882` iPad 84/84、iPhone 83/84（120 秒扫描 OCR 超时）；185 / `v1.7.0-beta.42` 双 SDK App 回归 204/204，但界面验收失败、未上传。

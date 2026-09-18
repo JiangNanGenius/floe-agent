@@ -1,8 +1,8 @@
 # Floe 1.7 TestFlight delivery
 
-## Preparation: 1.7.0 (187)
+## Qualifying: 1.7.0 (187)
 
-Build metadata is prepared. No beta.44 tag, cloud run, signed IPA or TestFlight upload exists at this record. See the [preparation record](RELEASE_1.7.0_BETA_44.md).
+Tag `v1.7.0-beta.44` is fixed at `d77aa11f7b4933b987faf5cf65ebc817d520e15e`. [Run35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708) started 2026-09-18 05:50:30 UTC and is qualifying the Notes component and both SDKs in parallel. No signed IPA or TestFlight upload is claimed. See the [preparation record](RELEASE_1.7.0_BETA_44.md).
 
 ## Failed candidate: 1.7.0 (186)
 
