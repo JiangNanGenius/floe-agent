@@ -1,6 +1,9 @@
 # Build189 preflight: Notes card accessibility ownership
 
-Candidate1.7.0(189), intended tag `v1.7.0-beta.46`.
+Candidate1.7.0(189), immutable tag `v1.7.0-beta.46`, source
+`ba0271b247fd233ebfed9df3bd2353a9242d0cc7`.
+[Cloud run35322816608](https://github.com/JiangNanGenius/floe-agent/actions/runs/35322816608)
+was started by the tag push with the normal release gates.
 
 Build188's SDK27 full-App Notes UI failed on both device families while finding
 the Word library card. The iPad query timed out; iPhone could not reach the card.
