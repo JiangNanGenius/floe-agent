@@ -302,8 +302,10 @@ def build(bundle, source, output):
                 engine / 'workdir/UnoApiHeadersTarget/offapi/comprehensive',
                 engine / 'workdir/UnpackedTarball/boost',
                 # Header-only external already used by the pinned chartexport.cxx
-                # (frozen::make_unordered_map); absent directories are harmless.
-                engine / 'workdir/UnpackedTarball/frozen']
+                # (frozen::make_unordered_map). Upstream adds the tarball's
+                # include/ directory (gb_LinkTarget__use_frozen); the unpacked
+                # root alone does not resolve <frozen/...>.
+                engine / 'workdir/UnpackedTarball/frozen/include']
     for include in includes + header_includes:
         command += ['-I', str(include)]
     members = lock.get('members', {lock['member']: 'engine/sc/source/filter/xcl97/xcl97rec.cxx'})
