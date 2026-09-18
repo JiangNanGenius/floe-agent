@@ -56,6 +56,21 @@ inherited whitespace warnings). Two deliberate deviations, recorded in
 No other patch behavior was changed. The historical 8.2.6 patch files remain
 available in git history at the previous commit of this directory.
 
+## Cloud build history (this pin)
+
+* 2026-09-19, `language-runtimes.yml` run 35394211461 (commit 9641c0fa): the
+  php-8.2.33 build configured with the full extension set and failed in
+  `ext/libxml/libxml.lo` because configure used the runner's host libxml2
+  (`-I/usr/include/libxml2`), whose headers need ICU (`unicode/ucnv.h`), not
+  present in wasi-sdk 20. The uploaded `build.log` records the exact error
+  (`php-wasm-<sha>` artifact).
+* Fix in the recipe: build the reviewed **slim** extension set
+  (`--disable-all --without-libxml --disable-dom/-simplexml/-xml/-xmlreader/-xmlwriter
+  --without-sqlite3 --disable-pdo --without-pdo-sqlite`) that does not depend on
+  the VMware prebuilt WASI libraries. Core PHP, the CLI SAPI, file IO, JSON,
+  PCRE, date, SPL and standard stay available; XML/DOM, mbstring, sqlite and
+  gd stay on the remote route and are listed as limitations below.
+
 ## Compatibility evidence actually observed
 
 **2026-09-19, host macOS 27 arm64, PHP 8.2.6 published module (historical
@@ -108,8 +123,8 @@ artifact digest recorded by `stage_artifact.py`. The catalog entry stays
 3. Move the entry from `CANDIDATES` into `MANIFEST` with the staged digest
    (reviewed change) and let `capability-hub.yml` sign.
 
-Known limitations: no sockets, no `iconv`/`openssl`/`phar`, fibers disabled,
-`wasmedge` flavors are not used (the WASM_RUNTIME_WASMEDGE code paths stay
-inert), and the module is an interpreter — startup is seconds, not
-milliseconds. Native PHP extensions and non-WASI syscalls stay on the remote
-host route.
+Known limitations: slim extension set (no libxml/DOM/XML, mbstring, sqlite,
+pdo, gd, sockets, `iconv`/`openssl`/`phar`), fibers disabled, `wasmedge`
+flavors are not used (the WASM_RUNTIME_WASMEDGE code paths stay inert), and the
+module is an interpreter — startup is seconds, not milliseconds. Native PHP
+extensions and non-WASI syscalls stay on the remote host route.

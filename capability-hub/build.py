@@ -122,6 +122,7 @@ CANDIDATES = (
             'patches': 'https://github.com/vmware-labs/webassembly-language-runtimes/tree/dd26cd52f0cf5e15ba058d5e8c0c4354386570ca/php/v8.2.6/patches',
             'patchRevision': 'dd26cd52f0cf5e15ba058d5e8c0c4354386570ca',
             'patchRebase': 'replayed onto php-8.2.33; 19/19 patches apply with plain git apply; two deviations documented in ThirdParty/PHPWASI/runtime.lock.json',
+            'buildConfiguration': 'slim: --disable-all without libxml/sqlite; XML/DOM, mbstring, sqlite and gd stay on the remote route',
             'wasiSdk': {
                 'version': '20.0',
                 'url': 'https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz',

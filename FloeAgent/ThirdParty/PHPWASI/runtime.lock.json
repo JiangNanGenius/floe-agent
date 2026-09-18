@@ -57,10 +57,10 @@
   },
   "build": {
     "sapi": [
-      "cgi",
-      "cli"
+      "cli",
+      "cgi"
     ],
-    "notes": "Mirrors the VMware Labs wlr-build.sh non-wasmedge PHP 8.2.6 recipe, rebased onto php-8.2.33: --host=wasm32-wasi, _WASI_EMULATED_GETPID/SIGNAL/PROCESS_CLOCKS, -DHAVE_FORK=0 -DWASM_WASI, wasm-opt -O3 when binaryen is available."
+    "notes": "Rebased VMware Labs non-wasmedge recipe on php-8.2.33 with the reviewed slim extension set: --disable-all --without-libxml (and its dependants) --without-sqlite3 --disable-pdo. The first cloud attempt failed because the host's libxml2 was picked up and needs ICU headers (unicode/ucnv.h) that wasi-sdk 20 does not carry; the VMware dependency prebuilts (libxml2/sqlite/oniguruma/libpng/jpeg) are intentionally not fetched, so those extensions stay on the remote route."
   },
   "limits": {
     "moduleMaxBytes": 33554432,

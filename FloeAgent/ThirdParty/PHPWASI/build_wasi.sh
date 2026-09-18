@@ -67,12 +67,21 @@ export LDFLAGS="--sysroot=${WASI_SYSROOT} -lwasi-emulated-getpid -lwasi-emulated
 
 cd "$src_dir"
 ./buildconf --force
+# Slim configuration: the VMware Labs dependency prebuilts (libxml2, sqlite,
+# oniguruma, libpng/zlib, jpeg) are not fetched here, so extensions that need
+# them stay on the remote route. PHP core, the CLI SAPI, file IO, JSON, PCRE,
+# date, SPL and standard remain. The first build attempt with the host's
+# libxml2 failed on `unicode/ucnv.h`; disabling libxml and its dependants is
+# the supported WASI configuration.
 ./configure \
   --host=wasm32-wasi host_alias=wasm32-musl-wasi \
   --target=wasm32-wasi target_alias=wasm32-musl-wasi \
   --without-iconv --without-openssl --without-pear \
   --disable-phar --disable-opcache --disable-zend-signals \
-  --without-pcre-jit --disable-fiber-asm
+  --without-pcre-jit --disable-fiber-asm \
+  --disable-all --without-libxml --disable-dom --disable-simplexml \
+  --disable-xml --disable-xmlreader --disable-xmlwriter \
+  --without-sqlite3 --disable-pdo --without-pdo-sqlite
 # The CLI SAPI is the preferred interpreter (CGI stdin requires request
 # environment variables). Build CGI as a fallback and keep whatever the
 # toolchain accepts; at least one artifact must exist.
