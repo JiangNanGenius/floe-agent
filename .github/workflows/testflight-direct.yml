@@ -5,6 +5,16 @@ on:
       tag:
         required: true
         type: string
+      expected_source_sha:
+        description: Exact source commit the caller froze; the tag checked out below must resolve to it
+        required: false
+        default: ''
+        type: string
+      reuse_artifact_run:
+        description: Run ID of an earlier lean run for the same tag whose retained unsigned IPA and private symbols artifact are reused without an App build; the producing run must still hold its symbols artifact and TestFlight is re-uploaded only when that run has no accepted-upload evidence
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
   actions: read
@@ -30,6 +40,9 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag }}
+      - name: Require the caller-frozen source commit when supplied
+        if: inputs.expected_source_sha != ''
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.expected_source_sha }}"
       - name: Verify source and accepted upload toolchain
         id: source
         run: |
@@ -39,6 +52,7 @@ jobs:
           printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
           printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
       - name: Restore bundled font cache
+        if: inputs.reuse_artifact_run == ''
         uses: actions/cache@v4
         with:
           path: |
@@ -47,6 +61,7 @@ jobs:
           key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
 
       - name: Fetch and verify bundled fonts
+        if: inputs.reuse_artifact_run == ''
         run: |
           python3 scripts/fonts/fetch_fonts.py --check || {
             python3 scripts/fonts/fetch_fonts.py
@@ -54,18 +69,91 @@ jobs:
           }
 
       - name: Select the job-local package cache
+        if: inputs.reuse_artifact_run == ''
         run: echo "FLOE_SPM_CACHE_ROOT=$RUNNER_TEMP/FloePackageCache" >> "$GITHUB_ENV"
 
       - name: Restore verified shell binary archives
+        if: inputs.reuse_artifact_run == ''
         uses: actions/cache@v4
         with:
           path: ${{ env.FLOE_SPM_CACHE_ROOT }}/artifacts
           key: floe-shell-archives-v1-${{ hashFiles('FloeAgent/ThirdParty/FloeShellEngine/Package.swift') }}
 
       - name: Prime the pinned shell artifact cache through GitHub API
+        if: inputs.reuse_artifact_run == ''
         run: python3 scripts/prime_shell_artifact_cache.py --cache-dir "$FLOE_SPM_CACHE_ROOT/artifacts"
 
+      - name: Restore and verify the retained unsigned IPA without rebuilding
+        id: reuse
+        if: inputs.reuse_artifact_run != ''
+        env:
+          REUSE_RUN: ${{ inputs.reuse_artifact_run }}
+          APP_TAG: ${{ steps.source.outputs.tag }}
+          APP_VERSION: ${{ steps.source.outputs.version }}
+          APP_BUILD: ${{ steps.source.outputs.build }}
+          APP_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          REQUIRED_TOOLCHAIN: Xcode 26.6 (17F113)
+        run: |
+          set -euo pipefail
+          [[ "$REUSE_RUN" =~ ^[1-9][0-9]*$ ]]
+          test -f scripts/verify_direct_unsigned_artifact.py
+          ARTIFACT_NAME="expedited-unsigned-ipa-$APP_VERSION-build$APP_BUILD"
+          EVIDENCE="$RUNNER_TEMP/DirectReuse"
+          EXTRACT="$RUNNER_TEMP/DirectReuseExtract"
+          mkdir -p "$EVIDENCE"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN" > "$EVIDENCE/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN/artifacts?per_page=100" > "$EVIDENCE/artifacts.json"
+          # Bind the producing run and the artifact metadata before downloading a byte.
+          # --require-symbols-artifact keeps the "no distribution without a captured
+          # dSYM" policy strict on the rebuild-free path: a producer that failed
+          # dSYM capture retains the unsigned IPA but cannot reach TestFlight.
+          python3 scripts/verify_direct_unsigned_artifact.py \
+            --run "$EVIDENCE/run.json" --artifacts "$EVIDENCE/artifacts.json" \
+            --repository "$GITHUB_REPOSITORY" --artifact-name "$ARTIFACT_NAME" \
+            --tag "$APP_TAG" --source-sha "$APP_SOURCE_SHA" \
+            --version "$APP_VERSION" --build "$APP_BUILD" \
+            --toolchain "$REQUIRED_TOOLCHAIN" --require-symbols-artifact \
+            --report "$EVIDENCE/metadata.json" > /dev/null
+          ARTIFACT_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifactId"])' "$EVIDENCE/metadata.json")"
+          # The downloaded zip stays outside the evidence folder so the retained
+          # evidence artifact never duplicates ~800 MB of IPA bytes.
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/DirectReuseArtifact.zip"
+          # Hash the downloaded zip against GitHub's digest and verify every byte inside it.
+          python3 scripts/verify_direct_unsigned_artifact.py \
+            --run "$EVIDENCE/run.json" --artifacts "$EVIDENCE/artifacts.json" \
+            --repository "$GITHUB_REPOSITORY" --artifact-name "$ARTIFACT_NAME" \
+            --tag "$APP_TAG" --source-sha "$APP_SOURCE_SHA" \
+            --version "$APP_VERSION" --build "$APP_BUILD" \
+            --toolchain "$REQUIRED_TOOLCHAIN" --require-symbols-artifact \
+            --artifact-zip "$RUNNER_TEMP/DirectReuseArtifact.zip" --extract-dir "$EXTRACT" \
+            --report "$EVIDENCE/verification.json" > /dev/null
+          IPA_PATH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ipaPath"])' "$EVIDENCE/verification.json")"
+          test -f "$IPA_PATH"
+          SYMBOLS_ARTIFACT_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["symbolsArtifactId"])' "$EVIDENCE/verification.json")"
+          echo "symbols_state=captured_in_producing_run_$REUSE_RUN" >> "$GITHUB_OUTPUT"
+          echo "symbols_artifact_id=$SYMBOLS_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+          if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["testflightAccepted"] else 1)' "$EVIDENCE/verification.json"; then
+            echo "upload_required=false" >> "$GITHUB_OUTPUT"
+            echo "Run $REUSE_RUN already has accepted TestFlight evidence for $APP_VERSION build $APP_BUILD and symbols artifact $SYMBOLS_ARTIFACT_ID; the upload will not be repeated."
+          else
+            echo "upload_required=true" >> "$GITHUB_OUTPUT"
+            echo "Run $REUSE_RUN has no accepted TestFlight evidence; the retained unsigned IPA will be signed and uploaded with private symbols $SYMBOLS_ARTIFACT_ID."
+          fi
+          # Restore the exact normalized app payload the retained IPA was packaged from.
+          ditto -x -k "$IPA_PATH" "$RUNNER_TEMP/DirectReusePayload"
+          APP_PATH="$(find "$RUNNER_TEMP/DirectReusePayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "$APP_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "$APP_BUILD"
+          mkdir -p "$RUNNER_TEMP/FloeSignedPayload"
+          ditto "$RUNNER_TEMP/DirectReusePayload/Payload" "$RUNNER_TEMP/FloeSignedPayload/Payload"
+          cp "$EXTRACT/bundle-normalization.json" "$RUNNER_TEMP/bundle-normalization.json"
+          cp "$EXTRACT/bundle-normalization.json" "$EVIDENCE/"
+          cp "$EXTRACT/TEST-SUMMARY.txt" "$EVIDENCE/"
+          cp "$EXTRACT/DIRECT-PROVENANCE.json" "$EVIDENCE/"
       - name: Rebuild the exact tag with the accepted App Store SDK
+        if: inputs.reuse_artifact_run == ''
         run: |
           brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
@@ -85,6 +173,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             DEVELOPMENT_TEAM='' \
+            DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
             build
           STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$STABLE_APP_PATH"
@@ -95,11 +184,13 @@ jobs:
           ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
 
       - name: Normalize reviewed App Store bundle defects before signing
+        if: inputs.reuse_artifact_run == ''
         run: |
           APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           python3 scripts/prepare_app_store_bundle.py --app "$APP_PATH" --report "$RUNNER_TEMP/bundle-normalization.json"
 
       - name: Preserve the unsigned device package before signing
+        if: inputs.reuse_artifact_run == ''
         id: package
         env:
           ASSET_NAME: ${{ steps.source.outputs.asset_name }}
@@ -108,14 +199,150 @@ jobs:
           APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           scripts/package_unsigned_ipa.sh "$APP_PATH" release-assets "$ASSET_NAME"
           cp "$RUNNER_TEMP/bundle-normalization.json" release-assets/
-          printf '%s\n' 'policy=user_requested_direct_TestFlight' 'simulator_tests=skipped_by_user_request' 'device_acceptance=pending_user' 'source=${{ steps.source.outputs.source_sha }}' > release-assets/TEST-SUMMARY.txt
+      # The unsigned IPA artifact is the single public subject of this build:
+      # TestFlight signs a copy, while the recovery artifact, the private dSYM
+      # and the GitHub/Feather distribution all stay bound to these exact bytes.
+      # The record and the retained artifact are written immediately after
+      # package validation, BEFORE any dSYM capture or signing, so a symbol or
+      # signing failure can never destroy the only recoverable device package.
+      - name: Record the direct-release provenance inside the retained artifact
+        if: inputs.reuse_artifact_run == ''
+        env:
+          ARTIFACT_NAME: expedited-unsigned-ipa-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
+          SYMBOLS_ARTIFACT: release-symbols-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
+          REQUIRED_TOOLCHAIN: Xcode 26.6 (17F113)
+          SYMBOLS_STATE: capture_required_before_signing
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")"
+          APP_BINARY="$APP_PATH/$EXECUTABLE"
+          test -f "$APP_BINARY"
+          # The app UUID comes from the packaged binary itself, not from the
+          # later symbol-capture step, so this record and the retained IPA stay
+          # complete and verifiable even when dSYM capture fails.
+          APP_UUID="$(dwarfdump --uuid "$APP_BINARY" | awk '{print $2; exit}')"
+          test "${#APP_UUID}" -eq 36
+          printf '%s\n' \
+            'tag=${{ steps.source.outputs.tag }}' \
+            'version=${{ steps.source.outputs.version }}' \
+            'build=${{ steps.source.outputs.build }}' \
+            'bundle=org.floeagent.ios' \
+            'source=${{ steps.source.outputs.source_sha }}' \
+            'asset=${{ steps.source.outputs.asset_name }}' \
+            'artifact='"$ARTIFACT_NAME" \
+            'symbols_artifact='"$SYMBOLS_ARTIFACT" \
+            'symbols_state='"$SYMBOLS_STATE" \
+            'app_uuid='"$APP_UUID" \
+            'toolchain='"$REQUIRED_TOOLCHAIN" \
+            'policy=user_requested_direct_TestFlight' \
+            'simulator_tests=skipped_by_user_request' \
+            'device_acceptance=pending_user' \
+            'signed_ipas_published=false' > release-assets/TEST-SUMMARY.txt
+          APP_UUID="$APP_UUID" \
+          ARTIFACT_NAME="$ARTIFACT_NAME" \
+          SYMBOLS_ARTIFACT="$SYMBOLS_ARTIFACT" \
+          SYMBOLS_STATE="$SYMBOLS_STATE" \
+          REQUIRED_TOOLCHAIN="$REQUIRED_TOOLCHAIN" \
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          record = {
+              'schemaVersion': 1,
+              'route': 'direct-testflight',
+              'tag': '${{ steps.source.outputs.tag }}',
+              'version': '${{ steps.source.outputs.version }}',
+              'build': '${{ steps.source.outputs.build }}',
+              'sourceCommit': '${{ steps.source.outputs.source_sha }}',
+              'bundleIdentifier': 'org.floeagent.ios',
+              'assetName': '${{ steps.source.outputs.asset_name }}',
+              'artifactName': os.environ['ARTIFACT_NAME'],
+              'symbolsArtifact': os.environ['SYMBOLS_ARTIFACT'],
+              'symbolsState': os.environ['SYMBOLS_STATE'],
+              'toolchain': os.environ['REQUIRED_TOOLCHAIN'],
+              'appUUID': os.environ['APP_UUID'],
+              'runId': int(os.environ['GITHUB_RUN_ID']),
+              'runAttempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'workflow': 'release-unsigned-ipa.yml',
+              'simulatorQualification': 'skipped_by_user_request',
+              'deviceAcceptance': 'pending_user',
+              'signedPayloadPublished': False,
+              'signedIpaPublished': False,
+          }
+          (Path('release-assets') / 'DIRECT-PROVENANCE.json').write_text(
+              json.dumps(record, indent=2) + '\n')
+          PY
+      # The recovery artifact must exist before any optional or fallible check
+      # runs: dSYM capture, signing and TestFlight upload all come after this.
       - name: Retain the device artifact for recovery and Feather
+        if: inputs.reuse_artifact_run == ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: expedited-unsigned-ipa-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
           path: FloeAgent/release-assets/
           if-no-files-found: error
+      # Symbols are captured after the unsigned IPA is retained so a retry can
+      # restore the package even when symbolication fails, while a symbol
+      # failure still fails this job and blocks signing/TestFlight distribution
+      # (truthful symbols_state is recorded, never faked).
+      - name: Retain source-bound private symbols before distribution
+        if: inputs.reuse_artifact_run == ''
+        id: symbols
+        run: |
+          set -euo pipefail
+          SYMBOLS="$RUNNER_TEMP/FloeReleaseSymbols"
+          PRODUCTS="$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          APP_NAME="$(basename "$APP_PATH")"
+          EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")"
+          APP_BINARY="$APP_PATH/$EXECUTABLE"
+          test -f "$APP_BINARY"
+          APP_UUID="$(dwarfdump --uuid "$APP_BINARY" | awk '{print $2; exit}')"
+          test "${#APP_UUID}" -eq 36
+          # The retained record already binds this exact binary UUID.
+          test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["appUUID"])' release-assets/DIRECT-PROVENANCE.json)" = "$APP_UUID"
+          mkdir -p "$SYMBOLS"
+          while IFS= read -r -d '' bundle; do
+            ditto "$bundle" "$SYMBOLS/$(basename "$bundle")"
+          done < <(find "$PRODUCTS" -type d -name '*.dSYM' -prune -print0)
+          DSYM="$SYMBOLS/$APP_NAME.dSYM"
+          test -d "$DSYM"
+          DSYM_UUID="$(dwarfdump --uuid "$DSYM" | awk '{print $2; exit}')"
+          test "$DSYM_UUID" = "$APP_UUID"
+          find "$SYMBOLS" -maxdepth 1 -name '*.dSYM' -exec sh -c 'for bundle in "$@"; do dwarfdump --uuid "$bundle" || exit 1; done' _ {} + > "$SYMBOLS/UUIDS.txt"
+          test -s "$SYMBOLS/UUIDS.txt"
+          printf '%s\n' "$APP_UUID" > "$SYMBOLS/APP-UUID.txt"
+          printf '%s\n' '${{ steps.source.outputs.tag }}' > "$SYMBOLS/TAG.txt"
+          printf '%s\n' '${{ steps.source.outputs.version }}' > "$SYMBOLS/VERSION.txt"
+          printf '%s\n' '${{ steps.source.outputs.build }}' > "$SYMBOLS/BUILD.txt"
+          printf '%s\n' '${{ steps.source.outputs.source_sha }}' > "$SYMBOLS/SOURCE-SHA.txt"
+          xcodebuild -version > "$SYMBOLS/TOOLCHAIN.txt"
+          # Authoritative symbol state for the private artifact: captured and
+          # bound to the exact app binary UUID recorded in the retained IPA.
+          printf '%s\n' \
+            'schemaVersion=1' \
+            'state=captured' \
+            'app_uuid='"$APP_UUID" \
+            'dsym_uuid='"$DSYM_UUID" \
+            'tag=${{ steps.source.outputs.tag }}' \
+            'version=${{ steps.source.outputs.version }}' \
+            'build=${{ steps.source.outputs.build }}' \
+            'source_sha=${{ steps.source.outputs.source_sha }}' > "$SYMBOLS/SYMBOLS-STATE.txt"
+          echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
+          echo "symbols_dir=$SYMBOLS" >> "$GITHUB_OUTPUT"
+      - name: Save private symbolication artifact
+        if: inputs.reuse_artifact_run == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-symbols-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
+          path: ${{ runner.temp }}/FloeReleaseSymbols/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Install App Store Connect API key
+        if: inputs.reuse_artifact_run == '' || steps.reuse.outputs.upload_required == 'true'
         env:
           ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -129,6 +356,7 @@ jobs:
           cp "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
 
       - name: Install distribution identity and existing App Store profiles
+        if: inputs.reuse_artifact_run == '' || steps.reuse.outputs.upload_required == 'true'
         env:
           DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -201,6 +429,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.ubiquity-kvstore-identifier' "$RUNNER_TEMP/Floe.entitlements")" = QYL72C43K6.org.floeagent.ios
 
       - name: Sign, verify, package, and upload to TestFlight
+        if: inputs.reuse_artifact_run == '' || steps.reuse.outputs.upload_required == 'true'
         env:
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
@@ -255,15 +484,45 @@ jobs:
             echo "commit=${{ steps.source.outputs.source_sha }}"
             echo "accepted_sdk_toolchain=$REQUIRED_XCODE_VERSION ($REQUIRED_XCODE_BUILD)"
             echo "qualification_policy=user_requested_skip_simulator_qualification"
+            if [[ '${{ inputs.reuse_artifact_run }}' != '' ]]; then
+              echo "artifact_reuse=retained_unsigned_ipa_from_run_${{ inputs.reuse_artifact_run }}"
+              echo "app_rebuilt=false"
+              echo "symbols_state=${{ steps.reuse.outputs.symbols_state }}"
+            else
+              echo "app_rebuilt=true"
+              echo "symbols_state=captured_private_artifact"
+            fi
             echo "testflight_upload=accepted_by_transport"
             echo "apple_processing_state=not_verified"
             echo "floe_qa_visibility=not_verified"
           } > "$RUNNER_TEMP/TestFlightExport/TESTFLIGHT-SUMMARY.txt"
 
       - name: Upload TestFlight evidence
+        if: inputs.reuse_artifact_run == '' || steps.reuse.outputs.upload_required == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testflight-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
           path: ${{ runner.temp }}/TestFlightExport/
           if-no-files-found: error
-
+      - name: Record that the retained TestFlight upload was already accepted
+        if: inputs.reuse_artifact_run != '' && steps.reuse.outputs.upload_required == 'false'
+        run: |
+          {
+            echo "tag=${{ steps.source.outputs.tag }}"
+            echo "version=${{ steps.source.outputs.version }}"
+            echo "build=${{ steps.source.outputs.build }}"
+            echo "commit=${{ steps.source.outputs.source_sha }}"
+            echo "artifact_reuse=retained_unsigned_ipa_from_run_${{ inputs.reuse_artifact_run }}"
+            echo "app_rebuilt=false"
+            echo "symbols_state=${{ steps.reuse.outputs.symbols_state }}"
+            echo "testflight_upload=already_accepted_in_run_${{ inputs.reuse_artifact_run }}"
+            echo "apple_processing_state=not_reverified"
+            echo "floe_qa_visibility=not_reverified"
+          } > "$RUNNER_TEMP/DirectReuse/REUSE-SUMMARY.txt"
+      - name: Retain the rebuild-free reuse evidence
+        if: inputs.reuse_artifact_run != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: direct-reuse-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}-run${{ inputs.reuse_artifact_run }}
+          path: ${{ runner.temp }}/DirectReuse/
+          if-no-files-found: error

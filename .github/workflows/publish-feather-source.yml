@@ -38,6 +38,26 @@ jobs:
           git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" > "$RUNNER_TEMP/feather-source-sha.txt"
           gh release view "$RELEASE_TAG" --json tagName,isDraft,publishedAt > "$RUNNER_TEMP/feather-release.json"
           jq -e --arg tag "$RELEASE_TAG" '.tagName == $tag and .isDraft == false and .publishedAt != null' "$RUNNER_TEMP/feather-release.json"
+      - name: Require a public unsigned-only asset set
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --json assets > "$RUNNER_TEMP/feather-assets.json"
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          assets = [entry['name'] for entry in json.loads(
+              (Path(os.environ['RUNNER_TEMP']) / 'feather-assets.json').read_text())['assets']]
+          unsigned = [name for name in assets if re.fullmatch(r'.+-unsigned\.ipa', name)]
+          sidecars = [name for name in assets if re.fullmatch(r'.+-unsigned\.ipa\.sha256', name)]
+          assert len(unsigned) == 1, f'Expected one published unsigned IPA, found {assets}'
+          assert len(sidecars) == 1, f'Expected one published checksum, found {assets}'
+          forbidden = [name for name in assets
+                       if name == 'FloeAgent.ipa'
+                       or (name.endswith('.ipa') and name not in unsigned)
+                       or name.endswith(('.mobileprovision', '.p12', '.dSYM'))]
+          assert not forbidden, f'Published release exposes signing material: {forbidden}'
+          print(f'Published unsigned-only assets verified: {unsigned[0]}')
+          PY
       - name: Download and verify the published developer IPA
         run: |
           set -euo pipefail

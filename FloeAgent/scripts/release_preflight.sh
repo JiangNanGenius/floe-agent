@@ -74,10 +74,26 @@ if ! awk -F'=' -v version="$VERSION" -v build="$BUILD" '
     exit 1
 fi
 
+# Portable plist read: the lean release preflight runs on ubuntu-latest, where
+# Apple's plutil does not exist. python3 plistlib reads the same XML/binary
+# plists on macOS and Linux and is already required above.
 SCREEN_SHARE_PLIST="FloeScreenShare/Info.plist"
-SCREEN_SHARE_DISPLAY_NAME="$(plutil -extract CFBundleDisplayName raw -o - "$SCREEN_SHARE_PLIST" 2>/dev/null || true)"
+SCREEN_SHARE_DISPLAY_NAME="$(python3 - "$SCREEN_SHARE_PLIST" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+try:
+    with Path(sys.argv[1]).open('rb') as stream:
+        plist = plistlib.load(stream)
+except Exception:
+    plist = None
+value = plist.get('CFBundleDisplayName') if isinstance(plist, dict) else None
+sys.stdout.write(value.strip() if isinstance(value, str) else '')
+PY
+)"
 if [[ -z "$SCREEN_SHARE_DISPLAY_NAME" ]]; then
-    echo "error: $SCREEN_SHARE_PLIST must define CFBundleDisplayName for App Store validation" >&2
+    echo "error: $SCREEN_SHARE_PLIST must define a non-empty CFBundleDisplayName for App Store validation" >&2
     exit 1
 fi
 
