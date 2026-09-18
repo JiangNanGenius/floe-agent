@@ -58,9 +58,7 @@ device acceptance. **Physical-device acceptance belongs to the user.**
   检查真实帧数、循环与时长，`gif(fps,width)` 会真实合成并重采样为固定帧率，属于
   本地确定性转换而非 AI 生成。
 - **本地语言**：PHP 8.2.33、Ruby 3.4.1 与编译型语言交付仍在云端验证中；可安装状态以已签名并发布的目录为准，候选配方不代表设备已可安装。最终交付后更新本节。
-- **本地模型**：MLX 的加载与图构建使用作用域错误处理，释放前等待 GPU 流排空，
-  文本加载路径保持纯文本。Build191 报告的 iPad 崩溃根因仍未证实（符号指向
-  `LLMModel.prepare`），本候选**不宣称已修复**，仍需真机确认。
+- **本地模型**：新增前台状态检查与后台取消保护，避免后台继续提交本地 GPU 推理；取消不会标记为模型失败。MLX 错误处理、释放前 GPU 排空与诊断已加强。生命周期测试 39 项、诊断测试 15 项通过，UIKit 分支已生成 SIL／目标文件。Build191 的前台 Qwen GatedDeltaNet 崩溃仍未证实修复，需真机确认。
 - **发布流程（内部）**：预检查改用可移植的 plist 读取（不再依赖 macOS `plutil`）；
   未签名设备工件在 dSYM 捕获之前先行留存；复用路径要求符号证据，重复的已接受上传
   会被拒绝；Feather 发布拒绝非 `-unsigned.ipa` 资产。
@@ -162,11 +160,7 @@ ownership 45、GIF 22）；语言兼容套件 12/12；capability-hub 27 项；�
   conversion resampled to a constant rate — a deterministic local conversion,
   not AI generation.
 - **Local languages**: PHP 8.2.33, Ruby 3.4.1 and compiler-backed language delivery are undergoing cloud validation. Installability requires the signed, published catalog; a candidate recipe is not an installable runtime. Refresh this section after delivery.
-- **Local models**: MLX loading and graph construction use a scoped error
-  handler, GPU work is drained before release, and the text-only loading path is
-  retained. The build 191 iPad crash root cause is still not proven (symbols
-  point at `LLMModel.prepare`); this candidate **does not claim a fix** and
-  needs device confirmation.
+- **Local models**: foreground admission and lifecycle cancellation prevent continued local GPU submission while inactive; cancellation is not a model failure. Scoped MLX error handling, GPU draining and diagnostics are strengthened. All 39 lifecycle and 15 diagnostic checks passed; the UIKit branch compiled to SIL/object. The build191 foreground Qwen GatedDeltaNet abort remains unproven fixed and needs device confirmation.
 - **Release pipeline (internal)**: preflight now uses a portable plist read
   (no macOS `plutil`); the unsigned device artifact is retained before dSYM
   capture; reuse requires symbols evidence; a duplicate accepted upload is
