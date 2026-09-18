@@ -1,8 +1,21 @@
 # Floe 1.7 TestFlight delivery
 
-## Qualifying: 1.7.0 (187)
+## Preparing: 1.7.0 (188)
 
-Tag `v1.7.0-beta.44` is fixed at `d77aa11f7b4933b987faf5cf65ebc817d520e15e`. [Run35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708) started 2026-09-18 05:50:30 UTC and is qualifying the Notes component and both SDKs in parallel. No signed IPA or TestFlight upload is claimed. See the [preparation record](RELEASE_1.7.0_BETA_44.md).
+Build188 keeps the IDE service-owned CI recovery/polling work and repairs Notes
+cover accessibility queries and bounded WebKit screenshot qualification. Cloud
+validation and upload are pending; see the [preflight](qualification/build188-release/README.md).
+
+## Blocked candidate: 1.7.0 (187)
+
+Tag `v1.7.0-beta.44` is fixed at `d77aa11f7b4933b987faf5cf65ebc817d520e15e`.
+[Run35312393708](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708)
+has failed the SDK27 Notes UI gate and the original component fixture. SDK27 App
+regression passed204/204 including23IDE cases. A separately corrected component
+run passed iPhone101/101 but failed one iPad mind-map WebKit timeout; it does not
+qualify the original release. The narrow artifact-recovery controller was not
+run. The exact-source device recovery archive is saved, unsigned; no TestFlight
+upload is claimed. [Fixture/results](qualification/build187-release/notes-fixture-repair.md).
 
 ## Failed candidate: 1.7.0 (186)
 

@@ -1,0 +1,46 @@
+{
+  "sourceSHA": "d77aa11f7b4933b987faf5cf65ebc817d520e15e",
+  "build": 187,
+  "runID": 35312393708,
+  "device": "iPad Air13-inch M4 simulator SDK27",
+  "scope": "NativeNotes component, not full-App card layout or device acceptance",
+  "visualReview": "Primary viewed all6 original image attachments. Word/Excel service images contain text/cells; PPT service image is a labelled native summary. Summary fixtures inject Quick Look failure to exercise the fallback. Source component run failed one unrelated staging-count fixture; no full qualification claimed.",
+  "images": [
+    {
+      "file": "word-summary.png",
+      "originalAttachment": "7748622A-FABD-4FF7-BFA4-174C7C68138A.png",
+      "testIdentifier": "NotesOfficeThumbnailTests/testContentSummaryFallbackRendersWordFromExtensionlessCASWhenQuickLookFails()",
+      "sha256": "2e58da5570391831f568ec9f81d8d8c166141455ce3f6836875a06427389864c"
+    },
+    {
+      "file": "excel-summary.png",
+      "originalAttachment": "3101D7D2-E09F-4D22-B715-9FF9E4FF62DE.png",
+      "testIdentifier": "NotesOfficeThumbnailTests/testContentSummaryFallbackRendersExcelFromExtensionlessCASWhenQuickLookFails()",
+      "sha256": "4b1f947cb57589c76b89291f197ae27c6bdced1ee4e713693a5c8418871114a3"
+    },
+    {
+      "file": "ppt-summary.png",
+      "originalAttachment": "320E6C9C-397E-4BB1-8C0D-61F2A631B87A.png",
+      "testIdentifier": "NotesOfficeThumbnailTests/testContentSummaryFallbackRendersPowerPointFromExtensionlessCASWhenQuickLookFails()",
+      "sha256": "c0ce08e468a10d6a5980ed7458b37efa2d52783e1ee4d51dd9f268cb95d9f637"
+    },
+    {
+      "file": "word-service.png",
+      "originalAttachment": "CAB82F37-A923-4E9F-92FF-5DD65B0D2F64.png",
+      "testIdentifier": "NotesOfficeThumbnailTests/testSampleRendersWordBusinessWeekly()",
+      "sha256": "7e8fd9810489995e88c4d4559ce63dad9f041338a8df60c9aec24121d07f9398"
+    },
+    {
+      "file": "excel-service.png",
+      "originalAttachment": "21AC7B9B-2666-4C6E-8580-C62AEB7E8795.png",
+      "testIdentifier": "NotesOfficeThumbnailTests/testSampleRendersExcelQuarterlySummary()",
+      "sha256": "127eb80782c9906c358ccc445eaa8d89bef9277f6376cec12870d5c85a89ae38"
+    },
+    {
+      "file": "ppt-service.png",
+      "originalAttachment": "EF4E2020-3AFE-4F4B-A634-32AF5D75078A.png",
+      "testIdentifier": "NotesOfficeThumbnailTests/testSampleRendersPowerPointProductRoadmap()",
+      "sha256": "c0ce08e468a10d6a5980ed7458b37efa2d52783e1ee4d51dd9f268cb95d9f637"
+    }
+  ]
+}

@@ -25,7 +25,11 @@ struct NotesRootView: View {
     /// thumbnail card so accessibility (and the UI acceptance tests) can
     /// distinguish real content covers from the explicit unsupported/placeholder
     /// state and prove a revision-keyed reload.
-    @State private var coverSources: [UUID: String] = [:]
+    private struct CoverState: Equatable {
+        let identity: String
+        let value: String
+    }
+    @State private var coverSources: [UUID: CoverState] = [:]
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     private enum SectionFilter: String, CaseIterable {
@@ -239,8 +243,8 @@ struct NotesRootView: View {
                     } label: {
                         let layout = showsCovers ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
                         layout {
-                            NotesDocumentThumbnail(document: document, store: session.store) { source, revision in
-                                let value = "\(source.rawValue)#\(revision)"
+                            NotesDocumentThumbnail(document: document, store: session.store) { source, revision, detail in
+                                let value = CoverState(identity: "\(source.rawValue)#\(revision)", value: detail)
                                 if coverSources[document.id] != value {
                                     coverSources[document.id] = value
                                 }
@@ -269,8 +273,13 @@ struct NotesRootView: View {
                         }.padding(.vertical, 6)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("notes.card.\(document.kind.rawValue).\(document.title).\(coverSources[document.id] ?? "none")")
-                    .accessibilityValue(coverSources[document.id] ?? "none")
+                    // A document is one actionable card. SwiftUI may merge a
+                    // Button's thumbnail child, so publish its actual cover
+                    // identity on the card instead of depending on child AX.
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(document.title)
+                    .accessibilityIdentifier("notes.card.\(document.kind.rawValue).\(document.title).\(coverSources[document.id]?.identity ?? "none")")
+                    .accessibilityValue(coverSources[document.id]?.value ?? "none")
                     .multilineTextAlignment(.leading)
                     .disabled(document.deletedAt != nil)
                     .contextMenu {

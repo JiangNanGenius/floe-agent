@@ -143,7 +143,7 @@ import FloeDocuments
         XCTAssertTrue(rendered, "The independently stored map must render inside the PDF reader window")
         // Screen capture lives in NativeNotesUITests, which has XCTest UI authorization.
         if let web = find(host.view) {
-            let content = XCTAttachment(image: try await web.takeSnapshot(configuration: nil))
+            let content = XCTAttachment(image: try await boundedSnapshot(web))
             content.name = "Notes linked map — WebKit content evidence"
             content.lifetime = .keepAlways; add(content)
         }
@@ -238,7 +238,7 @@ import FloeDocuments
                text == title {
                 let images = await boundedInt(web, "return document.querySelectorAll('me-tpc img').length")
                 XCTAssertEqual(images, 0)
-                let screenshot = try await web.takeSnapshot(configuration: nil)
+                let screenshot = try await boundedSnapshot(web)
                 let attachment = XCTAttachment(image: screenshot)
                 attachment.name = "Notes mind map component — literal Chinese and English text"
                 attachment.lifetime = .keepAlways
@@ -259,7 +259,7 @@ import FloeDocuments
                     try await Task.sleep(for: .milliseconds(100))
                 }
                 XCTAssertTrue(imageLoaded, "Native image resource did not render in the topic")
-                let illustratedSnapshot = XCTAttachment(image: try await web.takeSnapshot(configuration: nil))
+                let illustratedSnapshot = XCTAttachment(image: try await boundedSnapshot(web))
                 illustratedSnapshot.name = "Notes mind map component — embedded image"
                 illustratedSnapshot.lifetime = .keepAlways; add(illustratedSnapshot)
                 // Exercise actual WebKit layout, not the mocked bridge: long labels and
@@ -335,6 +335,36 @@ import FloeDocuments
             self.continuation = nil
             continuation?.resume(returning: value)
         }
+    }
+
+    /// A WebKit GPU stall must fail with the current stage and diagnostics,
+    /// rather than suspend the test beyond XCTest's entire execution budget.
+    /// Never substitute a blank image or skip the screenshot assertion.
+    @MainActor
+    private func boundedSnapshot(_ web: WKWebView) async throws -> UIImage {
+        let probe = BoundedProbe<UIImage>()
+        let image = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
+                guard probe.attach(continuation) else { return }
+                probe.timeoutTask = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(10))
+                    guard !Task.isCancelled else { return }
+                    probe.settle(nil)
+                }
+                web.takeSnapshot(with: nil) { image, _ in probe.settle(image) }
+            }
+        } onCancel: {
+            Task { @MainActor in probe.settle(nil) }
+        }
+        guard let image else {
+            let evidence = XCTAttachment(string: await mindMapDiagnostics(web))
+            evidence.name = "Mind map WebKit snapshot deadline diagnostics"
+            evidence.lifetime = .keepAlways
+            add(evidence)
+            throw NSError(domain: "FloeNotesQualification", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Mind map snapshot did not return a real image within 10 seconds"])
+        }
+        return image
     }
 
     @MainActor

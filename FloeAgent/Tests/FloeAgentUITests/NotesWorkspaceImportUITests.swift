@@ -404,7 +404,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// Polls until the card's identifier suffix (the settled cover source plus
     /// `#<revision>`) is one of the allowed real sources. `none`/`placeholder`
     /// and any unexpected source fail; a generic icon is never a source. The
-    /// thumbnail's own accessibility value is read for the same state and must
+    /// card's accessibility value comes directly from its thumbnail state and must
     /// agree with the source; a summary source additionally requires the
     /// `badge=summary` marker, so an unlabelled summary cannot pass as a
     /// correct two-tier cover.
@@ -419,7 +419,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             if card.exists {
                 let candidate = parseCover(card.identifier)
                 if cover.allowed.contains(candidate.source) {
-                    let value = coverDiagnostics(app, cover: cover)
+                    let value = card.value as? String ?? "unavailable"
                     if value == candidate.source || value.hasPrefix(candidate.source + ";") {
                         parsed = candidate
                         thumbnailValue = value
@@ -461,17 +461,6 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                            file: file, line: line)
         }
         return parsed
-    }
-
-    /// Reads the bounded, redacted generator identity the thumbnail element
-    /// publishes under `-ui-testing` (see `NotesDocumentThumbnail`): attempts,
-    /// timeout, numeric error domain/code and the fallback stage only. A card
-    /// that never settled reports `unavailable` instead of stalling the test.
-    private func coverDiagnostics(_ app: XCUIApplication, cover: CoverCase) -> String {
-        let element = app.descendants(matching: .any)
-            .matching(identifier: "notes.thumbnail.\(cover.kind).\(cover.title)").firstMatch
-        guard element.waitForExistence(timeout: 5), let value = element.value as? String else { return "unavailable" }
-        return value
     }
 
     /// The opened document exposes the Notes-owned compact header back control

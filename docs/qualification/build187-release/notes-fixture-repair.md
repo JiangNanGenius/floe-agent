@@ -24,8 +24,11 @@ copies after completion. Cancellation releases the replacement holder as well.
 No product source, timeout, retry, expected copy count, or release gate changed.
 Six focused Swift6 semantic/object checks passed against existing SDK27 modules,
 targeting iOS26; this is not execution. Dedicated cloud component run35314763193 at source
-920132dcc88b448a5877fca3d61ea911afb69566 is executing the full component suite on
-both devices, with the strict Quick Look diagnostics retained. The original build187 release remains blocked, even if this
+920132dcc88b448a5877fca3d61ea911afb69566 completed with the corrected staging-ownership test passing on both devices.
+iPhone passed101/101; iPad passed100/101, with a different failure: the mind-map
+WebKit test exceeded120 seconds during a GPU-process stall (the case later returned
+at152.558 seconds, which does not erase the timeout). Strict Quick Look diagnostics
+were retained separately. The original build187 release remains blocked, even if this
 new test source passes separately.
 
 ## Artifact-only recovery conditions
@@ -44,3 +47,10 @@ the supplementary test source and original failure remain explicitly recorded.
 It is not the expedited path and grants no testing waiver. Signing, bundle/profile
 checks and Apple validation remain the existing upload workflow. The original
 release still reports failure; a successful recovery would be a separate run.
+
+The original SDK27 full-App UI job also failed while querying a thumbnail child
+inside a document Button. The later captured hierarchy does contain that child;
+this establishes a costly/timed-out descendant query, not proof the thumbnail was
+absent or the App main thread was deadlocked. Therefore the narrow artifact-only recovery controller
+was not dispatched and cannot qualify this build. App-source repair requires a new
+immutable build; the build187 recovery archive remains preserved.

@@ -161,7 +161,7 @@ struct NotesDocumentThumbnail: View {
     /// Reports the settled cover source and the document revision it belongs to,
     /// so the owning card can expose both to accessibility and UI acceptance
     /// tests. Never reports `.none`.
-    var onSource: ((NotesDocumentCoverSource, Int) -> Void)?
+    var onSource: ((NotesDocumentCoverSource, Int, String) -> Void)?
     @State private var image: UIImage?
     @State private var source: NotesDocumentCoverSource = .none
     @State private var unsupportedDetail: String?
@@ -175,7 +175,7 @@ struct NotesDocumentThumbnail: View {
     private static let maximumThumbnailSourceBytes = 128 * 1024 * 1024
 
     init(document: NoteDocument, store: NotesStore?,
-         onSource: ((NotesDocumentCoverSource, Int) -> Void)? = nil) {
+         onSource: ((NotesDocumentCoverSource, Int, String) -> Void)? = nil) {
         self.document = document
         self.store = store
         self.onSource = onSource
@@ -278,7 +278,7 @@ struct NotesDocumentThumbnail: View {
             source = cached.source
             unsupportedDetail = nil
             diagnostics = nil
-            onSource?(cached.source, document.revision)
+            onSource?(cached.source, document.revision, accessibilityCoverValue)
             return
         }
         image = nil
@@ -310,7 +310,7 @@ struct NotesDocumentThumbnail: View {
         source = outcome.source
         diagnostics = nil
         unsupportedDetail = nil
-        onSource?(outcome.source, document.revision)
+        onSource?(outcome.source, document.revision, accessibilityCoverValue)
     }
 
     /// Publish the settled cover only when this task still owns the card. A
@@ -322,7 +322,7 @@ struct NotesDocumentThumbnail: View {
         source = outcome.source
         diagnostics = outcome.diagnostics
         unsupportedDetail = outcome.source == .unsupported ? outcome.diagnosis : nil
-        onSource?(outcome.source, document.revision)
+        onSource?(outcome.source, document.revision, accessibilityCoverValue)
     }
 }
 
