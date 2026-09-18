@@ -26,6 +26,9 @@ SPARSE_PATHS = [
     '/engine/sc/source/filter/oox/worksheethelper.cxx',
     '/engine/oox/source/vml/vmlshape.cxx',
     '/engine/oox/source/export/chartexport.cxx',
+    # chartexport.cxx includes its sibling ColorPropertySet.hxx with a quoted
+    # include, so the sparse checkout needs that header as well.
+    '/engine/oox/source/export/ColorPropertySet.hxx',
     # chartexport.cxx packages the regenerated PPTX chart workbook with the
     # engine's own ZipOutputStream/CRC32 instead of a duplicated zip writer.
     '/engine/package/inc/',
