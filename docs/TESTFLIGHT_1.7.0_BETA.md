@@ -2,7 +2,9 @@
 
 ## Candidate: 1.7.0 (185)
 
-Prepared for cloud qualification, not uploaded. Durable IDE GitHub Actions jobs,
+Tag `v1.7.0-beta.42`, source `42ecc4527fdbeb171dd0aed1d0776375770f1572`.
+[Cloud run 35292395886](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886)
+is in progress; not uploaded. Durable IDE GitHub Actions jobs,
 Lua environment limits and Office/CAD content covers are covered in the
 [candidate record](RELEASE_1.7.0_BETA_42.md).
 

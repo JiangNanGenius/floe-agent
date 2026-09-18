@@ -1,9 +1,16 @@
 # IDE cloud builds / IDE 云端构建
 
-Build 184 candidate. Full-App cloud qualification remains required; this page
-describes the implemented flow, not a TestFlight availability claim. The build
-182 section below records the original live dispatch/recovery; build 184 re-ran
-the production client/engine/disk-store CLI against the same existing run
+Build 185 candidate, source `42ecc4527fdbeb171dd0aed1d0776375770f1572`. The
+cloud qualification run
+[`35292395886`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886)
+started with `prepare-release` passed; the two-SDK App build/regression jobs were
+still running when this record was written. This page describes the implemented
+flow, not a TestFlight availability claim; nothing was uploaded. The IDE
+client/engine/store feature is unchanged from build 184, which compiled the App
+on both SDK lines but whose two App regressions each passed 203/204 tests with
+the same Lua install/run failure, so no upload occurred. The build 182 section
+below records the original live dispatch/recovery; build 184 re-ran the
+production client/engine/disk-store CLI against the same existing run
 (`35247779223`) with 28 passing checks and zero redispatch, but that is CLI
 evidence, not App UI acceptance.
 
@@ -61,7 +68,7 @@ cancel-before-association, retry/backoff, terminal-state preservation during an
 artifact refresh, redirect authorization handling, digest mismatch, and an
 actual GitHub run continued across App relaunch. The local state-machine and
 transport fixtures provide focused evidence; they do not replace full-App UI or
-real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_41.md)
+real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_42.md)
 for current delivery status.
 
 Observed before the build-180 tag: the production center/engine/store/policy and
@@ -124,3 +131,18 @@ recovered the seeded record to completed/success in 2.01 s, cleared the stale
 [Redacted evidence](qualification/build184-release/live-recovery.json). This
 reuses an immutable existing run; it is not a new dispatch, App relaunch or UI
 acceptance.
+
+### Build 185 candidate
+
+Build 184 compiled the App on both SDK lines, but each App regression passed
+203/204 tests with the same Lua install/run failure and no upload occurred; its
+unsigned device recovery archive is retained
+([record](qualification/build184-release/device-recovery.json)). The Actions
+feature source is unchanged in build 185. Build 184 actually executed the 25
+service fixtures in its Swift module job and all 23 IDE engine cases in its
+App test host successfully. Earlier mandatory SIL/object checks provide separate
+compiler evidence; those checks alone did not execute the tests.
+The only runtime repair in this candidate is the WASI environment contract
+(`f908cce1`), which is outside the GitHub Actions feature. Run `35292395886` is
+the current two-SDK qualification and has no recorded conclusion yet. No App
+relaunch UI, upload or availability is implied.

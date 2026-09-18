@@ -1,6 +1,9 @@
 # Floe Agent 1.7.0 (185) — beta.42 candidate
 
-**Prepared for cloud qualification; not uploaded.**
+**Cloud qualification in progress; not uploaded.**
+
+Tag `v1.7.0-beta.42`, source `42ecc4527fdbeb171dd0aed1d0776375770f1572`.
+[Release run 35292395886](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886).
 
 This candidate completes durable IDE GitHub Actions job ownership: submission
 intent is persisted before dispatch; relaunch and foreground entry reload jobs

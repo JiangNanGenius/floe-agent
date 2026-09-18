@@ -166,12 +166,41 @@ renderer's evidence is the mandatory SIL and object emission check in
 `qualification/build184-release/focused-compiler-checks.json`; that check compiles
 source, it does not execute the offscreen DXF/DWG or Office tests.
 
+### Build 185 component follow-up — development SDK 27
+
+The build 184 component run
+[`35287879287`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35287879287)
+failed the cold CAD cover-service and bundled mind-map text cases, so source
+`f4435d22` bounded the cold path: the renderer now waits for the real
+`window.floeEngineeringThumbnail` predicate under a 6 s deadline with
+cancellation and single-resume semantics, and the preview server reads complete,
+bounded request headers. The subsequent development-only NativeNotes run
+[`35290599088`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35290599088)
+on that exact source (`f4435d2271d3036d263bea49e7d032688af2bc53`) passed the
+`development` job on Xcode 27.0 (27A266a): **72/72 tests on iPad Air 13-inch (M4)
+and 72/72 on iPhone 18 Pro**, zero failures and zero skips. The `compatibility`
+job was skipped because the dispatch selected the development SDK only.
+
+Ten actual cover-service outputs (Word, Excel, PowerPoint, DXF, DWG per device)
+are retained under
+[`docs/qualification/build185-release/native-covers/`](qualification/build185-release/native-covers/README.md);
+machine-readable results are in
+[`native-notes-followup.json`](qualification/build185-release/native-notes-followup.json).
+The primary inspected all 21 exported images per device. Office/CAD content and
+map/PDF captures are present, but the **iPhone early literal-text map snapshot is
+a fully black frame** (1206×2334, every pixel 0) even though its DOM assertions
+passed; it is excluded from accepted visual proof. The later linked-map image has
+visible rendered content.
+
+These remain component-host results: the pass confirms the cold-path symptom is
+repaired, it does **not** prove the original cold-bridge failure cause, and it is
+not full-App library-grid, physical-device or release-SDK acceptance.
+
 ## 6. Evidence still required (not observed)
 
-1. **Component tests** (cloud/CI, Xcode): `xcodebuild build-for-testing` /
-   `test` for scheme `FloeNotesNativeQualification` on an iPad simulator. This
-   is the first place a real DXF/DWG offscreen render and the geometry-pixel
-   assertions are proven.
+1. **Release-SDK component tests:** the development SDK component and geometry
+   assertions passed on both device families as recorded above. The compatibility
+   job was not selected; its component result remains unobserved.
 2. **Full-App UI** (device or simulator): scheme `FloeAgent`,
    `FloeAgentUITests/NotesWorkspaceImportUITests.testNotesLibraryCardsShowRealContentCovers`.
    Office `quickLook` content and CAD `engineeringPreview` are the pass criteria.
@@ -179,7 +208,7 @@ source, it does not execute the offscreen DXF/DWG or Office tests.
    conversion performance are device claims; a simulator pass is not a device
    pass.
 4. **Project membership:** XcodeGen regenerated the main project with the new
-   renderer and test sources, and all app/extension build numbers are 184.
+   renderer and test sources, and all app/extension build numbers are 185.
    The generated project is included in the candidate diff. This establishes
    membership, not successful cloud compilation.
 

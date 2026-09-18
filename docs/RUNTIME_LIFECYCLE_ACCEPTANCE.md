@@ -8,8 +8,9 @@ change or dependency install was performed on this Mac.
 
 Reviewed production baseline: branch `codex/build178-feedback`,
 `e0c846f93c48d690fe71433ea0418faaad221aa5`. The two executable-check files and
-their `project.yml`/workflow wiring were added on top in `5e7a609e` and are
-present at candidate HEAD `8e0cf69`; they did not exist at `e0c846f9`. The
+their `project.yml`/workflow wiring were added on top in `5e7a609e`; they
+executed in the build 184 cloud App regression (`8e0cf69`) and are present
+unchanged at the build 185 candidate `42ecc452`. The
 runtime/execution/package paths were byte-identical
 through `e0c846f9` to the green CI source `955e346a` recorded in
 `docs/qualification/build179-release/runtime/README.md`; that checkpoint lists
@@ -116,8 +117,42 @@ them from the `FloeAgentUITests` UI-test bundle. Both new files are now wired:
 HTTP start/get/stop fixture is reused by the new tests.
 
 The main Xcode project was regenerated and now includes these tests with build
-184. The generated project and `project.yml` are part of the same candidate;
-cloud compilation and execution remain pending.
+185. The generated project and `project.yml` are part of the same candidate.
+Cloud execution is recorded below.
+
+## Cloud execution observed in build 184
+
+The build 184 two-SDK App regression on source `8e0cf69` (run
+[`35287358993`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35287358993))
+actually executed the app-hosted unit bundle. Each SDK leg passed 203/204:
+
+- `LocalServiceLifecycleTests` passed on both legs (`FloeApp.LocalServiceLifecycle`
+  is listed as passing and the strict verifier requires both cases). The real
+  restart and environment-deletion cases therefore have cloud execution evidence.
+- `LuaShellInstallTests.aptInstallRunsLuaAndRemoveDisablesIt` failed on both legs
+  with `floe-lua ... validationFailed("WASM input exceeds limits")` — the old
+  32-variable WASI cap rejecting the real shell export set, not a Node/Python
+  lifecycle failure.
+
+[Original regression record](qualification/build184-release/sdk27-app-regression.json).
+UI gates, signing and upload were skipped; the unsigned device recovery archive is
+retained ([record](qualification/build184-release/device-recovery.json)).
+
+The Lua failure is repaired in source `f908cce1`. The new
+`WasmEnvironmentContract` bounds variable count, per-key/value bytes and total
+`KEY=VALUE` payload bytes with value-free diagnostics; `WasmKitCommandRuntime`
+validates and forwards the caller's environment unchanged
+(`WasmKitCommandRuntime.swift:54,71`), and the committed
+`FloeShellCommands.swift:334` keeps the shell-authoritative
+`context.shellVariables` without re-merging the dependency snapshot, so an
+`unset` variable is not resurrected for WASM commands. Seven actual Swift
+Testing cases passed on macOS, including the real signed Lua fixture, plus eleven
+boundary/real-Lua checks
+([evidence](qualification/build185-release/lua-environment.json)). The release
+workflow now stages the signed fixture before the module tests (`0fff2c3b`), so
+the fixture-gated case is not skipped on the release-only path. The app-level
+`LuaShellInstallTests` rerun belongs to the build 185 full-App regression and is
+not yet observed.
 
 ## Source-backed API review (2026-09-18)
 
@@ -164,9 +199,11 @@ Expected pass criteria:
 
 ## Honest limits / unverified here
 
-- **Not executed locally.** Only `swiftc -parse` (syntax) passed; no typecheck
-  against `FloeApp`, no simulator, no test run. All runtime results above are
-  *expected*, not observed.
+- **Executed in cloud, not locally.** No local `xcodebuild`, simulator or test
+  run was performed for this record. The two lifecycle cases did execute and pass
+  in the build 184 cloud App regression; the Lua install/run case executed and
+  failed there. The `f908cce1` Lua repair itself has macOS focused-test evidence
+  but no full-App execution yet.
 - The tests require the app host to have run `AppEnvironment.live()` and injected
   `FloePlatformServices` / `ToolEnvironmentRouting` / `FloeShellCommandRegistry`.
   If that did not happen they fail loudly via `#require(..., message)`; they never

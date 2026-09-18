@@ -54,6 +54,14 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 
 当前版本描述入口为 [RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md)，对应中英文 README、USER_GUIDE、变更草稿、架构、迁移恢复及 TestFlight 准备记录。历史版本文件保留，不改写为新版本说明。上传后必须补入实际固定提交、构建号、Apple 处理结果与可安装状态。
 
+### 当前候选（185）状态（2026-09-18）
+
+- 候选为 1.7.0 (185) / `v1.7.0-beta.42`，固定源码 `42ecc4527fdbeb171dd0aed1d0776375770f1572`。发布流水线 run `35292395886` 已启动：`prepare-release` 通过，App 构建与双 SDK 回归仍在进行；**尚未签名、未上传、不可安装**。
+- 上一候选 1.7.0 (184) / `v1.7.0-beta.41` / `8e0cf69f`：两套 SDK 的 App 编译均通过，但两个 App 回归各 203/204，同一个 Lua 安装/运行用例命中旧 WASI 32 变量上限；`LocalServiceLifecycleTests` 两用例在两个 SDK 上均通过。设备恢复包已留存，未签名、未上传（[候选记录](RELEASE_1.7.0_BETA_41.md)、[回归证据](qualification/build184-release/sdk27-app-regression.json)、[恢复包](qualification/build184-release/device-recovery.json)）。
+- Lua 修复 `f908cce1`：真实 macOS Swift Testing 7/7（含签名 Lua fixture），另加 11 项边界/真实 Lua 检查（[证据](qualification/build185-release/lua-environment.json)）；CI `0fff2c3b` 在模块测试前准备签名 fixture。完整 App 内该用例的重跑仍属 185 验收。
+- NativeNotes 组件运行 `35290599088`（源码 `f4435d22`，开发 SDK 27，兼容作业未选择）在 iPad/iPhone 各 72/72；10 张真实内容封面保存于 `docs/qualification/build185-release/native-covers/`。其中 iPhone 早期思维导图文字截图整体黑帧，已排除；后续联动图有可见内容。组件通过只证明冷启动症状已修复，不证明原始失败原因，也不等于完整 App 或真机验收。
+- 证据分类固定为：真实测试／组件 UI／完整 App／真机／上传，五者分别记录；自动化与模拟器结果不替代用户真机检查。
+
 手记验收增加：回收站永久删除必须确认且检查修订；活动附件、其他文档和撤销历史不误删；多存储句柄共享读取保护，失败回收可重试。动态导图需在真实 WebKit 验证长文字、附图和分支无重叠，方向更新生效；iPhone 横屏保留阅读位置，以真实截图正文识别确认。
 
 真机分工更新：由用户执行 iPad/iPhone 真机检查。本轮保留自动化测试、云端归档与 TestFlight 上传责任，交付时附上双端检查清单；不以自动化通过代替用户的真机检查结果。

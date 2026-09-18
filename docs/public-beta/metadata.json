@@ -73,10 +73,10 @@
   "candidateQualification": {
     "version": "1.7.0",
     "build": "185",
-    "appSourceCommit": null,
+    "appSourceCommit": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
     "tag": "v1.7.0-beta.42",
-    "releaseRun": null,
-    "status": "prepared_for_cloud_qualification_not_uploaded",
+    "releaseRun": 35292395886,
+    "status": "cloud_qualification_in_progress_not_uploaded",
     "focusedEvidence": [
       "Build184 actual25 service fixtures and23 IDE App tests passed",
       "Current Lua/WASI production source:7/7 real Swift Testing cases passed plus11 boundary checks",

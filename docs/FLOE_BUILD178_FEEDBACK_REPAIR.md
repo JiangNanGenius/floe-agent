@@ -7,7 +7,7 @@ have not been uploaded to TestFlight. The branch retains a
 local code checkpoint with the open acceptance items below. Earlier
 release records in `docs/` are unchanged.
 
-Last updated: 2026-09-17.
+Last updated: 2026-09-18.
 
 ## What the user reported
 
@@ -508,3 +508,11 @@ Accepted SDK 26.6 device compilation and App regression completed. The 20-minute
 ### User correction — Word/Excel library thumbnails are not covered by PDF UI tests
 
 The SDK 27 release Notes screenshots above use PDFs. Historical NativeNotes component run `35186569645` returned all six real Office Quick Look samples on both device families, but it did not prove DOCX/XLSX content thumbnails appear in the full-App library after import, creation, saving or reopening. That end-to-end acceptance remains open; the user explicitly reiterated this gap. A dedicated investigation and true DOCX/XLSX library-card UI checks are in progress. No PDF or generic file icon will satisfy this requirement, and any App source changes require a new immutable release source rather than relabeling build 179 artifacts.
+
+
+### 2026-09-18 — build 184 failure and build 185 candidate
+
+- **Build 184 / `v1.7.0-beta.41`, source `8e0cf69f6387333e768b90d56372e587eb297375`.** [Run 35287358993](https://github.com/JiangNanGenius/floe-agent/actions/runs/35287358993) completed with failure. Both SDK legs compiled the App, but each App regression passed 203/204 tests with the same `LuaShellInstallTests/aptInstallRunsLuaAndRemoveDisablesIt` failure: `floe-lua -e "print(2 + 40)"` returned `WASM command failed: validationFailed("WASM input exceeds limits")`. The old 32-variable WASI cap rejected the real shell export set. `LocalServiceLifecycleTests` passed on both legs ([regression record](qualification/build184-release/sdk27-app-regression.json)). UI gates, signing and upload were skipped; the unsigned device recovery archive is retained ([record](qualification/build184-release/device-recovery.json)).
+- **Lua repair `f908cce1`.** The new `WasmEnvironmentContract` bounds variable count, key/value bytes and total payload bytes with content-free diagnostics. The committed `FloeShellCommands.swift:334` keeps the shell-authoritative `context.shellVariables`; the earlier redundant re-merge of the dependency snapshot was removed, so an `unset` variable is not resurrected for WASM commands. Seven actual Swift Testing cases passed on macOS against the real signed Lua fixture, plus eleven boundary/real-Lua checks ([evidence](qualification/build185-release/lua-environment.json)). CI `0fff2c3b` now stages the signed fixture before the module suite, so the fixture-gated test is not skipped on the release-only path.
+- **NativeNotes repair `f4435d22`.** [Run 35290599088](https://github.com/JiangNanGenius/floe-agent/actions/runs/35290599088) passed the development SDK 27 component host 72/72 on iPad Air 13-inch (M4) and 72/72 on iPhone 18 Pro; the compatibility job was not selected. Ten real cover-service outputs are retained under [build 185 covers](qualification/build185-release/native-covers/README.md). Primary review of all 21 exported images per device excluded the black iPhone early literal-text map frame; the later linked-map image renders content. This confirms the cold-path symptom is repaired; it does not prove the original failure cause and remains component evidence, not full-App or device acceptance.
+- **Build 185 candidate / `v1.7.0-beta.42`, source `42ecc4527fdbeb171dd0aed1d0776375770f1572`.** [Run 35292395886](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886) started; `prepare-release` passed and the two-SDK App build/regression jobs were still running at this record. No upload or availability claim. Build 185 keeps the build 184 client/engine/store feature unchanged; the only runtime repair is the WASI contract above.
