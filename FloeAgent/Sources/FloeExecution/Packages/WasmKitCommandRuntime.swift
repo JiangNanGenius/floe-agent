@@ -40,9 +40,18 @@ public struct WasmKitCommandRuntime: WasmCommandRuntime {
         var failure: Error?
         do {
             try budget.check()
-            guard (stdin?.utf8.count ?? 0) <= 256 * 1024, arguments.count <= 128,
-                  arguments.reduce(0, { $0 + $1.utf8.count }) <= 64 * 1024,
-                  environment.count <= 32, environment.allSatisfy({ $0.key.utf8.count <= 256 && $0.value.utf8.count <= 16 * 1024 && !$0.key.contains("\0") && !$0.value.contains("\0") }) else { throw FloeError.validationFailed("WASM input exceeds limits") }
+            // Each input family is bounded and reported separately so a cloud
+            // run can identify the exact field without touching its content.
+            guard (stdin?.utf8.count ?? 0) <= 256 * 1024 else {
+                throw FloeError.validationFailed("WASM stdin exceeds 256 KiB")
+            }
+            guard arguments.count <= 128 else {
+                throw FloeError.validationFailed("WASM arguments exceed 128 entries")
+            }
+            guard arguments.reduce(0, { $0 + $1.utf8.count }) <= 64 * 1024 else {
+                throw FloeError.validationFailed("WASM argument bytes exceed 64 KiB")
+            }
+            try WasmEnvironmentContract.validate(environment)
             let attributes = try FileManager.default.attributesOfItem(atPath: moduleURL.path)
             guard ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 4 * 1024 * 1024 else {
                 throw FloeError.validationFailed("WASM module exceeds 4 MiB")
