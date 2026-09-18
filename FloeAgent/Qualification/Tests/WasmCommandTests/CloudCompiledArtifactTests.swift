@@ -36,9 +36,14 @@ struct CloudCompiledArtifactTests {
     }
 
     private func run(arguments: [String], root: URL, timeout: TimeInterval = 60) async throws -> ShellRunOutcome {
+        // Cloud artifacts are not catalog-bound, so the qualification host runs
+        // them with the reviewed interpreter-class ceiling (module ≤ 64 MiB,
+        // memory ≤ 256 MiB). A module above the ceiling could never be signed
+        // into the catalog, so refusing it here matches the device boundary.
         await WasmKitCommandRuntime().run(
             moduleURL: try artifact(), arguments: arguments, stdin: nil, environment: [:],
-            rootURL: root, workingDirectory: ".", timeout: timeout, maxOutputBytes: 256 * 1024)
+            rootURL: root, workingDirectory: ".", timeout: timeout, maxOutputBytes: 256 * 1024,
+            moduleMaxBytes: 64 * 1024 * 1024, memoryMaxBytes: 256 * 1024 * 1024)
     }
 
     @Test func helloFileIOAndArgumentsInTheWorkspaceJail() async throws {
