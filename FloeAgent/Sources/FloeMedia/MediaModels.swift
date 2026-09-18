@@ -358,7 +358,7 @@ public struct MediaModelsTool: AgentTool {
 
     public static let name = "media.models"
     public static let toolDescription =
-        "List, install, remove or inspect skill-hub media models (interpolation, super resolution, restoration, audio). Models are never installed through apt. `list` shows installed and catalog-available entries with capability, size, license and availability; `install` requires an explicit id and scope (session, project or shared; prefer shared for large models); `remove` releases one install; `status` reports install paths. Downloads are verified against the signed catalog before use."
+        "List, install, remove or inspect skill-hub local-weight media models (interpolation, super resolution, restoration, audio). These are on-device artifacts, never cloud generation models and never AI capability claims: installing a file does not make it runnable. `list` shows installed and catalog-available entries with capability, size, license and availability; `install` requires an explicit id and scope (session, project or shared; prefer shared for large models); `remove` releases one install; `status` reports install paths. Runtime readiness is reported only by media.capabilities (runnable/unavailableReason). Downloads are verified against the signed catalog before use."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "action":{"type":"string","enum":["list","install","remove","status"]},
@@ -409,6 +409,7 @@ public struct MediaModelsTool: AgentTool {
                 lines.append("available id=\(artifact.id) version=\(artifact.version) capability=\(artifact.capability) bytes=\(artifact.totalBytes) license=\(artifact.license ?? "unknown")")
             }
             if lines.isEmpty { lines.append("no models installed or available") }
+            lines.append("note=Installed artifacts are local-weight storage; being installed does not imply runnable. Runtime readiness is reported by media.capabilities (runnable/unavailableReason).")
             return ToolExecutionOutput(digesting: lines.joined(separator: "\n"), exitStatus: 0)
         case "install":
             guard let id = args.id, let artifact = catalog?.model(id: id) else {

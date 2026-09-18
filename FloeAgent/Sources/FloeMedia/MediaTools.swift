@@ -48,7 +48,7 @@ public struct VideoInspectTool: AgentTool {
 
     public static let name = "video.inspect"
     public static let toolDescription =
-        "Inspect a video/audio file in the workspace: container, duration, video dimensions, frame rate, track count and rotation. Use this before editing so every parameter you pass is grounded in the actual source."
+        "Inspect a video/audio/GIF file in the workspace: container, duration, video dimensions, frame rate, track count and rotation. Animated GIFs are reported through ImageIO (frame count, loop count, per-frame timing) because AVFoundation cannot open them. Use this before editing so every parameter you pass is grounded in the actual source."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles]
     public static let isSideEffecting = false
@@ -79,7 +79,7 @@ public struct VideoEditTool: AgentTool {
 
     public static let name = "video.edit"
     public static let toolDescription =
-        "Edit a video using one source trim, synchronized speed, volume, mute and non-overlapping audio fades. Other operations fail before processing. Export supports mp4/mov/m4v, H.264/HEVC and AAC; optional dimensions, frame rate and bitrates are applied to the actual file. quality, export range and forced hardware selection are unsupported. Output is staged and verified before replacement; source files are preserved. This tool does not imply shared background-media job support."
+        "Edit a video using one source trim, synchronized speed, volume, mute and non-overlapping audio fades. Other operations fail before processing. A plan containing exactly one gif(fps,width) operation converts an animated GIF source into an H.264 mp4/mov through ImageIO with bounded memory; this is a deterministic local conversion, not AI generation, and it resamples the source to the requested constant frame rate (the reported duration stays truthful; use video.inspect for the original per-frame timing). Export supports mp4/mov/m4v, H.264/HEVC and AAC; optional dimensions, frame rate and bitrates are applied to the actual file. quality, export range and forced hardware selection are unsupported. Output is staged and verified before replacement; source files are preserved. This tool does not imply shared background-media job support."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "input":{"type":"string"},"output":{"type":"string"},

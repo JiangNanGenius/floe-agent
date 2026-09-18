@@ -199,8 +199,8 @@ public struct MediaGenerationJob: Sendable, Codable, Identifiable, Hashable {
     public var modelID: UUID
     public var mediaKind: MediaKind
     public var credentialReference: SecretReference?
-    public var canvasID: UUID
-    public var documentID: UUID
+    public var canvasID: UUID?
+    public var documentID: UUID?
     public var sourceNodeIDs: [UUID]
     public var resultNodeID: UUID
     public var requestJSON: Data
@@ -221,7 +221,7 @@ public struct MediaGenerationJob: Sendable, Codable, Identifiable, Hashable {
     public init(
         id: UUID = UUID(), providerTaskID: String? = nil,
         providerID: UUID, modelID: UUID, mediaKind: MediaKind,
-        credentialReference: SecretReference?, canvasID: UUID, documentID: UUID,
+        credentialReference: SecretReference?, canvasID: UUID? = nil, documentID: UUID? = nil,
         sourceNodeIDs: [UUID], resultNodeID: UUID, requestJSON: Data,
         assetReferences: [UUID] = [], state: MediaGenerationJobState = .preparing,
         createdAt: Date = Date(), estimatedCompletionAt: Date? = nil,

@@ -488,6 +488,47 @@ final class ConversationCenter: ObservableObject {
         } catch {
             // Honest degradation: keep prior state; the list surfaces empty.
         }
+        // Repair a stored default that no longer resolves (disabled, deleted or
+        // hidden model) through the shared deterministic fallback policy. This
+        // runs after preferences are published but never touches a running
+        // request: every live run holds its own provider/model pair.
+        await reconcileDefaultAgentModelIfNeeded()
+    }
+
+    /// Re-entry latch for the reload -> saveModelPreferences -> reload cycle.
+    private var isReconcilingDefaultAgentModel = false
+
+    /// Repairs `defaultAgentModelID` when the stored model is not an available
+    /// picker model any more. Candidate order is `availableAgentModels`
+    /// (already filtered to enabled, chat-capable, visible models) and the
+    /// resolver applies the fixed fallback order; nil keeps it deterministic
+    /// (stored default, then first usable) without scanning run history.
+    func reconcileDefaultAgentModelIfNeeded() async {
+        guard !isReconcilingDefaultAgentModel else { return }
+        let candidates = availableAgentModels.map {
+            AgentModelCandidate(id: $0.id, isUsable: true)
+        }
+        let resolution = AgentModelSelectionResolver.resolve(
+            selected: nil,
+            defaultModel: modelPreferences.defaultAgentModelID,
+            recent: nil,
+            candidates: candidates
+        )
+        guard let resolved = resolution.modelID,
+              resolved != modelPreferences.defaultAgentModelID else { return }
+        isReconcilingDefaultAgentModel = true
+        defer { isReconcilingDefaultAgentModel = false }
+        var preferences = modelPreferences
+        preferences.defaultAgentModelID = resolved
+        do {
+            try await saveModelPreferences(preferences)
+            FloeLogger(category: .app).info(
+                "defaultAgentModelReconciled reason=\(resolution.reason.rawValue) model=\(resolved.uuidString)"
+            )
+        } catch {
+            // saveModelPreferences already restored local truth on failure.
+            FloeLogger(category: .app).warning("defaultAgentModelReconcileFailed")
+        }
     }
 
     /// Installed local models participate in the same relational launch path
@@ -1902,6 +1943,13 @@ final class ConversationCenter: ObservableObject {
             orderedIDs: orderedIDs
         )
         publishSession(conversationID)
+    }
+
+    /// Whether `runID` is still live. Background delivery uses this to choose
+    /// between steering the current turn and leaving a visible queued message
+    /// that never auto-launches a new run on its own.
+    func hasActiveRun(_ runID: UUID) -> Bool {
+        runServices[runID] != nil
     }
 
     /// Atomic queued -> promoting -> steerPending/consumed transition. The
@@ -3351,6 +3399,49 @@ final class ConversationCenter: ObservableObject {
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
             }
+    }
+
+    /// Routes the ordinary Agent may submit to. This is deliberately stricter
+    /// than `videoModels`: a native adapter must exist and the remote model ID
+    /// must be present, so an OpenAI/Custom endpoint can never be advertised
+    /// as a video supplier.
+    func agentVideoRoutes() -> [VideoModelRoute] {
+        VideoModelRegistry.routes(
+            models: modelsByProvider.values.flatMap { $0 },
+            providers: providers,
+            preferredModelID: modelPreferences.defaultVideoModelID
+        )
+    }
+
+    /// Resolves one usable video route. An explicit modelID must appear in the
+    /// usable catalog; otherwise the configured default is used, and the first
+    /// usable route is the final fallback so a configured provider is not dead
+    /// on arrival.
+    func resolveAgentVideoRoute(
+        modelID: UUID?
+    ) throws -> (route: VideoModelRoute, provider: ProviderProfile, model: ModelProfile) {
+        let routes = agentVideoRoutes()
+        guard !routes.isEmpty else {
+            throw FloeError.invalidConfiguration(
+                "No configured, enabled and adapter-backed video model is available. Configure a Google, Volcengine Ark or DashScope provider with a video model and API key, then inspect video.models."
+            )
+        }
+        let route: VideoModelRoute
+        if let modelID {
+            guard let match = routes.first(where: { $0.modelID == modelID }) else {
+                throw FloeError.validationFailed(
+                    "The requested model is not an enabled, usable video model. Inspect video.models for exact modelID values."
+                )
+            }
+            route = match
+        } else {
+            route = routes[0]
+        }
+        guard let provider = providers.first(where: { $0.id == route.providerID }),
+              let model = modelsByProvider[provider.id]?.first(where: { $0.id == route.modelID }) else {
+            throw FloeError.invalidConfiguration("The selected video route is no longer available.")
+        }
+        return (route, provider, model)
     }
 
     var visionModels: [ModelProfile] {

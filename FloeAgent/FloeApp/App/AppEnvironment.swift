@@ -388,7 +388,7 @@ final class AppEnvironment: ObservableObject {
         )
         let packageHTTP = HTTPRequestService()
         let aptEngine = AptEngine(
-            downloader: AptEngine.Downloader { url, maxBytes in
+            downloader: AptEngine.Downloader(cancellableFetch: { url, maxBytes, cancellation in
                 let temp = FileManager.default.temporaryDirectory
                     .appendingPathComponent("floe-apt-\(UUID().uuidString)")
                 defer { try? FileManager.default.removeItem(at: temp) }
@@ -397,13 +397,14 @@ final class AppEnvironment: ObservableObject {
                         url: url,
                         timeout: 120,
                         maxBytes: min(maxBytes, 64 * 1024 * 1024),
-                        to: temp
+                        to: temp,
+                        cancellation: cancellation
                     )
                 } catch HTTPRequestError.httpStatus(404) {
                     throw AptEngine.Downloader.Failure.notFound
                 }
                 return try Data(floeContentsOf: temp)
-            }
+            })
         )
         FloePlatformServices.shared.configure(
             registry: environmentRegistry,
@@ -533,6 +534,10 @@ final class AppEnvironment: ObservableObject {
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.
         registerRemoteImageTools(center: filesCenter)
+        // Provider-backed durable video generation (Google Veo/Omni, Ark
+        // Seedance, DashScope Wan) for ordinary chat. Submissions become
+        // conversation-owned media jobs that survive relaunches.
+        registerRemoteVideoTools(center: filesCenter)
         // Public Apple-framework integrations. Device-local settings filter
         // these descriptors before each provider request.
         registerAppleSystemTools(database: database)

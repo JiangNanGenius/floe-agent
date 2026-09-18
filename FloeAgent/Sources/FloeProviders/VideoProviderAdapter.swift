@@ -105,6 +105,44 @@ public struct VideoProviderAdapterFactory: Sendable {
 }
 
 private enum VideoHTTP {
+    /// API calls carry the provider credential on every request. CFNetwork
+    /// forwards request headers across redirects, so a redirect is only
+    /// followed when it stays on the same HTTPS host; anything else is
+    /// refused instead of leaking the key to a third party.
+    private final class SameHostRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        static let shared = SameHostRedirectPolicy()
+
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping @Sendable (URLRequest?) -> Void
+        ) {
+            guard let originalHost = task.originalRequest?.url?.host,
+                  let target = request.url,
+                  target.scheme?.lowercased() == "https",
+                  target.user == nil, target.password == nil,
+                  let targetHost = target.host,
+                  targetHost.caseInsensitiveCompare(originalHost) == .orderedSame else {
+                completionHandler(nil)
+                return
+            }
+            completionHandler(request)
+        }
+    }
+
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 180
+        configuration.timeoutIntervalForResource = 900
+        return URLSession(
+            configuration: configuration,
+            delegate: SameHostRedirectPolicy.shared,
+            delegateQueue: nil
+        )
+    }()
+
     static func request(
         url: URL, method: String = "GET", body: Data? = nil,
         provider: ProviderProfile, credentials: ProviderCredentials,
@@ -123,7 +161,7 @@ private enum VideoHTTP {
     }
 
     static func data(for request: URLRequest, secret: String?) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw RemoteVideoError.invalidResponse("Provider returned a non-HTTP response")
         }
@@ -149,32 +187,85 @@ public struct GoogleVideoAdapter: VideoProviderAdapter {
             return try await submitOmni(request, provider: provider, credentials: credentials)
         }
         let model = try Self.safeComponent(request.modelRemoteID)
-        let url = provider.baseURL.appendingPathComponent("models/\(model):predictLongRunning")
-        let body: [String: Any] = ["instances": [["prompt": request.prompt]], "parameters": Self.parameters(request.options)]
-        let encoded = try JSONSerialization.data(withJSONObject: body)
+        // Veo lives on the v1beta surface; Interactions/Omni stays on the
+        // configured version root. Custom host/prefix is preserved.
+        let root = VideoEndpointRouting.googleRoot(baseURL: provider.baseURL, modelRemoteID: request.modelRemoteID)
+        let url = root.appendingPathComponent("models/\(model):predictLongRunning")
+        let encoded = try JSONSerialization.data(withJSONObject: Self.veoRequestBody(request))
         let data = try await VideoHTTP.data(for: VideoHTTP.request(url: url, method: "POST", body: encoded, provider: provider, credentials: credentials, googleKey: true), secret: credentials.apiKey)
         let json = try VideoHTTP.dictionary(data)
         guard let name = json["name"] as? String, !name.isEmpty else { throw RemoteVideoError.invalidResponse("Google returned no operation name") }
         return .init(providerTaskID: name, estimatedCompletionAt: Date().addingTimeInterval(120), resultRetentionExpiresAt: nil)
     }
+
+    /// Documented Veo request body. The inline reference form is
+    /// `instances[].referenceImages[].image.inlineData` (Gemini API Veo
+    /// reference, retrieved 2026-09-19); reference images require an
+    /// 8-second video, so a conflicting explicit duration is rejected before
+    /// the paid call instead of after it.
+    static func veoRequestBody(_ request: RemoteVideoRequest) throws -> [String: Any] {
+        guard request.referenceAssetURLs.count <= VideoReferenceImagePolicy.maximumAssets else {
+            throw RemoteVideoError.invalidRequest("Veo accepts one reference image in this app.")
+        }
+        var instance: [String: Any] = ["prompt": request.prompt]
+        if let reference = request.referenceAssetURLs.first {
+            if let duration = request.options.durationSeconds, duration != 8 {
+                throw RemoteVideoError.invalidRequest("Veo reference images require durationSeconds 8.")
+            }
+            let inline = try VideoReferenceImagePolicy.inlineImage(from: reference, providerName: "Google Veo")
+            instance["referenceImages"] = [[
+                "image": ["inlineData": ["mimeType": inline.mimeType, "data": inline.base64]],
+                "referenceType": "asset"
+            ]]
+        }
+        return ["instances": [instance], "parameters": Self.parameters(request.options)]
+    }
     public func status(taskID: String, modelRemoteID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoStatus {
         if modelRemoteID.hasPrefix("gemini-omni-") {
             return try await omniStatus(taskID: taskID, provider: provider, credentials: credentials)
         }
-        let url = provider.baseURL.appendingPathComponent(taskID)
+        let root = VideoEndpointRouting.googleRoot(baseURL: provider.baseURL, modelRemoteID: modelRemoteID)
+        let url = root.appendingPathComponent(taskID)
         let data = try await VideoHTTP.data(for: VideoHTTP.request(url: url, provider: provider, credentials: credentials, googleKey: true), secret: credentials.apiKey)
         let json = try VideoHTTP.dictionary(data)
         if let error = json["error"] as? [String: Any] { return .init(state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: error["message"] as? String) }
         guard json["done"] as? Bool == true else { return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil) }
         let response = json["response"] as? [String: Any]
-        let videos = response?["generatedVideos"] as? [[String: Any]]
-        let video = videos?.first?["video"] as? [String: Any]
-        let uri = (video?["uri"] as? String).flatMap(URL.init(string:))
-        return .init(state: .completed, progress: 1, resultURL: uri, resultURLExpiresAt: nil, error: nil)
+        // The Gemini API returns `response.generateVideoResponse.generatedSamples[0].video.uri`
+        // (official REST example, retrieved 2026-09-19); Vertex-shaped
+        // responses use `response.generatedVideos[0].video`. Both are accepted.
+        if let raw = Self.veoVideoURI(response), let uri = URL(string: raw) {
+            return .init(state: .completed, progress: 1, resultURL: uri, resultURLExpiresAt: nil, error: nil)
+        }
+        // A completed operation without a durable download URL is a truthful
+        // failure, not a silent "running" state that would poll forever.
+        return .init(
+            state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil,
+            error: "Google completed the operation without a downloadable video URI."
+        )
+    }
+
+    /// Extracts the download URI from either documented completed-operation
+    /// response shape.
+    static func veoVideoURI(_ response: [String: Any]?) -> String? {
+        if let generated = response?["generateVideoResponse"] as? [String: Any],
+           let samples = generated["generatedSamples"] as? [[String: Any]],
+           let video = samples.first?["video"] as? [String: Any] {
+            if let uri = (video["uri"] as? String) ?? (video["gcsUri"] as? String) { return uri }
+        }
+        if let videos = response?["generatedVideos"] as? [[String: Any]],
+           let video = videos.first?["video"] as? [String: Any] {
+            if let uri = (video["uri"] as? String) ?? (video["gcsUri"] as? String) { return uri }
+        }
+        return nil
     }
     public func cancel(taskID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws {
         if taskID.hasPrefix("interactions/") { return }
-        let url = provider.baseURL.appendingPathComponent("\(taskID):cancel")
+        // Veo operation names (`models/.../operations/...`) are the only
+        // cancellable Google tasks that reach this branch, and they always
+        // live on the v1beta surface.
+        let root = VideoEndpointRouting.googleRoot(baseURL: provider.baseURL, modelRemoteID: "veo")
+        let url = root.appendingPathComponent("\(taskID):cancel")
         _ = try await VideoHTTP.data(for: VideoHTTP.request(url: url, method: "POST", body: Data("{}".utf8), provider: provider, credentials: credentials, googleKey: true), secret: credentials.apiKey)
     }
     private static func safeComponent(_ value: String) throws -> String {
@@ -196,19 +287,7 @@ public struct GoogleVideoAdapter: VideoProviderAdapter {
         credentials: ProviderCredentials
     ) async throws -> RemoteVideoSubmission {
         let url = provider.baseURL.appendingPathComponent("interactions")
-        var responseFormat: [String: Any] = ["type": "video", "delivery": "uri"]
-        if let resolution = request.options.resolution {
-            responseFormat["resolution"] = resolution.lowercased()
-        }
-        var body: [String: Any] = [
-            "model": request.modelRemoteID,
-            "input": request.prompt,
-            "response_format": responseFormat
-        ]
-        var videoConfig: [String: Any] = [:]
-        if let ratio = request.options.aspectRatio { videoConfig["aspect_ratio"] = ratio }
-        if let duration = request.options.durationSeconds { videoConfig["duration_seconds"] = duration }
-        if !videoConfig.isEmpty { body["generation_config"] = ["video_config": videoConfig] }
+        let body = try Self.omniRequestBody(request)
         let data = try await VideoHTTP.data(
             for: VideoHTTP.request(
                 url: url, method: "POST",
@@ -221,12 +300,51 @@ public struct GoogleVideoAdapter: VideoProviderAdapter {
         guard let id = json["id"] as? String, !id.isEmpty else {
             throw RemoteVideoError.invalidResponse("Google Interactions returned no interaction ID")
         }
-        let resultURL = Self.omniVideoURL(json)
+        // `delivery: uri` returns a Google-hosted file that may still be
+        // processing; the poll path waits for the documented ACTIVE state
+        // before the durable download starts.
         return .init(
             providerTaskID: "interactions/\(id)",
-            estimatedCompletionAt: resultURL == nil ? Date().addingTimeInterval(120) : Date(),
-            resultURL: resultURL
+            estimatedCompletionAt: Date().addingTimeInterval(120),
+            resultURL: nil
         )
+    }
+
+    /// Documented Omni interaction body. `response_format` carries
+    /// `type`/`delivery`/`resolution`/`aspect_ratio`; an input image becomes a
+    /// content part and selects the explicit `image_to_video` task instead of
+    /// letting the model guess what the image means.
+    static func omniRequestBody(_ request: RemoteVideoRequest) throws -> [String: Any] {
+        var responseFormat: [String: Any] = ["type": "video", "delivery": "uri"]
+        if let resolution = request.options.resolution {
+            responseFormat["resolution"] = resolution.lowercased()
+        }
+        if let ratio = request.options.aspectRatio { responseFormat["aspect_ratio"] = ratio }
+        var body: [String: Any] = [
+            "model": request.modelRemoteID,
+            "response_format": responseFormat
+        ]
+        var videoConfig: [String: Any] = [:]
+        if request.referenceAssetURLs.isEmpty {
+            body["input"] = request.prompt
+        } else {
+            // Interactions take content parts; the image part is the
+            // documented inline form (`{"type":"image","data":...,"mime_type":...}`).
+            guard request.referenceAssetURLs.count <= VideoReferenceImagePolicy.maximumAssets else {
+                throw RemoteVideoError.invalidRequest("Gemini Omni accepts one reference image in this app.")
+            }
+            var parts: [[String: Any]] = []
+            for reference in request.referenceAssetURLs {
+                let inline = try VideoReferenceImagePolicy.inlineImage(from: reference, providerName: "Gemini Omni")
+                parts.append(["type": "image", "data": inline.base64, "mime_type": inline.mimeType])
+            }
+            parts.append(["type": "text", "text": request.prompt])
+            body["input"] = parts
+            videoConfig["task"] = "image_to_video"
+        }
+        if let duration = request.options.durationSeconds { videoConfig["duration_seconds"] = duration }
+        if !videoConfig.isEmpty { body["generation_config"] = ["video_config": videoConfig] }
+        return body
     }
 
     private func omniStatus(
@@ -251,13 +369,85 @@ public struct GoogleVideoAdapter: VideoProviderAdapter {
                          error: (json["error"] as? [String: Any])?["message"] as? String)
         }
         if let url = Self.omniVideoURL(json) {
-            return .init(state: .completed, progress: 1, resultURL: url, resultURLExpiresAt: nil, error: nil)
+            // With URI delivery the returned file must reach ACTIVE before it
+            // can be downloaded; polling the interaction alone would move a
+            // still-processing file into the download path and fail it.
+            return try await Self.omniFileStatus(
+                uri: url, provider: provider, credentials: credentials
+            )
         }
         if status == "completed" {
             return .init(state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil,
                          error: "Google returned an inline video without a durable download URL.")
         }
         return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
+    }
+
+    /// Polls the documented `files/{id}` resource for URI-delivered videos.
+    /// `ACTIVE` becomes a completed result; `PROCESSING`/`PENDING` stay
+    /// running; `FAILED` is terminal. An older/unknown file surface falls back
+    /// to the interaction's own URI so a working download is not blocked by an
+    /// unavailable status route.
+    private static func omniFileStatus(
+        uri: URL,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> RemoteVideoStatus {
+        let fileID = uri.lastPathComponent
+        guard !fileID.isEmpty,
+              fileID.range(of: #"^[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil else {
+            return .init(state: .completed, progress: 1, resultURL: uri, resultURLExpiresAt: nil, error: nil)
+        }
+        // The file resource lives where the provider pointed. Only a Google
+        // media host receives the API key; anything else is used directly.
+        let statusURL: URL?
+        if let host = uri.host, !host.isEmpty {
+            statusURL = VideoDownloadRedirectPolicy.isAllowedMediaRedirectHost(host)
+                ? uri : nil
+        } else {
+            let relative = uri.path.hasPrefix("/") ? String(uri.path.dropFirst()) : uri.path
+            statusURL = relative.isEmpty
+                ? nil : provider.baseURL.appendingPathComponent(relative)
+        }
+        guard let statusURL else {
+            return .init(state: .completed, progress: 1, resultURL: uri, resultURLExpiresAt: nil, error: nil)
+        }
+        do {
+            let data = try await VideoHTTP.data(
+                for: VideoHTTP.request(
+                    url: statusURL,
+                    provider: provider, credentials: credentials, googleKey: true
+                ),
+                secret: credentials.apiKey
+            )
+            let json = try VideoHTTP.dictionary(data)
+            if let decoded = Self.decodeOmniFileState(json, uri: uri) { return decoded }
+            return .init(state: .completed, progress: 1, resultURL: uri, resultURLExpiresAt: nil, error: nil)
+        } catch {
+            // The file-status route is not available on this base URL; the
+            // interaction URI is still the provider's own result and is used
+            // as-is rather than losing a completed video.
+            return .init(state: .completed, progress: 1, resultURL: uri, resultURLExpiresAt: nil, error: nil)
+        }
+    }
+
+    /// Pure decision for one `files/{id}` payload. Returns nil when the state
+    /// is not one of the documented values so the caller can use the URI.
+    static func decodeOmniFileState(_ json: [String: Any], uri: URL) -> RemoteVideoStatus? {
+        let state = (json["state"] as? [String: Any])?["name"] as? String
+            ?? (json["state"] as? String)
+        switch state?.uppercased() {
+        case "ACTIVE":
+            return .init(state: .completed, progress: 1, resultURL: uri, resultURLExpiresAt: nil, error: nil)
+        case "FAILED":
+            return .init(state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil,
+                         error: (json["error"] as? [String: Any])?["message"] as? String
+                            ?? "Google reported the generated video file as FAILED.")
+        case "PROCESSING", "PENDING":
+            return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
+        default:
+            return nil
+        }
     }
 
     private static func omniVideoURL(_ json: [String: Any]) -> URL? {
@@ -285,10 +475,22 @@ public struct VolcengineVideoAdapter: VideoProviderAdapter {
     }
     static func requestBody(_ request: RemoteVideoRequest) throws -> [String: Any] {
         let latest = request.modelRemoteID.contains("seedance-2-5")
+        guard VideoReferenceImagePolicy.supportsReferenceImages(
+            providerKind: .volcengineArk, modelRemoteID: request.modelRemoteID
+        ) else {
+            throw RemoteVideoError.invalidRequest("This Ark model has no verified image input route.")
+        }
         guard request.referenceAssetURLs.count <= 1 else { throw RemoteVideoError.invalidRequest("This mode accepts one first-frame image") }
         var content: [[String: Any]] = [["type": "text", "text": request.prompt]]
         if let image = request.referenceAssetURLs.first {
-            guard image.scheme == "https" || image.scheme == "data" else { throw RemoteVideoError.invalidRequest("Upload the reference image before generating video") }
+            // Documented url forms for image_url.url: public https URL, base64
+            // data URI or asset ID. Local file URLs are never uploaded.
+            guard image.scheme?.lowercased() == "https" || image.scheme?.lowercased() == "data" else {
+                throw RemoteVideoError.invalidRequest("Upload the reference image before generating video")
+            }
+            if image.scheme?.lowercased() == "data" {
+                _ = try VideoReferenceImagePolicy.inlineImage(from: image, providerName: "Volcengine Ark")
+            }
             content.append(["type": "image_url", "image_url": ["url": image.absoluteString], "role": "first_frame"])
         }
         var body: [String: Any] = ["model": request.modelRemoteID, "content": content]
@@ -317,23 +519,52 @@ public struct VolcengineVideoAdapter: VideoProviderAdapter {
     public func cancel(taskID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws {
         _ = try await VideoHTTP.data(for: VideoHTTP.request(url: provider.baseURL.appendingPathComponent("contents/generations/tasks/\(taskID)"), method: "DELETE", provider: provider, credentials: credentials), secret: credentials.apiKey)
     }
-    private static func decodeStatus(_ json: [String: Any]) throws -> RemoteVideoStatus {
+    static func decodeStatus(_ json: [String: Any]) throws -> RemoteVideoStatus {
         let status = (json["status"] as? String)?.lowercased() ?? ""
         let content = json["content"] as? [String: Any]
         let url = ((content?["video_url"] ?? json["video_url"]) as? String).flatMap(URL.init(string:))
+        let error = Self.errorMessage(json)
         switch status {
-        case "succeeded", "completed": return .init(state: .completed, progress: 1, resultURL: url, resultURLExpiresAt: nil, error: nil)
-        case "failed": return .init(state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: json["error"] as? String)
-        case "cancelled": return .init(state: .cancelled, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
-        default: return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
+        case "succeeded", "completed":
+            return .init(
+                state: .completed, progress: 1, resultURL: url,
+                // Ark keeps the task for 7 days but the signed result URL is
+                // documented as valid for 24 hours.
+                resultURLExpiresAt: url == nil ? nil : Date().addingTimeInterval(24 * 3600),
+                error: nil
+            )
+        case "failed":
+            return .init(state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: error)
+        case "expired":
+            return .init(state: .expired, progress: nil, resultURL: nil, resultURLExpiresAt: nil,
+                         error: error ?? "The provider task expired before the result was downloaded.")
+        case "cancelled":
+            return .init(state: .cancelled, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
+        default:
+            return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
         }
+    }
+
+    /// Ark reports errors as an object (`{"code": ..., "message": ...}`) on
+    /// status/poll responses and as a string on some legacy routes.
+    static func errorMessage(_ json: [String: Any]) -> String? {
+        if let text = json["error"] as? String, !text.isEmpty { return text }
+        if let object = json["error"] as? [String: Any] {
+            if let message = object["message"] as? String, !message.isEmpty {
+                if let code = object["code"] as? String, !code.isEmpty { return "\(code): \(message)" }
+                return message
+            }
+        }
+        if let message = json["message"] as? String, !message.isEmpty { return message }
+        return nil
     }
 }
 
 public struct AlibabaVideoAdapter: VideoProviderAdapter {
     public init() {}
     public func submit(_ request: RemoteVideoRequest, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoSubmission {
-        let url = provider.baseURL.appendingPathComponent("services/aigc/video-generation/video-synthesis")
+        let url = Self.apiRoot(for: provider)
+            .appendingPathComponent("services/aigc/video-generation/video-synthesis")
         let body = try Self.requestBody(request)
         var urlRequest = VideoHTTP.request(url: url, method: "POST", body: try JSONSerialization.data(withJSONObject: body), provider: provider, credentials: credentials)
         urlRequest.setValue("enable", forHTTPHeaderField: "X-DashScope-Async")
@@ -348,10 +579,18 @@ public struct AlibabaVideoAdapter: VideoProviderAdapter {
         var input: [String: Any] = ["prompt": request.prompt]
         var parameters: [String: Any] = [:]
         if !request.referenceAssetURLs.isEmpty {
-            guard latest, request.referenceAssetURLs.count == 1,
+            // Only the 3.x first-frame field has a documented image request in
+            // this adapter; other Wan models stay text-only rather than
+            // silently dropping the image.
+            guard VideoReferenceImagePolicy.supportsReferenceImages(
+                providerKind: .alibabaStudio, modelRemoteID: request.modelRemoteID
+            ), request.referenceAssetURLs.count == 1,
                   let image = request.referenceAssetURLs.first,
-                  image.scheme == "https" || image.scheme == "data" else {
+                  image.scheme?.lowercased() == "https" || image.scheme?.lowercased() == "data" else {
                 throw RemoteVideoError.invalidRequest("This mode accepts one uploaded Wan 3.0 first-frame image")
+            }
+            if image.scheme?.lowercased() == "data" {
+                _ = try VideoReferenceImagePolicy.inlineImage(from: image, providerName: "DashScope Wan")
             }
             input["media"] = [["type": "first_frame", "url": image.absoluteString]]
             parameters["ratio"] = "adaptive"
@@ -371,19 +610,61 @@ public struct AlibabaVideoAdapter: VideoProviderAdapter {
         return ["model": request.modelRemoteID, "input": input, "parameters": parameters]
     }
     public func status(taskID: String, modelRemoteID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoStatus {
-        let json = try VideoHTTP.dictionary(try await VideoHTTP.data(for: VideoHTTP.request(url: provider.baseURL.appendingPathComponent("tasks/\(taskID)"), provider: provider, credentials: credentials), secret: credentials.apiKey))
+        let json = try VideoHTTP.dictionary(try await VideoHTTP.data(for: VideoHTTP.request(url: Self.apiRoot(for: provider).appendingPathComponent("tasks/\(taskID)"), provider: provider, credentials: credentials), secret: credentials.apiKey))
+        return try Self.decodeStatus(json)
+    }
+    static func decodeStatus(_ json: [String: Any]) throws -> RemoteVideoStatus {
         let output = json["output"] as? [String: Any] ?? [:]
         let status = (output["task_status"] as? String)?.uppercased() ?? ""
         let url = (output["video_url"] as? String).flatMap(URL.init(string:))
+        let message = Self.errorMessage(json)
         switch status {
-        case "SUCCEEDED": return .init(state: .completed, progress: 1, resultURL: url, resultURLExpiresAt: nil, error: nil)
-        case "FAILED": return .init(state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: output["message"] as? String)
-        case "CANCELED", "CANCELLED": return .init(state: .cancelled, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
-        default: return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
+        case "SUCCEEDED":
+            return .init(
+                state: .completed, progress: 1, resultURL: url,
+                // DashScope documents the result URL as valid for 24 hours.
+                resultURLExpiresAt: url == nil ? nil : Date().addingTimeInterval(24 * 3600),
+                error: nil
+            )
+        case "FAILED":
+            return .init(state: .failed, progress: nil, resultURL: nil, resultURLExpiresAt: nil,
+                         error: message ?? "The provider reported a failed task without a message.")
+        case "CANCELED", "CANCELLED":
+            return .init(state: .cancelled, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
+        case "UNKNOWN":
+            // Official docs (Model Studio "文生视频" task-query reference,
+            // retrieved 2026-09-19): UNKNOWN means "任务不存在或状态未知",
+            // and appears when the task_id is unknown or older than its
+            // documented 24-hour query validity. Treating it as running would
+            // poll forever; reporting it as expired is the documented cause,
+            // with the provider's own message attached when present.
+            return .init(state: .expired, progress: nil, resultURL: nil, resultURLExpiresAt: nil,
+                         error: message ?? "供应商返回 UNKNOWN：任务不存在或状态未知（task_id 查询有效期 24 小时，超时后即为该状态）。")
+        default:
+            return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
         }
     }
     public func cancel(taskID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws {
-        let url = provider.baseURL.appendingPathComponent("tasks/\(taskID)/cancel")
+        let url = Self.apiRoot(for: provider).appendingPathComponent("tasks/\(taskID)/cancel")
         _ = try await VideoHTTP.data(for: VideoHTTP.request(url: url, method: "POST", body: Data("{}".utf8), provider: provider, credentials: credentials), secret: credentials.apiKey)
+    }
+
+    /// Native DashScope API root. The chat preset points at
+    /// `/compatible-mode/v1` and workspace subdomains carry no path; both are
+    /// normalized to `{root}/api/v1` while custom hosts are preserved.
+    static func apiRoot(for provider: ProviderProfile) -> URL {
+        VideoEndpointRouting.dashScopeAPIRoot(baseURL: provider.baseURL)
+    }
+
+    /// DashScope reports the failure reason under `output.message` with an
+    /// optional `output.code`; some routes also return a top-level `message`.
+    static func errorMessage(_ json: [String: Any]) -> String? {
+        let output = json["output"] as? [String: Any] ?? [:]
+        if let message = output["message"] as? String, !message.isEmpty {
+            if let code = output["code"] as? String, !code.isEmpty { return "\(code): \(message)" }
+            return message
+        }
+        if let message = json["message"] as? String, !message.isEmpty { return message }
+        return nil
     }
 }

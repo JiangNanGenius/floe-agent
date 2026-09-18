@@ -6266,8 +6266,10 @@ struct WorkspaceCanvasView: View {
     private func cancel(_ job: MediaGenerationJob) async -> String? {
         do {
             try await environment.mediaGenerationService.cancelVideo(jobID: job.id)
-            canvasJobs = (try? await MediaGenerationJobStore(database: environment.database)
-                .jobs(canvasID: job.canvasID)) ?? canvasJobs
+            if let canvasID = job.canvasID {
+                canvasJobs = (try? await MediaGenerationJobStore(database: environment.database)
+                    .jobs(canvasID: canvasID)) ?? canvasJobs
+            }
             return nil
         } catch {
             return error.localizedDescription
@@ -6281,8 +6283,10 @@ struct WorkspaceCanvasView: View {
                 jobID: job.id
             )
             store.setGenerationJob(replacement.id, for: job.resultNodeID)
-            canvasJobs = (try? await MediaGenerationJobStore(database: environment.database)
-                .jobs(canvasID: job.canvasID)) ?? canvasJobs
+            if let canvasID = job.canvasID {
+                canvasJobs = (try? await MediaGenerationJobStore(database: environment.database)
+                    .jobs(canvasID: canvasID)) ?? canvasJobs
+            }
             return nil
         } catch {
             return error.localizedDescription

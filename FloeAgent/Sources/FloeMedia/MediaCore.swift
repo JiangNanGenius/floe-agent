@@ -257,8 +257,26 @@ public actor MediaRenderer {
     }
 
     /// Inspects a media file: container, tracks, duration, dimensions.
+    /// Animated GIFs are read through ImageIO because AVFoundation cannot open
+    /// them on this platform.
     public func inspect(path: String) async throws -> [String: String] {
         let url = try resolve(path)
+        if GIFSupport.isGIF(fileURL: url) {
+            let gif = try GIFSupport.probe(fileURL: url)
+            return [
+                "path": path,
+                "container": "gif",
+                "durationSeconds": String(format: "%.3f", gif.totalDurationSeconds),
+                "videoWidth": String(gif.width),
+                "videoHeight": String(gif.height),
+                "videoFrameRate": String(format: "%.3f", gif.averageFrameRate),
+                "audioTrackCount": "0",
+                "gifFrameCount": String(gif.frameCount),
+                "gifAnimated": gif.isAnimated ? "true" : "false",
+                "gifLoopCount": gif.loopCount.map(String.init) ?? "unset",
+                "gifTiming": "variable"
+            ]
+        }
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration)
         var lines: [String: String] = [
@@ -285,6 +303,20 @@ public actor MediaRenderer {
     public func render(plan: VideoEditPlan, cancellation: CancellationToken? = nil) async throws -> MediaRenderResult {
         try plan.validate()
         try cancellation?.throwIfCancelled()
+        if let gifOperation = plan.operations.first(where: { operation in
+            if case .gif = operation { return true }
+            return false
+        }) {
+            guard plan.operations.count == 1, case .gif(let fps, let width) = gifOperation else {
+                throw FloeError.validationFailed("A GIF conversion plan must contain exactly one gif operation and no other operations")
+            }
+            return try await renderGIF(
+                plan: plan,
+                frameRate: Double(fps),
+                width: width,
+                cancellation: cancellation
+            )
+        }
         guard plan.export.quality == nil, plan.export.range == nil, plan.export.hardwareAcceleration == nil else {
             throw FloeError.validationFailed("quality, export range and forced hardware selection are not supported")
         }
@@ -426,6 +458,52 @@ public actor MediaRenderer {
             width: Int(size.width), height: Int(size.height), frameRate: Double(fps),
             videoCodec: plan.export.videoCodec ?? "h264", audioCodec: audio == nil ? nil : "aac",
             byteCount: bytes, appliedOperations: plan.operations.map { String(describing: $0) }, warnings: [])
+    }
+
+    /// Converts a timed animated GIF into a bounded-memory H.264 video. This
+    /// is a deterministic local conversion; it never calls an AI provider.
+    private func renderGIF(
+        plan: VideoEditPlan,
+        frameRate: Double,
+        width: Int,
+        cancellation: CancellationToken?
+    ) async throws -> MediaRenderResult {
+        guard ["mp4", "mov", "m4v"].contains(plan.export.container.lowercased()) else {
+            throw FloeError.validationFailed("GIF conversion exports mp4, mov or m4v only")
+        }
+        guard frameRate >= 1, frameRate <= 60 else {
+            throw FloeError.validationFailed("GIF conversion frame rate must be within 1...60")
+        }
+        let inputURL = try resolve(plan.input)
+        let outputURL = try resolveOutput(plan.output)
+        guard inputURL != outputURL else { throw FloeError.validationFailed("Choose a separate output file") }
+        guard GIFSupport.isGIF(fileURL: inputURL) else {
+            throw FloeError.validationFailed("The gif operation converts an animated GIF source to video; this input is not a GIF")
+        }
+        let result: GIFVideoConversionResult
+        do {
+            result = try await GIFSupport.convertToVideo(
+                fileURL: inputURL,
+                outputURL: outputURL,
+                frameRate: frameRate,
+                width: width,
+                cancellation: { cancellation?.isCancelled == true }
+            )
+        } catch let error as GIFSupportError {
+            throw FloeError.validationFailed(error.localizedDescription)
+        }
+        return MediaRenderResult(
+            outputPath: plan.output,
+            durationSeconds: result.durationSeconds,
+            width: result.width,
+            height: result.height,
+            frameRate: result.frameRate,
+            videoCodec: "h264",
+            audioCodec: nil,
+            byteCount: result.byteCount,
+            appliedOperations: ["gif(fps:\(Int(frameRate)), width:\(width))"],
+            warnings: ["Animated GIF sources have no audio track; the video is silent."]
+        )
     }
 
     private func exportComposition(_ exporter: AVAssetExportSession, to url: URL) async throws {

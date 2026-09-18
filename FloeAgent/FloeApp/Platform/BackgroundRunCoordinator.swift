@@ -8,6 +8,7 @@ import CryptoKit
 import FloeCore
 import FloePersistence
 import FloeProviders
+import FloeTools
 import FloeAgentRuntime
 
 extension Notification.Name {
@@ -174,7 +175,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var effectiveScenePhase: ScenePhase = .background
     private var activeProcessingTaskID: UUID?
     private lazy var mediaDownloads = MediaArtifactDownloadCoordinator(
-        database: environment.database
+        database: environment.database,
+        onReady: { [weak self] jobID in
+            guard let self else { return }
+            await self.environment.mediaGenerationService.deliverReadyMediaJob(jobID: jobID)
+        }
     )
     @available(iOS 26.0, *)
     private var continuedTasksByIdentifier:
@@ -1204,13 +1209,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// The app owns exactly one background URLSession for generated media.
     /// Reusing it avoids two delegates competing for the same persistent
     /// session identifier during launch restoration.
-    func startMediaArtifactDownload(jobID: UUID, remoteURL: URL) async {
-        await mediaDownloads.start(jobID: jobID, remoteURL: remoteURL)
+    func startMediaArtifactDownload(jobID: UUID, remoteURL: URL, headers: [String: String] = [:]) async {
+        await mediaDownloads.start(jobID: jobID, remoteURL: remoteURL, headers: headers)
     }
 
     /// One reconciliation path shared by launch, foreground, refresh and
     /// processing wakeups. Provider task IDs are already durable before this
     /// method runs, so cancellation can only delay progress, not lose work.
+    /// Restoring this on relaunch is what makes chat-submitted video jobs
+    /// survive a process death.
     func reconcilePendingMediaJobs(now: Date = Date()) async {
         // Generated-image reservations share this retry path with durable
         // provider jobs. A Canvas or database that is temporarily unavailable
@@ -1221,62 +1228,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         await environment.mediaGenerationService
             .reconcileGeneratedAssetReservations()
         let store = MediaGenerationJobStore(database: environment.database)
-        guard let jobs = try? await store.dueJobs(at: now) else { return }
-        for job in jobs where !Task.isCancelled {
-            guard let provider = try? await environment.configurationStore.provider(id: job.providerID),
-                  let model = try? await environment.configurationStore.model(id: job.modelID),
-                  let adapter = VideoProviderAdapterFactory().adapter(for: provider),
-                  let taskID = job.providerTaskID else { continue }
-            let apiKey = job.credentialReference.flatMap { reference in
-                try? environment.keychain.read(account: reference.keychainAccount)
-            }.flatMap { String(data: $0, encoding: .utf8) }
-            do {
-                let status = try await adapter.status(
-                    taskID: taskID, modelRemoteID: model.remoteModelID,
-                    provider: provider, credentials: ProviderCredentials(apiKey: apiKey)
-                )
-                switch status.state {
-                case .completed:
-                    guard let resultURL = status.resultURL else {
-                        _ = try await store.transition(id: job.id, to: .failed) {
-                            $0.lastError = "供应商报告完成，但没有返回可下载的视频地址。"
-                        }
-                        continue
-                    }
-                    let retainedState: MediaGenerationJobState = job.state == .downloading
-                        ? .downloading : .completed
-                    let completed = try await store.transition(id: job.id, to: retainedState) {
-                        $0.lastPolledAt = now
-                        $0.resultURL = resultURL
-                        $0.resultURLExpiresAt = status.resultURLExpiresAt
-                        $0.nextPollAt = nil
-                    }
-                    if completed.state != .downloading {
-                        _ = try await store.transition(id: completed.id, to: .downloading)
-                    }
-                    await mediaDownloads.start(jobID: job.id, remoteURL: resultURL)
-                case .failed, .cancelled, .expired:
-                    _ = try await store.transition(id: job.id, to: status.state) {
-                        $0.lastPolledAt = now
-                        $0.lastError = status.error
-                        $0.nextPollAt = nil
-                    }
-                default:
-                    _ = try await store.transition(id: job.id, to: .running) {
-                        $0.lastPolledAt = now
-                        $0.retryCount = 0
-                        $0.lastError = nil
-                        $0.nextPollAt = Self.nextMediaPollDate(job: $0, now: now)
-                    }
-                }
-            } catch {
-                _ = try? await store.transition(id: job.id, to: job.state) {
-                    $0.lastPolledAt = now
-                    $0.retryCount += 1
-                    $0.lastError = error.localizedDescription
-                    $0.nextPollAt = now.addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
+        // A crash between the provider call and the task-ID write leaves a
+        // `preparing` row with no task ID. Automatic retry is unsafe (the
+        // provider may have accepted the request and would charge twice), so
+        // the job is closed truthfully and the user is told to verify.
+        if let stale = try? await store.stalePreparingJobs(before: now.addingTimeInterval(-10 * 60)) {
+            for job in stale where !Task.isCancelled {
+                _ = try? await store.transition(id: job.id, to: .failed) {
+                    $0.nextPollAt = nil
+                    $0.lastError = "提交在保存供应商任务 ID 之前中断；供应商是否已受理未知。不会自动重复提交，请核对供应商控制台后再决定是否重试。"
                 }
             }
+        }
+        guard let jobs = try? await store.dueOwnedJobs(at: now) else { return }
+        for job in jobs where !Task.isCancelled {
+            try? await pollMediaJob(job, store: store, now: now)
         }
         if let next = (try? await store.dueJobs(at: .distantFuture, limit: 100))?
             .compactMap(\.nextPollAt).min() {
@@ -1597,6 +1563,13 @@ final class GeneratedAssetReservationActivityRegistry {
     func shouldReconcile(id: UUID) -> Bool {
         !activeIDs.contains(id)
     }
+}
+
+/// Result of an owner-aware media submission. `deduplicated` is true when an
+/// identical active job already existed and no provider call was made.
+struct MediaGenerationSubmission: Sendable {
+    var job: MediaGenerationJob
+    var deduplicated: Bool
 }
 
 @MainActor
@@ -2019,52 +1992,107 @@ final class MediaGenerationService {
         sourceNodeIDs: [UUID], resultNodeID: UUID,
         request: RemoteVideoRequest
     ) async throws -> MediaGenerationJob {
+        let submission = try await submitVideo(
+            modelID: modelID,
+            owner: .canvas(canvasID),
+            originRunID: nil,
+            sourceNodeIDs: sourceNodeIDs,
+            resultNodeID: resultNodeID,
+            request: request,
+            canvasDocumentID: documentID
+        )
+        return submission.job
+    }
+
+    /// Owner-aware submission used by ordinary chat and the legacy canvas
+    /// path. An identical active operation is returned instead of paying for a
+    /// second submission (`idempotencyKey` identifies the submitting tool
+    /// call; canvas keeps the legacy exact-request comparison); the provider
+    /// call happens only after the local row is durable. The dedupe lookup and
+    /// the insert share one transaction, so concurrent identical submissions
+    /// cannot both reach the provider.
+    func submitVideo(
+        modelID: UUID,
+        owner: MediaJobOwner,
+        originRunID: UUID?,
+        sourceNodeIDs: [UUID] = [],
+        resultNodeID: UUID = UUID(),
+        request: RemoteVideoRequest,
+        canvasDocumentID: UUID? = nil,
+        idempotencyKey: String? = nil
+    ) async throws -> MediaGenerationSubmission {
         guard let model = try await environment.configurationStore.model(id: modelID),
               let provider = try await environment.configurationStore.provider(id: model.providerID),
+              model.isEnabled, provider.isEnabled,
               let adapter = VideoProviderAdapterFactory().adapter(for: provider) else {
             throw RemoteVideoError.unsupportedProvider
         }
         let store = MediaGenerationJobStore(database: environment.database)
-        let requestJSON = try JSONEncoder().encode(request)
-        var job = MediaGenerationJob(
+        // Canonical key order keeps the legacy request comparison stable across
+        // process launches and encoder invocations.
+        let requestEncoder = JSONEncoder()
+        requestEncoder.outputFormatting = [.sortedKeys]
+        let requestJSON = try requestEncoder.encode(request)
+        // Conversation jobs must not invent a canvas/document identity; the
+        // canvas path keeps its real one.
+        let job = MediaGenerationJob(
             providerID: provider.id, modelID: model.id, mediaKind: .video,
-            credentialReference: provider.secretRef, canvasID: canvasID,
-            documentID: documentID, sourceNodeIDs: sourceNodeIDs,
+            credentialReference: provider.secretRef,
+            canvasID: owner.kind == .canvas ? owner.id : nil,
+            documentID: owner.kind == .canvas ? (canvasDocumentID ?? owner.id) : nil,
+            sourceNodeIDs: sourceNodeIDs,
             resultNodeID: resultNodeID, requestJSON: requestJSON
         )
-        try await store.save(job)
-        let key = provider.secretRef.flatMap { try? environment.keychain.read(account: $0.keychainAccount) }
-            .flatMap { String(data: $0, encoding: .utf8) }
+        let creation = try await store.createJob(
+            job, owner: owner, originRunID: originRunID,
+            idempotencyKey: idempotencyKey
+        )
+        if creation.deduplicated {
+            return MediaGenerationSubmission(job: creation.job, deduplicated: true)
+        }
+        let key = videoCredential(for: job)
         do {
             let submission = try await adapter.submit(
                 request, provider: provider, credentials: ProviderCredentials(apiKey: key)
             )
-            job.providerTaskID = submission.providerTaskID
-            job.state = .submitted
-            job.estimatedCompletionAt = submission.estimatedCompletionAt
-            job.resultRetentionExpiresAt = submission.resultRetentionExpiresAt
-            job.resultURL = submission.resultURL
-            job.resultURLExpiresAt = submission.resultURLExpiresAt
-            if submission.resultURL != nil {
-                job.state = .downloading
-                job.nextPollAt = nil
-            } else {
-                job.nextPollAt = Date().addingTimeInterval(30)
-            }
-            job.updatedAt = Date()
-            try await store.save(job)
-            if let resultURL = submission.resultURL {
-                await environment.backgroundRunCoordinator.startMediaArtifactDownload(
-                    jobID: job.id, remoteURL: resultURL
+            let targetState: MediaGenerationJobState =
+                submission.resultURL != nil ? .downloading : .submitted
+            let updated: MediaGenerationJob
+            do {
+                updated = try await store.transition(id: job.id, to: targetState) { current in
+                    current.providerTaskID = submission.providerTaskID
+                    current.estimatedCompletionAt = submission.estimatedCompletionAt
+                    current.resultRetentionExpiresAt = submission.resultRetentionExpiresAt
+                    current.resultURL = submission.resultURL
+                    current.resultURLExpiresAt = submission.resultURLExpiresAt
+                    current.nextPollAt = submission.resultURL == nil
+                        ? Date().addingTimeInterval(30) : nil
+                }
+            } catch let storeError as MediaGenerationJobStoreError {
+                // The user cancelled while the provider request was in
+                // flight. The local record already owns the truth; ask the
+                // provider to cancel the task it accepted and report that
+                // instead of resurrecting the cancelled job. Any other store
+                // error is rethrown unchanged.
+                guard case .invalidStateTransition = storeError else { throw storeError }
+                try? await adapter.cancel(
+                    taskID: submission.providerTaskID, provider: provider,
+                    credentials: ProviderCredentials(apiKey: key)
+                )
+                throw RemoteVideoError.requestFailed(
+                    "任务在供应商确认前已被取消，已尝试取消供应商任务。"
                 )
             }
+            if let resultURL = updated.resultURL {
+                await startMediaDownload(jobID: updated.id, remoteURL: resultURL, provider: provider, credential: key)
+            }
             BackgroundPolicyRegistry.shared.scheduleMediaRefresh(
-                earliest: job.nextPollAt ?? Date().addingTimeInterval(60)
+                earliest: updated.nextPollAt ?? Date().addingTimeInterval(60)
             )
             BackgroundPolicyRegistry.shared.scheduleMediaProcessing(
                 earliest: Date().addingTimeInterval(60)
             )
-            return job
+            return MediaGenerationSubmission(job: updated, deduplicated: false)
         } catch {
             _ = try? await store.transition(id: job.id, to: .failed) {
                 $0.lastError = error.localizedDescription
@@ -2073,59 +2101,338 @@ final class MediaGenerationService {
         }
     }
 
-    func cancelVideo(jobID: UUID) async throws {
-        let store = MediaGenerationJobStore(database: environment.database)
-        guard let job = try await store.job(id: jobID) else {
-            throw MediaGenerationJobStoreError.missingJob(jobID)
+    /// Reads the job's provider credential at the call site only.
+    private func videoCredential(for job: MediaGenerationJob) -> String? {
+        job.credentialReference.flatMap { reference in
+            try? environment.keychain.read(account: reference.keychainAccount)
+        }.flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    /// Starts the single background URLSession download for a result URL.
+    /// Google file URLs require the API key header; Ark and DashScope return
+    /// pre-signed URLs and need no extra header. The Google key is attached
+    /// only when the result host is a Google media surface, so a malformed or
+    /// hostile result URL can never receive the credential.
+    private func startMediaDownload(
+        jobID: UUID,
+        remoteURL: URL,
+        provider: ProviderProfile,
+        credential: String?
+    ) async {
+        var headers: [String: String] = [:]
+        if provider.kind == .googleGemini,
+           let credential, !credential.isEmpty,
+           let host = remoteURL.host,
+           VideoDownloadRedirectPolicy.isAllowedMediaRedirectHost(host) {
+            headers["x-goog-api-key"] = credential
         }
-        guard !job.state.isTerminal else {
+        await environment.backgroundRunCoordinator.startMediaArtifactDownload(
+            jobID: jobID, remoteURL: remoteURL, headers: headers
+        )
+    }
+
+    /// Polls one durable job exactly once and applies the truthful state.
+    /// Shared by launch/foreground reconciliation and `video.status`.
+    @discardableResult
+    func refreshVideoJob(jobID: UUID) async throws -> MediaGenerationJob? {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let owned = try await store.ownedJob(id: jobID) else { return nil }
+        try await pollMediaJob(owned, store: store, now: Date())
+        return try await store.job(id: jobID)
+    }
+
+    private func pollMediaJob(
+        _ owned: OwnedMediaGenerationJob,
+        store: MediaGenerationJobStore,
+        now: Date
+    ) async throws {
+        let job = owned.job
+        guard let provider = try? await environment.configurationStore.provider(id: job.providerID),
+              let model = try? await environment.configurationStore.model(id: job.modelID),
+              let adapter = VideoProviderAdapterFactory().adapter(for: provider) else { return }
+        let apiKey = videoCredential(for: job)
+        // A relaunch can lose the in-flight background task; restart the
+        // download from the persisted result URL instead of waiting. A result
+        // URL past its documented expiry can never be downloaded again, so it
+        // is closed truthfully instead of retrying a dead link.
+        if job.state == .downloading, let resultURL = job.resultURL {
+            if let expiry = job.resultURLExpiresAt, expiry <= now {
+                _ = try await store.transition(id: job.id, to: .expired) {
+                    $0.lastPolledAt = now
+                    $0.lastError = "结果下载地址已在有效期（24 小时）后过期，请重新生成。"
+                    $0.nextPollAt = nil
+                }
+                return
+            }
+            await startMediaDownload(jobID: job.id, remoteURL: resultURL, provider: provider, credential: apiKey)
             return
         }
-        guard let taskID = job.providerTaskID,
-              let provider = try await environment.configurationStore.provider(id: job.providerID),
+        guard let taskID = job.providerTaskID else { return }
+        do {
+            let status = try await adapter.status(
+                taskID: taskID, modelRemoteID: model.remoteModelID,
+                provider: provider, credentials: ProviderCredentials(apiKey: apiKey)
+            )
+            switch status.state {
+            case .completed:
+                guard let resultURL = status.resultURL else {
+                    _ = try await store.transition(id: job.id, to: .failed) {
+                        $0.lastPolledAt = now
+                        $0.lastError = "供应商报告完成，但没有返回可下载的视频地址。"
+                        $0.nextPollAt = nil
+                    }
+                    return
+                }
+                let retainedState: MediaGenerationJobState = job.state == .downloading
+                    ? .downloading : .completed
+                let completed = try await store.transition(id: job.id, to: retainedState) {
+                    $0.lastPolledAt = now
+                    $0.resultURL = resultURL
+                    $0.resultURLExpiresAt = status.resultURLExpiresAt
+                    $0.nextPollAt = nil
+                }
+                if completed.state != .downloading {
+                    _ = try await store.transition(id: completed.id, to: .downloading)
+                }
+                await startMediaDownload(jobID: job.id, remoteURL: resultURL, provider: provider, credential: apiKey)
+            case .failed, .cancelled, .expired:
+                _ = try await store.transition(id: job.id, to: status.state) {
+                    $0.lastPolledAt = now
+                    $0.lastError = status.error
+                    $0.nextPollAt = nil
+                }
+            default:
+                _ = try await store.transition(id: job.id, to: .running) {
+                    $0.lastPolledAt = now
+                    $0.retryCount = 0
+                    $0.lastError = nil
+                    $0.nextPollAt = Self.nextMediaPollDate(job: $0, now: now)
+                }
+            }
+        } catch {
+            _ = try? await store.transition(id: job.id, to: job.state) {
+                $0.lastPolledAt = now
+                $0.retryCount += 1
+                $0.lastError = error.localizedDescription
+                $0.nextPollAt = now.addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
+            }
+        }
+    }
+
+
+    /// Truthful cancellation. A terminal job is an error, not a silent no-op;
+    /// a provider cancel that races with completion reports the real outcome;
+    /// a failed provider cancel keeps the job alive with its error visible so
+    /// a later poll can still collect the result.
+    func cancelVideo(jobID: UUID) async throws {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let owned = try await store.ownedJob(id: jobID) else {
+            throw MediaGenerationJobStoreError.missingJob(jobID)
+        }
+        let job = owned.job
+        guard !job.state.isTerminal else {
+            throw RemoteVideoError.invalidRequest(
+                "该任务已结束（\(job.state.rawValue)），无法取消。使用 video.status 查看最终状态。"
+            )
+        }
+        guard let taskID = job.providerTaskID else {
+            // The provider call was never confirmed locally. Never claim a
+            // remote cancellation; close the durable job honestly.
+            _ = try await store.transition(id: jobID, to: .cancelled) {
+                $0.nextPollAt = nil
+                $0.lastError = "取消时尚未保存供应商任务 ID；供应商是否已受理未知，请在需要时核对供应商控制台。"
+            }
+            return
+        }
+        guard let provider = try await environment.configurationStore.provider(id: job.providerID),
               let adapter = VideoProviderAdapterFactory().adapter(for: provider) else {
             throw RemoteVideoError.unsupportedProvider
         }
-        let key = job.credentialReference.flatMap {
-            try? environment.keychain.read(account: $0.keychainAccount)
-        }.flatMap { String(data: $0, encoding: .utf8) }
-        try await adapter.cancel(
-            taskID: taskID,
-            provider: provider,
-            credentials: ProviderCredentials(apiKey: key)
-        )
-        _ = try await store.transition(id: jobID, to: .cancelled) {
-            $0.nextPollAt = nil
-            $0.lastError = nil
+        let key = videoCredential(for: job)
+        do {
+            try await adapter.cancel(
+                taskID: taskID,
+                provider: provider,
+                credentials: ProviderCredentials(apiKey: key)
+            )
+            _ = try await store.transition(id: jobID, to: .cancelled) {
+                $0.nextPollAt = nil
+                $0.lastError = nil
+            }
+        } catch {
+            // Ask the provider what actually happened before deciding.
+            if let model = try? await environment.configurationStore.model(id: job.modelID),
+               let status = try? await adapter.status(
+                   taskID: taskID, modelRemoteID: model.remoteModelID,
+                   provider: provider, credentials: ProviderCredentials(apiKey: key)
+               ) {
+                switch status.state {
+                case .completed:
+                    if let resultURL = status.resultURL {
+                        let completed = try await store.transition(id: jobID, to: .downloading) {
+                            $0.resultURL = resultURL
+                            $0.resultURLExpiresAt = status.resultURLExpiresAt
+                            $0.nextPollAt = nil
+                        }
+                        await startMediaDownload(
+                            jobID: completed.id, remoteURL: resultURL,
+                            provider: provider, credential: key
+                        )
+                    }
+                    throw RemoteVideoError.requestFailed("任务在取消前已完成，结果正在下载。")
+                case .failed, .cancelled, .expired:
+                    _ = try await store.transition(id: jobID, to: status.state) {
+                        $0.lastError = status.error ?? error.localizedDescription
+                        $0.nextPollAt = nil
+                    }
+                    return
+                default:
+                    break
+                }
+            }
+            _ = try await store.transition(id: jobID, to: job.state) {
+                $0.retryCount += 1
+                $0.lastError = "取消失败：\(error.localizedDescription)"
+                $0.nextPollAt = Date().addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
+            }
+            throw error
         }
     }
 
     /// A retry is always a new provider job so the original terminal record
-    /// remains auditable. Callers must obtain explicit user confirmation first
-    /// because the provider may charge for the new submission.
+    /// remains auditable. The retry is a distinct operation, so it does not
+    /// reuse the original idempotency key; an active duplicate request still
+    /// attaches to the existing job through the legacy comparison. Callers
+    /// must obtain explicit user confirmation first because the provider may
+    /// charge for the new submission.
     func retryVideo(jobID: UUID) async throws -> MediaGenerationJob {
         let store = MediaGenerationJobStore(database: environment.database)
-        guard let original = try await store.job(id: jobID) else {
+        guard let original = try await store.ownedJob(id: jobID) else {
             throw MediaGenerationJobStoreError.missingJob(jobID)
         }
-        let request = try JSONDecoder().decode(RemoteVideoRequest.self, from: original.requestJSON)
-        return try await submitVideo(
-            modelID: original.modelID,
-            canvasID: original.canvasID,
-            documentID: original.documentID,
-            sourceNodeIDs: original.sourceNodeIDs,
-            resultNodeID: original.resultNodeID,
-            request: request
+        let request = try JSONDecoder().decode(RemoteVideoRequest.self, from: original.job.requestJSON)
+        let submission = try await submitVideo(
+            modelID: original.job.modelID,
+            owner: original.owner,
+            originRunID: original.originRunID,
+            sourceNodeIDs: original.job.sourceNodeIDs,
+            resultNodeID: original.job.resultNodeID,
+            request: request,
+            canvasDocumentID: original.documentID
         )
+        return submission.job
+    }
+
+    /// Delivers a job that just became ready. Conversation-owned results are
+    /// copied into the conversation workspace (GeneratedMedia) and announced
+    /// as a steer/queued input; canvas jobs keep their canvas UI path. Every
+    /// completion still posts a local notification.
+    func deliverReadyMediaJob(jobID: UUID) async {
+        let store = MediaGenerationJobStore(database: environment.database)
+        // Only a job whose durable state is `ready` is delivered; a cancelled
+        // or failed job can never be announced as a finished video.
+        guard let owned = try? await store.ownedJob(id: jobID),
+              owned.job.state == .ready else { return }
+        var detail = "生成结果已保存到素材库，并会在画布中恢复。"
+        if owned.owner.kind == .conversation {
+            detail = await deliverConversationResult(owned)
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "视频已准备好"
+        content.body = detail
+        content.sound = .default
+        content.userInfo = ["mediaJobID": jobID.uuidString]
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "media.\(jobID.uuidString)", content: content, trigger: nil
+        ))
+    }
+
+    private func deliverConversationResult(_ owned: OwnedMediaGenerationJob) async -> String {
+        guard let localAssetID = owned.job.localAssetID,
+              let asset = try? await environment.creativeAssetStore.asset(id: localAssetID),
+              let relative = asset.localRelativePath else {
+            return "生成结果已保存到素材库（jobID \(owned.job.id.uuidString)）。"
+        }
+        let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false
+        )
+        guard let source = support?.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relative),
+              FileManager.default.fileExists(atPath: source.path) else {
+            return "生成结果已保存到素材库（\(relative)）。"
+        }
+        var delivered: String?
+        var note: String?
+        let reattacher = WorkspaceRootReattacher(
+            store: SQLiteWorkspaceStore(database: environment.database)
+        )
+        if let lease = await reattacher.acquireRoot(conversationID: owned.owner.id) {
+            defer { lease.release() }
+            let directory = lease.url.appendingPathComponent("GeneratedMedia", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let destination = directory.appendingPathComponent(
+                    "\(owned.job.id.uuidString)-\(source.lastPathComponent)"
+                )
+                let staging = directory.appendingPathComponent(".floe-deliver-\(UUID().uuidString)")
+                defer { try? FileManager.default.removeItem(at: staging) }
+                if FileManager.default.fileExists(atPath: staging.path) {
+                    try FileManager.default.removeItem(at: staging)
+                }
+                try FileManager.default.copyItem(at: source, to: staging)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
+                } else {
+                    try FileManager.default.moveItem(at: staging, to: destination)
+                }
+                delivered = "GeneratedMedia/\(destination.lastPathComponent)"
+            } catch {
+                note = "对话工作区写入失败：\(error.localizedDescription)；结果保留在素材库（\(relative)）。"
+                FloeLogger(category: .app).warning(
+                    "mediaJobWorkspaceDeliveryFailed job=\(owned.job.id.uuidString)"
+                )
+            }
+        } else {
+            note = "对话工作区当前不可用；结果保留在素材库（\(relative)）。"
+        }
+        let location = delivered ?? relative
+        if note == nil {
+            note = "已保存到对话工作区：\(location)"
+        }
+        let content = "视频已生成并保存到 \(location)（jobID \(owned.job.id.uuidString)）。 \(note ?? "")"
+        // A live run receives the result as a steer. Otherwise the message is
+        // queued and stays visible without auto-launching a new agent turn.
+        let activeOriginRun = owned.originRunID.flatMap { runID in
+            environment.conversationCenter.hasActiveRun(runID) ? runID : nil
+        }
+        try? await environment.conversationCenter.submitRunningInput(
+            content: content,
+            in: owned.owner.id,
+            // A live run receives this as a steer; otherwise it is queued for
+            // the user. The random fallback never matches a run.
+            expectedRunID: activeOriginRun ?? owned.originRunID ?? UUID(),
+            mode: activeOriginRun == nil ? .queue : .steer,
+            selectedModelID: nil,
+            workspaceID: environment.workspaceCenter.workspaceID(for: owned.owner.id),
+            executionMode: .agent,
+            attachments: []
+        )
+        return note ?? "已保存到对话工作区：\(location)"
     }
 }
 
 /// Background network-process owner for short-lived provider result URLs.
 /// Files move into the durable material library before a job becomes ready.
+/// The completed download is staged, size-verified and committed atomically;
+/// failures keep a truthful job state and never leave a half-written result.
 final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     static let sessionIdentifier = "org.floeagent.media-artifacts"
+    /// Hard ceiling for one generated video download.
+    static let maximumDownloadBytes: Int64 = 4 * 1024 * 1024 * 1024
 
     private let database: DatabaseManager
+    private let onReady: (@Sendable (UUID) async -> Void)?
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
         configuration.sessionSendsLaunchEvents = true
@@ -2134,13 +2441,14 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
 
-    init(database: DatabaseManager) {
+    init(database: DatabaseManager, onReady: (@Sendable (UUID) async -> Void)? = nil) {
         self.database = database
+        self.onReady = onReady
         super.init()
         _ = session
     }
 
-    func start(jobID: UUID, remoteURL: URL) async {
+    func start(jobID: UUID, remoteURL: URL, headers: [String: String] = [:]) async {
         guard remoteURL.scheme?.lowercased() == "https",
               remoteURL.user == nil, remoteURL.password == nil,
               remoteURL.host != nil, !remoteURL.isLocalOrPrivateNetwork else {
@@ -2149,10 +2457,43 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
         }
         let tasks = await session.allTasks
         if tasks.contains(where: { $0.taskDescription == jobID.uuidString }) { return }
-        let task = session.downloadTask(with: remoteURL)
+        var request = URLRequest(url: remoteURL)
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        let task = session.downloadTask(with: request)
         task.taskDescription = jobID.uuidString
         task.priority = URLSessionTask.highPriority
         task.resume()
+    }
+
+    /// Provider downloads may legitimately redirect (Google serves generated
+    /// files through a separate media host), but the credential header must
+    /// not leak to an arbitrary third party. Cross-host redirects are only
+    /// followed for the documented Google media hosts, and only after the
+    /// credential header is stripped; every other cross-host redirect is
+    /// refused.
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        guard let originalHost = task.originalRequest?.url?.host,
+              let target = request.url,
+              target.user == nil, target.password == nil,
+              !target.isLocalOrPrivateNetwork,
+              VideoDownloadRedirectPolicy.allowsRedirect(from: originalHost, to: target) else {
+            completionHandler(nil)
+            return
+        }
+        if (target.host ?? "").caseInsensitiveCompare(originalHost) == .orderedSame {
+            completionHandler(request)
+            return
+        }
+        var sanitized = request
+        sanitized.setValue(nil, forHTTPHeaderField: "x-goog-api-key")
+        sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
+        completionHandler(sanitized)
     }
 
     func urlSession(
@@ -2162,48 +2503,124 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
     ) {
         guard let raw = downloadTask.taskDescription, let jobID = UUID(uuidString: raw) else { return }
         do {
+            // The system deletes `location` when this delegate returns, so move
+            // it to a durable staging path synchronously and verify/commit in
+            // a task.
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask,
                 appropriateFor: nil, create: true
             )
-            let directory = support.appendingPathComponent("FloeAgent/Materials", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let assetID = UUID()
-            let extensionName = downloadTask.response?.suggestedFilename
-                .flatMap { URL(fileURLWithPath: $0).pathExtension }
-                .flatMap { $0.isEmpty ? nil : $0 } ?? "mp4"
-            let destination = directory.appendingPathComponent("\(assetID.uuidString)-generated.\(extensionName)")
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
+            let stagingDirectory = support.appendingPathComponent("FloeAgent/MediaStaging", isDirectory: true)
+            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+            let staging = stagingDirectory.appendingPathComponent("\(jobID.uuidString)-\(UUID().uuidString).download")
+            if FileManager.default.fileExists(atPath: staging.path) {
+                try FileManager.default.removeItem(at: staging)
             }
-            try FileManager.default.moveItem(at: location, to: destination)
+            try FileManager.default.moveItem(at: location, to: staging)
+            // Extract Sendable scalars before crossing into the settle task;
+            // URLResponse itself must not cross isolation.
+            let statusCode = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+            let mimeType = downloadTask.response?.mimeType
+            let suggestedExtension = downloadTask.response?.suggestedFilename
+                .flatMap { URL(fileURLWithPath: $0).pathExtension }
+                .flatMap { $0.isEmpty ? nil : $0 }
+            let sourceURL = downloadTask.originalRequest?.url
             Task {
-                let store = MediaGenerationJobStore(database: database)
-                let data = try? Data(contentsOf: destination, options: .mappedIfSafe)
-                let hash = data.map {
-                    FloeDigest.sha256Hex($0)
-                } ?? assetID.uuidString
-                let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize)
-                    .map(Int64.init) ?? 0
-                let assetStore = CreativeAssetStore(database: database)
-                try? await assetStore.save(CreativeAssetRecord(
-                    id: assetID, contentHash: hash, kind: .video,
-                    displayName: destination.deletingPathExtension().lastPathComponent,
-                    mimeType: downloadTask.response?.mimeType ?? "video/mp4",
-                    localRelativePath: "Materials/\(destination.lastPathComponent)",
-                    cloudRecordName: nil, byteCount: size,
-                    sourceURL: downloadTask.originalRequest?.url,
-                    license: nil, tags: ["生成内容"], referenceCount: 0,
-                    createdAt: Date(), updatedAt: Date()
-                ))
-                _ = try? await store.transition(id: jobID, to: .ready) {
-                    $0.localAssetID = assetID
-                    $0.lastError = nil
-                }
-                await Self.postCompletionNotification(jobID: jobID)
+                await self.settle(
+                    jobID: jobID, staging: staging, statusCode: statusCode,
+                    mimeType: mimeType, suggestedExtension: suggestedExtension,
+                    sourceURL: sourceURL
+                )
             }
         } catch {
             Task { await fail(jobID: jobID, message: error.localizedDescription) }
+        }
+    }
+
+    private func settle(
+        jobID: UUID,
+        staging: URL,
+        statusCode: Int,
+        mimeType: String?,
+        suggestedExtension: String?,
+        sourceURL: URL?
+    ) async {
+        let fileManager = FileManager.default
+        let store = MediaGenerationJobStore(database: database)
+        guard let job = try? await store.job(id: jobID), !job.state.isTerminal else {
+            try? fileManager.removeItem(at: staging)
+            return
+        }
+        let size = (try? staging.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        guard size > 0 else {
+            try? fileManager.removeItem(at: staging)
+            await fail(jobID: jobID, message: "供应商下载结果为空文件。")
+            return
+        }
+        guard size <= Self.maximumDownloadBytes else {
+            try? fileManager.removeItem(at: staging)
+            await fail(jobID: jobID, message: "下载结果超过 \(Self.maximumDownloadBytes) 字节上限。")
+            return
+        }
+        if statusCode != 0, !(200..<300).contains(statusCode) {
+            try? fileManager.removeItem(at: staging)
+            await fail(jobID: jobID, message: "下载返回 HTTP \(statusCode)")
+            return
+        }
+        do {
+            let support = try fileManager.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true
+            )
+            let directory = support.appendingPathComponent("FloeAgent/Materials", isDirectory: true)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let assetID = UUID()
+            let extensionName = suggestedExtension ?? "mp4"
+            let destination = directory.appendingPathComponent("\(assetID.uuidString)-generated.\(extensionName)")
+            let receipt = try AtomicFileCommitter.commit(
+                stagedFile: staging,
+                to: destination,
+                policy: FileCommitPolicy(
+                    conflict: .failIfExists,
+                    maxBytes: Int(Self.maximumDownloadBytes),
+                    verifyBeforeCommit: { staged in
+                        let stagedSize = (try? staged.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                        guard stagedSize > 0 else {
+                            throw FloeError.validationFailed("Downloaded media is empty")
+                        }
+                    }
+                )
+            )
+            let hash = receipt.sha256
+            let assetStore = CreativeAssetStore(database: database)
+            try? await assetStore.save(CreativeAssetRecord(
+                id: assetID, contentHash: hash, kind: .video,
+                displayName: destination.deletingPathExtension().lastPathComponent,
+                mimeType: mimeType ?? "video/mp4",
+                localRelativePath: "Materials/\(destination.lastPathComponent)",
+                cloudRecordName: nil, byteCount: size,
+                sourceURL: sourceURL,
+                license: nil, tags: ["生成内容"], referenceCount: 0,
+                createdAt: Date(), updatedAt: Date()
+            ))
+            // The job may have been cancelled while the download was in
+            // flight; a terminal job must never be announced as ready. The
+            // material stays in the library (it is already on disk), but no
+            // conversation input or notification claims success.
+            let ready = try? await store.transition(id: jobID, to: .ready) {
+                $0.localAssetID = assetID
+                $0.lastError = nil
+            }
+            guard ready?.state == .ready else {
+                FloeLogger(category: .app).warning(
+                    "mediaJobDownloadDeliveredAfterTerminal job=\(jobID.uuidString)"
+                )
+                return
+            }
+            await onReady?(jobID)
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            await fail(jobID: jobID, message: error.localizedDescription)
         }
     }
 
@@ -2233,17 +2650,6 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
                 $0.nextPollAt = now.addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
             }
         }
-    }
-
-    private static func postCompletionNotification(jobID: UUID) async {
-        let content = UNMutableNotificationContent()
-        content.title = "视频已准备好"
-        content.body = "生成结果已保存到素材库，并会在画布中恢复。"
-        content.sound = .default
-        content.userInfo = ["mediaJobID": jobID.uuidString]
-        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: "media.\(jobID.uuidString)", content: content, trigger: nil
-        ))
     }
 }
 #endif
