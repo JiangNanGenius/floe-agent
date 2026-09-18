@@ -27,3 +27,13 @@ Preflight on2026-09-18: script suite444 tests,443 passed and1 existing platform
 skip. All four project.yml targets and eight generated build configurations
 use191. Generated-project consistency passed after the candidate commit.
 No production Swift or UI code changed, so no duplicate local App build ran.
+
+## Initial cloud results — 2026-09-18
+
+The isolated network suite passed13/13; its unchanged eight-way deadline race
+completed in0.250s against1.5s. The other five recorded Swift invocations also
+exited successfully. This confirms the new invocation passed, without changing
+the original build190 failure or proving its scheduler-contention hypothesis.
+NativeNotes xcresults independently confirm101/101 passed,0 skipped on each
+simulator family. [Structured evidence](early-results.json). Both full-App SDK
+qualification jobs remain in progress; no upload or installability is claimed.

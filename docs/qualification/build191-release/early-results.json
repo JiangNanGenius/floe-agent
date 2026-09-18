@@ -1,0 +1,27 @@
+{
+  "source": "715cbc42e9402cf5ca691291fed5c201e61cf222",
+  "run": 35337960392,
+  "nativeNotes": {
+    "iPad": {
+      "result": "Passed",
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 101
+    },
+    "iPhone": {
+      "result": "Passed",
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "totalTestCount": 101
+    }
+  },
+  "networkDeadlineSuite": {
+    "passed": 13,
+    "suiteSeconds": 0.255,
+    "eightWayRaceSeconds": 0.25,
+    "assertionLimitSeconds": 1.5
+  },
+  "limitation": "Component and Swift-suite evidence only; both SDK full-App qualification jobs still running."
+}
