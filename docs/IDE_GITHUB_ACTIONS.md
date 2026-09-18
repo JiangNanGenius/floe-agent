@@ -3,9 +3,9 @@
 Build 185 candidate, source `42ecc4527fdbeb171dd0aed1d0776375770f1572`. The
 cloud qualification run
 [`35292395886`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35292395886)
-started with `prepare-release` passed; the two-SDK App build/regression jobs were
-still running when this record was written. This page describes the implemented
-flow, not a TestFlight availability claim; nothing was uploaded. The IDE
+finished with UI qualification failures; signing and upload were skipped. Both
+SDK App regressions passed 204/204, including all 23 IDE job cases. This page
+describes the implemented flow, not a TestFlight availability claim. The IDE
 client/engine/store feature is unchanged from build 184, which compiled the App
 on both SDK lines but whose two App regressions each passed 203/204 tests with
 the same Lua install/run failure, so no upload occurred. The build 182 section
@@ -144,5 +144,6 @@ App test host successfully. Earlier mandatory SIL/object checks provide separate
 compiler evidence; those checks alone did not execute the tests.
 The only runtime repair in this candidate is the WASI environment contract
 (`f908cce1`), which is outside the GitHub Actions feature. Run `35292395886` is
-the current two-SDK qualification and has no recorded conclusion yet. No App
-relaunch UI, upload or availability is implied.
+the current two-SDK qualification: both App regressions passed 204/204, but
+Office cover/navigation UI failures blocked upload. No App relaunch UI or
+TestFlight availability is implied.

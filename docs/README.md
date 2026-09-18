@@ -93,7 +93,7 @@
 - [Build 177 historical candidate record](RELEASE_NOTES_1.7.0_BUILD_177.md): earlier personalization, CAD/IDE and UI qualification work; its recorded status is historical.
 - [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.
 
-- [Build 185 candidate](RELEASE_1.7.0_BETA_42.md): durable cloud jobs, WASI environment repair and real Office/CAD covers; cloud qualification in progress.
+- [Build 185 candidate](RELEASE_1.7.0_BETA_42.md): durable cloud jobs, WASI environment repair and content-cover qualification; both App regressions passed but UI failures blocked upload.
 - [Build 184 failed candidate](RELEASE_1.7.0_BETA_41.md): both SDK App builds passed; Lua runtime regression blocked upload.
 - [Build 183 candidate](RELEASE_1.7.0_BETA_40.md): durable IDE cloud builds, real library covers, runtime lifecycle checks; App compilation failed before upload.
 - [IDE GitHub Actions](IDE_GITHUB_ACTIONS.md): snapshots, workflow setup, restart recovery and cancellation.

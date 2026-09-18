@@ -1,0 +1,74 @@
+{
+  "sourceSHA": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
+  "build": 185,
+  "runID": 35292395886,
+  "artifactID": 10528208908,
+  "device": "iPad mini (A17 Pro) simulator",
+  "sdk": "27.0",
+  "result": "FAILED",
+  "tests": {
+    "total": 5,
+    "passed": 3,
+    "failed": 1,
+    "skipped": 1
+  },
+  "failure": "Word cover source unsupported; Word Excel PPT generic cards observed in full App recording.",
+  "skip": "Native Office editor unavailable in simulator build; not accepted as tested.",
+  "iphone": "Test runner crashed while bootstrapping before tests started; no App UI acceptance.",
+  "screenshots": [
+    {
+      "file": "ipad-body-search-opened.png",
+      "sourceAttachment": "00809AFC-1036-42FA-BE4C-A1914E3B9922.png",
+      "label": "notes-body-search-opened-document_0_345DBA29-1C3B-45D4-A8BC-06B683176BF5.png",
+      "sourceSHA256": "888b04e46ce134d038f3dd73dd01609b70aa588c78f738cb2a4e4b8eb4dadfea",
+      "outputSHA256": "dc81885a0b77b586983c799efbbdd96fb23112e7a5a08bc54bb7902fdada4d25",
+      "transform": "EXIF orientation applied only"
+    },
+    {
+      "file": "ipad-body-search.png",
+      "sourceAttachment": "AF88593B-4B73-49FC-91E4-6C7EA093CC70.png",
+      "label": "notes-document-body-search_0_F1314C82-C92D-4467-B65B-E4A79B36A8C8.png",
+      "sourceSHA256": "58ba237d5a4efde908101e31f172ac2b21303e540090b6fe039149a75cfa5e0b",
+      "outputSHA256": "5a2f56d038cb683929e52bff733276e79eac799e70fb29b3acbbbf9ccec4c4e8",
+      "transform": "EXIF orientation applied only"
+    },
+    {
+      "file": "ipad-tabs.png",
+      "sourceAttachment": "39D83AC5-EACB-447C-B76A-20BC17414D2A.png",
+      "label": "notes-document-tabs_0_DE3EAE48-A360-423B-82DB-BF25B701C9E7.png",
+      "sourceSHA256": "acb8cef79609e32a1c2ef11b7515fe6a745c5218b58766fce7738be75cf90caf",
+      "outputSHA256": "bc11cd519b72687a294a4c234a4f34617bf52079c3e36b4198441d62a2d75ac8",
+      "transform": "EXIF orientation applied only"
+    },
+    {
+      "file": "ipad-brush-settings.png",
+      "sourceAttachment": "7AC5F262-BE51-41B6-81D2-7B1B60A8D642.png",
+      "label": "notes-native-brushes_0_ED34CD91-B2A2-4285-A90B-6174925C6942.png",
+      "sourceSHA256": "be799d2a1b9a2ad40458d5ba2960ebd72752a2852d1814335ef263089d4aec57",
+      "outputSHA256": "297f620583a454523e9636bc51d210199832a0147deaab7c1f4f06c01d7a733a",
+      "transform": "EXIF orientation applied only"
+    },
+    {
+      "file": "ipad-pencil-menu.png",
+      "sourceAttachment": "5D0CBB19-DB48-4AC5-8251-DB04AF551023.png",
+      "label": "notes-pencil-quick-menu-open_0_4FFE976C-3A24-4E24-A9B6-2B75E9659618.png",
+      "sourceSHA256": "325527066680b3f83b75df475371a3232eb0aecaae5160fcdd66767406554d68",
+      "outputSHA256": "43e9c0bfc1de2969252d6bf16f1f47715cafe91bbe26d6ab4ada3853f665363d",
+      "transform": "EXIF orientation applied only"
+    },
+    {
+      "file": "ipad-document-assistant.png",
+      "sourceAttachment": "49C2FC1A-39E4-41F5-8EAD-7895B1D9F363.png",
+      "label": "notes-document-assistant_0_30A79A0B-72A0-4772-AE8C-13EE42084704.png",
+      "sourceSHA256": "72ece17ad062fcb94f578ec8162a69c8964fd8f461daf70a29a946c9d6e3ba27",
+      "outputSHA256": "a698e8adce166a0274b93b1bad7fb52dafc368906c340699ef5d12ae347f548a",
+      "transform": "EXIF orientation applied only"
+    }
+  ],
+  "failureFrame": {
+    "file": "ipad-office-cover-failure.png",
+    "recording": "4A7A3969-1B70-4E70-B8AB-4183BD2BAC52.mp4",
+    "timeSeconds": 120,
+    "sha256": "8ee74d307476bf856334c1bfaddf9bb2003bdcdef94c5318d48586b6697b399b"
+  }
+}

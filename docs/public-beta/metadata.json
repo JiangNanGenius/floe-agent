@@ -76,15 +76,24 @@
     "appSourceCommit": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
     "tag": "v1.7.0-beta.42",
     "releaseRun": 35292395886,
-    "status": "cloud_qualification_in_progress_not_uploaded",
+    "status": "ui_qualification_failed_not_uploaded",
     "focusedEvidence": [
       "Build184 actual25 service fixtures and23 IDE App tests passed",
       "Current Lua/WASI production source:7/7 real Swift Testing cases passed plus11 boundary checks",
       "NativeNotes development component repair:72/72 on iPad and72/72 on iPhone, run35290599088"
     ],
     "limitations": [
-      "Full candidate App and native UI release gates remain required.",
-      "Component images and focused CLI tests do not establish App relaunch UI or TestFlight availability."
+      "UI failures block signing and upload; original logs/screenshots and unsigned device recovery retained.",
+      "Component and CLI evidence do not establish full-App UI or TestFlight availability."
+    ],
+    "appRegressions": {
+      "SDK27": "204/204 passed",
+      "acceptedSDK": "204/204 passed"
+    },
+    "uiFailures": [
+      "SDK27 iPad and accepted-SDK iPhone: Office content cover unsupported",
+      "accepted-SDK iPad: all7 covers and rename passed, opening Office lacked return control in unavailable-engine path",
+      "SDK27 iPhone: test runner exited during bootstrap before tests"
     ]
   },
   "earlierIDEQualification": {
