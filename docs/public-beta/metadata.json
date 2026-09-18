@@ -58,7 +58,7 @@
     "generatedVideoSecondsUsed": 0,
     "credentialMayBeSharedWithReviewers": false,
     "credentialIncludedInMaterials": false,
-    "successfulAppRecording": "Build 175 / 8958d8f1, iPad Simulator, run 34949317123; actual tool calls created and reread Markdown. Not candidate 182 evidence."
+    "successfulAppRecording": "Build175 /8958d8f1, iPad Simulator, run34949317123; actual tool calls created and reread Markdown. Not build187 evidence."
   },
   "deliveredQualification": {
     "version": "1.7.0",
@@ -72,32 +72,27 @@
   },
   "candidateQualification": {
     "version": "1.7.0",
-    "build": "186",
-    "stage": "fixed_source_build_acceptance_in_progress",
-    "tag": "v1.7.0-beta.43",
-    "tagObject": "31ba6f7c2fc4fbe86e68ea9de4ca9316edcd28ea",
-    "appSourceCommit": "d421fea260523d063270e2d21d623bd011acd9ea",
-    "releaseRun": 35306551280,
-    "releaseRunStartedAt": "2026-09-18T04:19:57Z",
-    "releaseRunStateAtRecord": "in_progress: prepare-release succeeded 04:20:22Z; notes-component development, build-verify-release and accepted-sdk-build were in progress; expedited/direct/recovery entries skipped",
-    "status": "tag_created_release_qualification_in_progress_no_upload_no_public_beta_submission",
-    "componentRun": 35304310882,
-    "officeLifecycleFixSourceCommit": "2a907841b50a19b07488f5e9fff40dc4f3b9cf1f",
+    "build": "187",
+    "stage": "fixed_source_cloud_qualification_in_progress",
+    "tag": "v1.7.0-beta.44",
+    "tagObject": "91cbedbd7694b1bf9d6168fd284a955212fc6990",
+    "appSourceCommit": "d77aa11f7b4933b987faf5cf65ebc817d520e15e",
+    "releaseRun": 35312393708,
+    "releaseRunStartedAt": "2026-09-18T05:50:30Z",
+    "status": "qualifying_no_upload_no_public_beta_submission",
     "focusedEvidence": [
-      "Component run35301809882 at source2a907841: iPad84/84, iPhone83/84; the only iPhone failure was a real scanned bilingual OCR/search case exceeding120 seconds, not Office lifecycle",
-      "Component run35304310882 at source8d303197: OCR/search passed on both devices (9.588s/82.388s) with the enforced XCTest timer reset120→180 proven from exported session logs; the only failure was one direct raw-staged Word request timing out at45.0958s while the same file passed through the real NotesDocumentCoverService on attempt1 in3.278s (iPad direct request passed after retry)",
-      "Six Office sample tests were rewritten (commit b06b3082, contained in the tagged source) to import through NoteFileImporter/NotesStore CAS and render through NotesDocumentCoverService with strict real-Quick-Look assertions; not yet executed anywhere, the current release run notes-component job is their first live result",
-      "Independent review with failure text and session-log locations: Local/Private/build186-final-review/REPORT.md"
+      "Preflight:428 script cases,427pass/1existing platform skip;6focused Swift semantic/object checks;32diagnostic-parser fixtures pass.",
+      "Cloud jobs are in progress; runtime results are not yet claimed.",
+      "Progressive Office content summaries are explicitly labelled and bounded; they do not claim original document layout.",
+      "Existing App-owned GitHub task persistence/recovery/foreground polling remains in this immutable source."
     ],
     "limitations": [
-      "No upload, Apple processing or TestFlight availability;178 remains the last confirmed internal build",
-      "Release run35306551280 was still in progress at this record; all three parallel jobs (Notes component, SDK27 build/verify, accepted-SDK build) must succeed before upload",
-      "The unproven simulator WebKit host stall can still fail a strict sample assertion; no retry or timeout masking was added",
-      "Native iPad local-model chat stability and native Office/Pencil operation remain physical-device acceptance",
-      "RDP is not delivered as a usable App feature",
-      "App Store Connect was not re-queried for this preparation"
+      "No upload or installability claimed. All three release gates must pass before signing.",
+      "Full-App relaunch with live GitHub run remains a UI acceptance item; older23App-host cases and28live CLI checks are distinct.",
+      "Physical iPad local-model ordinary-chat stability and native Office/Pencil remain unverified.",
+      "RDP and the complete signed package/model catalog are not delivered."
     ],
-    "componentCovers": "docs/qualification/build186-release/native-covers - native Notes component-host output, not full-App UI or release acceptance"
+    "officeCoverEvidence": "docs/qualification/build186-release/app-ui: real full-App simulator cards at build186; source-labelled, not187 acceptance"
   },
   "previousBuild185CandidateQualification": {
     "version": "1.7.0",
@@ -187,5 +182,29 @@
         "Actual App live-account dispatch/relaunch UI observation pending."
       ]
     }
-  ]
+  ],
+  "previousBuild186CandidateQualification": {
+    "version": "1.7.0",
+    "build": "186",
+    "stage": "failed_qualification_no_upload",
+    "tag": "v1.7.0-beta.43",
+    "tagObject": "31ba6f7c2fc4fbe86e68ea9de4ca9316edcd28ea",
+    "appSourceCommit": "d421fea260523d063270e2d21d623bd011acd9ea",
+    "releaseRun": 35306551280,
+    "releaseRunStartedAt": "2026-09-18T04:19:57Z",
+    "releaseRunStateAtRecord": "completed failure; accepted-SDK App regressions204/204 including23 IDE cases passed, but localization, one iPad strict Excel cover and both Office back-control UI legs failed",
+    "status": "failed_no_upload",
+    "componentRun": 35304310882,
+    "officeLifecycleFixSourceCommit": "2a907841b50a19b07488f5e9fff40dc4f3b9cf1f",
+    "focusedEvidence": [
+      "Build186 accepted-SDK App regressions204/204 including23 IDE cases passed.",
+      "Notes component iPhone84/84 and iPad83/84; strict Excel QL timed out while real summary rendered.",
+      "Both full-App Notes UI legs had3pass/1fail/1expected native-Office skip. Back button existed but its child accessibilityID was overridden; cover cold-relaunch portion was not reached."
+    ],
+    "limitations": [
+      "Not uploaded; unsigned device recovery retained.",
+      "The original results are in docs/qualification/build186-release/result.json; not build187 evidence."
+    ],
+    "componentCovers": "docs/qualification/build186-release/native-covers - native Notes component-host output, not full-App UI or release acceptance"
+  }
 }
