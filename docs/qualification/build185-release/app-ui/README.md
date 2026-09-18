@@ -9,3 +9,9 @@ The failed recording shows real DXF, DWG, PDF, handwritten-page and mind-map con
 Retained successful-flow screenshots show document tabs, body search, Pencil controls and the document-only assistant. They use synthetic fixtures and prove only the pictured simulator states. EXIF orientation was applied for document display; originals and recordings remain in the source artifact. `evidence.json` records attachment names and hashes.
 
 ![Unresolved Office covers](ipad-office-cover-failure.png)
+
+## Contrasting accepted-SDK iPad result
+
+The same source on the accepted SDK rendered all seven covers and regenerated Word after rename, then failed when opening Word exposed an unavailable-engine page without a return control. The screenshot below is partial positive evidence, not a passed UI leg or a fix for the other devices.
+
+![Accepted-SDK iPad content covers before the navigation failure](accepted-ipad-content-covers.png)

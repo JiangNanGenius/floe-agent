@@ -70,5 +70,14 @@
     "recording": "4A7A3969-1B70-4E70-B8AB-4183BD2BAC52.mp4",
     "timeSeconds": 120,
     "sha256": "8ee74d307476bf856334c1bfaddf9bb2003bdcdef94c5318d48586b6697b399b"
+  },
+  "acceptedSDKiPad": {
+    "result": "FAILED at open-return step after all7covers and rename passed",
+    "sourceRunID": 35292395886,
+    "file": "accepted-ipad-content-covers.png",
+    "sourceAttachment": "A2A18F46-E323-445F-A498-EC7EE2013B01.png",
+    "sha256": "6d13cdba59416a27646ab6f32d23ebe20227968745155b4131113ee76a2683bd",
+    "transform": "EXIF orientation applied only",
+    "limitation": "One successful original-content render does not close failures on other UI legs or the unavailable-editor return path."
   }
 }
