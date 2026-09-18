@@ -57,6 +57,72 @@ public actor MLXTextEngine {
     private var container: ModelContainer?
     private let resourceProfile: LocalInferenceResourceProfile
 
+    /// Blocks until queued MLX work has left the device stream. Freeing the
+    /// container or clearing the process-wide cache while an `asyncEval`
+    /// still references its buffers is an ownership error; the stream is the
+    /// boundary that says the buffers are no longer in flight.
+    static func drainMLXPipeline() {
+        MLX.Stream.gpu.synchronize()
+    }
+
+    /// Hard bound for MLX/runtime text that reaches the diagnostic log. MLX
+    /// error strings describe kernels, dtypes, shapes and Metal failures; they
+    /// never contain prompt text, but a single-line bounded form keeps the
+    /// feedback log readable and cheap to upload.
+    nonisolated static func boundedRuntimeDiagnostic(
+        _ error: Error,
+        limit: Int = 240
+    ) -> String {
+        let nsError = error as NSError
+        var message = error.localizedDescription
+        if message.isEmpty { message = "<no description>" }
+        message = message
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        if message.count > limit {
+            message = String(message.prefix(limit)) + "…"
+        }
+        return "domain=\(nsError.domain) code=\(nsError.code) message=\(message)"
+    }
+
+    /// True when the failure is the caller's cancellation rather than a model
+    /// failure. mlx-swift-lm checks `Task.checkCancellation()` between prefill
+    /// windows, so an interrupted local turn arrives here as
+    /// `CancellationError`; collapsing it into `decodeFailed` made an ordinary
+    /// stop look like a broken model in the device log and in the run status.
+    nonisolated static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        if nsError.domain == "Swift.CancellationError" { return true }
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
+    /// Teardown variant of `drainMLXPipeline()` plus `Memory.clearCache()`.
+    ///
+    /// These calls run outside the generation error scope (`defer`,
+    /// `shutdown()`, failed load). When MLX observes a queued Metal error
+    /// there, the task-local `MLX.withError` handler is empty and MLX's
+    /// runtime terminates the process. Teardown must not turn an
+    /// already-finished turn into a crash: run it under a scoped handler and
+    /// record a bounded diagnostic instead. The failure is not swallowed as a
+    /// success — the next request still runs through the full scoped checks.
+    nonisolated static func drainPipelineAndClearCaches(
+        context: String,
+        traceID: String? = nil
+    ) {
+        do {
+            try MLX.withError { errors in
+                Self.drainMLXPipeline()
+                Memory.clearCache()
+                try errors.check()
+            }
+        } catch {
+            FloeLogger(category: .providers).warning(
+                "localInferenceTeardownError context=\(context) trace=\(traceID ?? "none") \(boundedRuntimeDiagnostic(error))"
+            )
+        }
+    }
+
     public init(
         modelDirectory: URL,
         includesVisionProjector: Bool,
@@ -74,30 +140,46 @@ public actor MLXTextEngine {
         // allocations cached even after its Swift container is gone. Start a
         // new load from a known baseline so the preflight allowance describes
         // this model, rather than this model plus stale MLX cache pages.
-        Memory.clearCache()
+        Self.drainPipelineAndClearCaches(context: "modelLoadBaseline")
         do {
-            if includesVisionProjector {
-                self.container = try await VLMModelFactory.shared.loadContainer(
-                    from: modelDirectory,
-                    using: FloeTokenizerLoader()
-                )
-            } else {
-                // Qwen3.5/3.8 and Gemma 4 snapshots include a vision tower,
-                // but the upstream LLM factory deliberately strips those
-                // weights and remaps language_model.* for text generation.
-                // Loading the full VLM for every tool/text turn wasted more
-                // than a gigabyte and could terminate the process during the
-                // first Metal graph construction on iPad.
-                self.container = try await LLMModelFactory.shared.loadContainer(
-                    from: modelDirectory,
-                    using: FloeTokenizerLoader()
-                )
+            // MLX's default error handler exits the process when no scoped
+            // handler is installed. Weight loading and graph construction can
+            // raise errors in the C++ layer, so this scope is what turns them
+            // into a Swift throw instead of a signal.
+            let loaded: ModelContainer = try await MLX.withError { errors in
+                do {
+                    let container: ModelContainer
+                    if includesVisionProjector {
+                        container = try await VLMModelFactory.shared.loadContainer(
+                            from: modelDirectory,
+                            using: FloeTokenizerLoader()
+                        )
+                    } else {
+                        // Qwen3.5/3.8 and Gemma 4 snapshots include a vision
+                        // tower, but the upstream LLM factory deliberately
+                        // strips those weights and remaps language_model.* for
+                        // text generation. Loading the full VLM for every
+                        // tool/text turn wasted more than a gigabyte and could
+                        // terminate the process during the first Metal graph
+                        // construction on iPad.
+                        container = try await LLMModelFactory.shared.loadContainer(
+                            from: modelDirectory,
+                            using: FloeTokenizerLoader()
+                        )
+                    }
+                    try errors.check()
+                    return container
+                } catch {
+                    try errors.check()
+                    throw error
+                }
             }
+            self.container = loaded
         } catch {
             // A failed graph/model construction can leave Metal allocations
             // in MLX's process-wide cache even though no container escaped.
             // Clear them before the runtime evaluates or loads another model.
-            Memory.clearCache()
+            Self.drainPipelineAndClearCaches(context: "modelLoadFailure")
             let nsError = error as NSError
             // Keep the useful class/code while avoiding model paths or raw
             // provider payloads in the user-visible diagnostic.
@@ -120,7 +202,7 @@ public actor MLXTextEngine {
         // process-wide Metal allocation cache for reuse. On iPad that made a
         // 3.8 -> 3.5 switch look like two resident multi-GB models and could
         // end in a jetsam-style termination without a normal crash report.
-        Memory.clearCache()
+        Self.drainPipelineAndClearCaches(context: "shutdown")
     }
 
     public func completeMeasured(
@@ -140,8 +222,13 @@ public actor MLXTextEngine {
         // decode. Device diagnostics showed the process disappearing between
         // a successful tool result and the second decode without a Swift
         // error, which is exactly where retaining both turns' cached pages is
-        // most expensive.
-        defer { Memory.clearCache() }
+        // most expensive. Drain queued graph work before releasing pages.
+        defer {
+            Self.drainPipelineAndClearCaches(
+                context: "turnTeardown",
+                traceID: diagnosticTraceID
+            )
+        }
         try Task.checkCancellation()
         let startedAt = Date()
         let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -172,9 +259,27 @@ public actor MLXTextEngine {
             additionalContext: ["enable_thinking": false]
         )
         let prepared: LMInput
+        let prepareDiagnostic = "localInferencePrepareStarted trace=\(diagnosticTraceID ?? "none") promptCharacters=\(input.prompt.description.count) images=\(input.images.count) tools=\(input.tools?.count ?? 0) batchSize=\(resourceProfile.batchSize) contextSize=\(resourceProfile.contextSize) kvBits=\(resourceProfile.tier == .constrained ? 4 : 8) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
+        FloeLogger(category: .providers).info(prepareDiagnostic)
         do {
-            prepared = try await container.prepare(input: input)
+            // Tokenizer template + chat-template application. The scoped
+            // handler converts anything MLX reports here into a Swift throw
+            // instead of letting MLX's default handler exit the process.
+            prepared = try await MLX.withError { errors in
+                do {
+                    let value = try await container.prepare(input: input)
+                    try errors.check()
+                    return value
+                } catch {
+                    try errors.check()
+                    throw error
+                }
+            }
         } catch {
+            if Self.isCancellation(error) { throw CancellationError() }
+            FloeLogger(category: .providers).warning(
+                "localInferencePrepareFailed trace=\(diagnosticTraceID ?? "none") images=\(images.count) \(Self.boundedRuntimeDiagnostic(error))"
+            )
             throw images.isEmpty
                 ? LocalInferenceError.promptTooLong
                 : LocalInferenceError.visionInputFailed
@@ -236,7 +341,8 @@ public actor MLXTextEngine {
             input: prepared,
             parameters: parameters,
             inputTokens: preparedInputTokens,
-            startedAt: startedAt
+            startedAt: startedAt,
+            diagnosticTraceID: diagnosticTraceID
         )
     }
 
@@ -249,7 +355,8 @@ public actor MLXTextEngine {
         input: sending LMInput,
         parameters: GenerateParameters,
         inputTokens: Int,
-        startedAt: Date
+        startedAt: Date,
+        diagnosticTraceID: String?
     ) async throws -> LocalGenerationResult {
         // MLX's C error callback calls fatalError when no task-local handler
         // exists. A Swift do/catch alone cannot catch that callback. Keep the
@@ -264,7 +371,8 @@ public actor MLXTextEngine {
             }
             return try await generateGuarded(container: container, input: prepared,
                 parameters: parameters, inputTokens: inputTokens,
-                startedAt: startedAt, errors: errors)
+                startedAt: startedAt, errors: errors,
+                diagnosticTraceID: diagnosticTraceID)
         }
     }
 
@@ -274,22 +382,48 @@ public actor MLXTextEngine {
         parameters: GenerateParameters,
         inputTokens: Int,
         startedAt: Date,
-        errors: MLX.ErrorBox
+        errors: MLX.ErrorBox,
+        diagnosticTraceID: String?
     ) async throws -> LocalGenerationResult {
         let stream: AsyncStream<Generation>
         do {
+            // `container.generate` runs the chunked prefill inside
+            // mlx-swift-lm's `LLMModel.prepare` before it returns this stream.
+            // The build-191 report symbolicated the terminated prefill to
+            // TokenIterator.prepare -> LLMModel.prepare -> withPreparedCache ->
+            // Qwen35GatedDeltaNet.forward -> gatedDeltaUpdate, i.e. this exact
+            // call. A scoped handler converts every error MLX reports here into
+            // a Swift throw; it cannot catch a Metal command-buffer failure
+            // raised off the calling task (that stays an upstream residual).
             stream = try await container.generate(input: input, parameters: parameters)
             try errors.check()
         } catch {
+            if Self.isCancellation(error) || Task.isCancelled { throw CancellationError() }
+            FloeLogger(category: .providers).warning(
+                "localInferencePrefillFailed trace=\(diagnosticTraceID ?? "none") inputTokens=\(inputTokens) batchSize=\(parameters.prefillStepSize ?? 0) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) \(Self.boundedRuntimeDiagnostic(error))"
+            )
             throw LocalInferenceError.decodeFailed
         }
+        // Prefill and the priming step are complete; without this marker a
+        // device report cannot tell a prefill crash from a decode crash.
+        FloeLogger(category: .providers).info(
+            "localInferencePrefillCompleted trace=\(diagnosticTraceID ?? "none") inputTokens=\(inputTokens) prefillMs=\(max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
+        )
 
         var text = ""
         var firstTokenAt: Date?
         var info: GenerateCompletionInfo?
         for await event in stream {
-            try Task.checkCancellation()
-            try errors.check()
+            if Task.isCancelled { throw CancellationError() }
+            do {
+                try errors.check()
+            } catch {
+                if Self.isCancellation(error) || Task.isCancelled { throw CancellationError() }
+                FloeLogger(category: .providers).warning(
+                    "localInferenceDecodeFailed trace=\(diagnosticTraceID ?? "none") stage=stream \(Self.boundedRuntimeDiagnostic(error))"
+                )
+                throw LocalInferenceError.decodeFailed
+            }
             switch event {
             case .chunk(let chunk):
                 if firstTokenAt == nil, !chunk.isEmpty { firstTokenAt = Date() }
@@ -305,7 +439,15 @@ public actor MLXTextEngine {
                 }
             }
         }
-        try errors.check()
+        do {
+            try errors.check()
+        } catch {
+            if Self.isCancellation(error) || Task.isCancelled { throw CancellationError() }
+            FloeLogger(category: .providers).warning(
+                "localInferenceDecodeFailed trace=\(diagnosticTraceID ?? "none") stage=final \(Self.boundedRuntimeDiagnostic(error))"
+            )
+            throw LocalInferenceError.decodeFailed
+        }
         let endedAt = Date()
         let outputTokens = info?.generationTokenCount ?? Self.estimatedTokens(text)
         let generationDurationMs = info.map { max(1, Int($0.generateTime * 1_000)) }

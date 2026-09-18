@@ -190,6 +190,19 @@ public actor LocalModelRuntime {
         let traceID = UUID().uuidString
         let startedAt = Date()
         let wantsVision = false
+        // A background agent continuation can reach this runtime after the
+        // resign-active notification was already delivered, or before the
+        // first local generation ever installed a lifecycle observer. Query
+        // the application state before mapping weights so on-device work never
+        // starts while iOS would reject its GPU submissions. This is advisory
+        // (the app can resign right after the probe); `registerForeground`
+        // below performs the authoritative race-checked admission.
+        guard await LocalInferenceBackgroundCanceller.shared.isForegroundEligible() else {
+            FloeLogger(category: .providers).warning(
+                "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=prepare"
+            )
+            throw CancellationError()
+        }
         let prepared = try await prepareEngine(
             modelID: modelID,
             wantsVision: wantsVision,
@@ -203,14 +216,68 @@ public actor LocalModelRuntime {
         )
         do {
             let engineStartedAt = Date()
-            let output = try await engine.completeMeasured(
-                instructions: instructions,
-                prompt: prompt,
-                images: images,
-                tools: tools,
-                maxTokens: min(maxTokens, profile.maximumOutputTokens),
-                diagnosticTraceID: traceID
-            )
+            // Local MLX prefill can run for many seconds (device evidence:
+            // 4822 prepared tokens, ~8-13 s to prefill/first failure). If the
+            // app stops being active during that window, iOS rejects the GPU
+            // work the next chunk submits, and mlx-swift-lm surfaces the
+            // command-buffer failure from a completion handler where the
+            // task-local `MLX.withError` handler cannot catch it (upstream
+            // PR #423 documents this and adds `Task.checkCancellation()`
+            // between prefill windows). The harness keeps runs alive through
+            // a short background lease, so nothing cancels a local generation
+            // on resign-active; this registry supplies that cancellation and
+            // refuses to launch a new local generation while the app is not
+            // active. Remote providers are untouched.
+            //
+            // Ordering contract: register first, then create the GPU task,
+            // then attach its cancellation forwarder. A notification that
+            // lands between register and attach is remembered by the relay,
+            // so the task is cancelled before its first GPU submission
+            // instead of being missed by an observer that was installed too
+            // late.
+            let cancellationRelay = LocalInferenceCancellationRelay()
+            guard let cancelToken = await LocalInferenceBackgroundCanceller.shared.registerForeground(
+                traceID: traceID,
+                cancel: {
+                    FloeLogger(category: .providers).warning(
+                        "localInferenceBackgroundCancelled trace=\(traceID) model=\(modelID)"
+                    )
+                    cancellationRelay.requestCancellation()
+                }
+            ) else {
+                FloeLogger(category: .providers).warning(
+                    "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=generation"
+                )
+                throw CancellationError()
+            }
+            defer { LocalInferenceBackgroundCanceller.shared.unregister(cancelToken) }
+            // The probe above can suspend on the main actor. Re-check the
+            // caller's cancellation before creating the GPU task so a stop
+            // that raced the admission does not launch prefill at all.
+            try Task.checkCancellation()
+            let generation = Task {
+                try await engine.completeMeasured(
+                    instructions: instructions,
+                    prompt: prompt,
+                    images: images,
+                    tools: tools,
+                    maxTokens: min(maxTokens, profile.maximumOutputTokens),
+                    diagnosticTraceID: traceID
+                )
+            }
+            // A lifecycle transition may land between `registerForeground`
+            // and this attach. `attach` reports that case so the task is
+            // cancelled here, before it can submit prefill.
+            if cancellationRelay.attach({ generation.cancel() }) {
+                generation.cancel()
+            }
+            // Keep harness/user cancellation working exactly as before: the
+            // unstructured task above does not inherit it automatically.
+            let output = try await withTaskCancellationHandler {
+                try await generation.value
+            } onCancel: {
+                cancellationRelay.requestCancellation()
+            }
             // Do not leave a multi-gigabyte mapped container resident while
             // the harness executes a tool or renders the completed answer.
             // Device reports showed occasional process termination precisely
@@ -240,10 +307,16 @@ public actor LocalModelRuntime {
             if activeEngine?.key == prepared.key {
                 activeEngine = nil
                 await engine.shutdown()
-                loadState = .failed(
-                    modelID: modelID,
-                    message: String(error.localizedDescription.prefix(300))
-                )
+                // Background/user cancellation is not a model failure; keep
+                // the settings surface truthful and unload silently.
+                if error is CancellationError {
+                    loadState = .unloaded
+                } else {
+                    loadState = .failed(
+                        modelID: modelID,
+                        message: String(error.localizedDescription.prefix(300))
+                    )
+                }
             }
             let availableAfterFailure = LocalInferenceResourcePolicy.availableMemoryBytes()
             let nsError = error as NSError
