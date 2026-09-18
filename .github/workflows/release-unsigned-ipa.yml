@@ -19,6 +19,11 @@ on:
         description: Reuse an existing exact-tag accepted-SDK artifact and upload without waiting for SDK 27 qualification
         required: false
         type: string
+      recover_developer_build191:
+        description: Package and publish the original Build191 unsigned recovery after internal delivery; no App build or TestFlight upload
+        required: false
+        default: false
+        type: boolean
       build191_ui_waiver:
         description: Explicitly waive all three recorded Build191 UI failures and reuse its pinned device recovery (internal TestFlight only)
         required: false
@@ -47,8 +52,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  developer-recovery:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_developer_build191 && inputs.tag == 'v1.7.0-beta.48' && inputs.publish && !inputs.direct_testflight && !inputs.recover_build_156 && !inputs.build191_ui_waiver && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/developer-ipa-from-recovery.yml
+
   direct-testflight:
-    if: ${{ !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
       actions: read
@@ -58,7 +72,7 @@ jobs:
     secrets: inherit
 
   expedited-testflight:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != '' && inputs.component_recovery_run == '' && (!inputs.build191_ui_waiver || (inputs.tag == 'v1.7.0-beta.48' && inputs.reuse_accepted_run == '35337960392' && !inputs.publish && !inputs.direct_testflight)) }}
+    if: ${{ !inputs.recover_developer_build191 && github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != '' && inputs.component_recovery_run == '' && (!inputs.build191_ui_waiver || (inputs.tag == 'v1.7.0-beta.48' && inputs.reuse_accepted_run == '35337960392' && !inputs.publish && !inputs.direct_testflight)) }}
     permissions:
       contents: read
       actions: read
@@ -70,7 +84,7 @@ jobs:
     secrets: inherit
 
   recover-testflight:
-    if: ${{ !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish && inputs.component_recovery_run == '' }}
+    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
       actions: read
@@ -78,7 +92,7 @@ jobs:
     secrets: inherit
 
   component-recovery:
-    if: ${{ !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != '' }}
+    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != '' }}
     permissions:
       contents: read
       actions: read
@@ -90,7 +104,7 @@ jobs:
     secrets: inherit
 
   prepare-release:
-    if: ${{ !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     runs-on: macos-26
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -115,7 +129,7 @@ jobs:
   notes-component:
     name: Qualify the NativeNotes development component in parallel
     needs: prepare-release
-    if: ${{ !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
     # Branch-local reusable call at the caller's commit. sdk=development selects
@@ -129,7 +143,7 @@ jobs:
 
   build-verify-release:
     needs: prepare-release
-    if: ${{ !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     # Verify the complete iOS 27 source path here. The upload job below
     # separately rebuilds this exact tag with the App Store accepted SDK.
     runs-on: xcode-27

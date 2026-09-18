@@ -1,0 +1,178 @@
+name: Recover Build191 unsigned developer distribution
+on:
+  workflow_call:
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+  attestations: write
+concurrency:
+  group: floe-developer-recovery-build191
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: '35337960392'
+      RELEASE_TAG: v1.7.0-beta.48
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+      - name: Check out the immutable App source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          ref: v1.7.0-beta.48
+      - name: Verify the source and prior internal delivery
+        id: source
+        run: |
+          set -euo pipefail
+          scripts/release_preflight.sh "$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = 715cbc42e9402cf5ca691291fed5c201e61cf222
+          xcodebuild -version | grep -F 'Build version 17F113'
+          for run_id in 35347141494 35351900047; do
+            # The installability check is pinned by run ID and checked below;
+            # the upload controller SHA is pinned as well.
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/delivery-$run_id.json"
+          done
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          upload=json.loads((root/'delivery-35347141494.json').read_text())
+          verify=json.loads((root/'delivery-35351900047.json').read_text())
+          for run in (upload, verify):
+              assert run['head_repository']['full_name']=='JiangNanGenius/floe-agent'
+              assert run['status']=='completed' and run['conclusion']=='success'
+          assert upload['id']==35347141494 and upload['head_sha']=='6f6df7a3394104cd609c735a109809761ec94b21'
+          assert upload['path']=='.github/workflows/release-unsigned-ipa.yml'
+          assert verify['id']==35351900047 and verify['path']=='.github/workflows/xcode-cloud-control.yml'
+          assert verify['head_sha']=='cf6cf768aaab2a766ad0a8635cd9103af9390d27'
+          PYCODE
+      - name: Check out the reviewed recovery controller separately
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          path: recovery-controller
+      - name: Verify and restore only the explicitly waived Build191 recovery
+        env:
+          COMPONENT_RECOVERY_REPORT: ''
+          APP_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          APP_VERSION: ${{ steps.source.outputs.version }}
+          APP_BUILD: ${{ steps.source.outputs.build }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_RUN" = 35337960392
+          test "$RELEASE_TAG" = v1.7.0-beta.48
+          test "$APP_SOURCE_SHA" = 715cbc42e9402cf5ca691291fed5c201e61cf222
+          test "$APP_VERSION" = 1.7.0
+          test "$APP_BUILD" = 191
+          test -z "$COMPONENT_RECOVERY_REPORT"
+          controller="$GITHUB_WORKSPACE/recovery-controller/FloeAgent/scripts"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/reuse-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > "$RUNNER_TEMP/reuse-jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts?per_page=100" > "$RUNNER_TEMP/reuse-artifacts.json"
+          python3 "$controller/verify_build191_expedited.py" --directory "$RUNNER_TEMP" --acknowledge-three-ui-failures
+          # Hash the complete downloaded artifact before extraction, not just its sidecar.
+          for item in device regression; do
+            read -r artifact_id digest < <(python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["artifacts"][sys.argv[2]]; print(a[0],a[2])' "$RUNNER_TEMP/REUSE-PROVENANCE.json" "$item")
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/$item.zip"
+            test "$(shasum -a 256 "$RUNNER_TEMP/$item.zip" | cut -d ' ' -f 1)" = "$digest"
+            PYTHONPATH="$controller" python3 -c 'from verify_accepted_sdk_recovery import safe_extract_zip; from pathlib import Path; import sys; safe_extract_zip(Path(sys.argv[1]),Path(sys.argv[2]))' "$RUNNER_TEMP/$item.zip" "$RUNNER_TEMP/$item"
+          done
+          python3 "$controller/verify_accepted_sdk_recovery.py" device-archive \
+            --artifact-dir "$RUNNER_TEMP/device" --source-sha "$APP_SOURCE_SHA" \
+            --version "$APP_VERSION" --build "$APP_BUILD" \
+            --extract-dir "$RUNNER_TEMP/DevicePayload" --report "$RUNNER_TEMP/device-archive-verification.json"
+          test "$(shasum -a 256 "$RUNNER_TEMP/device/accepted-sdk-device-recovery.zip" | cut -d ' ' -f 1)" = 0e2b45887ab0745fbcd582dbb10a43609e68693471254861b3cea61f15efd9c9
+          ditto "$RUNNER_TEMP/DevicePayload/FloeSignedPayload" "$RUNNER_TEMP/FloeSignedPayload"
+          ditto "$RUNNER_TEMP/regression/FloeStable-AppRegressionTests.xcresult" "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult"
+          python3 scripts/verify_app_regression_xcresult.py \
+            --result-bundle "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
+            --summary-output "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt"
+          python3 scripts/prepare_app_store_bundle.py \
+            --app "$RUNNER_TEMP/FloeSignedPayload/Payload/Floe Agent.app" \
+            --report "$RUNNER_TEMP/bundle-normalization.json"
+
+      - name: Generate pinned dependency, license and source scan evidence
+        run: |
+          set -euo pipefail
+          brew install gitleaks syft
+          scripts/pin_check.sh
+          scripts/license_inventory.sh
+          scripts/sbom.sh
+          scripts/secret_scan.sh
+      - name: Package and audit the unsigned developer application
+        id: package
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          app="$RUNNER_TEMP/FloeSignedPayload/Payload/Floe Agent.app"
+          scripts/package_unsigned_ipa.sh "$app" release-assets Floe-Agent-1.7.0-build191-unsigned.ipa
+          cp sbom.spdx.json LICENSES-THIRD-PARTY.md release-assets/
+          cp .gitleaks-report.json release-assets/source-gitleaks-report.json
+          cp "$RUNNER_TEMP/bundle-normalization.json" release-assets/
+          cp "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt" release-assets/
+          printf '%s\n' \
+            'title = "Floe release app scan allowlist"' \
+            '[allowlist]' \
+            'description = "Hash-pinned vendored bundles embedding upstream git SHAs"' \
+            'paths = [' \
+            "  '''codeblitz\\.global-with-react\\.min\\.js'''," \
+            "  '''(^|/)mesh\\.js'''," \
+            ']' > "$RUNNER_TEMP/app-gitleaks.toml"
+          gitleaks dir "$app" --config "$RUNNER_TEMP/app-gitleaks.toml" --redact --report-path release-assets/app-gitleaks-report.json
+          python3 scripts/test_remote_task_cancel.py
+          python3 scripts/test_remote_shell.py
+          scripts/package_remote_agent.sh release-assets 1.4.3
+          python3 - <<'PYCODE'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('release-assets')
+          ipa=root/'Floe-Agent-1.7.0-build191-unsigned.ipa'
+          digest=hashlib.sha256()
+          with ipa.open('rb') as stream:
+              for block in iter(lambda: stream.read(1024*1024),b''): digest.update(block)
+          digest=digest.hexdigest()
+          record={'schemaVersion':1,'sourceCommit':'715cbc42e9402cf5ca691291fed5c201e61cf222',
+                  'sourceTag':'v1.7.0-beta.48','sourceRun':35337960392,
+                  'sourceArtifactID':10544612762,
+                  'sourceArtifactDigest':'d73db7af1378b9773c76ddf14c51c56a4a53b602e8c2f46fe0c5b261fe02d7ff',
+                  'deviceArchiveSHA256':'0e2b45887ab0745fbcd582dbb10a43609e68693471254861b3cea61f15efd9c9',
+                  'packagingController':os.environ['GITHUB_SHA'],'packagingRun':int(os.environ['GITHUB_RUN_ID']),
+                  'toolchain':'Xcode 26.6 (17F113)','appRebuilt':False,'unsigned':True,
+                  'ipaName':ipa.name,'ipaSHA256':digest,'ipaBytes':ipa.stat().st_size,
+                  'testflightUploadRun':35347141494,'testflightVerificationRun':35351900047,
+                  'fullUIAcceptance':False,'waivedUITestFailures':3}
+          (root/'BUILD191-RECOVERY-PROVENANCE.json').write_text(json.dumps(record,indent=2)+'\n')
+          PYCODE
+      - name: Attest the developer IPA and its exact-source recovery record
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            ${{ steps.package.outputs.ipa_path }}
+            FloeAgent/release-assets/BUILD191-RECOVERY-PROVENANCE.json
+      - name: Preserve developer assets before publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-ipa-recovered-1.7.0-build191
+          path: FloeAgent/release-assets/
+          if-no-files-found: error
+      - name: Publish the separately verified developer prerelease
+        run: |
+          set -euo pipefail
+          notes="$GITHUB_WORKSPACE/recovery-controller/docs/RELEASE_NOTES_1.7.0_BUILD_191.md"
+          test -s "$notes"
+          grep -q '^## 简体中文' "$notes"
+          grep -q '^## English' "$notes"
+          # Never replace assets under an already published release.
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; preserve it and inspect before publication.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --prerelease --latest=false --title 'Floe Agent 1.7.0 (build 191)' --notes-file "$notes"

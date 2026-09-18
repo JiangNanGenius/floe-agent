@@ -58,9 +58,16 @@ jobs:
           assert expected == digest.hexdigest(), 'Published IPA checksum mismatch'
           (folder / 'ipa-path.txt').write_text(str(ipa))
           PY
-          gh attestation verify "$(cat "$RUNNER_TEMP/FeatherInput/ipa-path.txt")" \
-            --repo "$GH_REPO" --source-digest "$(cat "$RUNNER_TEMP/feather-source-sha.txt")" \
-            --signer-workflow "$GH_REPO/.github/workflows/release-unsigned-ipa.yml"
+          recovery=()
+          trust=FloeAgent/scripts/feather_recovery_trust.json
+          if jq -e --arg tag "$RELEASE_TAG" 'has($tag)' "$trust" >/dev/null; then
+            gh release download "$RELEASE_TAG" --pattern BUILD191-RECOVERY-PROVENANCE.json --dir "$RUNNER_TEMP/FeatherInput"
+            recovery=(--provenance "$RUNNER_TEMP/FeatherInput/BUILD191-RECOVERY-PROVENANCE.json")
+          fi
+          python3 FloeAgent/scripts/verify_feather_provenance.py \
+            --ipa "$(cat "$RUNNER_TEMP/FeatherInput/ipa-path.txt")" \
+            --tag "$RELEASE_TAG" --source-sha "$(cat "$RUNNER_TEMP/feather-source-sha.txt")" \
+            --trust "$trust" "${recovery[@]}"
       - name: Generate source from verified binary metadata
         run: |
           set -euo pipefail
