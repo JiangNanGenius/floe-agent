@@ -224,13 +224,12 @@
     }
   },
   "appleProcessing": {
-    "appleUploadID": "637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9",
-    "appleState": "PROCESSING",
-    "appleErrors": [],
-    "appleWarnings": [],
-    "appleCheckedAt": "2026-09-18T13:27:47Z",
-    "appleDiscoveryRun": 35350326982,
-    "appleBuildID": null,
-    "floeQAInstallability": "not_yet_verified"
+    "appleBuildID": "637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9",
+    "appleState": "VALID",
+    "expired": false,
+    "internalBetaState": "IN_BETA_TESTING",
+    "group": "Floe QA",
+    "verificationRun": 35351900047,
+    "checkedAt": "2026-09-18T13:43:41Z"
   }
 }

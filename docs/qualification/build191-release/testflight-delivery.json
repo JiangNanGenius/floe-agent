@@ -11,13 +11,24 @@
   "bundleID": "org.floeagent.ios",
   "toolchain": "17F113",
   "appleUploadID": "637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9",
-  "appleState": "PROCESSING",
+  "appleState": "VALID",
   "appleErrors": [],
   "appleWarnings": [],
-  "appleCheckedAt": "2026-09-18T13:27:47Z",
-  "appleDiscoveryRun": 35350326982,
-  "appleBuildID": null,
-  "floeQAInstallability": "not_yet_verified",
+  "appleCheckedAt": "2026-09-18T13:43:41Z",
+  "appleDiscoveryRun": 35351702764,
+  "appleBuildID": "637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9",
+  "floeQAInstallability": "confirmed",
   "fullUIAcceptance": false,
-  "waivedUITestFailures": 3
+  "waivedUITestFailures": 3,
+  "betaNotesPreparationRun": 35351790012,
+  "installabilityVerificationRun": 35351900047,
+  "expired": false,
+  "betaGroup": "Floe QA",
+  "betaGroupCount": 1,
+  "unexpectedBetaGroupCount": 0,
+  "internalBetaState": "IN_BETA_TESTING",
+  "betaNotesVerified": [
+    "en-US",
+    "zh-Hans"
+  ]
 }

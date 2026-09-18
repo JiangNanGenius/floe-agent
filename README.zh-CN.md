@@ -34,7 +34,7 @@ Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音�
 
 [Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
 
-**Build191（`v1.7.0-beta.48`，源码 `715cbc42`）已上传内部 TestFlight。** [成功的恢复上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/35347141494)复用固定源码工件，没有重编译。2026-09-18 13:27UTC，Apple 返回 PROCESSING，无错误或警告；Floe QA 可安装状态仍待确认。两个 SDK 的应用回归各通过 204/204，iPad、iPhone 手记组件各通过 101/101。三项界面失败均经用户明确同意先行内部真机测试，原失败证据保留，不代表完整验收通过。[当前证据](docs/qualification/build191-release/README.md)、[已留存封面截图](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png)。Office 封面可能是带标识的内容摘要，并非原始页面排版；本地模型与原生 Office/Pencil 的真机验收仍由测试者完成。
+**Build191（`v1.7.0-beta.48`，源码 `715cbc42`）已在内部 TestFlight（Floe QA）可安装。** [成功的恢复上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/35347141494)复用固定源码工件，没有重编译。2026-09-18 13:43UTC 已核实 Apple VALID、未过期、Floe QA 私有内部组和 IN_BETA_TESTING；中英文测试说明均已保存。两个 SDK 的应用回归各通过 204/204，iPad、iPhone 手记组件各通过 101/101。三项界面失败均经用户明确同意先行内部真机测试，原失败证据保留，不代表完整验收通过。[当前证据](docs/qualification/build191-release/README.md)、[已留存封面截图](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png)。Office 封面可能是带标识的内容摘要，并非原始页面排版；本地模型与原生 Office/Pencil 的真机验收仍由测试者完成。
 
 环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
 

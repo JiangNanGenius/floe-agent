@@ -118,3 +118,15 @@ restores Unix executable permissions during safe ZIP extraction. Its68 recovery
 tests passed; the original191 archive was also verified directly (18,922
 entries, App/extension executables0755). The local regenerated extraction was
 removed afterward; original recovery, signed delivery and failure evidence remain.
+
+## Internal TestFlight available — 13:43UTC
+
+Apple build `637ae05c-88f1-47b8-8f85-dd6fc6c9b2a9` is VALID and unexpired.
+[Preparation35351790012](https://github.com/JiangNanGenius/floe-agent/actions/runs/35351790012)
+read back both en-US and zh-Hans test notes and the existing private Floe QA
+group. [Verification35351900047](https://github.com/JiangNanGenius/floe-agent/actions/runs/35351900047)
+confirmed exactly that one internal group, no unexpected groups, and
+IN_BETA_TESTING. Build1.7.0(191) is available to authorized internal testers.
+The three waived UI failures are still failures; device acceptance belongs to
+the user. No public Beta review or production submission occurred.
+GitHub prerelease, Feather and main integration remain separate pending work.

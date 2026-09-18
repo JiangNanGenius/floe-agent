@@ -1,6 +1,6 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (191) — uploaded; Apple processing
+## Current internal delivery: 1.7.0 (191) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.48`, source `715cbc42e9402cf5ca691291fed5c201e61cf222`.
 User explicitly authorized internal delivery despite the two SDK27 UI failures:
@@ -16,8 +16,11 @@ Controller6f6df7a3 fixes that parser and preserves executable permissions;
 the real saved artifact was verified locally and its disposable extraction
 removed. Retry35347141494 successfully signed and uploaded source-run35337960392's
 saved device artifact without an App rebuild. Discovery35350326982 at
-2026-09-18 13:27UTC confirms191 PROCESSING, no errors/warnings, no build ID yet.
-Apple VALID/unexpired and Floe QA IN_BETA_TESTING remain pending. See
+2026-09-18 13:27UTC confirmed191 PROCESSING. Discovery35351702764 subsequently
+returned VALID. Preparation35351790012 saved and read back both test-note
+languages and Floe QA. Verification35351900047 at13:43UTC confirmed VALID,
+unexpired, exactly one private Floe QA group and IN_BETA_TESTING. Build191 is
+available to internal testers. See
 [delivery metadata](qualification/build191-release/testflight-delivery.json). Builds188–190 did not upload; their failures and recovery packages are
 retained in their qualification records. No public Beta submission is included.
 
