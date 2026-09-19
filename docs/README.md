@@ -10,10 +10,13 @@
 
 **Build 196 已在内部 Floe QA TestFlight 可安装**（Apple buildID `27355e88…`，`VALID`／未过期／唯一私有 Floe QA 组／`IN_BETA_TESTING`，2026-09-19 02:24 UTC 核实；中英文测试说明已读回）。Build 192/193 编译失败；Build 194/195 被 Apple 接受但从未发布；四个标签均作为证据保留，194–196 的 App 源码相同。工作区包含 191 反馈修复，[Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_196.json)已附加到该构建。本构建内置的签名目录已包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
 
+**Build 197（1.7.0，候选 `v1.7.0-beta.54`，标签尚未创建）为下一发布候选**：功能实现范围 `1cff5665..11681a0f`（8 个功能提交；最终冻结提交另记于发布证据），覆盖思维导图触摸新增节点、视频公开候选自动选择与方舟凭据修复、跨 run 工具上下文恢复与持久摘要脱敏、执行环境真实版本与 APT 工具路由、妙控键盘 Return 发送／Shift+Return 换行、Office 首次预览／第二次编辑与新建直编、IDE 内嵌／Git／分享／文件管理直达／Pencil／远端快照只读，并移除画布无效的“加入画布”入口。[Build 197 发布说明](RELEASE_NOTES_1.7.0_BUILD_197.md)与 [TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_197.json)仅记录已通过的轻量校验（Swift parse、Office 嵌入适配器 2 项、Office ink bridge 4 项、只读权限 6 项夹具、notes bridge 5 项、Office mode-memory 独立 smoke、xcodegen）；App 云端编译与真机验收待后续，本地 Qwen/GDN 首次消息崩溃仍待真机确认（尚未证实修复）。
+
 | 文档 | 阅读目的 |
 |---|---|
 | [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
 | [本地模型/视频/工具上下文修复（2026-09-19）](FLOE_LOCAL_VIDEO_TOOLCHAIN_REPAIR_2026-09-19.md) | 本地聊天取消竞态、公开视频候选选择、工具证据回灌的根因、改动与待真机项 |
+| [Build 197 发布说明](RELEASE_NOTES_1.7.0_BUILD_197.md) | 下一候选（`v1.7.0-beta.54` 标签尚未创建）：已实现行为、轻量校验清单与待真机项；App 云编译待后续 |
 | [Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（已交付内部 Floe QA；192/193 编译失败、194/195 上传未发布记录见各自说明） |
 | [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 本轮改动、已验证范围与发布状态 |
 | [当前手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
@@ -54,6 +57,7 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
+- [RELEASE_NOTES_1.7.0_BUILD_197.md](RELEASE_NOTES_1.7.0_BUILD_197.md) — 下一候选（1.7.0/197，`v1.7.0-beta.54` 标签尚未创建；仅轻量校验，未编译未上传）
 - [RELEASE_NOTES_1.7.0_BUILD_196.md](RELEASE_NOTES_1.7.0_BUILD_196.md) — 下一候选的完整说明（已冻结；发布工作流在冻结提交创建标签并上传，191 交付记录保持原样）
 - [RELEASE_NOTES_1.7.0_BUILD_195.md](RELEASE_NOTES_1.7.0_BUILD_195.md) — 已上传但未发布（GitHub 工件服务故障丢失 TestFlight 证据；App 源码与 196 相同；标签不动）
 - [RELEASE_NOTES_1.7.0_BUILD_194.md](RELEASE_NOTES_1.7.0_BUILD_194.md) — 已上传但未发布（发布工作流验证调用缺陷；App 源码与 195 相同；标签不动）
