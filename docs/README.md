@@ -8,12 +8,12 @@
 
 当前内部 TestFlight 为 **1.7.0（191）**，已核实 Apple VALID、未过期及 Floe QA 可测试。[beta.48](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.48) 开发者包与 [Feather 源](FEATHER_SOURCE.md)均已发布；三项界面失败仅获内部测试豁免。完整包/模型、RDP App 集成和部分真机验收仍未完成。[191交付证据](qualification/build191-release/README.md)，历史记录保持原结论。
 
-**Build 194 为已冻结的下一候选**：发布工作流在冻结提交创建标签 `v1.7.0-beta.51`，用验收上传 SDK 只构建一次并上传内部 TestFlight；Apple 处理、Floe QA 可见性和中英文测试说明由上传后核验记录。Build 192（`v1.7.0-beta.49`）与 Build 193（`v1.7.0-beta.50`）冻结后均在验收上传 SDK 编译失败（区域隔离错误，随后是 7 个 App 目标错误），未上传，两个标签作为失败记录保留。工作区包含 191 反馈修复，[Build 194 发布说明](RELEASE_NOTES_1.7.0_BUILD_194.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_194.json)在 `prepare-testflight` 阶段附加到上传的构建。本构建内置的签名目录已包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
+**Build 195 为已冻结的下一候选**：发布工作流在冻结提交创建标签 `v1.7.0-beta.52`，用验收上传 SDK 只构建一次并上传内部 TestFlight；Apple 处理、Floe QA 可见性和中英文测试说明由上传后核验记录。Build 192（`v1.7.0-beta.49`）与 Build 193（`v1.7.0-beta.50`）在验收上传 SDK 编译失败、未上传；Build 194（`v1.7.0-beta.51`）构建并上传成功，但发布步骤命中工作流缺陷、未发布；三个标签均作为证据保留。工作区包含 191 反馈修复，[Build 195 发布说明](RELEASE_NOTES_1.7.0_BUILD_195.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_195.json)在 `prepare-testflight` 阶段附加到上传的构建。本构建内置的签名目录已包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
 
 | 文档 | 阅读目的 |
 |---|---|
 | [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
-| [Build 194 发布说明](RELEASE_NOTES_1.7.0_BUILD_194.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（已冻结，发布工作流创建标签并上传；192/193 编译失败记录见各自说明） |
+| [Build 195 发布说明](RELEASE_NOTES_1.7.0_BUILD_195.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（已冻结，发布工作流创建标签并上传；192/193 编译失败、194 上传未发布记录见各自说明） |
 | [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 本轮改动、已验证范围与发布状态 |
 | [当前手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
 | [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 本轮改动与分发前剩余工作 |
@@ -52,7 +52,8 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_194.md](RELEASE_NOTES_1.7.0_BUILD_194.md) — 下一候选的完整说明（已冻结；发布工作流在冻结提交创建标签并上传，191 交付记录保持原样）
+- [RELEASE_NOTES_1.7.0_BUILD_195.md](RELEASE_NOTES_1.7.0_BUILD_195.md) — 下一候选的完整说明（已冻结；发布工作流在冻结提交创建标签并上传，191 交付记录保持原样）
+- [RELEASE_NOTES_1.7.0_BUILD_194.md](RELEASE_NOTES_1.7.0_BUILD_194.md) — 已上传但未发布（发布工作流验证调用缺陷；App 源码与 195 相同；标签不动）
 - [RELEASE_NOTES_1.7.0_BUILD_193.md](RELEASE_NOTES_1.7.0_BUILD_193.md) — 第二次冻结的失败记录（7 个 App 目标编译错误，未上传；标签不动）
 - [RELEASE_NOTES_1.7.0_BUILD_192.md](RELEASE_NOTES_1.7.0_BUILD_192.md) — 首次冻结的失败记录（验收上传 SDK 编译区域隔离错误，未上传；标签不动）
 - `RELEASE_VERIFICATION_<版本>.md`、`TESTFLIGHT_<版本>.md` — 对应核验与上传记录

@@ -1,16 +1,7 @@
-# Floe Agent 1.7.0 (194) / beta.51 — frozen internal-testing candidate
+# Floe Agent 1.7.0 (195) / beta.52 — frozen internal-testing candidate
 
-> **Status: uploaded, not published.** The accepted-SDK App compiled once, the
-> unsigned IPA and matching private symbols were retained before signing, and
-> TestFlight accepted run 35405286912's upload. The publish job then failed on a
-> release-workflow defect: the retained-artifact verifier was called without the
-> artifact zip or extracted paths, which it always rejects. The immutable tag
-> `v1.7.0-beta.51` remains at `b1e1bbdd` as the uploaded-but-unpublished record.
-> Build 195 (`v1.7.0-beta.52`) carries the workflow fix with identical App source
-> and proceeds to the GitHub/Feather publication.
-
-Build 194 carries the build 191 feedback repair plus the accepted-SDK compile
-fixes for the two earlier freezes, none of which uploaded:
+Build 195 carries the build 191 feedback repair, the accepted-SDK compile fixes
+for the first two freezes, and the release-workflow publish fix for the third:
 
 - build 192 (`v1.7.0-beta.49` at `1dc6577a`) stopped in `FloeLocalModels/MLXTextEngine.swift`
   with a Swift 6 region-isolation error ("sending 'input' risks causing data races");
@@ -19,12 +10,18 @@ fixes for the two earlier freezes, none of which uploaded:
   `BackgroundRunCoordinator`, a non-exhaustive `ShellRunOutcome` switch in
   `FloeShellCommands`, an isolated `Identifiable` conformance in `IDEWorkspaceTabs`, an
   optional `Bool?` permission probe and two invalid `CocoaError` codes in
-  `OfficeDocumentEditorView`.
+  `OfficeDocumentEditorView`;
+- build 194 (`v1.7.0-beta.51` at `b1e1bbdd`) **built and uploaded successfully** — the
+  accepted-SDK App compiled once, the unsigned IPA and matching private symbols were
+  retained before signing, and TestFlight accepted the upload. Its publish job then hit a
+  release-workflow defect: the retained-artifact verifier was called without the artifact
+  zip or extracted paths, which it always rejects. The App source of build 194 and build
+  195 is identical; only the release pipeline changed.
 
-Both immutable tags and their failure evidence stay recorded. Build 194 applies
-those fixes and is the candidate that proceeds.
+All three immutable tags and their failure evidence stay recorded. Build 195 applies
+the workflow fix and is the candidate that proceeds.
 
-The release pipeline creates the reserved tag `v1.7.0-beta.51` at the frozen
+The release pipeline creates the reserved tag `v1.7.0-beta.52` at the frozen
 commit this document ships in, performs the **single** accepted-upload-SDK App
 build (Xcode 26.6 / 17F113), and retains the unsigned device IPA with its matching
 private symbols **before** signing or upload; reuse of a retained exact artifact is

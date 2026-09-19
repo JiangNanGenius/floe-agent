@@ -67,6 +67,28 @@ are performed by the release workflow at the frozen commit; Apple processing and
 Floe QA visibility are verified separately before this build is called
 installable.
 
+## Uploaded but unpublished: 1.7.0 (194)
+
+Tag `v1.7.0-beta.51` is fixed at `b1e1bbdd81c9a04654c531fcaf95a12b74194b0f`.
+[Run 35405286912](https://github.com/JiangNanGenius/floe-agent/actions/runs/35405286912)
+completed the single accepted-SDK App compile, retained the unsigned IPA and its
+matching private symbols before signing, and TestFlight accepted the upload. The
+`lean-publish` job then failed on a release-workflow defect: the retained-artifact
+verifier was invoked without the artifact zip or explicit extracted paths, which
+it always rejects, so no attestation, GitHub prerelease or Feather publication
+exists for this tag. The build was not prepared for the Floe QA group and is not
+the deliverable; the immutable tag is retained as the uploaded-but-unpublished
+record.
+
+## Preparing: 1.7.0 (195)
+
+Build 195 carries the same App source as build 194 plus the release-workflow
+publish fix (artifact id resolved from GitHub's payload; the single verifier call
+passes the artifact zip and extraction directory) and a regression test for the
+step. The single accepted-SDK App build and internal TestFlight upload are
+performed by the release workflow at the frozen commit; Apple processing and Floe
+QA visibility are verified separately before this build is called installable.
+
 ## Preparing: 1.7.0 (188)
 
 Build188 keeps the IDE service-owned CI recovery/polling work and repairs Notes

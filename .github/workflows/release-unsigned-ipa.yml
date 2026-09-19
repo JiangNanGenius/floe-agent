@@ -1694,9 +1694,13 @@ jobs:
             --version "$VERSION" --build "$BUILD" --toolchain "$REQUIRED_TOOLCHAIN"
             --expect-testflight-accepted --require-symbols-artifact
           )
-          python3 FloeAgent/scripts/verify_direct_unsigned_artifact.py "${verify_args[@]}" "${running[@]}" "${evidence[@]}" \
-            --report "$ARTIFACTS/metadata.json" > /dev/null
-          ARTIFACT_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifactId"])' "$ARTIFACTS/metadata.json")"
+          # The verifier accepts either explicit extracted paths or the artifact
+          # zip with its extraction directory; it deliberately refuses a bare
+          # metadata-only call. Resolve the single live artifact id from GitHub's
+          # payload here, then run the one full verification below, which
+          # re-selects the same artifact and binds its digest.
+          ARTIFACT_ID="$(jq -r --arg n "$ARTIFACT_NAME" '[.artifacts[] | select(.name == $n and (.expired | not))] | if length == 1 then .[0].id else empty end' "$ARTIFACTS/artifacts.json")"
+          test -n "$ARTIFACT_ID"
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$ARTIFACTS/artifact.zip"
           python3 FloeAgent/scripts/verify_direct_unsigned_artifact.py "${verify_args[@]}" "${running[@]}" "${evidence[@]}" \
             --artifact-zip "$ARTIFACTS/artifact.zip" --extract-dir "$ARTIFACTS/extracted" \
@@ -1865,7 +1869,6 @@ jobs:
           name: lean-release-${{ needs.lean-source.outputs.version }}-build${{ needs.lean-source.outputs.build }}
           path: |
             ${{ runner.temp }}/LEAN-RELEASE-EVIDENCE.txt
-            ${{ runner.temp }}/DirectArtifact/metadata.json
             ${{ runner.temp }}/DirectArtifact/verification.json
             ${{ runner.temp }}/lean-publish-preflight.out
           if-no-files-found: ignore

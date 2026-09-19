@@ -222,6 +222,22 @@ class LeanPublishPolicyTests(unittest.TestCase):
             self.publish)
         self.assertIn('actions/attest-build-provenance@', self.publish)
 
+    def test_retained_artifact_verification_always_passes_extraction_paths(self):
+        # The verifier refuses a bare metadata-only call ("Provide either
+        # --artifact-zip with --extract-dir or explicit extracted paths"), which
+        # the first lean release hit after its TestFlight upload had already been
+        # accepted. Resolve the artifact id from GitHub's payload instead and
+        # keep exactly one verifier invocation, the full zip verification.
+        fetch = self.steps['Download, digest and verify the retained unsigned IPA']['run']
+        invocations = fetch.split(
+            'python3 FloeAgent/scripts/verify_direct_unsigned_artifact.py')[1:]
+        self.assertEqual(len(invocations), 1, invocations)
+        self.assertIn('--artifact-zip "$ARTIFACTS/artifact.zip"', invocations[0])
+        self.assertIn('--extract-dir "$ARTIFACTS/extracted"', invocations[0])
+        self.assertNotIn('metadata.json', fetch)
+        self.assertIn('ARTIFACT_ID="$(jq -r', fetch)
+        self.assertIn("select(.name == $n and (.expired | not))", fetch)
+
     def test_publish_is_idempotent_and_never_clobbers(self):
         self.assertIn('gh release view "$RELEASE_TAG"', self.publish)
         self.assertIn('--verify-tag --prerelease --latest=false', self.publish)
