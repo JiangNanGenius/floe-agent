@@ -12,6 +12,14 @@ struct SourceControlChangeTreeNode: Identifiable, Equatable {
     let children: [SourceControlChangeTreeNode]
 
     var isFolder: Bool { change == nil }
+
+    /// `OutlineGroup` requires an optional child collection key path and
+    /// treats `nil` as a leaf. The tree model keeps its non-optional
+    /// `children`; this projection only fails to `nil` where there is nothing
+    /// to disclose.
+    var outlineChildren: [SourceControlChangeTreeNode]? {
+        children.isEmpty ? nil : children
+    }
 }
 
 /// Builds the nested, directory-grouped change tree shown in the source
@@ -290,7 +298,7 @@ struct SourceControlView: View {
 
             if !stagedChanges.isEmpty {
                 Section("已暂存（\(stagedChanges.count)）") {
-                    OutlineGroup(SourceControlChangeTree.build(stagedChanges), children: \.children) { node in
+                    OutlineGroup(SourceControlChangeTree.build(stagedChanges), children: \.outlineChildren) { node in
                         changeNodeRow(node, staged: true)
                     }
                 }
@@ -300,7 +308,7 @@ struct SourceControlView: View {
                 if unstagedChanges.isEmpty {
                     Text("工作区干净").foregroundStyle(.secondary)
                 } else {
-                    OutlineGroup(SourceControlChangeTree.build(unstagedChanges), children: \.children) { node in
+                    OutlineGroup(SourceControlChangeTree.build(unstagedChanges), children: \.outlineChildren) { node in
                         changeNodeRow(node, staged: false)
                     }
                 }
