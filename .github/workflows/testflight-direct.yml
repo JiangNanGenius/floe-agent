@@ -167,8 +167,11 @@ jobs:
           python3 scripts/tests/test_dash_framework_provenance.py
           # Keep the complete build output and an xcresult on disk regardless
           # of outcome: GitHub truncates oversized single-step web logs, which
-          # hid the exact compiler diagnostics of the build 202 failure. The
-          # step still exits with the real xcodebuild status (pipefail).
+          # hid the exact compiler diagnostics of the build 202 failure. A
+          # failed rebuild prints the diagnostics and exits with the real
+          # xcodebuild status (pipefail) inside the failure branch only; a
+          # successful rebuild falls through to the STABLE_APP_PATH check and
+          # FloeSignedPayload preparation below instead of exiting early.
           BUILD_LOG="$RUNNER_TEMP/rebuild-xcodebuild.log"
           XCRESULT="$RUNNER_TEMP/FloeRebuild.xcresult"
           set +e
@@ -197,8 +200,8 @@ jobs:
             echo "::group::xcodebuild log tail"
             tail -n 120 "$BUILD_LOG" || true
             echo "::endgroup::"
+            exit "$build_status"
           fi
-          exit "$build_status"
           STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$STABLE_APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP_PATH/Info.plist")" = org.floeagent.ios
