@@ -317,8 +317,7 @@ public actor LocalModelRuntime {
             // cleanup. Unload, reclaim, recreate, and run the generation once
             // more. Cancellation and every other error keep the single
             // user-visible failure path below.
-            if lifecycle.decodeRetryCount == 0, Self.isRetriableDecodeFailure(error),
-               let current = prepared {
+            if Self.isRetriableDecodeFailure(error), let current = prepared {
                 lifecycle.recordDecodeRetry()
                 lifecycle.log(
                     "decodeRetryScheduled",

@@ -257,7 +257,6 @@ struct LocalModelLifecycleTests {
     @available(macOS 15.4, iOS 26.0, *)
     func persistentDecodeFailureThenRecovery() async throws {
         let harness = Harness(memorySamples: [4_000_000_000, 4_000_000_000])
-        let failing = Locked(true)
         let factory = harness.factory
         let runtime = LocalModelRuntime(
             store: LocalModelStore(root: harness.snapshotRoot),
@@ -273,15 +272,15 @@ struct LocalModelLifecycleTests {
             preflightSettleSamples: 3,
             preflightSettleInterval: .milliseconds(1)
         )
-        // Schedule the persistent decode failure on both the first engine and
-        // the retry engine; the flag flips the behavior for later makes.
-        let decodeFailure: FakeEngine.Behavior = { engine in
-            if failing.value { throw LocalInferenceError.decodeFailed }
-            return try FakeEngine.success(text: "clean retry")(engine)
+        // Turn one fails on both attempts. Turn two also fails on its first
+        // engine and must receive its own single transparent retry.
+        let decodeFailure: FakeEngine.Behavior = { _ in
+            throw LocalInferenceError.decodeFailed
         }
         factory.scheduleBehavior(decodeFailure, forMakeIndex: 1)
         factory.scheduleBehavior(decodeFailure, forMakeIndex: 2)
         factory.scheduleBehavior(decodeFailure, forMakeIndex: 3)
+        factory.scheduleBehavior(FakeEngine.success(text: "clean retry"), forMakeIndex: 4)
         // Turn 1: decode keeps failing (first engine + one transparent retry).
         await #expect(throws: LocalInferenceError.self) {
             try await runtime.completeMeasured(
@@ -298,16 +297,17 @@ struct LocalModelLifecycleTests {
         var lifecycle = await runtime.lifecycleDiagnostics()
         #expect(lifecycle.decodeRetryCount == 1)
         #expect(lifecycle.consecutiveFailureCount == 1)
-        // The runtime is not permanently broken: with the engine healthy and
-        // memory recovered, the next turn loads and finishes cleanly.
-        failing.value = false
+        // The runtime is not permanently broken: the next turn gets an
+        // independent retry budget and finishes cleanly.
         let result = try await runtime.completeMeasured(
             modelID: modelID, instructions: "i", prompt: "turn two",
             images: [], tools: [], maxTokens: 32
         )
         #expect(result.text == "clean retry")
+        #expect(factory.created.count == 4)
         #expect(await runtime.currentLoadState() == .unloaded)
         lifecycle = await runtime.lifecycleDiagnostics()
+        #expect(lifecycle.decodeRetryCount == 2)
         #expect(lifecycle.consecutiveFailureCount == 0)
     }
 
