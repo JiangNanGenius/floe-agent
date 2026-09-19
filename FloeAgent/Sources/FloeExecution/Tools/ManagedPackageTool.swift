@@ -33,7 +33,7 @@ public struct ManagedPackageTool: AgentTool {
 
     public static let name = "apt"
     public static let toolDescription =
-        "Manage Floe capabilities with apt-like actions. `search`/`show`/`list` are read-only catalog queries. `install` acquires a capability through its reviewed primitive (managed pure-Python packages, workflow guides, fonts, local models, data-only .deb payloads, sandboxed WASM commands); `purpose` is required for anything downloaded. `remove` uninstalls a managed package (bundled packages cannot be removed). `download` fetches a catalog artifact to the workspace without installing it. Native binaries never run on iOS: data-only .deb extraction uses `dpkg -x`, and executable payloads must use an approved remote host."
+        "Manage Floe capabilities with apt-like actions. `search`/`show`/`list` are read-only catalog queries. `install` acquires a capability through its reviewed primitive (managed pure-Python packages, workflow guides, fonts, local models, data-only .deb payloads, sandboxed WASM commands); `purpose` is required for anything downloaded. `remove` uninstalls a managed package (bundled packages cannot be removed). `download` fetches a catalog artifact to the workspace without installing it. Entries whose line carries `route=` show the only reviewed route: `direct` bundled shell commands are already available, `floe-precompiled` waits for a signed WASI artifact, `remote` runs only on a paired host, and `unsupported` must not be attempted; `installable=false` means install will refuse. Native binaries never run on iOS: data-only .deb extraction uses `dpkg -x`, and executable payloads must use an approved remote host."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "action":{"type":"string","enum":["search","list","show","install","remove","download"]},
@@ -159,6 +159,11 @@ public struct ManagedPackageTool: AgentTool {
         if let spec = entry.spec { parts.append("spec=\(spec)") }
         if let size = entry.sizeBytes { parts.append("bytes=\(size)") }
         parts.append("installed=\(installed)")
+        if let route = entry.route {
+            parts.append("route=\(route.rawValue)")
+            if let local = entry.localRoute { parts.append("local=\(local.rawValue)") }
+            parts.append("installable=\(entry.installable ?? false)")
+        }
         parts.append("summary=\(entry.summary)")
         return parts.joined(separator: " ")
     }

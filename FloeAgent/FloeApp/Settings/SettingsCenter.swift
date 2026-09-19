@@ -13,6 +13,8 @@
 import Foundation
 import SwiftUI
 import FloeCore
+import FloeEnvironments
+import FloeExecution
 import FloeModels
 import FloePersistence
 import FloeSecurity
@@ -87,6 +89,10 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var localPythonCapability: CapabilityState = .unknown
     @Published private(set) var nodeCapability: CapabilityState = .unknown
     @Published private(set) var remotePythonCapability: CapabilityState = .unknown
+    /// Real runtime versions with their source, availability and update route.
+    /// Built on every load from probes, the verified signed catalog and layer
+    /// manifests; never persisted and never decorated with placeholder values.
+    @Published private(set) var runtimeInventory: [RuntimeInventoryEntry] = []
     @Published private(set) var remoteHostCount = 0
     @Published private(set) var activeRemoteSessionCount = 0
 
@@ -191,6 +197,8 @@ final class SettingsCenter: ObservableObject {
         // Real remote-Python probe from FloeExecution (wired in
         // AppEnvironment); replaces the always-unavailable placeholder.
         async let remotePython = environment.remotePythonProbe.probe()
+        async let signedRuntimes = Self.signedRuntimePackages()
+        async let layerPackages = FloePlatformServices.shared.installedLayerPackages()
         async let iCloud = ICloudStatusProbe().probe()
         async let keychain = KeychainProbe(keychain: environment.keychain).probe()
         async let version = (try? environment.database.userVersion()) ?? 0
@@ -205,10 +213,22 @@ final class SettingsCenter: ObservableObject {
         savedGrants = await grants
         memoryGrants = await memory
         workspaces = await workspacesResult
-        jsCapability = await js
-        localPythonCapability = await localPython
-        nodeCapability = await node
-        remotePythonCapability = await remotePython
+        let jsState = await js
+        let localPythonState = await localPython
+        let nodeState = await node
+        let remotePythonState = await remotePython
+        jsCapability = jsState
+        localPythonCapability = localPythonState
+        nodeCapability = nodeState
+        remotePythonCapability = remotePythonState
+        runtimeInventory = Self.runtimeInventory(
+            js: jsState,
+            localPython: localPythonState,
+            node: nodeState,
+            remotePython: remotePythonState,
+            signed: await signedRuntimes,
+            layers: await layerPackages
+        )
         iCloudDrive = await iCloud
         keychainState = await keychain
         databaseUserVersion = await version
@@ -242,6 +262,63 @@ final class SettingsCenter: ObservableObject {
         }
         configSyncStatus = await environment.configurationSync.status
         configSyncLastSyncAt = await environment.configurationSync.lastSyncAt
+    }
+
+    // MARK: - Runtime inventory
+
+    /// Verified signed-catalog install state without re-hashing interpreter
+    /// modules on every settings load. Execution still verifies the digest.
+    private static func signedRuntimePackages() async -> [RuntimeInventorySignedPackage] {
+        guard let store = FloeShellCommandRegistry.shared.wasm else { return [] }
+        let installed = await store.installedVersions()
+        return store.catalog.packages.map { entry in
+            RuntimeInventorySignedPackage(
+                id: entry.id,
+                command: entry.command,
+                catalogVersion: entry.version,
+                installedVersion: installed[entry.id]
+            )
+        }
+    }
+
+    /// Package-name prefixes that identify a runtime provided by an
+    /// environment layer rather than the app bundle.
+    private static let projectRuntimePackagePrefixes = [
+        "floe-runtime", "floe-node", "floe-python", "floe-lua", "floe-ruby",
+        "floe-php", "floe-wasm-",
+    ]
+
+    private static func runtimeInventory(
+        js: CapabilityState,
+        localPython: CapabilityState,
+        node: CapabilityState,
+        remotePython: CapabilityState,
+        signed: [RuntimeInventorySignedPackage],
+        layers: [FloePlatformServices.LayerPackageSummary]
+    ) -> [RuntimeInventoryEntry] {
+        let probes: [RuntimeInventoryProbe] = [
+            .init(id: "javascript", displayName: "JavaScript (JavaScriptCore)", source: .bundled, capability: js,
+                  detail: "JavaScriptCore framework"),
+            .init(id: "python", displayName: "Python (CPython)", source: .bundled, capability: localPython,
+                  detail: "Floe bundled CPython"),
+            .init(id: "node", displayName: "Node.js", source: .bundled, capability: node,
+                  detail: "nodejs-mobile runtime (npm/pnpm/yarn bundled)"),
+            .init(id: "python-remote", displayName: "Python (remote host)", source: .remote, capability: remotePython,
+                  detail: "paired SSH host"),
+        ]
+        let project = layers
+            .filter { layer in
+                projectRuntimePackagePrefixes.contains { layer.name.hasPrefix($0) }
+            }
+            .map {
+                RuntimeInventoryLayerPackage(
+                    environmentID: $0.environmentID,
+                    layerKind: $0.layerKind.rawValue,
+                    name: $0.name,
+                    version: $0.version
+                )
+            }
+        return RuntimeInventoryBuilder.build(probes: probes, signed: signed, project: project)
     }
 
     // MARK: - Stored-value mapping
@@ -664,6 +741,9 @@ final class SettingsCenter: ObservableObject {
         lines.append("python_local: \(describe(localPythonCapability))")
         lines.append("node_local: \(describe(nodeCapability))")
         lines.append("python_remote: \(describe(remotePythonCapability))")
+        for entry in runtimeInventory {
+            lines.append("runtime: \(entry.id) source=\(entry.source.rawValue) availability=\(describe(entry.availability)) update=\(describe(entry.update))")
+        }
         lines.append("icloud_drive: \(describe(iCloudDrive))")
         lines.append("keychain: \(describe(keychainState))")
         lines.append("gate_fail_closed: \(gateIsFailClosed)")
@@ -682,6 +762,23 @@ final class SettingsCenter: ObservableObject {
         case .available(let version): return "available(\(version))"
         case .unavailable(let reason): return "unavailable(\(reason))"
         case .unknown: return "unknown"
+        }
+    }
+
+    private func describe(_ availability: RuntimeInventoryEntry.Availability) -> String {
+        switch availability {
+        case .available(let version): return "available(\(version))"
+        case .notInstalled: return "not_installed"
+        case .unavailable(let reason): return "unavailable(\(reason))"
+        }
+    }
+
+    private func describe(_ update: RuntimeInventoryEntry.Update) -> String {
+        switch update {
+        case .current: return "current"
+        case .installable(let version): return "installable(\(version))"
+        case .updatable(let installed, let available): return "updatable(\(installed)->\(available))"
+        case .unavailable(let reason): return "unavailable(\(reason))"
         }
     }
 }

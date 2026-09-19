@@ -15,6 +15,8 @@ public struct CapabilityCatalog: Sendable, Decodable {
         case model
         case debData
         case wasmCommand
+        /// A shell/apt tool whose route is reviewed in ToolCapabilityCatalog.
+        case shellTool
     }
 
     public enum Tier: String, Codable, Sendable {
@@ -28,6 +30,10 @@ public struct CapabilityCatalog: Sendable, Decodable {
         case deb
         /// Sandboxed WASM command from the signed catalog.
         case wasm
+        /// Runs only on a paired remote host; never installed locally.
+        case remote
+        /// No Floe route; listed only so attempts fail with the reason.
+        case unsupported
     }
 
     public struct Entry: Codable, Sendable, Identifiable, Hashable {
@@ -45,6 +51,16 @@ public struct CapabilityCatalog: Sendable, Decodable {
         public var sizeBytes: Int?
         public var capabilities: [String]
         public var aliases: [String]
+        /// Present for `shellTool` entries; nil for every other kind.
+        public var route: ToolCapabilityCatalog.Route?
+        /// Present for `shellTool` entries; the tool's local execution route.
+        public var localRoute: ToolCapabilityCatalog.Local?
+        /// Reviewed installability. False for remote/unsupported/pending tools.
+        public var installable: Bool?
+        /// Present for `shellTool` entries with `route == .floePrecompiled`;
+        /// the signed WASI catalog ids whose installed artifact makes the
+        /// tool runnable. Nil for every other route/kind.
+        public var signedCatalogIDs: [String]?
 
         public init(
             id: String,
@@ -59,7 +75,11 @@ public struct CapabilityCatalog: Sendable, Decodable {
             sha256: String? = nil,
             sizeBytes: Int? = nil,
             capabilities: [String] = [],
-            aliases: [String] = []
+            aliases: [String] = [],
+            route: ToolCapabilityCatalog.Route? = nil,
+            localRoute: ToolCapabilityCatalog.Local? = nil,
+            installable: Bool? = nil,
+            signedCatalogIDs: [String]? = nil
         ) {
             self.id = id
             self.kind = kind
@@ -74,6 +94,10 @@ public struct CapabilityCatalog: Sendable, Decodable {
             self.sizeBytes = sizeBytes
             self.capabilities = capabilities
             self.aliases = aliases
+            self.route = route
+            self.localRoute = localRoute
+            self.installable = installable
+            self.signedCatalogIDs = signedCatalogIDs
         }
 
         /// Distribution name for pythonPackage entries (`name==version` → name).
@@ -111,6 +135,34 @@ public struct CapabilityCatalog: Sendable, Decodable {
     }
 
     public func entries(kind: Kind) -> [Entry] { entries.filter { $0.kind == kind } }
+
+    /// Reviewed shell/apt tool routes rendered as catalog entries. Direct
+    /// commands are already available; remote/unsupported/pending artifacts
+    /// stay visible only with `installable=false` so nothing is advertised as
+    /// installable unless it actually installs and runs.
+    public static func shellToolEntries(from tools: ToolCapabilityCatalog) -> [Entry] {
+        tools.tools.map { tool in
+            Entry(
+                id: tool.id,
+                kind: .shellTool,
+                tier: {
+                    switch tool.route {
+                    case .direct: return .bundled
+                    case .floePrecompiled: return .wasm
+                    case .remote: return .remote
+                    case .unsupported: return .unsupported
+                    }
+                }(),
+                summary: tool.localAlternative.map { "\(tool.displayName); local alternative: \($0)" } ?? tool.displayName,
+                capabilities: [],
+                aliases: tool.commands,
+                route: tool.route,
+                localRoute: tool.local,
+                installable: tool.installable,
+                signedCatalogIDs: tool.route == .floePrecompiled ? tool.signedCatalogIDs : nil
+            )
+        }
+    }
 
     /// Loads the manifest shipped in the FloeExecution bundle. An absent or
     /// malformed manifest yields an empty catalog instead of a crash.

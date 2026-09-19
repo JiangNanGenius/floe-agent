@@ -1,0 +1,505 @@
+{
+  "note": "Reviewed tool routes for the Floe shell and apt capability catalog. route=direct means a bundled shell command runs on device; route=floe-precompiled means a signed WASI artifact (not installable until it appears in the signed catalog); route=remote means only a paired remote host with the tool on PATH; route=unsupported means no Floe route exists and it must not be advertised as installable. Verified read-only by `python3 capability-hub/build.py --check-tools`.",
+  "required": [
+    "awk",
+    "bzip2",
+    "cmake",
+    "cmp",
+    "curl",
+    "cut",
+    "diff",
+    "find",
+    "git",
+    "grep",
+    "gzip",
+    "id",
+    "jq",
+    "locale",
+    "make",
+    "openssl",
+    "patch",
+    "pkg-config",
+    "sed",
+    "sqlite3",
+    "tar",
+    "unzip",
+    "wget",
+    "xargs",
+    "xz",
+    "zip"
+  ],
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "awk"
+      ],
+      "displayName": "awk",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist awk -> awk.framework/awk; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/awk",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "basename",
+        "dirname"
+      ],
+      "displayName": "basename / dirname",
+      "evidence": "FloeAgent/FloeApp/Execution/FloeShellCoreUtilities.swift registers POSIX basename/dirname on the app-side shell registry",
+      "fallback": null,
+      "id": "tool/basename-dirname",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "bzip2",
+        "bunzip2"
+      ],
+      "displayName": "bzip2 / bunzip2",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no bzip2 entry; no WASI artifact in pool/manifest.json; remote host only",
+      "fallback": null,
+      "id": "tool/bzip2",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "cmake"
+      ],
+      "displayName": "cmake",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no cmake entry; native build tools are remote-only",
+      "fallback": null,
+      "id": "tool/cmake",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "cut"
+      ],
+      "displayName": "cut",
+      "evidence": "FloeAgent/FloeApp/Execution/FloeShellCoreUtilities.swift registers cut (-c/-f/-d/-s, files or stdin) on the app-side shell registry",
+      "fallback": null,
+      "id": "tool/coreutils-cut",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "id"
+      ],
+      "displayName": "id",
+      "evidence": "FloeAgent/FloeApp/Execution/FloeShellCoreUtilities.swift registers id on the app-side shell registry; it is not in commandDictionary.plist (extraCommandsDictionary.plist is not loaded by the app shell)",
+      "fallback": null,
+      "id": "tool/coreutils-id",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "curl"
+      ],
+      "displayName": "curl",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist curl -> curl_ios.framework/curl_ios; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/curl",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "diff"
+      ],
+      "displayName": "diffutils diff",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist diff -> text.framework/text; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/diffutils",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "cmp"
+      ],
+      "displayName": "diffutils cmp",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no cmp entry; runs only on a paired host with cmp on PATH",
+      "fallback": null,
+      "id": "tool/diffutils-cmp",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "find",
+        "xargs"
+      ],
+      "displayName": "findutils (find, xargs)",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist find -> shell.framework/shell; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/findutils",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "git"
+      ],
+      "displayName": "git CLI",
+      "evidence": "FloeAgent/FloeApp/Execution/FloeShellCommands.swift:286 registers a git stub returning 127",
+      "fallback": null,
+      "id": "tool/git",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "git.* agent tools (libgit2) run locally",
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "grep",
+        "egrep",
+        "fgrep"
+      ],
+      "displayName": "grep / egrep / fgrep",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist grep -> text.framework/text; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/grep",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "gzip",
+        "gunzip"
+      ],
+      "displayName": "gzip / gunzip",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist gzip -> files.framework/files; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/gzip",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "jq"
+      ],
+      "displayName": "jq",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no jq entry; no candidate in pool/manifest.json; remote host only",
+      "fallback": null,
+      "id": "tool/jq",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "python3 json module (bundled CPython)",
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "locale"
+      ],
+      "displayName": "locale",
+      "evidence": "FloeAgent/FloeApp/Execution/FloeShellCoreUtilities.swift registers locale (category report from the shell environment; -a from Locale.availableIdentifiers)",
+      "fallback": null,
+      "id": "tool/locale",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "make"
+      ],
+      "displayName": "make",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no make entry; native build tools are remote-only",
+      "fallback": null,
+      "id": "tool/make",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [],
+      "displayName": "native Linux ELF/Mach-O executables",
+      "evidence": "FloeAgent/Sources/FloeExecution/Packages/CapabilityInstaller.swift:183 refuses executable .deb payloads; use a remote host",
+      "fallback": null,
+      "id": "tool/native-elf",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "unsupported",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "openssl"
+      ],
+      "displayName": "openssl CLI",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no openssl CLI entry; openssl.framework is linked only by curl_ios (FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8)",
+      "fallback": null,
+      "id": "tool/openssl",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "Floe TLS/crypto services and sha256sum (bundled)",
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "patch"
+      ],
+      "displayName": "patch",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no patch entry; no WASI artifact in pool/manifest.json; remote host only",
+      "fallback": null,
+      "id": "tool/patch",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "pkg-config"
+      ],
+      "displayName": "pkg-config",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no pkg-config entry; native build tools are remote-only",
+      "fallback": null,
+      "id": "tool/pkg-config",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": "pool/manifest.json floe-wasm-ripgrep (kind=wasm, status=pending); no signed artifact yet",
+      "available": false,
+      "commands": [
+        "rg"
+      ],
+      "displayName": "ripgrep (rg)",
+      "evidence": "pool/manifest.json line 12 pending ripgrep WASI; FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no rg entry",
+      "fallback": null,
+      "id": "tool/ripgrep",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "grep (bundled)",
+      "route": "floe-precompiled",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "sed"
+      ],
+      "displayName": "sed",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist sed -> text.framework/text; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/sed",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": "pool/manifest.json floe-wasm-sqlite3 (kind=wasm, status=pending); no signed artifact yet",
+      "available": false,
+      "commands": [
+        "sqlite3"
+      ],
+      "displayName": "sqlite3 shell",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no sqlite3 entry; pool/manifest.json line 14 pending SQLite WASI shell",
+      "fallback": "remote",
+      "id": "tool/sqlite3",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "python3 sqlite3 module (bundled CPython)",
+      "route": "floe-precompiled",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "tar"
+      ],
+      "displayName": "tar archive",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist tar -> tar.framework/tar; FloeAgent/ThirdParty/FloeShellEngine/Package.swift:8",
+      "fallback": null,
+      "id": "tool/tar",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": true,
+      "commands": [
+        "true",
+        "false"
+      ],
+      "displayName": "true / false",
+      "evidence": "FloeAgent/FloeApp/Execution/FloeShellCoreUtilities.swift registers true (exit 0) and false (exit 1)",
+      "fallback": null,
+      "id": "tool/true-false",
+      "installable": true,
+      "local": "direct",
+      "localAlternative": null,
+      "route": "direct",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "unzip"
+      ],
+      "displayName": "unzip",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no unzip entry; no WASI artifact in pool/manifest.json; remote host only",
+      "fallback": null,
+      "id": "tool/unzip",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "python3 -m zipfile (bundled CPython)",
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "wget"
+      ],
+      "displayName": "wget",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no wget entry; no WASI artifact in pool/manifest.json; remote host only",
+      "fallback": null,
+      "id": "tool/wget",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "curl (bundled)",
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "xz",
+        "unxz"
+      ],
+      "displayName": "xz / unxz",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no xz entry; no WASI artifact in pool/manifest.json; remote host only",
+      "fallback": null,
+      "id": "tool/xz",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": null,
+      "route": "remote",
+      "signedCatalogIDs": []
+    },
+    {
+      "artifactGap": null,
+      "available": false,
+      "commands": [
+        "zip"
+      ],
+      "displayName": "zip",
+      "evidence": "FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist has no zip entry; no WASI artifact in pool/manifest.json; remote host only",
+      "fallback": null,
+      "id": "tool/zip",
+      "installable": false,
+      "local": "unsupported",
+      "localAlternative": "python3 -m zipfile (bundled CPython)",
+      "route": "remote",
+      "signedCatalogIDs": []
+    }
+  ],
+  "updated": "2026-09-19"
+}

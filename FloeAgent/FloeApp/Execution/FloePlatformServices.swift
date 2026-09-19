@@ -113,6 +113,35 @@ final class FloePlatformServices: @unchecked Sendable {
 
     typealias PackageReport = EnvironmentManagementService.PackageReport
     typealias PackageAction = EnvironmentManagementService.PackageAction
+
+    /// One installed package read straight from an environment layer manifest.
+    struct LayerPackageSummary: Sendable {
+        let environmentID: String
+        let layerKind: LayerKind
+        let name: String
+        let version: String
+    }
+
+    /// Reads only the layer manifests (no file-size walk) for the
+    /// execution-runtime inventory. A missing or malformed manifest is skipped
+    /// instead of guessed; environment reports show the recovery state.
+    func installedLayerPackages() async -> [LayerPackageSummary] {
+        guard let registry = lock.withLock({ registry }) else { return [] }
+        var result: [LayerPackageSummary] = []
+        for record in await registry.all() {
+            guard let root = await registry.layerURL(for: record.id),
+                  let manifest = try? LayerManifest.loadChecked(from: root) else { continue }
+            for package in manifest.packages {
+                result.append(LayerPackageSummary(
+                    environmentID: record.id,
+                    layerKind: package.layer,
+                    name: package.name,
+                    version: package.version
+                ))
+            }
+        }
+        return result
+    }
     private func managementService() throws -> EnvironmentManagementService {
         guard let service = lock.withLock({ management }) else { throw FloeError.invalidConfiguration("Environment service unavailable") }
         return service

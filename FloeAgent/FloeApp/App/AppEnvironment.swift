@@ -110,7 +110,8 @@ final class AppEnvironment: ObservableObject {
         skillInstaller: SkillCenterCapabilityAdapter(center: skillsCenter),
         fontInstaller: FontStoreCapabilityAdapter(store: fontStore),
         modelInstaller: nil,
-        wasmStore: wasmCapabilities
+        wasmStore: wasmCapabilities,
+        toolCatalog: ToolCapabilityCatalog.bundled()
     )
     private let capabilityRoot: URL
     private let wasmCapabilities: SignedWasmCapabilityStore?

@@ -110,6 +110,18 @@ public actor SignedWasmCapabilityStore {
         }.map(\.id)
     }
 
+    /// Cheap install-state projection for the settings inventory: the verified
+    /// activation receipt must match the signed identity and the module must
+    /// stay within its signed size bound. Interpreter-sized modules are not
+    /// re-hashed here; execution verifies the exact SHA-256 before every run.
+    public func installedVersions() -> [String: String] {
+        var result: [String: String] = [:]
+        for entry in catalog.packages where isInstalled(entry) {
+            result[entry.id] = entry.version
+        }
+        return result
+    }
+
     /// Receipt and bounds check without hashing the module. The caller that is
     /// about to execute still verifies the digest exactly once, which matters
     /// for interpreter-class modules of tens of megabytes.

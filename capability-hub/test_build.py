@@ -14,7 +14,7 @@ from unittest import mock
 
 import build
 import stage_artifact
-from build import (MANIFEST, CANDIDATES, catalog_payload, check, place_immutable,
+from build import (MANIFEST, CANDIDATES, catalog_payload, check, check_tools, place_immutable,
                    artifact_bytes, build as build_catalog, entry_limits, sign_catalog,
                    status as catalog_status, validate_candidates, verify_catalog,
                    verify_committed)
@@ -148,6 +148,132 @@ class SigningTests(unittest.TestCase):
         with mock.patch.object(build, 'MANIFEST', manifest):
             with self.assertRaises(Exception):
                 check(base=repo, public_key_path=key_file)
+
+
+def tool_entry(identifier='tool/echo', route='direct', local='direct',
+               available=True, installable=True, commands=('echo',),
+               signed_refs=(), gap=None):
+    return {
+        'id': identifier,
+        'displayName': identifier.rsplit('/', 1)[-1],
+        'commands': list(commands),
+        'route': route,
+        'local': local,
+        'available': available,
+        'installable': installable,
+        'signedCatalogIDs': list(signed_refs),
+        'fallback': None,
+        'artifactGap': gap,
+        'localAlternative': None,
+        'evidence': 'synthetic fixture',
+    }
+
+
+class ToolRouteCatalogTests(unittest.TestCase):
+    """The reviewed shell/apt tool route catalog stays honest and read-only."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.private = Ed25519PrivateKey.generate()
+        self.public = self.private.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def _checkout(self, tools, required=('echo',), signed_ids=('floe/lua',)):
+        # check_tools resolves the app-shipped catalog and the shell sources
+        # from base.parent, so the checkout mirrors the real repo layout:
+        # <root>/checkout holds the hub files, <root>/FloeAgent the app tree.
+        repo = self.root / 'checkout'
+        repo.mkdir(parents=True)
+        (self.root / 'FloeAgent/FloeApp/Resources/Shell').mkdir(parents=True)
+        (self.root / 'FloeAgent/Sources/FloeExecution/Resources').mkdir(parents=True)
+        (self.root / 'FloeAgent/FloeApp/Execution').mkdir(parents=True)
+        catalog = json.dumps(
+            {'schemaVersion': 1,
+             'packages': [{'id': identifier, 'version': '1.0.0', 'command': identifier.rsplit('/', 1)[-1],
+                           'url': f'{build.URL_PREFIX}/{REVISION}/capability-hub/x.wasm',
+                           'sha256': hashlib.sha256(fake_module()).hexdigest(),
+                           'minimumAppVersion': '1.7.0'} for identifier in signed_ids]},
+            sort_keys=True, separators=(',', ':')).encode()
+        (repo / 'catalog.json').write_bytes(catalog)
+        (repo / 'catalog.sig').write_text(sign_catalog(catalog, self.private) + '\n')
+        key_file = self.root / 'public-key.json'
+        key_file.write_text(json.dumps({'publicKey': base64.b64encode(self.public).decode()}))
+        import plistlib
+        (self.root / 'FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist').write_bytes(
+            plistlib.dumps({'echo': 'text.framework/text', 'cat': 'text.framework/text'}))
+        (self.root / 'FloeAgent/FloeApp/Resources/Shell/extraCommandsDictionary.plist').write_bytes(
+            plistlib.dumps({}))
+        for swift in ('FloeShellCommands.swift', 'FloeShellCoreUtilities.swift', 'FloePlatformServices.swift'):
+            (self.root / 'FloeAgent/FloeApp/Execution' / swift).write_text(
+                '// fixture: no register("...") literals\n')
+        payload = {'schemaVersion': 1, 'updated': 'test', 'note': 'fixture',
+                   'required': list(required), 'tools': tools}
+        encoded = json.dumps(payload, sort_keys=True, indent=2).encode()
+        (repo / 'tool-catalog.json').write_bytes(encoded)
+        (self.root / 'FloeAgent/Sources/FloeExecution/Resources/ToolCapabilityCatalog.json').write_bytes(encoded)
+        return repo, key_file
+
+    def test_committed_tool_catalog_matches_device_truth(self):
+        # The real checkout is the gate: direct commands must be registered in
+        # the shipped shell dictionaries and every route must stay honest.
+        payload = check_tools()
+        routes = {}
+        for entry in payload['tools']:
+            routes[entry['route']] = routes.get(entry['route'], 0) + 1
+        self.assertGreaterEqual(routes.get('direct', 0), 1)
+
+    def test_valid_catalog_is_read_only(self):
+        repo, key_file = self._checkout([tool_entry()])
+        before = {str(path.relative_to(self.root)): path.read_bytes()
+                  for path in self.root.rglob('*') if path.is_file()}
+        check_tools(base=repo, public_key_path=key_file)
+        self.assertEqual(before, {str(path.relative_to(self.root)): path.read_bytes()
+                                  for path in self.root.rglob('*') if path.is_file()})
+
+    def test_direct_entry_must_name_shipped_commands(self):
+        repo, key_file = self._checkout([tool_entry(commands=('not-a-command',))])
+        with self.assertRaises(RuntimeError):
+            check_tools(base=repo, public_key_path=key_file)
+
+    def test_available_precompiled_needs_a_signed_catalog_id(self):
+        repo, key_file = self._checkout([
+            tool_entry('tool/pending', route='floe-precompiled', local='floe-precompiled',
+                       available=True, installable=True, commands=('pending',)),
+            tool_entry()])
+        with self.assertRaises(RuntimeError):
+            check_tools(base=repo, public_key_path=key_file)
+
+    def test_pending_precompiled_must_name_its_gap(self):
+        repo, key_file = self._checkout([
+            tool_entry('tool/pending', route='floe-precompiled', local='unsupported',
+                       available=False, installable=False, commands=('pending',)),
+            tool_entry()])
+        with self.assertRaises(RuntimeError):
+            check_tools(base=repo, public_key_path=key_file)
+
+    def test_remote_entry_is_never_installable(self):
+        repo, key_file = self._checkout([
+            tool_entry('tool/host-only', route='remote', local='unsupported',
+                       available=False, installable=True, commands=('host-only',)),
+            tool_entry()])
+        with self.assertRaises(RuntimeError):
+            check_tools(base=repo, public_key_path=key_file)
+
+    def test_required_coverage_is_enforced(self):
+        repo, key_file = self._checkout([tool_entry()], required=('echo', 'missing'))
+        with self.assertRaises(RuntimeError):
+            check_tools(base=repo, public_key_path=key_file)
+
+    def test_app_copy_must_match_the_canonical_catalog(self):
+        repo, key_file = self._checkout([tool_entry()])
+        app_copy = self.root / 'FloeAgent/Sources/FloeExecution/Resources/ToolCapabilityCatalog.json'
+        app_copy.write_bytes(app_copy.read_bytes() + b'\n')
+        with self.assertRaises(RuntimeError):
+            check_tools(base=repo, public_key_path=key_file)
 
 
 class ArtifactImmutabilityTests(unittest.TestCase):
