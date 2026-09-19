@@ -38,6 +38,19 @@ qualification was skipped by explicit user request, so this is internal device
 testing, not full acceptance. Device acceptance remains with the user, and the build
 191 foreground Qwen GatedDeltaNet abort is still not proven fixed.
 
+## Failed candidate: 1.7.0 (202)
+
+Immutable tag `v1.7.0-beta.59` at `0450b2aeb52ee4a1bad2fce4ef76f1ecd2fcdd49`,
+created by [run 35474286467](https://github.com/JiangNanGenius/floe-agent/actions/runs/35474286467)
+(the single authorized lean dispatch for Build 202) and preserved unmoved. That run
+failed in the accepted-SDK App build ([job 105980757911](https://github.com/JiangNanGenius/floe-agent/actions/runs/35474286467/job/105980757911),
+step "Rebuild the exact tag with the accepted App Store SDK", `xcodebuild` exit 65,
+3 frontend failures): `SourceControlView.swift:293:90` passes the non-optional
+`\.children` keypath where the SDK 26 `OutlineGroup` requires
+`[SourceControlChangeTreeNode]?`. Nothing was retained, signed, uploaded or
+published; `lean-publish` never ran and no Apple build ID exists for build 202. Full
+evidence: [build 202 lean-build failure](qualification/build202-release/build202-lean-build-failure.md).
+
 ## Previous internal delivery: 1.7.0 (198) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.55`, source `ce3574f36f954bb64c100754ff17295cead7c238`.
