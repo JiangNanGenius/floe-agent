@@ -154,6 +154,7 @@ jobs:
           cp "$EXTRACT/DIRECT-PROVENANCE.json" "$EVIDENCE/"
       - name: Rebuild the exact tag with the accepted App Store SDK
         if: inputs.reuse_artifact_run == ''
+        id: rebuild
         run: |
           brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
@@ -164,6 +165,13 @@ jobs:
           # tracked DashIOS source (interactive-stdin fix included), not stale
           # source-only artifacts; the bootstrap above records the manifest.
           python3 scripts/tests/test_dash_framework_provenance.py
+          # Keep the complete build output and an xcresult on disk regardless
+          # of outcome: GitHub truncates oversized single-step web logs, which
+          # hid the exact compiler diagnostics of the build 202 failure. The
+          # step still exits with the real xcodebuild status (pipefail).
+          BUILD_LOG="$RUNNER_TEMP/rebuild-xcodebuild.log"
+          XCRESULT="$RUNNER_TEMP/FloeRebuild.xcresult"
+          set +e
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
@@ -173,12 +181,24 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
+            -resultBundlePath "$XCRESULT" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             DEVELOPMENT_TEAM='' \
             DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
-            build
+            build 2>&1 | tee "$BUILD_LOG"
+          build_status="${PIPESTATUS[0]}"
+          set -e
+          if [[ "$build_status" -ne 0 ]]; then
+            echo "::group::xcodebuild error/warning summary"
+            grep -E "error:|warning:" "$BUILD_LOG" | sort -u | head -n 80 || true
+            echo "::endgroup::"
+            echo "::group::xcodebuild log tail"
+            tail -n 120 "$BUILD_LOG" || true
+            echo "::endgroup::"
+          fi
+          exit "$build_status"
           STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$STABLE_APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP_PATH/Info.plist")" = org.floeagent.ios
@@ -186,6 +206,17 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ steps.source.outputs.build }}"
           mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"
           ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
+
+      - name: Upload rebuild diagnostics on failure
+        if: ${{ always() && inputs.reuse_artifact_run == '' && steps.rebuild.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rebuild-diagnostics-run${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/rebuild-xcodebuild.log
+            ${{ runner.temp }}/FloeRebuild.xcresult
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Normalize reviewed App Store bundle defects before signing
         if: inputs.reuse_artifact_run == ''
