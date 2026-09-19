@@ -8768,11 +8768,19 @@ private struct SharedCanvasAgentConversation: View {
                 canvasVoiceCaptureRow
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField("描述要查找、整理或生成的内容", text: $prompt, axis: .vertical)
-                        .lineLimit(2...5)
-                        .textFieldStyle(.plain)
-                        .submitLabel(.send)
-                        .onSubmit { Task { await submit() } }
+                    // Hardware keyboard: plain Return sends, Shift+Return
+                    // inserts a newline, and Return never sends during IME
+                    // composition. The software return key keeps sending, as
+                    // the previous `.submitLabel(.send)` surface did.
+                    ComposerReturnField(
+                        text: $prompt,
+                        placeholder: "描述要查找、整理或生成的内容",
+                        canSend: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            && viewModel.selectedModelID != nil,
+                        softwareReturnSends: true,
+                        lineLimit: 2...5,
+                        onReturn: { Task { await submit() } }
+                    )
                         .padding(.horizontal, 12)
                         .padding(.top, 12)
                         .accessibilityIdentifier("canvas.agent.input")
@@ -8848,7 +8856,7 @@ private struct SharedCanvasAgentConversation: View {
                 }
                 Spacer()
                 if !viewModel.isRunning {
-                    Text("Return 发送")
+                    Text("Return 发送 · Shift+Return 换行")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.tertiary)
                 }
