@@ -11,6 +11,7 @@
 import SwiftUI
 import FloeCore
 import FloeEnvironments
+import FloeExecution
 import FloeSSH
 
 struct ExecutionEnvironmentView: View {
@@ -19,18 +20,14 @@ struct ExecutionEnvironmentView: View {
     var body: some View {
         Form {
             Section("settings.exec.runtimes") {
-                capabilityRow(
-                    name: String(localized: "settings.exec.js"),
-                    state: center.jsCapability
-                )
-                capabilityRow(
-                    name: String(localized: "settings.exec.python_local"),
-                    state: center.localPythonCapability
-                )
-                capabilityRow(
-                    name: String(localized: "settings.exec.node_local"),
-                    state: center.nodeCapability
-                )
+                if center.runtimeInventory.isEmpty {
+                    Text("settings.exec.runtimes.empty")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(center.runtimeInventory) { entry in
+                    runtimeRow(entry)
+                }
                 LabeledContent("settings.exec.remote_terminal") {
                     Text(String.localizedStringWithFormat(
                         String(localized: "settings.exec.remote_terminal.value"),
@@ -83,28 +80,78 @@ struct ExecutionEnvironmentView: View {
         }
     }
 
-    private func capabilityRow(name: String, state: CapabilityState) -> some View {
-        HStack {
-            Text(name)
-            Spacer()
-            switch state {
-            case .available(let version):
-                Label(version, systemImage: "checkmark.circle.fill")
+    private func runtimeRow(_ entry: RuntimeInventoryEntry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(entry.displayName)
+                Spacer()
+                Text(sourceLabel(entry.source))
                     .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(FloeTheme.success)
-            case .unavailable(let reason):
-                Label(reason, systemImage: "minus.circle")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
-            case .unknown:
-                Text("settings.capability.unknown")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(FloeTheme.unknown)
+                    .foregroundStyle(FloeTheme.primary)
+            }
+            HStack(spacing: 8) {
+                availabilityLabel(entry)
+                Spacer()
+                updateLabel(entry)
+            }
+            if let detail = entry.detail {
+                Text(detail).font(.caption2).foregroundStyle(.secondary)
             }
         }
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func availabilityLabel(_ entry: RuntimeInventoryEntry) -> some View {
+        switch entry.availability {
+        case .available(let version):
+            Label(version, systemImage: "checkmark.circle.fill")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.success)
+        case .notInstalled:
+            Label("settings.exec.runtime.not_installed", systemImage: "circle.dashed")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+        case .unavailable(let reason):
+            Label(reason, systemImage: "minus.circle")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    @ViewBuilder
+    private func updateLabel(_ entry: RuntimeInventoryEntry) -> some View {
+        switch entry.update {
+        case .current:
+            Text("settings.exec.runtime.update.current")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+        case .installable(let version):
+            Text(String.localizedStringWithFormat(
+                String(localized: "settings.exec.runtime.update.installable"), version
+            ))
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.primary)
+        case .updatable(_, let available):
+            Text(String.localizedStringWithFormat(
+                String(localized: "settings.exec.runtime.update.updatable"), available
+            ))
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+        case .unavailable:
+            EmptyView()
+        }
+    }
+
+    private func sourceLabel(_ source: RuntimeInventoryEntry.Source) -> String {
+        switch source {
+        case .bundled: return String(localized: "settings.exec.runtime.source.bundled")
+        case .user: return String(localized: "settings.exec.runtime.source.user")
+        case .project: return String(localized: "settings.exec.runtime.source.project")
+        case .remote: return String(localized: "settings.exec.runtime.source.remote")
+        }
     }
 }
 #endif

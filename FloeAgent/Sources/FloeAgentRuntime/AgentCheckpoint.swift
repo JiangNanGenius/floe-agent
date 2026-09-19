@@ -165,6 +165,11 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
     public var replayedToolPairs: [ReplayedToolPair]?
     public var pendingAssistantReasoning: String?
     public var toolSchemas: [Schema]
+    /// The run's full capability ceiling (the exact set tools.list enumerates)
+    /// so compat-mode reverse name mapping stays total after a relaunch.
+    /// Optional so snapshots written before this field remain decodable; a nil
+    /// value restores the previous conservative behavior.
+    public var allToolNames: [String]?
     public var reasoningDisabled: Bool
 
     public init(request: ProviderStreamRequest) {
@@ -187,6 +192,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
         toolSchemas = request.toolSchemas.map {
             Schema(name: $0.name, description: $0.description, parametersJSON: $0.parametersJSON)
         }
+        allToolNames = request.allToolNames
         reasoningDisabled = request.reasoningPolicy == .disabled
     }
 
@@ -215,6 +221,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
                     parametersJSON: $0.parametersJSON
                 )
             },
+            allToolNames: allToolNames ?? [],
             reasoningPolicy: reasoningDisabled ? .disabled : .modelDefault
         )
     }

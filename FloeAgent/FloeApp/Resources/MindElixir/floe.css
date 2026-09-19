@@ -2,4 +2,14 @@ html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;font-family:-appl
 html{color-scheme:light dark}body{background:Canvas;color:CanvasText}
 #map{touch-action:none}button{min-width:44px;min-height:44px}
 me-tpc{min-height:28px;padding:10px 14px!important}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+/* The two Floe add actions own the top-left corner; the engine's direction
+   toolbar moves to the bottom-left so the top-left stays predictable. */
+.floe-actions{position:fixed;top:12px;left:12px;z-index:120;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.floe-action{-webkit-user-select:none;user-select:none;touch-action:manipulation;-webkit-touch-callout:none;display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid #c9c9cf;border-radius:12px;background:#fff;color:#1c1c1e;font-size:15px;font-weight:600;line-height:1.2;box-shadow:0 1px 3px rgba(0,0,0,.16)}
+.floe-action:active{opacity:.85;transform:scale(.97)}
+.floe-hint{position:fixed;top:120px;left:12px;z-index:120;display:none;max-width:min(72vw,320px);padding:8px 12px;border-radius:10px;background:rgba(28,28,30,.93);color:#fff;font-size:13px;line-height:1.35}
+.floe-hint.show{display:block}
+[data-floe-theme=dark] .floe-action{background:#2c2c31;border-color:#4b4b52;color:#f2f2f7;box-shadow:0 1px 3px rgba(0,0,0,.55)}
+[data-floe-theme=dark] .floe-hint{background:rgba(242,242,247,.94);color:#1c1c1e}
+.mind-elixir-toolbar.lt{top:auto;bottom:20px;left:20px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.floe-action:active{transform:none}}

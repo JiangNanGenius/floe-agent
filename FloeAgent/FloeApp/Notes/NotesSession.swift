@@ -47,6 +47,11 @@ final class NotesSession {
     private(set) var pendingWrites = 0
     private(set) var canUndo = false
     private(set) var canRedo = false
+    /// Office documents created in this app run open once directly in the
+    /// editor. A document merely opened from the library follows its
+    /// remembered entry count (preview on the first entry, editor from the
+    /// second).
+    @ObservationIgnored private var editorOnNextOpen: Set<UUID> = []
     var requestedPageID: UUID?
     var errorMessage: String?
     var editConflicts: [NoteEditConflict] = []
@@ -253,7 +258,7 @@ final class NotesSession {
                 value.title = kind == .mindMap ? "未命名导图" : "未命名手记"
                 if !value.nodes.isEmpty { value.nodes[0].title = value.title }
             }
-            showCreatedDocument(try await store.create(value))
+            showCreatedDocument(try await store.create(value), editorOnFirstOpen: kind == .office)
             try await reload()
         }
     }
@@ -291,7 +296,9 @@ final class NotesSession {
                 }
             }.value
             let value = try await NoteFileImporter.importFile(file, notebookID: notebookID, store: store)
-            showCreatedDocument(try await store.create(value))
+            // The file was authored in this app run: first entry goes straight
+            // to the editor, unlike an imported existing document.
+            showCreatedDocument(try await store.create(value), editorOnFirstOpen: true)
             try await reload()
         }
     }
@@ -501,7 +508,20 @@ final class NotesSession {
         }
     }
 
-    private func showCreatedDocument(_ value: NoteDocument?) {
+    /// True once for a document created in this app run, so the newly created
+    /// Office document opens straight in the editor while a document the user
+    /// re-opens later follows the entry-count rule (first entry previews,
+    /// later entries edit).
+    func consumeEditorOnNextOpen(documentID: UUID) -> Bool {
+        editorOnNextOpen.remove(documentID) != nil
+    }
+
+    /// - Parameter editorOnFirstOpen: true only for a document authored in
+    ///   this app run (`create` / `createOffice`). Imported documents pass the
+    ///   default false: their first entry stays the safe read-only preview and
+    ///   only the entry-count rule promotes them to the editor later.
+    private func showCreatedDocument(_ value: NoteDocument?, editorOnFirstOpen: Bool = false) {
+        if editorOnFirstOpen, let value, value.kind == .office { editorOnNextOpen.insert(value.id) }
         // Office recovery can create another document while its editor is open.
         // Keep that editor mounted; switching to the new tab runs its save guard.
         if let current = document, current.kind == .office, let value {

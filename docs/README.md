@@ -10,9 +10,16 @@
 
 **Build 196 已在内部 Floe QA TestFlight 可安装**（Apple buildID `27355e88…`，`VALID`／未过期／唯一私有 Floe QA 组／`IN_BETA_TESTING`，2026-09-19 02:24 UTC 核实；中英文测试说明已读回）。Build 192/193 编译失败；Build 194/195 被 Apple 接受但从未发布；四个标签均作为证据保留，194–196 的 App 源码相同。工作区包含 191 反馈修复，[Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_196.json)已附加到该构建。本构建内置的签名目录已包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
 
+**Build 197（1.7.0，`v1.7.0-beta.54`）编译失败，从未上传**：标签 `v1.7.0-beta.54` 固定在 `f05b02ac`（不得移动）。[run 35426497884](https://github.com/JiangNanGenius/floe-agent/actions/runs/35426497884) 的验收上传 SDK App 编译报 5 条诊断、2 个独立错误：`ExecutionEnvironmentView.swift:82/105/124/147` 找不到 `RuntimeInventoryEntry`（缺 `import FloeExecution`），`FileInspectorView.swift:132` 对已解包的 `previewPath` 重复条件绑定；编译之后的步骤全部跳过，无工件、无签名、无 TestFlight 上传。其功能实现范围 `1cff5665..11681a0f`（8 个功能提交）保持不变，[Build 197 发布说明](RELEASE_NOTES_1.7.0_BUILD_197.md)保留原记录。
+
+**Build 198（1.7.0，候选 `v1.7.0-beta.55`，标签尚未创建）为下一发布候选（Build 197 的替代）**：功能与 197 相同（思维导图触摸新增节点、视频公开候选与方舟凭据修复、跨 run 工具上下文恢复与摘要脱敏、执行环境真实版本与 APT 路由、妙控键盘 Return 发送／Shift+Return 换行、Office 首次预览／第二次直编与 IDE 集成、Pencil 墨迹与远端快照只读、移除无效“加入画布”入口），修复上述两处编译错误（`ExecutionEnvironmentView.swift` 增加 `import FloeExecution`；`FileInspectorView.swift` 去掉多余的第二处可选绑定），4 个 target 的版本／构建号统一为 1.7.0／198。[Build 198 发布说明](RELEASE_NOTES_1.7.0_BUILD_198.md)与 [TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_198.json)记录本轮轻量校验（swiftc parse、xcodegen、版本／构建号一致性、JSON 校验、`git diff --check`）；App 云端编译与真机验收待后续，本地 Qwen/GDN 首次消息崩溃仍待真机确认（尚未证实修复）。
+
 | 文档 | 阅读目的 |
 |---|---|
 | [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
+| [本地模型/视频/工具上下文修复（2026-09-19）](FLOE_LOCAL_VIDEO_TOOLCHAIN_REPAIR_2026-09-19.md) | 本地聊天取消竞态、公开视频候选选择、工具证据回灌的根因、改动与待真机项 |
+| [Build 198 发布说明](RELEASE_NOTES_1.7.0_BUILD_198.md) | 下一候选（1.7.0/198，`v1.7.0-beta.55` 标签尚未创建）：功能与 197 相同并修复两处编译错误；轻量校验与待真机项 |
+| [Build 197 发布说明](RELEASE_NOTES_1.7.0_BUILD_197.md) | 编译失败的候选（`v1.7.0-beta.54` 固定于 `f05b02ac`，run 35426497884 报 2 个编译错误，未上传）：功能实现、轻量校验与待真机项 |
 | [Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（已交付内部 Floe QA；192/193 编译失败、194/195 上传未发布记录见各自说明） |
 | [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 本轮改动、已验证范围与发布状态 |
 | [当前手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
@@ -37,6 +44,7 @@
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
 | [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md) | 总体架构 |
 | [ARCHITECTURE_LOCAL_SHELL.md](ARCHITECTURE_LOCAL_SHELL.md) | 本地 Shell / 终端 / apt·pkg 能力层架构（安全边界、Linux 兼容性、第三方许可） |
+| [Shell 工具路由与运行时版本展示](FLOE_SHELL_TOOL_ROUTES.md) | 评审工具路由目录、运行时版本真实来源、`--check-tools` 校验与真机限制（2026-09-19） |
 | [PLAN_LOCAL_SHELL.md](PLAN_LOCAL_SHELL.md) | 本地 Shell 实现记录与遗留事项 |
 | `DEVELOPMENT_PLAN.md`（本地资料，未随仓库分发） | 里程碑计划（§11 的 on-device 代码排除已由本地 Shell 架构取代） |
 | [FLOE_BROWSER_PROTOCOL.md](FLOE_BROWSER_PROTOCOL.md) | 浏览器自动化协议 |
@@ -52,6 +60,8 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
+- [RELEASE_NOTES_1.7.0_BUILD_198.md](RELEASE_NOTES_1.7.0_BUILD_198.md) — 下一候选（1.7.0/198，`v1.7.0-beta.55` 标签尚未创建；修复 197 的两处编译错误；仅轻量校验，未编译未上传）
+- [RELEASE_NOTES_1.7.0_BUILD_197.md](RELEASE_NOTES_1.7.0_BUILD_197.md) — 编译失败记录（1.7.0/197，`v1.7.0-beta.54` 固定于 `f05b02ac`，run 35426497884 报 2 个编译错误；从未上传；标签不动）
 - [RELEASE_NOTES_1.7.0_BUILD_196.md](RELEASE_NOTES_1.7.0_BUILD_196.md) — 下一候选的完整说明（已冻结；发布工作流在冻结提交创建标签并上传，191 交付记录保持原样）
 - [RELEASE_NOTES_1.7.0_BUILD_195.md](RELEASE_NOTES_1.7.0_BUILD_195.md) — 已上传但未发布（GitHub 工件服务故障丢失 TestFlight 证据；App 源码与 196 相同；标签不动）
 - [RELEASE_NOTES_1.7.0_BUILD_194.md](RELEASE_NOTES_1.7.0_BUILD_194.md) — 已上传但未发布（发布工作流验证调用缺陷；App 源码与 195 相同；标签不动）

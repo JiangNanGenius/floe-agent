@@ -98,6 +98,113 @@ struct LocalPromptHarnessTests {
     }
 }
 
+// MARK: - Replayed tool evidence for on-device models
+
+@Suite("Local replayed tool evidence")
+struct LocalReplayedToolEvidenceTests {
+    private func request(
+        replayedPairs: [ReplayedToolPair],
+        systemEnvelope: String = "Run context: synthetic workspace. Current runtime time: fixed."
+    ) throws -> ProviderStreamRequest {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 16_384, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        return ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [
+                (role: "system", content: systemEnvelope),
+                (role: "user", content: "Continue the review.")
+            ],
+            replayedToolPairs: replayedPairs,
+            toolSchemas: [ToolSchemaDescriptor(
+                name: "workspace.readFile",
+                description: "Read a workspace file",
+                parametersJSON: #"{"type":"object"}"#
+            )],
+            allToolNames: ["workspace.readFile"]
+        ).refreshingRuntimeClock()
+    }
+
+    @Test("Settled tool pairs from earlier turns are replayed to a local model")
+    @available(macOS 15.4, *)
+    func settledPairsAreReplayed() throws {
+        let call = try ToolCall(
+            id: "call-42",
+            toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":"notes.md"}"#.utf8),
+            scope: .local
+        )
+        let result = ToolResult(
+            callID: "call-42",
+            status: .ok,
+            outputSummary: "Revision seven preserved all attachment positions.",
+            outputDigest: "digest"
+        )
+        let local = LocalProviderAdapter.buildPrompt(for: try request(
+            replayedPairs: [ReplayedToolPair(call: call, result: result)]
+        ))
+        #expect(local.text.contains("EARLIER COMPLETED TOOL WORK"))
+        #expect(local.text.contains("workspace.readFile"))
+        #expect(local.text.contains("call-42"))
+        #expect(local.text.contains("Revision seven preserved"))
+    }
+
+    @Test("No replay section is rendered without settled pairs")
+    @available(macOS 15.4, *)
+    func noReplayWithoutPairs() throws {
+        let local = LocalProviderAdapter.buildPrompt(for: try request(replayedPairs: []))
+        #expect(!local.text.contains("EARLIER COMPLETED TOOL WORK"))
+    }
+
+    @Test("The replay projection stays bounded and keeps the newest pairs")
+    @available(macOS 15.4, *)
+    func replayProjectionIsBounded() throws {
+        var pairs: [ReplayedToolPair] = []
+        for index in 0..<40 {
+            let call = try ToolCall(
+                id: "call-\(index)",
+                toolName: "workspace.readFile",
+                argumentsJSON: Data("{\"path\":\"file-\(index).md\"}".utf8),
+                scope: .local
+            )
+            pairs.append(ReplayedToolPair(
+                call: call,
+                result: ToolResult(
+                    callID: call.id,
+                    status: .ok,
+                    outputSummary: String(repeating: "evidence-\(index) ", count: 200),
+                    outputDigest: "digest"
+                )
+            ))
+        }
+        let local = LocalProviderAdapter.buildPrompt(for: try request(replayedPairs: pairs))
+        let section = local.text.components(separatedBy: "EARLIER COMPLETED TOOL WORK").last ?? ""
+        #expect(section.count <= 2_400)
+        #expect(section.contains("call-39"))
+        #expect(!section.contains("EARLIER TOOL CALL workspace.readFile id=call-0 "))
+    }
+
+    @Test("The on-device runtime envelope is bounded while keeping head and tail")
+    @available(macOS 15.4, *)
+    func runtimeEnvelopeIsBounded() throws {
+        let envelope = "HEAD-MARKER " + String(repeating: "context line ", count: 4_000) + " TAIL-MARKER"
+        let local = LocalProviderAdapter.buildPrompt(for: try request(
+            replayedPairs: [],
+            systemEnvelope: envelope
+        ))
+        #expect(local.systemInstructions.count < 12_000)
+        #expect(local.systemInstructions.contains("HEAD-MARKER"))
+        #expect(local.systemInstructions.contains("TAIL-MARKER"))
+    }
+}
+
+
 // MARK: - Decode-rate provenance (PiP speed口径)
 
 @Suite("Local decode-rate accounting")

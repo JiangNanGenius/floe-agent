@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import subprocess
@@ -28,6 +29,18 @@ ROOT = Path(__file__).resolve().parent
 PUBLIC_KEY = ROOT.parent / 'skill-hub/public-key.json'
 DOMAIN = b'FLOE-CAPABILITY-CATALOG-V1\n'
 URL_PREFIX = 'https://raw.githubusercontent.com/JiangNanGenius/floe-agent'
+
+# Reviewed shell/apt tool routes. The canonical classification lives in
+# `tool-catalog.json`; the app ships the same bytes as a FloeExecution
+# resource. `--check-tools` verifies both without writing anything.
+TOOL_CATALOG = ROOT / 'tool-catalog.json'
+APP_TOOL_CATALOG = ROOT.parent / 'FloeAgent/Sources/FloeExecution/Resources/ToolCapabilityCatalog.json'
+SHELL_DICTIONARIES = (
+    ROOT.parent / 'FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist',
+    ROOT.parent / 'FloeAgent/FloeApp/Resources/Shell/extraCommandsDictionary.plist',
+)
+TOOL_ROUTES = ('direct', 'floe-precompiled', 'remote', 'unsupported')
+TOOL_LOCAL_ROUTES = ('direct', 'floe-precompiled', 'unsupported')
 
 # Reviewed per-package ceilings. `WasmPackageLimits` in FloeExecution enforces
 # the same ranges at signature-verification time; a signed entry outside them
@@ -355,6 +368,103 @@ def check(base=ROOT, public_key_path=None):
     return payload
 
 
+def check_tools(base=ROOT, public_key_path=None):
+    """Read-only verification of the reviewed shell/apt tool route catalog.
+
+    Never signs, writes or rebuilds. The canonical `tool-catalog.json` and the
+    app-shipped copy must be byte-identical; `direct` entries must name
+    commands registered by the shipped shell (the engine dictionaries plus
+    the app-side `registry.register` literals); an available
+    `floe-precompiled` entry must reference real signed catalog ids while a
+    pending one must name its artifact gap; `remote` and `unsupported`
+    entries must stay non-installable; every required name must be covered
+    by at least one entry's commands. Mirrors
+    `ToolCapabilityCatalog.validate(knownCommands:signedCatalogIDs:)`.
+    """
+    base = Path(base)
+    tool_catalog = base / 'tool-catalog.json'
+    app_tool_catalog = (base.parent / 'FloeAgent/Sources/FloeExecution/Resources'
+                        / 'ToolCapabilityCatalog.json')
+    shell_dictionaries = (
+        base.parent / 'FloeAgent/FloeApp/Resources/Shell/commandDictionary.plist',
+        base.parent / 'FloeAgent/FloeApp/Resources/Shell/extraCommandsDictionary.plist',
+    )
+    canonical = tool_catalog.read_bytes()
+    if canonical != app_tool_catalog.read_bytes():
+        raise RuntimeError(
+            f'{tool_catalog.relative_to(base.parent)} and the app-shipped '
+            f'{app_tool_catalog.relative_to(base.parent)} differ')
+    payload = json.loads(canonical)
+    if payload.get('schemaVersion') != 1 or not payload.get('tools'):
+        raise RuntimeError('Unsupported or empty tool capability catalog')
+    known = set()
+    for dictionary in shell_dictionaries:
+        with open(dictionary, 'rb') as handle:
+            known.update(plistlib.load(handle))
+    # App-side commands registered on the Floe shell registry at launch. These
+    # are the second real source of `direct` tools alongside the engine
+    # dictionaries; the literal scan below is read-only and fails closed when
+    # a registration moves, so the catalog cannot claim a command the binary
+    # does not register.
+    shell_sources = (
+        base.parent / 'FloeAgent/FloeApp/Execution/FloeShellCommands.swift',
+        base.parent / 'FloeAgent/FloeApp/Execution/FloeShellCoreUtilities.swift',
+        base.parent / 'FloeAgent/FloeApp/Execution/FloePlatformServices.swift',
+    )
+    for source in shell_sources:
+        text = source.read_text()
+        known.update(re.findall(r'\.register\("([^"]+)"', text))
+        for array in re.findall(r'for\s+\w+\s+in\s+\[([^\]]+)\]', text):
+            known.update(re.findall(r'"([^"]+)"', array))
+    catalog_bytes = (base / 'catalog.json').read_bytes()
+    signature = (base / 'catalog.sig').read_text().strip()
+    trusted = base64.b64decode(
+        json.loads(Path(public_key_path or PUBLIC_KEY).read_text())['publicKey'])
+    verify_catalog(catalog_bytes, signature, trusted)
+    signed_ids = {package['id'] for package in json.loads(catalog_bytes).get('packages', [])}
+    seen = set()
+    covered = set()
+    for entry in payload['tools']:
+        identifier = entry.get('id', '')
+        if (re.fullmatch(r'tool/[a-z0-9][a-z0-9-]{0,63}', identifier) is None
+                or not entry.get('displayName') or not entry.get('evidence')
+                or identifier in seen):
+            raise RuntimeError(f'Invalid or duplicate tool catalog entry {identifier!r}')
+        seen.add(identifier)
+        route = entry.get('route')
+        local = entry.get('local')
+        if route not in TOOL_ROUTES:
+            raise RuntimeError(f'{identifier}: unknown route {route!r}')
+        if local not in TOOL_LOCAL_ROUTES:
+            raise RuntimeError(f'{identifier}: unknown local route {local!r}')
+        commands = entry.get('commands') or []
+        covered.update(commands)
+        available = bool(entry.get('available'))
+        installable = bool(entry.get('installable'))
+        signed_refs = entry.get('signedCatalogIDs') or []
+        gap = entry.get('artifactGap')
+        if route == 'direct':
+            if (local != 'direct' or not available or not installable
+                    or not commands or any(command not in known for command in commands)):
+                raise RuntimeError(f'{identifier}: direct tool must name shipped shell commands')
+        elif route == 'floe-precompiled':
+            if installable != available:
+                raise RuntimeError(f'{identifier}: availability and installability disagree')
+            if available:
+                if not signed_refs or any(ref not in signed_ids for ref in signed_refs):
+                    raise RuntimeError(f'{identifier}: available precompiled tool needs a signed catalog id')
+                if gap is not None:
+                    raise RuntimeError(f'{identifier}: available tool cannot carry an artifact gap')
+            elif not gap or signed_refs:
+                raise RuntimeError(f'{identifier}: pending artifact needs an explicit gap and no signed id')
+        elif available or installable or signed_refs:
+            raise RuntimeError(f'{identifier}: remote/unsupported tools are never installable')
+    missing = [name for name in payload.get('required', []) if name not in covered]
+    if missing:
+        raise RuntimeError('Tool catalog misses required coverage: ' + ', '.join(missing))
+    return payload
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, default=ROOT)
@@ -363,14 +473,28 @@ if __name__ == '__main__':
                         help='read-only: verify the committed signed catalog against the fixed manifest')
     parser.add_argument('--status', action='store_true',
                         help='read-only: print ready and compilepending language packages; never signs')
+    parser.add_argument('--check-tools', action='store_true',
+                        help='read-only: verify the reviewed tool route catalog against the shipped shell dictionaries and the signed catalog')
     args = parser.parse_args()
     if args.check and args.status:
         parser.error('--check and --status are separate read-only reports')
+    if args.check_tools and (args.check or args.status):
+        parser.error('--check-tools is a separate read-only report')
     if args.check:
         if args.test_key:
             parser.error('--check verifies the committed catalog; do not pass --test-key')
         check()
         print('Committed signed catalog matches the fixed manifest; nothing written')
+    elif args.check_tools:
+        if args.test_key:
+            parser.error('--check-tools verifies the committed catalog; do not pass --test-key')
+        payload = check_tools()
+        direct = sum(1 for entry in payload['tools'] if entry['route'] == 'direct')
+        pending = sum(1 for entry in payload['tools'] if entry['route'] == 'floe-precompiled')
+        remote = sum(1 for entry in payload['tools'] if entry['route'] == 'remote')
+        unsupported = sum(1 for entry in payload['tools'] if entry['route'] == 'unsupported')
+        print(f"Tool route catalog verified: {direct} direct, {pending} pending artifact, "
+              f"{remote} remote, {unsupported} unsupported; nothing written")
     elif args.status:
         for state, identifier, command, version, staged, limits in status():
             print(f"{state:15} {identifier:14} {command:12} {version:10} staged={'yes' if staged else 'no ':3} limits={limits}")

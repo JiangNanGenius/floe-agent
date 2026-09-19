@@ -583,13 +583,19 @@ struct ThreadComposerView: View {
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("composer.attach")
 
-            TextField(text: $draft, axis: .vertical) {
-                Text("home.new_task.placeholder")
-            }
-            .lineLimit(1...5)
+            // Hardware keyboard: plain Return sends, Shift+Return inserts a
+            // newline, and Return never sends during IME composition. The
+            // software return key keeps inserting newlines (previous
+            // multiline TextField behavior).
+            ComposerReturnField(
+                text: $draft,
+                placeholder: String(localized: "home.new_task.placeholder"),
+                canSend: canSend && !isAttachmentProcessing,
+                lineLimit: 1...5,
+                onReturn: { onSend() }
+            )
             .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
             .contentShape(Rectangle())
-            .textFieldStyle(.plain)
             .accessibilityLabel("home.new_task.placeholder")
             .accessibilityIdentifier("composer.input")
 

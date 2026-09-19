@@ -157,6 +157,43 @@ public struct KeychainSecretStore: Sendable {
         }
     }
 
+    /// Reference-based read for durable media jobs that snapshot a
+    /// `SecretReference` at submission time. Tries the reference's declared
+    /// synchronizable scope first, then the other scope, so a job always
+    /// reads the same Keychain item as `ConversationCenter.resolveCredentials`
+    /// and the provider editor regardless of the current sync preference
+    /// state. Returns nil when neither scope holds the account; never logs
+    /// or copies the secret body.
+    public func readSecret(reference: SecretReference) -> Data? {
+        Self.readSecret(
+            reference: reference,
+            reader: Self.keychainReader(service: store.service)
+        )
+    }
+
+    /// Scope fallback order for one reference snapshot: the declared
+    /// synchronizable scope first, then the opposite scope. The reader seam
+    /// keeps this verifiable without touching the device Keychain.
+    static func readSecret(
+        reference: SecretReference,
+        reader: @escaping @Sendable (String, Bool) -> Data?
+    ) -> Data? {
+        for synchronizable in [reference.synchronizable, !reference.synchronizable] {
+            if let data = reader(reference.keychainAccount, synchronizable) {
+                return data
+            }
+        }
+        return nil
+    }
+
+    /// Production reader over one service namespace. Never logs secret bytes.
+    static func keychainReader(service: String) -> @Sendable (String, Bool) -> Data? {
+        { account, synchronizable in
+            try? KeychainStore(service: service, synchronizable: synchronizable)
+                .read(account: account)
+        }
+    }
+
     public func deleteSecret(scope: Scope) async throws {
         let account = accountName(for: scope)
         let localStore = KeychainStore(service: store.service, synchronizable: false)

@@ -10,6 +10,35 @@ import FloeDocuments
 import FloeOfficeNative
 #endif
 
+/// One-shot, main-queue close acknowledgement used to bound a native close.
+/// The first resolver (engine callback or timeout) wins; later resolutions are
+/// ignored so a completion arriving after a timeout can never resume twice.
+/// The settled result is stored, so a resolution that lands before `wait()`
+/// is still returned verbatim instead of being mistaken for a timeout.
+@MainActor
+private final class OfficeCloseAck {
+    private var continuation: CheckedContinuation<OfficeFileSession.OfficeCloseResult, Never>?
+    private var settledResult: OfficeFileSession.OfficeCloseResult?
+
+    func wait() async -> OfficeFileSession.OfficeCloseResult {
+        if let settledResult { return settledResult }
+        return await withCheckedContinuation { continuation in
+            if let settledResult {
+                continuation.resume(returning: settledResult)
+            } else {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func resolve(_ result: OfficeFileSession.OfficeCloseResult) {
+        guard settledResult == nil else { return }
+        settledResult = result
+        continuation?.resume(returning: result)
+        continuation = nil
+    }
+}
+
 @MainActor
 final class OfficeFileSession: ObservableObject {
     enum Phase { case idle, loading, ready, insertingAttachment, readingAttachments, saving, closing, failed }
@@ -29,6 +58,13 @@ final class OfficeFileSession: ObservableObject {
     /// engine (protected document / backend refusal). While non-nil the session
     /// stays in preview; Floe never fakes a writable document.
     @Published private(set) var editUnavailableReason: String?
+    /// True when this session's document is a cloud/network snapshot staged in
+    /// a private temporary copy. There is no real remote write-back yet, so
+    /// entering edit would only mutate a throwaway copy and any later save
+    /// would masquerade as a remote save. Owning surfaces set this before
+    /// `open`; the session refuses editing and the UI shows the
+    /// download-to-local hint instead of any edit affordance.
+    @Published var isRemoteSnapshot = false
     private var workspace: SecurityScopedDocumentWorkspace?
     private var session: DocumentSession?
     private var requestedURL: URL?
@@ -52,6 +88,20 @@ final class OfficeFileSession: ObservableObject {
     /// Serializes/coalesces ink dispatches so an older completion can never
     /// publish over the latest stroke or a document that has since switched.
     private var inkSequencer = OfficeInkApplySequencer()
+    /// Continuation awaiting the pinned host's verified engine permission for
+    /// the controller this session just mounted. The host probes the backing
+    /// permission, follows the engine's guarded mobile edit entry and reports
+    /// the real state; racing it with an immediate JS probe reads an unopened
+    /// page as read-only and is the root cause of the iPhone edit that silently
+    /// fell back to preview.
+    private var permissionWaiter: CheckedContinuation<Bool?, Never>?
+    /// Bounded opening watchdog. A host that never reports readiness must not
+    /// leave the surface on a spinner forever.
+    private var openWatchdog: Task<Void, Never>?
+    /// Invoked after a verified original-file commit. Owning surfaces use it to
+    /// refresh sibling entries (IDE tabs, file tree, preview) so a save is
+    /// visible from every entry point.
+    var onCommitted: (() -> Void)?
 
     init() {
         inkPreferences = OfficeInkPreferences.session(forDocument: "")
@@ -77,6 +127,14 @@ final class OfficeFileSession: ObservableObject {
         false
         #endif
     }
+
+    /// Shared copy for every surface that hosts a cloud/network Office
+    /// snapshot. Kept on the session so FilePreview, the IDE tab and the
+    /// fullscreen editor all present the same truthful message.
+    static let remoteSnapshotHint = OfficeInkText.t(
+        "云端/网络文档当前为只读快照。要编辑，请先将文件下载到本地工作区后再打开。",
+        "Cloud and network documents are read-only snapshots. To edit, download the file to a local workspace and open it there.")
+
     var canAct: Bool { phase == .ready && !operating }
     var supportsAttachmentInsertion: Bool {
         guard !readOnly, let session else { return false }
@@ -121,11 +179,13 @@ final class OfficeFileSession: ObservableObject {
     /// same-named files in different workspaces separate while the digest keeps
     /// the raw path out of `UserDefaults`.
     ///
-    /// `stableIdentity` is only supplied by `FilePreviewView` for a cloud or
-    /// network file, whose local editing URL is a fresh preview copy each load.
-    /// Local Office documents and Notes pass nil, so their persisted settings
-    /// keep following the stable `session.originalURL` physical path and can
-    /// never be rebound to a transient workspace id.
+    /// `stableIdentity` is supplied by `FilePreviewView` for a cloud or
+    /// network file, whose local editing URL is a fresh preview copy each
+    /// load, and by Notes for its generated Office documents, whose staged
+    /// working copy likewise lives in a fresh UUID folder on every open.
+    /// Local Office documents pass nil, so their persisted settings keep
+    /// following the stable `session.originalURL` physical path and can never
+    /// be rebound to a transient workspace id.
     func useInkPreferences(stableIdentity: OfficeInkDocumentIdentity? = nil,
                            workspaceIdentity: String?,
                            documentKey: String) {
@@ -393,6 +453,14 @@ final class OfficeFileSession: ObservableObject {
         // arrives while the open owns the session is queued by performIntent.
         guard session != nil else { return false }
         if !readOnly, controller != nil, phase == .ready { return true }
+        // A cloud/network snapshot has no write-back target yet: editing would
+        // only change the throwaway preview copy and a later save would look
+        // like a successful remote save. Refuse with the download hint, keep
+        // the truthful preview mounted, and never touch the temp copy.
+        guard !isRemoteSnapshot else {
+            editUnavailableReason = Self.remoteSnapshotHint
+            return false
+        }
         phase = .loading
         error = nil
         editUnavailableReason = nil
@@ -406,19 +474,90 @@ final class OfficeFileSession: ObservableObject {
         } catch { fail(error); return false }
     }
 
+    /// Waits for the pinned host's verified engine permission for the mounted
+    /// controller, bounded. `nil` means the host did not report in time; that
+    /// is not a denial and callers must probe once more before deciding.
+    private func awaitEnginePermission(seconds: Double) async -> Bool? {
+        if let engineSessionReadOnly { return engineSessionReadOnly }
+        let nanoseconds = UInt64(max(0.1, seconds) * 1_000_000_000)
+        let timeout = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.resolveEnginePermission(nil)
+        }
+        let value: Bool? = await withCheckedContinuation { continuation in
+            if let resolved = engineSessionReadOnly {
+                continuation.resume(returning: resolved)
+            } else if permissionWaiter != nil {
+                // Defensive: an older wait can never hang; settle it first.
+                resolveEnginePermission(nil)
+                permissionWaiter = continuation
+            } else {
+                permissionWaiter = continuation
+            }
+        }
+        timeout.cancel()
+        return value
+    }
+
+    private func resolveEnginePermission(_ value: Bool?) {
+        guard let waiter = permissionWaiter else { return }
+        permissionWaiter = nil
+        waiter.resume(returning: value)
+    }
+
+    /// A host that never reports an open must not leave the surface on a
+    /// spinner forever. The watchdog only fires while this exact controller is
+    /// still loading and reports a truthful failed open with retained copies.
+    private func startOpenWatchdog(for native: FloeOfficeNativeViewController, readOnly: Bool) {
+        cancelOpenWatchdog()
+        openWatchdog = Task { @MainActor [weak self, weak native] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard !Task.isCancelled, let self, let native, self.controller === native,
+                  self.phase == .loading, !self.runtimeFailed else { return }
+            self.runtimeFailed = true
+            self.error = readOnly
+                ? "文档引擎未能在限定时间内打开预览；原文件未被修改。"
+                : "文档引擎未能在限定时间内打开编辑副本；编辑副本已保留。"
+            self.phase = .failed
+        }
+    }
+
+    private func cancelOpenWatchdog() {
+        openWatchdog?.cancel()
+        openWatchdog = nil
+    }
+
     /// Reads the pinned engine's real permission after an edit activation and
     /// attempts the engine's own mobile edit switch when it still reports
     /// readonly. A protected document or a switch the engine refuses returns
     /// to the preview controller with an explicit reason — the session never
     /// pretends to be writable.
+    ///
+    /// The host's verified permission callback is awaited first: the engine can
+    /// take several seconds to boot and mount (cold start, compact/iPhone
+    /// layout), and an immediate JS probe of a not-yet-opened page used to be
+    /// read as read-only and bounce the editor back to preview.
     private func acknowledgeEditPermission() async throws {
         #if canImport(FloeOfficeNative)
-        guard let native = controller as? FloeOfficeNativeViewController, native.isViewLoaded,
-              let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else { return }
+        guard let native = controller as? FloeOfficeNativeViewController else { return }
+        var hostReadOnly = await awaitEnginePermission(seconds: 20)
+        if hostReadOnly == false {
+            engineSessionReadOnly = false
+            readOnly = false
+            editUnavailableReason = nil
+            return
+        }
+        guard native.isViewLoaded, let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else {
+            // Without a mounted surface the engine has not opened yet. The host
+            // callback (or the open watchdog) still owns this session; never
+            // fabricate a read-only denial from a missing page.
+            return
+        }
         var probe = await Self.permissionProbe(webView)
         // Only a definite protected state takes this path; an unknown probe is
-        // handled by the conservative `isReadOnly`/`verifiedEditable` checks
-        // below, which never read a missing flag as an editable grant.
+        // handled by the conservative checks below, which never read a missing
+        // flag as an editable grant.
         if probe.documentProtected == true {
             try await fallBackToPreview(reason: OfficeInkText.t(
                 "该文档受保护，只能预览；未修改任何内容。",
@@ -428,8 +567,8 @@ final class OfficeFileSession: ObservableObject {
         // The host reports the engine's verified backing permission; the JS
         // probe is the fallback surface. An unverified (nil/unknown) state is
         // never read as an editable grant.
-        var hostReadOnly = engineSessionReadOnly
-        if hostReadOnly == true || probe.isReadOnly {
+        if hostReadOnly == nil { hostReadOnly = probe.isKnown ? probe.isReadOnly : nil }
+        if hostReadOnly == true {
             // Follow the engine's own guarded mobile entry through the host
             // API: it reports the engine state after the attempt and
             // distinguishes an edit-password challenge (error 42) from a
@@ -445,20 +584,37 @@ final class OfficeFileSession: ObservableObject {
                     "This document requires its edit password. Enter it in the editor.")
                 return
             }
+            engineSessionReadOnly = entry.readOnly
             hostReadOnly = entry.readOnly
-            for _ in 0..<10 {
+            // The mobile UI switches modes asynchronously after the guarded
+            // entry; give the engine a bounded settling window before
+            // concluding that the document is denied.
+            for _ in 0..<20 {
                 if Task.isCancelled { break }
-                try? await Task.sleep(nanoseconds: 150_000_000)
-                probe = await Self.permissionProbe(webView)
-                if let reported = engineSessionReadOnly { hostReadOnly = reported }
                 if hostReadOnly == false { break }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                if let reported = engineSessionReadOnly, reported == false {
+                    hostReadOnly = false
+                    break
+                }
+                probe = await Self.permissionProbe(webView)
+                if probe.isKnown, !probe.isReadOnly {
+                    hostReadOnly = false
+                    break
+                }
             }
         }
         // Only a verified state clears preview: the host's engine-truth report
-        // first, then a known engine probe. Unknown is never editable.
-        let verifiedEditable = hostReadOnly == false
-            || (hostReadOnly == nil && probe.isKnown && !probe.isReadOnly)
-        if !verifiedEditable {
+        // first, then a known engine probe. Unknown is never editable, but an
+        // unknown probe with no host report is left mounted (the host callback
+        // still settles it) instead of forcing a close that can stall.
+        if hostReadOnly == nil {
+            editUnavailableReason = OfficeInkText.t(
+                "编辑器尚未确认可编辑状态；若仍只读，请稍后重试或解除文档限制。",
+                "The editor has not confirmed an editable state yet; retry shortly, or remove the document restriction.")
+            return
+        }
+        if hostReadOnly == true {
             try await fallBackToPreview(reason: OfficeInkText.t(
                 "编辑器以只读模式打开，无法安全进入编辑。可重试；若仍只读，请解除文档限制后重新打开。",
                 "The editor opened read-only and could not safely switch to edit. Retry, or remove the document restriction and reopen."))
@@ -572,6 +728,9 @@ final class OfficeFileSession: ObservableObject {
             } else {
                 phase = .ready
             }
+            // Every owning surface refreshes its sibling entries after a
+            // verified original-file commit (and only then).
+            onCommitted?()
             return true
             #else
             throw CocoaError(.featureUnsupported)
@@ -702,6 +861,45 @@ final class OfficeFileSession: ObservableObject {
             try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
                 native.saveWorkingCopy { error in
                     if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+                }
+            }
+            let copy = try await workspace.prepareExport(session)
+            exportSnapshot = copy
+            exportWorkspace = workspace
+            phase = .ready
+            return copy
+            #else
+            throw CocoaError(.featureUnsupported)
+            #endif
+        } catch {
+            self.error = error.localizedDescription
+            phase = runtimeFailed || controller == nil ? .failed : .ready
+            return nil
+        }
+    }
+
+    /// Immutable snapshot for the system share sheet. Unlike
+    /// `prepareSaveCopy` a read-only preview may share too: its working copy
+    /// holds exactly the last committed bytes, so the shared file is truthful
+    /// in both modes. An editable session flushes the engine first so the
+    /// shared copy includes every accepted edit. The original file is never
+    /// handed out or mutated, and the snapshot is reclaimed by
+    /// `finishSaveCopy()` when the sheet dismisses.
+    func prepareShareCopy() async -> DocumentExportSnapshot? {
+        guard canAct, exportSnapshot == nil, let workspace, let session else { return nil }
+        operating = true
+        defer { finishOperation() }
+        phase = .saving
+        error = nil
+        do {
+            #if canImport(FloeOfficeNative)
+            if !readOnly, let native = controller as? FloeOfficeNativeViewController {
+                native.view.isUserInteractionEnabled = false
+                defer { native.view.isUserInteractionEnabled = true }
+                try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
+                    native.saveWorkingCopy { error in
+                        if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+                    }
                 }
             }
             let copy = try await workspace.prepareExport(session)
@@ -885,6 +1083,8 @@ final class OfficeFileSession: ObservableObject {
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
         runtimeFailed = false
         engineSessionReadOnly = nil
+        resolveEnginePermission(nil)
+        startOpenWatchdog(for: native, readOnly: readOnly)
         // Readiness is claimed from the permission callback, not the raw
         // working-copy event: the host verifies the engine's actual backing
         // permission (and follows the guarded edit entry for an editable
@@ -892,11 +1092,17 @@ final class OfficeFileSession: ObservableObject {
         // failure here.
         native.onWorkingCopyOpened = { [weak self, weak native] success in
             guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
-            if !success { self.fail(CocoaError(.fileReadCorruptFile)) }
+            if !success {
+                self.cancelOpenWatchdog()
+                self.resolveEnginePermission(nil)
+                self.fail(CocoaError(.fileReadCorruptFile))
+            }
         }
         native.onWorkingCopyOpenedWithPermission = { [weak self, weak native] success, readOnly in
             guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+            self.cancelOpenWatchdog()
             self.engineSessionReadOnly = readOnly
+            self.resolveEnginePermission(readOnly)
             if !success {
                 self.fail(CocoaError(.fileReadCorruptFile))
                 return
@@ -924,6 +1130,7 @@ final class OfficeFileSession: ObservableObject {
         native.onEnginePermissionChanged = { [weak self, weak native] readOnly in
             guard let self, let native, self.controller === native else { return }
             self.engineSessionReadOnly = readOnly
+            self.resolveEnginePermission(readOnly)
             if !readOnly, !native.isReadOnly, self.readOnly {
                 self.readOnly = false
                 self.editUnavailableReason = nil
@@ -949,9 +1156,12 @@ final class OfficeFileSession: ObservableObject {
     }
     private func closeController() async throws {
         guard let controller else { return }
+        cancelOpenWatchdog()
+        resolveEnginePermission(nil)
         // No view means the upstream viewWillAppear has not opened a document.
         // Do not load a WebView merely to close an abandoned preview request.
         guard controller.isViewLoaded else {
+            invalidateInkApply()
             explicitSaveBridge?.invalidate()
             explicitSaveBridge = nil
             self.controller = nil
@@ -962,10 +1172,35 @@ final class OfficeFileSession: ObservableObject {
         defer { expectedClose = false }
         #if canImport(FloeOfficeNative)
         if let native = controller as? FloeOfficeNativeViewController {
-            try await withCheckedThrowingContinuation { (closed: CheckedContinuation<Void, Error>) in
-                native.closeWorkingCopy { error in
-                    if let error { closed.resume(throwing: error) } else { closed.resume() }
+            let result = await Self.closeWorkingCopy(native, timeout: 8)
+            switch result {
+            case .acknowledged(let message):
+                // Free the surface before reporting so a failed engine close
+                // cannot keep a dead editor on screen.
+                invalidateInkApply()
+                explicitSaveBridge?.invalidate()
+                explicitSaveBridge = nil
+                self.controller = nil
+                if let message {
+                    throw NSError(domain: "org.floeagent.office.close", code: 2, userInfo: [
+                        NSLocalizedDescriptionKey: message
+                    ])
                 }
+                return
+            case .timedOut:
+                // The engine did not settle within the bound. Nothing was
+                // written back or deleted; its private copies stay on disk.
+                // Release this surface so the UI can never sit on 正在关闭
+                // forever, and report the unsettled close honestly.
+                invalidateInkApply()
+                explicitSaveBridge?.invalidate()
+                explicitSaveBridge = nil
+                self.controller = nil
+                throw NSError(domain: "org.floeagent.office.close", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: OfficeInkText.t(
+                        "文档引擎未在限定时间内完成关闭；编辑副本已保留，请重试。",
+                        "The document engine did not finish closing in time. Your document copies were retained; please retry.")
+                ])
             }
         }
         #endif
@@ -973,6 +1208,33 @@ final class OfficeFileSession: ObservableObject {
         explicitSaveBridge?.invalidate()
         explicitSaveBridge = nil
         self.controller = nil
+    }
+
+    fileprivate enum OfficeCloseResult {
+        /// The engine reported a result; the associated value is an error
+        /// message when the close failed, nil when it succeeded.
+        case acknowledged(String?)
+        case timedOut
+    }
+
+    /// Bounded native close. The pinned host settles the UIDocument and calls
+    /// back; a host that never calls back must not strand the session.
+    private static func closeWorkingCopy(_ native: FloeOfficeNativeViewController,
+                                         timeout: TimeInterval) async -> OfficeCloseResult {
+        let ack = OfficeCloseAck()
+        Task { @MainActor in
+            native.closeWorkingCopy { error in
+                ack.resolve(error.map { .acknowledged($0.localizedDescription) } ?? .acknowledged(nil))
+            }
+        }
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.1, timeout) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            ack.resolve(.timedOut)
+        }
+        let result = await ack.wait()
+        timeoutTask.cancel()
+        return result
     }
     private func fail(_ error: Error) {
         self.error = error.localizedDescription
@@ -1025,13 +1287,22 @@ struct OfficeDocumentSurface: View {
 struct OfficeDocumentEditorView: View {
     let relativePath: String
     @ObservedObject var session: OfficeFileSession
-    /// Set by `FilePreviewView` only for a cloud/network document; nil for
-    /// local Office and Notes so they keep their physical-URL ink identity.
+    /// Set by `FilePreviewView` for a cloud/network document and by Notes for
+    /// its generated Office documents, whose staged copies get fresh paths on
+    /// every open; nil for local Office documents, which keep their
+    /// physical-URL ink identity.
     var stableInkIdentity: OfficeInkDocumentIdentity? = nil
     var onSaved: (() async -> Bool)?
     var onClose: (() -> Void)? = nil
     /// A feature-owned tab strip replaces the standalone navigation title.
     var inlineHeader: AnyView? = nil
+    /// When false the owning surface owns the first intent: Notes opens a
+    /// remembered read-only preview and only enters editing from the App
+    /// toolbar's Edit action; the fullscreen editor requests editing
+    /// explicitly once its local open has settled. Editing is the default
+    /// everywhere else, where mounting this surface is already an explicit
+    /// edit action.
+    var requestsEditingOnAppear: Bool = true
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
@@ -1046,6 +1317,8 @@ struct OfficeDocumentEditorView: View {
     @State private var showingAttachments = false
     @State private var showingInkControls = false
     @State private var attachmentError: String?
+    /// In-flight share snapshot; reclaimed by `finishSaveCopy()` on dismiss.
+    @State private var shareSnapshot: DocumentExportSnapshot?
 
     var body: some View {
         OfficeDocumentSurface(session: session)
@@ -1080,25 +1353,35 @@ struct OfficeDocumentEditorView: View {
                     documentKey: relativePath)
                 // Queued intent: a tap that lands while the document is still
                 // opening is replayed instead of being dropped by `operating`.
-                await session.requestEditing()
+                if requestsEditingOnAppear { await session.requestEditing() }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let reason = session.editUnavailableReason {
+                    // Informational only: the edit entry lives in the App's top
+                    // toolbar, not in a floating control over the document.
                     HStack(spacing: 10) {
                         Label(reason, systemImage: "lock")
                             .font(.footnote).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
-                        if session.phase == .ready {
-                            Button(OfficeInkText.t("重试编辑", "Retry editing")) {
-                                Task { await session.requestEditing() }
-                            }
-                            .font(.footnote)
-                            .accessibilityIdentifier("office.editor.retryEdit")
-                        }
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(.bar)
                     .accessibilityIdentifier("office.editor.readonlyReason")
+                } else if session.isRemoteSnapshot {
+                    // A cloud/network snapshot is preview-only until a real
+                    // remote write-back exists; say so next to the document
+                    // instead of offering edit affordances that would only
+                    // touch the temporary copy.
+                    HStack(spacing: 10) {
+                        Label(OfficeFileSession.remoteSnapshotHint, systemImage: "icloud.and.arrow.down")
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.bar)
+                    .accessibilityIdentifier("office.editor.remoteSnapshotHint")
                 }
             }
             .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
@@ -1137,6 +1420,11 @@ struct OfficeDocumentEditorView: View {
                     exportSucceeded = saved
                     export = nil
                 }
+            }
+            .sheet(item: $shareSnapshot, onDismiss: {
+                Task { await session.finishSaveCopy() }
+            }) { snapshot in
+                OfficeDocumentShareSheet(url: snapshot.fileURL)
             }
             .alert("副本已保存", isPresented: $savedCopyNotice) {
                 Button("好", role: .cancel) {}
@@ -1179,6 +1467,20 @@ struct OfficeDocumentEditorView: View {
     }
 
     @ViewBuilder private var primaryActions: some View {
+        // The App owns the edit entry: preview exposes Edit in its own top
+        // toolbar, never a floating engine button over the document. A
+        // cloud/network snapshot never exposes Edit at all: there is no real
+        // remote write-back, so editing could only change the temp copy.
+        if session.readOnly, session.phase == .ready, !session.isRemoteSnapshot {
+            Button {
+                Task { _ = await session.requestEditing() }
+            } label: {
+                Label(OfficeInkText.t("编辑", "Edit"), systemImage: "square.and.pencil")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .disabled(!session.canAct)
+            .accessibilityIdentifier("office.preview.edit")
+        }
         if session.supportsAttachmentInsertion {
             Menu {
                 Button("从工作区选择", systemImage: "folder") { choosingWorkspaceAttachment = true }
@@ -1217,7 +1519,18 @@ struct OfficeDocumentEditorView: View {
                 primaryActions.labelStyle(.titleAndIcon)
                 Divider()
             }
-            Button("保存并返回") { Task { await saveAndDismiss() } }
+            if session.readOnly, session.phase == .ready, !session.isRemoteSnapshot {
+                Button(OfficeInkText.t("编辑", "Edit"), systemImage: "square.and.pencil") {
+                    Task { _ = await session.requestEditing() }
+                }
+                .accessibilityIdentifier("office.preview.edit.menu")
+            }
+            // A remote snapshot is read-only: nothing can be "saved back", so
+            // the save/discard entries stay hidden. Export, save-copy and
+            // share remain — those download truthfully to local files.
+            if !session.isRemoteSnapshot {
+                Button("保存并返回") { Task { await saveAndDismiss() } }
+            }
             if !session.exportFormats.isEmpty {
                 Menu("导出格式", systemImage: "square.and.arrow.up") {
                     ForEach(session.exportFormats, id: \.self) { format in
@@ -1231,12 +1544,21 @@ struct OfficeDocumentEditorView: View {
                 }
             }
             Button("另存副本…", systemImage: "doc.on.doc") { Task { export = await session.prepareSaveCopy() } }
-            if onSaved == nil {
+            // Explicit share of the current document from every Office
+            // surface (preview and edit): a verified snapshot copy goes to the
+            // system share sheet; the original file is never handed out.
+            Button(OfficeInkText.t("分享…", "Share…"), systemImage: "square.and.arrow.up") {
+                Task { shareSnapshot = await session.prepareShareCopy() }
+            }
+            .accessibilityIdentifier("office.editor.share")
+            if onSaved == nil, !session.isRemoteSnapshot {
                 Button("保留修改并返回") {
                     Task { if await session.keepChangesAndReturn() { dismissEditor() } }
                 }
             }
-            Button("放弃修改", role: .destructive) { confirmingDiscard = true }
+            if !session.isRemoteSnapshot {
+                Button("放弃修改", role: .destructive) { confirmingDiscard = true }
+            }
         } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
             .disabled(!session.canAct)
             .accessibilityLabel("文档操作")
@@ -1297,6 +1619,17 @@ struct OfficeCopyDestinationPicker: UIViewControllerRepresentable {
 private struct OfficeConvertedExport: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+/// System share sheet for a verified Office snapshot copy. Shared by the
+/// editor surface and the IDE's embedded Office action bar; the owning
+/// session reclaims the snapshot when the sheet dismisses.
+struct OfficeDocumentShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 private struct OfficeConvertedExportShareSheet: UIViewControllerRepresentable {
     let url: URL

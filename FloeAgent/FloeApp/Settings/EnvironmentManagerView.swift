@@ -2,6 +2,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeEnvironments
+import FloeExecution
 import FloePackages
 
 /// Jobs survive navigation and are drained by the environment lifecycle before deletion.
@@ -56,6 +57,15 @@ struct EnvironmentManagerView: View {
             Section {
                 Text("会话 → 项目 → 共享 → 基础").font(.headline)
                 Text("依赖按层查找，安装只写入所选环境。容器用于管理依赖、数据和生命周期。").font(.subheadline).foregroundStyle(.secondary)
+            }
+            Section("environment.tools.routes") {
+                NavigationLink {
+                    ToolRouteCatalogView(catalog: .bundled())
+                } label: {
+                    Label("environment.tools.routes.title", systemImage: "terminal")
+                }
+                Text("environment.tools.routes.summary")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if loading { ProgressView("读取环境与容量…") }
             if let error {
@@ -334,6 +344,82 @@ private struct EnvironmentDetailView: View {
         Task {
             defer { busy = false }
             do { try await operation(); await reload() } catch { self.error = String(describing: error) }
+        }
+    }
+}
+
+/// Read-only view of the reviewed shell/apt tool routes. Only direct commands
+/// and installed signed artifacts run on device; remote and unsupported
+/// entries are shown with the reason nothing is installed.
+struct ToolRouteCatalogView: View {
+    let catalog: ToolCapabilityCatalog
+
+    var body: some View {
+        List {
+            Section {
+                Text("environment.tools.routes.summary")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(ToolCapabilityCatalog.Route.allCases, id: \.self) { route in
+                let entries = catalog.tools.filter { $0.route == route }
+                if !entries.isEmpty {
+                    Section(Self.routeTitle(route)) {
+                        ForEach(entries) { tool in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(tool.displayName)
+                                    Spacer()
+                                    statusBadge(tool)
+                                }
+                                if !tool.commands.isEmpty {
+                                    Text(tool.commands.joined(separator: " · "))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let gap = tool.artifactGap {
+                                    Text(gap).font(.caption2).foregroundStyle(FloeTheme.pending)
+                                }
+                                if let alternative = tool.localAlternative {
+                                    Text(alternative).font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("environment.tools.routes.title")
+    }
+
+    @ViewBuilder
+    private func statusBadge(_ tool: ToolCapabilityCatalog.Entry) -> some View {
+        if tool.available {
+            Label("environment.tools.routes.available", systemImage: "checkmark.circle.fill")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.success)
+        } else if tool.installable {
+            Label("environment.tools.routes.installable", systemImage: "arrow.down.circle")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.primary)
+        } else if tool.route == .floePrecompiled {
+            Label("environment.tools.routes.pending", systemImage: "clock")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+        } else {
+            Label("environment.tools.routes.not_installed", systemImage: "minus.circle")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    static func routeTitle(_ route: ToolCapabilityCatalog.Route) -> LocalizedStringKey {
+        switch route {
+        case .direct: return "environment.tools.routes.direct"
+        case .floePrecompiled: return "environment.tools.routes.floe_precompiled"
+        case .remote: return "environment.tools.routes.remote"
+        case .unsupported: return "environment.tools.routes.unsupported"
         }
     }
 }

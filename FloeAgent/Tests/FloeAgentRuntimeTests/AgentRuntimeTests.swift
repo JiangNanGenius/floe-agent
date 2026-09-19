@@ -1034,6 +1034,29 @@ struct AgentRuntimeTests {
         #expect(request.messages.filter { $0.content.hasPrefix("# Floe runtime contract") }.count == 1)
     }
 
+    @Test("Seeded history keeps compaction summaries and recovered tool evidence")
+    func seededHistoryKeepsContinuationContext() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.textDelta(.init(text: "Continuing.")), .completed(.init(stopReason: .endTurn))]]
+        let history = [
+            ConversationMessage(role: "system", content: "[Context compaction notice]\nOlder messages were compacted into this summary."),
+            ConversationMessage(role: "system", content: "[Manual context snapshot]\nUser asked for an earlier summary."),
+            ConversationMessage(role: "system", content: "\(FloeAgentRuntime.priorToolEvidencePrefix)\n- video.generate [ok] call=job-1: submitted"),
+            ConversationMessage(role: "system", content: "Arbitrary historical system text that must stay excluded."),
+            ConversationMessage(role: "user", content: "Continue."),
+            ConversationMessage(role: "assistant", content: "Previous answer.")
+        ]
+        let runtime = makeRuntime(adapter: adapter)
+        await runtime.seedConversationHistory(history)
+        try await runtime.start(goal: "Continue.")
+
+        let request = try #require(adapter.requests.first)
+        #expect(request.messages.contains { $0.content.hasPrefix("[Context compaction notice]") })
+        #expect(request.messages.contains { $0.content.hasPrefix("[Manual context snapshot]") })
+        #expect(request.messages.contains { $0.content.hasPrefix(FloeAgentRuntime.priorToolEvidencePrefix) })
+        #expect(!request.messages.contains { $0.content.hasPrefix("Arbitrary historical system text") })
+    }
+
     @Test("Resume from checkpoint restores messages and continues")
     func resumeFromCheckpoint() async throws {
         let adapter = MockAdapter()

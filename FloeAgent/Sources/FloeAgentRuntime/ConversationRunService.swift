@@ -873,7 +873,13 @@ public actor ConversationRunService {
                 "tool": finishedToolName,
                 "id": result.callID,
                 "status": result.status.rawValue,
-                "summary": result.outputSummary,
+                // Tool output is untrusted and may accidentally echo a
+                // credential. Persist only the redacted projection; the live
+                // runtime still receives the original result for this turn.
+                "summary": SecretRedactor.redact(
+                    result.outputSummary,
+                    secret: secretForRedaction
+                ),
                 "outputDigest": result.outputDigest,
                 "durationMs": String(durationMs)
             ]

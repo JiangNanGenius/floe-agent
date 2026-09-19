@@ -8,6 +8,7 @@ import CryptoKit
 import FloeCore
 import FloePersistence
 import FloeProviders
+import FloeSync
 import FloeTools
 import FloeAgentRuntime
 
@@ -2046,6 +2047,9 @@ final class MediaGenerationService {
             return MediaGenerationSubmission(job: creation.job, deduplicated: true)
         }
         let key = videoCredential(for: job)
+        FloeLogger(category: .providers).info(
+            "videoSubmitAuthenticated providerID=\(provider.id.uuidString) model=\(model.remoteModelID) keyPresent=\(key != nil)"
+        )
         do {
             let submission = try await adapter.submit(
                 request, provider: provider, credentials: ProviderCredentials(apiKey: key)
@@ -2096,11 +2100,33 @@ final class MediaGenerationService {
         }
     }
 
-    /// Reads the job's provider credential at the call site only.
+    /// Reads the job's provider credential at the call site only. Resolves
+    /// through `KeychainSecretStore.readSecret(reference:)` — the same
+    /// secrets namespace and synchronizable fallback as the chat, image
+    /// generation and speed-test paths. The legacy `environment.keychain`
+    /// namespace is deliberately not consulted: no provider write path stores
+    /// secrets there, so reading it silently dropped the Authorization header
+    /// and the provider rejected the request with HTTP 401. Only provider/
+    /// model identifiers and key existence are logged, never secret bytes.
     private func videoCredential(for job: MediaGenerationJob) -> String? {
-        job.credentialReference.flatMap { reference in
-            try? environment.keychain.read(account: reference.keychainAccount)
-        }.flatMap { String(data: $0, encoding: .utf8) }
+        guard let reference = job.credentialReference else {
+            FloeLogger(category: .providers).warning(
+                "videoCredentialMissing providerID=\(job.providerID.uuidString) modelID=\(job.modelID.uuidString) reason=noSecretReference"
+            )
+            return nil
+        }
+        let key = KeychainSecretStore()
+            .readSecret(reference: reference)
+            .flatMap { String(data: $0, encoding: .utf8) }
+            .flatMap { value in
+                value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : value
+            }
+        if key == nil {
+            FloeLogger(category: .providers).warning(
+                "videoCredentialMissing providerID=\(job.providerID.uuidString) modelID=\(job.modelID.uuidString) account=\(reference.keychainAccount) synchronizable=\(reference.synchronizable)"
+            )
+        }
+        return key
     }
 
     /// Starts the single background URLSession download for a result URL.

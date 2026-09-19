@@ -49,9 +49,13 @@ public actor CapabilityInstaller {
         skillInstaller: (any CapabilitySkillInstalling)? = nil,
         fontInstaller: (any CapabilityFontInstalling)? = nil,
         modelInstaller: (any CapabilityModelInstalling)? = nil,
-        wasmStore: SignedWasmCapabilityStore? = nil
+        wasmStore: SignedWasmCapabilityStore? = nil,
+        toolCatalog: ToolCapabilityCatalog? = nil
     ) {
         var merged = catalog
+        if let toolCatalog {
+            merged.entries += CapabilityCatalog.shellToolEntries(from: toolCatalog)
+        }
         if let wasmStore {
             merged.entries += wasmStore.catalog.packages.map { entry in
                 // Interpreter-class entries carry a raised signed ceiling; say so
@@ -81,7 +85,7 @@ public actor CapabilityInstaller {
 
     public func installedIDs(environment: ToolEnvironment? = nil) async -> [String] {
         loadLedgerIfNeeded()
-        var ids = Set(ledger.values.filter { $0.kind != .pythonPackage && $0.kind != .wasmCommand }.map(\.id))
+        var ids = Set(ledger.values.filter { $0.kind != .pythonPackage && $0.kind != .wasmCommand && $0.kind != .shellTool }.map(\.id))
         let distributions: Set<String>
         if let pythonInstaller {
             distributions = Set((await pythonInstaller.installedDistributions(environment: environment)).map(Self.normalizedDistribution))
@@ -93,7 +97,26 @@ public actor CapabilityInstaller {
                 ids.insert(entry.id)
             }
         }
-        if let wasmStore { ids.formUnion(await wasmStore.installedIDs()) }
+        var wasmInstalled = Set<String>()
+        if let wasmStore {
+            wasmInstalled = Set(await wasmStore.installedIDs())
+            ids.formUnion(wasmInstalled)
+        }
+        // Reviewed tool routes: a direct command exists the moment the shell
+        // engine ships. Precompiled tools count as installed only through the
+        // verified signed store; remote/unsupported tools never do.
+        for entry in catalog.entries(kind: .shellTool) {
+            switch entry.route {
+            case .direct?:
+                ids.insert(entry.id)
+            case .floePrecompiled?:
+                if let signedIDs = entry.signedCatalogIDs, signedIDs.contains(where: { wasmInstalled.contains($0) }) {
+                    ids.insert(entry.id)
+                }
+            case .remote?, .unsupported?, .none:
+                break
+            }
+        }
         return ids.sorted()
     }
 
@@ -181,6 +204,8 @@ public actor CapabilityInstaller {
                               detail: "model installed", installedAt: Date())
         case .debData:
             throw FloeError.validationFailed("Use `dpkg -x <file.deb> <dir>` for data-only .deb payloads; apt does not install executable packages on iOS")
+        case .shellTool:
+            receipt = try installShellTool(entry)
         case .wasmCommand:
             guard let wasmStore else { throw FloeError.invalidConfiguration("Signed WASM catalog is unavailable") }
             try await wasmStore.install(id: entry.id, cancellation: cancellation)
@@ -188,6 +213,24 @@ public actor CapabilityInstaller {
         }
         record(receipt)
         return receipt
+    }
+
+    /// Reviewed tool routes never fake an install. A direct command already
+    /// exists, a pending artifact must name its gap, and remote/unsupported
+    /// routes refuse instead of pretending the tool can run locally.
+    private func installShellTool(_ entry: CapabilityCatalog.Entry) throws -> Receipt {
+        switch entry.route {
+        case .direct?:
+            return Receipt(id: entry.id, kind: entry.kind, tier: entry.tier,
+                           detail: "already available in the built-in shell; nothing was downloaded",
+                           installedAt: Date())
+        case .floePrecompiled?:
+            throw FloeError.validationFailed("\(entry.id) is a Floe precompiled tool whose signed artifact is not available yet; install it after the artifact is published and signed")
+        case .remote?:
+            throw FloeError.validationFailed("\(entry.id) is remote-only: it runs on a paired host with the tool on PATH, not on this device")
+        case .unsupported?, .none:
+            throw FloeError.validationFailed("\(entry.id) has no supported route on this device; use an approved remote host")
+        }
     }
 
     public func remove(id: String, environment: ToolEnvironment? = nil) async throws -> Receipt {
@@ -237,6 +280,15 @@ public actor CapabilityInstaller {
             persistLedger()
             return Receipt(id: entry.id, kind: entry.kind, tier: entry.tier,
                            detail: "ledger entry removed", installedAt: Date())
+        case .shellTool:
+            switch entry.route {
+            case .direct?:
+                throw FloeError.validationFailed("\(entry.id) ships inside the app shell and cannot be removed")
+            case .floePrecompiled?:
+                throw FloeError.validationFailed("\(entry.id) is removed with the signed catalog capability that provides its artifact")
+            case .remote?, .unsupported?, .none:
+                throw FloeError.validationFailed("\(entry.id) was never installed on this device; there is nothing to remove")
+            }
         }
     }
 

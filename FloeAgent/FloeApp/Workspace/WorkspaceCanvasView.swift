@@ -2217,26 +2217,6 @@ private final class CanvasDocumentStore: ObservableObject {
         persist()
     }
 
-    func addResearchNote(
-        text: String,
-        sourceURLs: [String],
-        runID: UUID
-    ) {
-        let count = selectedDocument?.nodes.count ?? 0
-        mutateSelectedDocument { document in
-            document.nodes.append(FloeCanvasNode(
-                text: text,
-                x: 320 + Double(count % 4) * 36,
-                y: 250 + Double(count % 5) * 34,
-                width: 340,
-                height: 240,
-                sourceURLs: sourceURLs,
-                licenseStatus: "许可待确认",
-                createdByRunID: runID
-            ))
-        }
-    }
-
     @discardableResult
     func applyAgentResult(text: String, to sourceNodeID: UUID, runID: UUID) -> UUID? {
         guard let source = selectedDocument?.nodes.first(where: { $0.id == sourceNodeID }) else {
@@ -8647,7 +8627,6 @@ private struct SharedCanvasAgentConversation: View {
     @State private var prompt = ""
     @State private var isNotesPickerPresented = false
     @State private var dictationPrefix = ""
-    @State private var insertedRunIDs = Set<UUID>()
     @State private var visibleTimelineCount = 30
 
     init(
@@ -8789,11 +8768,19 @@ private struct SharedCanvasAgentConversation: View {
                 canvasVoiceCaptureRow
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField("描述要查找、整理或生成的内容", text: $prompt, axis: .vertical)
-                        .lineLimit(2...5)
-                        .textFieldStyle(.plain)
-                        .submitLabel(.send)
-                        .onSubmit { Task { await submit() } }
+                    // Hardware keyboard: plain Return sends, Shift+Return
+                    // inserts a newline, and Return never sends during IME
+                    // composition. The software return key keeps sending, as
+                    // the previous `.submitLabel(.send)` surface did.
+                    ComposerReturnField(
+                        text: $prompt,
+                        placeholder: "描述要查找、整理或生成的内容",
+                        canSend: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            && viewModel.selectedModelID != nil,
+                        softwareReturnSends: true,
+                        lineLimit: 2...5,
+                        onReturn: { Task { await submit() } }
+                    )
                         .padding(.horizontal, 12)
                         .padding(.top, 12)
                         .accessibilityIdentifier("canvas.agent.input")
@@ -8867,22 +8854,9 @@ private struct SharedCanvasAgentConversation: View {
                     }
                     .buttonStyle(.bordered)
                 }
-                if let runID = viewModel.selectedRunID,
-                   !insertedRunIDs.contains(runID),
-                   let answer = latestAnswer(runID: runID) {
-                    Button("加入画布", systemImage: "rectangle.stack.badge.plus") {
-                        store.addResearchNote(
-                            text: answer,
-                            sourceURLs: extractURLs(from: answer),
-                            runID: runID
-                        )
-                        insertedRunIDs.insert(runID)
-                    }
-                    .buttonStyle(.bordered)
-                }
                 Spacer()
                 if !viewModel.isRunning {
-                    Text("Return 发送")
+                    Text("Return 发送 · Shift+Return 换行")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.tertiary)
                 }
@@ -9034,14 +9008,12 @@ private struct SharedCanvasAgentConversation: View {
         }
         // A queue/steer submission joins an existing run and returns before
         // that input has a distinct answer. Never attach the previous answer
-        // to the requested node; the finished result remains available via
-        // the explicit Add to Canvas action.
+        // to the requested node; the finished result stays in this conversation.
         guard !wasRunning else { return nil }
         guard let runID = viewModel.selectedRunID,
               let answer = latestAnswer(runID: runID) else { return nil }
         if let targetNodeID {
             _ = store.applyAgentResult(text: answer, to: targetNodeID, runID: runID)
-            insertedRunIDs.insert(runID)
         }
         return (answer, runID)
     }
@@ -9066,7 +9038,7 @@ private struct SharedCanvasAgentConversation: View {
                   documentID == store.project.selectedDocumentID,
                   let resultPoint = request.resultPoint else { return }
             let suggestions = associationSuggestions(from: result.answer)
-            let nodeIDs = store.addAssociationSuggestions(
+            store.addAssociationSuggestions(
                 suggestions,
                 from: request.nodeID,
                 sourcePort: request.sourcePort,
@@ -9074,9 +9046,6 @@ private struct SharedCanvasAgentConversation: View {
                 runID: result.runID,
                 documentID: documentID
             )
-            if !nodeIDs.isEmpty {
-                insertedRunIDs.insert(result.runID)
-            }
         } else {
             await submit(targetNodeID: request.nodeID)
         }
@@ -9123,21 +9092,6 @@ private struct SharedCanvasAgentConversation: View {
             return message.content
         }
         return String(message.content[range.upperBound...])
-    }
-
-    private func extractURLs(from text: String) -> [String] {
-        guard let detector = try? NSDataDetector(
-            types: NSTextCheckingResult.CheckingType.link.rawValue
-        ) else { return [] }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        var seen = Set<String>()
-        return detector.matches(in: text, options: [], range: range).compactMap { match in
-            guard let value = match.url?.absoluteString,
-                  let scheme = match.url?.scheme?.lowercased(),
-                  ["http", "https"].contains(scheme),
-                  seen.insert(value).inserted else { return nil }
-            return value
-        }
     }
 
     @MainActor

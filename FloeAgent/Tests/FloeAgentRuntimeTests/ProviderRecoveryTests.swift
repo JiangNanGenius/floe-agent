@@ -184,6 +184,97 @@ struct ProviderRecoveryTests {
         #expect(await runtime.providerAttempt()?.attempt == 2)
     }
 
+    @Test("on-device generation is never cancelled or retried by the cloud stall watchdog")
+    func localProviderIsExemptFromCloudWatchdog() async throws {
+        // The benchmark and ordinary chat differ only in request context, but
+        // a local MLX turn yields no provider event until prefill and decode
+        // finish. A cloud first-event timeout would cancel that GPU work in
+        // flight, which is the documented crash-adjacent path.
+        let adapter = SlowLocalAdapter(delay: .milliseconds(300))
+        let provider = localProvider()
+        let config = FloeAgentRuntime.Configuration(
+            conversationID: UUID(),
+            provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id),
+            maxProviderRetries: 0,
+            providerFirstEventTimeout: 0.02,
+            providerStreamIdleTimeout: 0.02,
+            providerReasoningIdleTimeout: 0.02
+        )
+        let runtime = FloeAgentRuntime(
+            configuration: config,
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore()
+        )
+
+        try await runtime.start(goal: "slow on-device turn")
+
+        #expect(adapter.callCount == 1)
+        #expect(await runtime.liveness().phase == .completed)
+        #expect(await runtime.providerAttempt()?.attempt == 1)
+    }
+
+    @Test("dispatch snapshots preserve the full tool-name ceiling")
+    func dispatchSnapshotPreservesToolCeiling() throws {
+        let provider = TestFixtures.localhostProvider()
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id),
+            messages: [],
+            allToolNames: ["video.generate", "video.models", "tools.search"]
+        )
+        let encoded = try JSONEncoder().encode(ProviderDispatchRequestSnapshot(request: request))
+        let restored = try JSONDecoder().decode(ProviderDispatchRequestSnapshot.self, from: encoded).request()
+        #expect(restored.allToolNames == ["video.generate", "video.models", "tools.search"])
+    }
+
+    private func localProvider() -> ProviderProfile {
+        ProviderProfile(
+            id: UUID(),
+            kind: .local,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "http://127.0.0.1")!,
+            displayName: "On-device models",
+            isEnabled: true,
+            allowsPlainHTTP: true
+        )
+    }
+
+}
+
+/// A local-style stream that stays silent longer than the configured cloud
+/// watchdog timeouts before producing a complete answer.
+private final class SlowLocalAdapter: ProviderAdapter, @unchecked Sendable {
+    let protocolKind: ModelProtocol = .openAIChatCompletions
+    private let calls = AsyncLock(0)
+    private let delay: Duration
+
+    init(delay: Duration) { self.delay = delay }
+
+    var callCount: Int { calls.withLock { $0 } }
+
+    func stream(
+        request: ProviderStreamRequest,
+        credentials: ProviderCredentials
+    ) -> AsyncThrowingStream<AgentEvent, Error> {
+        _ = calls.withLock { value -> Int in
+            value += 1
+            return value
+        }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                try? await Task.sleep(for: delay)
+                continuation.yield(.textDelta(.init(text: "on-device answer")))
+                continuation.yield(.completed(.init(stopReason: .endTurn)))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }
 
 /// First request remains open until cancellation; the reconnect attempt

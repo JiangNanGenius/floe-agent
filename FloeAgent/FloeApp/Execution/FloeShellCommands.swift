@@ -283,6 +283,7 @@ enum FloeShellCommands {
         registerNetwork(registry)
         registerPackages(registry)
         registerWasm(registry)
+        FloeShellCoreUtilities.register(in: registry)
         registry.register("git") { _, _, stderr in
             FloeShellWrite(stderr, "git: use the git.* agent tools (libgit2) or an approved remote host\n")
             return 127

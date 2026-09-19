@@ -15,6 +15,11 @@ public enum CanvasAgentToolPolicy {
         "web.search", "web.fetch",
         // Notes tools enforce a separate native picker grant per conversation.
         "notes.read", "notes.search", "notes.edit", "notes.attachFile",
+        // Read-only video candidate catalog. Canvas video execution stays on
+        // canvas.generate so results bind to canvas nodes; video.models lets
+        // the canvas model choose a public candidate itself instead of asking
+        // the user for an internal UUID.
+        "video.models",
         "canvas.getState", "canvas.applyOperations", "canvas.delete",
         "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
         "canvas.generate", "canvas.generationStatus"

@@ -1049,6 +1049,11 @@ struct CanvasAgentToolContractTests {
             discardUnreferencedGeneratedAssets: { batch in
                 await probe.recordDiscarded(batch.assets)
             },
+            // This synthetic environment has no configured video provider, so
+            // the resolver accepts any explicit candidate ID and the failure is
+            // produced by the provider submission below (production resolves
+            // public candidates through ConversationCenter).
+            resolveVideoModel: { modelID, _ in modelID ?? UUID() },
             submitVideo: { _, _, _, _, _, _ in
                 throw FloeError.internalError("Synthetic video submission failure")
             }

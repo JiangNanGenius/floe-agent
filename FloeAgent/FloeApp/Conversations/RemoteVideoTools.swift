@@ -25,7 +25,7 @@ struct RemoteVideoModelsTool: AgentTool {
 
     static let name = "video.models"
     static let toolDescription =
-        "List the configured, enabled and adapter-backed cloud video models (Google Veo/Omni, Volcengine Ark Seedance, Alibaba DashScope Wan). Read this before video.generate: it returns exact modelID values, the preferred route, each model's parameter contract (aspect ratios, resolutions, duration limits, audio/watermark/seed support) and its reference-image policy. Models whose provider has no native video adapter are never listed. Models with referenceImage.supported=true accept exactly one workspace-relative referenceImagePath or a conversation referenceImageAttachmentID; the image is read locally and sent to the provider inline as base64 (never as a local path), and unsupported models reject the argument instead of ignoring it."
+        "List the configured, enabled and adapter-backed cloud video models (Google Veo/Omni, Volcengine Ark Seedance, Alibaba DashScope Wan). Read this before video.generate: it returns the preferred route and every model's public selection name (`model`, its remote model ID), display name, parameter contract (aspect ratios, resolutions, duration limits, audio/watermark/seed support) and reference-image policy. When several candidates exist, choose the public candidate that fits the request yourself by passing its `model` value to video.generate; never ask the user for an internal UUID. Models whose provider has no native video adapter are never listed. Models with referenceImage.supported=true accept exactly one workspace-relative referenceImagePath or a conversation referenceImageAttachmentID; the image is read locally and sent to the provider inline as base64 (never as a local path), and unsupported models reject the argument instead of ignoring it."
     static let parametersJSON = #"{"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -56,6 +56,7 @@ struct RemoteVideoModelsTool: AgentTool {
                 ]
                 referenceImage["mode"] = route.contract.referenceMode ?? NSNull()
                 return [
+                    "model": route.publicModelID,
                     "modelID": route.modelID.uuidString,
                     "remoteModelID": route.remoteModelID,
                     "modelName": route.displayName,
@@ -72,7 +73,7 @@ struct RemoteVideoModelsTool: AgentTool {
                 "total": routes.count,
                 "models": entries,
                 "nextOffset": end < routes.count ? end as Any : NSNull(),
-                "policy": "These are the only usable video routes. Call video.generate once per request and track it with video.status; a replayed tool call for the same request returns the existing job instead of paying twice, while a new user request always creates a new job. Never resubmit a running, timed-out or outcome-unknown job. Reference images are read from the task workspace or a conversation attachment and sent inline when referenceImage.supported is true. Completion is downloaded automatically into the conversation workspace and announced with a notification."
+                "policy": "These are the only usable video routes. Pass a public candidate (`model` or `modelName`) to video.generate; the internal modelID is optional and must never be requested from the user. When several candidates exist, choose the one that fits the request from its public parameters yourself. Call video.generate once per request and track it with video.status; a replayed tool call for the same request returns the existing job instead of paying twice, while a new user request always creates a new job. Never resubmit a running, timed-out or outcome-unknown job. Reference images are read from the task workspace or a conversation attachment and sent inline when referenceImage.supported is true. Completion is downloaded automatically into the conversation workspace and announced with a notification."
             ]
             return String(decoding: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), as: UTF8.self)
         }
@@ -104,6 +105,12 @@ struct RemoteVideoModelsTool: AgentTool {
 struct RemoteVideoGenerateTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var prompt: String
+        /// Public candidate selection from video.models: its `model` (remote
+        /// model ID) or `modelName`. The current conversation model chooses
+        /// among the public candidates; the user never supplies a UUID.
+        var model: String?
+        /// Optional internal UUID retained for compatibility with older
+        /// callers. Prefer `model`.
         var modelID: UUID?
         var aspectRatio: String?
         var resolution: String?
@@ -122,11 +129,12 @@ struct RemoteVideoGenerateTool: AgentTool {
 
     static let name = "video.generate"
     static let toolDescription =
-        "Submit one durable video generation job for the current conversation and return its jobID immediately. Read video.models first for exact modelID values, allowed parameters and referenceImage support. Supply at most one reference image: referenceImagePath (workspace-relative PNG/JPEG/WebP) or referenceImageAttachmentID (an image attached to this conversation). The image is read locally and sent to the provider inline as base64; models without reference support reject it instead of ignoring it, and local paths are never uploaded silently. The job survives relaunches: polling resumes automatically and the finished video is downloaded into the conversation workspace with a notification. Use video.status to check progress and video.cancel to stop it. A replayed tool call for the same request returns the existing job; a distinct later request creates a new job. This tool is for real provider video generation, not for local GIF/animation conversion (use video.edit for a timed GIF source)."
+        "Submit one durable video generation job for the current conversation and return its jobID immediately. Read video.models first for the public candidate names (`model`/`modelName`), allowed parameters and referenceImage support, then choose the candidate that fits the request yourself. Pass its public `model` value; when only one route exists or it is already the preferred one you may omit the selection entirely. Never ask the user for an internal modelID or UUID. Supply at most one reference image: referenceImagePath (workspace-relative PNG/JPEG/WebP) or referenceImageAttachmentID (an image attached to this conversation). The image is read locally and sent to the provider inline as base64; models without reference support reject it instead of ignoring it, and local paths are never uploaded silently. The job survives relaunches: polling resumes automatically and the finished video is downloaded into the conversation workspace with a notification. Use video.status to check progress and video.cancel to stop it. A replayed tool call for the same request returns the existing job; a distinct later request creates a new job. This tool is for real provider video generation, not for local GIF/animation conversion (use video.edit for a timed GIF source)."
     static let parametersJSON = #"""
     {"type":"object","properties":{
       "prompt":{"type":"string","description":"Detailed description of the video to create"},
-      "modelID":{"type":"string","format":"uuid","description":"Exact modelID from video.models; omit to use the preferred route"},
+      "model":{"type":"string","description":"Public candidate from video.models: its `model` remote ID or its modelName. Choose it yourself when several candidates exist; never ask the user for an internal UUID."},
+      "modelID":{"type":"string","format":"uuid","description":"Optional legacy internal id from video.models; prefer the public `model` value"},
       "aspectRatio":{"type":"string","description":"Allowed aspect ratio from video.models"},
       "resolution":{"type":"string","description":"Allowed resolution from video.models"},
       "durationSeconds":{"type":"integer","minimum":1,"maximum":60,"description":"Allowed duration from video.models. Veo reference images require 8"},
@@ -149,7 +157,13 @@ struct RemoteVideoGenerateTool: AgentTool {
                 throw FloeError.invalidConfiguration("Video generation requires a conversation context")
             }
             let conversation = center.environment.conversationCenter
-            let (route, _, model) = try conversation.resolveAgentVideoRoute(modelID: args.modelID)
+            let (route, _, model) = try conversation.resolveAgentVideoRoute(
+                modelID: args.modelID,
+                selection: args.model
+            )
+            FloeLogger(category: .providers).info(
+                "videoRouteResolved surface=chat public=\(route.remoteModelID) preferred=\(route.preferred) candidates=\(conversation.agentVideoRoutes().count) explicit=\(args.model != nil || args.modelID != nil)"
+            )
             let options = try VideoRequestValidator.validate(
                 VideoGenerationOptions(
                     aspectRatio: args.aspectRatio,
@@ -201,6 +215,9 @@ struct RemoteVideoGenerateTool: AgentTool {
     func validate(_ args: Arguments) throws {
         guard !args.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw FloeError.validationFailed("prompt must not be empty")
+        }
+        if args.model != nil, args.modelID != nil {
+            throw FloeError.validationFailed("Use either the public `model` or the legacy `modelID`, not both")
         }
         if let duration = args.durationSeconds, !(1...60).contains(duration) {
             throw FloeError.validationFailed("durationSeconds must be within 1...60")
