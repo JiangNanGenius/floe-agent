@@ -44,6 +44,10 @@ public struct GitRepositorySnapshot: Codable, Sendable, Hashable {
     public let remoteURL: String?
     public let changes: [GitFileChange]
     public let recentCommits: [GitCommitSummary]
+    /// The discovered repository root. Differs from the inspected workspace
+    /// root when the workspace lives inside a repository (or a worktree); nil
+    /// for a non-repository. Change paths are always relative to this root.
+    public let repositoryRoot: URL?
 
     public init(
         isRepository: Bool,
@@ -52,7 +56,8 @@ public struct GitRepositorySnapshot: Codable, Sendable, Hashable {
         branches: [String] = [],
         remoteURL: String? = nil,
         changes: [GitFileChange] = [],
-        recentCommits: [GitCommitSummary] = []
+        recentCommits: [GitCommitSummary] = [],
+        repositoryRoot: URL? = nil
     ) {
         self.isRepository = isRepository
         self.branch = branch
@@ -61,6 +66,7 @@ public struct GitRepositorySnapshot: Codable, Sendable, Hashable {
         self.remoteURL = remoteURL
         self.changes = changes
         self.recentCommits = recentCommits
+        self.repositoryRoot = repositoryRoot
     }
 }
 

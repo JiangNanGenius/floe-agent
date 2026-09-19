@@ -9,6 +9,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import Testing
+import FloeGit
 @testable import FloeApp
 
 @Suite("FloeApp.OfficeEditIntentQueue")
@@ -169,6 +170,98 @@ struct OfficeIDETabTests {
         #expect(store.activeTab?.kind == .office)
         #expect(store.activeTab?.id == "docs/deck.pptx")
         #expect(store.tabs.count == 2) // code tab + the one office tab
+    }
+}
+
+@Suite("FloeApp.OfficeOpenRecovery")
+struct OfficeOpenRecoveryTests {
+
+    @Test("A resolve/open failure reaches a recoverable failed state, not an idle spinner")
+    @MainActor
+    func openFailureIsTerminalAndRecoverable() async {
+        let session = OfficeFileSession()
+        // Before any open the session is an idle, read-only preview.
+        #expect(session.phase == .idle)
+        #expect(session.readOnly)
+        // The owning surface reports a resolve/open failure (previously this
+        // only set `error`, leaving the phase on `.idle` → endless spinner).
+        session.reportOpenFailure(CocoaError(.fileReadNoPermission))
+        #expect(session.phase == .failed)
+        #expect(session.error != nil)
+        // Retry resets to `.idle` even though no working copy was ever
+        // created, so the owning loader re-arms and can retry the open.
+        await session.retryPreview()
+        #expect(session.phase == .idle)
+        #expect(session.error == nil)
+    }
+}
+
+@Suite("FloeApp.OfficeDeadlineGate")
+struct OfficeDeadlineGateTests {
+
+    @Test("The receipt returns at the deadline even when the callback never fires")
+    @MainActor
+    func deadlineGateReturnsWithoutCallback() async {
+        let receipt = OfficeSaveReceipt()
+        // Arm only a deadline; no engine callback ever resolves the receipt.
+        let deadline = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            receipt.resolve(.failure(CocoaError(.fileReadUnknown)))
+        }
+        let start = Date()
+        try? await receipt.wait()
+        // `wait()` returned because the deadline fired, not a callback.
+        #expect(Date().timeIntervalSince(start) < 2.0)
+        await deadline.value
+        // A late second resolve is ignored (no double-resume crash).
+        receipt.resolve(.success(()))
+    }
+
+    @Test("The first resolver wins and a late resolution is ignored")
+    @MainActor
+    func firstResolverWins() async {
+        let receipt = OfficeSaveReceipt()
+        receipt.resolve(.success(()))
+        try? await receipt.wait()
+        receipt.resolve(.failure(CocoaError(.fileReadUnknown)))
+        // Reaching here without a crash means the late failure was ignored.
+    }
+}
+
+@Suite("FloeApp.SourceControlChangeTree")
+struct SourceControlChangeTreeTests {
+
+    @Test("groups changes by directory into a nested, sorted tree")
+    @MainActor
+    func groupsByDirectory() {
+        let changes = [
+            GitFileChange(path: "Sources/Core/engine.swift", kind: .modified, staged: false),
+            GitFileChange(path: "Sources/App/main.swift", kind: .modified, staged: false),
+            GitFileChange(path: "README.md", kind: .modified, staged: false),
+        ]
+        let tree = SourceControlChangeTree.build(changes)
+        #expect(tree.count == 2)
+        // Sorted: "README.md" < "Sources".
+        #expect(tree[0].name == "README.md")
+        #expect(tree[0].change != nil)
+        #expect(tree[0].isFolder == false)
+        #expect(tree[1].name == "Sources")
+        #expect(tree[1].isFolder)
+        #expect(tree[1].change == nil)
+        #expect(tree[1].children.map(\.name) == ["App", "Core"])
+        let app = tree[1].children[0]
+        #expect(app.isFolder)
+        #expect(app.children.count == 1)
+        #expect(app.children[0].name == "main.swift")
+        #expect(app.children[0].change?.path == "Sources/App/main.swift")
+        // Ids are full repository-relative paths (stable across refreshes).
+        #expect(app.children[0].id == "Sources/App/main.swift")
+    }
+
+    @Test("an empty change list builds an empty tree")
+    @MainActor
+    func emptyBuildsEmpty() {
+        #expect(SourceControlChangeTree.build([]).isEmpty)
     }
 }
 #endif

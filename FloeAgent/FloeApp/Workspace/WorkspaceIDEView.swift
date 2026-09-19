@@ -315,7 +315,10 @@ struct WorkspaceIDEView: View {
                 let url = try await resolveOfficeURL(relativePath: tab.relativePath)
                 await session.open(url)
             } catch {
-                session.error = error.localizedDescription
+                // Resolve/open errors must reach a terminal, recoverable state:
+                // leaving the phase untouched shows an endless "opening"
+                // spinner and never re-arms this loader for a retry.
+                session.reportOpenFailure(error)
             }
         }
     }
