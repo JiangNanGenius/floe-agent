@@ -432,6 +432,53 @@ struct ConversationRunServiceTests {
         #expect(result.sequence < after.sequence)
     }
 
+    @Test("Persisted tool-result summaries redact the active provider secret")
+    func persistedToolResultSummaryIsRedacted() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Redaction", createdAt: Date(), updatedAt: Date()
+        ))
+        let secret = "sk-tool-result-fixture-12345678"
+        let call = try TestFixtures.toolCall(id: "call_secret_result")
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call)],
+            [.textDelta(.init(text: "完成。")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = .init(
+            name: call.toolName, riskLabels: [], isSideEffecting: false
+        )
+        executor.results = [ToolResult(
+            callID: call.id,
+            status: .ok,
+            outputSummary: "provider returned \(secret)",
+            outputDigest: "fixture-digest"
+        )]
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            credentials: .init(apiKey: secret),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "执行并保存结果")
+
+        let event = try #require(
+            try await runStore.events(runID: service.runID).first { $0.kind == .toolResult }
+        )
+        #expect(!event.payloadJSON.contains(secret))
+        #expect(event.payloadJSON.contains(SecretRedactor.replacement))
+    }
+
     @Test("A completion without final text persists an explicit error event")
     func completionWithoutFinalText() async throws {
         let (conversationStore, runStore) = try await makeStores()
