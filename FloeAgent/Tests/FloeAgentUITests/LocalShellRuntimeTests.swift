@@ -342,18 +342,70 @@ struct LocalShellRuntimeTests {
         #expect(output.contains("missing-command-ok"))
     }
 
-    @Test(.timeLimit(.minutes(1))) func timeoutRetainsWorkerUntilItStopsAndNextRunCanProceed() async throws {
+    @Test(.timeLimit(.minutes(1))) func timeoutDoesNotPoisonTheGateAndNextRunProceeds() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = IOSSystemShellBackend()
         let id = UUID().uuidString
-        let first = await backend.run(.init(command: "sleep 2", cwd: ".", rootURL: root, timeout: 0.1, sessionID: id), cancellation: nil)
+        // A command that outlives its deadline. After the bounded cancellation
+        // grace the gate is reclaimed; the next run must execute even while the
+        // timed-out worker is still stopping.
+        let first = await backend.run(.init(command: "sleep 5", cwd: ".", rootURL: root, timeout: 0.1, sessionID: id), cancellation: nil)
         guard case .timedOut = first else { Issue.record("Expected sleep timeout: \(first)"); return }
-        let next = await backend.run(.init(command: "printf 'after-worker'", cwd: ".", rootURL: root, timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
-        guard case .exited(let code, let output, _, _, _, _) = next else { Issue.record("Worker lease did not recover: \(next)"); return }
+        // Partial output produced before the deadline is preserved, never a
+        // fabricated timeout after a hung finalizer.
+        let second = await backend.run(.init(command: "printf 'after-worker'", cwd: ".", rootURL: root, timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .exited(let code, let output, _, _, _, _) = second else { Issue.record("Worker lease did not recover: \(second)"); return }
         #expect(code == 0 && output == "after-worker")
+        // The abandoned worker still unwinds on its own; it just does not own
+        // the gate any more.
+        let deadline = Date().addingTimeInterval(8)
+        while FloeShellHasActiveWorker(id) && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
         #expect(!FloeShellHasActiveWorker(id))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func timedOutCommandKeepsPartialOutputAndNextRunProceeds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = IOSSystemShellBackend()
+        let first = await backend.run(.init(command: "printf 'partial-output\\n'; sleep 5", cwd: ".", rootURL: root,
+            timeout: 0.4, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .timedOut(let partial, _, _) = first else { Issue.record("Expected timeout with partial output: \(first)"); return }
+        #expect(partial.contains("partial-output"))
+        let next = await backend.run(.init(command: "printf 'after-timeout'", cwd: ".", rootURL: root,
+            timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+        guard case .exited(let code, let output, _, _, _, _) = next else { Issue.record("Gate stayed poisoned: \(next)"); return }
+        #expect(code == 0 && output == "after-timeout")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func interactiveSessionReceivesInputAndReturnsOutput() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = IOSSystemShellBackend()
+        let sessionID = UUID().uuidString.lowercased()
+        let opened = try await backend.openSession(.init(cwd: ".", rootURL: root, sessionID: sessionID), cancellation: nil)
+        #expect(opened.alive)
+        do {
+            // The interactive shell must read the session's stdin descriptor
+            // (thread_stdin), not the App's process fd 0.
+            let typed = try await backend.exchangeSession(.init(sessionID: sessionID,
+                input: "printf 'interactive-ok\\n'\n", waitMs: 500, maxBytes: 4096), cancellation: nil)
+            var received = typed.output
+            for _ in 0..<10 where !received.contains("interactive-ok") {
+                let next = try await backend.exchangeSession(.init(sessionID: sessionID, input: nil,
+                    waitMs: 500, maxBytes: 4096), cancellation: nil)
+                received += next.output
+                if !next.alive { break }
+            }
+            #expect(received.contains("interactive-ok"), "interactive session returned: \(received)")
+        } catch {
+            await backend.closeSession(sessionID: sessionID)
+            throw error
+        }
+        await backend.closeSession(sessionID: sessionID)
     }
 
     @Test func posixLoopAndPipe() async throws {

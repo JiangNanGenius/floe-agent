@@ -11,6 +11,7 @@
 #import <signal.h>
 #import <unistd.h>
 #import <fcntl.h>
+#import <poll.h>
 #import <os/log.h>
 #import <stdio.h>
 #import <stdlib.h>
@@ -103,6 +104,7 @@ struct FloeRunGateCounters {
     int64_t waiters = 0;
     int64_t acquisitions = 0;
     int64_t busyReturns = 0;
+    int64_t abandonedWorkers = 0;
     int64_t waitMsTotal = 0;
     std::string ownerSession;
     double ownerStarted = 0;
@@ -142,6 +144,14 @@ void FloeRecordGateBusy(void) {
     counters.busyReturns += 1;
 }
 
+/// A worker outlived its deadline and the cancellation grace; the gate was
+/// reclaimed instead of being held until that worker happens to stop.
+void FloeRecordGateAbandoned(void) {
+    FloeRunGateCounters &counters = FloeRunGateCountersRef();
+    std::lock_guard<std::mutex> guard(counters.lock);
+    counters.abandonedWorkers += 1;
+}
+
 } // namespace
 
 NSString *FloeShellRunGateDiagnostics(void) {
@@ -154,9 +164,10 @@ NSString *FloeShellRunGateDiagnostics(void) {
         ? (int64_t)MAX(0.0, (NSProcessInfo.processInfo.systemUptime - counters.ownerStarted) * 1000.0)
         : 0;
     return [NSString stringWithFormat:
-            @"gate owner=%@ heldMs=%lld waiters=%lld acquisitions=%lld busyReturns=%lld waitMsTotal=%lld",
+            @"gate owner=%@ heldMs=%lld waiters=%lld acquisitions=%lld busyReturns=%lld abandoned=%lld waitMsTotal=%lld",
             owner ?: @"none", (long long)heldMs, (long long)counters.waiters,
             (long long)counters.acquisitions, (long long)counters.busyReturns,
+            (long long)counters.abandonedWorkers,
             (long long)counters.waitMsTotal];
 }
 
@@ -219,6 +230,13 @@ BOOL FloeShellSetMiniRoot(NSString *rootPath) {
 
 namespace {
 
+struct FloeRunContext;
+
+/// Releases the process-wide engine run gate exactly once for `context`.
+/// Called by the caller when it reclaims a gate from a non-cooperative worker
+/// and by the worker's own teardown, whichever happens first.
+void FloeReleaseRunGate(FloeRunContext *context);
+
 struct FloeCaptureBudget {
     std::mutex lock;
     size_t remaining;
@@ -229,23 +247,71 @@ struct FloePipeCapture {
     std::mutex lock;
     std::string bytes;
     std::thread reader;
+    std::atomic_bool stopRequested{false};
+    /// Absolute uptime (seconds) when a stopping reader gives up even if bytes
+    /// keep arriving. 0 = drain until EOF.
+    std::atomic<double> hardDeadline{0};
+    double quietWindow = 0;
+
+    static double uptime() { return NSProcessInfo.processInfo.systemUptime; }
+
+    /// Stops the reader after `quietSeconds` without new output, or
+    /// `hardSeconds` from now, whichever comes first. The earlier hard
+    /// deadline wins so an abandoned worker cannot extend a reclaim.
+    void requestStop(double quietSeconds, double hardSeconds) {
+        double proposed = uptime() + MAX(0.05, hardSeconds);
+        double current = hardDeadline.load(std::memory_order_relaxed);
+        while (current == 0 || proposed < current) {
+            if (hardDeadline.compare_exchange_weak(current, proposed, std::memory_order_relaxed)) break;
+        }
+        std::lock_guard<std::mutex> guard(lock);
+        quietWindow = MAX(0.05, quietSeconds);
+        stopRequested.store(true, std::memory_order_release);
+    }
+
     explicit FloePipeCapture(int fd, std::shared_ptr<FloeCaptureBudget> budget) {
         reader = std::thread([this, fd, budget] {
             char chunk[16384];
+            double lastDataAt = uptime();
             while (true) {
-                ssize_t count = read(fd, chunk, sizeof(chunk));
-                if (count < 0 && errno == EINTR) continue;
-                if (count <= 0) break;
-                size_t retained;
-                { std::lock_guard<std::mutex> guard(budget->lock);
-                  retained = std::min((size_t)count, budget->remaining);
-                  budget->remaining -= retained; }
-                if (retained) { std::lock_guard<std::mutex> guard(lock); bytes.append(chunk, retained); }
+                if (stopRequested.load(std::memory_order_acquire)) {
+                    double now = uptime();
+                    if (now >= hardDeadline.load(std::memory_order_relaxed)) break;
+                    double quiet;
+                    { std::lock_guard<std::mutex> guard(lock); quiet = quietWindow; }
+                    if (quiet > 0 && now - lastDataAt >= quiet) break;
+                }
+                struct pollfd descriptor = { fd, POLLIN, 0 };
+                int ready = poll(&descriptor, 1, 50);
+                if (ready > 0) {
+                    if ((descriptor.revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
+                    ssize_t count = read(fd, chunk, sizeof(chunk));
+                    if (count > 0) {
+                        lastDataAt = uptime();
+                        size_t retained;
+                        { std::lock_guard<std::mutex> guard(budget->lock);
+                          retained = std::min((size_t)count, budget->remaining);
+                          budget->remaining -= retained; }
+                        if (retained) { std::lock_guard<std::mutex> guard(lock); bytes.append(chunk, retained); }
+                        continue;
+                    }
+                    if (count == 0) break;                       // EOF
+                    if (errno == EINTR) continue;
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    break;
+                }
+                if (ready < 0 && errno != EINTR) break;
             }
             close(fd);
         });
     }
-    void finish() { if (reader.joinable()) reader.join(); }
+    /// Bounded finalization: drain whatever already arrived (plus a short quiet
+    /// window for a last flush) and never block on a write end held open by a
+    /// descendant or a detached command thread.
+    void finish() {
+        requestStop(0.15, 2.0);
+        if (reader.joinable()) reader.join();
+    }
     ~FloePipeCapture() { finish(); }
     NSString *snapshot() {
         std::lock_guard<std::mutex> guard(lock);
@@ -271,7 +337,14 @@ struct FloeRunContext {
     __strong NSString *trackedSessionID;
     __strong NSString *temporaryDirectory;
     __strong NSString *originalDirectory;
-    bool ownsRunGate = false;
+    /// Exactly-once gate ownership. A timeout/cancel caller may reclaim the
+    /// gate before the worker stops; the worker's own teardown then finds the
+    /// release already done instead of signalling a second time.
+    std::atomic_bool gateReleased{false};
+    /// The caller stopped waiting and reclaimed the gate. This worker no
+    /// longer owns process-wide state: it must not restore the working
+    /// directory another run may already own.
+    std::atomic_bool abandoned{false};
     bool engineSessionOpened = false;
     std::atomic_bool finished{false};
     ~FloeRunContext() {
@@ -283,15 +356,20 @@ struct FloeRunContext {
         if (errorCapture) errorCapture->finish();
         if (engineSessionOpened) ios_closeSession(sessionKey);
         if (sessionKey) free(sessionKey);
-        if (originalDirectory) [[NSFileManager defaultManager] changeCurrentDirectoryPath:originalDirectory];
+        if (!abandoned.load(std::memory_order_acquire) && originalDirectory) {
+            [[NSFileManager defaultManager] changeCurrentDirectoryPath:originalDirectory];
+        }
         if (temporaryDirectory) [[NSFileManager defaultManager] removeItemAtPath:temporaryDirectory error:nil];
         if (trackedSessionID) FloeWorkerFinished(trackedSessionID);
-        if (ownsRunGate) {
-            FloeRecordGateReleased(trackedSessionID);
-            dispatch_semaphore_signal(FloeShellRunGate());
-        }
+        FloeReleaseRunGate(this);
     }
 };
+
+void FloeReleaseRunGate(FloeRunContext *context) {
+    if (context->gateReleased.exchange(true, std::memory_order_acq_rel)) { return; }
+    FloeRecordGateReleased(context->trackedSessionID);
+    dispatch_semaphore_signal(FloeShellRunGate());
+}
 
 void *FloeRunThreadMain(void *rawContext) {
     std::unique_ptr<std::shared_ptr<FloeRunContext>> holder(
@@ -380,10 +458,10 @@ FloeShellBridgeStatus FloeShellRunCommand(
         return FloeShellBridgeStatusBusy;
     }
     const NSTimeInterval executionStarted = NSProcessInfo.processInfo.systemUptime;
-    // Ownership follows the actual worker, including after a caller's deadline.
-    // Another one-shot must not reset cwd/root while that worker is still alive.
+    // The worker starts as the gate owner. Ownership is released exactly once:
+    // by this caller when the deadline plus the cancellation grace expire, or
+    // by the worker's teardown, whichever comes first.
     auto context = std::make_shared<FloeRunContext>();
-    context->ownsRunGate = true;
     context->trackedSessionID = sessionID;
     FloeRecordGateAcquired(sessionID);
     if (shouldCancel && shouldCancel()) { return FloeShellBridgeStatusCancelled; }
@@ -449,22 +527,31 @@ FloeShellBridgeStatus FloeShellRunCommand(
             [NSThread sleepForTimeInterval:0.02];
         }
         if (timedOut || cancelled) {
-            // Give the interrupt a short grace period to flush output.
+            // Give cooperative cancellation (dash polls an owned-session flag
+            // on its own execution thread) a bounded window to flush output
+            // and stop. A native command that ignores its token must not keep
+            // the process-wide gate beyond this window.
             NSTimeInterval graceStarted = NSProcessInfo.processInfo.systemUptime;
-            while (!context->finished.load(std::memory_order_acquire) && NSProcessInfo.processInfo.systemUptime - graceStarted < 1.0) {
+            while (!context->finished.load(std::memory_order_acquire) && NSProcessInfo.processInfo.systemUptime - graceStarted < 0.5) {
                 [NSThread sleepForTimeInterval:0.02];
             }
         }
         if (context->finished.load(std::memory_order_acquire)) {
             pthread_join(thread, NULL);
         } else {
-            // The worker outlived its caller's deadline. It keeps the gate and
-            // its engine resources until it actually stops; a later caller
-            // reports Busy/not-started instead of a fabricated timeout. There
-            // is deliberately no thread kill: releasing global runtime state
-            // while the worker still uses it is unsafe.
+            // Hard reclaim: the worker outlived its caller's deadline and the
+            // cancellation grace. Future commands must not report Busy for an
+            // unbounded time. The abandoned worker keeps its own engine
+            // session, thread-local streams and pipes (so it cannot corrupt a
+            // later run's stdio) but no longer owns the gate; its teardown
+            // releases nothing and never restores the working directory.
+            context->abandoned.store(true, std::memory_order_release);
+            if (context->outputCapture) context->outputCapture->requestStop(0.15, 0.4);
+            if (context->errorCapture) context->errorCapture->requestStop(0.15, 0.4);
+            FloeReleaseRunGate(context.get());
             pthread_detach(thread);
-            os_log_error(FloeShellLogGate(), "floeShellWorkerDetached session=%{public}@ waitedMs=%lld %{public}@",
+            FloeRecordGateAbandoned();
+            os_log_error(FloeShellLogGate(), "floeShellWorkerAbandoned session=%{public}@ waitedMs=%lld %{public}@",
                          sessionID, (long long)((NSProcessInfo.processInfo.systemUptime - requestedAt) * 1000.0),
                          FloeShellRunGateDiagnostics());
         }
@@ -473,8 +560,10 @@ FloeShellBridgeStatus FloeShellRunCommand(
         if (outStdout) { *outStdout = context->outputCapture->snapshot(); }
         if (outStderr) { *outStderr = context->errorCapture->snapshot(); }
         if (outExitCode) { *outExitCode = context->finished.load(std::memory_order_acquire) ? context->exitCode : 124; }
-        // The worker retains streams, its registered session, temporary input
-        // and execution lease until it has actually stopped and drained output.
+        // A completed worker has already drained and closed its pipes. An
+        // abandoned worker keeps its streams until it stops; its readers stop
+        // at the reclaim deadline so a descendant holding a pipe open cannot
+        // leak descriptors or block later runs.
 
         if (cancelled) { return FloeShellBridgeStatusCancelled; }
         if (timedOut) { return FloeShellBridgeStatusTimedOut; }

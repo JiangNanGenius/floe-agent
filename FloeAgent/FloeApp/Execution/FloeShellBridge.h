@@ -41,8 +41,13 @@ typedef NS_ENUM(NSInteger, FloeShellBridgeStatus) {
 /// `gateTimeout` bounds only the wait for the process-wide engine gate. A
 /// command that cannot start inside that window returns `Busy` with its
 /// output untouched; `timeout` bounds the execution itself once the gate is
-/// owned. The worker that owns the gate always keeps it until it has actually
-/// stopped: callers never release another worker's global runtime state.
+/// owned. After a timeout or cancellation the bridge requests cooperative
+/// interruption, waits a bounded grace and then reclaims the gate even when
+/// the worker has not stopped: a command that ignores cancellation must never
+/// poison later runs. The abandoned worker keeps its own engine session,
+/// thread-local streams and pipes; its output readers stop at the reclaim
+/// deadline so a descendant holding a pipe open cannot block finalization.
+/// Completion always returns the bytes already captured before finalization.
 FloeShellBridgeStatus FloeShellRunCommand(
     NSString *command,
     NSString *rootPath,

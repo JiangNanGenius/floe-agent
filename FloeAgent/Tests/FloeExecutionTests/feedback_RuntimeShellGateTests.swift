@@ -76,12 +76,13 @@ struct FeedbackRuntimeShellGateTests {
         #expect(request.gateTimeout == 1)
     }
 
-    /// Contract double for the app-target bridge gate: after a worker outlives
-    /// its caller's deadline it keeps the process-wide gate, so the next
-    /// command is not-started (never a second fabricated timeout) and the gate
-    /// opens again only when that worker actually stops. The real bridge gate
-    /// runs in FloeAgent/scripts/tests/feedback_shell_bridge_host.mm.
-    @Test func timedOutWorkerKeepsGateUntilItStops() async {
+    /// Contract double for the app-target bridge gate (the real state machine
+    /// runs in FloeAgent/scripts/tests/feedback_shell_bridge_host.mm): while a
+    /// timed-out worker still owns the gate the next command is not-started
+    /// (exit 75, never a second fabricated timeout); once the bridge has waited
+    /// its bounded cancellation grace it reclaims the gate, so a worker that
+    /// ignores cancellation cannot poison later commands.
+    @Test func timedOutNonCooperativeWorkerDoesNotPoisonTheGate() async {
         let gate = SimulatedGateBackend()
         let service = LocalShellService(backend: gate, configuration: .init(gateWaitTimeout: 0.25),
             rootProvider: { FileManager.default.temporaryDirectory })
@@ -93,20 +94,39 @@ struct FeedbackRuntimeShellGateTests {
         guard case .outcome(.timedOut) = first else {
             Issue.record("Started worker must time out, got \(first)"); return
         }
+        // Before the reclaim the gate reports not-started, never timedOut.
         let second = await service.run(command: "printf after", cwd: ".", environment: [:], stdin: nil,
             timeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.notStarted(let reason)) = second else {
             Issue.record("Gate still owned: expected notStarted, got \(second)"); return
         }
         #expect(reason.contains("nothing was started"))
-        await gate.finishWorker()
+        // The bridge reclaims the gate after its bounded grace even though the
+        // non-cooperative worker is still running.
+        await gate.reclaimGateAfterGrace()
         let third = await service.run(command: "printf after", cwd: ".", environment: [:], stdin: nil,
             timeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.exited(let code, let stdout, _, _, _, _)) = third else {
-            Issue.record("Released gate must run again, got \(third)"); return
+            Issue.record("Reclaimed gate must run again, got \(third)"); return
         }
         #expect(code == 0)
         #expect(stdout == "after")
+        #expect(await gate.workerStillRunning)
+        await gate.finishWorker()
+    }
+
+    @Test func timedOutRenderPreservesPartialOutput() async {
+        let backend = PartialTimeoutBackend()
+        let service = LocalShellService(backend: backend, rootProvider: { FileManager.default.temporaryDirectory })
+        let context = ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken())
+        let tool = LocalShellTool(shell: service)
+        let output = try? await tool.execute(.init(command: "long"), context: context)
+        #expect(output?.exitStatus == 124)
+        #expect(output?.summary.contains("status=timedOut") == true)
+        #expect(output?.summary.contains("partial-output") == true)
+        #expect(output?.summary.contains("exit=124") == true)
+        // A timed-out run is never rendered as busily not-started.
+        #expect(output?.summary.contains("status=notStarted") == false)
     }
 
     // MARK: - Session diagnostics
@@ -137,6 +157,27 @@ struct FeedbackRuntimeShellGateTests {
             _ = try await center.exchange(sessionID: opened.sessionID, input: nil, waitMs: 50, maxBytes: 4096,
                 runID: runID, cancellation: nil)
         }
+    }
+
+    @Test func exchangeToolReportsSessionStateAndCounters() async throws {
+        let backend = CountingSessionBackend()
+        let center = ShellSessionCenter(backend: backend)
+        let runID = UUID()
+        let opened = try await center.open(command: "", cwd: ".", environment: [:], columns: 80, rows: 24,
+            runID: runID, rootURL: FileManager.default.temporaryDirectory, cancellation: nil)
+        let tool = ShellExchangeTool(center: center)
+        let context = ToolContext(runID: runID, scope: .local, cancellation: CancellationToken())
+        let quiet = try await tool.execute(.init(sessionID: opened.sessionID), context: context)
+        #expect(quiet.summary.contains("alive=true"))
+        #expect(quiet.summary.contains("bytesRead=0"))
+        #expect(quiet.summary.contains("bytesWritten=0"))
+        #expect(quiet.summary.contains("note=no-output-yet"))
+        let typed = try await tool.execute(.init(sessionID: opened.sessionID, input: "echo hi\n"), context: context)
+        #expect(typed.summary.contains("output:\nhi\n"))
+        #expect(typed.summary.contains("bytesRead=3"))
+        #expect(typed.summary.contains("bytesWritten=8"))
+        #expect(typed.summary.contains("outputBytes=3"))
+        await center.close(sessionID: opened.sessionID, runID: runID)
     }
 
     @Test func immediatelyExitedSessionIsClosedNotLeaked() async throws {
@@ -253,19 +294,46 @@ private actor BusyShellBackend: LocalShellBackend {
 
 private actor SimulatedGateBackend: LocalShellBackend {
     private var workerRunning = false
-    func runWorkerThatOutlivesItsDeadline() { workerRunning = true }
+    private var gateReclaimed = false
+    var workerStillRunning: Bool { workerRunning }
+    func runWorkerThatOutlivesItsDeadline() {
+        workerRunning = true
+        gateReclaimed = false
+    }
+    /// Models the bridge after its bounded cancellation grace: the gate is
+    /// reclaimed even though the worker has not stopped.
+    func reclaimGateAfterGrace() { gateReclaimed = true }
     func finishWorker() { workerRunning = false }
 
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
-        if workerRunning {
+        if workerRunning && !gateReclaimed {
             // The worker that timed out is still holding the gate.
             if request.command.contains("sleep") {
                 return .timedOut(partialStdout: "", partialStderr: "", durationMs: 50)
             }
             return .notStarted(reason: "The local shell is still stopping another command; nothing was started (exit 75). Retry after it stops.")
         }
+        if request.command.contains("sleep") {
+            workerRunning = true
+            return .timedOut(partialStdout: "", partialStderr: "", durationMs: 50)
+        }
         return .exited(code: 0, stdout: request.command.replacingOccurrences(of: "printf ", with: ""),
                        stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
+    }
+    func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
+        .init(sessionID: request.sessionID, initialOutput: "", alive: true)
+    }
+    func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
+        .init(output: "", alive: false, exitCode: 0)
+    }
+    func closeSession(sessionID: String) async {}
+}
+
+/// A worker whose command produced output before the deadline and never
+/// stopped: finalization must return the partial bytes as a timeout.
+private actor PartialTimeoutBackend: LocalShellBackend {
+    func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
+        .timedOut(partialStdout: "partial-output\n", partialStderr: "partial-error\n", durationMs: 150)
     }
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         .init(sessionID: request.sessionID, initialOutput: "", alive: true)
