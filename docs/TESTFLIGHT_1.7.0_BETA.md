@@ -135,6 +135,36 @@ upload are performed by the release workflow at the frozen commit; Apple
 processing and Floe QA visibility are verified separately before this build is
 called installable.
 
+## Failed candidate: 1.7.0 (197)
+
+Tag `v1.7.0-beta.54` is fixed at `f05b02acd8f98a2d3cadd9eda6e6408a5f44935f`.
+[Run 35426497884](https://github.com/JiangNanGenius/floe-agent/actions/runs/35426497884)
+created the tag and stopped in the accepted-SDK App build's "Rebuild the exact tag
+with the accepted App Store SDK" step (2026-09-19 06:52 UTC) with five diagnostics
+and two distinct errors: `ExecutionEnvironmentView.swift:82/105/124/147` could not
+find `RuntimeInventoryEntry` in scope (the defining `FloeExecution` module was not
+imported), and `FileInspectorView.swift:132:24` conditionally bound the
+already-unwrapped `previewPath` ("initializer for conditional binding must have
+Optional type, not 'String'"). Every step after the compile was skipped: no App
+artifact, signing or upload occurred, so build 197 / beta.54 was never uploaded.
+The immutable tag is retained as the failed-freeze record and build number 197 is
+retired.
+
+## Preparing: 1.7.0 (198)
+
+Build 198 is the replacement candidate for build 197 and carries the same feature
+set with the two compile errors fixed minimally: `ExecutionEnvironmentView.swift`
+adds the missing `import FloeExecution`, and `FileInspectorView.swift` drops the
+redundant second optional binding (no behavior change). All four targets are on
+version 1.7.0 / build 198. The single accepted-SDK App build and internal
+TestFlight upload are performed by the release workflow at the frozen commit
+(reserved tag `v1.7.0-beta.55`, not yet created); Apple processing and Floe QA
+visibility are verified separately before this build is called installable. Only
+light checks were run for this preparation round (swiftc parse, xcodegen, exact
+version/build consistency, JSON validation, `git diff --check`); no cloud build or
+upload has happened, and the build 191 local Qwen GatedDeltaNet first-message
+abort remains unconfirmed and is not claimed fixed.
+
 ## Preparing: 1.7.0 (188)
 
 Build188 keeps the IDE service-owned CI recovery/polling work and repairs Notes

@@ -129,7 +129,9 @@ struct FileInspectorView: View {
                         .font(FloeTheme.Typography.section)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    if let previewPath, isOfficePreview(previewPath) {
+                    // Already unwrapped by the enclosing `if let previewPath`;
+                    // re-binding here would be a non-optional conditional bind.
+                    if isOfficePreview(previewPath) {
                         openOfficeEditorButton(previewPath)
                     } else if canOpenCodeWorkbenchForPreview {
                         openIDEButton

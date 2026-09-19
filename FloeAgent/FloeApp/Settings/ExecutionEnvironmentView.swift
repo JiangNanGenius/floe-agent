@@ -11,6 +11,7 @@
 import SwiftUI
 import FloeCore
 import FloeEnvironments
+import FloeExecution
 import FloeSSH
 
 struct ExecutionEnvironmentView: View {
