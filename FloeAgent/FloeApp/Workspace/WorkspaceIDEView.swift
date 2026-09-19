@@ -388,7 +388,7 @@ struct WorkspaceIDEView: View {
         // The tab owns every Office action; opening never spawns another
         // window. On compact widths the row switches to icon-only buttons so
         // Save/Discard/Share keep their 36pt targets without overflowing.
-        HStack(spacing: 10) {
+        let bar = HStack(spacing: 10) {
             if session.readOnly {
                 if session.isRemoteSnapshot {
                     // No real remote write-back exists yet; the snapshot is
@@ -449,10 +449,16 @@ struct WorkspaceIDEView: View {
             .disabled(!session.canAct)
             .accessibilityIdentifier("workspace.ide.office.share")
         }
-        .labelStyle(sizeClass == .compact ? .iconOnly : .titleAndIcon)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+        // `.iconOnly` and `.titleAndIcon` are distinct concrete styles; a
+        // ternary cannot mix them, so branch between the two modifiers.
+        if sizeClass == .compact {
+            bar.labelStyle(.iconOnly)
+        } else {
+            bar.labelStyle(.titleAndIcon)
+        }
     }
 
     private var hasOfficeEdits: Bool {

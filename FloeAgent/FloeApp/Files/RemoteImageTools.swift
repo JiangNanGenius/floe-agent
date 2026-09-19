@@ -583,7 +583,7 @@ struct RemoteImageGenerateTool: AgentTool {
         // Resolve a public selection name before any provider contact so a
         // one-of violation or unknown candidate fails closed at validation.
         if let model = args.model {
-            args.modelID = try resolvePublicModel(model)
+            args.modelID = try await resolvePublicModel(model)
             args.model = nil
         }
         let (attachments, routeDescription) = try await generate(args)
