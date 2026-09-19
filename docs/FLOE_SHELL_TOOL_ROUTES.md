@@ -66,8 +66,25 @@ Build 198 的 v5 测试报告把两处宣传与真机表现的差距定性清楚
   安装位置与生命周期脚本归环境所有，不支持的选项或未绑定环境会给出明确拒绝原因。
 - **shell.exchange 必须真的能收发**：真机报告里 `shell.exchange` 长时间 `alive=true` 但零输出。
   根因是 Floe 的 dash 顶层解析读取 App 进程 fd 0，而不是会话的 `thread_stdin`；修复落在
-  `ThirdParty/DashIOS/src/input.c` 的 INIT（`basepf.fd = fileno(thread_stdin)`），
-  需要按 `scripts/build_dash_ios.sh` 重新生成 `Frameworks/dash*.xcframework` 后才会进入 App。
+  `ThirdParty/DashIOS/src/input.c` 的 INIT（`basepf.fd = fileno(thread_stdin)`）。
+  这条链路如何进 App（不再是“源码改了就算修了”）：
+  - 发布 CI 的 release tooling bootstrap 会跑 `scripts/build_dash_ios.sh`，从**被跟踪的**
+    `ThirdParty/DashIOS` 源码重新生成 git-ignored 的 `Frameworks/dash*.xcframework`；
+  - 构建脚本收尾写入 `Frameworks/dash-build-manifest.json`（全部 DashIOS 源文件哈希 +
+    每个 dash 二进制哈希）；release 工作流（release-unsigned-ipa 两个 SDK job、
+    testflight-direct）随后用 `scripts/tests/test_dash_framework_provenance.py` 校验，
+    源与二进制任何不一致都直接失败——保证交互 stdin 修复**确实编进了**构建输入；
+  - 行为侧证据：`scripts/tests/run_feedback_dash_interactive_host.sh` 用同一套真实
+    DashIOS 源码在 macOS 主机上编译（桩掉 ios_system），验证 `dash -i` 通过
+    thread_stdin 管道收到输入（修复前同源构建必然失败）；CI 模拟器回归里的
+    `LocalShellRuntimeTests.interactiveSessionReceivesInputAndReturnsOutput` 再对
+    编译进 App 的产物复验同一行为。
+- **超时/取消不再拖死、也绝不并发**：超时的命令在有限宽限期内协作式停止（dash 在命令间、
+  Floe 命令在循环内轮询取消标志），worker 真正退出、teardown 释放进程级 run gate 后，
+  下一条命令才会进入引擎。无视取消的原生命令不会一直占着 gate 到“碰巧停掉”，而是被
+  **隔离（quarantine）**：调用方带着已捕获的输出立即返回，gate 继续持有，期间新命令如实
+  报 not-started（exit 75，诊断含 `quarantined=`/`quarantineOwner=`），直到旧 worker 真正
+  停止、由它的 teardown 释放 gate。任何时刻进程内只有一个 ios_system 使用者。
 
 ## 真机限制 / Device limits
 

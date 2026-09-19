@@ -41,13 +41,21 @@ typedef NS_ENUM(NSInteger, FloeShellBridgeStatus) {
 /// `gateTimeout` bounds only the wait for the process-wide engine gate. A
 /// command that cannot start inside that window returns `Busy` with its
 /// output untouched; `timeout` bounds the execution itself once the gate is
-/// owned. After a timeout or cancellation the bridge requests cooperative
-/// interruption, waits a bounded grace and then reclaims the gate even when
-/// the worker has not stopped: a command that ignores cancellation must never
-/// poison later runs. The abandoned worker keeps its own engine session,
-/// thread-local streams and pipes; its output readers stop at the reclaim
-/// deadline so a descendant holding a pipe open cannot block finalization.
-/// Completion always returns the bytes already captured before finalization.
+/// owned. The gate serializes every use of the process-wide ios_system engine:
+/// after a timeout or cancellation the bridge requests cooperative
+/// interruption and waits a bounded grace for the worker to actually stop.
+/// A cooperative worker finishes inside that window and its own teardown
+/// releases the gate, so the next command starts immediately. A worker that
+/// ignores cancellation is quarantined instead of being released into
+/// concurrency: the bridge detaches it, stops its output readers at a bounded
+/// deadline and returns the timeout/cancel outcome with the bytes already
+/// captured, but it deliberately keeps the gate held, because that worker may
+/// still be executing inside ios_system and may still mutate process-global
+/// state (working directory, environment, mini root, session registries).
+/// The gate is released exactly once by the quarantined worker's own teardown
+/// after ios_system has returned — a later command only enters the engine
+/// after the old worker is proven stopped; until then new commands report
+/// `Busy`/not-started with quarantine diagnostics, never a fabricated timeout.
 FloeShellBridgeStatus FloeShellRunCommand(
     NSString *command,
     NSString *rootPath,

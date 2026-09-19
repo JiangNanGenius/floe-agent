@@ -71,13 +71,22 @@ longer block finalization or turn a completed command into a fabricated
 timeout; the bytes captured before the deadline are still returned.
 
 A blocking native command without a cooperative checkpoint can outlive the
-caller. After the deadline plus a bounded cancellation grace the bridge
-reclaims the process-wide run gate and detaches that worker instead of holding
-the gate until it happens to stop. The abandoned worker keeps its own engine
-session, thread-local streams and pipes, must not restore the process working
-directory, and releases nothing on teardown; its active-worker record stays
-retained until it finishes, so environment deletion still refuses while native
-work remains. This is lifecycle scoping, not strong isolation of native code.
+caller's deadline and the bounded cancellation grace. The bridge then
+quarantines the run: it detaches the worker, stops its output readers at the
+bounded reclaim deadline and returns the timeout/cancel outcome with the bytes
+already captured, but it deliberately does NOT release the process-wide run
+gate, because that worker may still be executing inside ios_system and may
+still mutate process-global state (working directory, environment, mini root,
+session registries). The gate is released exactly once by the quarantined
+worker's own teardown after ios_system has returned: a later command only
+enters the engine after the old worker is proven stopped, and until then new
+commands report not-started (exit 75) with quarantine diagnostics — never a
+fabricated timeout, and never two concurrent engine users. The quarantined
+worker keeps its own engine session, thread-local streams and pipes, and its
+active-worker record stays retained until it finishes, so environment deletion
+still refuses while native work remains. This is lifecycle scoping, not strong
+isolation of native code; a native command that truly never stops leaves the
+local shell quarantined (busy) until it returns or the app restarts.
 
 ### 2.2 Interactive sessions
 

@@ -3,11 +3,16 @@
 //  Floe Agent — Build 199 shell-gate repair harness.
 //
 //  Compiles the real FloeShellBridge.mm for the macOS host against a scripted
-//  stub engine (fixtures/ios_system/ios_system.h) and verifies the behaviors
-//  the Build 198 transcript exposed and the Build 199 repair fixes:
-//    * a timed-out command that ignores cooperative cancellation no longer
-//      poisons the run gate: the next command starts and completes;
-//    * cancellation does not poison the gate either;
+//  stub engine (fixtures/ios_system/ios_system.h) and verifies the safety
+//  contract the Build 198 transcript motivated and the Build 199 repair ships:
+//    * the process-wide run gate is released only by the owning worker's own
+//      teardown after ios_system has returned. A cooperative worker stops
+//      inside the bounded cancellation grace, so the next command starts
+//      immediately; a worker that ignores cancellation is quarantined instead:
+//      while it is still alive the next command reports Busy/not-started and
+//      never enters the engine, and the gate reopens only once the old worker
+//      is proven stopped;
+//    * cancellation gets the same quarantine treatment as a timeout;
 //    * a descendant/detached thread holding the output pipe open cannot block
 //      finalization: captured stdout/stderr is preserved and the worker stops;
 //    * large output is captured up to the cap and the run still terminates;
@@ -68,14 +73,24 @@ static void writeBytes(const char *bytes, size_t count) {
 
 int ios_system(const char *command) {
     NSString *value = command ? [NSString stringWithUTF8String:command] : @"";
+    if ([value hasPrefix:@"coop"]) {
+        // Cooperative worker: observes the bridge cancellation flag on its own
+        // execution thread and stops promptly, modelling dash (which polls
+        // between commands) and the Floe replacement commands.
+        while (!floe_shell_should_cancel()) { usleep(2000); }
+        writeBytes("coop-done\n", 10);
+        return 0;
+    }
     if ([value hasPrefix:@"block"]) {
+        // Non-cooperative native command: ignores the cancellation flag until
+        // the flag models the native command finishing by itself.
         while (!gReleaseBlocked.load(std::memory_order_acquire)) { usleep(5000); }
         return 0;
     }
     if ([value hasPrefix:@"large-block"]) {
         // Emit a large payload and then ignore cooperative cancellation. The
-        // caller's deadline must still return the captured bytes and release
-        // the gate for the next command.
+        // caller's deadline must still return the captured bytes and the gate
+        // must stay quarantined until the worker actually stops.
         std::vector<char> bytes(100 * 1024, 'x');
         writeBytes(bytes.data(), bytes.size());
         while (!gReleaseBlocked.load(std::memory_order_acquire)) { usleep(5000); }
@@ -163,25 +178,65 @@ int main(int argc, const char **argv) {
         root = [root stringByAppendingPathComponent:@"floe-shell-bridge-host"];
         [[NSFileManager defaultManager] createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:nil];
 
-        // S1: a timed-out non-cooperative worker must not poison the gate.
+        // S0: a cooperative worker actually stops inside the bounded grace. The
+        // caller joins it, the worker's own teardown releases the gate, and
+        // the next command starts immediately — the safe fast path.
+        NSString *coopOut = nil, *coopErr = nil;
+        int32_t coopCode = 125;
+        FloeShellBridgeStatus coop = FloeShellRunCommand(@"coop", root, root, @"one-shot-coop", @{}, nil,
+            0.15, 0.15, 4096, nil, &coopOut, &coopErr, &coopCode);
+        check(coop == FloeShellBridgeStatusTimedOut, @"S0 cooperative worker outliving its deadline reports timedOut");
+        check([coopOut containsString:@"coop-done"], @"S0 cooperative worker flushed its final output before stopping");
+        check(!FloeShellHasActiveWorker(@"one-shot-coop"), @"S0 cooperative worker already stopped inside the grace");
+        check(![FloeShellRunGateDiagnostics() containsString:@"quarantineOwner=one-shot-coop"],
+              @"S0 cooperative stop leaves no quarantine behind");
+        NSString *afterCoopOut = nil, *afterCoopErr = nil;
+        int32_t afterCoopCode = 125;
+        FloeShellBridgeStatus afterCoop = FloeShellRunCommand(@"ok", root, root, @"one-shot-after-coop", @{}, nil,
+            2.0, 0.15, 4096, nil, &afterCoopOut, &afterCoopErr, &afterCoopCode);
+        check(afterCoop == FloeShellBridgeStatusOK && afterCoopCode == 0 && [afterCoopOut containsString:@"ok"],
+              @"S0 next command runs immediately after a cooperative timeout");
+
+        // S1: a timed-out NON-cooperative worker quarantines the gate. The
+        // bridge must never release the process-wide engine while that worker
+        // can still touch global state, and it must never start a second
+        // command concurrently.
+        gReleaseBlocked.store(false, std::memory_order_release);
         NSString *stdout1 = nil, *stderr1 = nil;
         int32_t code1 = 125;
         FloeShellBridgeStatus first = FloeShellRunCommand(@"block 5000", root, root, @"one-shot-1", @{}, nil,
             0.15, 0.15, 4096, nil, &stdout1, &stderr1, &code1);
         check(first == FloeShellBridgeStatusTimedOut, @"S1 started worker outliving its deadline reports timedOut");
-        check(FloeShellHasActiveWorker(@"one-shot-1"), @"S1 abandoned worker is still tracked as active");
-        check([FloeShellRunGateDiagnostics() containsString:@"abandoned=1"], @"S1 hard reclaim is recorded in gate diagnostics");
+        check(FloeShellHasActiveWorker(@"one-shot-1"), @"S1 quarantined worker is still tracked as active");
+        check([FloeShellRunGateDiagnostics() containsString:@"quarantined=1"], @"S1 quarantine is recorded in gate diagnostics");
+        check([FloeShellRunGateDiagnostics() containsString:@"quarantineOwner=one-shot-1"], @"S1 quarantine names the owning session");
 
-        // The acceptance case: while that non-cooperative worker is still
-        // alive, the next command must actually run (not exit 75/Busy).
+        // Safety invariant: while the quarantined worker is still alive, the
+        // next command must NOT enter the engine; it reports not-started.
+        NSString *busyOut = nil, *busyErr = nil;
+        int32_t busyCode = 125;
+        FloeShellBridgeStatus busy = FloeShellRunCommand(@"ok", root, root, @"one-shot-busy", @{}, nil,
+            2.0, 0.15, 4096, nil, &busyOut, &busyErr, &busyCode);
+        check(busy == FloeShellBridgeStatusBusy, @"S1 next command reports Busy while the quarantined worker lives");
+        check(busyOut.length == 0 && busyErr.length == 0, @"S1 Busy carries no fabricated output");
+
+        // Once the native command returns by itself, the worker stops and its
+        // own teardown — not the timed-out caller — reopens the gate.
+        gReleaseBlocked.store(true, std::memory_order_release);
+        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"one-shot-1"); }, 5.0),
+              @"S1 quarantined worker stops once the command returns");
+        check(![FloeShellRunGateDiagnostics() containsString:@"quarantineOwner=one-shot-1"],
+              @"S1 quarantine clears when the worker stops");
         NSString *stdoutNext = nil, *stderrNext = nil;
         int32_t codeNext = 125;
         FloeShellBridgeStatus next = FloeShellRunCommand(@"ok", root, root, @"one-shot-next", @{}, nil,
             2.0, 0.15, 4096, nil, &stdoutNext, &stderrNext, &codeNext);
-        check(next == FloeShellBridgeStatusOK && codeNext == 0, @"S1 next command starts while the abandoned worker is alive");
+        check(next == FloeShellBridgeStatusOK && codeNext == 0, @"S1 next command runs after the old worker is proven stopped");
         check([stdoutNext containsString:@"ok"], @"S1 next command returns its own output");
 
-        // S1b: cancellation gets the same bounded treatment.
+        // S1b: cancellation quarantines the gate the same way, and the gate
+        // reopens only after that worker actually stops.
+        gReleaseBlocked.store(false, std::memory_order_release);
         NSTimeInterval cancelStarted = NSProcessInfo.processInfo.systemUptime;
         NSString *stdoutCancel = nil, *stderrCancel = nil;
         int32_t codeCancel = 125;
@@ -189,15 +244,21 @@ int main(int argc, const char **argv) {
             5.0, 0.15, 4096, ^BOOL { return NSProcessInfo.processInfo.systemUptime - cancelStarted > 0.2; },
             &stdoutCancel, &stderrCancel, &codeCancel);
         check(cancelled == FloeShellBridgeStatusCancelled, @"S1b cancelled caller reports Cancelled");
+        check(FloeShellHasActiveWorker(@"one-shot-cancel"), @"S1b cancelled non-cooperative worker is quarantined, not released");
+        NSString *busyCancelOut = nil, *busyCancelErr = nil;
+        int32_t busyCancelCode = 125;
+        FloeShellBridgeStatus busyCancel = FloeShellRunCommand(@"ok", root, root, @"one-shot-busy-cancel", @{}, nil,
+            2.0, 0.15, 4096, nil, &busyCancelOut, &busyCancelErr, &busyCancelCode);
+        check(busyCancel == FloeShellBridgeStatusBusy, @"S1b next command reports Busy while the cancelled worker lives");
+        gReleaseBlocked.store(true, std::memory_order_release);
+        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"one-shot-cancel"); }, 5.0),
+              @"S1b cancelled worker stops once the command returns");
         NSString *stdoutAfterCancel = nil, *stderrAfterCancel = nil;
         int32_t codeAfterCancel = 125;
         FloeShellBridgeStatus afterCancel = FloeShellRunCommand(@"ok", root, root, @"one-shot-after-cancel", @{}, nil,
             2.0, 0.15, 4096, nil, &stdoutAfterCancel, &stderrAfterCancel, &codeAfterCancel);
-        check(afterCancel == FloeShellBridgeStatusOK && [stdoutAfterCancel containsString:@"ok"], @"S1b cancellation does not poison the gate");
-
-        gReleaseBlocked.store(true, std::memory_order_release);
-        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"one-shot-1") && !FloeShellHasActiveWorker(@"one-shot-cancel"); }, 5.0),
-              @"S1 abandoned workers stop once the command returns");
+        check(afterCancel == FloeShellBridgeStatusOK && [stdoutAfterCancel containsString:@"ok"],
+              @"S1b gate reopens only after the cancelled worker actually stops");
 
         // S1c: repeated commands on a clean gate.
         BOOL repeatedOK = YES;
@@ -230,7 +291,7 @@ int main(int argc, const char **argv) {
         check(largeOut.length == 64 * 1024, @"S1e large output is captured exactly to the cap");
 
         // S1f: a timed-out large-output worker still returns the bytes already
-        // captured, then releases the gate.
+        // captured, then quarantines the gate until the worker stops.
         gReleaseBlocked.store(false, std::memory_order_release);
         NSString *partialOut = nil, *partialErr = nil;
         int32_t partialCode = 125;
@@ -238,13 +299,21 @@ int main(int argc, const char **argv) {
             0.15, 2.0, 256 * 1024, nil, &partialOut, &partialErr, &partialCode);
         check(partial == FloeShellBridgeStatusTimedOut, @"S1f non-cooperative large worker reports timedOut");
         check(partialOut.length == 100 * 1024, @"S1f partial stdout is fully preserved before finalization");
+        check(FloeShellHasActiveWorker(@"one-shot-partial"), @"S1f large worker is quarantined while still running");
+        NSString *busyPartialOut = nil, *busyPartialErr = nil;
+        int32_t busyPartialCode = 125;
+        FloeShellBridgeStatus busyPartial = FloeShellRunCommand(@"ok", root, root, @"one-shot-busy-partial", @{}, nil,
+            2.0, 0.15, 4096, nil, &busyPartialOut, &busyPartialErr, &busyPartialCode);
+        check(busyPartial == FloeShellBridgeStatusBusy, @"S1f gate reports Busy while the quarantined large worker lives");
+        gReleaseBlocked.store(true, std::memory_order_release);
+        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"one-shot-partial"); }, 5.0),
+              @"S1f quarantined large worker stops once released");
         NSString *afterPartialOut = nil, *afterPartialErr = nil;
         int32_t afterPartialCode = 125;
         FloeShellBridgeStatus afterPartial = FloeShellRunCommand(@"ok", root, root, @"one-shot-after-partial", @{}, nil,
             2.0, 0.15, 4096, nil, &afterPartialOut, &afterPartialErr, &afterPartialCode);
-        check(afterPartial == FloeShellBridgeStatusOK && [afterPartialOut containsString:@"ok"], @"S1f gate is usable immediately after the timeout");
-        gReleaseBlocked.store(true, std::memory_order_release);
-        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"one-shot-partial"); }, 5.0), @"S1f partial worker stops once released");
+        check(afterPartial == FloeShellBridgeStatusOK && [afterPartialOut containsString:@"ok"],
+              @"S1f gate is usable again only after the quarantined worker stopped");
 
         // S2: session readiness, claim and descriptor ownership.
         int inFD = -1, outFD = -1;
@@ -303,7 +372,7 @@ int main(int argc, const char **argv) {
         // S5: bounded diagnostics for the gate.
         NSString *diagnostics = FloeShellRunGateDiagnostics();
         check([diagnostics containsString:@"gate owner="] && [diagnostics containsString:@"busyReturns="]
-              && [diagnostics containsString:@"abandoned="] && [diagnostics containsString:@"waitMsTotal="],
+              && [diagnostics containsString:@"quarantined="] && [diagnostics containsString:@"waitMsTotal="],
               @"S5 gate diagnostics expose bounded counters");
 
         printf("\n%d/%d shell bridge host checks passed\n", checks - failures, checks);

@@ -160,6 +160,10 @@ jobs:
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
           scripts/pin_check.sh
+          # The direct build must embed dash frameworks compiled from the
+          # tracked DashIOS source (interactive-stdin fix included), not stale
+          # source-only artifacts; the bootstrap above records the manifest.
+          python3 scripts/tests/test_dash_framework_provenance.py
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
             -skipPackagePluginValidation \
             -skipMacroValidation \

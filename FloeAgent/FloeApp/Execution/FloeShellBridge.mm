@@ -104,10 +104,15 @@ struct FloeRunGateCounters {
     int64_t waiters = 0;
     int64_t acquisitions = 0;
     int64_t busyReturns = 0;
-    int64_t abandonedWorkers = 0;
+    /// Workers that outlived their deadline and grace while still inside the
+    /// engine. The gate stays quarantined (held) until such a worker's own
+    /// teardown releases it; no second command enters the engine meanwhile.
+    int64_t quarantinedWorkers = 0;
     int64_t waitMsTotal = 0;
     std::string ownerSession;
     double ownerStarted = 0;
+    /// Session of the live quarantined worker, if any. Diagnostics only.
+    std::string quarantineSession;
 };
 
 FloeRunGateCounters &FloeRunGateCountersRef(void) {
@@ -130,6 +135,9 @@ void FloeRecordGateReleased(NSString *sessionID) {
         counters.ownerSession.clear();
         counters.ownerStarted = 0;
     }
+    if (sessionID.length == 0 || counters.quarantineSession == sessionID.UTF8String) {
+        counters.quarantineSession.clear();
+    }
 }
 
 void FloeRecordGateWait(NSTimeInterval waited) {
@@ -144,12 +152,14 @@ void FloeRecordGateBusy(void) {
     counters.busyReturns += 1;
 }
 
-/// A worker outlived its deadline and the cancellation grace; the gate was
-/// reclaimed instead of being held until that worker happens to stop.
-void FloeRecordGateAbandoned(void) {
+/// A worker outlived its deadline and the cancellation grace while still able
+/// to touch process-global engine state. The gate is quarantined (kept held)
+/// until that worker's own teardown releases it after it has actually stopped.
+void FloeRecordGateQuarantined(NSString *sessionID) {
     FloeRunGateCounters &counters = FloeRunGateCountersRef();
     std::lock_guard<std::mutex> guard(counters.lock);
-    counters.abandonedWorkers += 1;
+    counters.quarantinedWorkers += 1;
+    counters.quarantineSession = sessionID.length > 0 ? sessionID.UTF8String : "";
 }
 
 } // namespace
@@ -163,11 +173,14 @@ NSString *FloeShellRunGateDiagnostics(void) {
     int64_t heldMs = counters.ownerStarted > 0
         ? (int64_t)MAX(0.0, (NSProcessInfo.processInfo.systemUptime - counters.ownerStarted) * 1000.0)
         : 0;
+    NSString *quarantine = counters.quarantineSession.empty()
+        ? @"none"
+        : [NSString stringWithUTF8String:counters.quarantineSession.c_str()];
     return [NSString stringWithFormat:
-            @"gate owner=%@ heldMs=%lld waiters=%lld acquisitions=%lld busyReturns=%lld abandoned=%lld waitMsTotal=%lld",
+            @"gate owner=%@ heldMs=%lld waiters=%lld acquisitions=%lld busyReturns=%lld quarantined=%lld quarantineOwner=%@ waitMsTotal=%lld",
             owner ?: @"none", (long long)heldMs, (long long)counters.waiters,
             (long long)counters.acquisitions, (long long)counters.busyReturns,
-            (long long)counters.abandonedWorkers,
+            (long long)counters.quarantinedWorkers, quarantine ?: @"none",
             (long long)counters.waitMsTotal];
 }
 
@@ -337,14 +350,13 @@ struct FloeRunContext {
     __strong NSString *trackedSessionID;
     __strong NSString *temporaryDirectory;
     __strong NSString *originalDirectory;
-    /// Exactly-once gate ownership. A timeout/cancel caller may reclaim the
-    /// gate before the worker stops; the worker's own teardown then finds the
-    /// release already done instead of signalling a second time.
+    /// Exactly-once gate ownership. The gate is released only by this
+    /// worker's own teardown, after ios_system has returned and the worker
+    /// has actually stopped. A caller that hits the deadline never releases
+    /// the gate while the worker can still touch process-global engine state;
+    /// it quarantines the worker instead and lets this teardown reopen the
+    /// gate once the old worker is proven stopped.
     std::atomic_bool gateReleased{false};
-    /// The caller stopped waiting and reclaimed the gate. This worker no
-    /// longer owns process-wide state: it must not restore the working
-    /// directory another run may already own.
-    std::atomic_bool abandoned{false};
     bool engineSessionOpened = false;
     std::atomic_bool finished{false};
     ~FloeRunContext() {
@@ -356,7 +368,9 @@ struct FloeRunContext {
         if (errorCapture) errorCapture->finish();
         if (engineSessionOpened) ios_closeSession(sessionKey);
         if (sessionKey) free(sessionKey);
-        if (!abandoned.load(std::memory_order_acquire) && originalDirectory) {
+        // The gate is still held through this teardown (including the working
+        // directory restore), so no other command can observe or race it.
+        if (originalDirectory) {
             [[NSFileManager defaultManager] changeCurrentDirectoryPath:originalDirectory];
         }
         if (temporaryDirectory) [[NSFileManager defaultManager] removeItemAtPath:temporaryDirectory error:nil];
@@ -458,9 +472,11 @@ FloeShellBridgeStatus FloeShellRunCommand(
         return FloeShellBridgeStatusBusy;
     }
     const NSTimeInterval executionStarted = NSProcessInfo.processInfo.systemUptime;
-    // The worker starts as the gate owner. Ownership is released exactly once:
-    // by this caller when the deadline plus the cancellation grace expire, or
-    // by the worker's teardown, whichever comes first.
+    // The worker starts as the gate owner. Ownership is released exactly once,
+    // by this worker's own teardown after it has actually stopped. A caller
+    // that runs out of deadline never releases the gate itself; it quarantines
+    // the worker and leaves the release to the teardown, so the engine never
+    // hosts two concurrent commands.
     auto context = std::make_shared<FloeRunContext>();
     context->trackedSessionID = sessionID;
     FloeRecordGateAcquired(sessionID);
@@ -527,10 +543,14 @@ FloeShellBridgeStatus FloeShellRunCommand(
             [NSThread sleepForTimeInterval:0.02];
         }
         if (timedOut || cancelled) {
-            // Give cooperative cancellation (dash polls an owned-session flag
-            // on its own execution thread) a bounded window to flush output
-            // and stop. A native command that ignores its token must not keep
-            // the process-wide gate beyond this window.
+            // Give cooperative cancellation (dash and the Floe replacement
+            // commands poll an owned-session flag on their own execution
+            // thread) a bounded window to flush output and actually stop. A
+            // cooperative worker finishes inside this window, so its teardown
+            // releases the gate before this caller returns and the next
+            // command starts immediately. A command that ignores its token is
+            // quarantined below: the caller stops waiting, but the gate stays
+            // held until that worker's own teardown releases it.
             NSTimeInterval graceStarted = NSProcessInfo.processInfo.systemUptime;
             while (!context->finished.load(std::memory_order_acquire) && NSProcessInfo.processInfo.systemUptime - graceStarted < 0.5) {
                 [NSThread sleepForTimeInterval:0.02];
@@ -539,19 +559,23 @@ FloeShellBridgeStatus FloeShellRunCommand(
         if (context->finished.load(std::memory_order_acquire)) {
             pthread_join(thread, NULL);
         } else {
-            // Hard reclaim: the worker outlived its caller's deadline and the
-            // cancellation grace. Future commands must not report Busy for an
-            // unbounded time. The abandoned worker keeps its own engine
-            // session, thread-local streams and pipes (so it cannot corrupt a
-            // later run's stdio) but no longer owns the gate; its teardown
-            // releases nothing and never restores the working directory.
-            context->abandoned.store(true, std::memory_order_release);
+            // Quarantine: the worker outlived its caller's deadline and the
+            // cancellation grace and may still be executing inside the
+            // process-wide ios_system engine, able to mutate global cwd,
+            // environment, mini root and session registries. The run gate is
+            // therefore NOT released here: a second command must never enter
+            // the engine concurrently. The abandoned worker keeps its own
+            // engine session, thread-local streams and pipes; its output
+            // readers stop at the bounded reclaim deadline so a descendant
+            // holding a pipe open cannot block finalization, and this
+            // worker's own teardown releases the gate after ios_system has
+            // returned — later commands start only once the old worker is
+            // proven stopped, and report Busy/not-started until then.
             if (context->outputCapture) context->outputCapture->requestStop(0.15, 0.4);
             if (context->errorCapture) context->errorCapture->requestStop(0.15, 0.4);
-            FloeReleaseRunGate(context.get());
             pthread_detach(thread);
-            FloeRecordGateAbandoned();
-            os_log_error(FloeShellLogGate(), "floeShellWorkerAbandoned session=%{public}@ waitedMs=%lld %{public}@",
+            FloeRecordGateQuarantined(sessionID);
+            os_log_error(FloeShellLogGate(), "floeShellWorkerQuarantined session=%{public}@ waitedMs=%lld %{public}@",
                          sessionID, (long long)((NSProcessInfo.processInfo.systemUptime - requestedAt) * 1000.0),
                          FloeShellRunGateDiagnostics());
         }
@@ -560,10 +584,11 @@ FloeShellBridgeStatus FloeShellRunCommand(
         if (outStdout) { *outStdout = context->outputCapture->snapshot(); }
         if (outStderr) { *outStderr = context->errorCapture->snapshot(); }
         if (outExitCode) { *outExitCode = context->finished.load(std::memory_order_acquire) ? context->exitCode : 124; }
-        // A completed worker has already drained and closed its pipes. An
-        // abandoned worker keeps its streams until it stops; its readers stop
-        // at the reclaim deadline so a descendant holding a pipe open cannot
-        // leak descriptors or block later runs.
+        // A completed worker has already drained and closed its pipes. A
+        // quarantined worker keeps its streams until it stops; its readers
+        // stopped at the bounded reclaim deadline so a descendant holding a
+        // pipe open cannot leak descriptors or block finalization, and its
+        // eventual teardown — not this caller — reopens the run gate.
 
         if (cancelled) { return FloeShellBridgeStatusCancelled; }
         if (timedOut) { return FloeShellBridgeStatusTimedOut; }

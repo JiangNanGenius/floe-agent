@@ -77,12 +77,12 @@ struct FeedbackRuntimeShellGateTests {
     }
 
     /// Contract double for the app-target bridge gate (the real state machine
-    /// runs in FloeAgent/scripts/tests/feedback_shell_bridge_host.mm): while a
-    /// timed-out worker still owns the gate the next command is not-started
-    /// (exit 75, never a second fabricated timeout); once the bridge has waited
-    /// its bounded cancellation grace it reclaims the gate, so a worker that
-    /// ignores cancellation cannot poison later commands.
-    @Test func timedOutNonCooperativeWorkerDoesNotPoisonTheGate() async {
+    /// runs in FloeAgent/scripts/tests/feedback_shell_bridge_host.mm): a worker
+    /// that outlives its deadline quarantines the process-wide gate — while it
+    /// is still alive the next command stays not-started (exit 75, never a
+    /// fabricated timeout), and the gate reopens only when that worker has
+    /// actually stopped and its teardown released the engine.
+    @Test func timedOutNonCooperativeWorkerQuarantinesTheGateUntilItStops() async {
         let gate = SimulatedGateBackend()
         let service = LocalShellService(backend: gate, configuration: .init(gateWaitTimeout: 0.25),
             rootProvider: { FileManager.default.temporaryDirectory })
@@ -94,25 +94,25 @@ struct FeedbackRuntimeShellGateTests {
         guard case .outcome(.timedOut) = first else {
             Issue.record("Started worker must time out, got \(first)"); return
         }
-        // Before the reclaim the gate reports not-started, never timedOut.
+        // While the quarantined worker lives the gate reports not-started,
+        // never timedOut: a second command must not enter the engine.
         let second = await service.run(command: "printf after", cwd: ".", environment: [:], stdin: nil,
             timeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.notStarted(let reason)) = second else {
-            Issue.record("Gate still owned: expected notStarted, got \(second)"); return
+            Issue.record("Gate still quarantined: expected notStarted, got \(second)"); return
         }
         #expect(reason.contains("nothing was started"))
-        // The bridge reclaims the gate after its bounded grace even though the
-        // non-cooperative worker is still running.
-        await gate.reclaimGateAfterGrace()
+        #expect(await gate.workerStillRunning)
+        // Only the worker's own stop releases the gate.
+        await gate.finishWorker()
         let third = await service.run(command: "printf after", cwd: ".", environment: [:], stdin: nil,
             timeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.exited(let code, let stdout, _, _, _, _)) = third else {
-            Issue.record("Reclaimed gate must run again, got \(third)"); return
+            Issue.record("Gate must run again after the worker stopped, got \(third)"); return
         }
         #expect(code == 0)
         #expect(stdout == "after")
-        #expect(await gate.workerStillRunning)
-        await gate.finishWorker()
+        #expect(!(await gate.workerStillRunning))
     }
 
     @Test func timedOutRenderPreservesPartialOutput() async {
@@ -294,19 +294,16 @@ private actor BusyShellBackend: LocalShellBackend {
 
 private actor SimulatedGateBackend: LocalShellBackend {
     private var workerRunning = false
-    private var gateReclaimed = false
     var workerStillRunning: Bool { workerRunning }
+    /// Models the bridge quarantine: the timed-out worker keeps owning the
+    /// process-wide gate until it actually stops; nothing reclaims it early.
     func runWorkerThatOutlivesItsDeadline() {
         workerRunning = true
-        gateReclaimed = false
     }
-    /// Models the bridge after its bounded cancellation grace: the gate is
-    /// reclaimed even though the worker has not stopped.
-    func reclaimGateAfterGrace() { gateReclaimed = true }
     func finishWorker() { workerRunning = false }
 
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
-        if workerRunning && !gateReclaimed {
+        if workerRunning {
             // The worker that timed out is still holding the gate.
             if request.command.contains("sleep") {
                 return .timedOut(partialStdout: "", partialStderr: "", durationMs: 50)
