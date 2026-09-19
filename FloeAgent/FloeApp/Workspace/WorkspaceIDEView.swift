@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeDocuments
 import FloeWorkspace
 
 /// An IDE pins one workspace for its lifetime, including terminal ownership.
@@ -30,6 +31,10 @@ struct WorkspaceIDEView: View {
     @State private var officeFullscreenTab: IDEWorkspaceTab?
     @State private var officeCloseRequest: OfficeCloseRequest?
     @State private var routingNotice: String?
+    @State private var showsSourceControl = false
+    /// In-flight Office share snapshot. The owning tab session reclaims it on
+    /// dismiss via `finishSaveCopy()`.
+    @State private var officeShareSnapshot: DocumentExportSnapshot?
     @StateObject private var remoteOfficeCopy = RemoteFilePreviewCopy()
 
     private struct OfficeCloseRequest: Identifiable {
@@ -108,6 +113,13 @@ struct WorkspaceIDEView: View {
                     } label: { Label("ide.open.editor", systemImage: "doc.richtext") }
                     .disabled(tabs.activeTab == nil || root == nil)
                     .accessibilityIdentifier("workspace.ide.richEditor")
+                    // Common source-control entries (status, diff, stage,
+                    // commit, branch) for the IDE's pinned workspace.
+                    Button {
+                        showsSourceControl = true
+                    } label: { Label(IDELanguageRunText.t("源码管理", "Source control"), systemImage: "arrow.triangle.branch") }
+                    .disabled(root == nil || workspaceID == nil || center.currentWorkspace?.id != workspaceID)
+                    .accessibilityIdentifier("workspace.ide.sourceControl")
                     Button {
                         toggleTerminal()
                     } label: { Label("ide.terminal", systemImage: "terminal") }
@@ -141,6 +153,25 @@ struct WorkspaceIDEView: View {
                                              onClose: { officeFullscreenTab = nil })
                 }
             }
+        }
+        .sheet(isPresented: $showsSourceControl) {
+            NavigationStack {
+                SourceControlView(center: center.environment.sourceControlCenter)
+                    .navigationTitle(IDELanguageRunText.t("源码管理", "Source control"))
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button(IDELanguageRunText.t("完成", "Done")) { showsSourceControl = false }
+                        }
+                    }
+            }
+        }
+        .sheet(item: $officeShareSnapshot, onDismiss: {
+            // Only the session that produced this snapshot holds it; the
+            // others no-op on their own export store.
+            Task { for tab in tabs.tabs { await tab.officeSession?.finishSaveCopy() } }
+        }) { snapshot in
+            OfficeDocumentShareSheet(url: snapshot.fileURL)
         }
         .confirmationDialog("ide.unsaved", isPresented: $showsCloseConfirmation, titleVisibility: .visible) {
             Button("ide.save.close") { Task { if await saveAllSurfaces() { await finishClose() } } }
@@ -215,7 +246,11 @@ struct WorkspaceIDEView: View {
                          ? IDELanguageRunText.t("代码", "Code")
                          : tab.title)
                         .lineLimit(1)
-                    if tab.hasUnsavedChanges {
+                    if let session = tab.officeSession {
+                        // Observe the session so the unsaved dot follows an
+                        // Office save/discard without waiting for a tab switch.
+                        IDETabUnsavedBadge(session: session)
+                    } else if tab.hasUnsavedChanges {
                         Circle().fill(FloeTheme.primary).frame(width: 6, height: 6)
                             .accessibilityLabel(IDELanguageRunText.t("有未保存的修改", "Unsaved changes"))
                     }
@@ -281,6 +316,11 @@ struct WorkspaceIDEView: View {
             guard let tab = tabs.activeTab, tab.kind == .office,
                   let session = tab.officeSession, Self.needsOfficeLoad(session) else { return }
             do {
+                // A cloud/network tab edits only a private temporary copy, so
+                // the session must stay a read-only snapshot; nothing may
+                // present a temp-copy save as a successful remote save.
+                session.isRemoteSnapshot = center.isCloudWorkspacePath(tab.relativePath)
+                    || center.isNetworkWorkspacePath(tab.relativePath)
                 let url = try await resolveOfficeURL(relativePath: tab.relativePath)
                 await session.open(url)
             } catch {
@@ -336,6 +376,9 @@ struct WorkspaceIDEView: View {
                     OfficeDocumentSurface(session: session)
                     officeActionBar(tab: tab, session: session)
                 }
+                // A verified original-file commit from this tab (including the
+                // engine's own toolbar save) refreshes every sibling entry.
+                .onAppear { session.onCommitted = { onSaved() } }
             }
         }
     }
@@ -357,17 +400,31 @@ struct WorkspaceIDEView: View {
     @ViewBuilder private func officeActionBar(tab: IDEWorkspaceTab, session: OfficeFileSession) -> some View {
         HStack(spacing: 10) {
             if session.readOnly {
-                Button {
-                    Task { await session.requestEditing() }
-                } label: {
-                    Label(IDELanguageRunText.t("编辑", "Edit"), systemImage: "square.and.pencil")
-                        .frame(minHeight: 36)
+                if session.isRemoteSnapshot {
+                    // No real remote write-back exists yet; the snapshot is
+                    // preview-only and the edit entry stays hidden so a
+                    // temp-copy edit can never masquerade as a remote save.
+                    Label(OfficeFileSession.remoteSnapshotHint, systemImage: "icloud.and.arrow.down")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("workspace.ide.office.remoteHint")
+                } else {
+                    Button {
+                        Task { await session.requestEditing() }
+                    } label: {
+                        Label(IDELanguageRunText.t("编辑", "Edit"), systemImage: "square.and.pencil")
+                            .frame(minHeight: 36)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!session.canAct)
+                    .accessibilityIdentifier("workspace.ide.office.edit")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!session.canAct)
-                .accessibilityIdentifier("workspace.ide.office.edit")
             } else {
                 Button {
+                    // A verified commit already fired `session.onCommitted`,
+                    // which refreshes every sibling entry; calling onSaved()
+                    // here as well would refresh everything twice.
                     Task { _ = await session.saveAndReturn() }
                 } label: {
                     Label(IDELanguageRunText.t("保存", "Save"), systemImage: "checkmark")
@@ -386,6 +443,17 @@ struct WorkspaceIDEView: View {
                 .disabled(!session.canAct)
             }
             Spacer(minLength: 0)
+            // Explicit share of this document without leaving the tab: a
+            // verified snapshot copy goes to the system share sheet.
+            Button {
+                Task { officeShareSnapshot = await session.prepareShareCopy() }
+            } label: {
+                Label(IDELanguageRunText.t("分享", "Share"), systemImage: "square.and.arrow.up")
+                    .frame(minHeight: 36)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!session.canAct)
+            .accessibilityIdentifier("workspace.ide.office.share")
             Button {
                 officeFullscreenTab = tab
             } label: {
@@ -435,13 +503,13 @@ struct WorkspaceIDEView: View {
 
     private func openActiveInRoutedSurface() {
         if let active = tabs.activeTab, active.kind == .office {
-            officeFullscreenTab = active
+            // An Office document stays embedded in its own IDE tab; opening it
+            // must never spawn a second window. Fullscreen remains an explicit
+            // action on the tab's action bar.
+            tabs.activate(active.id)
             return
         }
-        if let path = state.activePath {
-            tabs.open(relativePath: path)
-            if tabs.activeTab?.kind == .office { officeFullscreenTab = tabs.activeTab }
-        }
+        if let path = state.activePath { tabs.open(relativePath: path) }
     }
 
     private func requestClose(_ tab: IDEWorkspaceTab) {
@@ -490,6 +558,18 @@ struct WorkspaceIDEView: View {
         Task {
             try? await Task.sleep(for: .seconds(2))
             withAnimation(.snappy) { routingNotice = nil }
+        }
+    }
+}
+/// Live unsaved-state badge for an Office tab. The tab model itself is not an
+/// observed session, so the badge observes the shared Office session directly.
+private struct IDETabUnsavedBadge: View {
+    @ObservedObject var session: OfficeFileSession
+
+    var body: some View {
+        if session.hasUncommittedChanges || (!session.readOnly && session.phase == .ready) {
+            Circle().fill(FloeTheme.primary).frame(width: 6, height: 6)
+                .accessibilityLabel(IDELanguageRunText.t("有未保存的修改", "Unsaved changes"))
         }
     }
 }

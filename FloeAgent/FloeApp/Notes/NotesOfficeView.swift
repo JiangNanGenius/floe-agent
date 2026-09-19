@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeDocuments
 import FloeNotes
 import FloeCore
 
@@ -23,6 +24,8 @@ struct NotesOfficeView: View {
     @State private var showingRecoveries = false
     @State private var keepingCopy = false
     @State private var isVisible = false
+    /// Latch so only the first completed open of this mounted document counts.
+    @State private var openCounted = false
     @State private var externalRefreshTask: Task<Void, Never>?
     @State private var externalUpdateAvailable = false
     @State private var pendingExternalResource: UUID?
@@ -86,7 +89,10 @@ struct NotesOfficeView: View {
             if !OfficeFileSession.available {
                 ContentUnavailableView("Office 编辑器不可用", systemImage: "doc", description: Text("此构建不包含原生 Office 引擎。原文件已保留。"))
             } else {
-                OfficeDocumentEditorView(relativePath: document.officeFileName ?? document.title, session: office, onSaved: {
+                OfficeDocumentEditorView(relativePath: document.officeFileName ?? document.title,
+                                         session: office,
+                                         stableInkIdentity: inkIdentity,
+                                         onSaved: {
                     pendingCommit = true
                     await commit()
                     return !pendingCommit
@@ -108,7 +114,10 @@ struct NotesOfficeView: View {
                         }.accessibilityLabel("notes.office.assistantAndMindMaps")
                             .accessibilityIdentifier("notes.office.assistant")
                     }
-                ))
+                ), requestsEditingOnAppear: false)
+                // Notes owns the first intent: the remembered mode resolved
+                // in `prepare()` decides preview versus editor, so the editor
+                // surface must not auto-request editing when it appears.
 
             }
         }
@@ -132,6 +141,15 @@ struct NotesOfficeView: View {
             }
         }
         .task { await prepare() }
+        .onChange(of: office.phase) { _, phase in
+            // `open()` returns before the engine reports readiness, so the
+            // entry is counted here instead: one completed open — preview or
+            // editor — makes the next entry of this document default to the
+            // editor. A failed open is never counted.
+            guard phase == .ready, !openCounted, office.error == nil else { return }
+            openCounted = true
+            OfficeDocumentModeStore.shared.markOpened(scope: modeScope, document: modeDocument)
+        }
         .onChange(of: document.officeResourceID) { _, value in
             guard let value, value != baseResourceID else { return }
             externalResourceChanged(value)
@@ -205,6 +223,15 @@ struct NotesOfficeView: View {
         .accessibilityIdentifier("notes.office.header")
     }
 
+    /// Stable identity for the ink settings and the remembered open mode. The
+    /// staged working copy lives in a fresh UUID folder on every open, so the
+    /// physical draft path can never key per-source-document state.
+    private var modeScope: String { "notes-office-document-\(document.id.uuidString)" }
+    private var modeDocument: String { document.officeFileName ?? document.title }
+    private var inkIdentity: OfficeInkDocumentIdentity {
+        OfficeInkDocumentIdentity(workspaceIdentity: modeScope, relativePath: modeDocument)
+    }
+
     private func prepare() async {
         guard draftURL == nil, session.store != nil else { return }
         do {
@@ -215,11 +242,21 @@ struct NotesOfficeView: View {
             }
             guard let staged = try await stageWorkingCopy(latest) else { return }
             apply(staged)
+            // Resolve the entry mode before the open begins: `open()` reports
+            // readiness through the engine's async callback, and the
+            // completion hook marks the document as opened. Reading the memory
+            // first keeps the decision independent of that timing.
+            let shouldEdit = session.consumeEditorOnNextOpen(documentID: document.id)
+                || OfficeDocumentModeStore.shared.mode(scope: modeScope, document: modeDocument) == .edit
             await office.open(staged.target)
-            // Queued edit intent: the open above may still own the session; the
-            // intent is replayed when it settles and a refused read-only open
-            // reports the real reason instead of silently staying preview.
-            _ = await office.requestEditing()
+            // First entry of an existing/imported document is a read-only
+            // preview; from the second entry onwards it opens directly in the
+            // editor, even when the first visit never left the preview. A
+            // document created in this app run is an explicit authoring action
+            // and goes straight to the editor on its first open. A refused
+            // edit entry reports the real reason instead of silently staying
+            // preview.
+            if shouldEdit { _ = await office.requestEditing() }
             if let error = office.error { message = error }
             else if let reason = office.editUnavailableReason { message = reason }
         } catch { message = error.localizedDescription }

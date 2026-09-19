@@ -430,8 +430,11 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             window.floeEmbeddedControlsInstalled = true;
             // Floe's tab close saves/commits before releasing the native session.
             // The engine's close button bypasses that owner and strands the tab.
+            // The engine's floating mobile edit entry is hidden for the same
+            // reason: the App's own top toolbar owns the preview/edit entry, so
+            // no edit affordance floats over the document's lower-left corner.
             const style = document.createElement('style');
-            style.textContent = '#closebuttonwrapper, #closebuttonwrapperseparator, #closebutton { display: none !important; }';
+            style.textContent = '#closebuttonwrapper, #closebuttonwrapperseparator, #closebutton { display: none !important; } #mobile-edit-button, #mobile-edit-buttonwrapper, .mobile-edit-button { display: none !important; }';
             document.head.appendChild(style);
             if (window.L && window.L.Params) window.L.Params.closeButtonEnabled = false;
 

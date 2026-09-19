@@ -24,6 +24,7 @@ struct FileInspectorView: View {
 
     @StateObject private var treeModel: FileTreeViewModel
     @State private var previewPath: String?
+    @State private var officeEditorPath: OfficeEditorPath?
     @State private var showWorkspacePicker = false
     @State private var showMountPicker = false
     @State private var showImportPicker = false
@@ -94,6 +95,11 @@ struct FileInspectorView: View {
                 Task { await treeModel.loadRoot() }
             }
         }
+        // Office documents expand straight into the native editor; the IDE
+        // would hand their bytes to the text workbench.
+        .fullScreenCover(item: $officeEditorPath) { request in
+            OfficeFullscreenEditorView(relativePath: request.relativePath, center: center)
+        }
         .fullScreenCover(item: $canvasWorkspace) { workspace in
             WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
         }
@@ -123,7 +129,11 @@ struct FileInspectorView: View {
                         .font(FloeTheme.Typography.section)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    if canOpenCodeWorkbenchForPreview { openIDEButton }
+                    if let previewPath, isOfficePreview(previewPath) {
+                        openOfficeEditorButton(previewPath)
+                    } else if canOpenCodeWorkbenchForPreview {
+                        openIDEButton
+                    }
                     Button {
                         router.hideInspector()
                     } label: {
@@ -240,6 +250,24 @@ struct FileInspectorView: View {
         .frame(minWidth: 44, minHeight: 44)
         .disabled(center.fileService == nil)
         .accessibilityIdentifier("workspace.openIDE")
+    }
+
+    private func isOfficePreview(_ path: String) -> Bool {
+        WorkspaceFileRouter.destination(for: path) == .officeEditor && OfficeFileSession.available
+    }
+
+    /// The file manager's expand action for an Office document opens the
+    /// native fullscreen editor directly (never the IDE and never a text
+    /// decode). Disabled only while the workspace has no file service.
+    private func openOfficeEditorButton(_ path: String) -> some View {
+        Button {
+            officeEditorPath = OfficeEditorPath(relativePath: path)
+        } label: {
+            Label("office.editor.open", systemImage: "arrow.up.left.and.arrow.down.right")
+        }
+        .frame(minWidth: 44, minHeight: 44)
+        .disabled(center.fileService == nil)
+        .accessibilityIdentifier("workspace.openOfficeEditor")
     }
 
     private var workspaceActions: some View {
@@ -391,6 +419,12 @@ struct FileInspectorView: View {
             withAnimation(.snappy) { contextNotice = nil }
         }
     }
+}
+
+/// One Office fullscreen-editor request from the file inspector.
+private struct OfficeEditorPath: Identifiable {
+    let relativePath: String
+    var id: String { relativePath }
 }
 
 private struct NetworkWorkspaceMountSheet: View {

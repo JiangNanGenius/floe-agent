@@ -70,7 +70,21 @@ struct FilePreviewView: View {
                 if isOfficeEditorPresented {
                     ContentUnavailableView("正在全屏编辑", systemImage: "doc.richtext")
                 } else {
-                    OfficeDocumentSurface(session: officeSession)
+                    VStack(spacing: 0) {
+                        if officeSession.isRemoteSnapshot {
+                            // Preview-only snapshot: no edit entry exists for
+                            // this document anywhere in the preview; say why
+                            // and how to get an editable copy.
+                            Label(OfficeFileSession.remoteSnapshotHint, systemImage: "icloud.and.arrow.down")
+                                .font(.footnote).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(.bar)
+                                .accessibilityIdentifier("file.preview.office.remoteHint")
+                        }
+                        OfficeDocumentSurface(session: officeSession)
+                    }
                 }
             } else if let pdfURL {
                 InlinePDFReader(url: pdfURL, validateRead: {
@@ -430,8 +444,12 @@ struct FilePreviewView: View {
         }
         if isOfficeDocument, OfficeFileSession.available, let service = center.fileService {
             do {
+                // A cloud/network document is staged into a private temporary
+                // copy; the session must treat it as a read-only snapshot and
+                // never present edits as a successful remote save.
+                let remote = center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath)
                 let url: URL
-                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                if remote {
                     let bytes = try await center.readRemotePreview(relativePath: relativePath)
                     try Task.checkCancellation()
                     url = try remotePreview.store(bytes, fileName: fileName)
@@ -439,6 +457,7 @@ struct FilePreviewView: View {
                     url = try service.guardResolver.resolve(relativePath)
                     try service.guardResolver.assertReadableSize(url)
                 }
+                officeSession.isRemoteSnapshot = remote
                 nativeOfficeURL = url
                 await officeSession.open(url)
                 await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
