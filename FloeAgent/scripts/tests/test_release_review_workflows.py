@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -216,6 +217,115 @@ class RecoveryOrderingTests(unittest.TestCase):
         self.assertNotIn('metadata.json', self.reuse['run'])
         self.assertIn('ARTIFACT_ID="$(jq -r', self.reuse['run'])
         self.assertIn("select(.name == $n and (.expired | not))", self.reuse['run'])
+
+
+class RebuildDiagnosticsControlFlowTests(unittest.TestCase):
+    """A successful rebuild must reach payload packaging; a failed one must not.
+
+    The build 202 diagnostics commit added the failure summary with an
+    unconditional ``exit "$build_status"`` after the branch, so every
+    successful rebuild exited before the STABLE_APP_PATH verification and the
+    FloeSignedPayload preparation and no app was ever packaged. These checks
+    pin the corrected control flow: the exit lives inside the failure branch,
+    the packaging lines sit after the branch with no earlier exit, and the
+    extracted failure branch is executed to prove both paths rather than
+    merely grepping for them.
+    """
+
+    FAILURE_IF = 'if [[ "$build_status" -ne 0 ]]; then'
+    REBUILD_STEP = 'Rebuild the exact tag with the accepted App Store SDK'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.steps = DIRECT['jobs']['upload']['steps']
+        cls.rebuild = cls.steps[step_index(cls.steps, cls.REBUILD_STEP)]
+        cls.script = cls.rebuild['run']
+
+    @classmethod
+    def failure_branch_lines(cls):
+        lines = cls.script.splitlines()
+        start = next(index for index, line in enumerate(lines)
+                     if line.strip() == cls.FAILURE_IF)
+        end = next(index for index in range(start + 1, len(lines))
+                   if lines[index].strip() == 'fi')
+        return lines, start, end
+
+    def test_failure_branch_prints_diagnostics_and_exits_nonzero(self):
+        lines, start, end = self.failure_branch_lines()
+        body = '\n'.join(lines[start + 1:end])
+        self.assertIn('::group::xcodebuild error/warning summary', body)
+        self.assertIn('grep -E "error:|warning:" "$BUILD_LOG"', body)
+        self.assertIn('::group::xcodebuild log tail', body)
+        self.assertIn('tail -n 120 "$BUILD_LOG"', body)
+        self.assertIn('exit "$build_status"', body)
+        # Exactly one status exit exists in the whole step, and it is the
+        # branch's own: a second top-level exit would repeat the build 202
+        # early-exit bug that skipped packaging on success.
+        self.assertEqual(self.script.count('exit "$build_status"'), 1)
+        self.assertNotIn('exit "$build_status"', '\n'.join(lines[end:]))
+        self.assertEqual(lines[end].strip(), 'fi')
+
+    def test_packaging_lines_run_only_after_the_failure_branch(self):
+        lines, start, end = self.failure_branch_lines()
+        tail = '\n'.join(lines[end + 1:])
+        for required in (
+                'STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData'
+                '/Build/Products/Release-iphoneos"',
+                'test -n "$STABLE_APP_PATH"',
+                "test \"$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "
+                "\"$STABLE_APP_PATH/Info.plist\")\" = org.floeagent.ios",
+                'mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"',
+                'ditto "$STABLE_APP_PATH" '
+                '"$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"'):
+            with self.subTest(required=required):
+                self.assertIn(required, tail)
+        # Nothing between the failure branch and packaging may terminate the
+        # step, or success could again stop before FloeSignedPayload exists.
+        self.assertNotIn('exit', tail)
+
+    def run_failure_branch(self, build_status):
+        lines, start, end = self.failure_branch_lines()
+        with tempfile.TemporaryDirectory(prefix='floe-rebuild-flow-') as folder:
+            root = Path(folder)
+            log = root / 'rebuild-xcodebuild.log'
+            log.write_text('note: harmless build noise\n'
+                           'FloeApp/App.swift:12: warning: unused variable\n'
+                           'FloeApp/App.swift:99: error: cannot find scope\n')
+            harness = root / 'harness.sh'
+            harness.write_text('\n'.join([
+                'set -euo pipefail',
+                f'BUILD_LOG={shlex.quote(str(log))}',
+                f'build_status={int(build_status)}',
+                *lines[start:end + 1],
+                'echo reached-packaging',
+                '',
+            ]))
+            return subprocess.run(['bash', str(harness)], capture_output=True,
+                                  text=True)
+
+    def test_success_reaches_packaging_without_diagnostics(self):
+        result = self.run_failure_branch(0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('reached-packaging', result.stdout)
+        self.assertNotIn('xcodebuild error/warning summary', result.stdout)
+        self.assertNotIn('xcodebuild log tail', result.stdout)
+
+    def test_failure_prints_diagnostics_and_exits_before_packaging(self):
+        result = self.run_failure_branch(65)
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertNotIn('reached-packaging', result.stdout)
+        self.assertIn('xcodebuild error/warning summary', result.stdout)
+        self.assertIn('cannot find scope', result.stdout)
+        self.assertIn('xcodebuild log tail', result.stdout)
+
+    def test_failure_diagnostics_upload_stays_failure_only(self):
+        upload = self.steps[step_index(
+            self.steps, 'Upload rebuild diagnostics on failure')]
+        self.assertIn('always()', upload['if'])
+        self.assertIn("inputs.reuse_artifact_run == ''", upload['if'])
+        self.assertIn("steps.rebuild.outcome == 'failure'", upload['if'])
+        self.assertIn('rebuild-xcodebuild.log', upload['with']['path'])
+        self.assertIn('FloeRebuild.xcresult', upload['with']['path'])
 
 
 class LeanPublishPolicyTests(unittest.TestCase):
