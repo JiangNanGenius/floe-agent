@@ -7,6 +7,11 @@ import FloeGit
 @MainActor
 final class SourceControlCenter: ObservableObject {
     @Published private(set) var snapshot = GitRepositorySnapshot(isRepository: false)
+    /// The discovered Git repository root (an ancestor of the workspace root
+    /// when the workspace is nested inside a repository or a worktree). All
+    /// stage/commit/diff operations target this root; nil when the workspace
+    /// is not a repository.
+    @Published private(set) var repositoryRoot: URL?
     @Published private(set) var account: GitHubAccount?
     @Published private(set) var repositories: [GitHubRepository] = []
     @Published private(set) var deviceAuthorization: GitHubDeviceAuthorization?
@@ -25,6 +30,14 @@ final class SourceControlCenter: ObservableObject {
 
     var isGitHubConnected: Bool { account != nil }
     var isDeviceLoginPending: Bool { deviceAuthorization != nil }
+    /// True when the discovered repository root is an ancestor of the
+    /// workspace root (a workspace nested inside a repository, or a linked
+    /// worktree). The view surfaces the real root in that case.
+    var isNestedRepository: Bool {
+        guard let repositoryRoot else { return false }
+        return repositoryRoot.standardizedFileURL
+            != environment.workspaceCenter.currentRootURL?.standardizedFileURL
+    }
 
     /// Skill updates use the existing connector credential without exposing it
     /// to the model, package, upgrade journal, or redirect destination.
@@ -186,10 +199,12 @@ final class SourceControlCenter: ObservableObject {
     func refreshRepository() async {
         guard let root = environment.workspaceCenter.currentRootURL else {
             snapshot = GitRepositorySnapshot(isRepository: false)
+            repositoryRoot = nil
             return
         }
         do {
             snapshot = try await git.snapshot(at: root)
+            repositoryRoot = snapshot.repositoryRoot
             errorMessage = nil
         } catch {
             errorMessage = SecretRedactor.redact(error.localizedDescription)
@@ -374,11 +389,15 @@ final class SourceControlCenter: ObservableObject {
         repositories = try await github.repositories(token: token)
     }
 
+    /// Operations stage/commit/diff against the discovered repository root so
+    /// a workspace nested inside a repository (or a worktree) acts on the real
+    /// repository; before the first refresh (or when not a repository) this is
+    /// the workspace root itself.
     private func workspaceRoot() throws -> URL {
         guard let root = environment.workspaceCenter.currentRootURL else {
             throw FloeError.notFound("workspace")
         }
-        return root
+        return repositoryRoot ?? root
     }
 
     private func gitIdentity() async throws -> (name: String, email: String) {

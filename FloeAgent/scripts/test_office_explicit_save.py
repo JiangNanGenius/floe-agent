@@ -19,6 +19,15 @@ class ExplicitSaveTests(unittest.TestCase):
             result = subprocess.run(['node', str(path)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_save_watchdog_bounds_a_lost_native_handoff(self):
+        source = SOURCE.read_text().split('// FLOE_EXPLICIT_SAVE_SCRIPT_BEGIN', 1)[1]
+        script = source.split('#"""', 1)[1].split('"""#', 1)[0]
+        with tempfile.TemporaryDirectory(prefix='floe-save-watchdog-') as folder:
+            path = Path(folder) / 'check.js'
+            path.write_text('const source = ' + json.dumps(script) + ';\n' + WATCHDOG_HARNESS)
+            result = subprocess.run(['node', str(path)], capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 HARNESS = r'''
 const assert = require('node:assert/strict');
@@ -41,7 +50,9 @@ for (const deferred of [false, true]) {
         postMessage(value) { if (failTransport) throw Error('transport gone'); calls.push(value); }
     }}}};
     if (!deferred) window.L = {Map};
-    const context = {window, document: {
+    // The real WebView always provides timers; the bounded save watchdog uses
+    // them, so the vm context must too.
+    const context = {window, setTimeout, clearTimeout, document: {
         readyState: deferred ? 'loading' : 'complete',
         addEventListener(event, listener, options) {
             assert.equal(event, 'DOMContentLoaded'); assert.equal(options.once, true); listeners.push(listener);
@@ -100,6 +111,61 @@ for (const deferred of [false, true]) {
     assert.equal(map.saveState.failed, 3);
     assert.equal(forwarded.length, 2); // No default Save or unrelated WOPI notification leaks.
 }
+'''
+
+WATCHDOG_HARNESS = r'''
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+// Controllable timers so the bounded watchdog can be driven deterministically.
+let now = 0;
+const pending = [];
+const setTimeout = (fn, ms) => { const t = { fired: false, run() { if (!this.fired) { this.fired = true; fn(); } } }; pending.push({ at: now + ms, t }); return t; };
+const clearTimeout = (t) => { t.fired = true; };
+const advance = (ms) => {
+    now += ms;
+    for (const entry of pending) if (!entry.t.fired && entry.at <= now) entry.t.run();
+};
+function Map() {
+    this.readonly = false;
+    this.saveState = {
+        saved: 0, failed: 0, modified: 0,
+        showSavedStatus() { this.saved++; },
+        showSaveFailedStatus() { this.failed++; },
+        showModifiedStatus() { this.modified++; }
+    };
+}
+Map.prototype.fire = function (...args) { return this; };
+Map.prototype.isReadOnlyMode = function () { return this.readonly; };
+const calls = [];
+const window = {
+    app: { file: { modified: false } },
+    webkit: { messageHandlers: { floeCommitDocument: { postMessage(v) { calls.push(v); } } } },
+    L: { Map }
+};
+const context = { window, setTimeout, clearTimeout, document: { readyState: 'complete', addEventListener() {} } };
+// Installing and firing must not throw (e.g. a `const` watchdog reassigned at
+// fire time is a TypeError that surfaces here).
+vm.runInNewContext(source, context);
+const map = new Map();
+const originalSaved = map.saveState.showSavedStatus;
+map.fire('postMessage', { msgId: 'UI_Save' });
+assert.equal(calls.length, 1); // handed to native
+assert.equal(map.saveState.showSavedStatus !== originalSaved, true); // Saved hidden while pending
+// Native never acknowledges (lost handoff): the engine save widget must not
+// latch forever. The bounded watchdog fails it and restores the real status.
+advance(20001);
+assert.equal(map.saveState.failed, 1);
+assert.equal(map.saveState.showSavedStatus, originalSaved);
+// A later explicit save works again (the latch was cleared).
+map.fire('postMessage', { msgId: 'UI_Save' });
+assert.equal(calls.length, 2);
+advance(20001); // watchdog armed again; let it fire with no acknowledgement
+assert.equal(map.saveState.failed, 2);
+map.fire('postMessage', { msgId: 'UI_Save' });
+assert.equal(calls.length, 3);
+window.floeCompleteOriginalSave(true); // Normal acknowledgement still works
+assert.equal(map.saveState.saved, 1);
+assert.equal(map.saveState.showSavedStatus, originalSaved);
 '''
 
 if __name__ == '__main__':

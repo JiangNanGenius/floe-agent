@@ -55,6 +55,39 @@ struct LocalGitServiceTests {
         #expect(branched.recentCommits.count == 2)
     }
 
+    @Test("repositoryRoot walks up to a repository and reports nil outside one")
+    func repositoryRootDiscoversAncestors() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let git = LocalGitService()
+
+        // Not a repository: no ancestor of the temp directory is a repo.
+        #expect(await git.repositoryRoot(at: root) == nil)
+
+        _ = try await git.initialize(
+            at: root,
+            authorName: "Floe Tests",
+            authorEmail: "floe-tests@example.invalid"
+        )
+
+        // The repository root itself.
+        #expect(await git.repositoryRoot(at: root) == root.standardizedFileURL)
+
+        // A workspace nested inside the repository resolves to the repo root,
+        // so source control stays visible instead of "not a repository".
+        let nested = root.appendingPathComponent("sub/dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        #expect(await git.repositoryRoot(at: nested) == root.standardizedFileURL)
+
+        // The snapshot taken from the nested workspace is a repository whose
+        // reported root is the real repository root.
+        let snapshot = try await git.snapshot(at: nested)
+        #expect(snapshot.isRepository)
+        #expect(snapshot.repositoryRoot == root.standardizedFileURL)
+    }
+
     @Test("rejects paths and branches that escape or rewrite repository metadata")
     func validatesRepositoryInputs() async throws {
         let root = FileManager.default.temporaryDirectory

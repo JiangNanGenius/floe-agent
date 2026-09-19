@@ -2,11 +2,58 @@
 import SwiftUI
 import FloeGit
 
+/// One node of the source-control change tree. Folders group changes by
+/// directory; files carry the underlying `GitFileChange`. Ids are the full
+/// repository-relative path so rows stay stable across refreshes.
+struct SourceControlChangeTreeNode: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let change: GitFileChange?
+    let children: [SourceControlChangeTreeNode]
+
+    var isFolder: Bool { change == nil }
+}
+
+/// Builds the nested, directory-grouped change tree shown in the source
+/// control surface. Kept UI-free so the grouping is unit-testable.
+enum SourceControlChangeTree {
+    private final class Box {
+        var change: GitFileChange?
+        var children: [String: Box] = [:]
+        func insert(_ change: GitFileChange, _ components: ArraySlice<String>) {
+            guard let first = components.first else { self.change = change; return }
+            let child = children[first] ?? Box()
+            child.insert(change, components.dropFirst())
+            children[first] = child
+        }
+        func node(id: String, name: String) -> SourceControlChangeTreeNode {
+            let childNodes = children
+                .sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+                .map { $0.value.node(id: id + "/" + $0.key, name: $0.key) }
+            return SourceControlChangeTreeNode(id: id, name: name, change: change, children: childNodes)
+        }
+    }
+
+    /// Groups repository-relative change paths into a sorted folder/file tree.
+    static func build(_ changes: [GitFileChange]) -> [SourceControlChangeTreeNode] {
+        let root = Box()
+        for change in changes {
+            let components = change.path.split(separator: "/").map(String.init)
+            root.insert(change, ArraySlice(components))
+        }
+        return root.children
+            .sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+            .map { $0.value.node(id: $0.key, name: $0.key) }
+    }
+}
+
 /// The ordinary source-control surface: staged/unstaged changes with
 /// per-file stage, unstage and discard (recovery copy kept), working-tree and
 /// staged diffs, commits, branch switch/create, fetch/pull (fast-forward and
 /// merge variants), push, and merge-conflict resolution. It deliberately
-/// exposes no force-push, reset --hard, clean or rebase.
+/// exposes no force-push, reset --hard, clean or rebase. Changes render as a
+/// collapsible directory tree (not a flat list) so a busy repository stays
+/// scannable.
 struct SourceControlView: View {
     @ObservedObject var center: SourceControlCenter
     @State private var commitMessage = ""
@@ -37,10 +84,13 @@ struct SourceControlView: View {
             if center.snapshot.isRepository {
                 repositoryContent
             } else {
+                // Intentional not-a-repository state: discovery already
+                // checked the workspace and its parents, so this is a truthful
+                // "no repository here" (not a hidden or failed tree).
                 ContentUnavailableView {
-                    Label("尚未初始化 Git", systemImage: "arrow.triangle.branch")
+                    Label("不是 Git 仓库", systemImage: "arrow.triangle.branch")
                 } description: {
-                    Text("在当前工作区建立本地仓库；文件仍保留在原位置。")
+                    Text("当前工作区及上层目录中都没有 Git 仓库。可以在工作区初始化一个本地仓库；文件仍保留在原位置。")
                 } actions: {
                     Button("初始化仓库") { run { try await center.initializeRepository() } }
                         .buttonStyle(.borderedProminent)
@@ -161,6 +211,16 @@ struct SourceControlView: View {
     private var repositoryContent: some View {
         List {
             Section {
+                // Surface the real repository root when it is an ancestor of
+                // the workspace (a nested checkout or a linked worktree), so
+                // the tree is truthful about which repository it inspects.
+                if center.isNestedRepository, let root = center.repositoryRoot {
+                    LabeledContent("仓库") {
+                        Label(root.path, systemImage: "folder")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Button { showBranches = true } label: {
                     LabeledContent("分支") {
                         Label(center.snapshot.branch ?? "游离 HEAD", systemImage: "arrow.triangle.branch")
@@ -230,13 +290,8 @@ struct SourceControlView: View {
 
             if !stagedChanges.isEmpty {
                 Section("已暂存（\(stagedChanges.count)）") {
-                    ForEach(stagedChanges) { change in
-                        changeRow(change, staged: true)
-                            .swipeActions(edge: .trailing) {
-                                Button("取消暂存") { run { try await center.unstage(paths: [change.path]) } }
-                                    .tint(.orange)
-                                Button("放弃修改", role: .destructive) { discardRequest = change }
-                            }
+                    OutlineGroup(SourceControlChangeTree.build(stagedChanges), children: \.children) { node in
+                        changeNodeRow(node, staged: true)
                     }
                 }
             }
@@ -245,13 +300,8 @@ struct SourceControlView: View {
                 if unstagedChanges.isEmpty {
                     Text("工作区干净").foregroundStyle(.secondary)
                 } else {
-                    ForEach(unstagedChanges) { change in
-                        changeRow(change, staged: false)
-                            .swipeActions(edge: .trailing) {
-                                Button("暂存") { run { try await center.stage(paths: [change.path]) } }
-                                    .tint(.green)
-                                Button("放弃修改", role: .destructive) { discardRequest = change }
-                            }
+                    OutlineGroup(SourceControlChangeTree.build(unstagedChanges), children: \.children) { node in
+                        changeNodeRow(node, staged: false)
                     }
                 }
             }
@@ -283,6 +333,17 @@ struct SourceControlView: View {
         }
     }
 
+    /// A tree node row: folders render as collapsible branches, files render
+    /// as the existing change row with stage/unstage/discard swipe actions.
+    @ViewBuilder private func changeNodeRow(_ node: SourceControlChangeTreeNode, staged: Bool) -> some View {
+        if let change = node.change {
+            changeRow(change, staged: staged)
+        } else {
+            Label(node.name, systemImage: "folder")
+                .foregroundStyle(.primary)
+        }
+    }
+
     private func changeRow(_ change: GitFileChange, staged: Bool) -> some View {
         Button { loadDiff(change.path, staged: staged) } label: {
             HStack(spacing: 10) {
@@ -291,15 +352,25 @@ struct SourceControlView: View {
                     .foregroundStyle(change.kind.color)
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
+                    Text((change.path as NSString).lastPathComponent).lineLimit(1)
                     Text(change.path).lineLimit(1).truncationMode(.middle)
-                    Text(staged ? "已暂存 · 查看暂存差异" : "未暂存 · 查看工作区差异")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
         }
         .buttonStyle(.plain)
+        .swipeActions(edge: .trailing) {
+            if staged {
+                Button("取消暂存") { run { try await center.unstage(paths: [change.path]) } }
+                    .tint(.orange)
+            } else {
+                Button("暂存") { run { try await center.stage(paths: [change.path]) } }
+                    .tint(.green)
+            }
+            Button("放弃修改", role: .destructive) { discardRequest = change }
+        }
     }
 
     private var stagedChanges: [GitFileChange] {
