@@ -68,6 +68,9 @@ struct FilePreviewView: View {
                 }
             } else if nativeOfficeURL != nil {
                 if isOfficeEditorPresented {
+                    // The dedicated fullscreen editor owns the document now;
+                    // the embedded preview session was released before it
+                    // opened, so exactly one live session exists per file.
                     ContentUnavailableView("正在全屏编辑", systemImage: "doc.richtext")
                 } else {
                     VStack(spacing: 0) {
@@ -163,11 +166,11 @@ struct FilePreviewView: View {
         .fullScreenCover(isPresented: $isOfficeEditorPresented, onDismiss: {
             Task { await load() }
         }) {
-            NavigationStack {
-                OfficeDocumentEditorView(relativePath: relativePath,
-                                         session: officeSession,
-                                         stableInkIdentity: remoteInkIdentity)
-            }
+            // The file manager's one dedicated fullscreen Office editor; the
+            // preview's Edit action and the inspector's expand action both
+            // land here, so a document never has two live sessions or two
+            // different editor chromes.
+            OfficeFullscreenEditorView(relativePath: relativePath, center: center)
         }
         .onDisappear {
             if !isOfficeEditorPresented { Task { await officeSession.release() } }
@@ -233,16 +236,16 @@ struct FilePreviewView: View {
             && center.fileService != nil
     }
 
-    /// Stable logical identity for a cloud/network Office document. Its local
-    /// editing URL is a fresh `remotePreview.store` copy whose directory changes
-    /// on every load, so the physical path can never key persisted ink settings.
-    /// Local Office documents return nil and keep their physical-URL identity.
-    private var remoteInkIdentity: OfficeInkDocumentIdentity? {
-        guard center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) else {
-            return nil
+    /// Opens the dedicated fullscreen Office editor. The embedded preview
+    /// session is released first so the same original file never has two live
+    /// document sessions (two working copies that would conflict on save);
+    /// dismissing the editor reloads the preview against the committed bytes.
+    private func presentOfficeEditor() {
+        guard !isOfficeEditorPresented else { return }
+        Task {
+            await officeSession.release()
+            isOfficeEditorPresented = true
         }
-        return OfficeInkDocumentIdentity(workspaceIdentity: center.currentWorkspace?.id.uuidString,
-                                         relativePath: relativePath)
     }
 
     @ToolbarContentBuilder
@@ -301,13 +304,13 @@ struct FilePreviewView: View {
             }
             if officeEditingAvailable {
                 Button {
-                    isOfficeEditorPresented = true
+                    presentOfficeEditor()
                 } label: {
                     Label("office.editor.open", systemImage: "square.and.pencil")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("office.editor.open")
-                .disabled(!officeSession.canAct)
+                .accessibilityIdentifier("file.preview.office.edit")
             }
             // Low-frequency actions live behind More instead of occupying a
             // permanent toolbar badge.
@@ -359,7 +362,7 @@ struct FilePreviewView: View {
             .disabled(!quickLookAvailable)
             if officeEditingAvailable {
                 Button {
-                    isOfficeEditorPresented = true
+                    presentOfficeEditor()
                 } label: {
                     Label("office.editor.open", systemImage: "square.and.pencil")
                 }

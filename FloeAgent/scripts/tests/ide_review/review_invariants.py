@@ -70,18 +70,20 @@ check("released = true" in office, "Office: release sets the latch")
 check(re.search(r"func open\(_ url: URL\) async \{.*?released = false", office, re.S) is not None,
       "Office: explicit open starts a new lifecycle")
 
-# --- IDE: embedded/fullscreen controller ownership --------------------------
-placeholder = re.search(
-    r"if officeFullscreenTab\?\.id == tab\.id \{\s*ContentUnavailableView", ide)
-check(placeholder is not None,
-      "IDE: embedded surface yields the controller while fullscreen is presented")
-check("OfficeDocumentEditorView(relativePath: tab.relativePath" in ide
-      and "session: session" in ide,
-      "IDE: fullscreen cover reuses the tab's OfficeFileSession")
+# --- IDE: embedded Office ownership ------------------------------------------
+# Build 199 repair: the Office document stays embedded in its own IDE tab for
+# preview and editing; no second app window re-parents the native controller,
+# so the old fullscreen cover and its placeholder are gone for good.
+check("officeFullscreenTab" not in ide,
+      "IDE: no Office fullscreen cover (second window) remains")
+check("OfficeDocumentEditorView" not in ide,
+      "IDE: the tab embeds the shared Office surface, not a second editor chrome")
+check("OfficeDocumentSurface(session: session)" in ide,
+      "IDE: office tab embeds the session surface")
 check("officeLoadKey" in ide and "needsOfficeLoad" in ide,
       "IDE: office loader keyed on the stable container")
 check(".task(id: tab.id)" not in ide,
-      "IDE: no office loader tied to the replaced fullscreen branch")
+      "IDE: no office loader tied to a replaced branch")
 check("await tabs.releaseAll()" in ide, "IDE: teardown happens on IDE close")
 check("func close(_ id: String) async" in tabs and "await tab.release()" in tabs,
       "Tabs: release only on actual tab close/releaseAll")

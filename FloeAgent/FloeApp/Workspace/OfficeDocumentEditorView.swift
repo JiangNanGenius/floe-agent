@@ -471,7 +471,17 @@ final class OfficeFileSession: ObservableObject {
             // probe result is the acknowledgement, never the requested flag.
             try await acknowledgeEditPermission()
             return !readOnly
-        } catch { fail(error); return false }
+        } catch {
+            // A failed edit activation must never leave a writable claim on a
+            // dead session: nothing verified as editable. Restore the truthful
+            // read-only claim so the failed surface offers its preview retry,
+            // the IDE shows the Edit entry again instead of dead Save/Discard
+            // chrome, and a later explicit edit can be attempted.
+            readOnly = true
+            if editUnavailableReason == nil { editUnavailableReason = error.localizedDescription }
+            fail(error)
+            return false
+        }
     }
 
     /// Waits for the pinned host's verified engine permission for the mounted
@@ -588,8 +598,13 @@ final class OfficeFileSession: ObservableObject {
             hostReadOnly = entry.readOnly
             // The mobile UI switches modes asynchronously after the guarded
             // entry; give the engine a bounded settling window before
-            // concluding that the document is denied.
-            for _ in 0..<20 {
+            // concluding that the document is denied. Cold starts and remounts
+            // on compact layouts can take several seconds before the page
+            // reports its real backing permission through the observer, so the
+            // window must outlast them — the previous 3s budget read a slow
+            // editable document as denied and bounced it back to preview,
+            // which is why later edit attempts kept failing.
+            for _ in 0..<60 {
                 if Task.isCancelled { break }
                 if hostReadOnly == false { break }
                 try? await Task.sleep(nanoseconds: 150_000_000)
@@ -1466,11 +1481,12 @@ struct OfficeDocumentEditorView: View {
         .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
     }
 
-    @ViewBuilder private var primaryActions: some View {
-        // The App owns the edit entry: preview exposes Edit in its own top
-        // toolbar, never a floating engine button over the document. A
-        // cloud/network snapshot never exposes Edit at all: there is no real
-        // remote write-back, so editing could only change the temp copy.
+    /// The App owns the edit entry: a preview exposes one clear host-level
+    /// Edit action in its own top chrome on every size class (never a floating
+    /// engine button over the document). A cloud/network snapshot never
+    /// exposes Edit at all: there is no real remote write-back, so editing
+    /// could only change the temp copy.
+    @ViewBuilder private var editAction: some View {
         if session.readOnly, session.phase == .ready, !session.isRemoteSnapshot {
             Button {
                 Task { _ = await session.requestEditing() }
@@ -1481,6 +1497,9 @@ struct OfficeDocumentEditorView: View {
             .disabled(!session.canAct)
             .accessibilityIdentifier("office.preview.edit")
         }
+    }
+
+    @ViewBuilder private var primaryActions: some View {
         if session.supportsAttachmentInsertion {
             Menu {
                 Button("从工作区选择", systemImage: "folder") { choosingWorkspaceAttachment = true }
@@ -1518,12 +1537,6 @@ struct OfficeDocumentEditorView: View {
             if inlineHeader != nil && sizeClass == .compact {
                 primaryActions.labelStyle(.titleAndIcon)
                 Divider()
-            }
-            if session.readOnly, session.phase == .ready, !session.isRemoteSnapshot {
-                Button(OfficeInkText.t("编辑", "Edit"), systemImage: "square.and.pencil") {
-                    Task { _ = await session.requestEditing() }
-                }
-                .accessibilityIdentifier("office.preview.edit.menu")
             }
             // A remote snapshot is read-only: nothing can be "saved back", so
             // the save/discard entries stay hidden. Export, save-copy and
@@ -1566,6 +1579,10 @@ struct OfficeDocumentEditorView: View {
 
     private var documentActions: some View {
         HStack(spacing: 4) {
+            // The preview's single primary action stays visible on compact
+            // layouts too; the remaining edit-mode actions keep their existing
+            // compact menu placement.
+            editAction
             if inlineHeader == nil || sizeClass != .compact { primaryActions }
             documentMenu
         }

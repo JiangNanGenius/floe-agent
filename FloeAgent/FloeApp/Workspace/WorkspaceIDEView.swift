@@ -8,9 +8,9 @@ import FloeWorkspace
 ///
 /// The IDE is a unified native tab host: the code workbench (CodeBlitz/Monaco)
 /// plus one tab per routed native document. Office documents get exactly one
-/// `OfficeFileSession` per tab, embedded as a preview and opened fullscreen for
-/// editing with that same session, so a tab close can always offer
-/// save / discard / cancel against one working copy.
+/// `OfficeFileSession` per tab and stay embedded in that tab for preview and
+/// editing — opening one never spawns a second app window — so a tab close can
+/// always offer save / discard / cancel against one working copy.
 struct WorkspaceIDEView: View {
     @ObservedObject var center: WorkspaceCenter
     let initialRelativePath: String?
@@ -21,6 +21,7 @@ struct WorkspaceIDEView: View {
     private let workspaceName: String
     private let root: URL?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var showsCloseConfirmation = false
     @State private var terminalOwner: LocalTerminalOwner?
     @State private var showsTerminal = false
@@ -28,7 +29,6 @@ struct WorkspaceIDEView: View {
     @State private var showsRunSheet = false
     @State private var showsRunTerminal = false
     @State private var pendingRunTerminal = false
-    @State private var officeFullscreenTab: IDEWorkspaceTab?
     @State private var officeCloseRequest: OfficeCloseRequest?
     @State private var routingNotice: String?
     @State private var showsSourceControl = false
@@ -144,15 +144,6 @@ struct WorkspaceIDEView: View {
                 await state.resolve(review, content: content)
                 if state.conflict == nil && !state.dirty { onSaved() }
             }, onCancel: { state.conflict = nil }).id(review.id)
-        }
-        .fullScreenCover(item: $officeFullscreenTab) { tab in
-            if let session = tab.officeSession {
-                NavigationStack {
-                    OfficeDocumentEditorView(relativePath: tab.relativePath,
-                                             session: session,
-                                             onClose: { officeFullscreenTab = nil })
-                }
-            }
         }
         .sheet(isPresented: $showsSourceControl) {
             NavigationStack {
@@ -308,10 +299,10 @@ struct WorkspaceIDEView: View {
                 }
             }
         }
-        // Office loading lives on the stable container, not on the branch the
-        // fullscreen placeholder replaces: presenting fullscreen while a
-        // document is still opening must not cancel the open. An edit intent
-        // raised by the fullscreen editor is serialized by the session queue.
+        // Office loading lives on the stable container, not on a branch that
+        // tab switching replaces: activating another tab while a document is
+        // still opening must not cancel the open. An edit intent raised from
+        // the tab's action bar is serialized by the session queue.
         .task(id: officeLoadKey) {
             guard let tab = tabs.activeTab, tab.kind == .office,
                   let session = tab.officeSession, Self.needsOfficeLoad(session) else { return }
@@ -330,10 +321,10 @@ struct WorkspaceIDEView: View {
     }
 
     /// Re-runs the office loader when the active office tab has no surface:
-    /// the first open, or a fullscreen editor that returned the session to
-    /// `.idle` (discard / keep changes) so the embedded read-only preview must
-    /// come back. The in-flight open itself is owned by the session, never by
-    /// this view, so a key change cannot cancel a load.
+    /// the first open, or a save/discard that returned the session to `.idle`
+    /// so the embedded read-only preview must come back. The in-flight open
+    /// itself is owned by the session, never by this view, so a key change
+    /// cannot cancel a load.
     private var officeLoadKey: String {
         guard let tab = tabs.activeTab, tab.kind == .office,
               let session = tab.officeSession else { return "code" }
@@ -353,33 +344,29 @@ struct WorkspaceIDEView: View {
 
     @ViewBuilder private func officeSurface(_ tab: IDEWorkspaceTab) -> some View {
         if let session = tab.officeSession {
-            // The fullscreen editor re-parents the same native controller; a
-            // placeholder avoids mounting it in two hosts at once.
-            if officeFullscreenTab?.id == tab.id {
-                ContentUnavailableView(IDELanguageRunText.t("正在全屏编辑", "Editing fullscreen"),
-                                       systemImage: "doc.richtext")
-            } else {
-                VStack(spacing: 0) {
-                    if let reason = session.editUnavailableReason {
-                        HStack(spacing: 8) {
-                            Label(reason, systemImage: "lock")
-                                .font(.footnote).foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                            Button(IDELanguageRunText.t("重试编辑", "Retry editing")) {
-                                Task { await session.requestEditing() }
-                            }
-                            .font(.footnote)
+            // The Office document stays embedded in its own IDE tab: preview,
+            // editing, save and discard all happen against this one session,
+            // and no second app window ever re-parents the native controller.
+            VStack(spacing: 0) {
+                if let reason = session.editUnavailableReason {
+                    HStack(spacing: 8) {
+                        Label(reason, systemImage: "lock")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button(IDELanguageRunText.t("重试编辑", "Retry editing")) {
+                            Task { await session.requestEditing() }
                         }
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(.bar)
+                        .font(.footnote)
                     }
-                    OfficeDocumentSurface(session: session)
-                    officeActionBar(tab: tab, session: session)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.bar)
                 }
-                // A verified original-file commit from this tab (including the
-                // engine's own toolbar save) refreshes every sibling entry.
-                .onAppear { session.onCommitted = { onSaved() } }
+                OfficeDocumentSurface(session: session)
+                officeActionBar(tab: tab, session: session)
             }
+            // A verified original-file commit from this tab (including the
+            // engine's own toolbar save) refreshes every sibling entry.
+            .onAppear { session.onCommitted = { onSaved() } }
         }
     }
 
@@ -398,6 +385,9 @@ struct WorkspaceIDEView: View {
     }
 
     @ViewBuilder private func officeActionBar(tab: IDEWorkspaceTab, session: OfficeFileSession) -> some View {
+        // The tab owns every Office action; opening never spawns another
+        // window. On compact widths the row switches to icon-only buttons so
+        // Save/Discard/Share keep their 36pt targets without overflowing.
         HStack(spacing: 10) {
             if session.readOnly {
                 if session.isRemoteSnapshot {
@@ -408,13 +398,16 @@ struct WorkspaceIDEView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        // The hint text is the whole message; never let the
+                        // compact icon-only action style strip it.
+                        .labelStyle(.titleAndIcon)
                         .accessibilityIdentifier("workspace.ide.office.remoteHint")
                 } else {
                     Button {
                         Task { await session.requestEditing() }
                     } label: {
                         Label(IDELanguageRunText.t("编辑", "Edit"), systemImage: "square.and.pencil")
-                            .frame(minHeight: 36)
+                            .frame(minWidth: 44, minHeight: 36)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!session.canAct)
@@ -428,7 +421,7 @@ struct WorkspaceIDEView: View {
                     Task { _ = await session.saveAndReturn() }
                 } label: {
                     Label(IDELanguageRunText.t("保存", "Save"), systemImage: "checkmark")
-                        .frame(minHeight: 36)
+                        .frame(minWidth: 44, minHeight: 36)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!session.canAct)
@@ -437,10 +430,11 @@ struct WorkspaceIDEView: View {
                     Task { _ = await session.discardAndReturn() }
                 } label: {
                     Label(IDELanguageRunText.t("放弃修改", "Discard"), systemImage: "arrow.uturn.backward")
-                        .frame(minHeight: 36)
+                        .frame(minWidth: 44, minHeight: 36)
                 }
                 .buttonStyle(.bordered)
                 .disabled(!session.canAct)
+                .accessibilityIdentifier("workspace.ide.office.discard")
             }
             Spacer(minLength: 0)
             // Explicit share of this document without leaving the tab: a
@@ -449,21 +443,13 @@ struct WorkspaceIDEView: View {
                 Task { officeShareSnapshot = await session.prepareShareCopy() }
             } label: {
                 Label(IDELanguageRunText.t("分享", "Share"), systemImage: "square.and.arrow.up")
-                    .frame(minHeight: 36)
+                    .frame(minWidth: 44, minHeight: 36)
             }
             .buttonStyle(.bordered)
             .disabled(!session.canAct)
             .accessibilityIdentifier("workspace.ide.office.share")
-            Button {
-                officeFullscreenTab = tab
-            } label: {
-                Label(IDELanguageRunText.t("全屏", "Fullscreen"), systemImage: "arrow.up.left.and.arrow.down.right")
-                    .frame(minHeight: 36)
-            }
-            .buttonStyle(.bordered)
-            .disabled(!session.canAct)
-            .accessibilityIdentifier("workspace.ide.office.fullscreen")
         }
+        .labelStyle(sizeClass == .compact ? .iconOnly : .titleAndIcon)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
@@ -504,8 +490,7 @@ struct WorkspaceIDEView: View {
     private func openActiveInRoutedSurface() {
         if let active = tabs.activeTab, active.kind == .office {
             // An Office document stays embedded in its own IDE tab; opening it
-            // must never spawn a second window. Fullscreen remains an explicit
-            // action on the tab's action bar.
+            // must never spawn a second window.
             tabs.activate(active.id)
             return
         }

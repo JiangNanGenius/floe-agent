@@ -4,8 +4,8 @@
 //
 // The IDE now hosts three surfaces in one native tab strip:
 //   • code      — the CodeBlitz/Monaco workbench (browser filesystem + CAS)
-//   • office    — one native OfficeFileSession per document, preview embedded
-//                 and fullscreen editing reusing the *same* session object
+//   • office    — one native OfficeFileSession per document; preview and
+//                 editing stay embedded in the same tab (no second window)
 //   • document  — typed viewer (PDF/CAD/image/binary) via FilePreviewView
 //
 // Text routing stays authoritative: an Office/PDF/CAD/image path can never
@@ -35,7 +35,7 @@ final class IDEWorkspaceTab: ObservableObject, @MainActor Identifiable {
     let relativePath: String
     let kind: IDEWorkspaceTabKind
     /// One Office session per Office tab. The embedded preview and the
-    /// fullscreen editor both read this same object, so there is exactly one
+    /// in-tab editor both read this same object, so there is exactly one
     /// working copy, one save receipt and one conflict baseline per document.
     let officeSession: OfficeFileSession?
 

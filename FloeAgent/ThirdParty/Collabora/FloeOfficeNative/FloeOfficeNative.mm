@@ -586,6 +586,15 @@ static void ServerReady() {
 @property (nonatomic) BOOL closing;
 @property (nonatomic) BOOL closed;
 @property (nonatomic) BOOL insertingAttachment;
+/// The host's view was mounted, so its document open was (or is being)
+/// requested. `loadViewIfNeeded` alone never sets this: a controller that was
+/// created and discarded before mounting has no kit client that could ever
+/// acknowledge a close.
+@property (nonatomic) BOOL openRequested;
+/// The UIDocument open completed (success or failure).
+@property (nonatomic) BOOL openSettled;
+/// The UIDocument open completed successfully; a live engine session exists.
+@property (nonatomic) BOOL documentOpened;
 @property (nonatomic, strong) NSMutableArray *closeWaiters;
 - (void)enginePermissionDidUpdate:(BOOL)readOnly;
 - (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
@@ -640,10 +649,23 @@ static void ServerReady() {
         document.onOpened = ^(BOOL success) {
             FloeOfficeNativeViewController *host = weakSelf;
             if (!host) return;
+            host.openSettled = YES;
+            host.documentOpened = success;
             if (host.onWorkingCopyOpened) host.onWorkingCopyOpened(success);
             if (!success) {
                 host.sessionIsReadOnly = YES;
                 if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(NO, YES);
+                return;
+            }
+            if (host.readOnly) {
+                // A preview is forced readonly by the mount grant and the lock
+                // script, so the engine's backing permission cannot change the
+                // session. Probing it only delayed readiness (seconds on a cold
+                // engine, worse on compact layouts) and was the visible "open
+                // spinner" on iPhone. Report immediately; the permission
+                // observer still streams later engine state for diagnostics.
+                host.sessionIsReadOnly = YES;
+                if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(YES, YES);
                 return;
             }
             [host probeEnginePermissionWithAttempts:0 completion:^(BOOL known, BOOL readOnly) {
@@ -950,6 +972,22 @@ static void ServerReady() {
     NSAssert(NSThread.isMainThread, @"Office closes are main-queue owned");
     if (self.insertingAttachment) { completion(OfficeError(11, @"Finish inserting the attachment before closing.")); return; }
     if (self.closed) { completion(nil); return; }
+    // No live engine session can ever acknowledge this close when the host's
+    // view was never mounted (created and discarded before appearing — the
+    // preview-to-edit switch on a fast tap) or when its open already failed.
+    // Waiting for a bye ack there only stalls the caller for seconds and
+    // surfaces as the "closing" spinner; settle immediately instead. Nothing
+    // was written back or deleted; the private copies stay on disk.
+    BOOL neverOpened = !self.openRequested || (self.openSettled && !self.documentOpened);
+    if (neverOpened) {
+        [self.saveReceipts cancel];
+        self.closed = YES;
+        if (self.editor.webView)
+            [self.editor.webView.configuration.userContentController removeScriptMessageHandlerForName:@"floePermission"];
+        completion(nil);
+        if (self.onClosed) self.onClosed(YES);
+        return;
+    }
     [self.closeWaiters addObject:[completion copy]];
     if (self.closing) return;
     self.closing = YES;
@@ -1040,6 +1078,13 @@ static void ServerReady() {
             });
         }
     });
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // The upstream editor opens its document from its own viewWillAppear, so
+    // reaching this point means a kit session is (or will be) live and every
+    // later close must go through the engine's acknowledgement path.
+    self.openRequested = YES;
 }
 - (void)viewDidLoad {
     [super viewDidLoad];

@@ -734,6 +734,7 @@ targets:
           - CanvasAgentToolContractTests.swift
           - MailConnectorTests.swift
           - SkillLifecycleTests.swift
+          - OfficeBridgeStateTests.swift
           - RARFixtures.generated.swift
     dependencies:
       - target: FloeAgent
@@ -771,6 +772,7 @@ targets:
       - path: Tests/FloeAgentUITests/CanvasAgentToolContractTests.swift
       - path: Tests/FloeAgentUITests/MailConnectorTests.swift
       - path: Tests/FloeAgentUITests/SkillLifecycleTests.swift
+      - path: Tests/FloeAgentUITests/OfficeBridgeStateTests.swift
       - path: Tests/FloeProvidersTests/VideoProviderAdapterTests.swift
       - path: Tests/FloeCoreTests/CreativeMediaModelsTests.swift
       - path: Tests/FloeAgentUITests/RARFixtures.generated.swift
