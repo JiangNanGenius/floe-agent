@@ -348,18 +348,19 @@ struct LocalShellRuntimeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = IOSSystemShellBackend()
         let id = UUID().uuidString
-        // A command that outlives its deadline. After the bounded cancellation
-        // grace the gate is reclaimed; the next run must execute even while the
-        // timed-out worker is still stopping.
+        // `sleep` is a cooperative Floe command: when its deadline passes the
+        // bridge requests cooperative cancellation and the worker actually
+        // stops inside the bounded grace. The worker's own teardown then
+        // releases the run gate before this caller returns, so the next run
+        // starts immediately — the engine never hosts two commands at once.
         let first = await backend.run(.init(command: "sleep 5", cwd: ".", rootURL: root, timeout: 0.1, sessionID: id), cancellation: nil)
         guard case .timedOut = first else { Issue.record("Expected sleep timeout: \(first)"); return }
-        // Partial output produced before the deadline is preserved, never a
-        // fabricated timeout after a hung finalizer.
+        // Output produced before the deadline is preserved, never a fabricated
+        // timeout after a hung finalizer.
         let second = await backend.run(.init(command: "printf 'after-worker'", cwd: ".", rootURL: root, timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
         guard case .exited(let code, let output, _, _, _, _) = second else { Issue.record("Worker lease did not recover: \(second)"); return }
         #expect(code == 0 && output == "after-worker")
-        // The abandoned worker still unwinds on its own; it just does not own
-        // the gate any more.
+        // The stopped worker is untracked again; nothing quarantined remains.
         let deadline = Date().addingTimeInterval(8)
         while FloeShellHasActiveWorker(id) && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
         #expect(!FloeShellHasActiveWorker(id))

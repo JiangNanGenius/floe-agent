@@ -207,6 +207,13 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain
           scripts/bootstrap_python_runtime.sh
 
+      # The app links git-ignored dash*.xcframework built from ThirdParty/DashIOS
+      # by the bootstrap above (including the interactive-stdin fix in
+      # src/input.c). Fail the release unless those binaries were actually
+      # built from the tracked source at this SHA, not stale source-only art.
+      - name: Verify dash framework provenance
+        run: python3 scripts/tests/test_dash_framework_provenance.py
+
       - name: Generate project and validate tag
         id: release
         env:
@@ -844,6 +851,11 @@ jobs:
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
           scripts/pin_check.sh
+
+      # Same provenance gate as the SDK 27 job: the signed TestFlight build
+      # must embed dash frameworks compiled from the tracked DashIOS source.
+      - name: Verify dash framework provenance
+        run: python3 scripts/tests/test_dash_framework_provenance.py
 
       # Same bounded resolution as the SDK 27 job, using this job's cache,
       # derived data, configuration and destination, and the same committed
