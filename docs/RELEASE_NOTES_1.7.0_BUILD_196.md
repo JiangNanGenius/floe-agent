@@ -1,5 +1,21 @@
 # Floe Agent 1.7.0 (196) / beta.53 — frozen internal-testing candidate
 
+> **Status: delivered to internal TestFlight (Floe QA).** The single accepted-SDK
+> App build ran in [run 35411629062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35411629062)
+> from the frozen commit `0771aee5f4c3a5495b828084081c47f128b0462f`. The unsigned
+> device IPA `Floe-Agent-1.7.0-build196-unsigned.ipa` (sha256
+> `bd080ba7dae8acc3e7483c73c855a219c07956c27482032599e1b6d18bed80c4`, 811,292,228 B)
+> and its matching private symbols (app UUID `66F46B44-2C38-3904-9C60-78D433A707E5`)
+> were retained **before** signing. The attested unsigned GitHub prerelease
+> `v1.7.0-beta.53` and the Feather source were published from that same artifact
+> (Feather run 35413736446; `feather.json` sha256 `bd080ba7…`, sourceCommit
+> `0771aee5…`). Apple buildID `27355e88-2f37-4c60-8b6e-713db546773b` was verified
+> `VALID`, unexpired, exactly one private Floe QA group and `IN_BETA_TESTING` at
+> 2026-09-19 02:24 UTC, and both English and Chinese test notes were saved and read
+> back. Simulator/UI qualification was skipped by explicit user request, so this is
+> internal device testing, not full acceptance; physical-device acceptance belongs
+> to the user and the build 191 local-model abort remains unproven fixed.
+
 Build 196 carries the build 191 feedback repair, the accepted-SDK compile fixes
 for the first two freezes, the release-workflow publish fix for the third, and
 the retry after the fourth attempt's evidence-upload flake:

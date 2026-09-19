@@ -6,14 +6,14 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-当前内部 TestFlight 为 **1.7.0（191）**，已核实 Apple VALID、未过期及 Floe QA 可测试。[beta.48](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.48) 开发者包与 [Feather 源](FEATHER_SOURCE.md)均已发布；三项界面失败仅获内部测试豁免。完整包/模型、RDP App 集成和部分真机验收仍未完成。[191交付证据](qualification/build191-release/README.md)，历史记录保持原结论。
+当前内部 TestFlight 为 **1.7.0（196）**，已核实 Apple VALID、未过期、唯一私有 Floe QA 组和 IN_BETA_TESTING（2026-09-19 02:24 UTC）。[beta.53](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.53) 开发者包与 [Feather 源](FEATHER_SOURCE.md)均由同一未签名工件发布。上一交付 191 保持原记录：三项界面失败仅获内部测试豁免。完整包/模型、RDP App 集成和部分真机验收仍未完成。[191 交付证据](qualification/build191-release/README.md)，历史记录保持原结论。
 
-**Build 196 为已冻结的下一候选**：发布工作流在冻结提交创建标签 `v1.7.0-beta.53`，用验收上传 SDK 只构建一次并上传内部 TestFlight；Apple 处理、Floe QA 可见性和中英文测试说明由上传后核验记录。Build 192/193 编译失败未上传；Build 194（`v1.7.0-beta.51`）上传成功但发布步骤命中工作流缺陷；Build 195（`v1.7.0-beta.52`）修复后上传成功，但 GitHub 工件服务临时故障丢失 TestFlight 证据；四个标签均作为证据保留，194–196 的 App 源码相同。工作区包含 191 反馈修复，[Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_196.json)在 `prepare-testflight` 阶段附加到上传的构建。本构建内置的签名目录已包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
+**Build 196 已在内部 Floe QA TestFlight 可安装**（Apple buildID `27355e88…`，`VALID`／未过期／唯一私有 Floe QA 组／`IN_BETA_TESTING`，2026-09-19 02:24 UTC 核实；中英文测试说明已读回）。Build 192/193 编译失败；Build 194/195 被 Apple 接受但从未发布；四个标签均作为证据保留，194–196 的 App 源码相同。工作区包含 191 反馈修复，[Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_196.json)已附加到该构建。本构建内置的签名目录已包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
 
 | 文档 | 阅读目的 |
 |---|---|
 | [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
-| [Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（已冻结，发布工作流创建标签并上传；192/193 编译失败、194/195 上传未发布记录见各自说明） |
+| [Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（已交付内部 Floe QA；192/193 编译失败、194/195 上传未发布记录见各自说明） |
 | [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 本轮改动、已验证范围与发布状态 |
 | [当前手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
 | [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 本轮改动与分发前剩余工作 |

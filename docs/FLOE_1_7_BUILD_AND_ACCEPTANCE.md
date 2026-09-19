@@ -54,6 +54,14 @@ swift build --package-path FloeAgent --target FloeExecution --force-resolved-ver
 
 当前版本描述入口为 [RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md)，对应中英文 README、USER_GUIDE、变更草稿、架构、迁移恢复及 TestFlight 准备记录。历史版本文件保留，不改写为新版本说明。上传后必须补入实际固定提交、构建号、Apple 处理结果与可安装状态。
 
+### 192–196 结果（2026-09-19）
+
+- 192 / `v1.7.0-beta.49` / `1dc6577a`：上传 SDK App 编译在 `FloeLocalModels/MLXTextEngine.swift` 因 Swift 6 区域隔离错误失败，未上传。
+- 193 / `v1.7.0-beta.50` / `e0b4c8ca`：修复区域隔离后暴露 7 个 App 目标错误（媒体轮询符号、`ShellRunOutcome` 分支、`Identifiable` 隔离、可选权限探针与两个 `CocoaError` 代码），未上传。
+- 194 / `v1.7.0-beta.51` / `b1e1bbdd`：单次验收上传 SDK 编译通过，未签名设备 IPA 与私有符号在签名前留存，TestFlight 运输层接受上传；发布步骤因验证器调用缺陷失败，未发布。
+- 195 / `v1.7.0-beta.52` / `575211e9`：修复发布步骤后构建上传成功（`No errors uploading archive`），但 GitHub 工件服务临时故障（`Failed to CreateArtifact: ENOTFOUND`）导致 TestFlight 证据工件缺失，未能通过发布门禁。
+- 196 / `v1.7.0-beta.53` / `0771aee5`：**内部 TestFlight 已交付**。run `35411629062` 单次验收 SDK 构建；未签名 IPA `Floe-Agent-1.7.0-build196-unsigned.ipa` sha256 `bd080ba7…80c4`、812 MB，私有符号 `release-symbols-1.7.0-build196`（App UUID `66F46B44…`）在签名前留存；来源证明签名工作流 `release-unsigned-ipa.yml`；GitHub prerelease `v1.7.0-beta.53` 仅含未签名资产；Feather run `35413736446` 发布 `feather.json`（sha256 `bd080ba7…`、sourceCommit `0771aee5…`）。ASC buildID `27355e88-2f37-4c60-8b6e-713db546773b`：`VALID`、未过期、唯一私有 Floe QA 组、`IN_BETA_TESTING`，中英文测试说明已读回（2026-09-19 02:24 UTC）。按要求跳过模拟器/界面验收，真机验收由用户完成；本地模型 Build191 Qwen 崩溃仍未证实修复。
+
 ### 186 最终结果与 187 准备（2026-09-18）
 
 - 186 固定源码 `d421fea260523d063270e2d21d623bd011acd9ea` / `v1.7.0-beta.43` 的 run `35306551280` 已失败。发布 SDK App 回归 204/204；双端 Notes UI 均 3 通过、1 失败、1 原生 Office 预期跳过；组件 iPad 83/84、iPhone 84/84；SDK 27 模块发现一个本地化键错误。签名与上传未执行，[原始结果](qualification/build186-release/result.json)与恢复包身份均已留存。

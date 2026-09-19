@@ -1,6 +1,31 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (191) — available in Floe QA
+## Current internal delivery: 1.7.0 (196) — available in Floe QA
+
+Immutable tag `v1.7.0-beta.53`, source `0771aee5f4c3a5495b828084081c47f128b0462f`.
+[Run 35411629062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35411629062)
+completed the single accepted-SDK App build (Xcode 26.6 / 17F113), retained the
+unsigned IPA `Floe-Agent-1.7.0-build196-unsigned.ipa` (sha256
+`bd080ba7dae8acc3e7483c73c855a219c07956c27482032599e1b6d18bed80c4`, 811,292,228 B)
+with matching private symbols (app UUID `66F46B44-2C38-3904-9C60-78D433A707E5`,
+artifact `release-symbols-1.7.0-build196`) before signing, and TestFlight accepted
+the upload. Attestation source digest `0771aee5…` signed by
+`release-unsigned-ipa.yml`; the attested unsigned GitHub prerelease
+`v1.7.0-beta.53` and the Feather source were published from the same artifact
+(Feather run 35413736446; `feather.json` sha256 `bd080ba7…`, sourceCommit
+`0771aee5…`). Apple `buildID` `27355e88-2f37-4c60-8b6e-713db546773b` was verified
+`VALID`, unexpired, exactly one private Floe QA group and `IN_BETA_TESTING` at
+2026-09-19 02:24 UTC ([discover 35415385318](https://github.com/JiangNanGenius/floe-agent/actions/runs/35415385318),
+[notes 35415460626](https://github.com/JiangNanGenius/floe-agent/actions/runs/35415460626),
+[verify 35415530334](https://github.com/JiangNanGenius/floe-agent/actions/runs/35415530334));
+both English and Chinese test notes were saved and read back. Simulator/UI
+qualification was skipped by explicit user request, so this is internal device
+testing, not full acceptance. Builds 194 and 195 were also uploaded to Apple
+(`VALID`) but never published, and builds 192/193 never compiled; see their
+records. Device acceptance remains with the user, and the build 191 foreground
+Qwen GatedDeltaNet abort is still not proven fixed.
+
+## Previous internal delivery: 1.7.0 (191) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.48`, source `715cbc42e9402cf5ca691291fed5c201e61cf222`.
 User explicitly authorized internal delivery despite the two SDK27 UI failures:
