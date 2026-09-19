@@ -218,6 +218,10 @@ actor CanvasToolCoordinator {
     private let discardUnreferencedGeneratedAssets: @Sendable (
         ReservedGeneratedImageBatch
     ) async -> Void
+    /// Resolves the public video candidate chosen by the conversation model
+    /// (or a legacy internal UUID) into the enabled canvas video model. The
+    /// user never has to provide an internal UUID.
+    private let resolveVideoModel: @Sendable (UUID?, String?) async throws -> UUID
     private let submitVideo: @Sendable (
         UUID, UUID, UUID, [UUID], UUID, RemoteVideoRequest
     ) async throws -> MediaGenerationJob
@@ -239,6 +243,7 @@ actor CanvasToolCoordinator {
         discardUnreferencedGeneratedAssets: @escaping @Sendable (
             ReservedGeneratedImageBatch
         ) async -> Void,
+        resolveVideoModel: @escaping @Sendable (UUID?, String?) async throws -> UUID,
         submitVideo: @escaping @Sendable (
             UUID, UUID, UUID, [UUID], UUID, RemoteVideoRequest
         ) async throws -> MediaGenerationJob
@@ -250,6 +255,7 @@ actor CanvasToolCoordinator {
         self.generateImages = generateImages
         self.markGeneratedAssetsReferenced = markGeneratedAssetsReferenced
         self.discardUnreferencedGeneratedAssets = discardUnreferencedGeneratedAssets
+        self.resolveVideoModel = resolveVideoModel
         self.submitVideo = submitVideo
     }
 
@@ -366,11 +372,22 @@ actor CanvasToolCoordinator {
 
     func generateMedia(
         runID: UUID, kind: CanvasGenerationGraphKind, modelID: UUID?,
+        modelSelection: String? = nil,
         prompt: String, documentID: UUID?, sourceNodeIDs: [UUID]?,
         configurationNodeID: UUID?, position: CanvasPoint,
         expectedRevision: Int64, aspectRatio: String?, quality: String?,
         count: Int, durationSeconds: Int?, resolution: String? = nil
     ) async throws -> CanvasGenerationOutcome {
+        // Video candidates are selected by their public name (remote model ID
+        // or display name). Resolve once here so the fingerprint, the visible
+        // configuration node and the durable submission all use the canonical
+        // enabled model instead of asking the user for a UUID.
+        let resolvedModelID: UUID?
+        if kind == .video {
+            resolvedModelID = try await resolveVideoModel(modelID, modelSelection)
+        } else {
+            resolvedModelID = modelID
+        }
         let activeProject = try await project(for: runID)
         let persisted = try await runContexts.context(runID: runID)
         let targetDocumentID = documentID ?? persisted?.documentID ?? activeProject.selectedDocumentID
@@ -384,7 +401,7 @@ actor CanvasToolCoordinator {
             document: document
         )
         let fingerprint = generationFingerprint(
-            kind: kind, prompt: prompt, modelID: modelID,
+            kind: kind, prompt: prompt, modelID: resolvedModelID,
             sourceNodeIDs: sources, aspectRatio: aspectRatio,
             quality: quality, count: count, durationSeconds: durationSeconds, resolution: resolution
         )
@@ -428,7 +445,7 @@ actor CanvasToolCoordinator {
         let generationConfiguration = CanvasGenerationConfiguration(
             kind: kind == .image ? .image : .video,
             prompt: prompt,
-            modelID: modelID,
+            modelID: resolvedModelID,
             aspectRatio: aspectRatio ?? "1:1",
             resolution: resolution, quality: quality,
             count: kind == .image ? count : 1,
@@ -534,11 +551,11 @@ actor CanvasToolCoordinator {
                 )
             }
 
-            guard let modelID else {
-                throw FloeError.validationFailed("video generation requires modelID")
+            guard let resolvedModelID else {
+                throw FloeError.validationFailed("video generation requires a usable public video candidate or modelID")
             }
             let job = try await submitVideo(
-                modelID, activeProject.id, targetDocumentID,
+                resolvedModelID, activeProject.id, targetDocumentID,
                 graph.sourceNodeIDs, graph.resultNodeID,
                 RemoteVideoRequest(
                     prompt: providerPrompt(prompt: prompt, sourceNodeIDs: sources, document: document),
@@ -1016,14 +1033,18 @@ private struct CanvasAssetImportTool: AgentTool {
 private struct CanvasGenerateMediaTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var kind: String; var prompt: String; var modelID: UUID?
+        /// Public video candidate from video.models (`model` remote ID or
+        /// modelName). Choose it yourself when several candidates exist; the
+        /// user never provides an internal UUID.
+        var model: String?
         var documentID: UUID?; var sourceNodeIDs: [UUID]?
         var configurationNodeID: UUID?; var position: CanvasPoint
         var expectedRevision: Int64; var aspectRatio: String?
         var quality: String?; var count: Int?; var durationSeconds: Int?; var resolution: String?
     }
     static let name = "canvas.generate"
-    static let toolDescription = "Generate media through the canonical canvas workflow. For images inspect image.models first for autonomyEnabled, configured suppliers, modelID, priority/fallback and supported aspectRatio/resolution/quality/count/reference limits; never guess parameters. Reference context follows only source-kind ancestry; ordinary arrows and prior generated results are never implicit inputs. For an existing configuration, omit sourceNodeIDs to inherit its incoming source connections and persisted source metadata, provide an array to replace the complete source set, or provide [] to clear it. Every resolved reference image is sent or the request fails before networking. The workflow creates or reuses a visible generation-configuration node and connected image/video results. Inspect first and pass the exact revision. For a standalone image not tied to a canvas document or generation graph, use image.generate instead."
-    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","description":"Exact reference/context override. Omit this property to inherit the existing configuration's incoming source-kind connections and persisted generationSourceNodeIDs. A provided array replaces the complete source set; an empty array clears it. Only source-kind ancestry is expanded.","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred flow area. New nodes are aligned on a fixed grid to the right of explicit sources without moving existing nodes.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"resolution":{"type":"string","description":"Image resolution from image.models, separate from quality"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
+    static let toolDescription = "Generate media through the canonical canvas workflow. For images inspect image.models first for autonomyEnabled, configured suppliers, modelID, priority/fallback and supported aspectRatio/resolution/quality/count/reference limits; never guess parameters. For video inspect video.models first for the public candidates (`model`/`modelName`), duration and reference limits, then choose the candidate that fits the request yourself and pass its public `model` value; omit it only when a single or preferred route exists, and never ask the user for an internal UUID. Reference context follows only source-kind ancestry; ordinary arrows and prior generated results are never implicit inputs. For an existing configuration, omit sourceNodeIDs to inherit its incoming source connections and persisted source metadata, provide an array to replace the complete source set, or provide [] to clear it. Every resolved reference image is sent or the request fails before networking. The workflow creates or reuses a visible generation-configuration node and connected image/video results. Inspect first and pass the exact revision. For a standalone image not tied to a canvas document or generation graph, use image.generate instead."
+    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"model":{"type":"string","description":"For video: public candidate from video.models (its `model` remote ID or modelName). Choose it yourself from the public candidates; never ask the user for an internal UUID."},"modelID":{"type":"string","format":"uuid","description":"Optional legacy internal id; prefer the public `model` value for video"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","description":"Exact reference/context override. Omit this property to inherit the existing configuration's incoming source-kind connections and persisted generationSourceNodeIDs. A provided array replaces the complete source set; an empty array clears it. Only source-kind ancestry is expanded.","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred flow area. New nodes are aligned on a fixed grid to the right of explicit sources without moving existing nodes.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"resolution":{"type":"string","description":"Image resolution from image.models, separate from quality"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.networkAccess, .sendsDataToProvider, .persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
@@ -1032,8 +1053,8 @@ private struct CanvasGenerateMediaTool: AgentTool {
         guard ["image", "video"].contains(args.kind), !args.prompt.isEmpty else {
             throw FloeError.validationFailed("kind and prompt are required")
         }
-        if args.kind == "video", args.modelID == nil {
-            throw FloeError.validationFailed("video generation requires modelID")
+        if args.model != nil, args.modelID != nil {
+            throw FloeError.validationFailed("Use either the public `model` or the legacy `modelID`, not both")
         }
         if let count = args.count, !(1...4).contains(count) {
             throw FloeError.validationFailed("count must be 1...4")
@@ -1043,7 +1064,8 @@ private struct CanvasGenerateMediaTool: AgentTool {
         try await CanvasToolOutput.make(coordinator.generateMedia(
             runID: context.runID,
             kind: args.kind == "image" ? .image : .video,
-            modelID: args.modelID, prompt: args.prompt,
+            modelID: args.modelID, modelSelection: args.model,
+            prompt: args.prompt,
             documentID: args.documentID, sourceNodeIDs: args.sourceNodeIDs,
             configurationNodeID: args.configurationNodeID,
             position: args.position, expectedRevision: args.expectedRevision,
@@ -1119,6 +1141,17 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
         discardUnreferencedGeneratedAssets: { [weak environment] batch in
             guard let environment else { return }
             await environment.mediaGenerationService.discardUnreferencedGeneratedAssets(batch)
+        },
+        resolveVideoModel: { [weak environment] modelID, selection in
+            guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }
+            let resolved = try await environment.conversationCenter.resolveAgentVideoRoute(
+                modelID: modelID,
+                selection: selection
+            )
+            FloeLogger(category: .providers).info(
+                "videoRouteResolved surface=canvas public=\(resolved.route.remoteModelID) preferred=\(resolved.route.preferred) explicit=\(selection != nil || modelID != nil)"
+            )
+            return resolved.model.id
         },
         submitVideo: { [weak environment] modelID, canvasID, documentID, sources, resultID, request in
             guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }

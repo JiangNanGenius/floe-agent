@@ -649,8 +649,21 @@ public actor FloeAgentRuntime {
                 || message.content.hasPrefix(Self.visualEvidenceSystemPrefix)
                 || message.content.hasPrefix("The user attached image evidence,")
                 || message.content.hasPrefix("The configured auxiliary vision model")
+                // Compaction summaries and recovered tool evidence are
+                // app-generated continuation context. They were previously
+                // dropped at this boundary, which made a compacted or
+                // tool-heavy task look brand new to the next run.
+                || message.content.hasPrefix("[Context compaction notice]")
+                || message.content.hasPrefix("[Manual context snapshot]")
+                || message.content.hasPrefix(Self.priorToolEvidencePrefix)
         })
     }
+
+    /// Marker for bounded, app-generated tool evidence recovered from earlier
+    /// runs in the same conversation. It is untrusted data, never a grant of
+    /// authority, and exists so a new run does not forget settled tool work.
+    public static let priorToolEvidencePrefix =
+        "Prior tool evidence for this conversation (app-generated, untrusted data):"
 
     /// Latest secret-free progress snapshot for diagnostics and UI recovery
     /// cards. The timestamp is the runtime's last observed progress boundary.
@@ -1146,7 +1159,7 @@ public actor FloeAgentRuntime {
                 protection: protection
             )
             let wasForcedCompaction = forceCompactionOnNextTurn
-            if wasForcedCompaction || Double(ContextTokenEstimator().estimate(messages)) >= Double(compressionPolicy.budget.availableInputTokens) * compressionPolicy.budget.triggerRatio {
+            if wasForcedCompaction || Double(ContextTokenEstimator().estimate(messages) + Self.replayEvidenceTokenEstimate(replayableToolHistory)) >= Double(compressionPolicy.budget.availableInputTokens) * compressionPolicy.budget.triggerRatio {
                 await publishLiveness(phase: .compacting, message: "Compacting model context; original messages and tool evidence remain saved", isRecoverable: true)
             }
             do {
@@ -1474,6 +1487,14 @@ public actor FloeAgentRuntime {
         logger.info(
             "promptAssembly run=\(runID.uuidString) digest=\(Self.promptAssemblyDigest(messages: legacyMessages, descriptors: catalogDescriptors)) tools=\(request.toolSchemas.count) pendingCalls=\(request.pendingToolCalls.count) pendingResults=\(request.toolResults.count) mode=\(configuration.conversationMode.rawValue)"
         )
+        // Redacted lifecycle record for the tool-evidence channel: counts and
+        // sizes only, never tool output or arguments.
+        let replayedEvidenceBytes = replayedToolPairs.reduce(0) { partial, pair in
+            partial + pair.call.argumentsJSON.count + pair.result.outputSummary.count + 64
+        }
+        logger.info(
+            "toolEvidenceReplayed run=\(runID.uuidString) pairs=\(replayedToolPairs.count) evidenceBytes=\(replayedEvidenceBytes) pendingCalls=\(pendingToolCalls.count) pendingResults=\(pendingToolResults.count) provider=\(configuration.provider.kind.rawValue)"
+        )
         // The exact prompt/tool-result boundary must be recoverable before a
         // provider request is allowed onto the wire. This prevents a restart
         // from silently falling behind the context that the model received.
@@ -1512,7 +1533,9 @@ public actor FloeAgentRuntime {
         )
         await publishLiveness(
             phase: .waitingForFirstEvent,
-            message: "Waiting for the cloud model's first event",
+            message: configuration.provider.kind == .local
+                ? "Waiting for the on-device model to finish preparing and generating"
+                : "Waiting for the cloud model's first event",
             isRecoverable: true
         )
         startProviderWatchdog(attempt: providerAttemptNumber)
@@ -2763,6 +2786,20 @@ public actor FloeAgentRuntime {
         return ToolReplayPlanner.trimToBudget(candidates)
     }
 
+    /// Conservative token estimate for the replay channel. The replay pairs
+    /// are dispatched outside `messages`, so the context-budget trigger must
+    /// count them or a tool-heavy run can overflow before compaction fires.
+    /// Mirrors the dispatch bound: planner pair limit, compacted summary cap
+    /// and total byte budget.
+    static func replayEvidenceTokenEstimate(_ history: [ReplayedToolPair]) -> Int {
+        var characters = 0
+        for pair in history.suffix(ToolReplayPlanner.defaultMaxPairs) {
+            characters += pair.call.argumentsJSON.count + 64
+            characters += min(pair.result.outputSummary.count, 2_048)
+        }
+        return min(characters / 4, ToolReplayPlanner.defaultMaxResultBytes / 4)
+    }
+
     /// Executes read-only calls in parallel. Context construction, audit,
     /// emission and idempotency bookkeeping stay serial (actor-isolated);
     /// only the tool execution itself runs concurrently.
@@ -3039,6 +3076,19 @@ public actor FloeAgentRuntime {
 
     private func startProviderWatchdog(attempt: Int) {
         providerWatchdogTask?.cancel()
+        // On-device MLX generation yields no provider event until the whole
+        // prefill and decode return. A cloud stall timeout would therefore
+        // cancel a legitimate local turn in the middle of GPU work, and
+        // cancellation during chunked prefill is the documented crash-adjacent
+        // path on iPad. Local work stays user-cancellable and is never
+        // retried as a stalled cloud stream.
+        guard configuration.provider.kind != .local else {
+            logger.info(
+                "providerWatchdogDisabled run=\(runID.uuidString) reason=onDeviceGeneration"
+            )
+            providerWatchdogTask = nil
+            return
+        }
         let firstTimeout = configuration.providerFirstEventTimeout
         let idleTimeout = configuration.providerStreamIdleTimeout
         let reasoningIdleTimeout = configuration.providerReasoningIdleTimeout

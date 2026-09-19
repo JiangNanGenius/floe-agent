@@ -152,6 +152,9 @@ enum ToolDiscovery {
         if names.contains("exec.localPython") {
             lines.append("Local Python execution is \(n("exec.localPython")); it is a different environment from SSH Executor or interactive Terminal.")
         }
+        if names.contains("video.generate") {
+            lines.append("Video generation can use any configured cloud video route: call \(n("video.models")) first to read the public candidate names (`model`/`modelName`) and their parameter limits, choose the candidate that fits the request yourself, then pass its public `model` value to \(n("video.generate")). Never ask the user for an internal UUID, and never resubmit a running job.")
+        }
         return lines.joined(separator: "\n")
     }
 

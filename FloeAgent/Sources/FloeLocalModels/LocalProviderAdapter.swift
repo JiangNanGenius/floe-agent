@@ -559,7 +559,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     let prompt = promptBuild.text
                     let imageParts: [AppleFoundationImageInput] = []
                     FloeLogger(category: .providers).info(
-                        "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
+                        "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount)) replayedToolPairs=\(request.replayedToolPairs.count) pendingToolCalls=\(request.pendingToolCalls.count) pendingToolResults=\(request.toolResults.count) systemCharacters=\(promptBuild.systemInstructions.count)"
                     )
                     var completion: LocalRuntimeCompletion
                     if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
@@ -577,7 +577,23 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             request.toolResults.map { ($0.callID, $0.output) },
                             uniquingKeysWith: { _, newest in newest }
                         )
-                        let toolHistory = request.pendingToolCalls.compactMap { call in
+                        // During an active Apple tool follow-up, settled pairs
+                        // from earlier turns keep their place in the native
+                        // transcript. On an ordinary later turn buildPrompt
+                        // already serializes replayedToolPairs as bounded
+                        // evidence, so leave native toolHistory empty rather
+                        // than injecting the same history twice. Only pairs
+                        // whose schema is still offered can be re-declared.
+                        let replayedExchanges: [AppleFoundationToolExchange] = request.toolResults.isEmpty
+                            ? []
+                            : request.replayedToolPairs.suffix(4).compactMap { pair in
+                                guard request.toolSchemas.contains(where: { $0.name == pair.call.toolName }) else { return nil }
+                                return AppleFoundationToolExchange(
+                                    call: pair.call,
+                                    output: pair.result.outputSummary
+                                )
+                            }
+                        let toolHistory = replayedExchanges + request.pendingToolCalls.compactMap { call in
                             resultByCallID[call.id].map {
                                 AppleFoundationToolExchange(call: call, output: $0)
                             }
@@ -838,6 +854,15 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let includeToolDirectory = inventoryRequested || actionRequested
             || !selectedTools.isEmpty || !request.pendingToolCalls.isEmpty
         let budgets = promptBudgets(contextTokens: contextTokens)
+        // The harness composes its runtime envelope as one system message.
+        // Bound it for the on-device context: an unbounded envelope is the
+        // largest first-chat-only input and the settings benchmark never
+        // exercises it. Head and tail survive so run context and the live
+        // clock are both retained.
+        let boundedRuntimeInstructions = clipped(
+            runtimeInstructions,
+            limit: budgets.runtimeInstructionsCharacters
+        )
 
         var sections: [String] = []
         // Add the adapter's actual admitted directory for actions/capability
@@ -942,6 +967,39 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 evidenceBudget -= bounded.count
             }
         }
+        // Settled pairs from earlier turns. On-device adapters previously
+        // rendered only the current pending pair, so a small local model
+        // forgot completed tool work after one follow-up request. Replay a
+        // bounded, compacted projection as app-generated evidence, never as
+        // fresh instructions or a new user turn.
+        if !isAppleToolFollowUp, !request.replayedToolPairs.isEmpty {
+            var replayBudget = budgets.replayCharacters
+            var lines: [String] = []
+            // Walk newest → oldest so budget exhaustion drops the oldest
+            // evidence first; render chronologically afterwards.
+            for pair in request.replayedToolPairs.suffix(budgets.replayPairCount).reversed()
+            where replayBudget > 120 {
+                let call = pair.call
+                let arguments = String(decoding: call.argumentsJSON, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let callLine = "EARLIER TOOL CALL \(call.toolName) id=\(call.id) args=\(clipped(arguments, limit: min(320, replayBudget)))"
+                replayBudget -= callLine.count
+                lines.append(callLine)
+                guard replayBudget > 80 else { break }
+                let result = pair.result
+                let output = result.outputSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resultLine = "EARLIER TOOL RESULT id=\(result.callID) status=\(result.status.rawValue) \(clipped(output, limit: min(520, replayBudget)))"
+                replayBudget -= resultLine.count
+                lines.append(resultLine)
+            }
+            lines.reverse()
+            if !lines.isEmpty {
+                sections.append("""
+                EARLIER COMPLETED TOOL WORK (app-generated evidence; already finished — reuse it, do not repeat it or claim it as new):
+                \(lines.joined(separator: "\n"))
+                """)
+            }
+        }
         let transcript = sections.joined(separator: "\n\n")
         let toolInstructions: String
         if selectedTools.isEmpty {
@@ -961,7 +1019,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             : ""
         let system = "You are Floe, a concise and natural on-device assistant. The latest user message may be a request or ordinary conversation. Respond normally and warmly to greetings, small talk, questions, brainstorming, opinions, and follow-ups; never demand a more explicit task merely because no tool is needed. Ask a clarifying question only when missing information materially changes a consequential action. Tool execution and approval are enforced by the app. \(directoryInstructions) \(toolInstructions) \(invocationPriority) Think silently. Never print private chain-of-thought, drafts, self-corrections, or a 'Thinking Process' section. A requested implementation plan or checklist is user-visible work, not private reasoning. Follow the task's output format."
             + (toolContext.isEmpty ? "" : "\n\n" + toolContext)
-            + (runtimeInstructions.isEmpty ? "" : "\n\n" + runtimeInstructions)
+            + (boundedRuntimeInstructions.isEmpty ? "" : "\n\n" + boundedRuntimeInstructions)
         return PromptBuild(
             systemInstructions: system,
             // MLX receives structured system/user messages and applies the
@@ -1140,6 +1198,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let directoryCharacters: Int
         let transcriptCharacters: Int
         let evidenceCharacters: Int
+        /// Bounded projection of settled tool pairs from earlier turns.
+        let replayCharacters: Int
+        let replayPairCount: Int
+        /// Upper bound for the harness runtime envelope on the on-device path.
+        let runtimeInstructionsCharacters: Int
         let actionToolCount: Int
         let inventoryToolCount: Int
         let actionSchemaCharacters: Int
@@ -1152,6 +1215,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 directoryCharacters: 600,
                 transcriptCharacters: 850,
                 evidenceCharacters: 900,
+                replayCharacters: 600,
+                replayPairCount: 2,
+                runtimeInstructionsCharacters: 1_400,
                 actionToolCount: 3,
                 inventoryToolCount: 4,
                 actionSchemaCharacters: 1_100,
@@ -1163,6 +1229,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 directoryCharacters: 1_000,
                 transcriptCharacters: 1_300,
                 evidenceCharacters: 1_400,
+                replayCharacters: 1_200,
+                replayPairCount: 4,
+                runtimeInstructionsCharacters: 2_600,
                 actionToolCount: 5,
                 inventoryToolCount: 6,
                 actionSchemaCharacters: 2_200,
@@ -1173,6 +1242,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
             directoryCharacters: 1_600,
             transcriptCharacters: 1_600,
             evidenceCharacters: 2_000,
+            replayCharacters: 2_000,
+            replayPairCount: 6,
+            runtimeInstructionsCharacters: 3_600,
             actionToolCount: 8,
             inventoryToolCount: 10,
             actionSchemaCharacters: 3_600,

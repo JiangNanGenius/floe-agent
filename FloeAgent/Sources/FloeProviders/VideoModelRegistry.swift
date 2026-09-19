@@ -61,6 +61,10 @@ public struct VideoModelRoute: Sendable, Codable, Hashable, Identifiable {
 
     public var id: UUID { modelID }
 
+    /// The public selection name for agent-facing tools. It is the provider's
+    /// remote model identifier, never the per-install internal UUID.
+    public var publicModelID: String { remoteModelID }
+
     public init(
         modelID: UUID,
         providerID: UUID,
@@ -123,6 +127,102 @@ public enum VideoModelRegistry {
             if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
             return $0.modelID.uuidString < $1.modelID.uuidString
         }
+    }
+
+    /// Resolves one usable video route from an optional internal UUID and an
+    /// optional public selection (display name or remote model ID). The agent
+    /// chooses among the public candidates printed by `video.models`, so the
+    /// user is never required to know or provide an internal UUID.
+    ///
+    /// Rules, in order:
+    /// * an explicit `modelID` must exist in the usable catalog;
+    /// * an explicit `selection` matches by UUID spelling, remote model ID or
+    ///   display name (case- and separator-insensitive), then by unique prefix
+    ///   or unique containment;
+    /// * an ambiguous or unknown selection fails with the public candidate
+    ///   list instead of silently choosing a different, possibly paid route;
+    /// * with neither identifier the preferred route is used, and the first
+    ///   usable route remains the final fallback.
+    public static func resolve(
+        modelID: UUID?,
+        selection: String?,
+        routes: [VideoModelRoute]
+    ) throws -> VideoModelRoute {
+        guard !routes.isEmpty else {
+            throw FloeError.invalidConfiguration(
+                "No configured, enabled and adapter-backed video model is available. Configure a Google, Volcengine Ark or DashScope provider with a video model and API key, then inspect video.models."
+            )
+        }
+        if let modelID {
+            guard let match = routes.first(where: { $0.modelID == modelID }) else {
+                throw FloeError.validationFailed(
+                    "The requested video model is no longer enabled or usable. Available public candidates: \(publicCandidates(routes))."
+                )
+            }
+            return match
+        }
+        guard let selection else { return routes[0] }
+        let trimmed = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return routes[0] }
+
+        // A user or model may still pass the internal UUID spelling.
+        if let asUUID = UUID(uuidString: trimmed),
+           let match = routes.first(where: { $0.modelID == asUUID }) {
+            return match
+        }
+        let needle = normalizedIdentifier(trimmed)
+        guard !needle.isEmpty else {
+            throw FloeError.validationFailed(
+                "Video model selection is empty. Available public candidates: \(publicCandidates(routes))."
+            )
+        }
+        let tiers: [() -> [VideoModelRoute]] = [
+            { routes.filter { route in
+                route.remoteModelID.caseInsensitiveCompare(trimmed) == .orderedSame
+                    || route.displayName.caseInsensitiveCompare(trimmed) == .orderedSame
+            } },
+            { routes.filter { route in
+                normalizedIdentifier(route.remoteModelID) == needle
+                    || normalizedIdentifier(route.displayName) == needle
+            } },
+            { routes.filter { route in
+                normalizedIdentifier(route.remoteModelID).hasPrefix(needle)
+                    || normalizedIdentifier(route.displayName).hasPrefix(needle)
+            } },
+            { routes.filter { route in
+                normalizedIdentifier(route.remoteModelID).contains(needle)
+                    || normalizedIdentifier(route.displayName).contains(needle)
+            } }
+        ]
+        for tier in tiers {
+            let matches = tier()
+            if matches.count == 1 { return matches[0] }
+            if matches.count > 1 {
+                throw FloeError.validationFailed(
+                    "Video model selection \"\(trimmed)\" matches several candidates. Choose one public candidate: \(publicCandidates(matches))."
+                )
+            }
+        }
+        throw FloeError.validationFailed(
+            "Unknown video model \"\(trimmed)\". Available public candidates: \(publicCandidates(routes))."
+        )
+    }
+
+    /// Public, secret-free candidate list. Internal UUIDs are intentionally
+    /// omitted so agents and users only need the public name.
+    public static func publicCandidates(_ routes: [VideoModelRoute]) -> String {
+        routes.map { route in
+            route.displayName.caseInsensitiveCompare(route.remoteModelID) == .orderedSame
+                ? route.remoteModelID
+                : "\(route.displayName) (\(route.remoteModelID))"
+        }.joined(separator: ", ")
+    }
+
+    /// Case- and separator-insensitive spelling of one identifier. Provider
+    /// catalogues mix `doubao-seedance-2-5-260628`, `doubao seedance 2.5` and
+    /// display variants, so dots, dashes, spaces and case are ignored.
+    static func normalizedIdentifier(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     /// Contract for one route. The official manifest wins when its remote ID
