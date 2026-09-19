@@ -220,6 +220,7 @@ public protocol CheckpointStore: Sendable {
 /// Filesystem-backed checkpoint store (Application Support on iOS).
 public actor FileCheckpointStore: CheckpointStore {
     private let directory: URL
+    private let logger = FloeLogger(category: .runtime)
 
     public init(directory: URL) {
         self.directory = directory
@@ -228,7 +229,15 @@ public actor FileCheckpointStore: CheckpointStore {
     public func save(_ checkpoint: AgentCheckpoint) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(checkpoint.runID.uuidString).checkpoint.json")
-        try checkpoint.encoded().write(to: url, options: .atomic)
+        let encoded = try checkpoint.encoded()
+        // Privacy-safe size record: byte counts only, never checkpoint
+        // content. Post-tool checkpoints are the harness's largest single
+        // allocation; device reports need this number to separate a payload
+        // blowout from an execution failure.
+        logger.info(
+            "checkpointSaved run=\(checkpoint.runID.uuidString) bytes=\(encoded.count) replayPairs=\(checkpoint.replayedToolPairs?.count ?? 0) state=\(checkpoint.state.name)"
+        )
+        try encoded.write(to: url, options: .atomic)
     }
 
     public func load(runID: UUID) throws -> AgentCheckpoint? {
@@ -1434,16 +1443,28 @@ public actor FloeAgentRuntime {
             model: configuration.model,
             messages: legacyMessages,
             contentMessages: contentMessages,
+            // The pending results cross the provider boundary in exactly one
+            // bounded form. Compacting here — before the dispatch envelope,
+            // the retry request, the checkpoint snapshot and the resumed
+            // rebuild — keeps all four byte-identical (the envelope digests
+            // reasoning content) and removes the unbounded post-tool payload
+            // peak for cloud bodies and on-device prefill alike. The marker
+            // keeps the original byte count and digest so the model can
+            // re-observe a truncated output with an explicit tool call.
             toolResults: pendingToolResults.map {
-                (callID: $0.callID, output: Self.modelVisibleToolResult($0))
+                (callID: $0.callID, output: ToolReplayPlanner.compactResultSummary(
+                    Self.modelVisibleToolResult($0)
+                ))
             },
             // Tool-call/result pairs are provider history, not permission to
             // issue another tool. A forced tool-free finalization must hide
             // schemas while still replaying the complete ordered pair.
             pendingToolCalls: pendingToolCalls,
             replayedToolPairs: replayedToolPairs,
-            pendingAssistantReasoning: pendingToolCalls.isEmpty || responseReasoning.isEmpty
-                ? nil : responseReasoning,
+            // A bounded excerpt satisfies thinking-mode providers' non-empty
+            // reasoning requirement without checkpointing the whole trace.
+            pendingAssistantReasoning: pendingToolCalls.isEmpty
+                ? nil : ToolReplayPlanner.boundedReasoning(responseReasoning),
             toolSchemas: supportsTools ? catalogDescriptors.map {
                 ToolSchemaDescriptor(
                     name: $0.name,
@@ -1512,8 +1533,13 @@ public actor FloeAgentRuntime {
             )
             return
         }
-        pendingToolResults.removeAll(keepingCapacity: true)
-        pendingToolCalls.removeAll(keepingCapacity: true)
+        // Release the settled batch's backing storage before the continuation
+        // turn. The checkpoint above already owns the durable recovery record;
+        // holding the largest batch's buffers across prompt assembly (and, for
+        // on-device providers, a full engine reload) extends the post-tool
+        // memory peak without preserving any semantic state.
+        pendingToolResults.removeAll(keepingCapacity: false)
+        pendingToolCalls.removeAll(keepingCapacity: false)
         responseReasoning = ""
 
         providerPayloadBytes = 0
@@ -2648,15 +2674,48 @@ public actor FloeAgentRuntime {
         // Graduate the settled batch into the run-level replay history before
         // the settlement checkpoint so a resumed run keeps its tool evidence.
         // A provider can reuse a call identifier across turns; the first
-        // settled pair stays authoritative for replay.
+        // settled pair stays authoritative for replay. Store the bounded
+        // projection — the same compacted summary the wire already receives
+        // at dispatch, plus a capped reasoning excerpt. The at-rest history is
+        // JSON-encoded into every later checkpoint (twice per tool turn), so
+        // retaining raw multi-megabyte outputs and a per-pair copy of the
+        // whole turn's reasoning peaked memory exactly in the post-tool
+        // window on device, for remote and local providers alike.
         let existingReplayIDs = Set(replayableToolHistory.map { $0.call.id })
+        var graduatedCount = 0
+        var compactedCount = 0
         for item in orderedResults where !existingReplayIDs.contains(item.call.id) {
+            var storedResult = item.result
+            let compactedSummary = ToolReplayPlanner.compactResultSummary(item.result.outputSummary)
+            if compactedSummary != item.result.outputSummary { compactedCount += 1 }
+            storedResult.outputSummary = compactedSummary
             replayableToolHistory.append(ReplayedToolPair(
                 call: item.call,
-                result: item.result,
-                assistantReasoning: responseReasoning.isEmpty ? nil : responseReasoning
+                result: storedResult,
+                assistantReasoning: ToolReplayPlanner.boundedReasoning(
+                    responseReasoning.isEmpty ? nil : responseReasoning
+                )
             ))
+            graduatedCount += 1
         }
+        // Bound the durable channel by evidence bytes only. The pair-count
+        // window stays a dispatch-time concern so the wire replay semantics
+        // (newest forty complete pairs after pending exclusion) are unchanged;
+        // what may no longer happen is an unbounded multi-megabyte history
+        // riding every later checkpoint.
+        let historyCountBeforeTrim = replayableToolHistory.count
+        replayableToolHistory = ToolReplayPlanner.trimToBudget(
+            replayableToolHistory,
+            maxPairs: .max
+        )
+        // Privacy-safe phase record for the post-tool window: counts and byte
+        // sizes only, never tool output, arguments or reasoning content.
+        let retainedEvidenceBytes = replayableToolHistory.reduce(0) {
+            $0 + ToolReplayPlanner.evidenceBytes(of: $1)
+        }
+        logger.info(
+            "toolEvidenceGraduated run=\(runID.uuidString) batch=\(orderedResults.count) graduated=\(graduatedCount) compacted=\(compactedCount) historyPairs=\(replayableToolHistory.count) droppedOldest=\(historyCountBeforeTrim - replayableToolHistory.count) evidenceBytes=\(retainedEvidenceBytes)"
+        )
         do {
             try await writeCheckpoint()
         } catch {
@@ -2764,6 +2823,18 @@ public actor FloeAgentRuntime {
                   withJSONObject: envelope, options: [.sortedKeys]
               ) else { return result.outputSummary }
         return String(decoding: data, as: UTF8.self) + "\n" + result.outputSummary
+    }
+
+    /// Bounded form of a pending result for the durable checkpoint. Only the
+    /// raw summary is compacted here: the provenance envelope is prepended at
+    /// dispatch time by `modelVisibleToolResult`, so a resumed run rebuilds
+    /// the same single-envelope wire output the live turn would have sent.
+    /// Pairing identity, status, artifacts and digests are untouched, so
+    /// failure results stay visible to later turns.
+    private static func checkpointSafeToolResult(_ result: ToolResult) -> ToolResult {
+        var projected = result
+        projected.outputSummary = ToolReplayPlanner.compactResultSummary(result.outputSummary)
+        return projected
     }
 
     /// Builds the replayed history for one dispatch. The run-level record is
@@ -3306,6 +3377,22 @@ public actor FloeAgentRuntime {
         // live in `messages`.
         let checkpointMessages = messages
         let iterationSnapshot = await budgetLedger.snapshot()
+        // Pending results cross this boundary as the same bounded projection
+        // the live request carried: the durable record must stay
+        // byte-identical to what the dispatch envelope digested so a resumed
+        // run rebuilds a matching request, and so the first post-tool
+        // checkpoint never encodes a full multi-megabyte result twice.
+        let checkpointPendingResults = (
+            activeProviderPendingCalls.isEmpty ? pendingToolResults : activeProviderPendingResults
+        ).map(Self.checkpointSafeToolResult)
+        // Bound exactly as the live request did (boundedReasoning is
+        // idempotent), keeping the envelope's reasoning digest reproducible
+        // after a restart. Empty stays absent.
+        let checkpointReasoning = ToolReplayPlanner.boundedReasoning(
+            responseReasoning.isEmpty
+                ? providerRetryRequest?.pendingAssistantReasoning
+                : responseReasoning
+        )
         let checkpoint = AgentCheckpoint(
             runID: runID,
             conversationID: configuration.conversationID,
@@ -3313,8 +3400,7 @@ public actor FloeAgentRuntime {
             messages: checkpointMessages,
             pendingToolCalls: activeProviderPendingCalls.isEmpty
                 ? pendingToolCalls : activeProviderPendingCalls,
-            pendingToolResults: activeProviderPendingCalls.isEmpty
-                ? pendingToolResults : activeProviderPendingResults,
+            pendingToolResults: checkpointPendingResults,
             approvals: grants,
             idempotencyKeys: executedIdempotencyKeys,
             conversationMode: configuration.conversationMode,
@@ -3328,9 +3414,7 @@ public actor FloeAgentRuntime {
             },
             providerDispatchEnvelope: latestProviderDispatchEnvelope,
             providerDispatchRequest: latestProviderDispatchRequest,
-            pendingAssistantReasoning: responseReasoning.isEmpty
-                ? (providerRetryRequest?.pendingAssistantReasoning ?? "")
-                : responseReasoning,
+            pendingAssistantReasoning: checkpointReasoning,
             replayedToolPairs: replayableToolHistory,
             ownedSystemContextID: ownedSystemContextID
         )
@@ -3884,11 +3968,16 @@ struct ToolLoopGuard {
 }
 
 /// Dispatch-time budget for cross-turn tool-pair replay. Trimming never
-/// mutates the run-level history: it produces a bounded copy for one
-/// request, dropping oldest whole pairs only — a pair is never split.
+/// splits a pair: it produces a bounded copy for one request and bounds the
+/// checkpointed at-rest history at graduation, dropping oldest whole pairs
+/// only — argument JSON stays wire-valid or the pair falls out completely.
 enum ToolReplayPlanner {
     static let defaultMaxPairs = 40
     static let defaultMaxResultBytes = 96 * 1_024
+    /// Ceiling for the reasoning excerpt stored with each settled pair.
+    /// Thinking-mode providers require a non-empty `reasoning_content`, but a
+    /// replayed pair never needs the whole trace; the tail precedes the call.
+    static let defaultMaxReasoningBytes = 4 * 1_024
 
     /// Same truncation strategy as `ContextEngine.pruneToolOutput`: outputs
     /// above 2 KiB keep a 1280-byte head and 640-byte tail around an explicit
@@ -3903,8 +3992,49 @@ enum ToolReplayPlanner {
         """
     }
 
+    /// Bounds the reasoning excerpt stored with a settled pair or pending
+    /// batch without inventing content: nil/empty stay absent (empty
+    /// reasoning is rejected on the wire), and overlong traces keep a
+    /// byte-exact UTF-8 tail behind an explicit marker. The marker plus a
+    /// budget-sized suffix makes the function idempotent, so a checkpointed
+    /// excerpt re-applied after a restart reproduces the same bytes and the
+    /// same envelope reasoning digest.
+    static func boundedReasoning(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        guard value.utf8.count > defaultMaxReasoningBytes else { return value }
+        return "[earlier reasoning omitted]\n"
+            + utf8Suffix(value, maxBytes: defaultMaxReasoningBytes)
+    }
+
+    /// The longest whole-scalar suffix of `text` fitting in `maxBytes` UTF-8
+    /// bytes. Byte-exact (never character-counted) so multibyte reasoning
+    /// stays inside the budget and re-application is a fixed point.
+    static func utf8Suffix(_ text: String, maxBytes: Int) -> String {
+        guard maxBytes > 0 else { return "" }
+        var bytes = 0
+        var scalars: [Unicode.Scalar] = []
+        for scalar in text.unicodeScalars.reversed() {
+            let size = String(scalar).utf8.count
+            if bytes + size > maxBytes { break }
+            bytes += size
+            scalars.append(scalar)
+        }
+        return String(String.UnicodeScalarView(scalars.reversed()))
+    }
+
+    /// Total checkpoint/wire weight of one pair: full argument JSON (never
+    /// truncated), the (already compacted) result summary and the stored
+    /// reasoning excerpt.
+    static func evidenceBytes(of pair: ReplayedToolPair) -> Int {
+        pair.call.argumentsJSON.count
+            + pair.result.outputSummary.utf8.count
+            + (pair.assistantReasoning?.utf8.count ?? 0)
+    }
+
     /// Drops oldest complete pairs until both limits hold. Pair count is
-    /// checked first, then total result-summary bytes; ordering is preserved.
+    /// checked first, then total evidence bytes; ordering is preserved. The
+    /// byte budget counts arguments as well as results so a single huge-write
+    /// pair cannot silently balloon every later checkpoint.
     static func trimToBudget(
         _ pairs: [ReplayedToolPair],
         maxPairs: Int = defaultMaxPairs,
@@ -3912,9 +4042,9 @@ enum ToolReplayPlanner {
     ) -> [ReplayedToolPair] {
         let pairOverflow = max(0, pairs.count - max(0, maxPairs))
         var kept = pairs.dropFirst(pairOverflow)
-        var byteTotal = kept.reduce(0) { $0 + $1.result.outputSummary.utf8.count }
+        var byteTotal = kept.reduce(0) { $0 + evidenceBytes(of: $1) }
         while byteTotal > max(0, maxResultBytes), let oldest = kept.first {
-            byteTotal -= oldest.result.outputSummary.utf8.count
+            byteTotal -= evidenceBytes(of: oldest)
             kept = kept.dropFirst()
         }
         return Array(kept)
