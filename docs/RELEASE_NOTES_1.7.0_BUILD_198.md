@@ -1,20 +1,33 @@
-# Floe Agent 1.7.0 (198) / beta.55 — 发布候选（标签尚未创建）/ release candidate (tag not yet created)
+# Floe Agent 1.7.0 (198) / beta.55 — frozen internal-testing candidate
 
-> **状态：候选草稿，不构成交付。** Build 198（`MARKETING_VERSION` 1.7.0，
-> `CURRENT_PROJECT_VERSION` 198）是替代 Build 197 的下一内部测试候选，预留标签
-> `v1.7.0-beta.55` **尚未创建**。App 云端编译、TestFlight 上传、Apple 处理与真机验收
-> 均未开始；本文只记录已实现行为、Build 197 的编译失败事实、已通过的轻量校验与明确的
-> 待验证项。发布工作流将在包含本文件的冻结提交上创建该标签并执行单次验收上传 SDK
-> 构建（与 Build 196 相同流水线；标签创建后不可移动）。
+> **状态：已交付内部 TestFlight（Floe QA）。/ Status: delivered to internal TestFlight (Floe QA).**
+> 单次验收上传 SDK App 构建在冻结提交 `ce3574f36f954bb64c100754ff17295cead7c238` 上执行
+> （[run 35428858014](https://github.com/JiangNanGenius/floe-agent/actions/runs/35428858014)），
+> 未签名的设备 IPA `Floe-Agent-1.7.0-build198-unsigned.ipa`（sha256
+> `92af2a99d99daa1d5962e8e783be6d3bab49971360340a0d039d83eba881ec9a`，811,481,871 B）与其
+> 匹配的私有符号包在签名前已保留。经来源证明的未签名 GitHub 预发布 `v1.7.0-beta.55` 与
+> Feather 源均来自同一工件（Feather run 35430911661；`feather.json` sha256 `92af2a99…`，
+> sourceCommit `ce3574f3…`）。Apple buildID `efbad369-6908-4c7a-950b-597c03716e5b` 已核验为
+> `VALID`、未过期、仅一个私有 Floe QA 组且 `IN_BETA_TESTING`（2026-09-19 08:32 UTC，
+> [prepare 35432200199](https://github.com/JiangNanGenius/floe-agent/actions/runs/35432200199)、
+> [verify 35432243630](https://github.com/JiangNanGenius/floe-agent/actions/runs/35432243630)），
+> 英文与简体中文测试说明均已写入并读回。模拟器／UI 资格按用户明确要求跳过，因此这是内部
+> 设备测试而非完整验收；真机验收属于用户，Build191 本地模型前台中断仍未证实修复。
 >
-> **Status: candidate draft, not a delivery.** Build 198 (version 1.7.0, build 198) is
-> the replacement candidate for build 197 and the next internal-testing candidate; the
-> reserved tag `v1.7.0-beta.55` has **not been created**. No App cloud compile,
-> TestFlight upload, Apple processing or device acceptance has happened yet. This
-> document records the implemented behavior, the build 197 compile failure, the light
-> checks that passed, and the open items only. The release workflow will create the tag
-> at the frozen commit containing this file and run the single accepted-upload-SDK App
-> build (same pipeline as Build 196; the tag is never moved afterwards).
+> **Status: delivered to internal TestFlight (Floe QA).** The single accepted-SDK
+> App build ran in [run 35428858014](https://github.com/JiangNanGenius/floe-agent/actions/runs/35428858014)
+> from the frozen commit `ce3574f36f954bb64c100754ff17295cead7c238`. The unsigned
+> device IPA `Floe-Agent-1.7.0-build198-unsigned.ipa` (sha256
+> `92af2a99d99daa1d5962e8e783be6d3bab49971360340a0d039d83eba881ec9a`, 811,481,871 B)
+> and its matching private symbols were retained **before** signing. The attested
+> unsigned GitHub prerelease `v1.7.0-beta.55` and the Feather source were published
+> from that same artifact (Feather run 35430911661; `feather.json` sha256 `92af2a99…`,
+> sourceCommit `ce3574f3…`). Apple buildID `efbad369-6908-4c7a-950b-597c03716e5b` was
+> verified `VALID`, unexpired, exactly one private Floe QA group and `IN_BETA_TESTING`
+> at 2026-09-19 08:32 UTC, and both English and Chinese test notes were saved and read
+> back. Simulator/UI qualification was skipped by explicit user request, so this is
+> internal device testing, not full acceptance; physical-device acceptance belongs to
+> the user and the build 191 local-model abort remains unproven fixed.
 
 功能实现范围 / Implementation range：`1cff5665..11681a0f`（当前分支
 `codex/build192-feedback-round2`，8 个功能提交 / 8 implementation commits），加上 Build 197

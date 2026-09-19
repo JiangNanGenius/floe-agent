@@ -1,6 +1,30 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (196) — available in Floe QA
+## Current internal delivery: 1.7.0 (198) — available in Floe QA
+
+Immutable tag `v1.7.0-beta.55`, source `ce3574f36f954bb64c100754ff17295cead7c238`.
+[Run 35428858014](https://github.com/JiangNanGenius/floe-agent/actions/runs/35428858014)
+completed the single accepted-SDK App build (Xcode 26.6 / 17F113), retained the
+unsigned IPA `Floe-Agent-1.7.0-build198-unsigned.ipa` (sha256
+`92af2a99d99daa1d5962e8e783be6d3bab49971360340a0d039d83eba881ec9a`, 811,481,871 B)
+with matching private symbols before signing, and TestFlight accepted
+the upload. Attestation source digest `ce3574f3…` signed by
+`release-unsigned-ipa.yml`; the attested unsigned GitHub prerelease
+`v1.7.0-beta.55` and the Feather source were published from the same artifact
+(Feather run 35430911661; `feather.json` sha256 `92af2a99…`, sourceCommit
+`ce3574f3…`). Apple `buildID` `efbad369-6908-4c7a-950b-597c03716e5b` was verified
+`VALID`, unexpired, exactly one private Floe QA group and `IN_BETA_TESTING` at
+2026-09-19 08:32 UTC ([discover 35432143491](https://github.com/JiangNanGenius/floe-agent/actions/runs/35432143491),
+[prepare 35432200199](https://github.com/JiangNanGenius/floe-agent/actions/runs/35432200199),
+[verify 35432243630](https://github.com/JiangNanGenius/floe-agent/actions/runs/35432243630));
+both English and Chinese test notes were saved and read back. Simulator/UI
+qualification was skipped by explicit user request, so this is internal device
+testing, not full acceptance. Builds 194 and 195 were also uploaded to Apple
+(`VALID`) but never published, and builds 192/193 never compiled; see their
+records. Device acceptance remains with the user, and the build 191 foreground
+Qwen GatedDeltaNet abort is still not proven fixed.
+
+## Previous internal delivery: 1.7.0 (196) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.53`, source `0771aee5f4c3a5495b828084081c47f128b0462f`.
 [Run 35411629062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35411629062)
@@ -149,21 +173,6 @@ Optional type, not 'String'"). Every step after the compile was skipped: no App
 artifact, signing or upload occurred, so build 197 / beta.54 was never uploaded.
 The immutable tag is retained as the failed-freeze record and build number 197 is
 retired.
-
-## Preparing: 1.7.0 (198)
-
-Build 198 is the replacement candidate for build 197 and carries the same feature
-set with the two compile errors fixed minimally: `ExecutionEnvironmentView.swift`
-adds the missing `import FloeExecution`, and `FileInspectorView.swift` drops the
-redundant second optional binding (no behavior change). All four targets are on
-version 1.7.0 / build 198. The single accepted-SDK App build and internal
-TestFlight upload are performed by the release workflow at the frozen commit
-(reserved tag `v1.7.0-beta.55`, not yet created); Apple processing and Floe QA
-visibility are verified separately before this build is called installable. Only
-light checks were run for this preparation round (swiftc parse, xcodegen, exact
-version/build consistency, JSON validation, `git diff --check`); no cloud build or
-upload has happened, and the build 191 local Qwen GatedDeltaNet first-message
-abort remains unconfirmed and is not claimed fixed.
 
 ## Preparing: 1.7.0 (188)
 
