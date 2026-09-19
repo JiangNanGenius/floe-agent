@@ -321,9 +321,11 @@ class LeanPublishPolicyTests(unittest.TestCase):
     def test_create_command_uses_the_selected_release_mode(self):
         run = self.publish_step['run']
         self.assertIn('--verify-tag "${RELEASE_MODE_ARGS[@]}"', run)
-        # Neither mode may be hard-coded back into the create command.
+        # Neither mode may be hard-coded back into the create command, and the
+        # created release is published directly (never left as a draft).
         self.assertNotIn('--verify-tag --prerelease', run)
         self.assertNotIn('--verify-tag --latest', run)
+        self.assertNotIn('--draft', run)
 
     def test_existing_release_mode_is_verified_and_never_silently_changed(self):
         good = self.good_existing_assets()
