@@ -84,6 +84,15 @@ INCLUDE "error.h"
 INIT {
 	basepf.nextc = basepf.buf = basebuf;
 	basepf.linno = 1;
+#if TARGET_OS_IPHONE
+	/* ios_system runs every command on its own thread with thread-local
+	 * streams. The top-level parser must read the session's stdin, not the
+	 * App process file descriptor 0: an interactive `dash -i` session opened
+	 * on a pipe otherwise never receives the caller's input and appears alive
+	 * while producing no output. */
+	if (thread_stdin != NULL)
+		basepf.fd = fileno(thread_stdin);
+#endif
 }
 
 RESET {

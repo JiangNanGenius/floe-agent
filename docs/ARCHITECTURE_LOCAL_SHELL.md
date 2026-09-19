@@ -64,19 +64,35 @@ checks it on the interpreter thread and exits with 130; the caller receives the
 cancelled or timed-out outcome. The bridge does not invoke a process-global
 signal handler on the calling Swift executor.
 
+Output drain is bounded: after the command's own write ends close, each pipe
+reader stops at EOF, at a short quiet window, or at a hard deadline. A
+descendant or detached engine thread that inherited the pipe write end can no
+longer block finalization or turn a completed command into a fabricated
+timeout; the bytes captured before the deadline are still returned.
+
 A blocking native command without a cooperative checkpoint can outlive the
-caller. Its context and active-worker record stay retained until it finishes;
-environment deletion must refuse while native work remains. This is dependency
-and lifecycle scoping, not strong isolation of native code.
+caller. After the deadline plus a bounded cancellation grace the bridge
+reclaims the process-wide run gate and detaches that worker instead of holding
+the gate until it happens to stop. The abandoned worker keeps its own engine
+session, thread-local streams and pipes, must not restore the process working
+directory, and releases nothing on teardown; its active-worker record stays
+retained until it finishes, so environment deletion still refuses while native
+work remains. This is lifecycle scoping, not strong isolation of native code.
 
 ### 2.2 Interactive sessions
 
 `FloeShellOpenSession` creates two pipes and runs the program on an NSThread
 with thread-local stdio bound to them. `shell.exchange` writes the input pipe
-and drains the output pipe non-blocking; EOF marks the session dead.
-`shell.signal` requests cooperative cancellation for the selected session. Closing a session also closes its owned pipes; no process-terminating signal is sent. The session registry
-lives in `ShellSessionCenter` (run-scoped ownership) and expires through the
-shared `SessionExpiryScheduler`.
+and drains the output pipe non-blocking; EOF marks the session dead. The
+interactive shell reads its input through the session's thread-local stdin:
+Floe's dash sets the top-level parser fd from `fileno(thread_stdin)`, because
+the App process fd 0 is not the session pipe. `shell.exchange` reports
+`alive`, `exitCode` and the cumulative byte counters so "the program wrote
+nothing" stays distinguishable from "output was drained". `shell.signal`
+requests cooperative cancellation for the selected session. Closing a session
+also closes its owned pipes; no process-terminating signal is sent. The session
+registry lives in `ShellSessionCenter` (run-scoped ownership) and expires
+through the shared `SessionExpiryScheduler`.
 
 ### 2.3 Replacement commands
 

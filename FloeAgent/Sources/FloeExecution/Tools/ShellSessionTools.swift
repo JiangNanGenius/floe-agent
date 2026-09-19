@@ -132,6 +132,15 @@ public struct ShellExchangeTool: AgentTool {
         )
         var text = "status=ok sessionID=\(args.sessionID) alive=\(result.alive)"
         if let exitCode = result.exitCode { text += " exitCode=\(exitCode)" }
+        // Cumulative counters distinguish "the program wrote nothing" from
+        // "output was written and already drained", so a short exchange is
+        // never mistaken for a broken channel.
+        text += " bytesRead=\(result.bytesRead) bytesWritten=\(result.bytesWritten) outputBytes=\(result.output.utf8.count)"
+        if result.output.isEmpty && result.alive {
+            text += result.bytesRead == 0
+                ? "\nnote=no-output-yet (the program is alive and has written nothing)"
+                : "\nnote=no-new-output (earlier output was already drained)"
+        }
         if !result.output.isEmpty { text += "\noutput:\n\(result.output)" }
         return ToolExecutionOutput(digesting: text, exitStatus: result.alive ? 0 : (result.exitCode ?? 0))
     }

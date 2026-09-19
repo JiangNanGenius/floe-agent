@@ -52,6 +52,23 @@ swiftc -parse <全部 14 个触及的 Swift 文件>       # 全部通过
 # 纯逻辑行为断言（cut/basename/dirname/locale/id，23 项）经临时最小编译全部通过
 ```
 
+## Build 198 现场报告的边界复核 / Build-198 runtime-boundary audit (2026-09-19)
+
+Build 198 的 v5 测试报告把两处宣传与真机表现的差距定性清楚，本轮按“如实描述、不夸大”原则修正文案：
+
+- **shell 内的 `apt` 不是 Debian 系统包管理器**：`apt list` 只有 Floe 自家签名 WASI 目录项
+  （`floe/lua`、`floe/ruby`、`floe/php`、`floe/wasm-text`），`var/lib/apt/lists` 为空，产物不是原生 ELF。
+  没有配置 Debian 源的环境时，`apt install bash/ps/ssh/zip/sqlite3` 之类的系统工具**不存在可安装项**。
+  `floe-shell` 技能文案与 `exec.shell` 工具描述已改为“Floe APT-compatible capability catalog”，
+  并列出可用替代（`workspace.archive`、Python `zipfile`/`sqlite3`、`exec.localService`、`git.*`/`ssh.*` 工具）。
+- **shell 内的 `git` 是引导桩**，返回 127 并指向 `git.*` 工具；`exec.shell` 描述不再把它列为内置命令。
+- **`npm install` / `pnpm add` 由环境托管**：只有在绑定受管理环境的 shell 内才执行，
+  安装位置与生命周期脚本归环境所有，不支持的选项或未绑定环境会给出明确拒绝原因。
+- **shell.exchange 必须真的能收发**：真机报告里 `shell.exchange` 长时间 `alive=true` 但零输出。
+  根因是 Floe 的 dash 顶层解析读取 App 进程 fd 0，而不是会话的 `thread_stdin`；修复落在
+  `ThirdParty/DashIOS/src/input.c` 的 INIT（`basepf.fd = fileno(thread_stdin)`），
+  需要按 `scripts/build_dash_ios.sh` 重新生成 `Frameworks/dash*.xcframework` 后才会进入 App。
+
 ## 真机限制 / Device limits
 
 - v3 真机报告确认 Node 18.20.4/npm 10.9.2、Python 3.13.5、Lua 5.4.8、Ruby 3.4.1、PHP 8.2.33 真实执行通过；
