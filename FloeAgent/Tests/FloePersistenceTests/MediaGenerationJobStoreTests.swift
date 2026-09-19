@@ -316,6 +316,75 @@ struct MediaGenerationJobStoreTests {
         }
     }
 
+    /// A job that reached `.ready` with a local asset is terminal for the
+    /// reconciler: it must never appear in `dueOwnedJobs`, so a later
+    /// launch/foreground reconcile or explicit refresh can never re-poll or
+    /// re-download it. This is the store-level half of "download exactly once".
+    @Test func readyJobWithLocalAssetIsNeverReconciledAgain() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let configuration = ModelConfigurationStore(database: database)
+        let provider = ProviderProfile(kind: .googleGemini, wireProtocol: .openAIResponses, baseURL: URL(string: "https://generativelanguage.googleapis.com/v1beta")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "veo-3.1", displayName: "Veo 3.1", limits: .init(contextTokens: 1, maxOutputTokens: 0), capabilities: [.videoGeneration])
+        try await configuration.saveProvider(provider)
+        try await configuration.saveModel(model)
+        let store = MediaGenerationJobStore(database: database)
+        let assetID = UUID()
+        let job = MediaGenerationJob(providerID: provider.id, modelID: model.id, mediaKind: .video, credentialReference: nil, canvasID: UUID(), documentID: UUID(), sourceNodeIDs: [], resultNodeID: UUID(), requestJSON: Data())
+        try await store.save(job)
+        _ = try await store.transition(id: job.id, to: .downloading)
+        _ = try await store.transition(id: job.id, to: .ready) {
+            $0.localAssetID = assetID
+            $0.nextPollAt = nil
+        }
+        let restored = try #require(await store.job(id: job.id))
+        #expect(restored.state == .ready)
+        #expect(restored.localAssetID == assetID)
+        #expect(try await store.dueOwnedJobs(at: Date.distantFuture).isEmpty)
+        // Terminal jobs cannot transition back to a non-terminal state, so a
+        // reconcile can never resurrect a delivered job into re-download.
+        await #expect(throws: MediaGenerationJobStoreError.self) {
+            _ = try await store.transition(id: job.id, to: .downloading)
+        }
+    }
+
+    /// A transient status-query failure (network unavailable, provider 5xx,
+    /// timeout) must keep the job in its prior non-terminal state while only
+    /// bumping the retry counter — the exact transition `pollMediaJob` performs
+    /// in its catch block. The job stays due for the next automatic or explicit
+    /// reconcile, so a successful submission is never poisoned into failure by
+    /// a later, temporarily unavailable status query.
+    @Test func transientStatusFailureKeepsJobAliveAndRetryable() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let configuration = ModelConfigurationStore(database: database)
+        let provider = ProviderProfile(kind: .volcengineArk, wireProtocol: .openAIChatCompletions, baseURL: URL(string: "https://ark.cn-beijing.volces.com/api/v3")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "seedance", displayName: "Seedance", limits: .init(contextTokens: 1, maxOutputTokens: 0), capabilities: [.videoGeneration])
+        try await configuration.saveProvider(provider)
+        try await configuration.saveModel(model)
+        let store = MediaGenerationJobStore(database: database)
+        let job = MediaGenerationJob(providerID: provider.id, modelID: model.id, mediaKind: .video, credentialReference: nil, canvasID: UUID(), documentID: UUID(), sourceNodeIDs: [], resultNodeID: UUID(), requestJSON: Data())
+        try await store.save(job)
+        _ = try await store.transition(id: job.id, to: .running)
+
+        // Two consecutive transient failures reuse the same-state transition.
+        for attempt in 1...2 {
+            let retried = try await store.transition(id: job.id, to: .running) {
+                $0.retryCount += 1
+                $0.lastError = "status query temporarily unavailable"
+                $0.nextPollAt = Date().addingTimeInterval(60 * Double(attempt))
+            }
+            #expect(retried.state == .running)
+            #expect(retried.retryCount == attempt)
+            #expect(retried.lastError == "status query temporarily unavailable")
+        }
+        // The job remains due for reconcile and is never terminal/failed.
+        let due = try await store.dueOwnedJobs(at: Date().addingTimeInterval(120))
+        #expect(due.map(\.id) == [job.id])
+        #expect(due.first?.job.state == .running)
+        #expect(due.first?.job.state.isTerminal == false)
+    }
+
     @Test func deletesOnlyJobsOwnedByRequestedCanvasDocument() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()

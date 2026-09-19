@@ -3276,7 +3276,8 @@ struct WorkspaceCanvasView: View {
             CanvasMediaJobCenter(
                 jobs: canvasJobs,
                 onCancel: { job in await cancel(job) },
-                onRetry: { job in await retry(job) }
+                onRetry: { job in await retry(job) },
+                onRefresh: { jobs in await refreshMediaJobs(jobs) }
             )
         }
         .fullScreenCover(item: $directorPresentation) { presentation in
@@ -6272,6 +6273,27 @@ struct WorkspaceCanvasView: View {
             return error.localizedDescription
         }
     }
+
+    /// Explicit user reconciliation: poll every non-terminal canvas job once
+    /// and reload the list. A job whose status query is temporarily
+    /// unavailable keeps its prior state and is retried on a later reconcile;
+    /// it never affects the overall task state.
+    @MainActor
+    private func refreshMediaJobs(_ jobs: [MediaGenerationJob]) async -> String? {
+        var firstError: String?
+        for job in jobs where !job.state.isTerminal {
+            do {
+                _ = try await environment.mediaGenerationService.refreshVideoJob(jobID: job.id)
+            } catch {
+                firstError = firstError ?? error.localizedDescription
+            }
+        }
+        if let canvasID = jobs.compactMap(\.canvasID).first {
+            canvasJobs = (try? await MediaGenerationJobStore(database: environment.database)
+                .jobs(canvasID: canvasID)) ?? canvasJobs
+        }
+        return firstError
+    }
 }
 
 private struct CanvasInkInterpretationPanel: View {
@@ -6805,10 +6827,12 @@ private struct CanvasMediaJobCenter: View {
     let jobs: [MediaGenerationJob]
     let onCancel: @MainActor (MediaGenerationJob) async -> String?
     let onRetry: @MainActor (MediaGenerationJob) async -> String?
+    let onRefresh: @MainActor ([MediaGenerationJob]) async -> String?
 
     @State private var pendingCancellation: MediaGenerationJob?
     @State private var pendingRetry: MediaGenerationJob?
     @State private var workingJobID: UUID?
+    @State private var isRefreshing = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -6857,6 +6881,23 @@ private struct CanvasMediaJobCenter: View {
             .navigationTitle("媒体任务")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isRefreshing = true
+                        Task { @MainActor in
+                            errorMessage = await onRefresh(jobs)
+                            isRefreshing = false
+                        }
+                    } label: {
+                        if isRefreshing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("刷新状态", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(isRefreshing || jobs.isEmpty)
+                    .accessibilityLabel("刷新媒体任务状态")
+                }
             }
         }
         .confirmationDialog("取消这个供应商任务？", isPresented: Binding(
@@ -8218,9 +8259,16 @@ private struct CanvasNodeSelectionChrome: View {
                     .fill(.background)
                     .overlay { Circle().stroke(FloeTheme.primary, lineWidth: 2) }
                     .frame(width: 13, height: 13)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: handle.alignment)
+                    // Hit shape belongs to the recognizer, not an outer wrapper.
+                    // Attach the hit region and the resize gesture to the small
+                    // handle frame first, then expand to the node bounds only
+                    // for alignment. Previously the expansion came first, so
+                    // `contentShape` resolved against the whole node and the
+                    // resize recognizer owned the entire card — every body,
+                    // center or edge drag resized instead of moving the node.
                     .contentShape(Rectangle().inset(by: -10))
                     .gesture(resizeGesture(handle))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: handle.alignment)
             }
             Image(systemName: "arrow.clockwise")
                 .font(.caption.weight(.semibold))

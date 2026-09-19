@@ -618,6 +618,31 @@ final class ThreadDetailViewModel: ObservableObject {
         agentMode = mode
     }
 
+    /// Explicit user reconciliation for this conversation's durable media jobs
+    /// (submitted through `video.generate`). Polls every non-terminal job once
+    /// and surfaces any user-presentable error through `actionError`. A job
+    /// whose status query is temporarily unavailable keeps its prior durable
+    /// state and is picked up by the next automatic or explicit reconcile; it
+    /// never changes the overall task state.
+    func refreshMediaJobs() async {
+        let store = MediaGenerationJobStore(database: center.environment.database)
+        guard let jobs = try? await store.jobs(owner: .conversation(conversationID)) else {
+            actionError = "媒体任务状态暂时无法读取，请稍后重试。"
+            return
+        }
+        var firstError: String?
+        for job in jobs where !job.state.isTerminal {
+            do {
+                _ = try await center.environment.mediaGenerationService.refreshVideoJob(jobID: job.id)
+            } catch {
+                firstError = firstError ?? error.localizedDescription
+            }
+        }
+        if let firstError {
+            actionError = "部分媒体任务状态暂时无法更新：\(firstError)"
+        }
+    }
+
     private static func activePlanRevision(_ plan: PlanDraft) -> Int? {
         (plan.status == .awaitingInput || plan.status == .ready) ? plan.revision : nil
     }
