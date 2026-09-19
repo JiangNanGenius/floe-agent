@@ -27,8 +27,15 @@ which is not the session pipe). Without it an interactive `dash -i` session
 opened on pipes appears alive but never receives `shell.exchange` input.
 Because the linked `Frameworks/dash*.xcframework` is built from this source by
 `scripts/build_dash_ios.sh` and is git-ignored, the build records
-`Frameworks/dash-build-manifest.json` (source + binary sha256) and release CI
-verifies it with `scripts/tests/test_dash_framework_provenance.py`; a
+`Frameworks/dash-build-manifest.json` and release CI verifies it with
+`scripts/tests/test_dash_framework_provenance.py`. The manifest hashes the
+non-documentation DashIOS files (compiled sources, headers, autotools inputs
+and plist templates) plus the build script and the FloeShellEngine artifact
+pin. Documentation such as this file cannot reach the compiler or linker, so
+editing it does not invalidate the recorded binaries; compiled-source,
+build-configuration, linked-engine-pin and binary drift still fail closed.
+The focused regression check is
+`python3 scripts/tests/test_dash_framework_provenance.py --self-test`; a
 host-side behavioral harness is
 `scripts/tests/run_feedback_dash_interactive_host.sh`.
 
