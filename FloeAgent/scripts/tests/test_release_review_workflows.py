@@ -8,7 +8,11 @@ Two kinds of checks live here:
 * workflow assertions for the recovery ordering that main found broken: the
   unsigned IPA must be retained immediately after package validation, before
   dSYM capture, and publishing must stay unsigned-only, exact-SHA and
-  idempotent.
+  idempotent;
+* release-mode assertions for the lean route: the dispatch input must keep the
+  historical prerelease/not-latest default, an explicitly dispatched false may
+  create the normal latest release, and an existing release is verified rather
+  than silently converted.
 
 The executable python gates embedded in the workflows are extracted and run
 against synthetic asset folders, so the exclusions are exercised, not just
@@ -62,6 +66,22 @@ def extract_heredoc_python(step: dict) -> str:
     start = next(index for index, line in enumerate(lines) if line.strip().endswith("<<'PY'"))
     end = next(index for index in range(start + 1, len(lines)) if lines[index].strip() == 'PY')
     return '\n'.join(lines[start + 1:end]) + '\n'
+
+
+def extract_release_mode_block(run: str) -> str:
+    """Return the shell lines that select the GitHub release mode flags."""
+    lines = run.splitlines()
+    start = next(index for index, line in enumerate(lines)
+                 if line.strip() == 'RELEASE_MODE_ARGS=()')
+    end = next(index for index in range(start + 1, len(lines))
+               if lines[index].strip() == 'fi')
+    return '\n'.join(lines[start:end + 1]) + '\n'
+
+
+def dispatch_inputs(workflow: dict) -> dict:
+    # PyYAML resolves the bare ``on`` key to True in YAML 1.1 mode.
+    triggers = workflow.get('on', workflow.get(True))
+    return triggers['workflow_dispatch']['inputs']
 
 
 class PortablePreflightFixtureTests(unittest.TestCase):
@@ -219,10 +239,32 @@ class RecoveryOrderingTests(unittest.TestCase):
 
 
 class LeanPublishPolicyTests(unittest.TestCase):
+    IPA = 'Floe-Agent-1.7.0-build192-unsigned.ipa'
+
     @classmethod
     def setUpClass(cls):
         cls.publish = job_block(RELEASE_TEXT, 'lean-publish')
         cls.steps = {step.get('name'): step for step in RELEASE['jobs']['lean-publish']['steps']}
+        cls.publish_step = cls.steps['Publish the attested unsigned release without clobbering']
+
+    def good_existing_assets(self):
+        return [self.IPA, f'{self.IPA}.sha256', 'TEST-SUMMARY.txt', 'DIRECT-PROVENANCE.json']
+
+    def run_existing_release_gate(self, names, *, is_prerelease, requested, is_draft=False):
+        root = Path(tempfile.mkdtemp(prefix='floe-existing-release-'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        script = root / 'existing_release_gate.py'
+        script.write_text(extract_heredoc_python(self.publish_step))
+        record = root / 'release.json'
+        record.write_text(json.dumps({
+            'assets': [{'name': name} for name in names],
+            'isPrerelease': is_prerelease,
+            'isDraft': is_draft,
+        }))
+        return subprocess.run(
+            [sys.executable, str(script), str(record), self.IPA, requested,
+             'v1.7.0-beta.999'],
+            capture_output=True, text=True)
 
     def test_exact_sha_attestation_and_evidence_union(self):
         fetch = self.steps['Download, digest and verify the retained unsigned IPA']['run']
@@ -255,12 +297,61 @@ class LeanPublishPolicyTests(unittest.TestCase):
 
     def test_publish_is_idempotent_and_never_clobbers(self):
         self.assertIn('gh release view "$RELEASE_TAG"', self.publish)
-        self.assertIn('--verify-tag --prerelease --latest=false', self.publish)
+        self.assertIn('--json assets,isPrerelease,isDraft', self.publish)
         self.assertIn('gh release download "$RELEASE_TAG"', self.publish)
         self.assertIn('sha256sum "$PUBLISHED/$ASSET_NAME"', self.publish)
         self.assertNotRegex(self.publish, r'gh release (create|upload)[^\n]*--clobber')
         self.assertNotIn('gh release edit', self.publish)
         self.assertNotIn('gh release delete', self.publish)
+        # The Feather continuation from the published asset stays wired.
+        self.assertIn('gh workflow run publish-feather-source.yml', self.publish)
+
+    def test_release_mode_flags_for_both_dispatch_paths(self):
+        block = extract_release_mode_block(self.publish_step['run'])
+        for requested, flags in (('true', ['--prerelease', '--latest=false']),
+                                 ('false', ['--latest=true'])):
+            with self.subTest(github_prerelease=requested):
+                result = subprocess.run(
+                    ['bash', '-c', block + '\nprintf "%s\\n" "${RELEASE_MODE_ARGS[@]}"\n'],
+                    env=dict(os.environ, RELEASE_PRERELEASE=requested),
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.split(), flags)
+
+    def test_create_command_uses_the_selected_release_mode(self):
+        run = self.publish_step['run']
+        self.assertIn('--verify-tag "${RELEASE_MODE_ARGS[@]}"', run)
+        # Neither mode may be hard-coded back into the create command, and the
+        # created release is published directly (never left as a draft).
+        self.assertNotIn('--verify-tag --prerelease', run)
+        self.assertNotIn('--verify-tag --latest', run)
+        self.assertNotIn('--draft', run)
+
+    def test_existing_release_mode_is_verified_and_never_silently_changed(self):
+        good = self.good_existing_assets()
+        for is_prerelease, requested in ((True, 'false'), (False, 'true')):
+            with self.subTest(isPrerelease=is_prerelease, requested=requested):
+                mismatch = self.run_existing_release_gate(
+                    good, is_prerelease=is_prerelease, requested=requested)
+                self.assertNotEqual(mismatch.returncode, 0)
+                self.assertIn('refusing to change an existing release', mismatch.stderr)
+        draft = self.run_existing_release_gate(
+            good, is_prerelease=False, is_draft=True, requested='false')
+        self.assertNotEqual(draft.returncode, 0)
+
+    def test_existing_release_asset_gate_rejects_signed_assets(self):
+        good = self.good_existing_assets()
+        for requested, is_prerelease in (('true', True), ('false', False)):
+            with self.subTest(requested=requested):
+                ok = self.run_existing_release_gate(
+                    good, is_prerelease=is_prerelease, requested=requested)
+                self.assertEqual(ok.returncode, 0, ok.stderr)
+        for bad in ('FloeAgent.ipa', 'Floe-Agent-1.7.0-build192-signed.ipa',
+                    'Floe.mobileprovision', 'distribution.p12'):
+            with self.subTest(bad=bad):
+                failed = self.run_existing_release_gate(
+                    good + [bad], is_prerelease=True, requested='true')
+                self.assertNotEqual(failed.returncode, 0, bad)
 
     def test_public_assets_are_unsigned_only(self):
         assemble = self.steps['Assemble only the public unsigned release assets']
@@ -319,27 +410,6 @@ class LeanPublishPolicyTests(unittest.TestCase):
             self.assertEqual(run(unsigned + [
                 {'name': 'FloeAgent-AppRegressionTests.xcresult.zip'}]).returncode, 0)
 
-    def test_existing_release_asset_gate_rejects_signed_assets(self):
-        step = self.steps['Publish the attested unsigned prerelease without clobbering']
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            script = root / 'existing_release_gate.py'
-            script.write_text(extract_heredoc_python(step))
-            ipa = 'Floe-Agent-1.7.0-build192-unsigned.ipa'
-            assets = root / 'assets.txt'
-            good = [ipa, f'{ipa}.sha256', 'TEST-SUMMARY.txt', 'DIRECT-PROVENANCE.json']
-            assets.write_text('\n'.join(good) + '\n')
-            ok = subprocess.run([sys.executable, str(script), str(assets), ipa],
-                                capture_output=True, text=True)
-            self.assertEqual(ok.returncode, 0, ok.stderr)
-            for bad in ('FloeAgent.ipa', 'Floe-Agent-1.7.0-build192-signed.ipa',
-                        'Floe.mobileprovision', 'distribution.p12'):
-                with self.subTest(bad=bad):
-                    assets.write_text('\n'.join(good + [bad]) + '\n')
-                    failed = subprocess.run([sys.executable, str(script), str(assets), ipa],
-                                            capture_output=True, text=True)
-                    self.assertNotEqual(failed.returncode, 0, bad)
-
     def test_lean_source_uses_githube_token_and_verifies_remote_ref(self):
         source = job_block(RELEASE_TEXT, 'lean-source')
         self.assertIn('contents: write', source)
@@ -359,6 +429,39 @@ class LeanPublishPolicyTests(unittest.TestCase):
         direct_permissions = DIRECT.get('permissions') or {}
         self.assertEqual(direct_permissions.get('contents'), 'read')
         self.assertEqual(direct_permissions.get('actions'), 'read')
+
+
+class LeanReleaseModeInputTests(unittest.TestCase):
+    """The dispatch input must keep the safe prerelease default and be wired."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.inputs = dispatch_inputs(RELEASE)
+        cls.publish = next(
+            step for step in RELEASE['jobs']['lean-publish']['steps']
+            if step.get('name', '').startswith('Publish the attested unsigned'))
+
+    def test_mode_input_defaults_to_the_historical_prerelease(self):
+        mode = self.inputs['github_prerelease']
+        self.assertEqual(mode['type'], 'boolean')
+        self.assertIs(mode['default'], True)
+        self.assertFalse(mode['required'])
+        description = mode['description'].lower()
+        for token in ('prerelease', 'latest', 'lean'):
+            self.assertIn(token, description)
+
+    def test_lean_release_description_names_the_mode_input(self):
+        description = self.inputs['lean_release']['description']
+        self.assertIn('github_prerelease', description)
+        self.assertNotIn('GitHub prerelease', description)
+
+    def test_publish_step_reads_the_dispatch_input(self):
+        job_env = RELEASE['jobs']['lean-publish']['env']
+        self.assertEqual(job_env['RELEASE_PRERELEASE'], '${{ inputs.github_prerelease }}')
+        self.assertIn('RELEASE_PRERELEASE', self.publish['run'])
+        evidence = next(step for step in RELEASE['jobs']['lean-publish']['steps']
+                        if step.get('name') == 'Record the lean delivery evidence')
+        self.assertIn('github_release_prerelease=$RELEASE_PRERELEASE', evidence['run'])
 
 
 if __name__ == '__main__':
