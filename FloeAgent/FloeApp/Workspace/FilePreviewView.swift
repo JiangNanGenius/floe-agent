@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeImages
 import FloeWorkspace
 
 /// Previews one workspace file. Loaded through WorkspaceCenter's guarded
@@ -40,6 +41,7 @@ struct FilePreviewView: View {
     @State private var quickLookURL: URL?
     @State private var previewError: String?
     @State private var mediaEditorSource: URL?
+    @State private var imageEditRequest: WorkspaceImageEditRequest?
     @State private var engineeringPackage: EngineeringPreviewPackage?
     @State private var isEngineeringFullScreen = false
     @State private var engineeringReview: EngineeringReviewCapture?
@@ -98,8 +100,22 @@ struct FilePreviewView: View {
                     try service.guardResolver.assertReadableSize(resolved)
                 }).id(pdfURL)
             } else if let binaryPreviewURL {
-                QuickLookView(url: binaryPreviewURL)
-                    .accessibilityIdentifier("file.preview.binary.inline")
+                VStack(spacing: 0) {
+                    // Read-only/unsupported image locations keep the Quick Look
+                    // preview but say why no edit entry exists, instead of
+                    // offering an edit that could never be written back.
+                    if let reason = imageEditUnavailableReason {
+                        Label(reason, systemImage: "lock")
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(.bar)
+                            .accessibilityIdentifier("file.preview.imageEditUnavailable")
+                    }
+                    QuickLookView(url: binaryPreviewURL)
+                        .accessibilityIdentifier("file.preview.binary.inline")
+                }
             } else if let content {
                 contentView(content)
             } else if !isTextual && !isPDF {
@@ -153,6 +169,14 @@ struct FilePreviewView: View {
         .fullScreenCover(item: $mediaEditorSource, onDismiss: { Task { await load() } }) { url in
             if let root = center.currentRootURL {
                 NavigationStack { MediaEditorView(workspaceRoot: root, previewURL: url) }
+            }
+        }
+        // The built-in image workbench edits the selected workspace file in
+        // place; dismissing it reloads the preview against the committed
+        // bytes without leaving the inspector/document-tab context.
+        .fullScreenCover(item: $imageEditRequest, onDismiss: { Task { await load() } }) { request in
+            FloeImageEditorView(sourceURL: request.sourceURL) { data in
+                try await saveEditedImage(request, editorPNG: data)
             }
         }
         .sheet(item: $quickLookURL) { url in
@@ -248,6 +272,131 @@ struct FilePreviewView: View {
         }
     }
 
+    // MARK: - Image editing
+
+    /// Who may edit this preview's image: the local workspace when the file
+    /// has a writable raster container, or the localized reason it cannot be
+    /// overwritten (cloud/network snapshots, read-only mounts, unsupported
+    /// formats). Nil for non-image previews so their toolbars stay unchanged.
+    private var imageEditAvailability: ImageEditAvailability? {
+        guard WorkspaceFileType.isImage(relativePath) else { return nil }
+        guard center.fileService != nil else {
+            return .unavailable(OfficeInkText.t(
+                "当前工作区不可用，无法编辑。",
+                "The workspace is unavailable, so editing is unavailable."
+            ))
+        }
+        if center.isCloudWorkspacePath(relativePath) {
+            return .unavailable(OfficeInkText.t(
+                "云工作区文件仅供只读预览，本版本不支持写回原文件。",
+                "Cloud workspace files are preview-only here; writing back is not supported in this version."
+            ))
+        }
+        if center.isNetworkWorkspacePath(relativePath) {
+            if let mount = center.networkWorkspaceMount(for: relativePath), mount.readOnly {
+                return .unavailable(OfficeInkText.t(
+                    "“\(mount.name)”是只读网络挂载，无法写回文件。",
+                    "“\(mount.name)” is a read-only network mount, so the file cannot be written back."
+                ))
+            }
+            return .unavailable(OfficeInkText.t(
+                "网络挂载文件仅供只读预览，本版本不支持写回原文件。",
+                "Network mount files are preview-only here; writing back is not supported in this version."
+            ))
+        }
+        guard ImageFileFormat(pathExtension: WorkspaceFileType.pathExtension(for: relativePath)) != nil else {
+            return .unavailable(OfficeInkText.t(
+                "此图片格式暂不支持编辑（支持 PNG、JPEG、HEIC）。",
+                "This image format can't be edited yet (PNG, JPEG and HEIC are supported)."
+            ))
+        }
+        return .editable
+    }
+
+    private var imageEditUnavailableReason: String? {
+        if case .unavailable(let reason) = imageEditAvailability { return reason }
+        return nil
+    }
+
+    /// Opens the built-in image workbench on the exact workspace file. The
+    /// guard-resolved URL keeps the workspace's security-scoped access, and
+    /// the pre-edit digest travels with the request so the commit can never
+    /// overwrite a file that changed while the editor was open.
+    private func presentImageEditor() {
+        guard let service = center.fileService else {
+            previewError = OfficeInkText.t(
+                "当前工作区不可用，无法编辑。",
+                "The workspace is unavailable, so editing is unavailable."
+            )
+            return
+        }
+        guard let format = ImageFileFormat(
+            pathExtension: WorkspaceFileType.pathExtension(for: relativePath)
+        ) else {
+            previewError = OfficeInkText.t(
+                "此图片格式暂不支持编辑（支持 PNG、JPEG、HEIC）。",
+                "This image format can't be edited yet (PNG, JPEG and HEIC are supported)."
+            )
+            return
+        }
+        let path = relativePath
+        Task {
+            do {
+                let request = try await Task.detached(priority: .userInitiated) {
+                    let url = try service.guardResolver.resolve(path)
+                    try service.guardResolver.assertReadableSize(url)
+                    let metadata = try service.metadata(path)
+                    guard !metadata.isDirectory else { throw CocoaError(.fileReadNoPermission) }
+                    guard FileManager.default.isWritableFile(atPath: url.path) else {
+                        throw ImageEditSaveFailure(message: OfficeInkText.t(
+                            "该文件在当前位置不可写，请先调整权限或复制到可写位置。",
+                            "This file is not writable in its current location; adjust permissions or copy it somewhere writable first."
+                        ))
+                    }
+                    return WorkspaceImageEditRequest(
+                        relativePath: path,
+                        sourceURL: url,
+                        baselineSHA256: metadata.sha256,
+                        rootURL: service.guardResolver.rootURL,
+                        format: format
+                    )
+                }.value
+                guard request.relativePath == relativePath else { return }
+                imageEditRequest = request
+            } catch { previewError = error.localizedDescription }
+        }
+    }
+
+    /// Re-encodes the editor's verified PNG into the destination file's own
+    /// raster container, then commits it atomically through the workspace
+    /// file service against the pre-edit digest.
+    private func saveEditedImage(_ request: WorkspaceImageEditRequest, editorPNG: Data) async throws {
+        guard request.relativePath == relativePath,
+              let service = center.fileService,
+              service.guardResolver.rootURL == request.rootURL else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        do {
+            let payload = try await Task.detached(priority: .userInitiated) {
+                try ImageFileEncoder.reencode(editorPNG, as: request.format)
+            }.value
+            let path = request.relativePath
+            let baseline = request.baselineSHA256
+            _ = try await Task.detached(priority: .userInitiated) {
+                try service.commitBinaryEdit(path: path, data: payload, expectedSHA256: baseline)
+            }.value
+        } catch let error as WorkspaceToolError {
+            if case .tooLarge(let limit) = error {
+                let mebibytes = limit / (1024 * 1024)
+                throw ImageEditSaveFailure(message: OfficeInkText.t(
+                    "编辑后的图片超过工作区单次写入上限（\(mebibytes) MiB），请先压缩原图再编辑。",
+                    "The edited image exceeds the workspace write limit (\(mebibytes) MiB); compress the original before editing."
+                ))
+            }
+            throw error
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
@@ -266,6 +415,19 @@ struct FilePreviewView: View {
                     } catch { previewError = error.localizedDescription }
                 } label: { Label("媒体工作台", systemImage: "film.stack") }
                 .accessibilityIdentifier("file.preview.mediaEditor")
+            }
+            if imageEditAvailability?.isEditable == true {
+                Button {
+                    presentImageEditor()
+                } label: {
+                    Label(
+                        OfficeInkText.t("编辑图片", "Edit Image"),
+                        systemImage: "square.and.pencil"
+                    )
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel(OfficeInkText.t("编辑图片", "Edit Image"))
+                .accessibilityIdentifier("file.preview.imageEdit")
             }
             if isHTML, content != nil {
                 Button {
@@ -569,6 +731,34 @@ struct FilePreviewView: View {
             }
         }
     }
+}
+
+/// Whether the preview may offer its image edit entry, or the localized
+/// reason it cannot write the file back.
+private enum ImageEditAvailability: Equatable {
+    case editable
+    case unavailable(String)
+
+    var isEditable: Bool { self == .editable }
+}
+
+/// Everything one image edit session needs to commit back to the exact file
+/// it opened: the guard-resolved URL, the pre-edit digest, the workspace
+/// root it belongs to and the raster container matching the path.
+private struct WorkspaceImageEditRequest: Sendable, Identifiable {
+    let id = UUID()
+    let relativePath: String
+    let sourceURL: URL
+    let baselineSHA256: String
+    let rootURL: URL
+    let format: ImageFileFormat
+}
+
+/// Bilingual save failure raised inside the editor's save closure; the
+/// editor surfaces `localizedDescription` in its alert.
+private struct ImageEditSaveFailure: LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 /// Plain share sheet for the file currently shown by the preview.

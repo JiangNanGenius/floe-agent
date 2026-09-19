@@ -781,6 +781,20 @@ final class WorkspaceCenter: ObservableObject {
         normalizedInspectorPath(relativePath).hasPrefix("Network/")
     }
 
+    /// The SMB/WebDAV mount backing a `Network/<name>/…` workspace path, or
+    /// nil for local paths. Editors use this to name a read-only mount in the
+    /// reason they cannot write the file back.
+    func networkWorkspaceMount(for relativePath: String) -> NetworkWorkspaceMount? {
+        let normalized = normalizedInspectorPath(relativePath)
+        let prefix = "Network/"
+        guard normalized.hasPrefix(prefix) else { return nil }
+        let remainder = normalized.dropFirst(prefix.count)
+        guard let name = remainder.split(separator: "/", omittingEmptySubsequences: true).first else {
+            return nil
+        }
+        return networkWorkspaceMounts.first { $0.name == String(name) }
+    }
+
     @discardableResult
     func addNetworkMount(
         name: String,
