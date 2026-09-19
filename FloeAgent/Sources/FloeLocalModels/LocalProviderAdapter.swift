@@ -80,6 +80,23 @@ public actor LocalModelRuntime {
         case ready(modelID: String, includesVisionProjector: Bool)
         case failed(modelID: String, message: String)
     }
+
+    /// Deterministic test seams. Production keeps the store/factory/policy
+    /// defaults; focused lifecycle tests inject a fake engine factory, a
+    /// scripted memory source and an instant settle interval so load,
+    /// teardown, reclaim and retry ownership is asserted without real weights.
+    typealias EngineFactory = @Sendable (
+        _ modelDirectory: URL,
+        _ includesVisionProjector: Bool,
+        _ profile: LocalInferenceResourceProfile,
+        _ traceID: String
+    ) async throws -> any LocalModelTextEngine
+    typealias AvailableMemorySource = @Sendable () -> UInt64
+    typealias ModelSnapshotSource = @Sendable (String) async -> (
+        directory: URL,
+        weightBytes: UInt64
+    )?
+
     private let store: LocalModelStore
     private struct EngineKey: Equatable {
         let modelID: String
@@ -87,7 +104,7 @@ public actor LocalModelRuntime {
     }
     private struct ActiveEngine {
         let key: EngineKey
-        let engine: MLXTextEngine
+        let engine: any LocalModelTextEngine
         let profile: LocalInferenceResourceProfile
     }
     /// iOS cannot safely keep several multi-gigabyte model mappings alive.
@@ -98,8 +115,61 @@ public actor LocalModelRuntime {
     private var taskResidency = LocalModelTaskResidencyLedger()
     private var inferenceBusy = false
     private var inferenceWaiters: [CheckedContinuation<Void, Never>] = []
+    private let makeEngine: EngineFactory
+    private let measureAvailableMemory: AvailableMemorySource
+    private let modelSnapshot: ModelSnapshotSource
+    /// Free preflight sample plus this many settle samples before rejecting a
+    /// load for insufficient memory. Each settle sample first reclaims
+    /// (drain + cache clear + autorelease drain), then waits
+    /// `preflightSettleInterval` so the kernel can reclaim the freed pages,
+    /// then re-measures. The 110% safety rule itself is unchanged — the
+    /// settle window only avoids rejecting on a transiently low snapshot
+    /// taken before reclamation completed.
+    private let preflightSettleSamples: Int
+    private let preflightSettleInterval: Duration
+    private var lifecycle = LocalInferenceLifecycleDiagnostics()
 
-    public init(store: LocalModelStore = LocalModelStore()) { self.store = store }
+    public init(store: LocalModelStore = LocalModelStore()) {
+        self.store = store
+        self.makeEngine = { modelDirectory, includesVisionProjector, profile, _ in
+            try await MLXTextEngine(
+                modelDirectory: modelDirectory,
+                includesVisionProjector: includesVisionProjector,
+                resourceProfile: profile
+            )
+        }
+        self.measureAvailableMemory = { LocalInferenceResourcePolicy.availableMemoryBytes() }
+        let snapshotStore = store
+        self.modelSnapshot = { modelID in
+            guard let modelURL = await snapshotStore.installedModelURL(id: modelID),
+                  let weightBytes = await snapshotStore.installedWeightBytes(id: modelID) else {
+                return nil
+            }
+            return (directory: modelURL, weightBytes: weightBytes)
+        }
+        self.preflightSettleSamples = 6
+        self.preflightSettleInterval = .milliseconds(250)
+    }
+
+    init(
+        store: LocalModelStore,
+        makeEngine: @escaping EngineFactory,
+        measureAvailableMemory: @escaping AvailableMemorySource,
+        modelSnapshot: @escaping ModelSnapshotSource,
+        preflightSettleSamples: Int,
+        preflightSettleInterval: Duration
+    ) {
+        self.store = store
+        self.makeEngine = makeEngine
+        self.measureAvailableMemory = measureAvailableMemory
+        self.modelSnapshot = modelSnapshot
+        self.preflightSettleSamples = preflightSettleSamples
+        self.preflightSettleInterval = preflightSettleInterval
+    }
+
+    /// Internal test/inspection hook: structured lifecycle counters for the
+    /// focused deterministic tests and for deeper device diagnostics.
+    func lifecycleDiagnostics() -> LocalInferenceLifecycleDiagnostics { lifecycle }
 
     public func currentLoadState() -> LoadState { loadState }
 
@@ -137,7 +207,10 @@ public actor LocalModelRuntime {
         }
         let previous = activeEngine
         activeEngine = nil
-        if let previous { await previous.engine.shutdown() }
+        if let previous {
+            await previous.engine.shutdown()
+            lifecycle.recordEngineShutdown()
+        }
         loadState = .unloaded
         FloeLogger(category: .providers).info(
             "localInferenceAutoUnloaded run=\(taskID.uuidString) reason=\(reason) releasedModel=\(previous?.key.modelID ?? "none")"
@@ -203,129 +276,281 @@ public actor LocalModelRuntime {
             )
             throw CancellationError()
         }
-        let prepared = try await prepareEngine(
-            modelID: modelID,
-            wantsVision: wantsVision,
-            traceID: traceID
-        )
-        let engine = prepared.engine
-        let profile = prepared.profile
-        let availableBeforeInference = LocalInferenceResourcePolicy.availableMemoryBytes()
-        FloeLogger(category: .providers).info(
-            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, profile.maximumOutputTokens)) availableBeforeBytes=\(availableBeforeInference) physicalBytes=\(ProcessInfo.processInfo.physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
-        )
+        var prepared: ActiveEngine?
+        var availableBeforeInference: UInt64 = 0
         do {
-            let engineStartedAt = Date()
-            // Local MLX prefill can run for many seconds (device evidence:
-            // 4822 prepared tokens, ~8-13 s to prefill/first failure). If the
-            // app stops being active during that window, iOS rejects the GPU
-            // work the next chunk submits, and mlx-swift-lm surfaces the
-            // command-buffer failure from a completion handler where the
-            // task-local `MLX.withError` handler cannot catch it (upstream
-            // PR #423 documents this and adds `Task.checkCancellation()`
-            // between prefill windows). The harness keeps runs alive through
-            // a short background lease, so nothing cancels a local generation
-            // on resign-active; this registry supplies that cancellation and
-            // refuses to launch a new local generation while the app is not
-            // active. Remote providers are untouched.
-            //
-            // Ordering contract: register first, then create the GPU task,
-            // then attach its cancellation forwarder. A notification that
-            // lands between register and attach is remembered by the relay,
-            // so the task is cancelled before its first GPU submission
-            // instead of being missed by an observer that was installed too
-            // late.
-            let cancellationRelay = LocalInferenceCancellationRelay()
-            guard let cancelToken = await LocalInferenceBackgroundCanceller.shared.registerForeground(
-                traceID: traceID,
-                cancel: {
-                    FloeLogger(category: .providers).warning(
-                        "localInferenceBackgroundCancelled trace=\(traceID) model=\(modelID)"
-                    )
-                    cancellationRelay.requestCancellation()
-                }
-            ) else {
-                FloeLogger(category: .providers).warning(
-                    "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=generation"
-                )
-                throw CancellationError()
-            }
-            defer { LocalInferenceBackgroundCanceller.shared.unregister(cancelToken) }
-            // The probe above can suspend on the main actor. Re-check the
-            // caller's cancellation before creating the GPU task so a stop
-            // that raced the admission does not launch prefill at all.
-            try Task.checkCancellation()
-            let generation = Task {
-                try await engine.completeMeasured(
-                    instructions: instructions,
-                    prompt: prompt,
-                    images: images,
-                    tools: tools,
-                    maxTokens: min(maxTokens, profile.maximumOutputTokens),
-                    diagnosticTraceID: traceID
-                )
-            }
-            // A lifecycle transition may land between `registerForeground`
-            // and this attach. `attach` reports that case so the task is
-            // cancelled here, before it can submit prefill.
-            if cancellationRelay.attach({ generation.cancel() }) {
-                generation.cancel()
-            }
-            // Keep harness/user cancellation working exactly as before: the
-            // unstructured task above does not inherit it automatically.
-            let output = try await withTaskCancellationHandler {
-                try await generation.value
-            } onCancel: {
-                cancellationRelay.requestCancellation()
-            }
-            // Do not leave a multi-gigabyte mapped container resident while
-            // the harness executes a tool or renders the completed answer.
-            // Device reports showed occasional process termination precisely
-            // in that gap. A follow-up turn reloads the same pinned snapshot;
-            // reliability is more important than hiding its visible prepare
-            // phase on memory-constrained iPads.
-            if activeEngine?.key == prepared.key {
-                activeEngine = nil
-                await engine.shutdown()
-                loadState = .unloaded
-            }
-            let endedAt = Date()
-            let availableAfterInference = LocalInferenceResourcePolicy.availableMemoryBytes()
-            let prepareDurationMs = max(0, Int(engineStartedAt.timeIntervalSince(startedAt) * 1_000))
-            FloeLogger(category: .providers).info(
-                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.text.count) inputTokens=\(output.inputTokens) outputTokens=\(output.outputTokens) ttftMs=\(output.timeToFirstTokenMs.map { $0 + prepareDurationMs } ?? -1) tokensPerSecond=\(output.tokensPerSecond ?? -1) durationMs=\(Int(endedAt.timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterInference) availableDeltaBytes=\(Int64(availableAfterInference) - Int64(availableBeforeInference)) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) engineReleased=true"
+            let engine = try await prepareEngine(
+                modelID: modelID,
+                wantsVision: wantsVision,
+                traceID: traceID
             )
-            return LocalRuntimeCompletion(
-                text: output.text,
-                inputTokens: output.inputTokens,
-                outputTokens: output.outputTokens,
-                totalDurationMs: max(0, Int(endedAt.timeIntervalSince(startedAt) * 1_000)),
-                timeToFirstTokenMs: output.timeToFirstTokenMs.map { $0 + prepareDurationMs },
-                tokensPerSecond: output.tokensPerSecond
+            prepared = engine
+            availableBeforeInference = measureAvailableMemory()
+            FloeLogger(category: .providers).info(
+                "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, engine.profile.maximumOutputTokens)) availableBeforeBytes=\(availableBeforeInference) physicalBytes=\(ProcessInfo.processInfo.physicalMemory) tier=\(engine.profile.tier.rawValue) context=\(engine.profile.contextSize) batch=\(engine.profile.batchSize)"
+            )
+            let output = try await runGeneration(
+                engine: engine.engine,
+                profile: engine.profile,
+                modelID: modelID,
+                instructions: instructions,
+                prompt: prompt,
+                images: images,
+                tools: tools,
+                maxTokens: maxTokens,
+                traceID: traceID
+            )
+            return try await finishSuccess(
+                prepared: engine,
+                output: output,
+                modelID: modelID,
+                startedAt: startedAt,
+                availableBeforeInference: availableBeforeInference,
+                traceID: traceID,
+                decodeRetried: false
             )
         } catch {
-            if activeEngine?.key == prepared.key {
-                activeEngine = nil
-                await engine.shutdown()
-                // Background/user cancellation is not a model failure; keep
-                // the settings surface truthful and unload silently.
-                if error is CancellationError {
-                    loadState = .unloaded
-                } else {
-                    loadState = .failed(
+            // A mid-decode Metal failure is often transient: the failed graph
+            // leaves process-wide cached pages that exaggerate the next
+            // measurement, and the turn that the build-198 report showed
+            // failing on the second user message recovered when retried after
+            // cleanup. Unload, reclaim, recreate, and run the generation once
+            // more. Cancellation and every other error keep the single
+            // user-visible failure path below.
+            if lifecycle.decodeRetryCount == 0, Self.isRetriableDecodeFailure(error),
+               let current = prepared {
+                lifecycle.recordDecodeRetry()
+                lifecycle.log(
+                    "decodeRetryScheduled",
+                    extra: "trace=\(traceID) model=\(modelID) error=\(Self.boundedErrorDescription(error))"
+                )
+                await unloadResidentEngine(prepared: current, reason: "decodeRetry")
+                reclaimMemory(context: "decodeRetry", traceID: traceID)
+                do {
+                    let reloaded = try await prepareEngine(
                         modelID: modelID,
-                        message: String(error.localizedDescription.prefix(300))
+                        wantsVision: wantsVision,
+                        traceID: traceID + ".decodeRetry"
                     )
+                    prepared = reloaded
+                    availableBeforeInference = measureAvailableMemory()
+                    let output = try await runGeneration(
+                        engine: reloaded.engine,
+                        profile: reloaded.profile,
+                        modelID: modelID,
+                        instructions: instructions,
+                        prompt: prompt,
+                        images: images,
+                        tools: tools,
+                        maxTokens: maxTokens,
+                        traceID: traceID
+                    )
+                    return try await finishSuccess(
+                        prepared: reloaded,
+                        output: output,
+                        modelID: modelID,
+                        startedAt: startedAt,
+                        availableBeforeInference: availableBeforeInference,
+                        traceID: traceID,
+                        decodeRetried: true
+                    )
+                } catch {
+                    await finishFailure(
+                        prepared: prepared,
+                        error: error,
+                        modelID: modelID,
+                        startedAt: startedAt,
+                        availableBeforeInference: availableBeforeInference,
+                        traceID: traceID
+                    )
+                    throw error
                 }
             }
-            let availableAfterFailure = LocalInferenceResourcePolicy.availableMemoryBytes()
-            let nsError = error as NSError
-            let safeMessage = String(error.localizedDescription.prefix(300))
-            FloeLogger(category: .providers).warning(
-                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterFailure) availableDeltaBytes=\(Int64(availableAfterFailure) - Int64(availableBeforeInference)) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
+            await finishFailure(
+                prepared: prepared,
+                error: error,
+                modelID: modelID,
+                startedAt: startedAt,
+                availableBeforeInference: availableBeforeInference,
+                traceID: traceID
             )
             throw error
         }
+    }
+
+    /// One guarded generation pass: foreground admission first, then the
+    /// unstructured GPU task, then the cancellation forwarder. Kept as a
+    /// helper so the decode-retry path runs the exact same admission and
+    /// cancellation ordering instead of a copy.
+    private func runGeneration(
+        engine: any LocalModelTextEngine,
+        profile: LocalInferenceResourceProfile,
+        modelID: String,
+        instructions: String,
+        prompt: String,
+        images: [Data],
+        tools: [ToolSchemaDescriptor],
+        maxTokens: Int,
+        traceID: String
+    ) async throws -> LocalGenerationResult {
+        // Local MLX prefill can run for many seconds (device evidence: 4822
+        // prepared tokens, ~8-13 s to prefill/first failure). If the app stops
+        // being active during that window, iOS rejects the GPU work the next
+        // chunk submits, and mlx-swift-lm surfaces the command-buffer failure
+        // from a completion handler where the task-local `MLX.withError`
+        // handler cannot catch it (upstream PR #423 documents this and adds
+        // `Task.checkCancellation()` between prefill windows). The harness
+        // keeps runs alive through a short background lease, so nothing
+        // cancels a local generation on resign-active; this registry supplies
+        // that cancellation and refuses to launch a new local generation
+        // while the app is not active. Remote providers are untouched.
+        //
+        // Ordering contract: register first, then create the GPU task, then
+        // attach its cancellation forwarder. A notification that lands between
+        // register and attach is remembered by the relay, so the task is
+        // cancelled before its first GPU submission instead of being missed
+        // by an observer that was installed too late.
+        let cancellationRelay = LocalInferenceCancellationRelay()
+        guard let cancelToken = await LocalInferenceBackgroundCanceller.shared.registerForeground(
+            traceID: traceID,
+            cancel: {
+                FloeLogger(category: .providers).warning(
+                    "localInferenceBackgroundCancelled trace=\(traceID) model=\(modelID)"
+                )
+                cancellationRelay.requestCancellation()
+            }
+        ) else {
+            FloeLogger(category: .providers).warning(
+                "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=generation"
+            )
+            throw CancellationError()
+        }
+        defer { LocalInferenceBackgroundCanceller.shared.unregister(cancelToken) }
+        // The probe above can suspend on the main actor. Re-check the caller's
+        // cancellation before creating the GPU task so a stop that raced the
+        // admission does not launch prefill at all.
+        try Task.checkCancellation()
+        let generation = Task {
+            try await engine.completeMeasured(
+                instructions: instructions,
+                prompt: prompt,
+                images: images,
+                tools: tools,
+                maxTokens: min(maxTokens, profile.maximumOutputTokens),
+                diagnosticTraceID: traceID
+            )
+        }
+        // A lifecycle transition may land between `registerForeground` and
+        // this attach. `attach` reports that case so the task is cancelled
+        // here, before it can submit prefill.
+        if cancellationRelay.attach({ generation.cancel() }) {
+            generation.cancel()
+        }
+        // Keep harness/user cancellation working exactly as before: the
+        // unstructured task above does not inherit it automatically.
+        return try await withTaskCancellationHandler {
+            try await generation.value
+        } onCancel: {
+            cancellationRelay.requestCancellation()
+        }
+    }
+
+    /// Success bookkeeping shared by the first attempt and the decode retry:
+    /// release the multi-gigabyte container before the harness executes a
+    /// tool or renders the answer (device reports showed occasional process
+    /// termination precisely in that gap), then log one structured finish
+    /// line with the lifecycle summary.
+    private func finishSuccess(
+        prepared: ActiveEngine,
+        output: LocalGenerationResult,
+        modelID: String,
+        startedAt: Date,
+        availableBeforeInference: UInt64,
+        traceID: String,
+        decodeRetried: Bool
+    ) async throws -> LocalRuntimeCompletion {
+        await unloadResidentEngine(prepared: prepared, reason: "turnFinished")
+        let endedAt = Date()
+        let availableAfterInference = measureAvailableMemory()
+        let prepareDurationMs = max(0, Int(endedAt.timeIntervalSince(startedAt) * 1_000))
+        lifecycle.recordTurnSucceeded()
+        lifecycle.log(
+            "turnFinished",
+            extra: "trace=\(traceID) model=\(modelID) decodeRetried=\(decodeRetried)"
+        )
+        FloeLogger(category: .providers).info(
+            "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.text.count) inputTokens=\(output.inputTokens) outputTokens=\(output.outputTokens) ttftMs=\(output.timeToFirstTokenMs.map { $0 + prepareDurationMs } ?? -1) tokensPerSecond=\(output.tokensPerSecond ?? -1) durationMs=\(Int(endedAt.timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterInference) availableDeltaBytes=\(Int64(availableAfterInference) - Int64(availableBeforeInference)) tier=\(prepared.profile.tier.rawValue) context=\(prepared.profile.contextSize) batch=\(prepared.profile.batchSize) engineReleased=true decodeRetried=\(decodeRetried)"
+        )
+        return LocalRuntimeCompletion(
+            text: output.text,
+            inputTokens: output.inputTokens,
+            outputTokens: output.outputTokens,
+            totalDurationMs: max(0, Int(endedAt.timeIntervalSince(startedAt) * 1_000)),
+            timeToFirstTokenMs: output.timeToFirstTokenMs.map { $0 + prepareDurationMs },
+            tokensPerSecond: output.tokensPerSecond
+        )
+    }
+
+    /// Failure bookkeeping shared by every exit: unload and mark the runtime
+    /// (silently for cancellation), record the lifecycle counters, and log one
+    /// structured failure line. The caller then rethrows the original error so
+    /// the failed turn still surfaces exactly one actionable error card.
+    private func finishFailure(
+        prepared: ActiveEngine?,
+        error: Error,
+        modelID: String,
+        startedAt: Date,
+        availableBeforeInference: UInt64,
+        traceID: String
+    ) async {
+        if let prepared, activeEngine?.key == prepared.key {
+            activeEngine = nil
+            await prepared.engine.shutdown()
+            lifecycle.recordEngineShutdown()
+            // Background/user cancellation is not a model failure; keep the
+            // settings surface truthful and unload silently.
+            if error is CancellationError {
+                loadState = .unloaded
+            } else {
+                loadState = .failed(
+                    modelID: modelID,
+                    message: String(error.localizedDescription.prefix(300))
+                )
+            }
+        }
+        lifecycle.recordTurnFailed(
+            stage: prepared == nil ? "prepare" : "generation",
+            error: error
+        )
+        let availableAfterFailure = measureAvailableMemory()
+        let nsError = error as NSError
+        let safeMessage = String(error.localizedDescription.prefix(300))
+        lifecycle.log(
+            "turnFailed",
+            extra: "trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage)"
+        )
+        FloeLogger(category: .providers).warning(
+            "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterFailure) availableDeltaBytes=\(Int64(availableAfterFailure) - Int64(availableBeforeInference)) tier=\(prepared?.profile.tier.rawValue ?? "none") context=\(prepared?.profile.contextSize ?? 0) batch=\(prepared?.profile.batchSize ?? 0)"
+        )
+    }
+
+    /// True only for a plain mid-decode failure. Cancellation, prepare/load
+    /// failures, context overflows and validation errors keep the single
+    /// failure surface; only `decodeFailed` earns the one transparent retry.
+    private static func isRetriableDecodeFailure(_ error: Error) -> Bool {
+        if MLXTextEngine.isCancellation(error) { return false }
+        guard let inferenceError = error as? LocalInferenceError else { return false }
+        if case .decodeFailed = inferenceError { return true }
+        return false
+    }
+
+    private static func boundedErrorDescription(_ error: Error, limit: Int = 240) -> String {
+        var message = error.localizedDescription
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        if message.count > limit { message = String(message.prefix(limit)) + "…" }
+        let nsError = error as NSError
+        return "domain=\(nsError.domain) code=\(nsError.code) message=\(message)"
     }
 
     /// Runs a short, deterministic text-only probe through the same engine and
@@ -357,24 +582,52 @@ public actor LocalModelRuntime {
         traceID: String
     ) async throws -> ActiveEngine {
         // Keep text-only turns on the language-model factory. Vision models
-        // are loaded only when an actual image arrives; a resident VLM can
-        // still serve later text turns without remapping.
+        // are loaded only when an actual image arrives.
         let key = EngineKey(modelID: modelID, includesVisionProjector: wantsVision)
-        if let cached = activeEngine,
-           cached.key.modelID == modelID,
-           cached.key.includesVisionProjector || !wantsVision {
+        if let cached = activeEngine, cached.key == key {
             loadState = .ready(
                 modelID: modelID,
                 includesVisionProjector: cached.key.includesVisionProjector
             )
+            lifecycle.recordEngineReused()
             FloeLogger(category: .providers).debug(
                 "localInferenceEngineReused trace=\(traceID) model=\(modelID) requestedVision=\(wantsVision) loadedVision=\(cached.key.includesVisionProjector)"
             )
             return cached
         }
+        if let cached = activeEngine,
+           cached.key.modelID == modelID,
+           cached.key.includesVisionProjector,
+           !wantsVision {
+            // A text-only continuation sheds the VLM's vision tower instead of
+            // keeping the projector's multi-hundred-megabyte vision tensors
+            // resident for turns that can never use them. The reload below is
+            // the same pinned snapshot without the projector.
+            lifecycle.recordVisionShed()
+            lifecycle.log("visionShed", extra: "trace=\(traceID) model=\(modelID)")
+            FloeLogger(category: .providers).info(
+                "localInferenceVisionShed trace=\(traceID) model=\(modelID) reason=textContinuation"
+            )
+            activeEngine = nil
+            await cached.engine.shutdown()
+            lifecycle.recordEngineShutdown()
+            await Task.yield()
+        } else if let previous = activeEngine {
+            // Release the old mapping before measuring process headroom. The
+            // prior implementation measured first, so switching a loaded 4B
+            // text model to its vision projector double-counted the model and
+            // rejected an otherwise viable load on 12 GB iPads.
+            activeEngine = nil
+            await previous.engine.shutdown()
+            lifecycle.recordEngineShutdown()
+            await Task.yield()
+            FloeLogger(category: .providers).info(
+                "localInferencePreviousEngineReleased trace=\(traceID) previousModel=\(previous.key.modelID) previousVision=\(previous.key.includesVisionProjector)"
+            )
+        }
         loadState = .loading(modelID: modelID, includesVisionProjector: wantsVision)
         do {
-            guard let modelURL = await store.installedModelURL(id: modelID) else {
+            guard let snapshot = await modelSnapshot(modelID) else {
                 FloeLogger(category: .providers).warning(
                     "localInferenceUnavailable trace=\(traceID) model=\(modelID) reason=notInstalled"
                 )
@@ -386,33 +639,58 @@ public actor LocalModelRuntime {
                     "这个模型版本暂不受支持，请在本地模型列表中选择可用型号"
                 )
             }
-            // Release the old mapping before measuring process headroom. The
-            // prior implementation measured first, so switching a loaded 4B
-            // text model to its vision projector double-counted the model and
-            // rejected an otherwise viable load on 12 GB iPads.
-            if let previous = activeEngine {
-                activeEngine = nil
-                await previous.engine.shutdown()
-                await Task.yield()
-                FloeLogger(category: .providers).info(
-                    "localInferencePreviousEngineReleased trace=\(traceID) previousModel=\(previous.key.modelID) previousVision=\(previous.key.includesVisionProjector)"
-                )
-            }
-            let mappedBytes = await store.installedWeightBytes(id: modelID) ?? 0
+            let mappedBytes = snapshot.weightBytes
             let physicalMemory = ProcessInfo.processInfo.physicalMemory
-            let availableMemory = LocalInferenceResourcePolicy.availableMemoryBytes()
-            guard LocalInferenceResourcePolicy.canLoad(
+            // Reclaim BEFORE measuring so the allowance describes the process
+            // after the previous turn's teardown (drain + cache clear +
+            // autorelease drain) rather than before it. The build-198 device
+            // report showed the next turn measuring ~2.6 GB immediately after
+            // the previous turn freed a 3 GB model: freed Metal pages had not
+            // been reclaimed yet, so the instantaneous preflight rejected a
+            // load that minutes earlier was accepted. The 110% rule is
+            // unchanged; measurement only happens at a fairer moment.
+            reclaimMemory(context: "preflight", traceID: traceID)
+            var samples = [sampleMemory(index: 0)]
+            if !LocalInferenceResourcePolicy.canLoad(
                 mappedBytes: mappedBytes,
-                physicalMemoryBytes: availableMemory
-            ) else {
+                physicalMemoryBytes: samples[0].availableBytes
+            ), preflightSettleSamples > 0 {
+                // Bounded settle window: reclaim, wait briefly for the kernel
+                // to return the freed pages, re-measure. Stops as soon as the
+                // unchanged safety rule passes; never weakens the threshold.
+                for index in 1...preflightSettleSamples {
+                    try? await Task.sleep(for: preflightSettleInterval)
+                    reclaimMemory(context: "preflightSettle", traceID: traceID)
+                    let sample = sampleMemory(index: index)
+                    samples.append(sample)
+                    if LocalInferenceResourcePolicy.canLoad(
+                        mappedBytes: mappedBytes,
+                        physicalMemoryBytes: sample.availableBytes
+                    ) { break }
+                }
+            }
+            lifecycle.recordPreflight(samples)
+            guard let viable = samples.first(where: {
+                LocalInferenceResourcePolicy.canLoad(
+                    mappedBytes: mappedBytes,
+                    physicalMemoryBytes: $0.availableBytes
+                )
+            }) else {
+                lifecycle.recordPreflightRejected()
+                let bestAvailable = samples.map(\.availableBytes).max() ?? 0
+                lifecycle.log(
+                    "engineLoadRejected",
+                    extra: "trace=\(traceID) model=\(modelID) mappedBytes=\(mappedBytes) bestAvailableBytes=\(bestAvailable) settleSamples=\(samples.count - 1)"
+                )
                 FloeLogger(category: .providers).warning(
-                    "localInferenceEngineLoadRejected trace=\(traceID) model=\(modelID) reason=memoryHeadroom mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) vision=\(wantsVision)"
+                    "localInferenceEngineLoadRejected trace=\(traceID) model=\(modelID) reason=memoryHeadroom mappedBytes=\(mappedBytes) availableBytes=\(bestAvailable) physicalBytes=\(physicalMemory) vision=\(wantsVision) settleSamples=\(samples.count - 1) samples=\(samples.map { "\($0.index):\($0.availableBytes)" }.joined(separator: ","))"
                 )
                 throw LocalInferenceError.insufficientMemory(
                     required: mappedBytes,
-                    physical: availableMemory
+                    physical: bestAvailable
                 )
             }
+            let availableMemory = viable.availableBytes
             let profile = LocalInferenceResourcePolicy.profile(
                 mappedBytes: mappedBytes,
                 // Re-evaluate the tier for every load. Background tasks,
@@ -422,28 +700,69 @@ public actor LocalModelRuntime {
             )
             let loadStartedAt = Date()
             FloeLogger(category: .providers).info(
-                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
+                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) settleSamples=\(samples.count - 1)"
             )
-            let loaded: MLXTextEngine
+            let loaded: any LocalModelTextEngine
             do {
-                loaded = try await MLXTextEngine(
-                    modelDirectory: modelURL,
-                    includesVisionProjector: wantsVision,
-                    resourceProfile: profile
+                loaded = try await makeEngine(
+                    snapshot.directory,
+                    wantsVision,
+                    profile,
+                    traceID
                 )
             } catch {
+                // One clean recreate: a failed graph/model construction can
+                // leave process-wide Metal allocations cached even though no
+                // container escaped. Reclaim, then recreate once from the
+                // known baseline. The build-198 report showed
+                // "MLX container initialization failed" persisting across
+                // manual retries; a disciplined unload + reclaim + recreate
+                // recovers the runtime instead of leaving it broken.
                 let nsError = error as NSError
                 let safeMessage = String(error.localizedDescription.prefix(300))
-                FloeLogger(category: .providers).warning(
-                    "localInferenceEngineLoadFailed trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                lifecycle.recordLoadFailure()
+                lifecycle.log(
+                    "engineLoadFailedFirstAttempt",
+                    extra: "trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage)"
                 )
-                throw error
+                FloeLogger(category: .providers).warning(
+                    "localInferenceEngineLoadFailedFirstAttempt trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                )
+                reclaimMemory(context: "loadFailure", traceID: traceID)
+                do {
+                    loaded = try await makeEngine(
+                        snapshot.directory,
+                        wantsVision,
+                        profile,
+                        traceID + ".recreate"
+                    )
+                    lifecycle.recordLoadRecovered()
+                    lifecycle.log("engineLoadRecovered", extra: "trace=\(traceID) model=\(modelID)")
+                    FloeLogger(category: .providers).info(
+                        "localInferenceEngineLoadRecovered trace=\(traceID) model=\(modelID) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                    )
+                } catch {
+                    let nsError = error as NSError
+                    let safeMessage = String(error.localizedDescription.prefix(300))
+                    lifecycle.recordLoadFailure()
+                    lifecycle.log(
+                        "engineLoadFailed",
+                        extra: "trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage)"
+                    )
+                    FloeLogger(category: .providers).warning(
+                        "localInferenceEngineLoadFailed trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                    )
+                    throw error
+                }
             }
             let prepared = ActiveEngine(key: key, engine: loaded, profile: profile)
             activeEngine = prepared
             loadState = .ready(modelID: modelID, includesVisionProjector: wantsVision)
+            lifecycle.recordEngineCreated()
+            let serial = (loaded as? MLXTextEngine).map { "\($0.engineSerial)" } ?? "external"
+            lifecycle.log("engineCreated", extra: "trace=\(traceID) model=\(modelID) serial=\(serial)")
             FloeLogger(category: .providers).info(
-                "localInferenceEngineLoadFinished trace=\(traceID) model=\(modelID) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                "localInferenceEngineLoadFinished trace=\(traceID) model=\(modelID) serial=\(serial) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
             )
             return prepared
         } catch {
@@ -455,13 +774,70 @@ public actor LocalModelRuntime {
         }
     }
 
+    /// One preflight memory observation. MLX active/cache bytes are logged by
+    /// the engine itself (its prepare/teardown lines already carry them); the
+    /// sample here stays focused on the allowance the safety rule consumes.
+    private func sampleMemory(index: Int) -> LocalInferenceLifecycleDiagnostics.PreflightSample {
+        LocalInferenceLifecycleDiagnostics.PreflightSample(
+            index: index,
+            availableBytes: measureAvailableMemory()
+        )
+    }
+
+    /// Process-wide reclaim used between lifecycle phases: drain the GPU
+    /// stream, clear MLX's allocator cache, and drain the autorelease pool so
+    /// freed Metal pages return before the next measurement or load. Tolerant
+    /// by construction: a queued teardown error is logged, never thrown.
+    private func reclaimMemory(context: String, traceID: String) {
+        lifecycle.recordReclaim()
+        MLXTextEngine.drainPipelineAndClearCaches(context: context, traceID: traceID)
+    }
+
+    /// Drops the resident engine if it is still the prepared one, marks the
+    /// runtime unloaded, and counts the shutdown for lifecycle diagnostics.
+    private func unloadResidentEngine(prepared: ActiveEngine, reason: String) async {
+        guard activeEngine?.key == prepared.key else { return }
+        activeEngine = nil
+        await prepared.engine.shutdown()
+        lifecycle.recordEngineShutdown()
+        loadState = .unloaded
+        FloeLogger(category: .providers).info(
+            "localInferenceEngineReleased reason=\(reason) model=\(prepared.key.modelID) vision=\(prepared.key.includesVisionProjector)"
+        )
+    }
+
+    /// Focused-test hook: installs a pre-resident engine (e.g. a VLM) so the
+    /// text-continuation vision-shed path is exercised without real weights.
+    func installResidentEngineForTesting(
+        _ engine: any LocalModelTextEngine,
+        modelID: String,
+        includesVisionProjector: Bool
+    ) {
+        let profile = LocalInferenceResourcePolicy.profile(
+            mappedBytes: 0,
+            physicalMemoryBytes: 0
+        )
+        activeEngine = ActiveEngine(
+            key: EngineKey(modelID: modelID, includesVisionProjector: includesVisionProjector),
+            engine: engine,
+            profile: profile
+        )
+        loadState = .ready(
+            modelID: modelID,
+            includesVisionProjector: includesVisionProjector
+        )
+    }
+
     public func unload(modelID: String? = nil) async {
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
         let previous = activeEngine
         if modelID == nil || previous?.key.modelID == modelID {
             activeEngine = nil
-            if let previous { await previous.engine.shutdown() }
+            if let previous {
+                await previous.engine.shutdown()
+                lifecycle.recordEngineShutdown()
+            }
             loadState = .unloaded
         }
         FloeLogger(category: .providers).info(

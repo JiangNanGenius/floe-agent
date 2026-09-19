@@ -56,6 +56,19 @@ public enum MLXCompilePolicy {
 public actor MLXTextEngine {
     private var container: ModelContainer?
     private let resourceProfile: LocalInferenceResourceProfile
+    /// Whether this engine loaded the VLM vision projector. A text-only
+    /// continuation sheds this engine so the multi-hundred-megabyte vision
+    /// tower is not retained across turns that can never use it.
+    public let includesVisionProjector: Bool
+    /// Creation-order identity used by lifecycle diagnostics to prove the
+    /// single-container ownership boundary: a log consumer can pair every
+    /// `engineCreated` serial with exactly one `engineShutdown` before the
+    /// next serial is created.
+    public let engineSerial: Int
+
+    /// Process-wide serial used by `engineSerial`. A Mutex keeps the
+    /// diagnostic counter race-free under concurrent first loads.
+    private static let serialCounter = Mutex<Int>(0)
 
     /// Blocks until queued MLX work has left the device stream. Freeing the
     /// container or clearing the process-wide cache while an `asyncEval`
@@ -106,20 +119,30 @@ public actor MLXTextEngine {
     /// already-finished turn into a crash: run it under a scoped handler and
     /// record a bounded diagnostic instead. The failure is not swallowed as a
     /// success — the next request still runs through the full scoped checks.
+    ///
+    /// The whole reclaim is wrapped in an `autoreleasepool`: on iOS the Metal
+    /// command buffers, completion-handler blocks and Objective-C temporaries
+    /// queued by prefill/decode are autoreleased and would otherwise stay in
+    /// the calling task's pool until some later boundary. That retention was
+    /// visible to the next turn as a reduced `os_proc_available_memory`
+    /// allowance right after teardown. Draining the pool here returns those
+    /// pages deterministically before the next preflight measures headroom.
     nonisolated static func drainPipelineAndClearCaches(
         context: String,
         traceID: String? = nil
     ) {
-        do {
-            try MLX.withError { errors in
-                Self.drainMLXPipeline()
-                Memory.clearCache()
-                try errors.check()
+        autoreleasepool {
+            do {
+                try MLX.withError { errors in
+                    Self.drainMLXPipeline()
+                    Memory.clearCache()
+                    try errors.check()
+                }
+            } catch {
+                FloeLogger(category: .providers).warning(
+                    "localInferenceTeardownError context=\(context) trace=\(traceID ?? "none") \(boundedRuntimeDiagnostic(error))"
+                )
             }
-        } catch {
-            FloeLogger(category: .providers).warning(
-                "localInferenceTeardownError context=\(context) trace=\(traceID ?? "none") \(boundedRuntimeDiagnostic(error))"
-            )
         }
     }
 
@@ -136,6 +159,11 @@ public actor MLXTextEngine {
         // mutates the environment.
         MLXCompilePolicy.applyBeforeModelLoad()
         self.resourceProfile = resourceProfile
+        self.includesVisionProjector = includesVisionProjector
+        self.engineSerial = Self.serialCounter.withLock {
+            $0 += 1
+            return $0
+        }
         // A previous model or a failed Metal graph can leave process-wide
         // allocations cached even after its Swift container is gone. Start a
         // new load from a known baseline so the preflight allowance describes
@@ -196,7 +224,7 @@ public actor MLXTextEngine {
     /// Dropping the final container reference releases MLX tensors. The
     /// runtime calls this before loading a replacement and when the last task
     /// finishes so several multi-gigabyte models never remain resident.
-    public func shutdown() {
+    public func shutdown() async {
         container = nil
         // Dropping Swift references is not enough: MLX deliberately keeps a
         // process-wide Metal allocation cache for reuse. On iPad that made a
@@ -223,10 +251,15 @@ public actor MLXTextEngine {
         // a successful tool result and the second decode without a Swift
         // error, which is exactly where retaining both turns' cached pages is
         // most expensive. Drain queued graph work before releasing pages.
+        // Image inputs are consumed during prepare; logging their counts here
+        // proves a text-only continuation shed every prior vision tensor.
         defer {
             Self.drainPipelineAndClearCaches(
                 context: "turnTeardown",
                 traceID: diagnosticTraceID
+            )
+            FloeLogger(category: .providers).info(
+                "localInferenceTurnTeardown trace=\(diagnosticTraceID ?? "none") images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) visionProjector=\(includesVisionProjector) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
             )
         }
         try Task.checkCancellation()
@@ -531,6 +564,13 @@ public actor MLXTextEngine {
         return "img"
     }
 }
+
+/// Production engine conformance. Requirements map one-to-one onto the
+/// actor's existing methods; `includesVisionProjector` is stored at init and
+/// `shutdown()` is async so the actor-isolated implementation satisfies the
+/// nonisolated requirement without a data-race crossing.
+@available(macOS 15.4, iOS 26.0, *)
+extension MLXTextEngine: LocalModelTextEngine {}
 
 /// The upstream convenience tokenizer loader is currently exposed only as a
 /// compiler macro. Xcode 27 beta can incorrectly compile that host macro for

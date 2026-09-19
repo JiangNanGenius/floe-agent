@@ -102,6 +102,7 @@ struct LocalPromptHarnessTests {
 
 @Suite("Local replayed tool evidence")
 struct LocalReplayedToolEvidenceTests {
+    @available(macOS 15.4, iOS 26.0, *)
     private func request(
         replayedPairs: [ReplayedToolPair],
         systemEnvelope: String = "Run context: synthetic workspace. Current runtime time: fixed."
