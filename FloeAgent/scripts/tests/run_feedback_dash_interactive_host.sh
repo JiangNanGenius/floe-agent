@@ -39,7 +39,7 @@ touch "$BUILD/source/aclocal.m4" "$BUILD/source/configure" "$BUILD/source/config
   "$BUILD/source/Makefile.in" "$BUILD/source/src/Makefile.in"
 
 echo "== building the host ios_system stub"
-"$CLANG" -O2 -c -o "$BUILD/ios_system_stub.o" "$SCRIPT_DIR/fixtures/dash_host/ios_system_stub.c"
+"$CLANG" -isysroot "$OSXROOT" -O2 -c -o "$BUILD/ios_system_stub.o" "$SCRIPT_DIR/fixtures/dash_host/ios_system_stub.c"
 ar rcs "$BUILD/libfloe_dash_stub.a" "$BUILD/ios_system_stub.o"
 
 echo "== configuring dash for the macOS host (iOS branches enabled)"
@@ -47,7 +47,7 @@ floe_host="$(uname -m)-apple-darwin"
 (
   cd "$BUILD/host"
   /bin/sh "$BUILD/source/configure" \
-    CC="$CLANG" \
+    CC="$CLANG -isysroot $OSXROOT" \
     CC_FOR_BUILD="$CLANG -isysroot $OSXROOT" \
     CFLAGS="-DJOBS=0 -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -DTARGET_OS_IPHONE=1 -Wno-macro-redefined -I$BUILD/source" \
     LDFLAGS="-L$BUILD -lfloe_dash_stub" \
