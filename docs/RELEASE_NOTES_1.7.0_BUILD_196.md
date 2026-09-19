@@ -1,17 +1,8 @@
-# Floe Agent 1.7.0 (195) / beta.52 — frozen internal-testing candidate
+# Floe Agent 1.7.0 (196) / beta.53 — frozen internal-testing candidate
 
-> **Status: uploaded, not published.** The accepted-SDK App compiled once, the
-> unsigned IPA and matching private symbols were retained before signing, and
-> TestFlight accepted run 35408690013's upload ("No errors uploading archive").
-> GitHub's artifact service then failed while storing the TestFlight evidence
-> artifact (`Failed to CreateArtifact: Unable to make request: ENOTFOUND`), so the
-> publish gate could not verify the accepted upload and no attestation, GitHub
-> prerelease or Feather publication exists. The immutable tag `v1.7.0-beta.52`
-> remains at `575211e9` as the uploaded-but-unpublished record. Build 196
-> (`v1.7.0-beta.53`) retries with identical App source.
-
-Build 195 carries the build 191 feedback repair, the accepted-SDK compile fixes
-for the first two freezes, and the release-workflow publish fix for the third:
+Build 196 carries the build 191 feedback repair, the accepted-SDK compile fixes
+for the first two freezes, the release-workflow publish fix for the third, and
+the retry after the fourth attempt's evidence-upload flake:
 
 - build 192 (`v1.7.0-beta.49` at `1dc6577a`) stopped in `FloeLocalModels/MLXTextEngine.swift`
   with a Swift 6 region-isolation error ("sending 'input' risks causing data races");
@@ -25,13 +16,19 @@ for the first two freezes, and the release-workflow publish fix for the third:
   accepted-SDK App compiled once, the unsigned IPA and matching private symbols were
   retained before signing, and TestFlight accepted the upload. Its publish job then hit a
   release-workflow defect: the retained-artifact verifier was called without the artifact
-  zip or extracted paths, which it always rejects. The App source of build 194 and build
-  195 is identical; only the release pipeline changed.
+  zip or extracted paths, which it always rejects;
+- build 195 (`v1.7.0-beta.52` at `575211e9`) built and uploaded successfully again with the
+  workflow fix, but GitHub's artifact service failed while storing the TestFlight evidence
+  artifact (`Failed to CreateArtifact: Unable to make request: ENOTFOUND`), so the publish
+  gate could not verify the accepted upload. Apple transport had already accepted build 195
+  ("No errors uploading archive"), and its unsigned IPA and symbols were retained. The App
+  source of builds 194, 195 and 196 is identical; only the release pipeline and the build
+  number differ.
 
-All three immutable tags and their failure evidence stay recorded. Build 195 applies
-the workflow fix and is the candidate that proceeds.
+All four immutable tags and their failure evidence stay recorded. Build 196 retries the
+publish with the fixed pipeline and is the candidate that proceeds.
 
-The release pipeline creates the reserved tag `v1.7.0-beta.52` at the frozen
+The release pipeline creates the reserved tag `v1.7.0-beta.53` at the frozen
 commit this document ships in, performs the **single** accepted-upload-SDK App
 build (Xcode 26.6 / 17F113), and retains the unsigned device IPA with its matching
 private symbols **before** signing or upload; reuse of a retained exact artifact is

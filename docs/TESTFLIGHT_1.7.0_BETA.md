@@ -89,6 +89,27 @@ step. The single accepted-SDK App build and internal TestFlight upload are
 performed by the release workflow at the frozen commit; Apple processing and Floe
 QA visibility are verified separately before this build is called installable.
 
+## Uploaded but unpublished: 1.7.0 (195)
+
+Tag `v1.7.0-beta.52` is fixed at `575211e9b820adec7fb38b480504a0adbd37d522`.
+[Run 35408690013](https://github.com/JiangNanGenius/floe-agent/actions/runs/35408690013)
+completed the single accepted-SDK App compile, retained the unsigned IPA and its
+matching private symbols before signing, and TestFlight accepted the upload ("No
+errors uploading archive"). The evidence-upload step then failed on a transient
+GitHub incident (`Failed to CreateArtifact: Unable to make request: ENOTFOUND`),
+so the publish gate could not verify the accepted upload and nothing was
+attested or published. The build was not prepared for the Floe QA group and is
+not the deliverable; the immutable tag is retained as the uploaded-but-unpublished
+record.
+
+## Preparing: 1.7.0 (196)
+
+Build 196 carries identical App source to builds 194 and 195 with the fixed
+release pipeline. The single accepted-SDK App build and internal TestFlight
+upload are performed by the release workflow at the frozen commit; Apple
+processing and Floe QA visibility are verified separately before this build is
+called installable.
+
 ## Preparing: 1.7.0 (188)
 
 Build188 keeps the IDE service-owned CI recovery/polling work and repairs Notes
