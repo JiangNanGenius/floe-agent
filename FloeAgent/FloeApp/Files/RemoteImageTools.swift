@@ -363,6 +363,15 @@ extension ConversationCenter {
         }
     }
 
+    /// Resolves one public image-model selection name (remote model ID or
+    /// display name, as printed by `image.models`) to its internal route ID.
+    /// Returns nil when no candidate matches so callers can fail with the
+    /// public candidate list instead of a guessed route.
+    func agentImageRouteID(forPublicModel selection: String, operation: RemoteImageOperation) throws -> UUID {
+        let models = agentImageRoutes(operation: operation).map(\.1)
+        return try ImageModelRouteResolver.resolve(selection: selection, models: models).id
+    }
+
     func performAgentImage(
         operation: RemoteImageOperation, prompt: String, sourceImages: [Data], modelID: UUID?,
         selection: ImageGenerationSelection, count: Int
@@ -434,7 +443,7 @@ extension ConversationCenter {
 struct RemoteImageModelsTool: AgentTool {
     struct Arguments: Decodable, Sendable { var operation: String?; var offset: Int?; var limit: Int? }
     static let name = "image.models"
-    static let toolDescription = "List configured image suppliers, exact model IDs, priority/fallback order and the parameters accepted by image.generate and canvas.generate. Inspect before selecting a route. modelID selects its owning supplier too. Check autonomyEnabled: when false use only the preferred route. With autonomy enabled, choose a suitable route and supported parameters; presets are preferences and fallbacks. Never guess enum values. Do not resubmit a timed-out or still-running generation because its outcome is unknown."
+    static let toolDescription = "List configured image suppliers, the public selection name (`model`, its remote model ID), exact model IDs, priority/fallback order and the parameters accepted by image.generate and canvas.generate. Inspect before selecting a route. `model` and `modelID` are a mutually exclusive one-of; the public `model` is preferred and the internal modelID must never be requested from the user. Check autonomyEnabled: when false use only the preferred route. With autonomy enabled, choose a suitable route and supported parameters; presets are preferences and fallbacks. Never guess enum values. Do not resubmit a timed-out or still-running generation because its outcome is unknown."
     static let parametersJSON = #"{"type":"object","properties":{"operation":{"type":"string","enum":["generate","edit"]},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -451,7 +460,8 @@ struct RemoteImageModelsTool: AgentTool {
             let entries = try routes[offset..<end].enumerated().map { index, route -> [String: Any] in
                 let contract = ImageGenerationPresetResolver.parameterContract(provider: route.0, model: route.1, operation: operation)
                 let parameters = try JSONSerialization.jsonObject(with: JSONEncoder().encode(contract))
-                return ["modelID": route.1.id.uuidString, "remoteModelID": route.1.remoteModelID,
+                return ["model": route.1.remoteModelID,
+                        "modelID": route.1.id.uuidString, "remoteModelID": route.1.remoteModelID,
                         "modelName": route.1.displayName, "providerID": route.0.id.uuidString,
                         "providerName": route.0.displayName ?? route.0.kind.rawValue, "providerKind": route.0.kind.rawValue,
                         "preferred": route.1.id == preferred, "priority": offset + index + 1,
@@ -462,7 +472,7 @@ struct RemoteImageModelsTool: AgentTool {
                 "autonomyEnabled": conversation.modelPreferences.autonomousImageRouting == true,
                 "operation": operation.rawValue, "total": routes.count, "models": entries,
                 "nextOffset": end < routes.count ? end as Any : NSNull(),
-                "fallbackPolicy": "Prefer the configured preset when suitable; explicitly selected model IDs remain exact. If modelID is omitted in autonomous mode, the first compatible route is selected before networking. A definite HTTP 401/404/429 may try one compatible fallback within the same generation. No fallback after cancellation, timeout, policy refusal, server error or unknown result. Never automatically submit a second generation to work around this policy."]
+                "fallbackPolicy": "These are the only usable image routes. Pass a public candidate (`model`, its remote model ID, or `modelName`) to image.generate; the internal modelID is the legacy alternative and must never be requested from the user. `model` and `modelID` are a mutually exclusive one-of: pass at most one. When several candidates exist, choose the one that fits the request from its public parameters yourself. Prefer the configured preset when suitable; explicitly selected model IDs remain exact. If modelID is omitted in autonomous mode, the first compatible route is selected before networking. A definite HTTP 401/404/429 may try one compatible fallback within the same generation. No fallback after cancellation, timeout, policy refusal, server error or unknown result. Never automatically submit a second generation to work around this policy."]
             return String(decoding: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), as: UTF8.self)
         }
     }
@@ -494,6 +504,12 @@ struct RemoteImageGenerateTool: AgentTool {
         var prompt: String
         var count: Int?
         var size: String?
+        /// Public candidate selection from image.models: its `model` remote ID
+        /// or its modelName. One-of with the legacy `modelID`; the user never
+        /// supplies a per-install internal UUID.
+        var model: String?
+        /// Optional internal UUID retained for compatibility with older
+        /// callers. Prefer the public `model` value.
         var modelID: UUID?
         var aspectRatio: String?
         var resolution: String?
@@ -502,7 +518,7 @@ struct RemoteImageGenerateTool: AgentTool {
 
     static let name = "image.generate"
     static let toolDescription =
-        "Generate standalone images. Inspect image.models for configured suppliers, modelID, preference/fallback order and supported parameters. When autonomy is enabled choose the best suitable model and parameters; otherwise use the preferred model. Use this for user requests to draw, create, or render an image. Returns durable image artifacts; do not substitute SVG/HTML/Python when this tool is available. Canvas graph operations are available only inside a Canvas task, not ordinary chat; do not search repeatedly for Canvas tools outside that surface."
+        "Generate standalone images. Inspect image.models for configured suppliers, the public selection name (`model`, its remote model ID), modelID, preference/fallback order and supported parameters. When autonomy is enabled choose the best suitable model and parameters; otherwise use the preferred model. Pass the public `model` value from image.models; only the legacy `modelID` UUID is the alternative, never both. Use this for user requests to draw, create, or render an image. Returns durable image artifacts; do not substitute SVG/HTML/Python when this tool is available. Canvas graph operations are available only inside a Canvas task, not ordinary chat; do not search repeatedly for Canvas tools outside that surface."
     static let parametersJSON = #"""
     {
       "type": "object",
@@ -510,13 +526,17 @@ struct RemoteImageGenerateTool: AgentTool {
         "prompt": {"type": "string", "description": "Detailed description of the image to create"},
         "count": {"type": "integer", "minimum": 1, "maximum": 4, "description": "Number of images; default 1"},
         "size": {"type": "string", "description": "Advanced native size override; use only when supported by image.models"},
-        "modelID": {"type":"string","format":"uuid","description":"Configured modelID from image.models; also selects its supplier"},
-        "aspectRatio": {"type":"string","description":"Allowed aspect ratio from image.models"},
-        "resolution": {"type":"string","description":"Allowed resolution from image.models"},
-        "quality": {"type":"string","description":"Allowed quality from image.models"}
+        "model": {"type": "string", "description": "Public candidate from image.models: its `model` remote ID or its modelName. One-of with the legacy `modelID`; never ask the user for an internal UUID."},
+        "modelID": {"type":"string","format":"uuid","description":"Optional legacy internal id from image.models; one-of with the public `model` value, which is always preferred"},
+        "aspectRatio": {"type": "string", "description": "Allowed aspect ratio from image.models"},
+        "resolution": {"type": "string", "description": "Allowed resolution from image.models"},
+        "quality": {"type": "string", "description": "Allowed quality from image.models"}
       },
       "required": ["prompt"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {"not": {"required": ["model", "modelID"]}, "description": "`model` and `modelID` are a mutually exclusive one-of: pass at most one."}
+      ]
     }
     """#
     static let riskLabels: Set<RiskLabel> = [.sendsDataToProvider, .writesFiles]
@@ -525,6 +545,7 @@ struct RemoteImageGenerateTool: AgentTool {
 
     private let generate: @MainActor @Sendable (Arguments) async throws -> ([AttachmentRef], String)
     private let resolveURL: @MainActor @Sendable (AttachmentRef) throws -> URL
+    private let resolvePublicModel: @MainActor @Sendable (String) throws -> UUID
 
     init(center: FilesCenter) {
         self.generate = { args in
@@ -537,6 +558,9 @@ struct RemoteImageGenerateTool: AgentTool {
         self.resolveURL = { attachment in
             try center.resolveURL(for: attachment)
         }
+        self.resolvePublicModel = { selection in
+            try center.environment.conversationCenter.agentImageRouteID(forPublicModel: selection, operation: .generate)
+        }
     }
 
     func validate(_ args: Arguments) throws {
@@ -546,10 +570,22 @@ struct RemoteImageGenerateTool: AgentTool {
         guard (1...4).contains(args.count ?? 1) else {
             throw FloeError.validationFailed("count must be 1...4")
         }
+        if args.model != nil, args.modelID != nil {
+            throw FloeError.validationFailed("Use either the public `model` or the legacy `modelID`, not both")
+        }
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
         try context.cancellation.throwIfCancelled()
+        var args = args
+        args.prompt = args.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Resolve a public selection name before any provider contact so a
+        // one-of violation or unknown candidate fails closed at validation.
+        if let model = args.model {
+            args.modelID = try resolvePublicModel(model)
+            args.model = nil
+        }
         let (attachments, routeDescription) = try await generate(args)
         let workspacePaths = try await persistInTaskWorkspace(
             attachments,

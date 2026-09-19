@@ -48,6 +48,7 @@ struct ThreadDetailView: View {
     @State private var exporting = false
     @State private var showsChecklist = false
     @State private var consumedInputID: UUID?
+    @State private var refreshingMediaJobs = false
     private let composerInput: ThreadComposerInput?
     private let onSaveToNotes: ((String) -> Void)?
     private let embedded: Bool
@@ -555,6 +556,14 @@ struct ThreadDetailView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                Button(refreshingMediaJobs ? "正在刷新媒体任务…" : "刷新媒体任务状态", systemImage: "arrow.clockwise") {
+                    refreshingMediaJobs = true
+                    Task {
+                        defer { refreshingMediaJobs = false }
+                        await viewModel.refreshMediaJobs()
+                    }
+                }
+                .disabled(refreshingMediaJobs)
                 Button("直接设置 Goal", systemImage: "target") {
                     showingGoalBuilder = true
                 }

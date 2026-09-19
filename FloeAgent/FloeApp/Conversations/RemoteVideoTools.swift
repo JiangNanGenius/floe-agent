@@ -133,8 +133,8 @@ struct RemoteVideoGenerateTool: AgentTool {
     static let parametersJSON = #"""
     {"type":"object","properties":{
       "prompt":{"type":"string","description":"Detailed description of the video to create"},
-      "model":{"type":"string","description":"Public candidate from video.models: its `model` remote ID or its modelName. Choose it yourself when several candidates exist; never ask the user for an internal UUID."},
-      "modelID":{"type":"string","format":"uuid","description":"Optional legacy internal id from video.models; prefer the public `model` value"},
+      "model":{"type":"string","description":"Public candidate from video.models: its `model` remote ID or its modelName. One-of with the legacy `modelID`; choose it yourself when several candidates exist; never ask the user for an internal UUID."},
+      "modelID":{"type":"string","format":"uuid","description":"Optional legacy internal id from video.models; one-of with the public `model` value, which is always preferred"},
       "aspectRatio":{"type":"string","description":"Allowed aspect ratio from video.models"},
       "resolution":{"type":"string","description":"Allowed resolution from video.models"},
       "durationSeconds":{"type":"integer","minimum":1,"maximum":60,"description":"Allowed duration from video.models. Veo reference images require 8"},
@@ -142,8 +142,12 @@ struct RemoteVideoGenerateTool: AgentTool {
       "watermark":{"type":"boolean","description":"Only when video.models reports supportsWatermark"},
       "seed":{"type":"integer","description":"Only when video.models reports supportsSeed"},
       "referenceImagePath":{"type":"string","description":"Workspace-relative PNG/JPEG/WebP image to use as the reference or first frame; only when video.models reports referenceImage.supported"},
-      "referenceImageAttachmentID":{"type":"string","format":"uuid","description":"Image attachment from this conversation to use as the reference or first frame; mutually exclusive with referenceImagePath"}},
-     "required":["prompt"],"additionalProperties":false}
+      "referenceImageAttachmentID":{"type":"string","format":"uuid","description":"Image attachment from this conversation to use as the reference or first frame; one-of with referenceImagePath"}},
+     "required":["prompt"],"additionalProperties":false,
+     "allOf":[
+       {"not":{"required":["model","modelID"]},"description":"`model` and `modelID` are a mutually exclusive one-of: pass at most one."},
+       {"not":{"required":["referenceImagePath","referenceImageAttachmentID"]},"description":"referenceImagePath and referenceImageAttachmentID are a mutually exclusive one-of: pass at most one."}
+     ]}
     """#
     static let riskLabels: Set<RiskLabel> = [.sendsDataToProvider, .networkAccess, .writesFiles]
     static let isSideEffecting = true

@@ -155,6 +155,9 @@ enum ToolDiscovery {
         if names.contains("video.generate") {
             lines.append("Video generation can use any configured cloud video route: call \(n("video.models")) first to read the public candidate names (`model`/`modelName`) and their parameter limits, choose the candidate that fits the request yourself, then pass its public `model` value to \(n("video.generate")). Never ask the user for an internal UUID, and never resubmit a running job.")
         }
+        if names.contains("image.generate") {
+            lines.append("Image generation can use any configured image route: call \(n("image.models")) first to read the public candidate names (`model`/`modelName`) and their parameter limits, choose the candidate that fits the request yourself, then pass its public `model` value to \(n("image.generate")). `model` and `modelID` are a mutually exclusive one-of; never ask the user for an internal UUID, and never resubmit a running or outcome-unknown generation.")
+        }
         return lines.joined(separator: "\n")
     }
 
