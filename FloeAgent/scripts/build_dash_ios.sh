@@ -68,10 +68,14 @@ for floe_name in dash dashA dashB dashC dashD dashE; do
    xcodebuild -create-xcframework -framework "$floe_work/iphoneos/$floe_name.framework" -framework "$floe_universal" -output "$floe_output"
 done
 
-# Record a provenance manifest (source inputs + built binary hashes) so release
+# Record a provenance manifest (build-input + built binary hashes) so release
 # CI can prove the frameworks — including the interactive-stdin fix in
-# ThirdParty/DashIOS/src/input.c — were actually built from the tracked source
-# and are not stale, source-only artifacts. scripts/tests/
-# test_dash_framework_provenance.py verifies it in check mode.
+# ThirdParty/DashIOS/src/input.c — were actually built from the tracked inputs
+# and are not stale, source-only artifacts. The inputs are the non-documentation
+# DashIOS files, this build script and the FloeShellEngine artifact pin, so a
+# documentation edit cannot invalidate an unchanged binary while source,
+# build-configuration and linked-engine drift still fail closed.
+# scripts/tests/test_dash_framework_provenance.py verifies it in check mode
+# (--self-test exercises the classification in a temporary tree).
 python3 "$floe_root/scripts/tests/test_dash_framework_provenance.py" --write \
   --source-dir "$floe_source" --frameworks-dir "$floe_root/Frameworks"

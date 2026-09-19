@@ -70,10 +70,12 @@ Build 198 的 v5 测试报告把两处宣传与真机表现的差距定性清楚
   这条链路如何进 App（不再是“源码改了就算修了”）：
   - 发布 CI 的 release tooling bootstrap 会跑 `scripts/build_dash_ios.sh`，从**被跟踪的**
     `ThirdParty/DashIOS` 源码重新生成 git-ignored 的 `Frameworks/dash*.xcframework`；
-  - 构建脚本收尾写入 `Frameworks/dash-build-manifest.json`（全部 DashIOS 源文件哈希 +
-    每个 dash 二进制哈希）；release 工作流（release-unsigned-ipa 两个 SDK job、
-    testflight-direct）随后用 `scripts/tests/test_dash_framework_provenance.py` 校验，
-    源与二进制任何不一致都直接失败——保证交互 stdin 修复**确实编进了**构建输入；
+  - 构建脚本收尾写入 `Frameworks/dash-build-manifest.json`（DashIOS 非文档文件哈希 +
+    构建脚本与 FloeShellEngine 引擎 pin + 每个 dash 二进制哈希）；文档（PROVENANCE.md、
+    COPYING、man 页）进不了编译/链接，改文档不会让二进制失效；release 工作流
+    （release-unsigned-ipa 两个 SDK job、testflight-direct）随后用
+    `scripts/tests/test_dash_framework_provenance.py` 校验，源、构建配置、引擎 pin
+    与二进制任何不一致都直接失败——保证交互 stdin 修复**确实编进了**构建输入；
   - 行为侧证据：`scripts/tests/run_feedback_dash_interactive_host.sh` 用同一套真实
     DashIOS 源码在 macOS 主机上编译（桩掉 ios_system），验证 `dash -i` 通过
     thread_stdin 管道收到输入（修复前同源构建必然失败）；CI 模拟器回归里的
