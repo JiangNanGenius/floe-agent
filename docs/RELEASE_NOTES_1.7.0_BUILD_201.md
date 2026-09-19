@@ -1,6 +1,6 @@
 # Floe Agent 1.7.0 (201) / beta.58 — 冻结内部测试构建与 GitHub 预发布恢复 / frozen internal-testing build with the GitHub prerelease recovered from the retained artifact
 
-> **状态：冻结提交已构建、签名并上传；GitHub 预发布与 Feather 源从保留工件恢复。**
+> **状态：已交付内部 TestFlight（Floe QA）；GitHub 预发布与 Feather 源从保留工件恢复。**
 > 单次验收上传 SDK App 构建在冻结提交 `be06cece8646d5ce53a12c6bf7fcd68ce728c0b3` 上执行
 > （[run 35453588806](https://github.com/JiangNanGenius/floe-agent/actions/runs/35453588806)，
 > Xcode 26.6 / 17F113，iOS SDK 26.5），未签名设备 IPA
@@ -15,13 +15,19 @@
 > `v1.7.0-beta.58` 与 Feather 源来自同一工件。Apple `buildID`
 > `ea0f0b12-6fad-4a55-b1f2-ac2033328c74` 在上传处理查询中为 `VALID`
 > （[discover 35457644985](https://github.com/JiangNanGenius/floe-agent/actions/runs/35457644985)）；
-> 内部 Floe QA 组可见性与双语测试说明的写入／读回结果记录于
-> [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)。模拟器／UI 资格按用户明确要求跳过，因此
-> 这是内部设备测试而非完整验收；真机验收属于用户，Build191 的本地模型前台中断仍未证实修复。
-> 本轮不含公开 Beta 提交或生产发布。
+> 内部 Floe QA 组可见性与双语测试说明的写入／读回已完成：Apple `buildID`
+> `ea0f0b12-6fad-4a55-b1f2-ac2033328c74` 于 2026-09-19 17:44 UTC 核验为 `VALID`、未过期、
+> 仅一个私有内部组 Floe QA（无公开链接）且 `IN_BETA_TESTING`
+> （[prepare 35458929498](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458929498)、
+> [verify 35459030591](https://github.com/JiangNanGenius/floe-agent/actions/runs/35459030591)），
+> 英文与简体中文说明均已保存并读回；Feather 源由发布事件触发的工作流
+> [35458914062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458914062) 校验
+> 发布资产与来源证明后写入（`feather.json` 提交 `e7f75620`）。模拟器／UI 资格按用户明确要求
+> 跳过，因此这是内部设备测试而非完整验收；真机验收属于用户，Build191 的本地模型前台中断仍未
+> 证实修复。本轮不含公开 Beta 提交或生产发布。
 >
-> **Status: the frozen commit was built, signed and uploaded; the GitHub prerelease and the
-> Feather source were recovered from the retained artifact.** The single accepted-SDK App build
+> **Status: delivered to internal TestFlight (Floe QA); the GitHub prerelease and the Feather
+> source were recovered from the retained artifact.** The single accepted-SDK App build
 > ran in [run 35453588806](https://github.com/JiangNanGenius/floe-agent/actions/runs/35453588806)
 > from the frozen commit `be06cece8646d5ce53a12c6bf7fcd68ce728c0b3` (Xcode 26.6 / 17F113,
 > iOS SDK 26.5). The unsigned device IPA `Floe-Agent-1.7.0-build201-unsigned.ipa` (sha256
@@ -36,11 +42,19 @@
 > GitHub prerelease `v1.7.0-beta.58` and the Feather source come from that same artifact. Apple
 > `buildID` `ea0f0b12-6fad-4a55-b1f2-ac2033328c74` reported `VALID`
 > ([discover 35457644985](https://github.com/JiangNanGenius/floe-agent/actions/runs/35457644985));
-> internal Floe QA group visibility and the saved/read-back bilingual test notes are recorded in
-> the [TestFlight delivery record](TESTFLIGHT_1.7.0_BETA.md). Simulator/UI qualification was
-> skipped by explicit user request, so this is internal device testing, not full acceptance;
-> physical-device acceptance belongs to the user and the build 191 local-model abort remains
-> unproven fixed. No public Beta submission or production release is included.
+> internal Floe QA group visibility and the saved/read-back bilingual test notes were completed:
+> Apple `buildID` `ea0f0b12-6fad-4a55-b1f2-ac2033328c74` was verified `VALID`, unexpired, exactly
+> one private internal Floe QA group (no public link) and `IN_BETA_TESTING` at 2026-09-19 17:44 UTC
+> ([prepare 35458929498](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458929498),
+> [verify 35459030591](https://github.com/JiangNanGenius/floe-agent/actions/runs/35459030591)) with
+> both English and Simplified Chinese notes saved and read back; the Feather source was written by
+> the release-event workflow
+> [35458914062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458914062) after it
+> verified the published assets and their provenance (`feather.json` commit `e7f75620`).
+> Simulator/UI qualification was skipped by explicit user request, so this is internal device
+> testing, not full acceptance; physical-device acceptance belongs to the user and the build 191
+> local-model abort remains unproven fixed. No public Beta submission or production release is
+> included.
 
 功能实现范围 / Implementation range：`5b27e472..be06cece`（build 199 版本准备、build 200 内部
 Beta 准备、Office 组件锁定、两处 Swift 6 修复与 build 201 版本／说明准备）；对外功能与 build 198
@@ -74,6 +88,71 @@ concrete label styles in `WorkspaceIDEView.swift`). Build 201 freezes those fixe
 only the accepted-upload-SDK cloud App compile can confirm them, and that compile passed in run
 35453588806 with a signed upload and retained artifacts. This document makes no claim about any
 other unexecuted test.
+
+## 发布恢复执行记录 / Publication recovery execution record
+
+- **GitHub 预发布**：2026-09-19 17:42 UTC 使用保留工件中的 IPA、`.sha256`、`TEST-SUMMARY.txt`、
+  `DIRECT-PROVENANCE.json`、`bundle-normalization.json`、`pdfium-linkage.json` 与生成的
+  `PUBLIC-ASSETS.json` 创建（`gh release create … --verify-tag --prerelease --latest=false`），
+  与工作流发布步骤的资产组装完全一致；资产集合只包含一个未签名 IPA 与其校验和，不含任何签名
+  材料。标签仍固定在 `be06cece`。
+- **来源证明**：发布前用 `FloeAgent/scripts/verify_direct_unsigned_artifact.py` 对下载的发布工件
+  重新做了完整校验（zip digest 与 GitHub 记录一致，IPA sha256 `e80ff0c5…`，上传接受证据
+  `testflight-1.7.0-build201`，私有符号工件仍然有效），并以 Feather 使用的完全相同参数执行
+  `gh attestation verify … --source-digest be06cece… --signer-workflow release-unsigned-ipa.yml`
+  通过。
+- **Feather**：发布事件触发的工作流
+  [35458914062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458914062) 独立复算
+  校验和、验证来源证明并提交 `feather.json`（`e7f75620`）。
+- **重建免上传重试**：以 `reuse_direct_run=35453588806` 重跑发布工作流的复用路径
+  （[run 35458919065](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458919065)）在
+  `testflight-direct.yml` 的 “Restore and verify the retained unsigned IPA without rebuilding” 步骤
+  失败：该文件在冻结标签处仍先执行一次不带 `--artifact-zip/--extract-dir` 的元数据校验调用，而该
+  脚本按设计拒绝这种调用（与 build 194 记录过的发布缺陷同类；当时只修复了
+  `release-unsigned-ipa.yml` 的发布作业）。标签不可移动，因此冻结版本的嵌套工作流无法修复后重跑；
+  本分支修复了该复用步骤（从 GitHub 工件负载解析唯一有效工件 id，只保留一次完整 zip 校验）并新增
+  回归测试 `test_rebuild_free_retry_verification_passes_extraction_paths`；修复后的命令用真实 run
+  负载在本地验证通过：工件 id `10587603014`、`testflightAccepted=true`（对应
+  `upload_required=false`，不会重复上传）。该次失败的重试没有产生任何发布或上传副作用。
+- **TestFlight**：prepare
+  [35458929498](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458929498) 写入双语
+  说明并确认 Floe QA 可见性；verify
+  [35459030591](https://github.com/JiangNanGenius/floe-agent/actions/runs/35459030591) 确认
+  `VALID`、未过期、仅一个私有 Floe QA 组且 `IN_BETA_TESTING`。
+
+- **GitHub prerelease**: created 2026-09-19 17:42 UTC from the retained artifact's IPA, `.sha256`,
+  `TEST-SUMMARY.txt`, `DIRECT-PROVENANCE.json`, `bundle-normalization.json`, `pdfium-linkage.json`
+  and the generated `PUBLIC-ASSETS.json` (`gh release create … --verify-tag --prerelease
+  --latest=false`), matching the workflow's asset assembly exactly; the asset set holds one unsigned
+  IPA and its checksum and no signing material. The tag remains fixed at `be06cece`.
+- **Provenance**: before publication the downloaded release artifact was fully re-verified with
+  `FloeAgent/scripts/verify_direct_unsigned_artifact.py` (zip digest matches GitHub's record, IPA
+  sha256 `e80ff0c5…`, accepted-upload evidence `testflight-1.7.0-build201`, private symbols artifact
+  still live), and `gh attestation verify … --source-digest be06cece… --signer-workflow
+  release-unsigned-ipa.yml` passed with exactly the arguments Feather uses.
+- **Feather**: the release-event workflow
+  [35458914062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458914062)
+  independently recomputed the checksum, verified provenance and committed `feather.json`
+  (`e7f75620`).
+- **Rebuild-free retry**: re-running the release workflow's reuse path with
+  `reuse_direct_run=35453588806`
+  ([run 35458919065](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458919065)) failed
+  in `testflight-direct.yml`'s “Restore and verify the retained unsigned IPA without rebuilding”
+  step: at the frozen tag that file still made a bare metadata-only verifier call without
+  `--artifact-zip/--extract-dir`, which the script rejects by design (the same defect class recorded
+  for build 194, where only the `release-unsigned-ipa.yml` publish job was repaired). The tag cannot
+  be moved, so the frozen nested workflow cannot be fixed and re-run; this branch fixes the reuse
+  step (resolve the single live artifact id from GitHub's payload and keep exactly one full zip
+  verification) and adds the regression test
+  `test_rebuild_free_retry_verification_passes_extraction_paths`. The fixed commands were validated
+  locally against the real run payload: artifact id `10587603014`, `testflightAccepted=true`
+  (so `upload_required=false`, no repeated upload). The failed retry produced no publication or
+  upload side effects.
+- **TestFlight**: prepare
+  [35458929498](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458929498) wrote the
+  bilingual notes and confirmed Floe QA visibility; verify
+  [35459030591](https://github.com/JiangNanGenius/floe-agent/actions/runs/35459030591) confirmed
+  `VALID`, unexpired, exactly one private Floe QA group and `IN_BETA_TESTING`.
 
 ## 简体中文
 

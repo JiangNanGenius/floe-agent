@@ -1,6 +1,44 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (198) — available in Floe QA
+## Current internal delivery: 1.7.0 (201) — available in Floe QA
+
+Immutable tag `v1.7.0-beta.58`, source `be06cece8646d5ce53a12c6bf7fcd68ce728c0b3`.
+[Run 35453588806](https://github.com/JiangNanGenius/floe-agent/actions/runs/35453588806)
+completed the single accepted-SDK App build (Xcode 26.6 / 17F113), retained the
+unsigned IPA `Floe-Agent-1.7.0-build201-unsigned.ipa` (sha256
+`e80ff0c56d4af35b7717b98cc704f1cb1131e67f8a0f15ebeaa12ec09286dec3`, 811,524,833 B,
+app UUID `69627670-F83E-3B29-BCF9-57EBC5771426`) with matching private symbols
+(artifact `release-symbols-1.7.0-build201`) before signing, and TestFlight accepted
+the upload. That run's `lean-publish` job then failed because
+`docs/RELEASE_NOTES_1.7.0_BUILD_201.md` was absent from the frozen tag checkout, so
+nothing was attested, published or sent to Feather. Publication was recovered from
+the same retained artifact — no rebuild and no re-upload, tag unmoved: the attested
+unsigned GitHub prerelease `v1.7.0-beta.58` was published 2026-09-19 17:42 UTC with
+the exact unsigned-only asset set (attestation source digest `be06cece…` signed by
+`release-unsigned-ipa.yml`), and Feather
+[run 35458914062](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458914062)
+verified the published checksum and provenance and committed `feather.json`
+(`e7f75620`, sha256 `e80ff0c5…`, sourceCommit `be06cece…`). Apple `buildID`
+`ea0f0b12-6fad-4a55-b1f2-ac2033328c74` was verified `VALID`, unexpired, exactly one
+private Floe QA group and `IN_BETA_TESTING` at 2026-09-19 17:44 UTC
+([discover 35457644985](https://github.com/JiangNanGenius/floe-agent/actions/runs/35457644985),
+[prepare 35458929498](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458929498),
+[verify 35459030591](https://github.com/JiangNanGenius/floe-agent/actions/runs/35459030591));
+both English and Chinese test notes were saved and read back. A rebuild-free retry
+(`reuse_direct_run=35453588806`,
+[run 35458919065](https://github.com/JiangNanGenius/floe-agent/actions/runs/35458919065))
+failed in `testflight-direct.yml`'s reuse step on the same bare metadata-only verifier
+call defect recorded for build 194 (only the lean publish job had been repaired); the
+frozen tag's nested workflow cannot be fixed and re-run, so the step was repaired on
+`main` with a regression test and its fixed commands were validated locally against
+the real run payload (`testflightAccepted=true` → `upload_required=false`, no repeated
+upload). Build 199 was never uploaded and build 200 stopped inside the accepted-SDK
+App build, so build 201 is the first uploaded build since 198. Simulator/UI
+qualification was skipped by explicit user request, so this is internal device
+testing, not full acceptance. Device acceptance remains with the user, and the build
+191 foreground Qwen GatedDeltaNet abort is still not proven fixed.
+
+## Previous internal delivery: 1.7.0 (198) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.55`, source `ce3574f36f954bb64c100754ff17295cead7c238`.
 [Run 35428858014](https://github.com/JiangNanGenius/floe-agent/actions/runs/35428858014)
