@@ -103,18 +103,18 @@ jobs:
           mkdir -p "$EVIDENCE"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN" > "$EVIDENCE/run.json"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN/artifacts?per_page=100" > "$EVIDENCE/artifacts.json"
-          # Bind the producing run and the artifact metadata before downloading a byte.
+          # The verifier deliberately refuses a bare metadata-only call ("Provide
+          # either --artifact-zip with --extract-dir or explicit extracted paths"),
+          # which is what the frozen build 201 recovery hit after TestFlight had
+          # already accepted the upload. Resolve the single live artifact id from
+          # GitHub's payload here and keep exactly one verifier invocation below:
+          # the full zip verification, which re-selects the artifact and binds its
+          # digest before any download is trusted.
           # --require-symbols-artifact keeps the "no distribution without a captured
           # dSYM" policy strict on the rebuild-free path: a producer that failed
           # dSYM capture retains the unsigned IPA but cannot reach TestFlight.
-          python3 scripts/verify_direct_unsigned_artifact.py \
-            --run "$EVIDENCE/run.json" --artifacts "$EVIDENCE/artifacts.json" \
-            --repository "$GITHUB_REPOSITORY" --artifact-name "$ARTIFACT_NAME" \
-            --tag "$APP_TAG" --source-sha "$APP_SOURCE_SHA" \
-            --version "$APP_VERSION" --build "$APP_BUILD" \
-            --toolchain "$REQUIRED_TOOLCHAIN" --require-symbols-artifact \
-            --report "$EVIDENCE/metadata.json" > /dev/null
-          ARTIFACT_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifactId"])' "$EVIDENCE/metadata.json")"
+          ARTIFACT_ID="$(jq -r --arg n "$ARTIFACT_NAME" '[.artifacts[] | select(.name == $n and (.expired | not))] | if length == 1 then .[0].id else empty end' "$EVIDENCE/artifacts.json")"
+          test -n "$ARTIFACT_ID"
           # The downloaded zip stays outside the evidence folder so the retained
           # evidence artifact never duplicates ~800 MB of IPA bytes.
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/DirectReuseArtifact.zip"

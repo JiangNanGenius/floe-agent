@@ -202,6 +202,21 @@ class RecoveryOrderingTests(unittest.TestCase):
                     step['if'],
                     "inputs.reuse_artifact_run == '' || steps.reuse.outputs.upload_required == 'true'")
 
+    def test_rebuild_free_retry_verification_passes_extraction_paths(self):
+        # The verifier refuses a bare metadata-only call ("Provide either
+        # --artifact-zip with --extract-dir or explicit extracted paths"), which
+        # the frozen build 201 recovery hit after TestFlight had already accepted
+        # the upload. Resolve the artifact id from GitHub's payload instead and
+        # keep exactly one verifier invocation, the full zip verification.
+        invocations = self.reuse['run'].split(
+            'python3 scripts/verify_direct_unsigned_artifact.py')[1:]
+        self.assertEqual(len(invocations), 1, invocations)
+        self.assertIn('--artifact-zip "$RUNNER_TEMP/DirectReuseArtifact.zip"', invocations[0])
+        self.assertIn('--extract-dir "$EXTRACT"', invocations[0])
+        self.assertNotIn('metadata.json', self.reuse['run'])
+        self.assertIn('ARTIFACT_ID="$(jq -r', self.reuse['run'])
+        self.assertIn("select(.name == $n and (.expired | not))", self.reuse['run'])
+
 
 class LeanPublishPolicyTests(unittest.TestCase):
     @classmethod
