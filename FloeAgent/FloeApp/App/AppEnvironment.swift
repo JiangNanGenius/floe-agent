@@ -92,9 +92,15 @@ final class AppEnvironment: ObservableObject {
     /// SettingsCenter so the UI reads live state instead of a placeholder.
     let remotePythonProbe: FloeExecution.RemotePythonProbe
     /// Local shell substrate (ios_system-backed) shared by exec.shell and the
-    /// interactive shell.* tools.
+    /// interactive shell.* tools. It routes through `RoutingLocalShellBackend`
+    /// so shell runs in a `runtime == .linux` environment execute inside that
+    /// environment's guest instead of the native substrate.
     let localShellService: LocalShellService
     let shellSessionCenter: ShellSessionCenter
+    /// One TinyEMU guest service for the whole app: the same guest interpreter
+    /// serves exec.shell, apt/dpkg, localPython and localService for a Linux
+    /// environment. nil only where the engine is not built in.
+    let linuxGuestService: TinyEMULinuxCommandService?
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
     /// Managed pure-Python installer shared by exec.localPython, exec.shell
     /// and the python.packages tool.
@@ -328,14 +334,7 @@ final class AppEnvironment: ObservableObject {
         let shellPolicy = ShellCommandPolicy(
             gate: try? CatastrophicActionGate.withBundledPatterns()
         )
-        let shellBackend = IOSSystemShellBackend()
-        self.localShellService = LocalShellService(
-            backend: shellBackend,
-            policy: shellPolicy,
-            environmentDefaults: Self.localShellEnvironment(),
-            rootProvider: WorkspaceCenter.toolRootProvider
-        )
-        self.shellSessionCenter = ShellSessionCenter(backend: shellBackend, policy: shellPolicy)
+        let nativeShellBackend = IOSSystemShellBackend()
         let managedPython = localPythonService.map { ManagedPythonInstallService(python: $0, packagesChanged: { await FloeShellCommands.refreshPythonCommands() }) }
         self.managedPythonInstaller = managedPython
         let capabilityRoot = ((try? FloeArtifactStore.root()) ?? URL(fileURLWithPath: NSTemporaryDirectory()))
@@ -356,24 +355,59 @@ final class AppEnvironment: ObservableObject {
         let containerCAS = ContainerCAS(roots: environmentRoots)
         let environmentExecutions = EnvironmentExecutionCoordinator(roots: environmentRoots, registry: environmentRegistry)
         ToolEnvironmentRouting.shared.configure { context in try await environmentExecutions.acquire(context) }
+
+        // Linux guest backend: one TinyEMU-backed service for the whole app,
+        // injected into the platform services seam so the apt/dpkg shell
+        // entries and the package UI reach the same guest that exec.shell and
+        // localPython will use per environment. Native environments never
+        // touch it (`ownsLinuxEnvironment` is false without `runtime .linux`).
+        let linuxGuests = LinuxGuestBackendAssembly.makeService(
+            registry: environmentRegistry,
+            artifactRoot: try? FloeArtifactStore.root()
+        )
+        self.linuxGuestService = linuxGuests
+        FloePlatformServices.shared.setLinuxCommandService(linuxGuests)
+
+        // exec.shell routes per request: Linux environments run in their
+        // guest, every other environment keeps the ios_system substrate.
+        let shellBackend = RoutingLocalShellBackend(
+            native: nativeShellBackend,
+            guests: linuxGuests
+        )
+        self.localShellService = LocalShellService(
+            backend: shellBackend,
+            policy: shellPolicy,
+            environmentDefaults: Self.localShellEnvironment(),
+            rootProvider: WorkspaceCenter.toolRootProvider
+        )
+        self.shellSessionCenter = ShellSessionCenter(backend: shellBackend, policy: shellPolicy)
+
         let containerLifecycle = ContainerLifecycle(
             roots: environmentRoots,
             registry: environmentRegistry,
             cas: containerCAS,
             hooks: ContainerLifecycle.Hooks(
-                stopSessions: { [weak self] id in
+                stopSessions: { [weak self, linuxGuests] id in
+                    // A stopped environment must not keep a guest running:
+                    // its console would keep executing with the layer frozen.
+                    await linuxGuests.stopGuest(environmentID: id)
                     guard let self else { throw FloeError.invalidConfiguration("Shell session service is unavailable") }
                     await self.shellSessionCenter.closeAll(environmentID: id)
                 },
-                cancelJobs: { id in
+                cancelJobs: { [linuxGuests] id in
+                    await linuxGuests.stopGuest(environmentID: id)
                     await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
                     try await IOSSystemNodeRuntime.shared.stopServices(environmentID: id)
                     try await CPythonLocalRuntime.shared.stopServices(environmentID: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                 },
-                terminateWorkers: { id in
+                terminateWorkers: { [linuxGuests] id in
+                    await linuxGuests.stopGuest(environmentID: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                     try await FloeShellCommandRegistry.shared.waitForWorkers(environmentID: id)
+                    guard !(await linuxGuests.guestIsRunning(environmentID: id)) else {
+                        throw FloeError.validationFailed("Linux guest has not stopped; environment data was retained")
+                    }
                     guard !CPythonLocalRuntime.hasActiveWork(environmentID: id) else {
                         throw FloeError.validationFailed("Python worker has not stopped; environment data was retained")
                     }

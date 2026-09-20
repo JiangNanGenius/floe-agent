@@ -276,6 +276,9 @@ let package = Package(
                 .product(name: "WasmKitWASI", package: "WasmKit"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 "FloeCore", "FloeTools", "FloeSSH", "FloeWorkspace", "FloeSecurity",
+                // The Linux guest backend (Sources/FloeExecution/Linux) talks to
+                // the vendored TinyEMU engine through this C target.
+                "FloeTinyEMU",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],

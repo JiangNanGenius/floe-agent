@@ -26,6 +26,16 @@ public enum LayerKind: String, Codable, Sendable, CaseIterable {
     case session
 }
 
+/// How an environment's commands execute. `posix` is the historical native
+/// stack (ios_system shell + bundled CPython) and stays the default for every
+/// existing record; `linux` means a TinyEMU RV64 guest owns the environment's
+/// shell, Python and services. Optional on disk so older registries decode
+/// unchanged and keep running natively.
+public enum ContainerRuntime: String, Codable, Sendable, CaseIterable {
+    case posix
+    case linux
+}
+
 /// One container record. `ownerID` is the conversation (session) or workspace
 /// (project) UUID string; templates and the shared layer have no owner.
 public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
@@ -44,6 +54,11 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
     public var templateID: String?
     public var requiresRebuild: Bool
     public var rebuildReason: String?
+    /// Explicit runtime selection. nil/absent = native `posix` compatibility.
+    public var runtime: ContainerRuntime?
+
+    /// Effective runtime with the compatibility default applied.
+    public var effectiveRuntime: ContainerRuntime { runtime ?? .posix }
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -60,7 +75,8 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
         parentID: String? = nil,
         templateID: String? = nil,
         requiresRebuild: Bool = false,
-        rebuildReason: String? = nil
+        rebuildReason: String? = nil,
+        runtime: ContainerRuntime? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -77,6 +93,7 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
         self.templateID = templateID
         self.requiresRebuild = requiresRebuild
         self.rebuildReason = rebuildReason
+        self.runtime = runtime
     }
 
     public static let currentLayerFormat = 1

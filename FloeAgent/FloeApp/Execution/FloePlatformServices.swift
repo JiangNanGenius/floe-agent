@@ -159,8 +159,28 @@ final class FloePlatformServices: @unchecked Sendable {
     }
     func packageReport(id: String) async throws -> PackageReport { try await managementService().packageReport(id: id) }
     func managePackage(id: String, action: PackageAction) async throws -> String { try await managementService().managePackage(id: id, action: action) }
-    func stopEnvironment(id: String) async throws { try await managementService().stopEnvironment(id: id) }
-    func resumeEnvironment(id: String) async throws { try await managementService().resumeEnvironment(id: id) }
+    func stopEnvironment(id: String) async throws {
+        // Stop the guest before the layer goes cold: its console may still be
+        // executing with the writable layer attached.
+        if let guests = currentLinuxCommandService() as? any LinuxGuestControlling {
+            await guests.stopGuest(environmentID: id)
+        }
+        try await managementService().stopEnvironment(id: id)
+    }
+    /// Resuming a Linux environment starts its guest. If the guest cannot
+    /// start (for example no qualified image exists yet), the environment goes
+    /// back to stopped and the honest reason is thrown, so the record never
+    /// claims an active Linux environment without a guest behind it.
+    func resumeEnvironment(id: String) async throws {
+        try await managementService().resumeEnvironment(id: id)
+        guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return }
+        do {
+            _ = try await guests.startGuest(environmentID: id, taskID: nil)
+        } catch {
+            try? await managementService().stopEnvironment(id: id)
+            throw error
+        }
+    }
     func deleteEnvironment(id: String) async throws { try await managementService().deleteEnvironment(id: id) }
     func saveEnvironmentTemplate(id: String, name: String) async throws { try await managementService().saveEnvironmentTemplate(id: id, name: name) }
 

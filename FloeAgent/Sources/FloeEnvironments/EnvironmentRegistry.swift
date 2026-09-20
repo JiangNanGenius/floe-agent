@@ -148,15 +148,24 @@ public actor EnvironmentRegistry {
         records.values.filter { $0.ownerID == ownerID }
     }
 
-    /// Finds or creates the project container for a workspace.
+    /// Finds or creates the project container for a workspace. `runtime`
+    /// explicitly selects `linux` for a guest-backed environment; leaving it
+    /// nil keeps the native default and never rewrites an existing record.
     @discardableResult
     public func ensureProjectContainer(
         workspaceID: String,
         workspaceRootPath: String,
-        templateID: String? = nil
+        templateID: String? = nil,
+        runtime: ContainerRuntime? = nil
     ) throws -> ContainerRecord {
         try prepare()
         if let existing = records.values.first(where: { $0.kind == .project && $0.ownerID == workspaceID }) {
+            if let runtime, existing.runtime != runtime {
+                var updated = existing
+                updated.runtime = runtime
+                try saveRecord(updated)
+                return updated
+            }
             touch(existing.id)
             return records[existing.id] ?? existing
         }
@@ -165,7 +174,8 @@ public actor EnvironmentRegistry {
             ownerID: workspaceID,
             name: URL(fileURLWithPath: workspaceRootPath).lastPathComponent,
             baseRevision: baseRevision,
-            templateID: templateID
+            templateID: templateID,
+            runtime: runtime
         )
         do {
             try materialize(record, seedFrom: templateID)
@@ -185,7 +195,8 @@ public actor EnvironmentRegistry {
         conversationID: String,
         workspaceID: String?,
         workspaceRootPath: String?,
-        inheritFromProject: Bool = true
+        inheritFromProject: Bool = true,
+        runtime: ContainerRuntime? = nil
     ) throws -> ContainerRecord {
         try prepare()
         var parent: ContainerRecord?
@@ -211,7 +222,8 @@ public actor EnvironmentRegistry {
             ownerID: conversationID,
             baseRevision: baseRevision,
             parentID: parent?.id,
-            templateID: parent?.templateID
+            templateID: parent?.templateID,
+            runtime: runtime ?? parent?.runtime
         )
         do {
             try materialize(record, seedFrom: parent?.id)
@@ -283,6 +295,17 @@ public actor EnvironmentRegistry {
     public func transition(id: String, state: ContainerState) throws {
         guard var record = records[id] else { return }
         record.state = state
+        try saveRecord(record)
+    }
+
+    /// Declares (or changes) an environment's runtime. Native stays the
+    /// default for records that never set one; switching to `linux` only
+    /// takes effect for environments whose guest image is qualified, and the
+    /// backend reports that honestly when a guest is asked to start.
+    public func setRuntime(id: String, runtime: ContainerRuntime?) throws {
+        try prepare()
+        guard var record = records[id] else { throw FloeError.notFound("Execution environment \(id)") }
+        record.runtime = runtime
         try saveRecord(record)
     }
 
