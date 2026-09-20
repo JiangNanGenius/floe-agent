@@ -47,7 +47,7 @@ import FloeWorkspace
             arguments: ["path": "/" + path], in: nil, contentWorld: .page)
     }
 
-    private func applyNativeDocumentMessage(_ body: [String: Any]) {
+    fileprivate func applyNativeDocumentMessage(_ body: [String: Any]) {
         guard let path = body["path"] as? String,
               let relative = try? IDEWorkspaceSession.relativePath(path) else { return }
         if body["phase"] as? String == "unmount" {

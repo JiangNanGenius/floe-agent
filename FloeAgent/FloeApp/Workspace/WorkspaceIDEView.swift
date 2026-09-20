@@ -179,7 +179,7 @@ struct WorkspaceIDEView: View {
         }) { snapshot in
             OfficeDocumentShareSheet(url: snapshot.fileURL)
         }
-        .alert(
+        .confirmationDialog(
             IDELanguageRunText.t("关闭标签前处理修改？", "Handle changes before closing this tab?"),
             isPresented: Binding(get: { internalOfficeClose != nil }, set: { if !$0 { internalOfficeClose = nil } }),
             titleVisibility: .visible
@@ -794,7 +794,7 @@ private struct IDEPDFDocumentOverlay: View {
                     Button("pdf.reader.retry") { Task { await load() } }
                 }
             } else if let url {
-                InlinePDFReader(url: url, validateRead: { validate(url: url) })
+                InlinePDFReader(url: url, validateRead: { try validate(url: url) })
                     .id(url)
             } else {
                 ProgressView("inspector.preview.loading")

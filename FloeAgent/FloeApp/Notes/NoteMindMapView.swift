@@ -214,7 +214,7 @@ struct NoteMindMapView: View {
             MindMapEdgesLayer(
                 document: document,
                 frames: current,
-                connectionDraft: connectionDraft.flatMap { draft in
+                connectionDraft: connectionDrag.flatMap { draft in
                     guard let source = current[draft.sourceID] else { return nil }
                     let world = worldPoint(from: draft.screenPoint)
                     return (source: source, point: world)
@@ -569,7 +569,7 @@ struct NoteMindMapView: View {
                 guard !all.isEmpty else { return }
                 let committed = try await onEdit(all, document.revision)
                 guard committed.id == document.id else { return }
-                onCommitted?()
+                onCommitted?(committed)
             } catch {
                 onError(error.localizedDescription)
             }
@@ -906,7 +906,7 @@ private struct MindMapMultiTouchNavigator: UIViewRepresentable {
             case .changed:
                 let delta = recognizer.translation(in: hostWindow)
                 recognizer.setTranslation(.zero, in: hostWindow)
-                parent.onPan(delta)
+                parent.onPan(CGSize(width: delta.x, height: delta.y))
             case .ended, .cancelled, .failed:
                 panIsActive = false
                 publishActivityIfNeeded()

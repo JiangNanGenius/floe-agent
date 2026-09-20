@@ -212,7 +212,7 @@ private struct Arrowhead: Shape {
             path.move(to: tip)
             path.addLine(to: CGPoint(x: base.x + side.x * 4.5, y: base.y + side.y * 4.5))
             path.addLine(to: CGPoint(x: base.x - side.x * 4.5, y: base.y - side.y * 4.5))
-            path.closeSubdivision()
+            path.closeSubpath()
         }
     }
 }
