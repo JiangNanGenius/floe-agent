@@ -3138,6 +3138,23 @@
         }
       }
     },
+    "environment.packages.linux.command_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Missing Linux command"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缺少 Linux 命令"
+          }
+        }
+      }
+    },
     "environment.packages.linux.empty": {
       "extractionState": "manual",
       "localizations": {
@@ -3155,6 +3172,23 @@
         }
       }
     },
+    "environment.packages.linux.guest_not_running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Linux environment is not running yet; start the Floe Linux environment first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 环境尚未运行；请先启动 Floe Linux 环境。"
+          }
+        }
+      }
+    },
     "environment.packages.linux.install_title": {
       "extractionState": "manual",
       "localizations": {
@@ -3168,6 +3202,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在安装 %@…"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.installed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed in the Linux Guest"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux guest 内已安装"
           }
         }
       }
@@ -3223,19 +3274,53 @@
         }
       }
     },
-    "environment.packages.linux.placeholder": {
+    "environment.packages.linux.recommended.provides": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Package name, for example nano or nano=7.2-1"
+            "value": "Provides: %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "软件包名，例如 nano 或 nano=7.2-1"
+            "value": "提供命令：%@"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.recommended.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shortcuts for common real Debian package names. Install runs the guest's own apt-get, so whether an entry resolves depends on the guest's configured APT sources; the app does not review or verify these packages, and this list does not claim every entry has been verified on this device."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "常用 Debian 真实包名的快捷入口。安装执行 guest 内原生的 apt-get，条目能否解析取决于 guest 已配置的 APT 源；App 不审核、不校验这些软件包，此列表也不代表每个条目都已在本机验证。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.recommended.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recommended Packages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推荐软件包"
           }
         }
       }
