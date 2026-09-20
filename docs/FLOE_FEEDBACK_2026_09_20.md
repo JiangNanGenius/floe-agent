@@ -23,7 +23,9 @@ Apple processing and internal-group availability remain required.
 
 - Cross-task search/read pagination and final-response continuation: preserve
   cursor/source identifiers through bounded tool envelopes and compression,
-  without skipping unread records. The first implementation is under correction.
+  without skipping unread records. Cursor-true UTF-8 pagination and full stored
+  message reachability are integrated, with 40 focused harness assertions passing.
+  Cloud-provider empty completion and local memory work remain in progress.
 - Local-model continuation and memory/compaction recovery: actual process budget,
   tool-catalog growth and recoverable checkpoint behavior. No current device
   crash stack is available; the screenshot alone does not establish a cause.
@@ -31,8 +33,12 @@ Apple processing and internal-group availability remain required.
   environment-owned Shell, local Python and services. A legacy demo boot is
   insufficient to claim modern Linux/APT support. Existing native/WASM execution
   remains available until the replacement is qualified.
-- Package responsibilities: APT manages Linux packages; Python, Node and WASM
-  have separate entries. Shell and local Python in one Linux environment must
+- Package responsibilities: Linux-only APT routing, separate Python/WASM agent
+  tools, existing Python/Node UI entries, and a signed WASM download directory
+  are integrated. Tool schemas and 34 new bilingual strings were checked.
+  The Linux UI reads the real guest package database when a runner is available;
+  a stopped Linux environment must not fall back to host package storage.
+  A recommended Linux download list and actual backend integration remain pending. Shell and local Python in one Linux environment must
   use the same interpreter/package installation. Linux ELF extensions are not
   directly loadable by iOS CPython.
 
@@ -56,3 +62,17 @@ Apple processing and internal-group availability remain required.
 本轮先完成代码和必要定向检查，通过云端完整 App 编译后上传 TestFlight。
 不反复点界面，真机交互由用户验收。构建成功、工件保留、上传接受、Apple
 处理完成和 Floe QA 可安装分别记录；尚未通过的 Linux 能力不会写成已可用。
+
+## Expedited build attempts
+
+- Build 205 / beta.62 failed the required Office dependency pin check before App
+  compilation. The native host was rebuilt in run35495484711 and its archive,
+  executable, manifest and source hashes verified; no pin check was bypassed.
+- Build 206 / beta.63 passed that dependency step but failed accepted-SDK App
+  compilation on IDE/mind-map call sites. [Original evidence](qualification/build206-release/build206-compile-failure.md)
+  is retained; no IPA or upload was produced.
+- Build 207 / beta.64 uses corrected call sites at immutable source
+  `41b03ad5` in [run35497153478](https://github.com/JiangNanGenius/floe-agent/actions/runs/35497153478).
+  It is a first device candidate for Office, internal IDE documents, Git, native
+  mind maps and Shell repairs. Runtime and new Linux/package changes are still
+  being integrated separately. Dispatch is not an upload or installability claim.
