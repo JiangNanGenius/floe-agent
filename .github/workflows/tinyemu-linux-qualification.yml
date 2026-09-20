@@ -79,9 +79,10 @@ jobs:
           cd work
           curl -fsSL --retry 3 -o SHA512SUMS https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/SHA512SUMS
           grep "nocloud-riscv64-daily.qcow2" SHA512SUMS | tee debian-sha512.txt
-          curl -fL --retry 3 --max-time 1800 -o debian13-riscv64.qcow2 \
+          curl -fL --retry 3 --max-time 1800 -o debian-13-nocloud-riscv64-daily.qcow2 \
             https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/debian-13-nocloud-riscv64-daily.qcow2
           sha512sum -c debian-sha512.txt
+          ln -f debian-13-nocloud-riscv64-daily.qcow2 debian13-riscv64.qcow2
           sha256sum debian13-riscv64.qcow2 | tee debian-sha256.txt
 
       - name: Convert + extract Debian kernel/initrd/rootfs
