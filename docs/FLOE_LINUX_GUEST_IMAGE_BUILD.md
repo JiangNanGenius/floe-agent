@@ -57,8 +57,9 @@ just installs host tools and calls it.
    `dpkg-query` inventory used for the source mapping;
 8. **boot B** — a fresh `floe.epoch`; stage 2 re-checks the clock against the
    host value, repeats signed HTTPS `apt-get update`, runs a Python HTTPS
-   request with the default CA store, and executes the 13 commands from the
-   user feedback report as real operations;
+   request with the default CA store, and exercises the 13 commands from the
+   user feedback report: 11 as real operations, `ssh` as a version/presence
+   check and `scp` as a negative client attempt (no sshd in the image);
 9. `e2fsck` the disk, collect evidence (dpkg inventory, copyright files,
    common licenses, ext4 features, apt logs, transcripts), write
    `manifest.json` in the `LinuxGuestImage` schema, and package the zip.
@@ -71,7 +72,8 @@ just installs host tools and calls it.
 | `FLOE_STAGE{1,2}_CLOCK_OK` | guest `date +%s` is within 300 s (boot A) / 120 s (boot B) of the host value |
 | `FLOE_STAGE1_APT_UPDATE_RC_0`, `FLOE_STAGE{1,2}_APT_INSTALL_RC_0` | signed HTTPS APT update/install with normal verification |
 | `FLOE_STAGE2_PY_HTTPS_200` | Python `urllib` with the default CA store reached `deb.debian.org` |
-| `FLOE_CMD_{ps,setsid,nohup,bash,zsh,zip,unzip,7z,xz,bzip2,sqlite3,ssh,scp}_OK` | each of the 13 commands ran a real operation |
+| `FLOE_CMD_{ps,setsid,nohup,bash,zsh,zip,unzip,7z,xz,bzip2,sqlite3}_OK` | those 11 commands performed real work |
+| `FLOE_CMD_ssh_OK`, `FLOE_CMD_scp_OK` | client presence/version and a negative client attempt only; no transfer is claimed |
 | `FLOE-END boot{A,B} 0` | the runner returned exit 0 for the whole guest script |
 
 Not proven by these gates, and intentionally not claimed: iPad/device
@@ -130,8 +132,10 @@ keeps `image` and `sources` as separate jobs for the same reason.
   Distribution needs the source offer published at a stable URL plus the
   archive SHA-512 pinned in `LinuxGuestImageDistributionCatalog`.
 - **`ssh`/`scp` checks are client-side.** The image ships `openssh-client`; it
-  has no `sshd`, so the check proves the client stack runs and attempts a
-  session, not an end-to-end transfer.
+  has no `sshd`. `ssh` is verified by its version output only, and `scp` by a
+  negative attempt (`localhost:1`, rc 255, first line `socket: Address family
+  not supported by protocol`). A real connection or transfer was **not**
+  tested and is left to user testing.
 - **Networking is not automatic.** The runner mounts the filesystems; the
   guest still needs `ip link/addr/route` plus `nameserver 10.0.2.3` (exactly
   what the build scripts do) before APT/HTTPS works. The app currently starts

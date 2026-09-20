@@ -184,12 +184,15 @@ jobs:
           if [ "${{ inputs.rebuild_kernel }}" = "true" ]; then EXTRA="$EXTRA --rebuild-kernel"; fi
           if [ "${{ inputs.skip_debian }}" = "true" ]; then EXTRA="$EXTRA --skip-debian"; fi
           if [ "${{ inputs.skip_upstream }}" = "true" ]; then EXTRA="$EXTRA --skip-upstream"; fi
+          # The source bundle must name the run that actually built the image,
+          # which is not this run when only `sources` was dispatched.
+          IMAGE_RUN="${{ (github.event_name == 'workflow_dispatch' && inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}"
           # shellcheck disable=SC2086
           sudo bash FloeAgent/LinuxGuest/image/collect-corresponding-sources.sh \
             --out "${{ runner.temp }}/floe-sources" \
             --packages "${{ runner.temp }}/floe-image-evidence/guest-packages.tsv" \
             --image-evidence "${{ runner.temp }}/floe-image-evidence" \
-            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/$IMAGE_RUN" \
             $EXTRA 2>&1 | tee "${{ runner.temp }}/floe-sources.log"
 
       - name: Show the source bundle summary
