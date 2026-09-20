@@ -44,20 +44,26 @@ endif
 SLIRP_OBJS := bootp ip_icmp mbuf slirp tcp_output cksum ip_input misc \
               socket tcp_subr udp if ip_output sbuf tcp_input tcp_timer
 # pristine-compiled core objects
-CORE_OBJS := virtio pci fs cutils simplefb json machine fs_disk softfp
+CORE_OBJS := pci fs cutils simplefb json machine softfp
 # sources replaced by patched build copies (see PATCHES). riscv_cpu.c is
 # copied too so its quoted include of riscv_cpu_template.h resolves to the
 # patched copy in $(BUILD) (the pristine tree keeps the unpatched header).
-PATCHED_SRCS := riscv_machine.c iomem.c riscv_cpu.c riscv_cpu_template.h
+# fs_disk.c (0003+0007) and virtio.c (0008) are patched as well.
+PATCHED_SRCS := riscv_machine.c iomem.c riscv_cpu.c riscv_cpu_template.h \
+                fs_disk.c virtio.c
+# patched-compiled objects (explicit rules below)
+PATCHED_OBJS := virtio fs_disk
 
 OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(CORE_OBJS))) \
+        $(addprefix $(BUILD)/,$(addsuffix .o,$(PATCHED_OBJS))) \
         $(addprefix $(BUILD)/slirp/,$(addsuffix .o,$(SLIRP_OBJS))) \
         $(BUILD)/riscv_cpu32.o $(BUILD)/riscv_cpu64.o \
         $(BUILD)/riscv_machine.o $(BUILD)/iomem.o
 
 TARGETS := $(BUILD)/libfloevm.a
 ifneq ($(HOST_DIR),)
-TARGETS += $(BUILD)/floe_vm_host $(BUILD)/lifecycle_test
+TARGETS += $(BUILD)/floe_vm_host $(BUILD)/lifecycle_test \
+           $(BUILD)/two_vm_test $(BUILD)/containment_test
 endif
 
 all: $(TARGETS)
@@ -67,14 +73,22 @@ $(BUILD)/.dir:
 	touch $@
 
 # Patched sources: copy into $(BUILD), apply every patch in order, verify
-# the expected markers landed.
+# the expected markers landed. The top-level headers and the whole slirp
+# directory are copied too, because the patched slirp translation units
+# include "slirp.h" (renamed in the vendored tree, pristine here) and
+# "../cutils.h" relative to their own location.
 $(BUILD)/.prepared: $(PATCHES) | $(BUILD)/.dir
 	for f in $(PATCHED_SRCS); do cp $(TINYEMU_SRC)/$$f $(BUILD)/$$f; done
+	cp $(TINYEMU_SRC)/*.h $(BUILD)/
+	cp $(TINYEMU_SRC)/slirp/*.c $(TINYEMU_SRC)/slirp/*.h $(BUILD)/slirp/
 	for p in $(PATCHES); do patch -p1 -N -d $(BUILD) < $$p; done
 	grep -q "poweroff_requested" $(BUILD)/riscv_machine.c
 	grep -q "floe_ram_oom" $(BUILD)/iomem.c
 	grep -q "static int copy_bios" $(BUILD)/riscv_machine.c
 	grep -q "FLOE-EMBED: Execute FENCE/FENCE.TSO" $(BUILD)/riscv_cpu_template.h
+	grep -q "fs_valid_name" $(BUILD)/fs_disk.c
+	grep -q "flds_valid" $(BUILD)/slirp/slirp.h
+	grep -q "VIRTIO_BLK_S_UNSUPP" $(BUILD)/virtio.c
 	touch $@
 
 $(BUILD)/riscv_machine.o: $(BUILD)/.prepared
@@ -83,11 +97,27 @@ $(BUILD)/riscv_machine.o: $(BUILD)/.prepared
 $(BUILD)/iomem.o: $(BUILD)/.prepared
 	$(CC) $(CFLAGS) -c -o $@ $(BUILD)/iomem.c
 
-$(BUILD)/%.o: $(TINYEMU_SRC)/%.c | $(BUILD)/.dir
+$(BUILD)/virtio.o: $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -c -o $@ $(BUILD)/virtio.c
+
+$(BUILD)/fs_disk.o: $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -c -o $@ $(BUILD)/fs_disk.c
+
+# Static pattern rules: these are explicit rules for the listed targets, so
+# no generic $(BUILD)/%.o implicit rule can pick the pristine sources for a
+# target that must come from the patched copies. (A generic rule placed
+# before a same-stem "slirp/%.o" rule silently won the implicit-rule search
+# and compiled pristine slirp into the library.)
+$(addprefix $(BUILD)/,$(addsuffix .o,$(CORE_OBJS))): $(BUILD)/%.o: $(TINYEMU_SRC)/%.c | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/slirp/%.o: $(TINYEMU_SRC)/slirp/%.c | $(BUILD)/.dir
-	$(CC) $(CFLAGS) -c -o $@ $<
+# NOTE: the patched slirp sources are created by the .prepared step, so the
+# rule must depend on the stamp and name the (generated) source explicitly;
+# listing the generated .c as a normal prerequisite makes make fail before
+# .prepared has ever run ("no rule to make target .../slirp/bootp.c").
+# $* is the stem ("bootp" etc.).
+$(addprefix $(BUILD)/slirp/,$(addsuffix .o,$(SLIRP_OBJS))): $(BUILD)/slirp/%.o: $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -c -o $@ $(BUILD)/slirp/$*.c
 
 $(BUILD)/riscv_cpu64.o: $(BUILD)/.prepared
 	$(CC) $(CFLAGS) -DMAX_XLEN=64 -c -o $@ $(BUILD)/riscv_cpu.c
@@ -111,6 +141,21 @@ $(BUILD)/lifecycle_test.o: $(HOST_DIR)/lifecycle_test.c $(ADAPTER)floe_vm.h | $(
 	$(CC) $(CFLAGS) -I$(ADAPTER) -c -o $@ $<
 
 $(BUILD)/lifecycle_test: $(BUILD)/lifecycle_test.o $(BUILD)/libfloevm.a
+	$(CC) -o $@ $^ $(LIBS)
+
+# two networked VMs on two host threads + per-VM forwarding cleanup
+$(BUILD)/two_vm_test.o: $(HOST_DIR)/two_vm_test.c $(ADAPTER)floe_vm.h | $(BUILD)/.dir
+	$(CC) $(CFLAGS) -I$(ADAPTER) -c -o $@ $<
+
+$(BUILD)/two_vm_test: $(BUILD)/two_vm_test.o $(BUILD)/libfloevm.a
+	$(CC) -o $@ $^ $(LIBS)
+
+# 9p export-root containment: compiled against the patched fs_disk.c
+# directly (no VM/guest needed), plus cutils.c for mallocz/put_le*.
+$(BUILD)/containment_test.o: $(HOST_DIR)/containment_test.c $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -I$(TINYEMU_SRC) -I$(BUILD) -c -o $@ $<
+
+$(BUILD)/containment_test: $(BUILD)/containment_test.o $(BUILD)/fs_disk.o $(BUILD)/cutils.o
 	$(CC) -o $@ $^ $(LIBS)
 
 clean:

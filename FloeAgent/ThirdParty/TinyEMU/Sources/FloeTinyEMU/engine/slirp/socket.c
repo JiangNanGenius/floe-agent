@@ -510,10 +510,11 @@ sorecvfrom(struct socket *so)
 	   * out much quicker (10 seconds  for now...)
 	   */
 	    if (so->so_expire) {
+	      /* FLOE-EMBED (patch 0006): per-instance wall-clock cache */
 	      if (so->so_fport == htons(53))
-		so->so_expire = curtime + SO_EXPIREFAST;
+		so->so_expire = so->slirp->curtime + SO_EXPIREFAST;
 	      else
-		so->so_expire = curtime + SO_EXPIRE;
+		so->so_expire = so->slirp->curtime + SO_EXPIRE;
 	    }
 
 	    /*
@@ -544,7 +545,7 @@ sosendto(struct socket *so, struct floe_slirp_mbuf *m)
 	    slirp->vnetwork_addr.s_addr) {
 	  /* It's an alias */
 	  if (so->so_faddr.s_addr == slirp->vnameserver_addr.s_addr) {
-	    if (get_dns_addr(&addr.sin_addr) < 0)
+	    if (get_dns_addr(slirp, &addr.sin_addr) < 0)
 	      addr.sin_addr = loopback_addr;
 	  } else {
 	    addr.sin_addr = loopback_addr;
@@ -566,7 +567,7 @@ sosendto(struct socket *so, struct floe_slirp_mbuf *m)
 	 * but only if it's an expirable socket
 	 */
 	if (so->so_expire)
-		so->so_expire = curtime + SO_EXPIRE;
+		so->so_expire = slirp->curtime + SO_EXPIRE; /* patch 0006 */
 	so->so_state &= SS_PERSISTENT_MASK;
 	so->so_state |= SS_ISFCONNECTED; /* So that it gets select()ed */
 	return 0;
@@ -672,10 +673,11 @@ soisfconnected(struct socket *so)
 static void
 sofcantrcvmore(struct socket *so)
 {
+	Slirp *slirp = so->slirp; /* FLOE-EMBED (patch 0006) */
 	if ((so->so_state & SS_NOFDREF) == 0) {
 		shutdown(so->s,0);
-		if(global_writefds) {
-		  FD_CLR(so->s,global_writefds);
+		if (slirp->flds_valid && slirp->flds[1]) {
+		  FD_CLR(so->s, slirp->flds[1]);
 		}
 	}
 	so->so_state &= ~(SS_ISFCONNECTING);
@@ -690,13 +692,14 @@ sofcantrcvmore(struct socket *so)
 static void
 sofcantsendmore(struct socket *so)
 {
+	Slirp *slirp = so->slirp; /* FLOE-EMBED (patch 0006) */
 	if ((so->so_state & SS_NOFDREF) == 0) {
             shutdown(so->s,1);           /* send FIN to fhost */
-            if (global_readfds) {
-                FD_CLR(so->s,global_readfds);
+            if (slirp->flds_valid && slirp->flds[0]) {
+                FD_CLR(so->s, slirp->flds[0]);
             }
-            if (global_xfds) {
-                FD_CLR(so->s,global_xfds);
+            if (slirp->flds_valid && slirp->flds[2]) {
+                FD_CLR(so->s, slirp->flds[2]);
             }
 	}
 	so->so_state &= ~(SS_ISFCONNECTING);

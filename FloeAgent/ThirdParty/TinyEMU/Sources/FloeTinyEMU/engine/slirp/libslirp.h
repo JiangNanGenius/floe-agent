@@ -8,7 +8,11 @@
 struct Slirp;
 typedef struct Slirp Slirp;
 
-int get_dns_addr(struct in_addr *pdns_addr);
+/* FLOE-EMBED (patch 0006): the resolver host is now explicit instead of
+   the former process-wide DNS cache, so two slirp instances can resolve on
+   two threads. Callers always have the Slirp at hand (protocol processing);
+   no thread-local "current instance" is involved. */
+int get_dns_addr(Slirp *slirp, struct in_addr *pdns_addr);
 
 Slirp *slirp_init(int restricted, struct in_addr vnetwork,
                   struct in_addr vnetmask, struct in_addr vhost,

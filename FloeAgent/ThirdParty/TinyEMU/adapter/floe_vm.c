@@ -216,8 +216,6 @@ static void floe_block_device_destroy(BlockDevice *bs)
 /* slirp user-mode networking glue (adapted from temu.c, MIT) */
 
 #ifdef CONFIG_SLIRP
-static Slirp *floe_slirp_state;
-
 static void floe_slirp_write_packet(EthernetDevice *net,
                                     const uint8_t *buf, int len)
 {
@@ -255,7 +253,11 @@ static void floe_slirp_select_poll1(EthernetDevice *net,
     slirp_select_poll(slirp_state, rfds, wfds, efds, (select_ret <= 0));
 }
 
-static EthernetDevice *floe_slirp_open(void)
+/* One slirp instance per VM (patch 0006 moved the former process-wide
+   timers/DNS cache/select scratch into struct Slirp). Two networked VMs can
+   therefore be created and run on two host threads at the same time; each
+   one gets its own virtual network and forwarding table. */
+static EthernetDevice *floe_slirp_open(Slirp **pslirp)
 {
     EthernetDevice *net;
     struct in_addr net_addr = { .s_addr = htonl(0x0a000200) }; /* 10.0.2.0 */
@@ -264,20 +266,25 @@ static EthernetDevice *floe_slirp_open(void)
     struct in_addr dhcp     = { .s_addr = htonl(0x0a00020f) }; /* 10.0.2.15 */
     struct in_addr dns      = { .s_addr = htonl(0x0a000203) }; /* 10.0.2.3 */
 
-    if (floe_slirp_state) {
-        fprintf(stderr, "floe_vm: only a single slirp instance is allowed\n");
+    net = mallocz(sizeof(*net));
+    if (!net)
+        return NULL;
+    *pslirp = slirp_init(0, net_addr, mask, host, NULL,
+                         "", NULL, dhcp, dns, net);
+    if (!*pslirp) {
+        free(net);
         return NULL;
     }
-    net = mallocz(sizeof(*net));
-    floe_slirp_state = slirp_init(0, net_addr, mask, host, NULL,
-                                  "", NULL, dhcp, dns, net);
+    /* Each VM has its own slirp network, so the fixed MAC cannot collide
+       with another VM's; keep the upstream 52:55:... special-address style
+       for the host side by using a stable per-VM guest MAC. */
     net->mac_addr[0] = 0x02;
     net->mac_addr[1] = 0x00;
     net->mac_addr[2] = 0x00;
     net->mac_addr[3] = 0x00;
     net->mac_addr[4] = 0x00;
     net->mac_addr[5] = 0x01;
-    net->opaque = floe_slirp_state;
+    net->opaque = *pslirp;
     net->write_packet = floe_slirp_write_packet;
     net->select_fill = floe_slirp_select_fill1;
     net->select_poll = floe_slirp_select_poll1;
@@ -288,10 +295,7 @@ static void floe_slirp_close(EthernetDevice *net)
 {
     if (!net)
         return;
-    if (floe_slirp_state) {
-        slirp_cleanup(floe_slirp_state);
-        floe_slirp_state = NULL; /* allow a later VM to use networking again */
-    }
+    slirp_cleanup(net->opaque);
     free(net);
 }
 #endif /* CONFIG_SLIRP */
@@ -339,8 +343,16 @@ struct FloeVM {
     BlockDevice *disk;
     FSDevice *shares[FLOE_VM_MAX_SHARES];
     int share_opened;
+    /* Serializes run_slice/destroy/hostfwd per VM. Different VMs have
+       different locks, so two VMs (networked or not) run concurrently.
+       Independent from console.lock (console input may be queued from any
+       thread at any time). */
+    pthread_mutex_t api_lock;
+    /* cache for the lock-free poweroff query (updated under api_lock) */
+    int poweroff_seen;
 #ifdef CONFIG_SLIRP
     EthernetDevice *net;
+    Slirp *slirp; /* this VM's own instance (patch 0006) */
     struct { int is_udp; uint32_t host_ipv4; int host_port; }
         hostfwds[FLOE_VM_MAX_HOSTFWD];
     int hostfwd_count;
@@ -364,17 +376,19 @@ static void floe_vm_free_resources(FloeVM *vm)
     vm->share_opened = 0;
 #ifdef CONFIG_SLIRP
     /* remove adapter-registered forwards first (closes their listening
-       fds; upstream slirp_cleanup does not close them) */
-    if (vm->net && floe_slirp_state) {
+       fds; upstream slirp_cleanup does not close them). This touches only
+       this VM's slirp instance. */
+    if (vm->net && vm->slirp) {
         for (i = 0; i < vm->hostfwd_count; i++) {
             struct in_addr ha = { .s_addr = htonl(vm->hostfwds[i].host_ipv4) };
-            slirp_remove_hostfwd(floe_slirp_state, vm->hostfwds[i].is_udp,
+            slirp_remove_hostfwd(vm->slirp, vm->hostfwds[i].is_udp,
                                  ha, vm->hostfwds[i].host_port);
         }
         vm->hostfwd_count = 0;
     }
     floe_slirp_close(vm->net);
     vm->net = NULL;
+    vm->slirp = NULL;
 #endif
     free(vm->p.files[VM_FILE_BIOS].buf);
     free(vm->p.files[VM_FILE_KERNEL].buf);
@@ -439,7 +453,12 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
     }
 
     vm = mallocz(sizeof(*vm));
+    if (!vm)
+        return NULL;
+    /* Per-VM locks. Nothing here is thread-local: create may run on the
+       main thread while run_slice runs later on a worker thread. */
     pthread_mutex_init(&vm->console.lock, NULL);
+    pthread_mutex_init(&vm->api_lock, NULL);
     vm->console.out_fn = out_fn;
     vm->console.out_opaque = out_opaque;
     vm->console_dev.opaque = &vm->console;
@@ -505,7 +524,7 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
 
 #ifdef CONFIG_SLIRP
     if (cfg->net_enable) {
-        vm->net = floe_slirp_open();
+        vm->net = floe_slirp_open(&vm->slirp);
         if (!vm->net)
             goto fail;
         p->tab_eth[0].driver = "user";
@@ -522,12 +541,14 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
 
     if (vm->m->net)
         vm->m->net->device_set_carrier(vm->m->net, TRUE);
+    __atomic_store_n(&vm->poweroff_seen, 0, __ATOMIC_RELAXED);
     return vm;
 
  fail:
     fprintf(stderr, "floe_vm: create failed\n");
     floe_vm_free_resources(vm); /* symmetric partial cleanup */
     pthread_mutex_destroy(&vm->console.lock);
+    pthread_mutex_destroy(&vm->api_lock);
     free(vm);
     return NULL;
 }
@@ -554,15 +575,25 @@ int floe_vm_console_input(FloeVM *vm, const uint8_t *data, int len)
 int floe_vm_run_slice(FloeVM *vm, int timeout_ms)
 {
     fd_set rfds, wfds, efds;
-    int fd_max, ret, delay;
+    int fd_max, ret, delay, rc;
     struct timeval tv;
     VirtMachine *m;
 
-    if (!vm || !vm->m)
+    if (!vm)
         return -1;
+    /* Serializes this VM against destroy/hostfwd calls from other threads;
+       other VMs use their own locks and run concurrently. */
+    pthread_mutex_lock(&vm->api_lock);
+    if (!vm->m) {
+        pthread_mutex_unlock(&vm->api_lock);
+        return -1;
+    }
     m = vm->m;
-    if (riscv_machine_poweroff_requested(m))
+    if (riscv_machine_poweroff_requested(m)) {
+        __atomic_store_n(&vm->poweroff_seen, 1, __ATOMIC_RELAXED);
+        pthread_mutex_unlock(&vm->api_lock);
         return 1;
+    }
 
     if (timeout_ms < 0 || timeout_ms > FLOE_MAX_SLEEP_TIME)
         timeout_ms = FLOE_MAX_SLEEP_TIME;
@@ -581,6 +612,11 @@ int floe_vm_run_slice(FloeVM *vm, int timeout_ms)
     tv.tv_sec = delay / 1000;
     tv.tv_usec = (delay % 1000) * 1000;
     ret = select(fd_max + 1, &rfds, &wfds, &efds, &tv);
+    /* a failed select (other than EINTR, which is a valid wakeup) is a
+       recoverable host fault: surface it after giving slirp its poll */
+    rc = 0;
+    if (ret < 0 && errno != EINTR)
+        rc = -1;
     if (m->net)
         m->net->select_poll(m->net, &rfds, &wfds, &efds, ret);
 
@@ -595,15 +631,23 @@ int floe_vm_run_slice(FloeVM *vm, int timeout_ms)
             virtio_console_write_data(m->console_dev, buf, got);
     }
 
-    virt_machine_interp(m, FLOE_MAX_EXEC_CYCLE);
-    return riscv_machine_poweroff_requested(m) ? 1 : 0;
+    if (rc == 0) {
+        virt_machine_interp(m, FLOE_MAX_EXEC_CYCLE);
+        rc = riscv_machine_poweroff_requested(m) ? 1 : 0;
+        if (rc == 1)
+            __atomic_store_n(&vm->poweroff_seen, 1, __ATOMIC_RELAXED);
+    }
+    pthread_mutex_unlock(&vm->api_lock);
+    return rc;
 }
 
 int floe_vm_poweroff_requested(const FloeVM *vm)
 {
-    if (!vm || !vm->m)
+    if (!vm)
         return 0;
-    return riscv_machine_poweroff_requested(vm->m);
+    /* lock-free by design: run_slice updates this cache under api_lock, so
+       a controller thread may poll it without blocking the VM thread */
+    return __atomic_load_n(&((FloeVM *)vm)->poweroff_seen, __ATOMIC_RELAXED);
 }
 
 int floe_vm_hostfwd_add(FloeVM *vm, int is_udp, uint32_t host_ipv4,
@@ -611,23 +655,29 @@ int floe_vm_hostfwd_add(FloeVM *vm, int is_udp, uint32_t host_ipv4,
 {
 #ifdef CONFIG_SLIRP
     struct in_addr ha, ga;
-    if (!vm || !vm->net || !floe_slirp_state)
+    int rc;
+    if (!vm || !vm->net || !vm->slirp)
         return -1;
     if (host_port <= 0 || host_port > 65535 || guest_port <= 0 ||
         guest_port > 65535)
         return -1;
-    if (vm->hostfwd_count >= FLOE_VM_MAX_HOSTFWD)
-        return -1;
     ha.s_addr = htonl(host_ipv4);
     ga.s_addr = htonl(guest_ipv4);
-    if (slirp_add_hostfwd(floe_slirp_state, is_udp, ha, host_port,
-                          ga, guest_port) < 0)
-        return -1;
-    vm->hostfwds[vm->hostfwd_count].is_udp = is_udp;
-    vm->hostfwds[vm->hostfwd_count].host_ipv4 = host_ipv4;
-    vm->hostfwds[vm->hostfwd_count].host_port = host_port;
-    vm->hostfwd_count++;
-    return 0;
+    pthread_mutex_lock(&vm->api_lock);
+    if (vm->hostfwd_count >= FLOE_VM_MAX_HOSTFWD) {
+        rc = -1;
+    } else if (slirp_add_hostfwd(vm->slirp, is_udp, ha, host_port,
+                                 ga, guest_port) < 0) {
+        rc = -1;
+    } else {
+        vm->hostfwds[vm->hostfwd_count].is_udp = is_udp;
+        vm->hostfwds[vm->hostfwd_count].host_ipv4 = host_ipv4;
+        vm->hostfwds[vm->hostfwd_count].host_port = host_port;
+        vm->hostfwd_count++;
+        rc = 0;
+    }
+    pthread_mutex_unlock(&vm->api_lock);
+    return rc;
 #else
     (void)vm; (void)is_udp; (void)host_ipv4; (void)host_port;
     (void)guest_ipv4; (void)guest_port;
@@ -640,22 +690,27 @@ int floe_vm_hostfwd_remove(FloeVM *vm, int is_udp, uint32_t host_ipv4,
 {
 #ifdef CONFIG_SLIRP
     struct in_addr ha;
-    int i;
-    if (!vm || !vm->net || !floe_slirp_state)
+    int i, rc;
+    if (!vm || !vm->net || !vm->slirp)
         return -1;
     ha.s_addr = htonl(host_ipv4);
-    if (slirp_remove_hostfwd(floe_slirp_state, is_udp, ha, host_port) < 0)
-        return -1;
-    for (i = 0; i < vm->hostfwd_count; i++) {
-        if (vm->hostfwds[i].is_udp == is_udp &&
-            vm->hostfwds[i].host_ipv4 == host_ipv4 &&
-            vm->hostfwds[i].host_port == host_port) {
-            vm->hostfwds[i] = vm->hostfwds[vm->hostfwd_count - 1];
-            vm->hostfwd_count--;
-            break;
+    pthread_mutex_lock(&vm->api_lock);
+    if (slirp_remove_hostfwd(vm->slirp, is_udp, ha, host_port) < 0) {
+        rc = -1;
+    } else {
+        for (i = 0; i < vm->hostfwd_count; i++) {
+            if (vm->hostfwds[i].is_udp == is_udp &&
+                vm->hostfwds[i].host_ipv4 == host_ipv4 &&
+                vm->hostfwds[i].host_port == host_port) {
+                vm->hostfwds[i] = vm->hostfwds[vm->hostfwd_count - 1];
+                vm->hostfwd_count--;
+                break;
+            }
         }
+        rc = 0;
     }
-    return 0;
+    pthread_mutex_unlock(&vm->api_lock);
+    return rc;
 #else
     (void)vm; (void)is_udp; (void)host_ipv4; (void)host_port;
     return -1;
@@ -666,18 +721,24 @@ void floe_vm_destroy(FloeVM *vm)
 {
     if (!vm)
         return;
-    /* Ends the machine (frees CPU state + guest RAM + machine struct).
-     * Upstream note: virtio device structs (a few hundred bytes each) are
-     * not individually freed by TinyEMU's riscv_machine_end; that is an
-     * upstream process-exit design. All adapter-owned resources (disk
-     * FILE handles + snapshot tables, 9p FS devices + tags, slirp state,
-     * file buffers) are released below, and the slirp singleton is reset
-     * so a later VM can use networking again. */
+    /* Waits for an in-flight run_slice on this VM to return, then ends the
+     * machine (frees CPU state + guest RAM + machine struct). Upstream
+     * note: virtio device structs (a few hundred bytes each) are not
+     * individually freed by TinyEMU's riscv_machine_end; that is an
+     * upstream process-exit design. All adapter-owned resources (disk FILE
+     * handles + snapshot tables, per-VM 9p devices + tags, this VM's slirp
+     * instance and its forwarding sockets, file buffers) are released
+     * below. Other VMs are unaffected. Do not call this from the console
+     * output callback: that runs inside run_slice on the same thread and
+     * the api_lock is not recursive. */
+    pthread_mutex_lock(&vm->api_lock);
     if (vm->m) {
         virt_machine_end(vm->m);
         vm->m = NULL;
     }
     floe_vm_free_resources(vm);
+    pthread_mutex_unlock(&vm->api_lock);
+    pthread_mutex_destroy(&vm->api_lock);
     pthread_mutex_destroy(&vm->console.lock);
     free(vm);
 }

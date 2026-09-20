@@ -19,11 +19,14 @@
 #    carrying documented patches, applied in this order: riscv_machine.c
 #    (patches/0001 poweroff callback, then patches/0002 recoverable OOM +
 #    copy_bios bounds), iomem.c (patches/0002), fs_disk.c (patches/0003
-#    Apple stat timestamps) and slirp/bootp.c (patches/0004, an upstream
-#    typo that only compiles with DEBUG undefined), and riscv_cpu_template.h
-#    (patches/0005 FENCE compatibility). --check rebuilds the
-#    pristine tree + patches + rename and diffs, so a hand-edited vendored
-#    file fails the check.
+#    Apple stat timestamps, then patches/0007 fd-based export-root
+#    containment), slirp/bootp.c (patches/0004, an upstream typo that only
+#    compiles with DEBUG undefined), riscv_cpu_template.h (patches/0005
+#    FENCE compatibility), slirp/{slirp,socket,udp,ip_icmp,tcp_subr}.c and
+#    slirp/{slirp,main,libslirp}.h (patches/0006 per-instance slirp state)
+#    and virtio.c (patches/0008 recoverable guest-fault paths). --check
+#    rebuilds the pristine tree + patches + rename and diffs, so a
+#    hand-edited vendored file fails the check.
 #  - adapter/floe_vm.{c,h} are symlinked from ../../adapter (single source).
 #  - shims/ holds the Apple SDK compatibility headers from adapter/macos
 #    (byteswap.h, sys/sysmacros.h, sys/statfs.h); patch 0002 replaced the
@@ -63,12 +66,17 @@ misc.h sbuf.h slirp.h slirp_config.h socket.h tcp.h tcp_timer.h tcp_var.h \
 tcpip.h tftp.h udp.h"
 
 # Documented patches applied in this order to the pristine copies. 0001 and
-# 0002 both touch riscv_machine.c, which is why the order is explicit.
+# 0002 both touch riscv_machine.c, and 0003 + 0007 both touch fs_disk.c,
+# which is why the order is explicit. 0006 must be applied before 0008 (it
+# does not touch virtio.c, but the slirp header layout is patch 0006's).
 PATCHES="0001-htif-poweroff-callback.patch \
 0002-embeddable-error-propagation.patch \
 0003-fs_disk-apple-stat-timestamps.patch \
 0004-slirp-bootp-debug-typo.patch \
-0005-fence-hints.patch"
+0005-fence-hints.patch \
+0006-slirp-per-instance-state.patch \
+0007-9p-export-root-containment.patch \
+0008-recoverable-guest-fault-paths.patch"
 
 # slirp declares its own BSD structs (ipovly/tcpcb/sbuf/udphdr/arphdr/icmp)
 # whose tags collide with Darwin SDK umbrella-module headers when compiled

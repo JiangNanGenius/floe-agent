@@ -37,6 +37,19 @@ IMG="$WORK/src/diskimage-linux-riscv-2018-09-23"
     "$IMG/root-riscv64.bin" "$WORK/share9p" | tee "$WORK/lifecycle.txt"
 grep -a LIFECYCLE_OK "$WORK/lifecycle.txt"
 
+echo "== two networked VMs on two host threads =="
+"$WORK/build/two_vm_test" | tee "$WORK/two_vm.txt"
+grep -a TWO_VM_OK "$WORK/two_vm.txt"
+
+echo "== two concurrent real guests (own console + own 9p share) =="
+"$WORK/build/two_vm_test" "$IMG/bbl64.bin" "$IMG/kernel-riscv64.bin" \
+    "$IMG/root-riscv64.bin" | tee "$WORK/two_vm_guest.txt"
+grep -a TWO_VM_OK "$WORK/two_vm_guest.txt"
+
+echo "== 9p export-root containment =="
+"$WORK/build/containment_test" | tee "$WORK/containment.txt"
+grep -a CONTAINMENT_OK "$WORK/containment.txt"
+
 cat > "$WORK/script.txt" <<'EOF'
 @6 uname -a
 @8 echo FLOE_SMOKE_OK_$((6*7))

@@ -8,31 +8,43 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *
  * This is Floe's own adapter layer. It links against the pristine, pinned
- * TinyEMU 2019-12-21 sources (MIT, Fabrice Bellard) plus one documented
- * minimal patch (patches/0001-htif-poweroff-callback.patch) that converts
- * the guest-poweroff exit(0) into an observable VM flag. No GPL code is
- * used: no QEMU, no iSH derived implementation.
+ * TinyEMU 2019-12-21 sources (MIT, Fabrice Bellard) plus the documented
+ * Floe patches in patches/ (guest poweroff, recoverable create/OOM paths,
+ * Apple stat names, BOOTP typo, FENCE hints, per-instance slirp state,
+ * 9p export-root containment, recoverable guest-fault paths). No GPL code
+ * is used: no QEMU, no iSH derived implementation.
  *
- * Threading model: the embedder runs floe_vm_run_slice() from a single VM
- * thread. floe_vm_console_input() may be called from any thread (queued).
- * Console output is delivered through the callback from within run_slice.
+ * Threading model: create may run on any thread; run_slice may then run on
+ * a different (worker) thread -- nothing adapter- or engine-owned is
+ * thread-local, and create does not capture a thread id. Console input may
+ * be queued from any thread. Per VM, run_slice/destroy/hostfwd calls are
+ * serialized by the adapter; different VMs (including networked ones) can
+ * run concurrently on different threads because every VM owns its slirp
+ * instance, its CPU state and its devices. Console output is delivered
+ * through the callback from within run_slice (do not call floe_vm_destroy
+ * from that callback; stop the worker first).
  *
  * Lifecycle contract (verified by Qualification/TinyEMULinux):
  *  - create/destroy are repeatable: destroy releases the guest RAM, disk
- *    FILE handles + snapshot tables, 9p FS devices + tags, slirp state and
- *    file buffers; a failed create frees its partial allocations.
- *  - Networking uses one process-wide slirp instance: at most ONE VM with
- *    net_enable=1 may exist at a time; after that VM is destroyed a new
- *    networked VM can be created. Multiple simultaneous non-networked VMs
- *    are allowed by the adapter (upstream TinyEMU is not reentrant-safe
- *    across threads; run all slices from the same VM thread pool and do
- *    not drive two VMs concurrently from two threads).
- *  - Upstream engine fatal paths: guest RAM allocation failure exit(1)
- *    (iomem.c), internal device-invariant abort()s (virtio.c/riscv_cpu.c)
- *    remain from upstream and would terminate the host process; they are
- *    not reachable via valid guest behavior but are engine defects the
- *    embedder should know about. The guest-poweroff exit(0) IS fixed by
- *    patches/0001. */
+ *    FILE handles + snapshot tables, 9p FS devices + tags, slirp state
+ *    (including adapter-registered port forwards) and file buffers; a
+ *    failed create frees its partial allocations.
+ *  - Networking is per-VM: each net_enable=1 VM gets its own slirp
+ *    instance (separate 10.0.2.0/24 network, timers, DNS cache and select
+ *    scratch), so TWO independent networked VMs can run on separate host
+ *    threads at the same time. Destroying one closes only its own listening
+ *    sockets. Host TCP/UDP ports remain a host-wide namespace: two VMs
+ *    cannot both bind the same 127.0.0.1:port.
+ *  - run_slice returns <0 only for a host-side fault it can recover from
+ *    (e.g. select() failure); destroy such a VM and create a new one.
+ *  - Upstream engine fatal paths: guest-RAM OOM (iomem.c), oversized
+ *    BIOs/kernel/initrd (copy_bios), unknown virtio-blk request types and
+ *    guest-sized descriptor/allocation failures in the virtio devices are
+ *    recoverable (patches/0001, 0002, 0008). The remaining upstream
+ *    abort()s are internal invariant checks on size_log2 / reply format
+ *    strings that this adapter cannot reach with a valid guest, plus the
+ *    unused config-file loader in machine.c; they are recorded in
+ *    PHASE2_adapter.md rather than silently assumed away. */
 #ifndef FLOE_VM_H
 #define FLOE_VM_H
 
@@ -80,26 +92,33 @@ int floe_vm_console_input(FloeVM *vm, const uint8_t *data, int len);
 
 /* Run one slice: poll network fds with select() up to timeout_ms, deliver
  * queued console input, then interpret up to a fixed cycle budget.
- * Returns: 0 = ran normally; 1 = guest requested poweroff; <0 = error. */
+ * Serialized per VM against destroy/hostfwd calls on other threads.
+ * Returns: 0 = ran normally; 1 = guest requested poweroff; <0 = host-side
+ * fault (destroy and recreate the VM). */
 int floe_vm_run_slice(FloeVM *vm, int timeout_ms);
 
-/* Non-blocking: 1 if the guest requested poweroff (HTIF tohost shutdown). */
+/* Non-blocking: 1 if the guest requested poweroff (HTIF tohost shutdown).
+ * Safe to call from any thread; the value is cached atomically by the
+ * adapter (updated by create/run_slice). */
 int floe_vm_poweroff_requested(const FloeVM *vm);
 
-/* host->guest TCP/UDP port forwarding through slirp (for localService:
-   a guest Node/Python service becomes reachable on the host loopback).
-   IPv4 addresses are in HOST byte order; host_ipv4 should normally be
-   0x7F000001 (127.0.0.1); guest_ipv4 = 0 selects the guest's DHCP address
-   (10.0.2.15). Callable from the run_slice thread while the VM runs, or
-   any thread while it is paused. Forwards added here are removed
-   automatically by floe_vm_destroy (listening fds are closed).
-   Returns 0 on success, -1 on error (no network, table full, bad args). */
+/* host->guest TCP/UDP port forwarding through this VM's own slirp instance
+   (for localService: a guest Node/Python service becomes reachable on the
+   host loopback). IPv4 addresses are in HOST byte order; host_ipv4 should
+   normally be 0x7F000001 (127.0.0.1); guest_ipv4 = 0 selects the guest's
+   DHCP address (10.0.2.15). Callable from any thread; the adapter serializes
+   it with run_slice/destroy on this VM (bounded by one slice). Forwards
+   added here are removed automatically by floe_vm_destroy (listening fds are
+   closed) and never touch another VM's slirp instance.
+   Returns 0 on success, -1 on error (no network, table full, bad args,
+   host port already bound). */
 int floe_vm_hostfwd_add(FloeVM *vm, int is_udp, uint32_t host_ipv4,
                         int host_port, uint32_t guest_ipv4, int guest_port);
 int floe_vm_hostfwd_remove(FloeVM *vm, int is_udp, uint32_t host_ipv4,
                            int host_port);
 
-/* Stop and free the VM. Safe to call after poweroff request. */
+/* Stop and free the VM; waits for an in-flight run_slice on this VM to
+   return. Do not call it from the console output callback. */
 void floe_vm_destroy(FloeVM *vm);
 
 const char *floe_vm_engine_version(void); /* TinyEMU core version string */

@@ -216,6 +216,23 @@ struct Slirp {
     struct tftp_session tftp_sessions[TFTP_SESSIONS_MAX];
 
     void *opaque;
+
+    /* FLOE-EMBED (patch 0006): formerly process-wide mutable globals moved
+       into the instance so several networked VMs can run on separate host
+       threads, each with its own timer flags, DNS cache and select()
+       scratch. flds[] points at fd_sets owned by the thread currently in
+       slirp_select_poll(); flds_valid guards the dereference. Nothing here
+       may be replaced by TLS: slirp_select_fill/poll are always called from
+       the run_slice thread and receive their instance explicitly. */
+    u_int curtime;
+    u_int time_fasttimo;
+    u_int last_slowtimo;
+    int do_slowtimo;
+    struct in_addr dns_addr;
+    u_int dns_addr_time;
+    struct stat dns_addr_stat;
+    fd_set *flds[3]; /* 0 = read, 1 = write, 2 = except */
+    int flds_valid;
 };
 
 extern Slirp *slirp_instance;

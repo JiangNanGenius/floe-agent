@@ -127,7 +127,7 @@ icmp_input(struct floe_slirp_mbuf *m, int hlen)
           slirp->vnetwork_addr.s_addr) {
 	/* It's an alias */
 	if (so->so_faddr.s_addr == slirp->vnameserver_addr.s_addr) {
-	  if (get_dns_addr(&addr.sin_addr) < 0)
+	  if (get_dns_addr(slirp, &addr.sin_addr) < 0)
 	    addr.sin_addr = loopback_addr;
 	} else {
 	  addr.sin_addr = loopback_addr;

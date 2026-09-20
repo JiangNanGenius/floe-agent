@@ -64,17 +64,24 @@ engine build.
 | --- | --- | --- |
 | `patches/0001-htif-poweroff-callback.patch` | `riscv_machine.c` | guest poweroff becomes an observable flag instead of `exit(0)` |
 | `patches/0002-embeddable-error-propagation.patch` | `riscv_machine.c` (after 0001), `iomem.c` | recoverable create failures: RAM OOM returns NULL, `copy_bios` returns 0/-1 with bounds checks before `memcpy` |
+| `patches/0003-fs_disk-apple-stat-timestamps.patch` | `fs_disk.c` | Apple SDK stat-timestamp member names for the vendored/SwiftPM copy |
+| `patches/0004-slirp-bootp-debug-typo.patch` | `slirp/bootp.c` | upstream typo that only compiles with DEBUG undefined |
 | `patches/0005-fence-hints.patch` | `riscv_cpu_template.h` | treat FENCE/FENCE.TSO and reserved fm encodings as the no-op hints the base ISA defines, and ignore fence.i's unused fields (Zifencei). Upstream trapped FENCE.TSO, which Debian 13's libapt-pkg executes — apt's http/https methods died with SIGILL |
+| `patches/0006-slirp-per-instance-state.patch` | `slirp/slirp.{c,h}`, `slirp/{socket,udp,ip_icmp,tcp_subr}.c`, `slirp/{main,libslirp}.h` | move the process-wide slirp timers, DNS cache and select scratch into `struct Slirp`, make `get_dns_addr` take its instance explicitly and initialise the remaining constant global (`loopback_addr`) with `pthread_once`; lets two networked VMs run on two host threads (no TLS) |
+| `patches/0007-9p-export-root-containment.patch` | `fs_disk.c` (after 0003) | fd-based 9p export-root containment: root pinned as `root_fd`, every fid is a contained dir fd + single component, all authority via `*at()` syscalls with `O_NOFOLLOW`; "..", "/", absolute/relative symlink targets and renames cannot escape; FIFOs/device nodes are metadata-only (`EOPNOTSUPP`, never opened) |
+| `patches/0008-recoverable-guest-fault-paths.patch` | `virtio.c` | replace the remaining guest-reachable `abort()`/unchecked allocations with device errors: unknown virtio-blk request types answer `VIRTIO_BLK_S_UNSUPP`, guest-controlled descriptor sizes/allocation failures return an error instead of aborting or writing through NULL, and empty 9p replies (Tclunk/Tfsync) are still sent |
 
 The integrated app vendor tree (`FloeAgent/ThirdParty/TinyEMU/Sources/`,
-SwiftPM target `FloeTinyEMU`) additionally carries `0003` (Darwin
-`stat`-timestamp shim for `fs_disk.c`) and `0004` (slirp `bootp` debug typo);
-those are tracked there and must be listed in that tree's provenance when it
-lands. `0002` must be applied after `0001` to the same `riscv_machine.c`
-copy; the vendoring script has to keep that order. `0005` patches
-`riscv_cpu_template.h`, so any tree that compiles `riscv_cpu.c` must compile
-it where the patched header is visible (the qualification Makefile copies
-`riscv_cpu.c` plus the header into `$(BUILD)` for that reason).
+SwiftPM target `FloeTinyEMU`) carries the same `0001`-`0008` set; the
+qualification build and the vendored tree must both apply them in numeric
+order. `0002` must be applied after `0001` to the same `riscv_machine.c`
+copy, and `0007` after `0003` to the same `fs_disk.c` copy; the vendoring
+script has to keep that order. `0005` patches `riscv_cpu_template.h`, so any
+tree that compiles `riscv_cpu.c` must compile it where the patched header is
+visible (the qualification Makefile copies `riscv_cpu.c` plus the header into
+`$(BUILD)` for that reason). `0006`/`0007`/`0008` are Floe-authored
+MIT-compatible modifications of MIT/BSD files: no new upstream code, no
+GPL/LGPL.
 
 ## Guest image licensing
 

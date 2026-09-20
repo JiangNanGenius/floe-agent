@@ -305,7 +305,7 @@ int
 udp_attach(struct socket *so)
 {
   if((so->s = os_socket(AF_INET,SOCK_DGRAM,0)) != -1) {
-    so->so_expire = curtime + SO_EXPIRE;
+    so->so_expire = so->slirp->curtime + SO_EXPIRE; /* patch 0006 */
     insque(so, &so->slirp->udb);
   }
   return(so->s);
@@ -353,7 +353,7 @@ udp_listen(Slirp *slirp, uint32_t haddr, u_int hport, uint32_t laddr,
 	    return NULL;
 	}
 	so->s = os_socket(AF_INET,SOCK_DGRAM,0);
-	so->so_expire = curtime + SO_EXPIRE;
+	so->so_expire = slirp->curtime + SO_EXPIRE; /* patch 0006 */
 	insque(so, &slirp->udb);
 
 	addr.sin_family = AF_INET;

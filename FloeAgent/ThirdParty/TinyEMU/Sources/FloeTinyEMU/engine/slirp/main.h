@@ -28,8 +28,10 @@ extern int ctty_closed;
 
 extern char *slirp_tty;
 extern char *exec_shell;
-extern u_int curtime;
-extern fd_set *global_readfds, *global_writefds, *global_xfds;
+/* FLOE-EMBED (patch 0006): the wall-clock cache (curtime) and the select
+   scratch fd_set pointers (global_readfds/global_writefds/global_xfds)
+   moved into struct Slirp so that independent instances no longer share
+   them; see slirp.h. Only constant state stays process-wide: */
 extern struct in_addr loopback_addr;
 extern char *username;
 extern char *socket_path;

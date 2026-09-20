@@ -22,6 +22,21 @@
         "file": "patches/0005-fence-hints.patch",
         "purpose": "Treat the FENCE family as the no-op ordering hint it is: accept FENCE.TSO (0x8330000f) and reserved fm encodings, and ignore the unused imm/rs1/rd fields of fence.i (Zifencei). Upstream trapped FENCE.TSO as illegal, which made Debian 13 libapt-pkg die with SIGILL (apt http/https methods).",
         "applies_to": "riscv_cpu_template.h of the pinned tarball"
+      },
+      {
+        "file": "patches/0006-slirp-per-instance-state.patch",
+        "purpose": "Per-VM slirp state: move the wall-clock cache (curtime), timer flags (time_fasttimo/last_slowtimo/do_slowtimo), DNS cache (dns_addr/dns_addr_time/dns_addr_stat) and the select() scratch fd_set pointers into struct Slirp; make get_dns_addr() take its Slirp explicitly (no thread-local current-instance). No slirp state is shared between instances any more; slirp_init_once() (the only remaining process-wide state, the constant loopback_addr) now uses pthread_once (InterlockedCompareExchange on Windows). Enables two independent networked VMs on two host threads.",
+        "applies_to": "slirp/slirp.h, slirp/slirp.c, slirp/socket.c, slirp/udp.c, slirp/ip_icmp.c, slirp/tcp_subr.c, slirp/main.h, slirp/libslirp.h of the pinned tarball"
+      },
+      {
+        "file": "patches/0007-9p-export-root-containment.patch",
+        "purpose": "Enforce 9p export-root containment structurally instead of by path-string validation: the share pins its root on root_fd (O_RDONLY|O_DIRECTORY|O_NOFOLLOW) and every fid is either a contained directory fd or a contained directory fd plus one single component; walk/open/create/mkdir/symlink/mknod/link/rename/unlink/readlink/setattr use fstatat/openat/... *at() calls with AT_SYMLINK_NOFOLLOW/O_NOFOLLOW, so '..', '/', absolute paths, guest-created symlinks and in-share renames can never resolve outside the export. FIFOs, sockets and device nodes are returned as metadata but never opened or truncated (EOPNOTSUPP), so a blocking host FIFO cannot freeze a run_slice thread. Path strings remain for diagnostics/readdir only.",
+        "applies_to": "fs_disk.c of the pinned tarball, after 0003"
+      },
+      {
+        "file": "patches/0008-recoverable-guest-fault-paths.patch",
+        "purpose": "Make the guest-reachable fatal paths in virtio.c recoverable per instance: unknown virtio-blk request types complete with VIRTIO_BLK_S_UNSUPP instead of the virtio_block_req_end() abort(), the guest-controlled descriptor sizes in the block/net/console paths are range-checked before use, unchecked mallocs return an error instead of writing through NULL, allocate failures in the 9p walk/read/write/readdir handlers answer a 9p error, and replies with an empty payload (Tclunk/TRflush/Tfsync) are still sent (a missing reply would hang the guest). Remaining upstream abort()s are internal invariants (fixed result-buffer sizes, device-registered access widths) and are documented in PHASE2_adapter.md.",
+        "applies_to": "virtio.c of the pinned tarball"
       }
     ],
     "trimmed_out": [
@@ -32,7 +47,7 @@
       "aes.c/sha256.c (only referenced by the HTTP filesystem path)",
       "KVM: not present on the RISC-V path upstream (x86-only)"
     ],
-    "patches_note": "The integrated app vendor tree also applies 0003-fs_disk-apple-stat-timestamps.patch and 0004-slirp-bootp-debug-typo.patch (tracked in that tree). The vendor script must: apply 0001 then 0002 to the same riscv_machine.c copy, add riscv_cpu_template.h:0005, and rebuild VENDORED-SHA256SUMS (--check re-applies patches). 0005 changes riscv_cpu_template.h, so the tree that compiles riscv_cpu.c must include the patched header; the qualification Makefile copies riscv_cpu.c + the header into $(BUILD) so the quoted include resolves to the patched copy.",
+    "patches_note": "The integrated app vendor tree applies the full 0001-0008 set (0003/0004 are tracked there as part of the same series). The vendor script must: apply 0001 then 0002 to the same riscv_machine.c copy, 0003 then 0007 to the same fs_disk.c copy, 0005 to riscv_cpu_template.h, then 0004/0006/0008, and rebuild VENDORED-SHA256SUMS (--check re-applies patches). 0005 changes riscv_cpu_template.h, so the tree that compiles riscv_cpu.c must include the patched header; the qualification Makefile copies riscv_cpu.c + the header into $(BUILD) so the quoted include resolves to the patched copy. 0006 also edits slirp headers, so the qualification build compiles the patched slirp copies from $(BUILD)/slirp (not the pristine tree).",
     "license_files": {
       "MIT-LICENSE.txt": "a75690160a50d8085bcd25acf34faa5b1c484e15ffd0bd662e5f4d7a289da080",
       "licenses/SLIRP-COPYRIGHT.txt": "6aa542ccb77b884dbb8e8c4620f3471111e5648fe341147befcf933ea30d764f",

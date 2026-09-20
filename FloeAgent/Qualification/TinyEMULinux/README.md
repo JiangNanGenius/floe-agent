@@ -10,6 +10,9 @@ the engine, not full-app acceptance.
 | Path | Purpose |
 | --- | --- |
 | `floe_vm_host.c` | CLI host: boots a VM, feeds a timed `@sec command` script to the guest console, records a transcript, exits 0 when `--until MARKER` is observed or the guest requests poweroff |
+| `lifecycle_test.c` | repeatable create/destroy, hostfwd bind/remove/destroy, recoverable oversized-BIOS/kernel and RAM-OOM failures |
+| `two_vm_test.c` | two networked VMs on two host threads (isolated slirp/forwarding/cleanup); with `<bios> <kernel> <disk>` also two concurrent real guest boots with per-VM console markers and per-VM 9p shares |
+| `containment_test.c` | drives the patched `fs_disk.c` directly: `..`, `/`, symlink traversal, rename escape, file-fid children, and FIFO/device metadata-only handling (no blocking open) |
 | `run_local_smoke.sh` | end-to-end local driver: pinned fetch → GPL gate → build → boot → console/9p/network markers (~40 MB, no root) |
 | `tools/pty_boot.py` | PTY harness used to drive the pristine upstream `temu` CLI for comparison evidence |
 | `guest-scripts/` | timed guest command scripts |
@@ -90,6 +93,48 @@ Honest status, including what does **not** work:
   no `FLOE_INSN_*` evidence came from that run even though APT itself
   passed; the probe is fixed and its `fence_tso=OK` marker is now part of
   the required evidence, to be re-confirmed in the final image smoke.
+
+## Phase 2 adapter results (2026-09-21, host: Apple Silicon macOS 27, interpreter)
+
+Run after patches 0006/0007/0008 landed (per-VM slirp, fd-based 9p
+containment, recoverable guest-fault paths). All four native tests pass on
+this host; the commands are the ones `run_local_smoke.sh` now runs:
+
+- `lifecycle_test <bios> <kernel> <disk> <share>` → `LIFECYCLE_OK
+  (0 failures)`: 5x create/slice/destroy with networking, failed-create
+  cleanup, hostfwd bind/remove/destroy-auto-cleanup, recoverable
+  oversized-BIOS/kernel; the RAM-OOM rlimit case is skipped on Darwin
+  (Linux CI covers it).
+- `containment_test` → `CONTAINMENT_OK` (65 checks): walking `..`, `/`,
+  `dir1/../../outside` returns 0 components; a symlink fid is returned as
+  `P9_QTSYMLINK` with its target verbatim but walking through it (relative,
+  absolute or directory link, host- or guest-created) walks 0 components
+  and `open` fails; create/mkdir/symlink/mknod/link/rename/unlink reject
+  `..`/`/` names; legitimate in-share create/write/rename/unlink still
+  work; a file fid cannot resolve a sibling; a host FIFO under the share is
+  metadata-only and `open`/`setattr(size)` return `EOPNOTSUPP` in <1 s
+  (never blocking the caller).
+- `two_vm_test` → `TWO_VM_OK` (23 checks): two networked VMs exist at the
+  same time, run 200 slices each on two threads, keep independent
+  forwarding tables, and destroying one closes only its own listeners
+  (the other even re-uses the freed host port).
+- `two_vm_test <bios> <kernel> <disk>` → `TWO_VM_OK` (32 checks, ~9 s wall):
+  two REAL guests boot concurrently on two threads, each mounts its own 9p
+  share, writes a distinct file and prints a distinct console marker; each
+  marker appears only on its own VM's console and each file only in its own
+  share directory. The same run under `-fsanitize=thread` completes with
+  **zero ThreadSanitizer warnings**.
+- Single-VM smoke (`floe_vm_host … --share /dev/root=… --net`) still boots
+  the 2018 demo guest, mounts the 9p share, writes `two_vm_a.txt` and exits
+  on the assembled marker (`FLOE_TWOVM_A_OK`).
+
+Limits: both phases run the demo buildroot guest, not Debian; no iPad or
+physical-device measurement was made here; the Linux RAM-OOM case is only
+covered by the CI workflow. See `docs/PHASE2_adapter.md` for the
+fatal-path audit (what is recoverable vs. which upstream invariants
+remain) and the integration contract.
+
+
 
 ## Evidence rules for this qualification
 

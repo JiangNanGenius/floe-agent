@@ -28,8 +28,14 @@ fetched and hash-verified by `fetch_source.sh` (see `PROVENANCE.json`).
 | `LICENSE-INVENTORY.md` | per-file license inventory |
 | `license_check.sh` | GPL gate over the exact build sources |
 | `patches/0001-htif-poweroff-callback.patch` | guest poweroff becomes an observable flag instead of `exit(0)` |
+| `patches/0002-embeddable-error-propagation.patch` | guest-RAM OOM / oversized BIOS/kernel/initrd become recoverable create errors |
+| `patches/0003-…` / `patches/0004-…` | Darwin stat-timestamp names; slirp BOOTP debug typo |
+| `patches/0005-fence-hints.patch` | FENCE/FENCE.TSO (+ reserved encodings) are hints, not illegal instructions |
+| `patches/0006-slirp-per-instance-state.patch` | per-VM slirp timers/DNS cache/select scratch (`pthread_once` for the one constant global): two networked VMs on two host threads |
+| `patches/0007-9p-export-root-containment.patch` | fd-based 9p export-root containment + special files are metadata-only (`EOPNOTSUPP`) |
+| `patches/0008-recoverable-guest-fault-paths.patch` | guest-reachable virtio aborts/unchecked allocations become device errors |
 | `adapter/floe_vm.h` / `floe_vm.c` | embeddable C API: VM create / run slice / console bytes in+out / disk / 9p / slirp net / stop+destroy |
-| `adapter/Makefile` | builds `libfloevm.a` (+ `floe_vm_host` when `HOST_DIR` is set); `MACOS=1` adds local shim headers |
+| `adapter/Makefile` | builds `libfloevm.a` (+ `floe_vm_host`, `lifecycle_test`, `two_vm_test`, `containment_test` when `HOST_DIR` is set); `MACOS=1` adds local shim headers |
 | `adapter/macos/` | macOS-only build shims (byteswap/statfs/if_tun); Linux needs none |
 
 ## Embeddable C API (stable surface for the app integration)
@@ -46,6 +52,30 @@ Config covers: RAM, BIOS (bbl) + kernel + initrd paths, kernel cmdline,
 one virtio-blk raw image (snapshot or write-through), up to 4 virtio-9p
 shares (tag → host dir), slirp networking on/off. Console output arrives
 via callback inside `run_slice`; console input is queued thread-safely.
+
+Isolation / lifecycle contract (details and evidence:
+`FloeAgent/Qualification/TinyEMULinux/README.md`, `docs/PHASE2_adapter.md`):
+
+- `floe_vm_create()` may run on any thread; `run_slice` may then run on a
+  different worker thread (no thread-local state, no captured thread id).
+- Networking is per VM: every `net_enable=1` VM owns its slirp instance
+  (network, timers, DNS cache, select scratch, forwarding table), so two
+  independent networked VMs can run concurrently on two host threads and
+  each destroy closes only its own listening sockets. Host TCP/UDP ports
+  remain one namespace.
+- `run_slice`/`hostfwd_*`/`destroy` are serialized per VM by the adapter;
+  `destroy` waits for an in-flight slice (do not call it from the console
+  output callback). `run_slice` returns `<0` only for a recoverable
+  host-side fault.
+- A 9p share is confined to its `host_dir`: the root is pinned on an fd and
+  every operation resolves through contained fds with `O_NOFOLLOW`, so
+  `..`, `/`, absolute paths, guest symlinks and renames cannot escape.
+  FIFOs/sockets/device nodes under the share are visible as metadata but
+  cannot be opened (`EOPNOTSUPP`), so they cannot block a run slice.
+- Remaining upstream fatal paths (internal size/format invariants, the
+  unused config-file loader) are listed in `docs/PHASE2_adapter.md`; the
+  guest-reachable ones (OOM, oversized BIOS/kernel/initrd, unknown
+  virtio-blk types, guest-sized descriptor allocations) are recoverable.
 
 The qualification host + scripts + measured results live in
 `FloeAgent/Qualification/TinyEMULinux/`.
@@ -68,4 +98,14 @@ virtio 控制台、virtio-blk 磁盘、virtio-9p 宿主共享目录与 slirp 用
   floe_vm_poweroff_requested / floe_vm_destroy`；配置含内存、BIOS/内核/
   initrd、cmdline、virtio-blk 磁盘（快照或写透）、至多 4 个 9p 共享、
   slirp 网络开关。控制台输出经回调返回，输入线程安全排队。
+- 隔离/生命周期契约（详见 `docs/PHASE2_adapter.md` 与
+  `Qualification/TinyEMULinux/README.md`）：创建与运行可以在不同宿主线程；
+  每个 VM 拥有独立 slirp 实例（计时器、DNS 缓存、select scratch、端口
+  转发表），两个联网 VM 可在两个宿主线程上并发运行，销毁只关闭自己的
+  监听端口；同一 VM 的 run_slice/转发/销毁由适配器串行化，销毁会等待
+  正在执行的 slice（不要在控制台回调里销毁）。
+- 9p 共享被限制在 `host_dir` 内：根目录用 fd 固定，所有操作经已包含的
+  fd 与 `O_NOFOLLOW` 解析，`..`、`/`、绝对路径、客户机符号链接与重命名都
+  无法越界；共享目录下的 FIFO/设备节点只返回元数据、不可打开
+  （`EOPNOTSUPP`），因此不会阻塞 run slice。
 - 资格宿主与实测结果见 `FloeAgent/Qualification/TinyEMULinux/`。

@@ -1043,7 +1043,13 @@ static void virtio_block_req_end(VIRTIODevice *s, int ret)
         virtio_consume_desc(s, queue_idx, desc_idx, 1);
         break;
     default:
-        abort();
+        /* FLOE-EMBED (patch 0008): upstream abort()ed here. A request type
+           that is not one of the handled ones must complete with an error
+           status instead of terminating the host process. */
+        buf1[0] = VIRTIO_BLK_S_UNSUPP;
+        memcpy_to_queue(s, queue_idx, desc_idx, 0, buf1, sizeof(buf1));
+        virtio_consume_desc(s, queue_idx, desc_idx, 1);
+        break;
     }
 }
 
@@ -1069,6 +1075,7 @@ static int virtio_block_recv_request(VIRTIODevice *s, int queue_idx,
     BlockDevice *bs = s1->bs;
     BlockRequestHeader h;
     uint8_t *buf;
+    uint8_t buf1[1];
     int len, ret;
 
     if (s1->req_in_progress)
@@ -1079,9 +1086,18 @@ static int virtio_block_recv_request(VIRTIODevice *s, int queue_idx,
     s1->req.type = h.type;
     s1->req.queue_idx = queue_idx;
     s1->req.desc_idx = desc_idx;
+    /* FLOE-EMBED (patch 0008): read_size/write_size come from the guest's
+       descriptor chain. Upstream fed them straight into malloc()/assert()
+       (a malformed chain could abort the host or write through NULL);
+       reject impossible sizes as a device error instead. The status byte of
+       an IN request lives at the end of the write buffer, hence >= 1. */
+    if (write_size < 1 || read_size < 0)
+        return 0;
     switch(h.type) {
     case VIRTIO_BLK_T_IN:
         s1->req.buf = malloc(write_size);
+        if (!s1->req.buf)
+            return 0;
         s1->req.write_size = write_size;
         ret = bs->read_async(bs, h.sector_num, s1->req.buf, 
                              (write_size - 1) / SECTOR_SIZE,
@@ -1094,10 +1110,18 @@ static int virtio_block_recv_request(VIRTIODevice *s, int queue_idx,
         }
         break;
     case VIRTIO_BLK_T_OUT:
-        assert(write_size >= 1);
+        /* FLOE-EMBED (patch 0008): was assert(write_size >= 1) and an
+           unchecked malloc()/memcpy_from_queue() with read_size - header */
+        if (read_size < (int)sizeof(h))
+            return 0;
         len = read_size - sizeof(h);
         buf = malloc(len);
-        memcpy_from_queue(s, buf, queue_idx, desc_idx, sizeof(h), len);
+        if (!buf)
+            return 0;
+        if (memcpy_from_queue(s, buf, queue_idx, desc_idx, sizeof(h), len)) {
+            free(buf);
+            return 0;
+        }
         ret = bs->write_async(bs, h.sector_num, buf, len / SECTOR_SIZE,
                               virtio_block_req_cb, s);
         free(buf);
@@ -1109,6 +1133,12 @@ static int virtio_block_recv_request(VIRTIODevice *s, int queue_idx,
         }
         break;
     default:
+        /* FLOE-EMBED (patch 0008): unknown request type: answer with
+           VIRTIO_BLK_S_UNSUPP and consume the descriptor instead of
+           stalling the queue (upstream silently dropped it). */
+        buf1[0] = VIRTIO_BLK_S_UNSUPP;
+        memcpy_to_queue(s, queue_idx, desc_idx, 0, buf1, sizeof(buf1));
+        virtio_consume_desc(s, queue_idx, desc_idx, 1);
         break;
     }
     return 0;
@@ -1164,9 +1194,18 @@ static int virtio_net_recv_request(VIRTIODevice *s, int queue_idx,
         /* send to network */
         if (memcpy_from_queue(s, &h, queue_idx, desc_idx, 0, s1->header_size) < 0)
             return 0;
+        /* FLOE-EMBED (patch 0008): read_size is guest-controlled */
         len = read_size - s1->header_size;
+        if (len <= 0)
+            return 0;
         buf = malloc(len);
-        memcpy_from_queue(s, buf, queue_idx, desc_idx, s1->header_size, len);
+        if (!buf)
+            return 0;
+        if (memcpy_from_queue(s, buf, queue_idx, desc_idx, s1->header_size,
+                              len)) {
+            free(buf);
+            return 0;
+        }
         es->write_packet(es, buf, len);
         free(buf);
         virtio_consume_desc(s, queue_idx, desc_idx, 0);
@@ -1275,8 +1314,16 @@ static int virtio_console_recv_request(VIRTIODevice *s, int queue_idx,
 
     if (queue_idx == 1) {
         /* send to console */
+        /* FLOE-EMBED (patch 0008): read_size is guest-controlled */
+        if (read_size <= 0)
+            return 0;
         buf = malloc(read_size);
-        memcpy_from_queue(s, buf, queue_idx, desc_idx, 0, read_size);
+        if (!buf)
+            return 0;
+        if (memcpy_from_queue(s, buf, queue_idx, desc_idx, 0, read_size)) {
+            free(buf);
+            return 0;
+        }
         cs->write_data(cs->opaque, buf, read_size);
         free(buf);
         virtio_consume_desc(s, queue_idx, desc_idx, 0);
@@ -1943,6 +1990,8 @@ static int unmarshall(VIRTIO9PDevice *s, int queue_idx,
                 len = get_le16(buf);
                 offset += 2;
                 str = malloc(len + 1);
+                if (!str)
+                    return -1;
                 if (memcpy_from_queue(s1, str, queue_idx, desc_idx, offset, len))
                     return -1;
                 str[len] = '\0';
@@ -1979,7 +2028,15 @@ static void virtio_9p_send_reply(VIRTIO9PDevice *s, int queue_idx,
     }
 #endif
     len = buf_len + 7;
+    /* FLOE-EMBED (patch 0008): a reply is size(4)+id(1)+tag(2) even with no
+       payload (Tclunk/TRflush/Tfsync), so only a negative/overflowing
+       length is impossible here; the upstream code would have crashed on
+       malloc failure instead of dropping the reply. */
+    if (buf_len < 0 || len < 7)
+        return;
     buf1 = malloc(len);
+    if (!buf1)
+        return;
     put_le32(buf1, len);
     buf1[4] = id + 1;
     put_le16(buf1 + 5, tag);
@@ -2115,6 +2172,11 @@ static int virtio_9p_recv_request(VIRTIODevice *s1, int queue_idx,
             if (!f)
                 goto fid_not_found;
             oi = malloc(sizeof(*oi));
+            if (!oi) {
+                /* FLOE-EMBED (patch 0008) */
+                err = -P9_EIO;
+                goto error;
+            }
             oi->dev = s;
             oi->queue_idx = queue_idx;
             oi->desc_idx = desc_idx;
@@ -2295,9 +2357,15 @@ static int virtio_9p_recv_request(VIRTIODevice *s1, int queue_idx,
             if (!f)
                 goto fid_not_found;
             buf = malloc(count + 4);
+            if (!buf) {
+                /* FLOE-EMBED (patch 0008): count is guest-controlled */
+                err = -P9_EIO;
+                goto error;
+            }
             n = fs->fs_readdir(fs, f, offs, buf + 4, count);
             if (n < 0) {
                 err = n;
+                free(buf);
                 goto error;
             }
             put_le32(buf, n);
@@ -2511,8 +2579,15 @@ static int virtio_9p_recv_request(VIRTIODevice *s1, int queue_idx,
             f = fid_find(s, fid);
             if (!f)
                 goto fid_not_found;
-            names = mallocz(sizeof(names[0]) * nwname);
-            qids = malloc(sizeof(qids[0]) * nwname);
+            names = nwname ? mallocz(sizeof(names[0]) * nwname) : NULL;
+            qids = nwname ? malloc(sizeof(qids[0]) * nwname) : NULL;
+            if (nwname && (!names || !qids)) {
+                /* FLOE-EMBED (patch 0008) */
+                free(names);
+                free(qids);
+                err = -P9_EIO;
+                goto error;
+            }
             for(i = 0; i < nwname; i++) {
                 if (unmarshall(s, queue_idx, desc_idx, &offset, 
                                "s", &names[i])) {
@@ -2555,6 +2630,11 @@ static int virtio_9p_recv_request(VIRTIODevice *s1, int queue_idx,
             if (!f)
                 goto fid_not_found;
             buf = malloc(count + 4);
+            if (!buf) {
+                /* FLOE-EMBED (patch 0008): count is guest-controlled */
+                err = -P9_EIO;
+                goto error;
+            }
             n = fs->fs_read(fs, f, offs, buf + 4, count);
             if (n < 0) {
                 err = n;
@@ -2580,7 +2660,12 @@ static int virtio_9p_recv_request(VIRTIODevice *s1, int queue_idx,
             f = fid_find(s, fid);
             if (!f)
                 goto fid_not_found;
-            buf1 = malloc(count);
+            buf1 = count ? malloc(count) : NULL;
+            if (count && !buf1) {
+                /* FLOE-EMBED (patch 0008): count is guest-controlled */
+                err = -P9_EIO;
+                goto error;
+            }
             if (memcpy_from_queue(s1, buf1, queue_idx, desc_idx, offset,
                                   count)) {
                 free(buf1);

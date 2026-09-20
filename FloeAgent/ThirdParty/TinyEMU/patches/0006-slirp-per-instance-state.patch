@@ -1,0 +1,468 @@
+--- a/slirp/slirp.h
++++ b/slirp/slirp.h
+@@ -216,6 +216,23 @@
+     struct tftp_session tftp_sessions[TFTP_SESSIONS_MAX];
+ 
+     void *opaque;
++
++    /* FLOE-EMBED (patch 0006): formerly process-wide mutable globals moved
++       into the instance so several networked VMs can run on separate host
++       threads, each with its own timer flags, DNS cache and select()
++       scratch. flds[] points at fd_sets owned by the thread currently in
++       slirp_select_poll(); flds_valid guards the dereference. Nothing here
++       may be replaced by TLS: slirp_select_fill/poll are always called from
++       the run_slice thread and receive their instance explicitly. */
++    u_int curtime;
++    u_int time_fasttimo;
++    u_int last_slowtimo;
++    int do_slowtimo;
++    struct in_addr dns_addr;
++    u_int dns_addr_time;
++    struct stat dns_addr_stat;
++    fd_set *flds[3]; /* 0 = read, 1 = write, 2 = except */
++    int flds_valid;
+ };
+ 
+ extern Slirp *slirp_instance;
+--- a/slirp/slirp.c
++++ b/slirp/slirp.c
+@@ -23,6 +23,10 @@
+  */
+ #include "slirp.h"
+ 
++#ifndef _WIN32
++#include <pthread.h> /* FLOE-EMBED (patch 0006): pthread_once below */
++#endif
++
+ /* host loopback address */
+ struct in_addr loopback_addr;
+ 
+@@ -33,19 +37,18 @@
+ 
+ static const uint8_t zero_ethaddr[6] = { 0, 0, 0, 0, 0, 0 };
+ 
+-/* XXX: suppress those select globals */
+-fd_set *global_readfds, *global_writefds, *global_xfds;
+-
+-u_int curtime;
+-static u_int time_fasttimo, last_slowtimo;
+-static int do_slowtimo;
+-
+-static struct in_addr dns_addr;
+-static u_int dns_addr_time;
++/* FLOE-EMBED (patch 0006): the select scratch fd_sets, the wall clock
++   cache, the timer flags and the DNS cache used to live here as
++   process-wide statics, which made concurrent slirp instances corrupt each
++   other. They are Slirp members now (see slirp.h) and the functions below
++   use their `slirp` argument or so->slirp. loopback_addr stays global: it
++   is written once with a constant value by slirp_init_once() and only read
++   afterwards, so it is instance-invariant. No thread-local state is used;
++   every instance is addressed explicitly by the caller. */
+ 
+ #ifdef _WIN32
+ 
+-int get_dns_addr(struct in_addr *pdns_addr)
++int get_dns_addr(Slirp *slirp, struct in_addr *pdns_addr)
+ {
+     FIXED_INFO *FixedInfo=NULL;
+     ULONG    BufLen;
+@@ -53,8 +56,9 @@
+     IP_ADDR_STRING *pIPAddr;
+     struct in_addr tmp_addr;
+ 
+-    if (dns_addr.s_addr != 0 && (curtime - dns_addr_time) < 1000) {
+-        *pdns_addr = dns_addr;
++    if (slirp->dns_addr.s_addr != 0 &&
++        (slirp->curtime - slirp->dns_addr_time) < 1000) {
++        *pdns_addr = slirp->dns_addr;
+         return 0;
+     }
+ 
+@@ -81,8 +85,8 @@
+     pIPAddr = &(FixedInfo->DnsServerList);
+     inet_aton(pIPAddr->IpAddress.String, &tmp_addr);
+     *pdns_addr = tmp_addr;
+-    dns_addr = tmp_addr;
+-    dns_addr_time = curtime;
++    slirp->dns_addr = tmp_addr;
++    slirp->dns_addr_time = slirp->curtime;
+     if (FixedInfo) {
+         GlobalFree(FixedInfo);
+         FixedInfo = NULL;
+@@ -97,9 +101,9 @@
+ 
+ #else
+ 
+-static struct stat dns_addr_stat;
+-
+-int get_dns_addr(struct in_addr *pdns_addr)
++/* FLOE-EMBED (patch 0006): dns_addr_stat is a Slirp member now (see the
++   per-instance state in slirp.h). */
++int get_dns_addr(Slirp *slirp, struct in_addr *pdns_addr)
+ {
+     char buff[512];
+     char buff2[257];
+@@ -107,20 +111,20 @@
+     int found = 0;
+     struct in_addr tmp_addr;
+ 
+-    if (dns_addr.s_addr != 0) {
++    if (slirp->dns_addr.s_addr != 0) {
+         struct stat old_stat;
+-        if ((curtime - dns_addr_time) < 1000) {
+-            *pdns_addr = dns_addr;
++        if ((slirp->curtime - slirp->dns_addr_time) < 1000) {
++            *pdns_addr = slirp->dns_addr;
+             return 0;
+         }
+-        old_stat = dns_addr_stat;
+-        if (stat("/etc/resolv.conf", &dns_addr_stat) != 0)
++        old_stat = slirp->dns_addr_stat;
++        if (stat("/etc/resolv.conf", &slirp->dns_addr_stat) != 0)
+             return -1;
+-        if ((dns_addr_stat.st_dev == old_stat.st_dev)
+-            && (dns_addr_stat.st_ino == old_stat.st_ino)
+-            && (dns_addr_stat.st_size == old_stat.st_size)
+-            && (dns_addr_stat.st_mtime == old_stat.st_mtime)) {
+-            *pdns_addr = dns_addr;
++        if ((slirp->dns_addr_stat.st_dev == old_stat.st_dev)
++            && (slirp->dns_addr_stat.st_ino == old_stat.st_ino)
++            && (slirp->dns_addr_stat.st_size == old_stat.st_size)
++            && (slirp->dns_addr_stat.st_mtime == old_stat.st_mtime)) {
++            *pdns_addr = slirp->dns_addr;
+             return 0;
+         }
+     }
+@@ -139,8 +143,8 @@
+             /* If it's the first one, set it to dns_addr */
+             if (!found) {
+                 *pdns_addr = tmp_addr;
+-                dns_addr = tmp_addr;
+-                dns_addr_time = curtime;
++                slirp->dns_addr = tmp_addr;
++                slirp->dns_addr_time = slirp->curtime;
+             }
+ #ifdef DEBUG
+             else
+@@ -166,25 +170,39 @@
+ 
+ #endif
+ 
+-static void slirp_init_once(void)
+-{
+-    static int initialized;
++/* FLOE-EMBED (patch 0006): one-time initialization of the only remaining
++   process-wide slirp state (loopback_addr, a constant). It must be
++   thread-safe because two VMs may be created concurrently on two threads:
++   the former `static int initialized` flag was a plain data race. */
+ #ifdef _WIN32
++static void slirp_init_once_body(void)
++{
+     WSADATA Data;
+-#endif
+-
+-    if (initialized) {
+-        return;
+-    }
+-    initialized = 1;
+-
+-#ifdef _WIN32
+     WSAStartup(MAKEWORD(2,0), &Data);
+     atexit(winsock_cleanup);
++    loopback_addr.s_addr = htonl(INADDR_LOOPBACK);
++}
++
++static void slirp_init_once(void)
++{
++    static LONG initialized;
++    /* interlocked test-and-set; the body runs exactly once */
++    if (InterlockedCompareExchange(&initialized, 1, 0) == 0)
++        slirp_init_once_body();
++}
++#else
++static pthread_once_t slirp_once_control = PTHREAD_ONCE_INIT;
++
++static void slirp_init_once_body(void)
++{
++    loopback_addr.s_addr = htonl(INADDR_LOOPBACK);
++}
++
++static void slirp_init_once(void)
++{
++    pthread_once(&slirp_once_control, slirp_init_once_body);
++}
+ #endif
+-
+-    loopback_addr.s_addr = htonl(INADDR_LOOPBACK);
+-}
+ 
+ Slirp *slirp_init(int restricted, struct in_addr vnetwork,
+                   struct in_addr vnetmask, struct in_addr vhost,
+@@ -194,6 +212,9 @@
+ {
+     Slirp *slirp = mallocz(sizeof(Slirp));
+ 
++    /* FLOE-EMBED (patch 0006): mallocz() zeroes the structure, which is
++       exactly the required initial state for the per-instance timer flags,
++       wall-clock cache, DNS cache and select scratch (flds_valid = 0). */
+     slirp_init_once();
+ 
+     slirp->restricted = restricted;
+@@ -242,23 +263,24 @@
+     struct socket *so, *so_next;
+     int nfds;
+ 
+-    /* fail safe */
+-    global_readfds = NULL;
+-    global_writefds = NULL;
+-    global_xfds = NULL;
++    /* fail safe: no fd_set is valid outside slirp_select_poll() */
++    slirp->flds[0] = NULL;
++    slirp->flds[1] = NULL;
++    slirp->flds[2] = NULL;
++    slirp->flds_valid = 0;
+ 
+     nfds = *pnfds;
+ 	/*
+ 	 * First, TCP sockets
+ 	 */
+-	do_slowtimo = 0;
++	slirp->do_slowtimo = 0;
+ 
+ 	{
+ 		/*
+ 		 * *_slowtimo needs calling if there are IP fragments
+ 		 * in the fragment queue, or there are TCP connections active
+ 		 */
+-		do_slowtimo |= ((slirp->tcb.so_next != &slirp->tcb) ||
++		slirp->do_slowtimo |= ((slirp->tcb.so_next != &slirp->tcb) ||
+ 		    (&slirp->ipq.ip_link != slirp->ipq.ip_link.next));
+ 
+ 		for (so = slirp->tcb.so_next; so != &slirp->tcb;
+@@ -268,8 +290,9 @@
+ 			/*
+ 			 * See if we need a tcp_fasttimo
+ 			 */
+-			if (time_fasttimo == 0 && so->so_tcpcb->t_flags & TF_DELACK)
+-			   time_fasttimo = curtime; /* Flag when we want a fasttimo */
++			if (slirp->time_fasttimo == 0 &&
++                            (so->so_tcpcb->t_flags & TF_DELACK))
++			   slirp->time_fasttimo = slirp->curtime; /* Flag when we want a fasttimo */
+ 
+ 			/*
+ 			 * NOFDREF can include still connecting to local-host,
+@@ -327,11 +350,11 @@
+ 			 * See if it's timed out
+ 			 */
+ 			if (so->so_expire) {
+-				if (so->so_expire <= curtime) {
++				if (so->so_expire <= slirp->curtime) {
+ 					udp_detach(so);
+ 					continue;
+ 				} else
+-					do_slowtimo = 1; /* Let socket expire */
++					slirp->do_slowtimo = 1; /* Let socket expire */
+ 			}
+ 
+ 			/*
+@@ -361,24 +384,30 @@
+     struct socket *so, *so_next;
+     int ret;
+ 
+-    global_readfds = readfds;
+-    global_writefds = writefds;
+-    global_xfds = xfds;
+-
+-    curtime = os_get_time_ms();
++    /* the fd_sets live on the stack of the run_slice thread that called
++       slirp_select_fill()/slirp_select_poll(); publish them per-instance
++       for the duration of this poll only */
++    slirp->flds[0] = readfds;
++    slirp->flds[1] = writefds;
++    slirp->flds[2] = xfds;
++    slirp->flds_valid = 1;
++
++    slirp->curtime = os_get_time_ms();
+ 
+     {
+ 	/*
+ 	 * See if anything has timed out
+ 	 */
+-		if (time_fasttimo && ((curtime - time_fasttimo) >= 2)) {
++		if (slirp->time_fasttimo &&
++                    ((slirp->curtime - slirp->time_fasttimo) >= 2)) {
+ 			tcp_fasttimo(slirp);
+-			time_fasttimo = 0;
++			slirp->time_fasttimo = 0;
+ 		}
+-		if (do_slowtimo && ((curtime - last_slowtimo) >= 499)) {
++		if (slirp->do_slowtimo &&
++                    ((slirp->curtime - slirp->last_slowtimo) >= 499)) {
+ 			ip_slowtimo(slirp);
+ 			tcp_slowtimo(slirp);
+-			last_slowtimo = curtime;
++			slirp->last_slowtimo = slirp->curtime;
+ 		}
+ 
+ 	/*
+@@ -524,14 +553,14 @@
+ 	}
+     }
+ 
+-	/* clear global file descriptor sets.
+-	 * these reside on the stack in vl.c
+-	 * so they're unusable if we're not in
+-	 * slirp_select_fill or slirp_select_poll.
++	/* clear the per-instance file descriptor sets.
++	 * the fd_sets themselves reside on the caller's stack (run_slice),
++	 * so they are unusable outside slirp_select_fill/slirp_select_poll.
+ 	 */
+-	 global_readfds = NULL;
+-	 global_writefds = NULL;
+-	 global_xfds = NULL;
++	 slirp->flds[0] = NULL;
++	 slirp->flds[1] = NULL;
++	 slirp->flds[2] = NULL;
++	 slirp->flds_valid = 0;
+ }
+ 
+ #define ETH_ALEN 6
+--- a/slirp/socket.c
++++ b/slirp/socket.c
+@@ -510,10 +510,11 @@
+ 	   * out much quicker (10 seconds  for now...)
+ 	   */
+ 	    if (so->so_expire) {
++	      /* FLOE-EMBED (patch 0006): per-instance wall-clock cache */
+ 	      if (so->so_fport == htons(53))
+-		so->so_expire = curtime + SO_EXPIREFAST;
++		so->so_expire = so->slirp->curtime + SO_EXPIREFAST;
+ 	      else
+-		so->so_expire = curtime + SO_EXPIRE;
++		so->so_expire = so->slirp->curtime + SO_EXPIRE;
+ 	    }
+ 
+ 	    /*
+@@ -544,7 +545,7 @@
+ 	    slirp->vnetwork_addr.s_addr) {
+ 	  /* It's an alias */
+ 	  if (so->so_faddr.s_addr == slirp->vnameserver_addr.s_addr) {
+-	    if (get_dns_addr(&addr.sin_addr) < 0)
++	    if (get_dns_addr(slirp, &addr.sin_addr) < 0)
+ 	      addr.sin_addr = loopback_addr;
+ 	  } else {
+ 	    addr.sin_addr = loopback_addr;
+@@ -566,7 +567,7 @@
+ 	 * but only if it's an expirable socket
+ 	 */
+ 	if (so->so_expire)
+-		so->so_expire = curtime + SO_EXPIRE;
++		so->so_expire = slirp->curtime + SO_EXPIRE; /* patch 0006 */
+ 	so->so_state &= SS_PERSISTENT_MASK;
+ 	so->so_state |= SS_ISFCONNECTED; /* So that it gets select()ed */
+ 	return 0;
+@@ -672,10 +673,11 @@
+ static void
+ sofcantrcvmore(struct socket *so)
+ {
++	Slirp *slirp = so->slirp; /* FLOE-EMBED (patch 0006) */
+ 	if ((so->so_state & SS_NOFDREF) == 0) {
+ 		shutdown(so->s,0);
+-		if(global_writefds) {
+-		  FD_CLR(so->s,global_writefds);
++		if (slirp->flds_valid && slirp->flds[1]) {
++		  FD_CLR(so->s, slirp->flds[1]);
+ 		}
+ 	}
+ 	so->so_state &= ~(SS_ISFCONNECTING);
+@@ -690,13 +692,14 @@
+ static void
+ sofcantsendmore(struct socket *so)
+ {
++	Slirp *slirp = so->slirp; /* FLOE-EMBED (patch 0006) */
+ 	if ((so->so_state & SS_NOFDREF) == 0) {
+             shutdown(so->s,1);           /* send FIN to fhost */
+-            if (global_readfds) {
+-                FD_CLR(so->s,global_readfds);
++            if (slirp->flds_valid && slirp->flds[0]) {
++                FD_CLR(so->s, slirp->flds[0]);
+             }
+-            if (global_xfds) {
+-                FD_CLR(so->s,global_xfds);
++            if (slirp->flds_valid && slirp->flds[2]) {
++                FD_CLR(so->s, slirp->flds[2]);
+             }
+ 	}
+ 	so->so_state &= ~(SS_ISFCONNECTING);
+--- a/slirp/udp.c
++++ b/slirp/udp.c
+@@ -305,7 +305,7 @@
+ udp_attach(struct socket *so)
+ {
+   if((so->s = os_socket(AF_INET,SOCK_DGRAM,0)) != -1) {
+-    so->so_expire = curtime + SO_EXPIRE;
++    so->so_expire = so->slirp->curtime + SO_EXPIRE; /* patch 0006 */
+     insque(so, &so->slirp->udb);
+   }
+   return(so->s);
+@@ -353,7 +353,7 @@
+ 	    return NULL;
+ 	}
+ 	so->s = os_socket(AF_INET,SOCK_DGRAM,0);
+-	so->so_expire = curtime + SO_EXPIRE;
++	so->so_expire = slirp->curtime + SO_EXPIRE; /* patch 0006 */
+ 	insque(so, &slirp->udb);
+ 
+ 	addr.sin_family = AF_INET;
+--- a/slirp/main.h
++++ b/slirp/main.h
+@@ -28,8 +28,10 @@
+ 
+ extern char *slirp_tty;
+ extern char *exec_shell;
+-extern u_int curtime;
+-extern fd_set *global_readfds, *global_writefds, *global_xfds;
++/* FLOE-EMBED (patch 0006): the wall-clock cache (curtime) and the select
++   scratch fd_set pointers (global_readfds/global_writefds/global_xfds)
++   moved into struct Slirp so that independent instances no longer share
++   them; see slirp.h. Only constant state stays process-wide: */
+ extern struct in_addr loopback_addr;
+ extern char *username;
+ extern char *socket_path;
+--- a/slirp/libslirp.h
++++ b/slirp/libslirp.h
+@@ -8,7 +8,11 @@
+ struct Slirp;
+ typedef struct Slirp Slirp;
+ 
+-int get_dns_addr(struct in_addr *pdns_addr);
++/* FLOE-EMBED (patch 0006): the resolver host is now explicit instead of
++   the former process-wide DNS cache, so two slirp instances can resolve on
++   two threads. Callers always have the Slirp at hand (protocol processing);
++   no thread-local "current instance" is involved. */
++int get_dns_addr(Slirp *slirp, struct in_addr *pdns_addr);
+ 
+ Slirp *slirp_init(int restricted, struct in_addr vnetwork,
+                   struct in_addr vnetmask, struct in_addr vhost,
+--- a/slirp/ip_icmp.c
++++ b/slirp/ip_icmp.c
+@@ -127,7 +127,7 @@
+           slirp->vnetwork_addr.s_addr) {
+ 	/* It's an alias */
+ 	if (so->so_faddr.s_addr == slirp->vnameserver_addr.s_addr) {
+-	  if (get_dns_addr(&addr.sin_addr) < 0)
++	  if (get_dns_addr(slirp, &addr.sin_addr) < 0)
+ 	    addr.sin_addr = loopback_addr;
+ 	} else {
+ 	  addr.sin_addr = loopback_addr;
+--- a/slirp/tcp_subr.c
++++ b/slirp/tcp_subr.c
+@@ -340,7 +340,7 @@
+         slirp->vnetwork_addr.s_addr) {
+       /* It's an alias */
+       if (so->so_faddr.s_addr == slirp->vnameserver_addr.s_addr) {
+-	if (get_dns_addr(&addr.sin_addr) < 0)
++	if (get_dns_addr(slirp, &addr.sin_addr) < 0)
+ 	  addr.sin_addr = loopback_addr;
+       } else {
+ 	addr.sin_addr = loopback_addr;
