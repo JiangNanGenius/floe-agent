@@ -12,6 +12,11 @@
         "file": "patches/0001-htif-poweroff-callback.patch",
         "purpose": "Convert guest-poweroff exit(0) in riscv_machine.c into an observable poweroff_requested flag (library must not terminate the host process). MIT-compatible modification.",
         "applies_to": "riscv_machine.c of the pinned tarball"
+      },
+      {
+        "file": "patches/0002-embeddable-error-propagation.patch",
+        "purpose": "Recoverable create failures: iomem.c guest-RAM allocation returns NULL instead of exit(1); riscv_machine.c copy_bios returns 0/-1, checks kernel/initrd bounds before memcpy (upstream copied first) and releases the partial machine. Must be applied after 0001 to the same riscv_machine.c copy.",
+        "applies_to": "riscv_machine.c (after 0001) and iomem.c"
       }
     ],
     "trimmed_out": [
@@ -21,20 +26,30 @@
       "fs_net.c/fs_wget.c/fs_utils.c/block_net.c (HTTP network filesystem; CONFIG_FS_NET off) -> drops libcurl+OpenSSL",
       "aes.c/sha256.c (only referenced by the HTTP filesystem path)",
       "KVM: not present on the RISC-V path upstream (x86-only)"
-    ]
+    ],
+    "patches_note": "The integrated app vendor tree also applies 0003-fs_disk-apple-stat-timestamps.patch and 0004-slirp-bootp-debug-typo.patch (tracked in that tree); the core tree ships 0001-0002 only. The vendor script must keep the 0001->0002 order for riscv_machine.c.",
+    "license_files": {
+      "MIT-LICENSE.txt": "a75690160a50d8085bcd25acf34faa5b1c484e15ffd0bd662e5f4d7a289da080",
+      "licenses/SLIRP-COPYRIGHT.txt": "6aa542ccb77b884dbb8e8c4620f3471111e5648fe341147befcf933ea30d764f",
+      "note": "MIT text verbatim from the pinned tarball; the slirp COPYRIGHT is restored verbatim from the QEMU v3.1.0 archive because the tarball omits it. See licenses/README.md."
+    }
   },
   "smoke_demo_image": {
     "name": "TinyEMU RISC-V demo disk (buildroot, qualification smoke only - NOT the target userland)",
     "upstream_url": "https://bellard.org/tinyemu/diskimage-linux-riscv-2018-09-23.tar.gz",
     "sha256": "808ecc1b32efdd76103172129b77b46002a616dff2270664207c291e4fde9e14",
     "size_bytes": 7969810,
-    "contains": ["bbl64.bin (BIOS)", "kernel-riscv64.bin (Linux 4.15)", "root-riscv64.bin (4MB ext2 buildroot rootfs)"],
-    "license_note": "Demo guest contains GPL-licensed software (Linux kernel, busybox). It is qualification tooling, never shipped in the app. Guest-side GPL obligations are tracked separately from the MIT engine; see LICENSE-INVENTORY.md."
+    "contains": [
+      "bbl64.bin (BIOS)",
+      "kernel-riscv64.bin (Linux 4.15)",
+      "root-riscv64.bin (4MB ext2 buildroot rootfs)"
+    ],
+    "license_note": "Demo guest contains GPL-licensed software (Linux kernel, busybox). It is qualification tooling, never shipped in the app. Exact boot loader/kernel revisions, patches and kernel config are recorded in docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md; see also LICENSE-INVENTORY.md."
   },
   "target_userland": {
     "name": "Debian 13 (trixie) riscv64 nocloud cloud image (daily)",
     "upstream_url_pattern": "https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/debian-13-nocloud-riscv64-daily.qcow2",
     "pinning": "daily image - resolved + SHA512 recorded by the qualification workflow at run time (see .github/workflows/tinyemu-linux-qualification.yml); not bit-pinned here because Debian rotates daily builds",
-    "license_note": "Guest packages are a mix of licenses including GPL. They are installed inside the emulated guest and are governed by their own licenses + source-availability obligations; the host app ships none of them."
+    "license_note": "Guest packages are a mix of licenses including GPL. They are installed inside the emulated guest and are governed by their own licenses + source-availability obligations; the host app ships none of them. See docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md for the remaining distribution gaps (no package->source manifest yet, daily image not digest-pinned)."
   }
 }

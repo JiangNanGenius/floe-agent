@@ -1,0 +1,23 @@
+diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
+index e716922..d088558 100644
+--- a/arch/riscv/Kconfig
++++ b/arch/riscv/Kconfig
+@@ -346,7 +346,17 @@ config SECCOMP
+ 	  If unsure, say Y. Only embedded should say N here.
+ 
+ config EARLY_PRINTK
+-	def_bool y
++	bool "Early printk"
++	default n
++	help
++	  This option enables special console drivers which allow the kernel
++	  to print messages very early in the bootup process.
++
++	  This is useful for kernel debugging when your machine crashes very
++	  early before the console code is initialized. For normal operation
++	  it is not recommended because it looks ugly and doesn't cooperate
++	  with klogd/syslogd or the X server. You should normally N here,
++	  unless you want to debug such a crash.
+ 
+ source "lib/Kconfig.debug"
+ 
