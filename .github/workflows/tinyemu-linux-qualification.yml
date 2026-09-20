@@ -3,12 +3,37 @@
 # Scope: builds the pinned MIT TinyEMU RV64 embeddable core on Linux and
 # boots real guests, recording transcripts + measurements as artifacts.
 # This workflow NEVER touches release/TestFlight/production lanes and never
-# modifies app code. Triggered manually or by pushes to the task branch
-# that touch only engine/qualification files.
+# modifies app code.
+#
+# Triggering:
+#  - push to codex/feedback-linux touching engine/qualification files runs
+#    the LEAN path: build + lifecycle regression + Stage A (2018 demo
+#    parity). A few minutes; safe for every engine change.
+#  - manual dispatch with run_debian=true additionally runs the Debian 13
+#    riscv64 stages (B: modern kernel probe, C: userland on the 4.15
+#    fallback kernel, D: APT/numpy/node, E: persistence). That downloads a
+#    ~3 GB image and takes up to ~2 h, so it is opt-in.
+#
+# Evidence rules (kept honest after a real false-positive incident):
+#  - guest markers are only ever emitted by printf/echo *built at runtime*,
+#    so the literal marker string never appears in the console input line
+#    that the guest TTY echoes back. A marker hit therefore means the guest
+#    executed something, not that it echoed the command.
+#  - exit codes are captured from the real command (`cmd >log 2>&1; printf
+#    'RC=%d\n' $?`); never from the tail of a pipeline.
+#  - `--until` values use the same runtime-assembled markers, so the host
+#    cannot exit on TTY echo.
+#  - raw guest logs are exported to the host through the 9p share when the
+#    stage mounts it, and all transcripts/timing/RC files are uploaded.
 name: tinyemu-linux-qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      run_debian:
+        description: 'Also run the heavy Debian 13 riscv64 stages (B/C/D/E)'
+        type: boolean
+        default: false
   push:
     branches: [codex/feedback-linux]
     paths:
@@ -43,6 +68,14 @@ jobs:
             BUILD=../../../work/build HOST_DIR=. -j"$(nproc)"
           ../../../work/build/floe_vm_host 2>&1 | head -2 || true
 
+      - name: Lifecycle regression (repeatable create/destroy, failure cleanup, RAM-OOM, hostfwd)
+        run: |
+          IMG=work/src/diskimage-linux-riscv-2018-09-23
+          mkdir -p work/share9p
+          work/build/lifecycle_test "$IMG/bbl64.bin" "$IMG/kernel-riscv64.bin" \
+            "$IMG/root-riscv64.bin" work/share9p | tee work/lifecycle.txt
+          grep -a LIFECYCLE_OK work/lifecycle.txt
+
       - name: Stage A — boot pinned 2018 demo image (engine parity check)
         run: |
           IMG=work/src/diskimage-linux-riscv-2018-09-23
@@ -51,10 +84,10 @@ jobs:
           @15 uname -a
           @18 echo FLOE_STAGEA_OK_$((6*7))
           @21 mount -t 9p -o trans=virtio,version=9p2000.L /dev/root /mnt
-          @24 echo ci-9p-proof > /mnt/floe_ci_9p.txt && echo FLOE_STAGEA_9P_OK
+          @24 echo ci-9p-proof > /mnt/floe_ci_9p.txt && printf 'FLOE_STAGEA_9P_%s\n' OK
           @27 ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up
-          @30 ping -c 1 -W 3 10.0.2.2 && echo FLOE_STAGEA_PING_OK
-          @34 echo FLOE_STAGEA_DONE
+          @30 ping -c 1 -W 3 10.0.2.2 && printf 'FLOE_STAGEA_PING_%s\n' OK
+          @34 printf 'FLOE_STAGEA_%s\n' DONE
           EOF
           sed -i 's/^ *//' work/stageA.txt
           set +e
@@ -75,14 +108,8 @@ jobs:
           test -f work/share9p/floe_ci_9p.txt
           grep -a FLOE_STAGEA_PING_OK work/stageA-transcript.txt
 
-      - name: Lifecycle regression (repeatable create/destroy, failure cleanup, slirp reset)
-        run: |
-          IMG=work/src/diskimage-linux-riscv-2018-09-23
-          work/build/lifecycle_test "$IMG/bbl64.bin" "$IMG/kernel-riscv64.bin" \
-            "$IMG/root-riscv64.bin" work/share9p | tee work/lifecycle.txt
-          grep -a LIFECYCLE_OK work/lifecycle.txt
-
       - name: Fetch Debian 13 riscv64 nocloud image (record resolved SHA512)
+        if: ${{ inputs.run_debian }}
         run: |
           cd work
           curl -fsSL --retry 3 -o SHA512SUMS https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/SHA512SUMS
@@ -94,6 +121,7 @@ jobs:
           sha256sum debian13-riscv64.qcow2 | tee debian-sha256.txt
 
       - name: Convert + extract Debian kernel/initrd/rootfs
+        if: ${{ inputs.run_debian }}
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq qemu-utils parted >/dev/null
           qemu-img convert -O raw work/debian13-riscv64.qcow2 work/debian13-riscv64.raw
@@ -101,7 +129,7 @@ jobs:
           sudo partprobe "$LOOP" || true
           sleep 2
           echo "LOOP=$LOOP" >> "$GITHUB_ENV"
-          sudo parted -s "$LOOP" print | tee work/partitions.txt
+          sudo parted -s "$LOOP" unit s print | tee work/partitions.txt
           # find the largest ext4 partition = rootfs
           ROOTP=$(sudo parted -s "$LOOP" print | awk '/ext4/{print $1}' | sort -n | tail -1)
           echo "ROOTP=$ROOTP" >> "$GITHUB_ENV"
@@ -109,6 +137,22 @@ jobs:
           sudo tune2fs -O ^orphan_file "${LOOP}p${ROOTP}" 2>&1 | tail -1 || true
           sudo tune2fs -O ^metadata_csum_seed "${LOOP}p${ROOTP}" 2>&1 | tail -1 || true
           sudo e2fsck -fy "${LOOP}p${ROOTP}" 2>&1 | tail -2 || true
+          sudo tune2fs -l "${LOOP}p${ROOTP}" | grep -aE "Filesystem features|Block size|Filesystem state" \
+            | tee work/debian-ext4-features.txt
+          # The pinned 2018 bbl/demo kernel has NO EFI/GPT partition support (no
+          # CONFIG_EFI_PARTITION strings in the image; a valid GPT disk is seen
+          # only through the protective MBR, so root=/dev/vda1 panics
+          # "VFS: Unable to mount root fs"). Verified 2026-09-20 in run
+          # 35493987238 and locally with a GPT disk accepted by macOS. The
+          # fallback route therefore boots the extracted ext4 partition as a
+          # whole-disk image (root=/dev/vda), which this kernel mounts fine.
+          RS=$(sudo parted -s "$LOOP" unit s print | awk -v p="$ROOTP" '$1==p {gsub(/s/,"",$2); gsub(/s/,"",$4); print $2, $4}')
+          RSTART=$(echo "$RS" | cut -d' ' -f1); REND=$(echo "$RS" | cut -d' ' -f2)
+          [ -n "$RSTART" ] && [ -n "$REND" ] || { echo "cannot resolve rootfs extent"; exit 1; }
+          dd if=work/debian13-riscv64.raw of=work/debian13-rootfs.img bs=512 \
+             skip="$RSTART" count="$((REND - RSTART + 1))" status=progress
+          sudo chmod 644 work/debian13-rootfs.img
+          ls -la work/debian13-rootfs.img | tee work/debian-rootfs-size.txt
           mkdir -p work/mnt
           sudo mount -o ro "${LOOP}p${ROOTP}" work/mnt
           ls work/mnt/boot/ | tee work/boot-listing.txt
@@ -121,6 +165,7 @@ jobs:
           sudo umount work/mnt
 
       - name: Stage B — Debian 13 modern kernel vs 2018 bbl (compatibility probe; failure is recorded, not hidden)
+        if: ${{ inputs.run_debian }}
         run: |
           set +e
           timeout 90 work/build/floe_vm_host \
@@ -135,31 +180,34 @@ jobs:
           set -e
 
       - name: Stage C — Debian 13 userland on 4.15 fallback kernel (init=/bin/bash)
+        if: ${{ inputs.run_debian }}
         run: |
           cat > work/stageC.txt <<'EOF'
           @20 mount -t proc proc /proc
           @23 mount -t sysfs sys /sys
           @26 mount -t devtmpfs dev /dev 2>/dev/null; mount -t devpts devpts /dev/pts 2>/dev/null
+          @29 mkdir -p /floe; mount -t 9p -o trans=virtio,version=9p2000.L floe /floe
           @30 ip link set eth0 up 2>/dev/null; ip addr add 10.0.2.15/24 dev eth0 2>/dev/null; ip route add default via 10.0.2.2 2>/dev/null
           @34 echo nameserver 10.0.2.3 > /etc/resolv.conf
-          @36 echo FLOE_STAGEC_ALIVE_$((7*6))
+          @36 printf 'FLOE_STAGEC_ALIVE_%d\n' $((7*6))
           @39 cat /etc/os-release | head -2
-          @42 python3 --version 2>&1 || echo FLOE_NO_PYTHON3
-          @46 node --version 2>&1 || echo FLOE_NO_NODE
-          @50 sh -c 'sleep 2 & wait; echo FLOE_FORK_WAIT_OK'
-          @54 mkfifo /tmp/f && (cat /tmp/f & sleep 1; echo hi > /tmp/f; wait) && echo FLOE_PIPE_OK
-          @60 sh -c 'trap "echo FLOE_SIGNAL_OK" USR1; kill -USR1 $$; true' 2>&1 | head -2
-          @64 python3 -c 'import pty,os; pty.spawn(["/bin/echo","FLOE_PTY_OK"])' 2>&1 | tail -2
-          @70 echo FLOE_STAGEC_DONE
+          @42 python3 --version 2>&1 || printf 'FLOE_NO_PYTHON%s\n' 3
+          @46 node --version 2>&1 || printf 'FLOE_NO_%s\n' NODE
+          @50 sh -c 'sleep 2 & wait' && printf 'FLOE_FORK_WAIT_%s\n' OK
+          @54 mkfifo /tmp/f && (cat /tmp/f & sleep 1; echo hi > /tmp/f; wait) && printf 'FLOE_PIPE_%s\n' OK
+          @60 M1=FLOE_SIGNAL_; M2=OK; sh -c 'trap "echo $0$1" USR1; kill -USR1 $$' "$M1" "$M2"
+          @64 python3 -c 'import pty; pty.spawn(["/bin/echo","FLOE_PTY_"+"OK"])' 2>&1 | tail -1
+          @70 cat /etc/os-release > /floe/guest-os-release.txt 2>/dev/null; sync
+          @72 printf 'FLOE_STAGEC_%s\n' DONE
           EOF
           sed -i 's/^ *//' work/stageC.txt
           set +e
           /usr/bin/time -v timeout 600 work/build/floe_vm_host \
             --bios work/src/diskimage-linux-riscv-2018-09-23/bbl64.bin \
             --kernel work/src/diskimage-linux-riscv-2018-09-23/kernel-riscv64.bin \
-            --disk work/debian13-riscv64.raw --rw \
-            --ram 512 --cmdline "console=hvc0 root=/dev/vda${ROOTP} rw init=/bin/bash" \
-            --net \
+            --disk work/debian13-rootfs.img --rw \
+            --ram 512 --cmdline "console=hvc0 root=/dev/vda rw init=/bin/bash" \
+            --net --share floe=work/share9p \
             --script work/stageC.txt \
             --transcript work/stageC-transcript.txt \
             --until FLOE_STAGEC_DONE --max-s 560 > work/stageC-stdout.txt 2> work/stageC-time.txt
@@ -168,27 +216,29 @@ jobs:
           set -e
 
       - name: Stage D — APT + python3-numpy + nodejs (network-permitting)
+        if: ${{ inputs.run_debian }}
         run: |
           cat > work/stageD.txt <<'EOF'
           @20 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
-          @25 ip link set eth0 up; ip addr add 10.0.2.15/24 dev eth0; ip route add default via 10.0.2.2
+          @23 mkdir -p /floe; mount -t 9p -o trans=virtio,version=9p2000.L floe /floe && A=/floe || A=/tmp
+          @26 ip link set eth0 up; ip addr add 10.0.2.15/24 dev eth0; ip route add default via 10.0.2.2
           @28 echo nameserver 10.0.2.3 > /etc/resolv.conf
-          @32 ping -c1 -W3 10.0.2.2 && echo FLOE_STAGED_PING_OK
-          @38 apt-get update 2>&1 | tail -3; echo FLOE_APT_UPDATE_RC=$?
-          @240 apt-get install -y --no-install-recommends python3-numpy nodejs 2>&1 | tail -3; echo FLOE_APT_INSTALL_RC=$?
-          @600 python3 -c 'import numpy; print("FLOE_NUMPY_OK", numpy.__version__)' 2>&1 | tail -1
-          @660 node -e 'console.log("FLOE_NODE_OK", process.version)' 2>&1 | tail -1
-          @700 python3 -c 'import scipy' 2>&1 | tail -1; echo FLOE_SCIPY_PROBE_DONE
-          @720 sync; echo FLOE_STAGED_DONE
+          @32 ping -c1 -W3 10.0.2.2 && printf 'FLOE_STAGED_PING_%s\n' OK
+          @38 apt-get update > $A/apt-update.log 2>&1; printf 'FLOE_APT_UPDATE_RC=%d\n' $?; tail -3 $A/apt-update.log
+          @240 apt-get install -y --no-install-recommends python3-numpy nodejs > $A/apt-install.log 2>&1; printf 'FLOE_APT_INSTALL_RC=%d\n' $?; tail -3 $A/apt-install.log; sync
+          @600 python3 -c 'import numpy; print("FLOE_NUMPY_" + "OK", numpy.__version__)' 2>&1 | tail -1
+          @660 node -e 'console.log("FLOE_NODE_" + "OK", process.version)' 2>&1 | tail -1
+          @700 python3 -c 'import scipy' 2>&1 | tail -1; printf 'FLOE_SCIPY_PROBE_%s\n' DONE
+          @720 dpkg -l > $A/dpkg-listing.txt 2>/dev/null; sync; printf 'FLOE_STAGED_%s\n' DONE
           EOF
           sed -i 's/^ *//' work/stageD.txt
           set +e
           timeout 3300 work/build/floe_vm_host \
             --bios work/src/diskimage-linux-riscv-2018-09-23/bbl64.bin \
             --kernel work/src/diskimage-linux-riscv-2018-09-23/kernel-riscv64.bin \
-            --disk work/debian13-riscv64.raw --rw \
-            --ram 768 --cmdline "console=hvc0 root=/dev/vda${ROOTP} rw init=/bin/bash" \
-            --net \
+            --disk work/debian13-rootfs.img --rw \
+            --ram 768 --cmdline "console=hvc0 root=/dev/vda rw init=/bin/bash" \
+            --net --share floe=work/share9p \
             --script work/stageD.txt \
             --transcript work/stageD-transcript.txt \
             --until FLOE_STAGED_DONE --max-s 3200 > work/stageD-stdout.txt 2>&1
@@ -196,33 +246,36 @@ jobs:
           set -e
 
       - name: Stage E — file persistence across reboot (write-through disk)
+        if: ${{ inputs.run_debian }}
         run: |
           cat > work/stageE1.txt <<'EOF'
           @20 mount -t proc proc /proc
-          @24 echo "persist-$(date +%s)" > /floe_persist.txt; sync; echo FLOE_E1_WRITTEN
-          @30 echo FLOE_STAGEE1_DONE
+          @24 echo "persist-$(date +%s)" > /floe_persist.txt; sync; printf 'FLOE_E1_%s\n' WRITTEN
+          @30 printf 'FLOE_STAGEE1_%s\n' DONE
           EOF
           sed -i 's/^ *//' work/stageE1.txt
           cat > work/stageE2.txt <<'EOF'
           @20 mount -t proc proc /proc
-          @24 cat /floe_persist.txt && echo FLOE_PERSIST_OK || echo FLOE_PERSIST_FAIL
-          @28 echo FLOE_STAGEE2_DONE
+          @23 mkdir -p /floe; mount -t 9p -o trans=virtio,version=9p2000.L floe /floe
+          @24 cat /floe_persist.txt > /floe/persist-readback.txt 2>&1 && printf 'FLOE_PERSIST_%s\n' OK || printf 'FLOE_PERSIST_%s\n' FAIL
+          @28 printf 'FLOE_STAGEE2_%s\n' DONE
           EOF
           sed -i 's/^ *//' work/stageE2.txt
           set +e
           timeout 300 work/build/floe_vm_host \
             --bios work/src/diskimage-linux-riscv-2018-09-23/bbl64.bin \
             --kernel work/src/diskimage-linux-riscv-2018-09-23/kernel-riscv64.bin \
-            --disk work/debian13-riscv64.raw --rw \
-            --ram 512 --cmdline "console=hvc0 root=/dev/vda${ROOTP} rw init=/bin/bash" \
+            --disk work/debian13-rootfs.img --rw \
+            --ram 512 --cmdline "console=hvc0 root=/dev/vda rw init=/bin/bash" \
             --script work/stageE1.txt --transcript work/stageE1-transcript.txt \
             --until FLOE_STAGEE1_DONE --max-s 240 > /dev/null 2>&1
           echo "stageE1_rc=$?"
           timeout 300 work/build/floe_vm_host \
             --bios work/src/diskimage-linux-riscv-2018-09-23/bbl64.bin \
             --kernel work/src/diskimage-linux-riscv-2018-09-23/kernel-riscv64.bin \
-            --disk work/debian13-riscv64.raw --rw \
-            --ram 512 --cmdline "console=hvc0 root=/dev/vda${ROOTP} rw init=/bin/bash" \
+            --disk work/debian13-rootfs.img --rw \
+            --ram 512 --cmdline "console=hvc0 root=/dev/vda rw init=/bin/bash" \
+            --net --share floe=work/share9p \
             --script work/stageE2.txt --transcript work/stageE2-transcript.txt \
             --until FLOE_STAGEE2_DONE --max-s 240 > /dev/null 2>&1
           echo "stageE2_rc=$?"
@@ -235,6 +288,7 @@ jobs:
           {
             echo "{"
             echo "  \"engine_sha256\": \"be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555\","
+            echo "  \"run_debian\": \"${{ inputs.run_debian }}\","
             echo "  \"debian_image_sha512\": \"$(cat work/debian-sha512.txt 2>/dev/null | awk '{print $1}')\","
             echo "  \"debian_image_sha256\": \"$(cat work/debian-sha256.txt 2>/dev/null | awk '{print $1}')\","
             echo "  \"os_release\": \"$(cat work/debian-osrelease.txt 2>/dev/null)\","
@@ -243,13 +297,20 @@ jobs:
             echo "  \"stageB_transcript_bytes\": \"$(wc -c < work/stageB-transcript.txt 2>/dev/null)\","
             echo "  \"stageC_rc\": \"$(cat work/stageC-rc.txt 2>/dev/null | cut -d= -f2)\","
             echo "  \"stageD_rc\": \"$(cat work/stageD-rc.txt 2>/dev/null | cut -d= -f2)\","
+            echo "  \"lifecycle_ok\": $(grep -qa LIFECYCLE_OK work/lifecycle.txt 2>/dev/null && echo true || echo false),"
+            echo "  \"guest_log_files\": [$(ls work/share9p 2>/dev/null | sed 's/.*/"&"/' | paste -sd, -)],"
             echo "  \"markers\": {"
-            for m in FLOE_STAGEC_ALIVE_42 FLOE_FORK_WAIT_OK FLOE_PIPE_OK FLOE_SIGNAL_OK FLOE_PTY_OK FLOE_NO_PYTHON3 FLOE_NO_NODE FLOE_APT_UPDATE_RC=0 FLOE_APT_INSTALL_RC=0 FLOE_NUMPY_OK FLOE_NODE_OK FLOE_PERSIST_OK; do
+            for m in FLOE_STAGEA_OK_42 FLOE_STAGEA_9P_OK FLOE_STAGEA_PING_OK \
+                     FLOE_STAGEC_ALIVE_42 FLOE_FORK_WAIT_OK FLOE_PIPE_OK \
+                     FLOE_SIGNAL_OK FLOE_PTY_OK FLOE_NO_PYTHON3 FLOE_NO_NODE \
+                     FLOE_STAGED_PING_OK FLOE_APT_UPDATE_RC=0 FLOE_APT_INSTALL_RC=0 \
+                     FLOE_NUMPY_OK FLOE_NODE_OK FLOE_PERSIST_OK; do
               hit="false"
-              grep -qa "$m" work/stageC-transcript.txt work/stageD-transcript.txt work/stageE2-transcript.txt 2>/dev/null && hit="true"
+              grep -qa "$m" work/stageA-transcript.txt work/stageC-transcript.txt \
+                work/stageD-transcript.txt work/stageE2-transcript.txt 2>/dev/null && hit="true"
               echo "    \"$m\": $hit,"
             done
-            echo "    \"_end\": true"
+            echo "    \"_note\": \"true only means the literal string appeared in a console transcript; guest scripts assemble markers at runtime so TTY echo of the input line cannot produce them\""
             echo "  }"
             echo "}"
           } | tee work/summary.json
@@ -271,4 +332,5 @@ jobs:
             work/debian-osrelease.txt
             work/boot-listing.txt
             work/partitions.txt
+            work/share9p/*
           retention-days: 30
