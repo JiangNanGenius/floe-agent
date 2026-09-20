@@ -98,8 +98,9 @@ extract_module() {
     sed -n '/^public protocol LinuxGuestConsoleTransport/,/^}$/p' "$service_src"
     sed -n '/^enum LinuxGuestBootArguments/,/^}$/p' "$service_src"
 
-    # Whole files: the runtime-image preparer has no FloeCore/FloeTools imports.
-    cat "$runtime_image_src"
+    # FloeCore is replaced by the harness seam, but production must import it.
+    grep -q '^import FloeCore$' "$runtime_image_src" || { echo "runtime-image production FloeCore import missing" >&2; return 1; }
+    grep -v '^import FloeCore$' "$runtime_image_src"
 
     # The registry actor plus its lifecycle seam (the command service and the
     # local-service extension are not part of this check).

@@ -26,6 +26,7 @@
 
 import Darwin
 import Foundation
+import FloeCore
 
 /// Preparation failures for one guest start. Every case names the missing or
 /// conflicting path so the caller can report an honest reason; nothing here

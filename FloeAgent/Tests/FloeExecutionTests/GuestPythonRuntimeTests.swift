@@ -66,6 +66,7 @@ private final class ScriptedGuest: LinuxCommandRunning, LinuxGuestPathMapping, L
         return true
     }
     func stopGuest(environmentID: String) async { running = false }
+    func resetGuest(environmentID: String) async { running = false }
     func deleteGuest(environmentID: String) async { running = false }
     func guestIsRunning(environmentID: String) async -> Bool { running }
     func guestStatus(environmentID: String) async -> LinuxGuestStatus {
