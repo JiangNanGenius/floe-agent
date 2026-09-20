@@ -591,6 +591,12 @@ static void ServerReady() {
 /// created and discarded before mounting has no kit client that could ever
 /// acknowledge a close.
 @property (nonatomic) BOOL openRequested;
+/// A close arrived while the document open was still in flight. A `bye`
+/// issued before the open settles is dropped upstream and its ack never
+/// arrives (the observed close timeout), and the half-open document would
+/// stay alive in the engine with nobody left to close it. The close is
+/// therefore ordered behind the open and runs the moment it settles.
+@property (nonatomic) BOOL closeRequested;
 /// The UIDocument open completed (success or failure).
 @property (nonatomic) BOOL openSettled;
 /// The UIDocument open completed successfully; a live engine session exists.
@@ -655,6 +661,7 @@ static void ServerReady() {
             if (!success) {
                 host.sessionIsReadOnly = YES;
                 if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(NO, YES);
+                [host beginCloseIfRequested];
                 return;
             }
             if (host.readOnly) {
@@ -666,6 +673,7 @@ static void ServerReady() {
                 // observer still streams later engine state for diagnostics.
                 host.sessionIsReadOnly = YES;
                 if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(YES, YES);
+                [host beginCloseIfRequested];
                 return;
             }
             [host probeEnginePermissionWithAttempts:0 completion:^(BOOL known, BOOL readOnly) {
@@ -685,11 +693,13 @@ static void ServerReady() {
                         entered.sessionIsReadOnly = stillReadOnly;
                         if (entered.onWorkingCopyOpenedWithPermission)
                             entered.onWorkingCopyOpenedWithPermission(YES, stillReadOnly);
+                        [entered beginCloseIfRequested];
                     }];
                     return;
                 }
                 if (probed.onWorkingCopyOpenedWithPermission)
                     probed.onWorkingCopyOpenedWithPermission(YES, probed.sessionIsReadOnly);
+                [probed beginCloseIfRequested];
             }];
         };
         document.floeSaveCompletion = ^(BOOL success) {
@@ -711,10 +721,7 @@ static void ServerReady() {
             host.closing = NO;
             host.closed = success;
             if (!success) host.editor.view.userInteractionEnabled = YES;
-            NSArray *waiters = [host.closeWaiters copy];
-            [host.closeWaiters removeAllObjects];
-            for (void (^completion)(NSError *) in waiters)
-                completion(success ? nil : OfficeError(10, @"Office could not close this document. Your document copies have been retained."));
+            [host settleCloseWaitersWithError:success ? nil : OfficeError(10, @"Office could not close this document. Your document copies have been retained.")];
             if (host.onClosed) host.onClosed(success);
         };
     }
@@ -972,30 +979,53 @@ static void ServerReady() {
     NSAssert(NSThread.isMainThread, @"Office closes are main-queue owned");
     if (self.insertingAttachment) { completion(OfficeError(11, @"Finish inserting the attachment before closing.")); return; }
     if (self.closed) { completion(nil); return; }
+    if (completion) [self.closeWaiters addObject:[completion copy]];
+    if (self.openRequested && !self.openSettled) {
+        // Order the close behind the in-flight open; it begins the moment
+        // the open settles (see `closeRequested`).
+        self.closeRequested = YES;
+        return;
+    }
+    [self beginClose];
+}
+- (void)beginClose {
+    if (self.closed || self.closing) return;
     // No live engine session can ever acknowledge this close when the host's
     // view was never mounted (created and discarded before appearing — the
     // preview-to-edit switch on a fast tap) or when its open already failed.
     // Waiting for a bye ack there only stalls the caller for seconds and
     // surfaces as the "closing" spinner; settle immediately instead. Nothing
     // was written back or deleted; the private copies stay on disk.
-    BOOL neverOpened = !self.openRequested || (self.openSettled && !self.documentOpened);
+    BOOL neverOpened = !self.openRequested || !self.documentOpened;
     if (neverOpened) {
         [self.saveReceipts cancel];
         self.closed = YES;
         if (self.editor.webView)
             [self.editor.webView.configuration.userContentController removeScriptMessageHandlerForName:@"floePermission"];
-        completion(nil);
+        [self settleCloseWaitersWithError:nil];
         if (self.onClosed) self.onClosed(YES);
         return;
     }
-    [self.closeWaiters addObject:[completion copy]];
-    if (self.closing) return;
     self.closing = YES;
     [self.saveReceipts cancel];
     self.editor.view.userInteractionEnabled = NO;
     if (self.editor.webView)
         [self.editor.webView.configuration.userContentController removeScriptMessageHandlerForName:@"floePermission"];
     [self.editor bye];
+}
+- (void)settleCloseWaitersWithError:(NSError *)error {
+    NSArray *waiters = [self.closeWaiters copy];
+    [self.closeWaiters removeAllObjects];
+    for (void (^completion)(NSError *) in waiters)
+        completion(error);
+}
+/// Runs a close that was queued while the document open was still in flight
+/// (see `closeRequested`). Called on every open-settle path, after the open
+/// report reached the App, so the session UI settles before the close.
+- (void)beginCloseIfRequested {
+    if (!self.closeRequested) return;
+    self.closeRequested = NO;
+    [self beginClose];
 }
 - (void)listAttachmentsWithCompletion:(void (^)(NSArray<FloeOfficeAttachmentInfo *> *, NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office attachment requests are main-queue owned");

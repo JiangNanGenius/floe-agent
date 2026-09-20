@@ -14,6 +14,13 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 
 /// Process-wide native engine. All completions and controller APIs use the main queue.
 /// The app must copy the qualified editor and engine resources into its main bundle.
+///
+/// Failure handling: a failed engine is terminal for the process lifetime. An
+/// in-process restart is deliberately not offered — engine initialization and
+/// the kit/server workers are not re-entrant by qualification, and a timed-out
+/// or unresponsive engine is not proof that its workers exited. Document
+/// working copies and recovery versions are retained by the App layer, and the
+/// user recovers by restarting the app.
 @interface FloeOfficeNativeRuntime : NSObject
 @property (class, nonatomic, readonly) FloeOfficeNativeRuntime *sharedRuntime NS_SWIFT_NAME(shared);
 @property (nonatomic, readonly, getter=isReady) BOOL ready;
@@ -79,6 +86,9 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 - (void)exportAttachmentWithIdentifier:(NSString *)identifier completion:(void (^)(NSURL * _Nullable fileURL, NSError * _Nullable error))completion;
 /// Settle the native document before releasing its view. This does not request
 /// an engine save or remove any files; save first when committing user edits.
+/// When the document open is still in flight the close is ordered behind it:
+/// a `bye` issued before the open settles is dropped upstream and its
+/// acknowledgement would never arrive.
 - (void)closeWorkingCopyWithCompletion:(void (^)(NSError * _Nullable error))completion;
 - (nullable instancetype)initWithWorkingFileURL:(NSURL *)workingFileURL
                              sessionDirectory:(NSURL *)sessionDirectory

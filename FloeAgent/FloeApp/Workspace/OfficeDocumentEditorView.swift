@@ -157,7 +157,9 @@ final class OfficeFileSession: ObservableObject {
                     guard let self else { return }
                     self.runtimeFailed = true
                     (self.controller as? FloeOfficeNativeViewController)?.cancelPendingSave()
-                    self.error = "文档服务已停止响应，编辑副本已保留。"
+                    self.error = OfficeInkText.t(
+                        "文档服务已停止响应，编辑副本已保留；重启应用后可恢复。",
+                        "The document service stopped responding. Your editing copies were retained; restart the app to recover.")
                     self.phase = .failed
                 }
             }
@@ -1175,8 +1177,8 @@ final class OfficeFileSession: ObservableObject {
             timeout,
             timeoutError: NSError(domain: "org.floeagent.office.runtime", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: OfficeInkText.t(
-                    "文档引擎未能在限定时间内启动；请重试。",
-                    "The document engine did not start in time. Please retry.")
+                    "文档引擎未能在限定时间内启动；编辑副本已保留。请稍后重试，若仍失败请重启应用。",
+                    "The document engine did not start in time. Your edits were retained. Retry shortly, or restart the app if it keeps failing.")
             ])
         ) { completion in
             FloeOfficeNativeRuntime.shared.prepare { error in
