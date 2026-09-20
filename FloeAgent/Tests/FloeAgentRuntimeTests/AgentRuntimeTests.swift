@@ -424,6 +424,203 @@ struct AgentRuntimeTests {
         #expect(failure.message.contains("no visible answer"))
     }
 
+    @Test("A cloud history lookup that ends with no visible answer earns one bounded continuation")
+    func cloudHistoryLookupEmptyTurnContinuesOnce() async throws {
+        let adapter = MockAdapter()
+        let search = try TestFixtures.toolCall(
+            id: "history-search",
+            toolName: "conversation.search",
+            arguments: #"{"query":"构建 204"}"#
+        )
+        adapter.script = [
+            [.toolRequest(search), .completed(.init(stopReason: .toolUse))],
+            [.completed(.init(stopReason: .endTurn))],
+            [.textDelta(.init(text: "构建 204 的任务里记录了这个结论。")),
+             .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["conversation.search"] = ToolCatalog.Descriptor(
+            name: "conversation.search",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        executor.results = [ToolResult(
+            callID: "history-search",
+            status: .ok,
+            outputSummary: #"{"status":"ok","ids":["11111111-1111-1111-1111-111111111111"]}"#,
+            outputDigest: "history-digest"
+        )]
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+
+        try await runtime.start(goal: "查一下之前任务里关于构建 204 的记录")
+
+        #expect(adapter.requests.count == 3)
+        // The settled lookup is evidence for the continuation, never a call
+        // to execute again.
+        #expect(executor.executedCalls.map(\.id) == ["history-search"])
+        #expect(adapter.requests[1].pendingToolCalls.map(\.id) == ["history-search"])
+        let continuationRequest = adapter.requests[2]
+        #expect(continuationRequest.messages.contains {
+            $0.role == "system"
+                && $0.content.contains("produced neither a user-visible answer nor a tool call")
+        })
+        guard case .completed = await runtime.state else {
+            Issue.record("Expected the continued cloud run to complete")
+            return
+        }
+    }
+
+    @Test("A second empty cloud turn after a history lookup fails recoverably without replay")
+    func cloudHistoryLookupSecondEmptyTurnFailsRecoverably() async throws {
+        let adapter = MockAdapter()
+        let search = try TestFixtures.toolCall(
+            id: "history-search",
+            toolName: "conversation.search",
+            arguments: #"{"query":"上次的结论"}"#
+        )
+        adapter.script = [
+            [.toolRequest(search), .completed(.init(stopReason: .toolUse))],
+            [.completed(.init(stopReason: .endTurn))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["conversation.search"] = ToolCatalog.Descriptor(
+            name: "conversation.search",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "查一下上次的结论")
+
+        #expect(adapter.requests.count == 3)
+        #expect(executor.executedCalls.map(\.id) == ["history-search"])
+        guard case .failed(let failure) = await runtime.state else {
+            Issue.record("Expected a recoverable failure, got \(await runtime.state.name)")
+            return
+        }
+        #expect(failure.isRecoverable)
+        #expect(failure.message.contains("no visible answer"))
+    }
+
+    @Test("A cloud empty turn without a history lookup keeps normal completion semantics")
+    func cloudEmptyTurnWithoutHistoryLookupCompletesNormally() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, sink: sink)
+
+        try await runtime.start(goal: "打个招呼")
+
+        #expect(adapter.requests.count == 1)
+        guard case .completed = await runtime.state else {
+            Issue.record("Ordinary cloud empty turns must still complete as-is")
+            return
+        }
+    }
+
+    @Test("A failed history lookup does not arm the cloud continuation")
+    func failedHistoryLookupDoesNotArmContinuation() async throws {
+        let adapter = MockAdapter()
+        let search = try TestFixtures.toolCall(
+            id: "history-search",
+            toolName: "conversation.search",
+            arguments: #"{"query":"不存在的记录"}"#
+        )
+        adapter.script = [
+            [.toolRequest(search), .completed(.init(stopReason: .toolUse))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["conversation.search"] = ToolCatalog.Descriptor(
+            name: "conversation.search",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        executor.results = [ToolResult(
+            callID: "history-search",
+            status: .failed,
+            outputSummary: #"{"status":"targetUnavailable"}"#,
+            outputDigest: "history-digest"
+        )]
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "查一下不存在的记录")
+
+        #expect(adapter.requests.count == 2)
+        guard case .completed = await runtime.state else {
+            Issue.record("A failed lookup leaves ordinary cloud completion semantics intact")
+            return
+        }
+    }
+
+    @Test("A local prepared-prompt overflow after a tool turn compacts once and retries without replay")
+    func localOverflowAfterToolCompactsAndRetries() async throws {
+        let adapter = MockAdapter()
+        let echo = try TestFixtures.toolCall(id: "overflow-echo")
+        adapter.script = [
+            [.toolRequest(echo), .completed(.init(stopReason: .toolUse))],
+            [.error(AgentEvent.NormalizedError(
+                kind: .contextOverflow,
+                providerMessage: "The prepared on-device prompt exceeded the local model context window."
+            ))],
+            [.textDelta(.init(text: "压缩后继续")), .completed(.init(stopReason: .endTurn))]
+        ]
+        var localProvider = TestFixtures.localhostProvider()
+        localProvider.kind = .local
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let sink = MockSink()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            sink: sink,
+            provider: localProvider
+        )
+
+        try await runtime.start(goal: "读取后总结")
+
+        #expect(adapter.requests.count == 3)
+        #expect(executor.executedCalls.map(\.id) == ["overflow-echo"])
+        #expect(sink.transitions.contains("compacting"))
+        guard case .completed = await runtime.state else {
+            Issue.record("Expected the retried run to complete, got \(await runtime.state.name)")
+            return
+        }
+    }
+
+    @Test("A repeated local context overflow fails recoverably after one compaction")
+    func localOverflowSecondFailureIsRecoverable() async throws {
+        let adapter = MockAdapter()
+        let echo = try TestFixtures.toolCall(id: "overflow-echo")
+        let overflow = AgentEvent.error(AgentEvent.NormalizedError(
+            kind: .contextOverflow,
+            providerMessage: "The prepared on-device prompt exceeded the local model context window."
+        ))
+        adapter.script = [
+            [.toolRequest(echo), .completed(.init(stopReason: .toolUse))],
+            [overflow],
+            [overflow]
+        ]
+        var localProvider = TestFixtures.localhostProvider()
+        localProvider.kind = .local
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor, provider: localProvider)
+
+        try await runtime.start(goal: "读取后总结")
+
+        #expect(adapter.requests.count == 3)
+        #expect(executor.executedCalls.map(\.id) == ["overflow-echo"])
+        guard case .failed(let failure) = await runtime.state else {
+            Issue.record("Expected a recoverable failure, got \(await runtime.state.name)")
+            return
+        }
+        #expect(failure.isRecoverable)
+        #expect(failure.message.contains("still exceeds the model limit"))
+    }
+
     @Test("A promised action without a structured call is repaired once")
     func deferredActionPromiseRequestsTheRealToolCall() async throws {
         let adapter = MockAdapter()

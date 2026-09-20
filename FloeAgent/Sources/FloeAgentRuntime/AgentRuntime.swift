@@ -451,8 +451,17 @@ public actor FloeAgentRuntime {
     /// A provider turn that ends with neither visible text nor a tool call
     /// earns exactly one bounded continuation asking for the final answer;
     /// a second empty turn fails recoverably instead of looping or closing
-    /// the run with an invisible answer.
+    /// the run with an invisible answer. On-device models take this path on
+    /// any empty turn; cloud runs only after a successful cross-task history
+    /// lookup (see `historyLookupSucceededInRun`).
     private var noVisibleAnswerContinuationCount = 0
+    /// True once this run settled a `conversation.search`/`conversation.read`
+    /// result with status ok. A cloud turn that then ends with no visible
+    /// answer is the observed "search succeeded, no follow-up" cross-task
+    /// failure, so it earns the same single bounded continuation local models
+    /// get. Ordinary cloud empty turns stay unchanged. Settled pairs replay as
+    /// evidence only; the execution ledger still refuses to re-run them.
+    private var historyLookupSucceededInRun = false
     private var malformedToolRepairCount = 0
     private var malformedToolRepairRequested = false
     /// Set by tool/compaction handling to request another provider turn.
@@ -881,6 +890,18 @@ public actor FloeAgentRuntime {
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
         replayableToolHistory = checkpoint.replayedToolPairs ?? []
+        // A resumed run keeps the cross-task continuation contract: a
+        // successful history lookup committed before or during the
+        // interruption still owes a visible follow-up, even though the
+        // original flag is process memory.
+        historyLookupSucceededInRun = replayableToolHistory.contains { pair in
+            Self.isConversationHistoryTool(pair.call.toolName) && pair.result.status == .ok
+        } || pendingToolResults.contains { result in
+            guard result.status == .ok else { return false }
+            return pendingToolCalls.contains {
+                $0.id == result.callID && Self.isConversationHistoryTool($0.toolName)
+            }
+        }
         activeProviderPendingCalls = []
         activeProviderPendingResults = []
         grants = checkpoint.approvals
@@ -1976,10 +1997,12 @@ public actor FloeAgentRuntime {
                !isFinalizingWithoutTools,
                // Weak on-device models are the observed source of turns that
                // end with neither visible text nor a tool call (for example
-               // reasoning-only output after a search/read chain). Cloud
-               // semantics — and every existing cloud contract — stay
-               // unchanged.
-               configuration.provider.kind == .local {
+               // reasoning-only output after a search/read chain). Cloud runs
+               // join that rule only after a successful cross-task history
+               // lookup in this run: "search succeeded, then nothing" was
+               // reproduced on cloud models too, while ordinary cloud empty
+               // turns keep their existing completion semantics.
+               configuration.provider.kind == .local || historyLookupSucceededInRun {
                 // The search→read→answer chain (and every other route) only
                 // closes when something visible reached the user. One bounded
                 // continuation converts a silent empty turn into the final
@@ -2083,7 +2106,8 @@ public actor FloeAgentRuntime {
     /// Bounded continuation for a turn that produced neither visible text nor
     /// a structured tool call — for example a search/read chain that stopped
     /// before the answer. Runs at most once per run; tool schemas stay
-    /// available so a genuinely unfinished action can still be issued.
+    /// available so a genuinely unfinished action can still be issued, and
+    /// already-settled tool pairs are replayed as evidence, never re-executed.
     private func beginNoVisibleAnswerContinuation() async {
         noVisibleAnswerContinuationCount += 1
         await transition(to: .verifying)
@@ -2718,6 +2742,9 @@ public actor FloeAgentRuntime {
                 result: result,
                 isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true
             )
+            if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
+                historyLookupSucceededInRun = true
+            }
             setToolLifecycle(call: call, phase: .resultCommitted)
             orderedResults.append((call, result))
         }
@@ -3283,14 +3310,17 @@ public actor FloeAgentRuntime {
             await failRun(message: safeProviderMessage, recoverable: false)
             return
         }
+        // The bounded retry path also carries on-device resource failures;
+        // name the real layer instead of always blaming a cloud request.
+        let providerLabel = configuration.provider.kind == .local ? "On-device model" : "Cloud model"
         guard latestProviderDispatchEnvelope != nil, providerRetryRequest != nil else {
-            let message = "Cloud model request failed and no safe dispatch checkpoint is available. \(safeProviderMessage) Re-run the task to try again; no tool was replayed."
+            let message = "\(providerLabel) request failed and no safe dispatch checkpoint is available. \(safeProviderMessage) Re-run the task to try again; no tool was replayed."
             await publishProviderAttempt(status: .failed, reason: message, error: error)
             await failRun(message: message, recoverable: true)
             return
         }
         guard providerRetryCount < configuration.maxProviderRetries else {
-            let message = "Cloud model retry budget exhausted after \(providerAttemptNumber) attempt(s). Last cause: \(safeProviderMessage) Safe recovery: resume or re-run from the saved dispatch checkpoint; no tool side effect was replayed."
+            let message = "\(providerLabel) retry budget exhausted after \(providerAttemptNumber) attempt(s). Last cause: \(safeProviderMessage) Safe recovery: resume or re-run from the saved dispatch checkpoint; no tool side effect was replayed."
             await publishProviderAttempt(status: .exhausted, reason: message, error: error)
             await failRun(message: message, recoverable: true)
             return
@@ -3786,6 +3816,14 @@ public actor FloeAgentRuntime {
             }
         }
         return true
+    }
+
+    /// The cross-task history lookup pair. A settled successful result from
+    /// either one means the run owes the user a visible follow-up (the answer
+    /// or the explicit no-results/unavailable statement), including on cloud
+    /// providers whose empty turns otherwise complete as-is.
+    static func isConversationHistoryTool(_ name: String) -> Bool {
+        name == "conversation.search" || name == "conversation.read"
     }
 
     private static func contextOutputReservation(limits: ModelLimits) -> Int {
