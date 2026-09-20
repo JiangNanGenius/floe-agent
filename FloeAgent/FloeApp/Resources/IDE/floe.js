@@ -80,12 +80,91 @@
     await app.start(document.getElementById('root'));
     const { WorkbenchEditorService } = Alex.requireModule('@opensumi/ide-editor');
     const editor = app.injector.get(WorkbenchEditorService);
+    // PDF/Office documents open as real internal CodeBlitz editor tabs, not
+    // as native outer tabs: a lightweight placeholder component claims the
+    // resource, reports its content rectangle through the bridge, and the
+    // native side overlays the real PDF/Office surface clipped to exactly
+    // that rectangle. The bytes never travel the BrowserFS text path, so the
+    // errno-95 ENOTSUP decode failure cannot occur for these documents.
+    const { EditorComponentRegistry, EditorOpenType } = Alex.requireModule('@opensumi/ide-editor');
+    const React = Alex.requireModule('react');
+    const { URI } = Alex.requireModule('@opensumi/ide-core-common');
+    const FLOE_NATIVE_DOCUMENT_COMPONENT = 'floe-native-document';
+    const FloeNativeDocument = (props) => {
+      const ref = React.useRef(null);
+      const resourcePath = props.resource?.uri?.path?.toString() || '';
+      const relative = pathKey(resourcePath);
+      const kind = policy && policy.kindForPath(relative) === 'pdf' ? 'pdf' : 'office';
+      React.useEffect(() => {
+        const node = ref.current;
+        const report = () => {
+          if (!node) return;
+          const rect = node.getBoundingClientRect();
+          notify('nativeDocument', {
+            path: relative, kind,
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          });
+        };
+        report();
+        if (!node) return undefined;
+        const resize = new ResizeObserver(report);
+        resize.observe(node);
+        // Tab switches hide the previous editor (zero-size box): both the
+        // size and the intersection observation keep the native overlay in
+        // sync with which internal tab is actually visible.
+        let visible = true;
+        const intersection = new IntersectionObserver((entries) => {
+          const nowVisible = entries.some(entry => entry.isIntersecting) && !!node.offsetWidth && !!node.offsetHeight;
+          if (nowVisible === visible) return;
+          visible = nowVisible;
+          report();
+        }, { threshold: 0 });
+        intersection.observe(node);
+        window.addEventListener('resize', report);
+        return () => {
+          resize.disconnect();
+          intersection.disconnect();
+          window.removeEventListener('resize', report);
+          notify('nativeDocument', { path: relative, kind, phase: 'unmount' });
+        };
+      }, [relative]);
+      // The placeholder is transparent: the native overlay supplies the real
+      // surface. A subtle pattern keeps the tab honest if the bridge lags.
+      return React.createElement('div', {
+        ref, className: 'floe-native-document',
+        style: { width: '100%', height: '100%', minHeight: '100%', background: 'var(--editor-background, transparent)' }
+      });
+    };
+    const nativeDocumentRegistry = app.injector.get(EditorComponentRegistry);
+    nativeDocumentRegistry.registerEditorComponent({
+      component: FloeNativeDocument, uid: FLOE_NATIVE_DOCUMENT_COMPONENT, scheme: 'file'
+    });
+    // Weight 20 outranks the built-in file resolver (10), so PDF/Office paths
+    // are claimed before the text editor can attempt a binary read.
+    nativeDocumentRegistry.registerEditorComponentResolver(
+      scheme => scheme === 'file' ? 20 : -1,
+      (resource, results) => {
+        const relative = pathKey(resource.uri.path.toString());
+        const kind = policy ? policy.kindForPath(relative) : 'unknown';
+        if (kind === 'pdf' || kind === 'office') {
+          results.push({ type: EditorOpenType.component, componentId: FLOE_NATIVE_DOCUMENT_COMPONENT, weight: 20 });
+        }
+      }
+    );
     const active = resource => {
       const path = resource?.uri?.path?.toString();
       notify('active', { path: path?.startsWith('/workspace/Floe/') ? pathKey(path) : null });
     };
     editor.onActiveResourceChange(active); active(editor.currentResource);
     window.floeIDE = {
+      // Open a workspace-relative PDF/Office path as an internal CodeBlitz
+      // editor tab (custom document component); the native overlay follows.
+      openDocument: async (path) => {
+        const relative = pathKey('/' + String(path || '').replace(/^\//, ''));
+        if (!policy || (policy.kindForPath(relative) !== 'pdf' && policy.kindForPath(relative) !== 'office')) return false;
+        await editor.open(new URI('file:///workspace/Floe' + relative));
+        return true;
+      },
       hasDirty: () => editor.hasDirty(),
       applyResolution: async (path, expectedDraft, result) => {
         const documents = await editor.getAllOpenedDocuments();

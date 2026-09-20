@@ -6,11 +6,14 @@ import FloeWorkspace
 
 /// An IDE pins one workspace for its lifetime, including terminal ownership.
 ///
-/// The IDE is a unified native tab host: the code workbench (CodeBlitz/Monaco)
-/// plus one tab per routed native document. Office documents get exactly one
-/// `OfficeFileSession` per tab and stay embedded in that tab for preview and
-/// editing — opening one never spawns a second app window — so a tab close can
-/// always offer save / discard / cancel against one working copy.
+/// The IDE is one CodeBlitz workbench: text/code files use its internal
+/// editor tabs and file tree; PDF and Office documents use the same internal
+/// tab system through a custom document component whose rectangle stream the
+/// native surfaces overlay — no native outer tab is ever created for them.
+/// Other routed documents (CAD/image/media/Quick Look) keep their typed
+/// native tab in the strip. Every open Office document still gets exactly one
+/// `OfficeFileSession`, so a tab close can always offer save / discard /
+/// keep-copy against one working copy.
 struct WorkspaceIDEView: View {
     @ObservedObject var center: WorkspaceCenter
     let initialRelativePath: String?
@@ -32,6 +35,14 @@ struct WorkspaceIDEView: View {
     @State private var officeCloseRequest: OfficeCloseRequest?
     @State private var routingNotice: String?
     @State private var showsSourceControl = false
+    /// Office session backing an internal CodeBlitz tab overlay, keyed by
+    /// workspace-relative path. One session per open document, created on
+    /// demand and released when its internal tab unmounts.
+    @StateObject private var nativeDocs = IDENativeDocumentStore()
+    /// An Office internal tab was closed with edits still in its session;
+    /// the save/discard decision happens here because the tab is already gone.
+    @State private var internalOfficeClose: String?
+    @State private var forwardedInitialNativePath = false
     /// In-flight Office share snapshot. The owning tab session reclaims it on
     /// dismiss via `finishSaveCopy()`.
     @State private var officeShareSnapshot: DocumentExportSnapshot?
@@ -160,9 +171,44 @@ struct WorkspaceIDEView: View {
         .sheet(item: $officeShareSnapshot, onDismiss: {
             // Only the session that produced this snapshot holds it; the
             // others no-op on their own export store.
-            Task { for tab in tabs.tabs { await tab.officeSession?.finishSaveCopy() } }
+            Task {
+                for tab in tabs.tabs { await tab.officeSession?.finishSaveCopy() }
+                for session in nativeDocs.all { await session.finishSaveCopy() }
+            }
         }) { snapshot in
             OfficeDocumentShareSheet(url: snapshot.fileURL)
+        }
+        .alert(
+            IDELanguageRunText.t("关闭标签前处理修改？", "Handle changes before closing this tab?"),
+            isPresented: Binding(get: { internalOfficeClose != nil }, set: { if !$0 { internalOfficeClose = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let path = internalOfficeClose {
+                let session = nativeDocs.existing(path)
+                if session?.readOnly == false {
+                    Button(IDELanguageRunText.t("保存并关闭", "Save and close")) {
+                        Task {
+                            let saved = await session?.saveAndReturn() ?? false
+                            if saved { await nativeDocs.release(path) }
+                            internalOfficeClose = nil
+                        }
+                    }
+                    Button(IDELanguageRunText.t("保留副本并关闭", "Keep a copy and close")) {
+                        Task {
+                            let kept = await session?.keepChangesAndReturn() ?? false
+                            if kept { await nativeDocs.release(path) }
+                            internalOfficeClose = nil
+                        }
+                    }
+                }
+                Button(IDELanguageRunText.t("放弃修改并关闭", "Discard and close"), role: .destructive) {
+                    Task {
+                        let discarded = await session?.discardAndReturn() ?? false
+                        if discarded { await nativeDocs.release(path) }
+                        internalOfficeClose = nil
+                    }
+                }
+            }
         }
         .confirmationDialog("ide.unsaved", isPresented: $showsCloseConfirmation, titleVisibility: .visible) {
             Button("ide.save.close") { Task { if await saveAllSurfaces() { await finishClose() } } }
@@ -198,13 +244,41 @@ struct WorkspaceIDEView: View {
         }
         .onChange(of: state.pendingNativePath) { _, value in
             guard let value else { return }
-            tabs.open(relativePath: value)
-            showRoutingNotice(WorkspaceFileRouter.surfaceName(for: value))
+            switch WorkspaceTextPolicy.kind(forPath: value) {
+            case .pdf, .office:
+                // PDF/Office live in internal CodeBlitz tabs now; the native
+                // overlay follows the component's reported rectangle.
+                Task { await state.openNativeDocument(value) }
+            default:
+                tabs.open(relativePath: value)
+                showRoutingNotice(WorkspaceFileRouter.surfaceName(for: value))
+            }
             state.pendingNativePath = nil
+        }
+        .onChange(of: state.nativeDocuments) { _, newValue in
+            // An internal tab unmounted: settle its Office session. With
+            // edits outstanding the save/discard decision is the user's;
+            // a clean preview releases immediately.
+            for path in nativeDocs.officePaths where newValue[path] == nil {
+                settleInternalOfficeClose(path)
+            }
+        }
+        .onChange(of: state.ready) { _, ready in
+            guard ready, !forwardedInitialNativePath, let initialRelativePath else { return }
+            forwardedInitialNativePath = true
+            switch WorkspaceTextPolicy.kind(forPath: initialRelativePath) {
+            case .pdf, .office:
+                Task { await state.openNativeDocument(initialRelativePath) }
+            default:
+                break
+            }
         }
         .onDisappear {
             // A swipe-dismiss edge case must not strand an Office working copy.
-            Task { await tabs.releaseAll() }
+            Task {
+                await nativeDocs.releaseAll()
+                await tabs.releaseAll()
+            }
         }
     }
 
@@ -280,13 +354,29 @@ struct WorkspaceIDEView: View {
     // MARK: - Content
 
     @ViewBuilder private var content: some View {
-        ZStack {
+        ZStack(alignment: .topLeading) {
             // The web workbench stays mounted for the IDE lifetime so unsaved
             // Monaco buffers survive native tab switches.
             IDEWorkbenchWebView(state: state, initialPath: codeInitialPath)
                 .opacity(tabs.activeTab?.kind == .code ? 1 : 0)
                 .allowsHitTesting(tabs.activeTab?.kind == .code)
                 .accessibilityHidden(tabs.activeTab?.kind != .code)
+            if tabs.activeTab?.kind == .code {
+                // Native PDF/Office surfaces overlay the web workbench at the
+                // exact rectangles reported by the internal editor tabs, and
+                // follow tab switches and resizes through the same stream.
+                // Hidden tabs stay mounted (invisible, no hit testing) so a
+                // PDF keeps its reading position and an Office session keeps
+                // its editor state across switches.
+                ForEach(nativeDocumentRequests, id: \.path) { request in
+                    nativeDocumentOverlay(request)
+                        .frame(width: max(0, request.rect.width), height: max(0, request.rect.height))
+                        .offset(x: request.rect.minX, y: request.rect.minY)
+                        .opacity(request.visible ? 1 : 0)
+                        .allowsHitTesting(request.visible)
+                        .clipped()
+                }
+            }
             if let tab = tabs.activeTab {
                 switch tab.kind {
                 case .code:
@@ -299,43 +389,54 @@ struct WorkspaceIDEView: View {
                 }
             }
         }
-        // Office loading lives on the stable container, not on a branch that
-        // tab switching replaces: activating another tab while a document is
-        // still opening must not cancel the open. An edit intent raised from
-        // the tab's action bar is serialized by the session queue.
+        // Office loading lives on the stable container, not on an overlay
+        // branch tab switching replaces: activating another tab while a
+        // document is still opening must not cancel the open. The in-flight
+        // open is owned by the session; an edit intent from the action bar is
+        // serialized by the session queue.
         .task(id: officeLoadKey) {
-            guard let tab = tabs.activeTab, tab.kind == .office,
-                  let session = tab.officeSession, Self.needsOfficeLoad(session) else { return }
-            do {
+            for request in state.nativeDocuments.values where request.kind == .office {
+                let session = nativeDocs.session(for: request.path)
+                guard Self.needsOfficeLoad(session) else { continue }
                 // A cloud/network tab edits only a private temporary copy, so
                 // the session must stay a read-only snapshot; nothing may
                 // present a temp-copy save as a successful remote save.
-                session.isRemoteSnapshot = center.isCloudWorkspacePath(tab.relativePath)
-                    || center.isNetworkWorkspacePath(tab.relativePath)
-                let url = try await resolveOfficeURL(relativePath: tab.relativePath)
-                await session.open(url)
-            } catch {
-                // Resolve/open errors must reach a terminal, recoverable state:
-                // leaving the phase untouched shows an endless "opening"
-                // spinner and never re-arms this loader for a retry.
-                session.reportOpenFailure(error)
+                session.isRemoteSnapshot = center.isCloudWorkspacePath(request.path)
+                    || center.isNetworkWorkspacePath(request.path)
+                do {
+                    let url = try await resolveOfficeURL(relativePath: request.path)
+                    await session.open(url)
+                } catch {
+                    // Resolve/open errors must reach a terminal, recoverable
+                    // state: an endless "opening" spinner never re-arms retries.
+                    session.reportOpenFailure(error)
+                }
             }
         }
     }
 
-    /// Re-runs the office loader when the active office tab has no surface:
+    /// Re-runs the office loader when any internal office tab has no surface:
     /// the first open, or a save/discard that returned the session to `.idle`
-    /// so the embedded read-only preview must come back. The in-flight open
-    /// itself is owned by the session, never by this view, so a key change
-    /// cannot cancel a load.
+    /// so the embedded read-only preview must come back.
     private var officeLoadKey: String {
-        guard let tab = tabs.activeTab, tab.kind == .office,
-              let session = tab.officeSession else { return "code" }
-        return "\(tab.id)#\(Self.needsOfficeLoad(session))"
+        state.nativeDocuments.values
+            .filter { $0.kind == .office }
+            .map { "\($0.path)#\(Self.needsOfficeLoad(nativeDocs.session(for: $0.path)))" }
+            .sorted()
+            .joined(separator: "|")
     }
 
-    private static func needsOfficeLoad(_ session: OfficeFileSession) -> Bool {
-        session.controller == nil && session.phase == .idle
+    private var nativeDocumentRequests: [IDEWorkbenchState.IDENativeDocumentRequest] {
+        state.nativeDocuments.values.sorted { $0.path < $1.path }
+    }
+
+    @ViewBuilder private func nativeDocumentOverlay(_ request: IDEWorkbenchState.IDENativeDocumentRequest) -> some View {
+        switch request.kind {
+        case .pdf:
+            IDEPDFDocumentOverlay(relativePath: request.path, center: center)
+        case .office:
+            officeOverlay(request.path)
+        }
     }
 
     /// Text files are handed to the workbench only when the typed router says
@@ -365,11 +466,53 @@ struct WorkspaceIDEView: View {
                     .background(.bar)
                 }
                 OfficeDocumentSurface(session: session)
-                officeActionBar(tab: tab, session: session)
+                officeActionBar(session: session)
             }
             // A verified original-file commit from this tab (including the
             // engine's own toolbar save) refreshes every sibling entry.
             .onAppear { session.onCommitted = { onSaved() } }
+        }
+    }
+
+    /// The internal-tab Office overlay: one session per document path, opened
+    /// by the session itself (never cancelled by tab switches — the request
+    /// stream drives visibility, the open owns the session).
+    @ViewBuilder private func officeOverlay(_ path: String) -> some View {
+        let session = nativeDocs.session(for: path)
+        VStack(spacing: 0) {
+            if let reason = session.editUnavailableReason {
+                HStack(spacing: 8) {
+                    Label(reason, systemImage: "lock")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button(IDELanguageRunText.t("重试编辑", "Retry editing")) {
+                        Task { await session.requestEditing() }
+                    }
+                    .font(.footnote)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.bar)
+            }
+            OfficeDocumentSurface(session: session)
+            officeActionBar(session: session)
+        }
+        // A verified original-file commit refreshes every sibling entry.
+        .onAppear { session.onCommitted = { onSaved() } }
+    }
+
+    private static func needsOfficeLoad(_ session: OfficeFileSession) -> Bool {
+        session.controller == nil && session.phase == .idle
+    }
+
+    /// Settles an Office session whose internal tab already unmounted. A
+    /// clean preview releases at once; outstanding edits hand the decision to
+    /// the user (the tab itself cannot be vetoed after the fact).
+    private func settleInternalOfficeClose(_ path: String) {
+        guard let session = nativeDocs.existing(path) else { return }
+        if session.hasUncommittedChanges || (!session.readOnly && session.phase == .ready) {
+            internalOfficeClose = path
+        } else {
+            Task { await nativeDocs.release(path) }
         }
     }
 
@@ -387,7 +530,7 @@ struct WorkspaceIDEView: View {
         return url
     }
 
-    @ViewBuilder private func officeActionBar(tab: IDEWorkspaceTab, session: OfficeFileSession) -> some View {
+    @ViewBuilder private func officeActionBar(session: OfficeFileSession) -> some View {
         // The tab owns every Office action; opening never spawns another
         // window. On compact widths the row switches to icon-only buttons so
         // Save/Discard/Share keep their 36pt targets without overflowing.
@@ -465,7 +608,7 @@ struct WorkspaceIDEView: View {
     }
 
     private var hasOfficeEdits: Bool {
-        tabs.tabs.contains { $0.hasUnsavedChanges }
+        nativeDocs.hasEdits || tabs.tabs.contains { $0.hasUnsavedChanges }
     }
 
     // MARK: - Actions
@@ -497,6 +640,12 @@ struct WorkspaceIDEView: View {
     }
 
     private func openActiveInRoutedSurface() {
+        // PDF/Office actives live in internal CodeBlitz tabs; re-assert the
+        // internal tab instead of spawning any native chrome.
+        if let path = state.activePath, isNativeDocumentPath(path) {
+            Task { await state.openNativeDocument(path) }
+            return
+        }
         if let active = tabs.activeTab, active.kind == .office {
             // An Office document stays embedded in its own IDE tab; opening it
             // must never spawn a second window.
@@ -504,6 +653,13 @@ struct WorkspaceIDEView: View {
             return
         }
         if let path = state.activePath { tabs.open(relativePath: path) }
+    }
+
+    private func isNativeDocumentPath(_ path: String) -> Bool {
+        switch WorkspaceTextPolicy.kind(forPath: path) {
+        case .pdf, .office: return true
+        default: return false
+        }
     }
 
     private func requestClose(_ tab: IDEWorkspaceTab) {
@@ -532,6 +688,9 @@ struct WorkspaceIDEView: View {
     private func saveAllSurfaces() async -> Bool {
         var saved = true
         if state.ready { saved = await state.saveAll() }
+        for session in nativeDocs.all where !session.readOnly {
+            if !(await session.saveInPlace()) { saved = false }
+        }
         for tab in tabs.tabs {
             guard let session = tab.officeSession, !session.readOnly else { continue }
             if !(await session.saveInPlace()) { saved = false }
@@ -542,6 +701,7 @@ struct WorkspaceIDEView: View {
     private func finishClose() async {
         // Do not leave a run-owned session behind when the IDE closes.
         if let runController { await runController.stop() }
+        await nativeDocs.releaseAll()
         await tabs.releaseAll()
         onSaved()
         dismiss()
@@ -564,6 +724,101 @@ private struct IDETabUnsavedBadge: View {
         if session.hasUncommittedChanges || (!session.readOnly && session.phase == .ready) {
             Circle().fill(FloeTheme.primary).frame(width: 6, height: 6)
                 .accessibilityLabel(IDELanguageRunText.t("有未保存的修改", "Unsaved changes"))
+        }
+    }
+}
+
+/// Owns the `OfficeFileSession` behind each internal CodeBlitz Office tab,
+/// keyed by workspace-relative path. Sessions are created on demand and
+/// released only through here so a tab close or IDE close never strands a
+/// working copy.
+@MainActor
+final class IDENativeDocumentStore: ObservableObject {
+    private var sessions: [String: OfficeFileSession] = [:]
+
+    func session(for path: String) -> OfficeFileSession {
+        if let existing = sessions[path] { return existing }
+        let created = OfficeFileSession()
+        sessions[path] = created
+        return created
+    }
+
+    func existing(_ path: String) -> OfficeFileSession? { sessions[path] }
+    var all: [OfficeFileSession] { Array(sessions.values) }
+    var officePaths: [String] { Array(sessions.keys) }
+
+    var hasEdits: Bool {
+        sessions.values.contains { $0.hasUncommittedChanges || (!$0.readOnly && $0.phase == .ready) }
+    }
+
+    func release(_ path: String) async {
+        guard let session = sessions.removeValue(forKey: path) else { return }
+        await session.release()
+    }
+
+    func releaseAll() async {
+        let owned = sessions.values
+        sessions.removeAll()
+        for session in owned { await session.release() }
+    }
+}
+
+/// Read-only PDF surface for an internal IDE tab. Resolution mirrors
+/// `FilePreviewView`: local files pass the guard resolver, cloud/network
+/// files become a private snapshot copy (never decoded as text). Rendering is
+/// the shared PDFKit-gated `InlinePDFReader`.
+private struct IDEPDFDocumentOverlay: View {
+    let relativePath: String
+    let center: WorkspaceCenter
+    @State private var url: URL?
+    @State private var loadError: String?
+    @StateObject private var remoteCopy = RemoteFilePreviewCopy()
+
+    var body: some View {
+        Group {
+            if let loadError {
+                ContentUnavailableView {
+                    Label("inspector.preview.error", systemImage: "exclamationmark.triangle")
+                } description: { Text(loadError) } actions: {
+                    Button("pdf.reader.retry") { Task { await load() } }
+                }
+            } else if let url {
+                InlinePDFReader(url: url, validateRead: { validate(url: url) })
+                    .id(url)
+            } else {
+                ProgressView("inspector.preview.loading")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task(id: relativePath) { await load() }
+    }
+
+    private func load() async {
+        guard let service = center.fileService else {
+            loadError = String(localized: "ide.workspace.unavailable")
+            return
+        }
+        do {
+            if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                url = try remoteCopy.store(bytes, fileName: (relativePath as NSString).lastPathComponent)
+            } else {
+                let resolved = try service.guardResolver.resolve(relativePath)
+                try service.guardResolver.assertReadableSize(resolved)
+                url = resolved
+            }
+            loadError = nil
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    private func validate(url: URL) throws {
+        if remoteCopy.url == url { return }
+        guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+        guard let resolved = try? service.guardResolver.resolve(relativePath),
+              resolved.standardizedFileURL == url.standardizedFileURL else {
+            throw CocoaError(.fileReadNoPermission)
         }
     }
 }

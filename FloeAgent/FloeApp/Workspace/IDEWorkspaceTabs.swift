@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// The IDE now hosts three surfaces in one native tab strip:
-//   • code      — the CodeBlitz/Monaco workbench (browser filesystem + CAS)
-//   • office    — one native OfficeFileSession per document; preview and
-//                 editing stay embedded in the same tab (no second window)
-//   • document  — typed viewer (PDF/CAD/image/binary) via FilePreviewView
+// The IDE is one CodeBlitz workbench. Its internal editor tabs own text/code
+// AND PDF/Office documents (custom document component, native overlay clipped
+// to the reported rectangle) — those never appear in this native strip. The
+// strip only hosts the code container plus typed viewers for the remaining
+// routed kinds (CAD/image/media/Quick Look).
 //
 // Text routing stays authoritative: an Office/PDF/CAD/image path can never
 // become a code tab, so the web workbench never sees bytes it would decode
@@ -72,7 +72,12 @@ final class IDEWorkspaceTabStore: ObservableObject {
             return
         }
         switch WorkspaceFileRouter.destination(for: initialRelativePath) {
-        case .codeEditor:
+        case .codeEditor, .officeEditor:
+            // Office documents are internal CodeBlitz tabs; the IDE view
+            // forwards the initial path once the workbench is ready.
+            activeTabID = Self.codeTabID
+        case .documentViewer where WorkspaceTextPolicy.isPDFPath(initialRelativePath):
+            // PDFs are internal CodeBlitz tabs as well.
             activeTabID = Self.codeTabID
         default:
             _ = open(relativePath: initialRelativePath)

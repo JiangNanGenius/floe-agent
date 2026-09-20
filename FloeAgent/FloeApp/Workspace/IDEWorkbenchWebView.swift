@@ -14,9 +14,59 @@ import FloeWorkspace
     /// A non-text path the workbench refused (ENOTSUP). The native IDE opens
     /// it in its typed surface instead of showing a decode failure.
     @Published var pendingNativePath: String?
+    /// Native-document overlay requests reported by the web workbench's
+    /// custom document component (PDF/Office internal tabs). Keyed by the
+    /// workspace-relative path; each entry carries the last reported rect
+    /// (web-view points) and whether its internal tab is visible.
+    @Published private(set) var nativeDocuments: [String: IDENativeDocumentRequest] = [:]
     weak var web: WKWebView?
     let files: IDEWorkspaceSession?
     init(files: WorkspaceFileService?) { self.files = files.map { IDEWorkspaceSession(files: $0) } }
+
+    struct IDENativeDocumentRequest: Equatable {
+        let path: String
+        let kind: IDENativeDocumentKind
+        var rect: CGRect
+        var visible: Bool
+    }
+    enum IDENativeDocumentKind: String, Equatable {
+        case pdf
+        case office
+    }
+
+    /// Opens a workspace-relative PDF/Office path as an internal CodeBlitz
+    /// editor tab. Text routing is untouched; other kinds stay refused here
+    /// so their native surfaces keep their existing routing.
+    func openNativeDocument(_ path: String) async {
+        guard ready, let web, !nativeDocuments.keys.contains(path) else { return }
+        _ = try? await web.callAsyncJavaScript(
+            "return await window.floeIDE.openDocument(path)",
+            arguments: ["path": "/" + path], in: nil, contentWorld: .page)
+    }
+
+    private func applyNativeDocumentMessage(_ body: [String: Any]) {
+        guard let path = body["path"] as? String,
+              let relative = try? IDEWorkspaceSession.relativePath(path) else { return }
+        if body["phase"] as? String == "unmount" {
+            nativeDocuments.removeValue(forKey: relative)
+            return
+        }
+        guard let rectBody = body["rect"] as? [String: Any],
+              let x = rectBody["x"] as? CGFloat, let y = rectBody["y"] as? CGFloat,
+              let width = rectBody["width"] as? CGFloat, let height = rectBody["height"] as? CGFloat,
+              let rawKind = body["kind"] as? String, let kind = IDENativeDocumentKind(rawValue: rawKind)
+        else { return }
+        let rect = CGRect(x: x, y: y, width: width, height: height)
+        let visible = rect.width > 1 && rect.height > 1
+        nativeDocuments[relative] = IDENativeDocumentRequest(path: relative, kind: kind, rect: rect, visible: visible)
+    }
+
+    /// The web content process is gone: every overlay request it reported
+    /// is stale and must not leave native surfaces floating.
+    func webContentProcessTerminated() {
+        ready = false
+        nativeDocuments.removeAll()
+    }
     func resolve(_ review: WorkspaceEditConflict, content: String) async {
         guard let web, let files, ready else { return }
         do {
@@ -147,6 +197,11 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
                     state.pendingNativePath = relative
                 }
                 replyHandler([:], nil)
+            case "nativeDocument":
+                // The custom document component reports mount/rect/unmount
+                // for PDF/Office internal tabs; the native overlay follows.
+                state.applyNativeDocumentMessage(body)
+                replyHandler([:], nil)
             default:
                 guard let data = try? JSONSerialization.data(withJSONObject: body),
                       let request = try? JSONDecoder().decode(IDEWorkspaceSession.Request.self, from: data) else {
@@ -191,8 +246,8 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
             decisionHandler(navigationAction.request.url == page ? .allow : .cancel)
         }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            state.ready = false
             state.error = String(localized: "ide.process.stopped")
+            state.webContentProcessTerminated()
         }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { state.error = error.localizedDescription }
     }
