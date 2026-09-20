@@ -24,7 +24,10 @@
 //    * claiming after a close returns NO so the caller cannot touch recycled
 //      descriptor numbers;
 //    * interactive input written to the session's stdin descriptor reaches the
-//      running program and its output comes back on the session pipe.
+//      running program and its output comes back on the session pipe;
+//    * an already-cancelled session open on a free gate never starts a native
+//      session thread (no engine entry, no record, no worker) and returns the
+//      gate exactly once, still usable immediately afterwards.
 //
 //  This is a desktop host check of the bridge state machine, not an iOS or
 //  ios_system qualification.
@@ -45,6 +48,9 @@ FILE *thread_stdout = NULL;
 FILE *thread_stderr = NULL;
 void *thread_context = NULL;
 static std::atomic<bool> gReleaseBlocked{false};
+/// Counts every entry into the scripted engine, on any thread. Tests use it to
+/// prove a cancelled open started no native session thread at all.
+static std::atomic<int> gEngineEntries{0};
 
 void initializeEnvironment(void) {}
 bool joinMainThread = false;
@@ -72,6 +78,7 @@ static void writeBytes(const char *bytes, size_t count) {
 }
 
 int ios_system(const char *command) {
+    gEngineEntries.fetch_add(1, std::memory_order_acq_rel);
     NSString *value = command ? [NSString stringWithUTF8String:command] : @"";
     if ([value hasPrefix:@"coop"]) {
         // Cooperative worker: observes the bridge cancellation flag on its own
@@ -424,6 +431,53 @@ int main(int argc, const char **argv) {
         gReleaseBlocked.store(true, std::memory_order_release);
         check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"one-shot-q"); }, 5.0),
               @"S6b quarantined one-shot stops once released");
+
+        // S7: a cancellation that already happened must not start a session
+        // thread even when the gate is immediately free. The wait loop breaks
+        // on `waited == 0` without consulting shouldCancel, so the bridge must
+        // re-check after taking the gate, hand it back exactly once and report
+        // Cancelled — never enter the engine or create a session record.
+        NSString *preOut = nil, *preErr = nil; int32_t preCode = 125;
+        FloeShellBridgeStatus preFree = FloeShellRunCommand(@"ok", root, root, @"one-shot-pre-cancel", @{}, nil,
+            2.0, 0.5, 4096, nil, &preOut, &preErr, &preCode);
+        check(preFree == FloeShellBridgeStatusOK, @"S7 gate is free and immediately available before the cancelled open");
+        gEngineEntries.store(0, std::memory_order_release);
+        __block int cancelChecks = 0;
+        int inFD7 = -1, outFD7 = -1; NSString *initial7 = nil;
+        FloeShellBridgeStatus cancelledFree = FloeShellOpenSession(@"banner", root, root, @"session-cancelled-free", @{}, 80, 24, 2.0,
+            ^BOOL { cancelChecks += 1; return YES; }, &inFD7, &outFD7, &initial7);
+        check(cancelledFree == FloeShellBridgeStatusCancelled, @"S7 already-cancelled session open on a free gate reports Cancelled");
+        check(cancelChecks > 0, @"S7 the cancelled open consulted its cancellation token");
+        check(gEngineEntries.load(std::memory_order_acquire) == 0, @"S7 cancelled open started no native session thread");
+        check(!FloeShellSessionAlive(@"session-cancelled-free"), @"S7 cancelled open registered no session record");
+        check(FloeShellClaimSessionDescriptors(@"session-cancelled-free") == NO, @"S7 cancelled open left no claimable descriptors");
+        check(!FloeShellHasActiveWorker(@"session-cancelled-free"), @"S7 cancelled open registered no active worker");
+        check(inFD7 == -1 && outFD7 == -1, @"S7 cancelled open returned no descriptors");
+        check(![FloeShellRunGateDiagnostics() containsString:@"owner=session-cancelled-free"],
+              @"S7 cancelled open does not remain the gate owner");
+        NSString *postOut = nil, *postErr = nil; int32_t postCode = 125;
+        FloeShellBridgeStatus postFree = FloeShellRunCommand(@"ok", root, root, @"one-shot-post-cancel", @{}, nil,
+            2.0, 0.5, 4096, nil, &postOut, &postErr, &postCode);
+        check(postFree == FloeShellBridgeStatusOK && [postOut containsString:@"ok"],
+              @"S7 gate is usable again immediately after the cancelled open");
+        // A cancelled open must not damage a later normal session either.
+        int inFD8 = -1, outFD8 = -1; NSString *initial8 = nil;
+        FloeShellBridgeStatus opened8 = FloeShellOpenSession(@"banner", root, root, @"session-after-cancelled", @{}, 80, 24, 2.0, nil, &inFD8, &outFD8, &initial8);
+        check(opened8 == FloeShellBridgeStatusOK, @"S7 a normal session still opens after the cancelled one");
+        if (inFD8 >= 0) { close(inFD8); }
+        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"session-after-cancelled"); }, 5.0),
+              @"S7 that session unwinds on stdin EOF");
+        if (outFD8 >= 0) { close(outFD8); }
+        FloeShellEndSession(@"session-after-cancelled");
+
+        // S8: the process-wide gate is exactly available once after every
+        // worker has stopped. A cancelled or failed open that leaked a hold
+        // (count 0) or over-released the gate (count 2) fails here, so the
+        // "hand the gate back precisely once" contract is measured directly.
+        int available = 0;
+        while (available < 3 && dispatch_semaphore_wait(FloeShellRunGate(), DISPATCH_TIME_NOW) == 0) { available += 1; }
+        for (int index = 0; index < available; index++) { dispatch_semaphore_signal(FloeShellRunGate()); }
+        check(available == 1, @"S8 the run gate is exactly available once after all workers stopped");
 
         printf("\n%d/%d shell bridge host checks passed\n", checks - failures, checks);
         return failures == 0 ? 0 : 1;

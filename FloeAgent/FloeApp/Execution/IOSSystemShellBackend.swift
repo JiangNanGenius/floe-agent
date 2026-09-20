@@ -164,7 +164,16 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         private var pendingInput = Data()
         private var finished = false
         private var closing = false
+        /// Latches the one and only close of the stdin write end. Every path
+        /// that closes it (EOF flush, hard write error, pump teardown) goes
+        /// through closeInputDescriptorLocked(), so a recycled descriptor
+        /// number is never closed twice.
         private var inputClosed = false
+        /// Set when an exchange asked for end-of-file. The pump flushes every
+        /// byte enqueued before this request, then closes stdin so the program
+        /// observes the queued input followed by a real EOF. New input is
+        /// refused from this point on.
+        private var eofRequested = false
         private var exitCode: Int32?
         private var bytesRead = 0
         private var bytesWritten = 0
@@ -184,23 +193,25 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             lock.lock()
             defer { lock.unlock() }
             guard !closing && !finished else { throw FloeError.validationFailed("Terminal input is closed") }
-            guard !inputClosed else { throw FloeError.validationFailed("Terminal stdin is closed (EOF was sent); open a new session for more input") }
+            guard !inputClosed && !eofRequested else { throw FloeError.validationFailed("Terminal stdin is closed (EOF was sent); open a new session for more input") }
             guard pendingInput.count + data.count <= 256 * 1024 else {
                 throw FloeError.validationFailed("Terminal input queue is full")
             }
             pendingInput.append(data)
             wake.signal()
         }
-        /// Closes the session's stdin write end once. The program observes a
-        /// real EOF (read returns 0) instead of a stray Ctrl-D byte, which a
-        /// pipe has no line discipline to translate.
+        /// Requests the session's stdin end-of-file without discarding input
+        /// that was already enqueued: the pump writes the pending bytes in
+        /// order and only then closes the write end, so the program reads the
+        /// queued input and then a real EOF (read returns 0). Closing the
+        /// descriptor here would drop those bytes. Input is refused from this
+        /// point on, and the pump owns the single descriptor close.
         func sendEOF() throws {
             lock.lock()
             defer { lock.unlock() }
             guard !closing && !finished else { throw FloeError.validationFailed("Terminal input is closed") }
-            guard !inputClosed else { return }
-            inputClosed = true
-            Darwin.close(input)
+            guard !eofRequested else { return }
+            eofRequested = true
             wake.signal()
         }
         func start() {
@@ -216,11 +227,20 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
                         if written > 0 {
                             pendingInput.removeFirst(written); bytesWritten += written
                         } else if written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR {
-                            // The program stopped reading (EPIPE/EBADF): mark
-                            // stdin closed but keep draining its output.
-                            inputClosed = true
+                            // The program stopped reading (EPIPE/EBADF): the
+                            // write end is unusable. Close it exactly once —
+                            // flagging it closed without closing would leak
+                            // the descriptor — and keep draining output.
                             pendingInput.removeAll()
+                            closeInputDescriptorLocked()
                         }
+                    }
+                    // Deliver a requested EOF only once every byte enqueued
+                    // before it has been written, so a queued command or line
+                    // is never silently dropped. EAGAIN/EINTR writes keep
+                    // their bytes queued and are retried on the next pass.
+                    if eofRequested && pendingInput.isEmpty && !inputClosed {
+                        closeInputDescriptorLocked()
                     }
                     lock.unlock()
                     var chunk = [UInt8](repeating: 0, count: 16 * 1024)
@@ -253,10 +273,20 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
                 onFinish?(id)
             }
         }
+        /// Closes the stdin write end exactly once. `inputClosed` doubles as the
+        /// ownership latch so the EOF flush, a hard write error and the pump's
+        /// teardown can all call this without a double close of a descriptor
+        /// number some other open may already have recycled.
+        private func closeInputDescriptorLocked() {
+            guard !inputClosed else { return }
+            inputClosed = true
+            Darwin.close(input)
+        }
         private func closeDescriptorsLocked() {
-            // Per-descriptor flags: sendEOF() may already have closed stdin,
-            // and a recycled descriptor number must never be closed twice.
-            if !inputClosed { inputClosed = true; Darwin.close(input) }
+            // Per-descriptor latches: the EOF flush (or a hard write error)
+            // may already have closed stdin, and a recycled descriptor number
+            // must never be closed twice.
+            closeInputDescriptorLocked()
             if !outputClosed { outputClosed = true; Darwin.close(output) }
         }
         func drain(maxBytes: Int) -> ShellExchangeResult {

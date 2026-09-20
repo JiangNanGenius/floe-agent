@@ -708,6 +708,17 @@ FloeShellBridgeStatus FloeShellOpenSession(
     }
     FloeRecordGateWait(NSProcessInfo.processInfo.systemUptime - requestedAt);
     FloeRecordGateAcquired(sessionID);
+    // The gate can be free on the first try (`waited == 0` breaks out of the
+    // wait loop above without ever consulting shouldCancel), so cancellation
+    // must be re-checked after acquisition. A request that was already
+    // cancelled must not start a native session thread or touch engine state:
+    // hand the gate back exactly once and report Cancelled. The wait-loop
+    // paths above still cover cancellation that arrives while queued.
+    if (shouldCancel && shouldCancel()) {
+        FloeRecordGateReleased(sessionID);
+        dispatch_semaphore_signal(FloeShellRunGate());
+        return FloeShellBridgeStatusCancelled;
+    }
     int inputPipe[2] = {-1, -1};
     int outputPipe[2] = {-1, -1};
     if (pipe(inputPipe) != 0) { FloeRecordGateReleased(sessionID); dispatch_semaphore_signal(FloeShellRunGate()); return FloeShellBridgeStatusEngineUnavailable; }
