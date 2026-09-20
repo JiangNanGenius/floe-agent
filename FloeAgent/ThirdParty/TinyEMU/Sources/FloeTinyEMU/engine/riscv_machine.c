@@ -754,7 +754,10 @@ static int riscv_build_fdt(RISCVMachine *m, uint8_t *dst,
     return size;
 }
 
-static void copy_bios(RISCVMachine *s, const uint8_t *buf, int buf_len,
+/* FLOE-EMBED: returns 0 on success, -1 on image/RAM size errors so the
+   embedder gets a recoverable create failure instead of process exit.
+   Also fixes upstream check-after-memcpy overflow on kernel/initrd. */
+static int copy_bios(RISCVMachine *s, const uint8_t *buf, int buf_len,
                       const uint8_t *kernel_buf, int kernel_buf_len,
                       const uint8_t *initrd_buf, int initrd_buf_len,
                       const char *cmd_line)
@@ -765,7 +768,7 @@ static void copy_bios(RISCVMachine *s, const uint8_t *buf, int buf_len,
 
     if (buf_len > s->ram_size) {
         vm_error("BIOS too big\n");
-        exit(1);
+        return -1;
     }
 
     ram_ptr = get_ram_ptr(s, RAM_BASE_ADDR, TRUE);
@@ -779,11 +782,11 @@ static void copy_bios(RISCVMachine *s, const uint8_t *buf, int buf_len,
         else
             align = 2 << 20; /* 2 MB page align */
         kernel_base = (buf_len + align - 1) & ~(align - 1);
-        memcpy(ram_ptr + kernel_base, kernel_buf, kernel_buf_len);
         if (kernel_buf_len + kernel_base > s->ram_size) {
             vm_error("kernel too big");
-            exit(1);
+            return -1;
         }
+        memcpy(ram_ptr + kernel_base, kernel_buf, kernel_buf_len);
     }
 
     initrd_base = 0;
@@ -792,11 +795,11 @@ static void copy_bios(RISCVMachine *s, const uint8_t *buf, int buf_len,
         initrd_base = s->ram_size / 2;
         if (initrd_base > (128 << 20))
             initrd_base = 128 << 20;
-        memcpy(ram_ptr + initrd_base, initrd_buf, initrd_buf_len);
         if (initrd_buf_len + initrd_base > s->ram_size) {
             vm_error("initrd too big");
-            exit(1);
+            return -1;
         }
+        memcpy(ram_ptr + initrd_base, initrd_buf, initrd_buf_len);
     }
     
     ram_ptr = get_ram_ptr(s, 0, TRUE);
@@ -816,6 +819,7 @@ static void copy_bios(RISCVMachine *s, const uint8_t *buf, int buf_len,
     q[2] = 0x58593 + ((fdt_addr - 4) << 20); /* addi a1, a1, dtb */
     q[3] = 0xf1402573; /* csrr a0, mhartid */
     q[4] = 0x00028067; /* jalr zero, t0, jump_addr */
+    return 0; /* FLOE-EMBED: success */
 }
 
 static void riscv_flush_tlb_write_range(void *opaque, uint8_t *ram_addr,
@@ -865,8 +869,18 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
     }
     /* RAM */
     ram_flags = 0;
-    cpu_register_ram(s->mem_map, RAM_BASE_ADDR, p->ram_size, ram_flags);
-    cpu_register_ram(s->mem_map, 0x00000000, LOW_RAM_SIZE, 0);
+    /* FLOE-EMBED: cpu_register_ram returns NULL on allocation failure
+       (see iomem.c floe_ram_oom); report and release the partial machine
+       so the embedder gets a recoverable create error. */
+    if (!cpu_register_ram(s->mem_map, RAM_BASE_ADDR, p->ram_size, ram_flags) ||
+        !cpu_register_ram(s->mem_map, 0x00000000, LOW_RAM_SIZE, 0)) {
+        vm_error("floe: could not allocate guest RAM (%llu MB)\n",
+                 (unsigned long long)(p->ram_size >> 20));
+        riscv_cpu_end(s->cpu_state);
+        phys_mem_map_end(s->mem_map);
+        free(s);
+        return NULL;
+    }
     s->rtc_real_time = p->rtc_real_time;
     if (p->rtc_real_time) {
         s->rtc_start_time = rtc_get_real_time(s);
@@ -972,11 +986,19 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
         vm_error("No bios found");
     }
 
-    copy_bios(s, p->files[VM_FILE_BIOS].buf, p->files[VM_FILE_BIOS].len,
-              p->files[VM_FILE_KERNEL].buf, p->files[VM_FILE_KERNEL].len,
-              p->files[VM_FILE_INITRD].buf, p->files[VM_FILE_INITRD].len,
-              p->cmdline);
-    
+    /* FLOE-EMBED: propagate copy_bios failure; release the partial machine.
+       Note: virtio device structs registered above are not individually
+       freed (upstream has no virtio_device_end) -- a few hundred bytes. */
+    if (copy_bios(s, p->files[VM_FILE_BIOS].buf, p->files[VM_FILE_BIOS].len,
+                  p->files[VM_FILE_KERNEL].buf, p->files[VM_FILE_KERNEL].len,
+                  p->files[VM_FILE_INITRD].buf, p->files[VM_FILE_INITRD].len,
+                  p->cmdline) < 0) {
+        riscv_cpu_end(s->cpu_state);
+        phys_mem_map_end(s->mem_map);
+        free(s);
+        return NULL;
+    }
+
     return (VirtMachine *)s;
 }
 

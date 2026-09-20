@@ -108,8 +108,10 @@ static PhysMemoryRange *default_register_ram(PhysMemoryMap *s, uint64_t addr,
 
     pr->phys_mem = mallocz(size);
     if (!pr->phys_mem) {
-        fprintf(stderr, "Could not allocate VM memory\n");
-        exit(1);
+        /* FLOE-EMBED: guest RAM OOM is a recoverable error for embedders
+           (floe_ram_oom); propagate NULL instead of terminating the host */
+        fprintf(stderr, "Could not allocate VM memory (floe_ram_oom)\n");
+        return NULL;
     }
 
     if (devram_flags & DEVRAM_FLAG_DIRTY_BITS) {

@@ -16,10 +16,12 @@
 #
 # Vendored content rules:
 #  - engine/ is byte-identical to the pristine tarball EXCEPT the files
-#    carrying documented patches: riscv_machine.c (patches/0001),
-#    fs_disk.c (patches/0002) and slirp/bootp.c (patches/0003, an upstream
-#    typo that only compiles with DEBUG undefined). --check re-applies the
-#    patches to the pristine copies and diffs, so a hand-edited vendored
+#    carrying documented patches, applied in this order: riscv_machine.c
+#    (patches/0001 poweroff callback, then patches/0002 recoverable OOM +
+#    copy_bios bounds), iomem.c (patches/0002), fs_disk.c (patches/0003
+#    Apple stat timestamps) and slirp/bootp.c (patches/0004, an upstream
+#    typo that only compiles with DEBUG undefined). --check rebuilds the
+#    pristine tree + patches + rename and diffs, so a hand-edited vendored
 #    file fails the check.
 #  - adapter/floe_vm.{c,h} are symlinked from ../../adapter (single source).
 #  - shims/ holds the Apple SDK compatibility headers from adapter/macos
@@ -59,10 +61,12 @@ tcp_timer.c bootp.h debug.h if.h ip.h ip_icmp.h libslirp.h main.h mbuf.h \
 misc.h sbuf.h slirp.h slirp_config.h socket.h tcp.h tcp_timer.h tcp_var.h \
 tcpip.h tftp.h udp.h"
 
-# files that differ from pristine by a documented patch: "<file>:<patch>"
-PATCHED="riscv_machine.c:0001-htif-poweroff-callback.patch \
-fs_disk.c:0002-fs_disk-apple-stat-timestamps.patch \
-slirp/bootp.c:0003-slirp-bootp-debug-typo.patch"
+# Documented patches applied in this order to the pristine copies. 0001 and
+# 0002 both touch riscv_machine.c, which is why the order is explicit.
+PATCHES="0001-htif-poweroff-callback.patch \
+0002-embeddable-error-propagation.patch \
+0003-fs_disk-apple-stat-timestamps.patch \
+0004-slirp-bootp-debug-typo.patch"
 
 # slirp declares its own BSD structs (ipovly/tcpcb/sbuf/udphdr/arphdr/icmp)
 # whose tags collide with Darwin SDK umbrella-module headers when compiled
@@ -98,8 +102,6 @@ sha() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}';
   else sha256sum "$1" | awk '{print $1}'; fi
 }
-
-is_patched() { case " $PATCHED " in (*" $1:"*) return 0;; (*) return 1;; esac; }
 
 # SDK compatibility shims copied into the target (see header comment).
 SHIMS="byteswap.h sys/statfs.h sys/sysmacros.h"
@@ -142,10 +144,9 @@ if [ "$MODE" = "write" ]; then
   mkdir -p "$ENGINE/slirp"
   for f in $CORE; do cp "$SRC/$f" "$ENGINE/$f"; done
   for f in $SLIRP; do cp "$SRC/slirp/$f" "$ENGINE/slirp/$f"; done
-  for spec in $PATCHED; do
-    f="${spec%%:*}"; p="${spec#*:}"
+  for p in $PATCHES; do
     patch -p1 -N --no-backup-if-mismatch -d "$ENGINE" < "$HERE/patches/$p" >/dev/null
-    echo "patched: $f ($p)"
+    echo "patched: $p"
   done
   rm -f "$ENGINE"/*.orig "$ENGINE"/slirp/*.orig
   rename_slirp_tags "$ENGINE"
@@ -166,33 +167,24 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 ok=1
-check_one() { # $1 relative vendored path, $2 pristine path
-  local vendored="$ENGINE/$1" pristine="$SRC/$2"
-  if [ ! -f "$vendored" ]; then echo "check FAIL: missing $1"; ok=0; return; fi
-  local spec_patch="" t
-  for spec in $PATCHED; do
-    if [ "${spec%%:*}" = "$2" ] || [ "${spec%%:*}" = "$1" ]; then spec_patch="${spec#*:}"; fi
-  done
-  mkdir -p "$TMP/checktree/$(dirname "$1")"
-  cp "$pristine" "$TMP/checktree/$1"
-  if [ -n "$spec_patch" ]; then
-    (cd "$TMP/checktree" && patch -p1 -N -r - --no-backup-if-mismatch < "$HERE/patches/$spec_patch") >/dev/null 2>&1 || true
-  fi
-  if [ "$1" != "${1#slirp/}" ]; then
-    # slirp files additionally carry the floe_slirp_ tag rename
-    for t in $RENAMED_TAGS; do
-      perl -pi -e 's/\b'"$t"'\b/floe_slirp_'"$t"'/g unless /^\s*#\s*include/' "$TMP/checktree/$1"
-    done
-  fi
-  if cmp -s "$TMP/checktree/$1" "$vendored"; then
-    if [ -n "$spec_patch" ]; then echo "check ok: $1 (patch $spec_patch + rename)"; fi
-  else
-    echo "check FAIL: $1 != pristine + patches + rename"; ok=0
-  fi
-}
-for f in $CORE; do check_one "$f" "$f"; done
-for f in $SLIRP; do check_one "slirp/$f" "slirp/$f"; done
-verify_slirp_tags "$ENGINE" || ok=0
+# 1. rebuild the expected vendored tree from pristine + patches + rename
+mkdir -p "$TMP/expected/slirp"
+for f in $CORE; do cp "$SRC/$f" "$TMP/expected/$f"; done
+for f in $SLIRP; do cp "$SRC/slirp/$f" "$TMP/expected/slirp/$f"; done
+for p in $PATCHES; do
+  (cd "$TMP/expected" && patch -p1 -N -r - --no-backup-if-mismatch < "$HERE/patches/$p") >/dev/null 2>&1 || true
+done
+rename_slirp_tags "$TMP/expected"
+verify_slirp_tags "$TMP/expected" || ok=0
+
+# 2. every vendored file must equal the expected tree byte for byte
+for f in $CORE; do
+  if cmp -s "$TMP/expected/$f" "$ENGINE/$f"; then :; else echo "check FAIL: $f != pristine + patches + rename"; ok=0; fi
+done
+for f in $SLIRP; do
+  if cmp -s "$TMP/expected/slirp/$f" "$ENGINE/slirp/$f"; then :; else echo "check FAIL: slirp/$f != pristine + patches + rename"; ok=0; fi
+done
+
 # no stray files in engine/
 stray=$(cd "$ENGINE" && find . -type f | sed 's|^\./||' | while read -r f; do
   case " $CORE " in (*" $f "*) continue;; esac
