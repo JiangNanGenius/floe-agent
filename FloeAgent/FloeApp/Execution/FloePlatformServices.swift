@@ -182,6 +182,50 @@ final class FloePlatformServices: @unchecked Sendable {
         lock.withLock { linuxCommandService }
     }
 
+    /// True when a running Linux guest backs this environment. The package UI
+    /// reads real guest state only when this is true; otherwise it says a
+    /// Linux environment is required instead of showing a host-side catalog.
+    func linuxEnvironmentAvailable(id: String?) async -> Bool {
+        guard let id, let service = currentLinuxCommandService() else { return false }
+        return await service.supports(environmentID: id)
+    }
+
+    /// True when the injected runner owns the environment as a Linux guest,
+    /// even if the guest is not running yet. The shell uses this to keep
+    /// host-side data-only dpkg operations out of Linux environments, and the
+    /// UI uses it to ask for a Linux start instead of reporting that Linux
+    /// does not exist on this device.
+    func linuxEnvironmentOwned(id: String?) async -> Bool {
+        guard let id, let service = currentLinuxCommandService() else { return false }
+        return await service.ownsLinuxEnvironment(environmentID: id)
+    }
+
+    /// Runs one command inside the environment's Linux guest with exactly the
+    /// argv the caller supplies: no command-name or argument rewriting. The
+    /// caller checks `linuxEnvironmentAvailable` first; this stays the
+    /// race-safe second gate so a stopped guest never receives a command.
+    func runLinuxCommand(
+        id: String,
+        argv: [String],
+        timeout: TimeInterval = 300,
+        maxOutputBytes: Int = 256 * 1024,
+        cancellation: CancellationToken? = nil
+    ) async throws -> LinuxCommandResult {
+        guard !argv.isEmpty else { throw FloeError.validationFailed("缺少 Linux 命令") }
+        guard let service = currentLinuxCommandService(), await service.supports(environmentID: id) else {
+            throw FloeError.validationFailed("Linux 环境尚未运行；请先启动 Floe Linux 环境")
+        }
+        return try await service.run(
+            environmentID: id,
+            argv: argv,
+            workingDirectory: nil,
+            standardInput: nil,
+            timeout: timeout,
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )
+    }
+
     func registerCommands(in commandRegistry: FloeShellCommandRegistry) {
         lock.lock()
         let envCommand = self.envCommand
@@ -235,7 +279,12 @@ final class FloePlatformServices: @unchecked Sendable {
                     if !result.stderr.isEmpty { FloeShellWrite(stderr, result.stderr.hasSuffix("\n") ? result.stderr : result.stderr + "\n") }
                     return result.exitCode
                 }
-                if name == "dpkg" || name == "dpkg-deb", let cli {
+                // A Linux-backed environment must never fall back to host-side
+                // layer writes: its package state lives inside the guest. Only
+                // non-Linux environments keep the reviewed data-only archive
+                // operations of PackagesCLI.
+                let ownedByLinux = await FloePlatformServices.shared.linuxEnvironmentOwned(id: invocation?.environment?.id)
+                if name == "dpkg" || name == "dpkg-deb", !ownedByLinux, let cli {
                     // Host-side reviewed data-only .deb operations (extract,
                     // inspect, build, data-package install into an environment
                     // layer). Executable payloads are refused inside PackagesCLI.
@@ -247,7 +296,9 @@ final class FloePlatformServices: @unchecked Sendable {
                     }
                     return result.exitCode
                 }
-                let unavailable = LinuxShellCommandRouter.linuxRequiredOutput(command: name)
+                let unavailable = ownedByLinux
+                    ? LinuxShellCommandRouter.linuxNotRunningOutput(command: name)
+                    : LinuxShellCommandRouter.linuxRequiredOutput(command: name)
                 FloeShellWrite(stderr, unavailable.stderr + "\n")
                 return unavailable.exitCode
             }

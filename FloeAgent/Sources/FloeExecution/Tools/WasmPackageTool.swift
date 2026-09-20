@@ -28,8 +28,8 @@ public struct WasmPackageTool: AgentTool {
     {"type":"object","properties":{
       "action":{"type":"string","enum":["list","show","install","remove"]},
       "ids":{"type":"array","maxItems":16,"items":{"type":"string","description":"Catalog ids such as floe/lua, or command names such as floe-lua"},"description":"Targets for show/install/remove"},
-      "purpose":{"type":"string","description":"Concrete reason this capability is needed for the user's request (required for installs)"},
-     "required":["action"],"additionalProperties":false}
+      "purpose":{"type":"string","description":"Concrete reason this capability is needed for the user's request (required for installs)"}
+     },"required":["action"],"additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .writesFiles]
     public static let isSideEffecting = true

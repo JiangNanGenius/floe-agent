@@ -172,7 +172,7 @@ public actor SignedWasmCapabilityStore {
 
     public func run(command: String, arguments: [String], stdin: String?, environment: [String: String], rootURL: URL, workingDirectory: String = ".", timeout: TimeInterval? = nil, maxOutputBytes: Int = 256 * 1024, cancellation: CancellationToken? = nil) async -> ShellRunOutcome {
         guard let entry = catalog.packages.first(where: { $0.command == command }), isInstalled(entry) else {
-            return .failed(message: "WASM command is not installed; install its signed capability with apt")
+            return .failed(message: "WASM command is not installed; install its signed capability with the wasm.packages tool")
         }
         guard !busy.contains(entry.id), activeRuns.values.reduce(0, +) < 4 else {
             return .failed(message: "WASM package is being changed or all execution slots are occupied")

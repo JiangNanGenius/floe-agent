@@ -31,8 +31,8 @@ public struct PythonPackageTool: AgentTool {
       "action":{"type":"string","enum":["search","list","show","install","remove"]},
       "query":{"type":"string","description":"Search terms for action=search"},
       "ids":{"type":"array","maxItems":16,"items":{"type":"string","description":"Catalog ids such as floe/py-openpyxl, or aliases"},"description":"Targets for show/install/remove"},
-      "purpose":{"type":"string","description":"Concrete reason this package is needed for the user's request (required for network installs)"},
-     "required":["action"],"additionalProperties":false}
+      "purpose":{"type":"string","description":"Concrete reason this package is needed for the user's request (required for network installs)"}
+     },"required":["action"],"additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .writesFiles]
     public static let isSideEffecting = true

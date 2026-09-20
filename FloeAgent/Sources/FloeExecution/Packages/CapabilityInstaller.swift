@@ -203,7 +203,7 @@ public actor CapabilityInstaller {
             receipt = Receipt(id: entry.id, kind: entry.kind, tier: entry.tier,
                               detail: "model installed", installedAt: Date())
         case .debData:
-            throw FloeError.validationFailed("Use `dpkg -x <file.deb> <dir>` for data-only .deb payloads; apt does not install executable packages on iOS")
+            throw FloeError.validationFailed("Use `dpkg -x <file.deb> <dir>` for data-only .deb payloads; Debian executable packages install with apt inside a Linux environment")
         case .shellTool:
             receipt = try installShellTool(entry)
         case .wasmCommand:
@@ -302,7 +302,7 @@ public actor CapabilityInstaller {
             throw FloeError.notFound("capability \(id) is not in the catalog")
         }
         guard let urlString = entry.url, let url = URL(string: urlString) else {
-            throw FloeError.validationFailed("\(entry.id) has no downloadable artifact; install it through apt install")
+            throw FloeError.validationFailed("\(entry.id) has no downloadable artifact; use the entry that owns its family (python.packages, wasm.packages or the family's own manager)")
         }
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         let destination = destinationDirectory.appendingPathComponent(url.lastPathComponent)

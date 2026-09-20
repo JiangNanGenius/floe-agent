@@ -33,6 +33,12 @@ public protocol LinuxCommandRunning: Sendable {
     /// that guest is running. Anything else must return false so callers
     /// report "a Linux environment is required" honestly.
     func supports(environmentID: String) async -> Bool
+    /// True when this service owns the environment as a Linux guest even if
+    /// the guest is not running yet. The shell uses this to keep host-side
+    /// data-only dpkg operations away from Linux environments, whose package
+    /// state lives inside the guest; the UI uses it to say "start the Linux
+    /// environment" instead of "no Linux environment exists".
+    func ownsLinuxEnvironment(environmentID: String) async -> Bool
     /// Executes argv inside the environment's Linux guest with bounded output.
     func run(
         environmentID: String,
@@ -43,6 +49,16 @@ public protocol LinuxCommandRunning: Sendable {
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult
+}
+
+public extension LinuxCommandRunning {
+    /// The default keeps existing conformers source-compatible: false means
+    /// "this environment is not a Linux guest I own", so non-Linux
+    /// environments keep the host data-only archive fallback. A TinyEMU
+    /// backend overrides it to answer ownership while its guest is stopped,
+    /// and the override is the one that runs because this is a protocol
+    /// requirement (extension-only methods would dispatch statically).
+    func ownsLinuxEnvironment(environmentID: String) async -> Bool { false }
 }
 
 /// Shell-facing router for the Linux package command names. It owns the
@@ -105,6 +121,19 @@ public struct LinuxShellCommandRouter: Sendable {
         } catch {
             return LinuxCommandResult(stdout: "", stderr: "\(command): \(error.localizedDescription)", exitCode: 100)
         }
+    }
+
+    /// Honest answer when the environment is a Linux guest this device owns
+    /// but the guest is not running. The apt/dpkg family must not fall back
+    /// to host layer operations in this state: a Linux environment's package
+    /// state lives inside its guest.
+    public static func linuxNotRunningOutput(command: String) -> LinuxCommandResult {
+        let message = """
+        \(command): this environment is a Floe Linux guest, but it is not running yet. \
+        Start the Linux environment and retry. Debian packages are managed only inside the guest, \
+        and host-side data-only archive operations never apply to a Linux environment.
+        """
+        return LinuxCommandResult(stdout: "", stderr: message, exitCode: 100)
     }
 
     /// Honest answer for the apt command family when no Linux guest backs the

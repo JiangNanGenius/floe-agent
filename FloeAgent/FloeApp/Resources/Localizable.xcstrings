@@ -2549,13 +2549,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Installed in This Layer"
+            "value": "Layer Data Payloads (Read Only)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本层已安装"
+            "value": "本层数据归档 · 只读"
           }
         }
       }
@@ -2566,13 +2566,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Inherited · Read Only"
+            "value": "Inherited Layer Data (Read Only)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "从父层继承 · 只读"
+            "value": "从父层继承的数据归档 · 只读"
           }
         }
       }
@@ -2600,13 +2600,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verify & Refresh Sources"
+            "value": "Refresh Package Index"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "验证并刷新软件源"
+            "value": "刷新软件包索引"
           }
         }
       }
@@ -2794,6 +2794,584 @@
           "stringUnit": {
             "state": "translated",
             "value": "软件包任务"
+          }
+        }
+      }
+    },
+    "environment.capabilities.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelled; reload to confirm the current state"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已取消；重新读取以确认当前状态"
+          }
+        }
+      }
+    },
+    "environment.capabilities.cancelling": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelling and waiting for the transaction to finish…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在取消并等待事务结束…"
+          }
+        }
+      }
+    },
+    "environment.capabilities.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The signed catalog carries no installable command in this build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此构建的签名目录中没有可安装的命令。"
+          }
+        }
+      }
+    },
+    "environment.capabilities.empty.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Signed Commands"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有签名命令"
+          }
+        }
+      }
+    },
+    "environment.capabilities.entry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recommended signed catalog"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推荐签名目录"
+          }
+        }
+      }
+    },
+    "environment.capabilities.install": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download & Install"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载并安装"
+          }
+        }
+      }
+    },
+    "environment.capabilities.install_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloading %@…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载 %@…"
+          }
+        }
+      }
+    },
+    "environment.capabilities.installed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装"
+          }
+        }
+      }
+    },
+    "environment.capabilities.installed_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed %@; its floe command is ready."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装 %@；对应的 floe 命令已可用。"
+          }
+        }
+      }
+    },
+    "environment.capabilities.loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading the signed catalog…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在读取签名目录…"
+          }
+        }
+      }
+    },
+    "environment.capabilities.remove": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstall"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载"
+          }
+        }
+      }
+    },
+    "environment.capabilities.remove_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removing %@…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在卸载 %@…"
+          }
+        }
+      }
+    },
+    "environment.capabilities.removed_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed %@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已卸载 %@。"
+          }
+        }
+      }
+    },
+    "environment.capabilities.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One reviewed catalog of signed WASI commands. Install downloads the SHA-256-pinned artifact and verifies it before the command can run. Python, Node and Debian packages each keep their own entry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这是审核过的签名 WASI 命令目录。安装会下载固定 SHA-256 的产物并校验通过后才可运行。Python、Node 与 Debian 软件包各自使用独立入口。"
+          }
+        }
+      }
+    },
+    "environment.capabilities.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signed WASI Commands"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "签名 WASI 命令"
+          }
+        }
+      }
+    },
+    "environment.capabilities.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build has no verified signed catalog, so no artifact can be downloaded or installed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此构建没有经过验证的签名目录，无法下载或安装任何产物。"
+          }
+        }
+      }
+    },
+    "environment.capabilities.unavailable.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signed Catalog Unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "签名目录不可用"
+          }
+        }
+      }
+    },
+    "environment.packages.language.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Python and Node install from their own registries into the selected environment; apt never installs them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Python 与 Node 从各自的注册源安装到所选环境；apt 不会安装它们。"
+          }
+        }
+      }
+    },
+    "environment.packages.layer.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Data-only payloads recorded in this layer's manifest (for example files unpacked with dpkg-deb -x). They are not Linux distribution packages; Debian packages live inside a running Linux environment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "记录在本层清单中的数据归档（例如用 dpkg-deb -x 解包的文件）。它们不是 Linux 发行版软件包；Debian 软件包只存在于运行中的 Linux 环境内。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.command_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux command failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 命令失败"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No distribution packages are installed in the Linux environment yet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 环境内尚未安装发行版软件包。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.install_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installing %@…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在安装 %@…"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading Linux packages…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在读取 Linux 软件包…"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.not_running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This environment is a Floe Linux guest that is not running yet. Start the Linux environment, then manage its Debian packages here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此环境是尚未运行的 Floe Linux guest。请先启动 Linux 环境，再在这里管理它的 Debian 软件包。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.origin": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read from the running Linux guest. Install, remove and refresh run the guest's own apt-get/dpkg and never write this app's host layers."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "列表来自运行中的 Linux guest。安装、卸载与刷新执行 guest 内原生的 apt-get/dpkg，不写入 App 宿主层。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Package name, for example nano or nano=7.2-1"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "软件包名，例如 nano 或 nano=7.2-1"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.refresh_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refreshing the Linux package index…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在刷新 Linux 软件包索引…"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.remove_action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.remove_confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove %@ from the Linux environment?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从 Linux 环境卸载 %@？"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.remove_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runs apt-get remove inside the Linux guest; packages that depend on it may be removed too."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Linux guest 内执行 apt-get remove；依赖它的软件包可能一并被移除。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.remove_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removing %@…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在卸载 %@…"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Linux environment is available on this device. apt/dpkg manage Debian packages only inside a Floe Linux environment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机没有可用的 Linux 环境。apt/dpkg 只在 Floe Linux 环境内管理 Debian 软件包。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.split": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Python, Node and signed WASI commands keep their own entries above; apt never installs them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Python、Node 与签名 WASI 命令保留上方各自的独立入口；apt 不会安装它们。"
+          }
+        }
+      }
+    },
+    "environment.packages.linux.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux Distribution Packages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 发行版软件包"
           }
         }
       }

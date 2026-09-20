@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeEnvironments
 import FloeExecution
 import FloePackages
+import FloeTools
 
 /// Jobs survive navigation and are drained by the environment lifecycle before deletion.
 @MainActor final class EnvironmentPackageJobs: ObservableObject {
@@ -58,13 +60,22 @@ struct EnvironmentManagerView: View {
                 Text("会话 → 项目 → 共享 → 基础").font(.headline)
                 Text("依赖按层查找，安装只写入所选环境。容器用于管理依赖、数据和生命周期。").font(.subheadline).foregroundStyle(.secondary)
             }
-            Section("environment.tools.routes") {
+            Section {
                 NavigationLink {
                     ToolRouteCatalogView(catalog: .bundled())
                 } label: {
                     Label("environment.tools.routes.title", systemImage: "terminal")
                 }
                 Text("environment.tools.routes.summary")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("environment.capabilities.title") {
+                NavigationLink {
+                    WasmCapabilityCatalogView()
+                } label: {
+                    Label("environment.capabilities.entry", systemImage: "puzzlepiece.extension")
+                }
+                Text("environment.capabilities.summary")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if loading { ProgressView("读取环境与容量…") }
@@ -133,23 +144,29 @@ struct EnvironmentManagerView: View {
 }
 
 private struct EnvironmentDetailView: View {
+    /// One distribution package reported by the Linux guest's own dpkg
+    /// database; the list is display formatting over real guest state.
+    private struct LinuxPackage: Identifiable, Equatable {
+        let name: String
+        let version: String
+        var id: String { name }
+    }
     let report: FloePlatformServices.EnvironmentReport
     let displayName: String
-    @State private var addingSource = false
-    @State private var editingSource: AptSource?
-    @State private var sourceURL = ""
-    @State private var sourceSuite = "stable"
-    @State private var sourceComponent = "main"
-    @State private var sourceKey = ""
-    @State private var trustUnsignedSource = false
     @State private var current: FloePlatformServices.EnvironmentReport?
     @State private var packages: FloePlatformServices.PackageReport?
     @State private var error: String?
     @State private var busy = false
     @State private var templateName = ""
-    @State private var pendingRemoval: String?
     @State private var confirmDelete = false
     @State private var query = ""
+    @State private var linuxAvailable = false
+    @State private var linuxOwned = false
+    @State private var linuxPackages: [LinuxPackage] = []
+    @State private var linuxLoading = false
+    @State private var linuxError: String?
+    @State private var linuxSpecification = ""
+    @State private var pendingLinuxRemoval: String?
     @ObservedObject private var jobs = EnvironmentPackageJobs.shared
     @Environment(\.dismiss) private var dismiss
     private var record: ContainerRecord { (current ?? report).record }
@@ -197,61 +214,58 @@ private struct EnvironmentDetailView: View {
                         Label(language.title, systemImage: language == .python ? "terminal" : "curlybraces")
                     }
                 }
-                Text("从 PyPI 或 npm 安装到所选环境，自动继承父层依赖。无需配置 apt 软件源。")
+                Text("environment.packages.language.summary")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("environment.packages.installed") {
-                if let packages {
-                    if packages.installed.isEmpty { Text("此层尚未安装软件包").foregroundStyle(.secondary) }
-                    ForEach(packages.installed.filter { matches($0.name) }, id: \.name) { package in
-                        VStack(alignment: .leading, spacing: 8) {
-                            LabeledContent(package.name, value: package.version)
-                            if let summary = package.summary { Text(summary).font(.caption).foregroundStyle(.secondary) }
-                            HStack {
-                                Button(LocalizedStringKey(packages.held.contains(package.name) ? "environment.packages.unhold" : "environment.packages.hold")) {
-                                    start(packages.held.contains(package.name) ? .unhold(package.name) : .hold(package.name), "更新版本固定状态…")
-                                }.buttonStyle(.borderless)
-                                Spacer()
-                                Button("action.uninstall", role: .destructive) { pendingRemoval = package.name }.buttonStyle(.borderless)
-                            }.font(.subheadline).disabled(!writable)
-                        }.padding(.vertical, 4)
+            Section("environment.packages.linux.title") {
+                if linuxAvailable {
+                    Text("environment.packages.linux.origin").font(.caption).foregroundStyle(.secondary)
+                    Button("environment.packages.refresh", systemImage: "arrow.clockwise") {
+                        runLinux(["apt-get", "update"], String(localized: "environment.packages.linux.refresh_title"))
+                    }.disabled(!writable)
+                    HStack {
+                        TextField("environment.packages.linux.placeholder", text: $linuxSpecification)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.go)
+                            .onSubmit { installLinuxPackage() }
+                        Button("environment.packages.install") { installLinuxPackage() }
+                            .disabled(!writable || linuxSpecification.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.font(.subheadline)
+                    if let linuxError {
+                        Label(linuxError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(FloeTheme.destructive)
                     }
-                } else { Text("正在读取依赖…").foregroundStyle(.secondary) }
+                    if linuxLoading { ProgressView("environment.packages.linux.loading") }
+                    if linuxPackages.isEmpty && linuxError == nil && !linuxLoading {
+                        Text("environment.packages.linux.empty").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    ForEach(linuxPackages.filter { matches($0.name) }) { package in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(package.name)
+                                Text(package.version).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("action.uninstall", role: .destructive) { pendingLinuxRemoval = package.name }
+                                .buttonStyle(.borderless).disabled(!writable)
+                        }.font(.subheadline)
+                    }
+                } else {
+                    Label(LocalizedStringKey(linuxOwned
+                            ? "environment.packages.linux.not_running"
+                            : "environment.packages.linux.required"),
+                          systemImage: "info.circle")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    Text("environment.packages.linux.split").font(.caption).foregroundStyle(.secondary)
+                }
             }
-            if let packages, !packages.inherited.isEmpty {
-                Section("environment.packages.inherited") {
+            if let packages, !packages.installed.isEmpty || !packages.inherited.isEmpty {
+                Section("environment.packages.installed") {
+                    Text("environment.packages.layer.summary").font(.caption).foregroundStyle(.secondary)
+                    ForEach(packages.installed.filter { matches($0.name) }, id: \.name) { package in
+                        LabeledContent { Text(package.version).foregroundStyle(.secondary) } label: { Label(package.name, systemImage: "shippingbox") }
+                    }
                     ForEach(packages.inherited.filter { matches($0.name) }, id: \.name) { package in
                         LabeledContent { Text("\(package.version) · \(package.layer.rawValue)").foregroundStyle(.secondary) } label: { Label(package.name, systemImage: "arrow.down.forward") }
                     }
-                }
-            }
-            Section("environment.packages.available") {
-                Button("添加软件源", systemImage: "plus") { editSource(nil) }.disabled(!writable)
-                Button("environment.packages.refresh", systemImage: "arrow.clockwise") { start(.refresh, "正在下载并验证软件源…") }.disabled(!writable)
-                if let packages {
-                    if packages.available.isEmpty { Text("尚无经过验证的软件包索引。刷新成功后，可在此选择安装。").font(.subheadline).foregroundStyle(.secondary) }
-                    ForEach(Array(packages.available.filter { matches($0.name) }.enumerated()), id: \.offset) { _, package in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) { Text(package.name); Text(package.version).font(.caption).foregroundStyle(.secondary) }
-                            Spacer()
-                            Button("environment.packages.install") { start(.install(package.name + "=" + package.version), "正在安装 \(package.name)…") }.buttonStyle(.bordered).disabled(!writable)
-                        }
-                    }
-                    DisclosureGroup("软件源（\(packages.sources.count)）") {
-                        if packages.sources.isEmpty { Text("尚未配置软件源") }
-                        ForEach(packages.sources) { source in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(source.uri).textSelection(.enabled)
-                                Text("\(source.suite) · \(source.enabled ? "启用" : "停用")").foregroundStyle(.secondary)
-                                HStack {
-                                    Button("编辑") { editSource(source) }
-                                    Button(source.enabled ? "停用" : "启用") { start(.setSourceEnabled(source.id, !source.enabled), "正在更新软件源…") }
-                                    Spacer()
-                                    Button("移除", role: .destructive) { start(.deleteSource(source.id), "正在移除软件源…") }
-                                }.buttonStyle(.borderless).disabled(!writable)
-                            }.padding(.vertical, 4)
-                        }
-                    }.font(.caption)
                 }
             }
             if record.kind.isWritableLayer {
@@ -276,45 +290,20 @@ private struct EnvironmentDetailView: View {
         .task { await reload() }
         .refreshable { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }
-        .sheet(isPresented: $addingSource) {
-            NavigationStack {
-                Form {
-                    Section("软件源") {
-                        TextField("HTTPS 地址", text: $sourceURL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        TextField("发行版", text: $sourceSuite).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        TextField("组件", text: $sourceComponent).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    }
-                    Section("packages.source.trust") {
-                        Toggle("packages.source.unsigned", isOn: $trustUnsignedSource)
-                        Text("packages.source.unsigned.help").font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !trustUnsignedSource {
-                        Section("OpenPGP 签名公钥") {
-                            TextEditor(text: $sourceKey).font(.caption.monospaced()).frame(minHeight: 160)
-                            Text("从软件源发布者获取公钥。下载的软件包索引必须通过此公钥验证。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                            if editingSource != nil { Text("留空保留已保存的签名公钥。").font(.footnote).foregroundStyle(.secondary) }
-                        }
-                    }
+        .confirmationDialog(
+            pendingLinuxRemoval.map { String(format: String(localized: "environment.packages.linux.remove_confirm"), $0) } ?? "",
+            isPresented: Binding(get: { pendingLinuxRemoval != nil }, set: { if !$0 { pendingLinuxRemoval = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("environment.packages.linux.remove_action", role: .destructive) {
+                if let name = pendingLinuxRemoval {
+                    runLinux(["apt-get", "remove", "-y", name],
+                             String(format: String(localized: "environment.packages.linux.remove_title"), name))
                 }
-                .navigationTitle(editingSource == nil ? "添加软件源" : "编辑软件源")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("取消") { addingSource = false } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("保存") {
-                            start(.saveSource(AptSource(uri: sourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                                suite: sourceSuite, components: sourceComponent.split(separator: " ").map(String.init),
-                                trusted: trustUnsignedSource, enabled: editingSource?.enabled ?? true), sourceKey, replacingID: editingSource?.id), "正在保存软件源…")
-                            addingSource = false
-                        }.disabled(sourceURL.isEmpty || sourceSuite.isEmpty || (!trustUnsignedSource && sourceKey.isEmpty && editingSource?.signedBy == nil))
-                    }
-                }
+                pendingLinuxRemoval = nil
             }
-        }
-        .confirmationDialog("卸载 \(pendingRemoval ?? "")？", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }), titleVisibility: .visible) {
-            Button("卸载本层软件包", role: .destructive) { if let name = pendingRemoval { start(.remove(name), "正在卸载 \(name)…") }; pendingRemoval = nil }
-            Button("取消", role: .cancel) { pendingRemoval = nil }
-        } message: { Text("仅修改当前环境。若其他软件包依赖它，卸载会被拒绝。") }
+            Button("action.cancel", role: .cancel) { pendingLinuxRemoval = nil }
+        } message: { Text("environment.packages.linux.remove_message") }
         .confirmationDialog("删除此容器？", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("environment.delete.stop_and_delete", role: .destructive) {
                 perform { try await FloePlatformServices.shared.deleteEnvironment(id: report.id); dismiss() }
@@ -322,20 +311,77 @@ private struct EnvironmentDetailView: View {
         } message: { Text("将停止此环境的任务并删除其依赖和容器数据。有子会话的项目须先清理子会话；停止失败时保留数据。") }
     }
     private func matches(_ name: String) -> Bool { query.isEmpty || name.localizedCaseInsensitiveContains(query) }
-    private func editSource(_ source: AptSource?) {
-        editingSource = source
-        sourceURL = source?.uri ?? ""
-        sourceSuite = source?.suite ?? "stable"
-        sourceComponent = source?.components.joined(separator: " ") ?? "main"
-        sourceKey = ""
-        trustUnsignedSource = source?.trusted ?? false
-        addingSource = true
+
+    /// Standard apt semantics: the user's specification passes through to the
+    /// guest verbatim (only `-y` is added because this UI has no terminal).
+    private func installLinuxPackage() {
+        let specification = linuxSpecification.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !specification.isEmpty else { return }
+        linuxSpecification = ""
+        runLinux(["apt-get", "install", "-y", specification],
+                 String(format: String(localized: "environment.packages.linux.install_title"), specification))
     }
-    private func start(_ action: FloePlatformServices.PackageAction, _ title: String) { jobs.start(id: report.id, title: title, action: action) }
+
+    private func runLinux(_ argv: [String], _ title: String) {
+        let id = report.id
+        jobs.start(id: id, title: title) {
+            let token = CancellationToken()
+            return try await withTaskCancellationHandler {
+                let result = try await FloePlatformServices.shared.runLinuxCommand(
+                    id: id, argv: argv, timeout: 600, cancellation: token)
+                let output = [result.stdout, result.stderr]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }.joined(separator: "\n")
+                guard result.exitCode == 0 else {
+                    throw FloeError.validationFailed(output.isEmpty
+                        ? "\(String(localized: "environment.packages.linux.command_failed")) (exit \(result.exitCode))"
+                        : output)
+                }
+                return output.isEmpty ? title : output
+            } onCancel: { token.cancel() }
+        }
+    }
+
+    /// Reads the guest's real dpkg database. Parsing dpkg-query output is
+    /// display formatting; package decisions stay inside the guest.
+    @MainActor private func refreshLinuxPackages() async {
+        linuxLoading = true
+        defer { linuxLoading = false }
+        do {
+            let result = try await FloePlatformServices.shared.runLinuxCommand(
+                id: report.id,
+                argv: ["dpkg-query", "-W", "-f=${binary:Package}\\t${Version}\\t${Status}\\n"],
+                timeout: 60)
+            guard result.exitCode == 0 else {
+                linuxPackages = []
+                linuxError = [result.stderr, result.stdout].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty } ?? "dpkg-query exit \(result.exitCode)"
+                return
+            }
+            linuxPackages = Self.parseDpkgQuery(result.stdout)
+            linuxError = nil
+        } catch {
+            linuxPackages = []
+            linuxError = error.localizedDescription
+        }
+    }
+
+    private static func parseDpkgQuery(_ output: String) -> [LinuxPackage] {
+        output.split(separator: "\n").compactMap { line -> LinuxPackage? in
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count >= 3,
+                  fields[2].trimmingCharacters(in: .whitespaces) == "install ok installed" else { return nil }
+            return LinuxPackage(name: fields[0], version: fields[1])
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     @MainActor private func reload() async {
         do {
             packages = try await FloePlatformServices.shared.packageReport(id: report.id)
             current = try await FloePlatformServices.shared.environmentReports().first { $0.id == report.id }
+            linuxAvailable = await FloePlatformServices.shared.linuxEnvironmentAvailable(id: report.id)
+            linuxOwned = await FloePlatformServices.shared.linuxEnvironmentOwned(id: report.id)
+            if linuxAvailable { await refreshLinuxPackages() } else { linuxPackages = []; linuxError = nil }
             error = nil
         } catch { self.error = String(describing: error) }
     }
@@ -421,6 +467,166 @@ struct ToolRouteCatalogView: View {
         case .remote: return "environment.tools.routes.remote"
         case .unsupported: return "environment.tools.routes.unsupported"
         }
+    }
+}
+
+/// App-wide signed WASM catalog jobs. The task is owned here, not by the
+/// view, so a download survives navigation; the store still serializes
+/// operations per package and verifies the artifact before activation.
+@MainActor final class WasmCapabilityJobs: ObservableObject {
+    static let shared = WasmCapabilityJobs()
+    @Published private(set) var running: Set<String> = []
+    @Published private(set) var messages: [String: String] = [:]
+    @Published private(set) var failures: Set<String> = []
+    @Published private(set) var revision = 0
+    private var tasks: [String: Task<Void, Never>] = [:]
+
+    func start(id: String, title: String, operation: @escaping @Sendable () async throws -> String) {
+        guard !running.contains(id) else { return }
+        running.insert(id)
+        messages[id] = title
+        failures.remove(id)
+        tasks[id] = Task {
+            do { messages[id] = try await operation() }
+            catch is CancellationError { messages[id] = String(localized: "environment.capabilities.cancelled") }
+            catch { messages[id] = error.localizedDescription; failures.insert(id) }
+            running.remove(id)
+            tasks[id] = nil
+            revision += 1
+        }
+    }
+
+    func cancel(id: String) {
+        guard let task = tasks[id] else { return }
+        messages[id] = String(localized: "environment.capabilities.cancelling")
+        task.cancel()
+    }
+}
+
+/// The recommended signed WASI catalog: list, download+install and remove.
+/// Install goes through SignedWasmCapabilityStore, which downloads the
+/// SHA-256-pinned artifact through the app's bounded HTTP transport and only
+/// activates it after verification. Python, Node and Debian packages stay in
+/// their own entries and never appear here.
+struct WasmCapabilityCatalogView: View {
+    @State private var installed: [String: String] = [:]
+    @State private var loading = false
+    @State private var error: String?
+    @ObservedObject private var jobs = WasmCapabilityJobs.shared
+
+    private var store: SignedWasmCapabilityStore? { FloeShellCommandRegistry.shared.wasm }
+
+    var body: some View {
+        List {
+            Section {
+                Text("environment.capabilities.summary")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if loading { ProgressView("environment.capabilities.loading") }
+            if let error {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive)
+                    Button("action.reload") { Task { await reload() } }
+                }
+            }
+            if let store {
+                if store.catalog.packages.isEmpty {
+                    ContentUnavailableView("environment.capabilities.empty.title", systemImage: "puzzlepiece.extension",
+                                           description: Text("environment.capabilities.empty"))
+                } else {
+                    ForEach(store.catalog.packages, id: \.id) { entry in
+                        row(entry)
+                    }
+                }
+            } else {
+                ContentUnavailableView("environment.capabilities.unavailable.title", systemImage: "puzzlepiece.extension",
+                                       description: Text("environment.capabilities.unavailable"))
+            }
+        }
+        .navigationTitle("environment.capabilities.title")
+        .task { await reload() }
+        .refreshable { await reload() }
+        .onChange(of: jobs.revision) { Task { await reload() } }
+    }
+
+    @ViewBuilder
+    private func row(_ entry: SignedWasmCatalog.Entry) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(entry.id).font(.headline)
+                Spacer()
+                if installed[entry.id] != nil {
+                    Label("environment.capabilities.installed", systemImage: "checkmark.circle.fill")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.success)
+                } else {
+                    Label("environment.tools.routes.not_installed", systemImage: "arrow.down.circle")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.primary)
+                }
+            }
+            Text("\(entry.command) · \(entry.version)")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                if installed[entry.id] != nil {
+                    Button("environment.capabilities.remove", role: .destructive) { remove(entry) }
+                        .buttonStyle(.borderless)
+                        .disabled(jobs.running.contains(entry.id))
+                } else {
+                    Button("environment.capabilities.install") { install(entry) }
+                        .buttonStyle(.bordered)
+                        .disabled(jobs.running.contains(entry.id))
+                }
+                if jobs.running.contains(entry.id) {
+                    ProgressView()
+                    Button("action.cancel") { jobs.cancel(id: entry.id) }
+                        .buttonStyle(.borderless)
+                }
+            }
+            .font(.subheadline)
+            if let message = jobs.messages[entry.id] {
+                Text(message)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .foregroundStyle(jobs.failures.contains(entry.id) ? FloeTheme.destructive : .secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func install(_ entry: SignedWasmCatalog.Entry) {
+        guard let store else { return }
+        jobs.start(id: entry.id,
+                   title: String(format: String(localized: "environment.capabilities.install_title"), entry.id)) {
+            let token = CancellationToken()
+            return try await withTaskCancellationHandler {
+                try await store.install(id: entry.id, cancellation: token)
+                return String(format: String(localized: "environment.capabilities.installed_message"), entry.id)
+            } onCancel: { token.cancel() }
+        }
+    }
+
+    private func remove(_ entry: SignedWasmCatalog.Entry) {
+        guard let store else { return }
+        jobs.start(id: entry.id,
+                   title: String(format: String(localized: "environment.capabilities.remove_title"), entry.id)) {
+            try await store.remove(id: entry.id)
+            return String(format: String(localized: "environment.capabilities.removed_message"), entry.id)
+        }
+    }
+
+    @MainActor private func reload() async {
+        guard !loading else { return }
+        loading = true
+        defer { loading = false }
+        guard let store else {
+            installed = [:]
+            error = nil
+            return
+        }
+        installed = await store.installedVersions()
+        error = nil
     }
 }
 #endif
