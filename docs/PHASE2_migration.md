@@ -227,6 +227,67 @@ release workflows' verification steps (no release is started by this worker).
 
 ---
 
+## 8. Implementation evidence (this worker)
+
+Commits on `codex/tinyemu-phase2-migration` (base `46422286`):
+
+- `187cb8ba` — this contract (initial).
+- `d7ebcef0` — contract aligned with the engine draft and coordinator corrections.
+- `9737251e` — the migration implementation.
+
+Routing implementation (actual changed consumers):
+
+- `FloeExecution`: `GuestPythonRuntime` (guest `python3 -c` with printJSON
+  sentinel, 9p path mapping, unmapped-host-path dropping),
+  `LinuxGuestActivator` (lazy start + cold-start hook),
+  `LocalPythonCapabilityProbe`/`LocalNodeCapabilityProbe` (component state),
+  `ManagedPythonInstallService` (guest pip only), `LegacyNodeInstallRecovery`
+  (native-era journal rollback, pure file ops), catalog tiers reclassified to
+  `managed`, `RuntimeInventoryEntry.Source.component`.
+- `FloeEnvironments`: `defaultExecutionBackend = .linuxVM` for new records and
+  the recoverable nil→linuxVM metadata migration in `prepare()`
+  (`registry.json.pre-linux-backend-migration` backup).
+- `FloeApp`: `GuestRuntimeAssembly` (service factory + legacy package
+  seeding), shell `python3`/`pip`/`node`/`npm`/`pnpm` handlers route to the
+  guest, `exec.localService` guest-only, archive bridge routes with the task
+  environment, settings probes/views, environment backend picker copy.
+- Removed from the app target: `FloeCPythonBridge`, `FloeNodeBridge`,
+  `IOSSystemNodeRuntime`, `CPythonLocalRuntime`, `PythonServiceBootstrap.py`,
+  `Resources/NodeTools`, `managed_package_{install,remove}.py`,
+  `NodeExecutionService`, `PythonEntryPointShims` — all archived under
+  `FloeAgent/ThirdParty/NativeRuntimeArchive/` with a README.
+
+Retired app tests → current coverage mapping:
+
+| Retired (archived in NativeRuntimeArchive/tests) | Covered now by |
+| --- | --- |
+| LocalPythonRuntimeTests (native CPython E2E) | `GuestPythonRuntimeTests` (routing, stdin, cancel, markers, containment, lazy start) + TinyEMU qualification (real guest) |
+| LocalShellRuntimeTests native service/pip-install/HTTPS/Node legs | `LinuxGuestLocalServiceSupervisorTests`, `LinuxGuestLanguagePackageTests`, TinyEMU qualification; shell-core legs (gate, timeout, cancel, interactive) kept in the trimmed file |
+| LocalServiceLifecycleTests (native worker ownership) | supervisor guest cases + engine stopGuest teardown (services die with the guest, forwarding removed) |
+| EnvironmentLanguagePackageTests install/remove leg | `LinuxGuestLanguagePackageTests` guest pip/npm cases; legacy inventory leg kept |
+
+Focused checks run locally (host is disk-constrained; no App build here):
+
+- `swiftc -parse` sweep over every Swift file in FloeApp/Sources/Tests: clean.
+- `xcodegen generate` twice: second run idempotent, zero `Python`/`NodeMobile`
+  references in the regenerated `project.pbxproj` (134 embed entries removed).
+- `python3 scripts/audit_native_runtime_free.py --project`: passes on the
+  migrated tree; self-test confirms it flags the HEAD project and native
+  bundle markers (5/5 findings on synthetic payloads).
+- `test_native_runtime_free_audit.py`: 5/5 pass. `test_release_preflight_versions.py`:
+  7/7 pass (the harness previously failed at HEAD for an unrelated missing
+  Office lock fixture; the lock gate now skips only when the lock tree is
+  absent, and the fixture copies the audit script).
+- `validate_localization_catalog.py`: 1128 entries, en + zh-Hans complete.
+- All edited workflows parse as YAML; `capability-hub/build.py --check-tools`
+  passes (catalogs byte-identical, routes intact).
+
+Not proven here (honest limits): full Swift compile and SIL/concurrency
+diagnostics (cloud build owns them), any real guest run (engine
+qualification owns it), and device/TestFlight behavior (release pipeline).
+
+---
+
 ## 中文摘要
 
 本次迁移把 App 内的本地 Python/Node 全部改为在 TinyEMU Linux 客体中运行：

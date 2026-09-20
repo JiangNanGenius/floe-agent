@@ -256,7 +256,7 @@
       "id": "tool/jq",
       "installable": false,
       "local": "unsupported",
-      "localAlternative": "python3 json module (bundled CPython)",
+      "localAlternative": "python3 json module (Linux guest)",
       "route": "remote",
       "signedCatalogIDs": []
     },
@@ -398,7 +398,7 @@
       "id": "tool/sqlite3",
       "installable": false,
       "local": "unsupported",
-      "localAlternative": "python3 sqlite3 module (bundled CPython)",
+      "localAlternative": "python3 sqlite3 module (Linux guest)",
       "route": "floe-precompiled",
       "signedCatalogIDs": []
     },
@@ -447,7 +447,7 @@
       "id": "tool/unzip",
       "installable": false,
       "local": "unsupported",
-      "localAlternative": "python3 -m zipfile (bundled CPython)",
+      "localAlternative": "python3 -m zipfile (Linux guest)",
       "route": "remote",
       "signedCatalogIDs": []
     },
@@ -496,7 +496,7 @@
       "id": "tool/zip",
       "installable": false,
       "local": "unsupported",
-      "localAlternative": "python3 -m zipfile (bundled CPython)",
+      "localAlternative": "python3 -m zipfile (Linux guest)",
       "route": "remote",
       "signedCatalogIDs": []
     }

@@ -233,7 +233,7 @@ final class GuestPythonRuntimeTests: XCTestCase {
         guard case .jsException(let message, _) = outcome else {
             return XCTFail("a native environment must not execute: \(outcome)")
         }
-        XCTAssertTrue(message.contains("not owned"), message)
+        XCTAssertTrue(message.contains("Linux"), message)
         XCTAssertTrue(guest.calls.isEmpty)
     }
 

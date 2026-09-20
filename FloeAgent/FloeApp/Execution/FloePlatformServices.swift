@@ -643,13 +643,13 @@ final class FloePlatformServices: @unchecked Sendable {
                     FloeShellWrite(stderr, "\(name): no environment is attached\n")
                     return 2
                 }
-                guard let service = currentLinuxCommandService(),
+                guard let service = self.currentLinuxCommandService(),
                       await service.ownsLinuxEnvironment(environmentID: environment.id) else {
                     FloeShellWrite(stderr, "\(name): Node.js runs inside this environment's Linux guest; select the Linux backend for this environment (Settings → Execution) and install the Linux component\n")
                     return 127
                 }
                 do {
-                    try await activateLinuxGuest(id: environment.id)
+                    try await self.activateLinuxGuest(id: environment.id)
                 } catch {
                     FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n")
                     return 127

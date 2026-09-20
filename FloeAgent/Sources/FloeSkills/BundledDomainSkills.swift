@@ -74,22 +74,21 @@ public enum BundledDomainSkills {
         Definition(
             id: "floe-python",
             name: "Local Python Runtime",
-            description: "The bundled CPython substrate: usage rules, bundled libraries, and the contract every script-carrying skill executes under.",
-            version: "1.3.0",
+            description: "The Linux-guest Python substrate: usage rules, package installs, and the contract every script-carrying skill executes under.",
+            version: "1.4.0",
             exposed: false,
             markdown: """
             ## Local Python (exec.localPython)
             ### Using the runtime
-            - The appended runtime probe is authoritative for this build's Python and native library versions. Standard-library extensions include asyncio, json, csv, sqlite3, zipfile, tarfile, gzip, bz2, lzma, hashlib, hmac, secrets, xml.etree, mmap, zoneinfo and statistics. Desktop shell modules (curses, readline, grp, pwd, syslog, multiprocessing) do not exist on iOS.
-            - numpy, Pillow (import as PIL), and pandas are bundled natively in supported builds. Use the runtime probe to confirm availability; do not infer installed versions from old memory or route working native libraries to WebAssembly. Native pandas supports CSV/JSON, filtering, grouping, joins, missing values and timezone processing offline; optional file-format dependencies must still be checked separately.
-            - For scipy and matplotlib, consult the runtime probe: if a package is not bundled in this build, use the explicitly identified **Pyodide WebAssembly** route (workspace HTML + public-HTTPS Pyodide, JSON in/out) or an authorized remote host. Never claim a native install when code ran in WebAssembly; a build pipeline or downloaded wheel is not proof of runtime availability.
-            - Extra compatible pure-Python packages use the active environment: run `python3 -m pip install PACKAGE` / `pip install PACKAGE` in `exec.shell`, or use `packages`/`pipCommand` + `packagePurpose` in `exec.localPython`. Both use the managed installer and applicable review. Installed native libraries can satisfy dependencies; unsupported native versions require an App update. Never import pip/ensurepip or launch subprocess inside the Python `script`.
+            - Local Python runs inside the task environment's TinyEMU Linux guest (Debian python3, riscv64): the full standard library, pip, subprocess and OS access are ordinary there. The environment's shared venv (`/floe/env/python/venv`) is the same interpreter the shell `python3`, the managed installer and the package page use; the task workspace is `/workspace`.
+            - Packages are NOT bundled. Install what a task needs with `packages`/`pipCommand` + `packagePurpose` in `exec.localPython`, or `python3 -m pip install PACKAGE` / `pip install PACKAGE` in `exec.shell` — the guest's real pip against the environment's configured index, with Linux riscv64 wheels allowed (numpy, pandas, Pillow, lxml install when published for the platform). The appended runtime probe (when a guest is running) is authoritative for what is importable; never claim an uninstalled package works.
+            - A stopped guest starts on demand. A missing Linux component or an unqualified image returns the explicit reason — relay it (Settings → Execution → Environments) instead of retrying blindly or falling back to another runtime claim.
+            - Remote execution through the paired host's daemon (ssh.execute / cloudWorkspace) is a **different environment** — do not document or treat it as this local runtime.
             ### The substrate contract for script-carrying skills
             Skills may ship `scripts/*.py` executed through this runtime. The contract:
-            - Manifest: `scriptRuntime: .localPython` + capability `python.local` + tool `exec.localPython`; scripts are static-audited at install (no subprocess, pip, ctypes, os.system; ≤192 KiB).
+            - Manifest: `scriptRuntime: .localPython` + capability `python.local` + tool `exec.localPython`; scripts are static-audited at install (≤192 KiB) and confined to the task's own guest shares (workspace + environment layer).
             - At runtime the **exact audited source** is embedded in the skill's injected instructions and its SHA256 is pre-approved: run it verbatim with task data in `inputJSON`. Any source or package-spec change returns to the normal approval flow.
-            - `pythonPackages` entries are exact `name==version` plus purpose and capabilities; they were inspected at install.
-            - Remote execution through the paired host's daemon (ssh.execute / cloudWorkspace) is a **different environment** — do not document or treat it as this local runtime.
+            - `pythonPackages` entries are exact `name==version` plus purpose and capabilities; they were inspected at install and install into the task environment's guest venv.
             """
         ),
         Definition(

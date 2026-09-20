@@ -45,6 +45,13 @@ public enum GuestPythonRuntime {
                 controller: controller,
                 onColdStart: onColdStart
             )
+        } catch let error as LinuxGuestError {
+            if case .notOwned = error {
+                // The selected environment is not a Linux guest: say how to
+                // get Python back instead of leaking registry jargon.
+                return .jsException(message: ManagedPythonInstallService.linuxRequiredMessage, stdout: "")
+            }
+            return .jsException(message: error.localizedDescription, stdout: "")
         } catch {
             return .jsException(message: error.localizedDescription, stdout: "")
         }

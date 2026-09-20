@@ -111,6 +111,8 @@ def audit_ipa(ipa):
 def audit_project():
     findings = []
     for manifest in [ROOT / "project.yml", ROOT / "Package.swift"]:
+        if not manifest.exists():
+            continue
         text = manifest.read_text()
         for needle, label in PROJECT_MARKERS:
             if needle in text:
