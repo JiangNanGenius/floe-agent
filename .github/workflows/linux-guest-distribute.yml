@@ -1163,8 +1163,36 @@ jobs:
                   raise SystemExit("gh api %s failed: %s%s" % (path, result.stdout, result.stderr))
               return json.loads(result.stdout)
 
+          def find_release():
+              """Return the release for TAG, including our own draft.
+
+              `GET /releases/tags/<tag>` never returns drafts, so a draft that was
+              created outside this step (or by an earlier attempt) is found through the
+              release list. Anything that carries the tag name but is not exactly our
+              single marked draft is a hard stop before any write.
+              """
+              release = api("repos/%s/releases/tags/%s" % (REPO, TAG), allow_missing=True)
+              if release is not None:
+                  return release
+              listed = api("repos/%s/releases?per_page=100" % REPO) or []
+              matches = [item for item in listed if item.get("tag_name") == TAG]
+              if not matches:
+                  return None
+              if len(matches) == 1 and matches[0].get("draft") and MARKER in (matches[0].get("body") or ""):
+                  return matches[0]
+              raise SystemExit("release %s exists but is not our single marked draft; refusing to touch it: %s"
+                               % (TAG, [(item.get("id"), item.get("draft")) for item in matches]))
+
+
+          def required_release():
+              found = find_release()
+              if found is None:
+                  raise SystemExit("release %s is not visible after the upload step" % TAG)
+              return found
+
+
           files = sorted(os.path.join(ASSETS, name) for name in os.listdir(ASSETS))
-          release = api("repos/%s/releases/tags/%s" % (REPO, TAG), allow_missing=True)
+          release = find_release()
           if release is None:
               if api("repos/%s/git/ref/tags/%s" % (REPO, TAG), allow_missing=True) is not None:
                   raise SystemExit("tag %s already exists; refusing to overwrite it" % TAG)
@@ -1175,7 +1203,7 @@ jobs:
           else:
               print("resuming draft %s" % release.get("html_url"))
 
-          release = api("repos/%s/releases/tags/%s" % (REPO, TAG))
+          release = required_release()
           existing = {asset["name"]: asset for asset in release.get("assets", [])}
           planned, skipped = [], []
           for path in files:
@@ -1191,7 +1219,7 @@ jobs:
               planned.append(path)
           if planned:
               print(gh("release", "upload", TAG, *planned, "--repo", REPO).stdout.strip())
-          release = api("repos/%s/releases/tags/%s" % (REPO, TAG))
+          release = required_release()
           assets = {asset["name"]: asset for asset in release.get("assets", [])}
           problems = []
           for path in files:
