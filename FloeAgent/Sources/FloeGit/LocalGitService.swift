@@ -234,7 +234,7 @@ public actor LocalGitService {
             throw FloeError.validationFailed("Commit message must contain 1 to 8192 bytes")
         }
         let repository = try Repository.open(at: root)
-        try configure(repository, authorName: authorName, authorEmail: authorEmail)
+        try configureIfMissing(repository, authorName: authorName, authorEmail: authorEmail)
         let commit = try repository.commit(message: value)
         return GitCommitSummary(
             oid: commit.id.hex,
@@ -396,7 +396,7 @@ public actor LocalGitService {
     /// and rebase are deliberately not implemented.
     @discardableResult
     public func mergeRef(at root: URL, refName: String, authorName: String, authorEmail: String) throws -> GitMergeOutcome {
-        try configure(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
+        try configureIfMissing(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
         return try withRawRepository(at: root) { repository in
             var reference: OpaquePointer?
             try Self.check(git_reference_lookup(&reference, repository, refName), operation: "resolve merge target")
@@ -505,7 +505,7 @@ public actor LocalGitService {
     @discardableResult
     public func resolveConflict(at root: URL, path: String, content: String, authorName: String, authorEmail: String) throws -> GitMergeOutcome {
         let safe = try Self.validRelativePath(path)
-        try configure(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
+        try configureIfMissing(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
         return try withRawRepository(at: root) { repository in
             let url = root.appendingPathComponent(safe).standardizedFileURL
             guard url.path.hasPrefix(root.standardizedFileURL.path + "/") else {
@@ -705,6 +705,20 @@ public actor LocalGitService {
             }
             return copied
         }
+    }
+
+    /// Applies `authorName`/`authorEmail` only when the repository does not
+    /// already carry an identity. A user-supplied or clone-provided
+    /// `user.name`/`user.email` always wins; the supplied identity is a
+    /// fallback for repositories that have none (the common case right after
+    /// a local init without an author).
+    private func configureIfMissing(_ repository: Repository, authorName: String, authorEmail: String) throws {
+        let existingName = (try? repository.config.string(forKey: "user.name")) ?? nil
+        let existingEmail = (try? repository.config.string(forKey: "user.email")) ?? nil
+        let hasName = existingName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let hasEmail = existingEmail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        if hasName && hasEmail { return }
+        try configure(repository, authorName: authorName, authorEmail: authorEmail)
     }
 
     private func configure(_ repository: Repository, authorName: String, authorEmail: String) throws {

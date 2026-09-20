@@ -134,6 +134,42 @@ struct LocalGitServiceTests {
         #expect(again.changes.isEmpty)
     }
 
+    @Test("commit keeps a repository identity that already exists")
+    func commitPreservesExistingIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let git = LocalGitService()
+
+        _ = try await git.initialize(at: root)
+        try Data("one\n".utf8).write(to: root.appendingPathComponent("a.txt"))
+        try await git.stageAll(at: root)
+        // A commit-time identity is written because the repository has none.
+        _ = try await git.commit(
+            at: root, message: "First",
+            authorName: "Floe Tests", authorEmail: "floe-tests@example.invalid"
+        )
+
+        // Simulate a user-supplied identity (e.g. edited `.git/config`).
+        let configURL = root.appendingPathComponent(".git/config")
+        var config = try String(contentsOf: configURL, encoding: .utf8)
+        config = config
+            .replacingOccurrences(of: "name = Floe Tests", with: "name = Custom User")
+            .replacingOccurrences(of: "email = floe-tests@example.invalid", with: "email = user@example.invalid")
+        try config.write(to: configURL, atomically: true, encoding: .utf8)
+
+        try Data("one\ntwo\n".utf8).write(to: root.appendingPathComponent("a.txt"))
+        try await git.stageAll(at: root)
+        let commit = try await git.commit(
+            at: root, message: "Second",
+            authorName: "Floe Tests", authorEmail: "floe-tests@example.invalid"
+        )
+        #expect(commit.author == "Custom User")
+        let snapshot = try await git.snapshot(at: root)
+        #expect(snapshot.recentCommits.first?.author == "Custom User")
+    }
+
     @Test("rejects paths and branches that escape or rewrite repository metadata")
     func validatesRepositoryInputs() async throws {
         let root = FileManager.default.temporaryDirectory
