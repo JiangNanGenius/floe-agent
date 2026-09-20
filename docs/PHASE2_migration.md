@@ -78,8 +78,9 @@ to `.linuxVM`.
 
 **3.2 Legacy language packages.** A migrated environment keeps its layer bytes.
 Guest Node resolves the same `usr/lib/node_modules` prefix, so preserved Node
-modules work. Legacy Python installs were pure-Python-only by construction,
-but the guest must **not** put the whole legacy `site-packages` on
+modules remain visible; modules with native addons still require Linux-compatible
+builds. Legacy Python installs may contain platform-specific packages, so the
+guest must **not** put the whole legacy `site-packages` on
 `PYTHONPATH`: version/shadowing and any stray extension module would silently
 override Linux wheels. Instead the layer manifest's recorded Python
 distributions are reinstalled into the guest venv (`name==version`, guest pip,
