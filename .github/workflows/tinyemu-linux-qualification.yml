@@ -253,13 +253,18 @@ jobs:
           @20 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
           @23 mkdir -p /floe; mount -t 9p -o trans=virtio,version=9p2000.L floe /floe && A=/floe || A=/tmp
           @26 ip link set eth0 up; ip addr add 10.0.2.15/24 dev eth0; ip route add default via 10.0.2.2
-          @28 echo nameserver 10.0.2.3 > /etc/resolv.conf
+          @28 rm -f /etc/resolv.conf; printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf; cat /etc/resolv.conf
           @32 ping -c1 -W3 10.0.2.2 && printf 'FLOE_STAGED_PING_%s\n' OK
-          @38 apt-get update > $A/apt-update.log 2>&1; printf 'FLOE_APT_UPDATE_RC=%d\n' $?; tail -3 $A/apt-update.log
-          @240 apt-get install -y --no-install-recommends python3-numpy nodejs > $A/apt-install.log 2>&1; printf 'FLOE_APT_INSTALL_RC=%d\n' $?; tail -3 $A/apt-install.log; sync
-          @600 python3 -c 'import numpy; print("FLOE_NUMPY_" + "OK", numpy.__version__)' 2>&1 | tail -1
-          @660 node -e 'console.log("FLOE_NODE_" + "OK", process.version)' 2>&1 | tail -1
-          @700 python3 -c 'import scipy' 2>&1 | tail -1; printf 'FLOE_SCIPY_PROBE_%s\n' DONE
+          @35 cat /proc/cpuinfo | head -6 > $A/cpuinfo.txt; dmesg | tail -5 > $A/dmesg-pre.txt
+          @38 python3 -c 'import urllib.request as u; r=u.urlopen("https://deb.debian.org/debian/dists/trixie/Release", timeout=30); print("FLOE_PY_HTTPS_" + str(r.status))' 2>&1 | tail -2
+          @44 printf 'deb https://deb.debian.org/debian trixie main\n' > /tmp/https.list; apt-get update -o Dir::Etc::sourcelist=/tmp/https.list -o Dir::Etc::sourceparts=/dev/null > $A/apt-https-probe.log 2>&1; printf 'FLOE_APT_HTTPS_RC=%d\n' $?; tail -4 $A/apt-https-probe.log
+          @47 dmesg | tail -25 > $A/dmesg-post-https.txt; cp /usr/lib/apt/methods/https $A/apt-https-method 2>/dev/null; ldd /usr/lib/apt/methods/https > $A/apt-https-method-ldd.txt 2>&1; ls -la /usr/lib/apt/methods/ > $A/apt-methods-ls.txt 2>&1; cat $A/dmesg-post-https.txt
+          @50 rm -f /etc/apt/sources.list.d/*.sources; printf 'deb http://deb.debian.org/debian trixie main\ndeb http://deb.debian.org/debian trixie-updates main\ndeb http://deb.debian.org/debian-security trixie-security main\n' > /etc/apt/sources.list; cat /etc/apt/sources.list > $A/apt-sources.txt
+          @56 apt-get update > $A/apt-update.log 2>&1; printf 'FLOE_APT_UPDATE_RC=%d\n' $?; tail -3 $A/apt-update.log
+          @270 apt-get install -y --no-install-recommends python3-numpy nodejs > $A/apt-install.log 2>&1; printf 'FLOE_APT_INSTALL_RC=%d\n' $?; tail -3 $A/apt-install.log; sync
+          @640 python3 -c 'import numpy; print("FLOE_NUMPY_" + "OK", numpy.__version__)' 2>&1 | tail -1
+          @690 node -e 'console.log("FLOE_NODE_" + "OK", process.version)' 2>&1 | tail -1
+          @710 python3 -c 'import scipy' 2>&1 | tail -1; printf 'FLOE_SCIPY_PROBE_%s\n' DONE
           @720 dpkg -l > $A/dpkg-listing.txt 2>/dev/null; sync; printf 'FLOE_STAGED_%s\n' DONE
           EOF
           sed -i 's/^ *//' work/stageD.txt
@@ -316,36 +321,53 @@ jobs:
       - name: Summarize results
         if: always()
         run: |
-          {
-            echo "{"
-            echo "  \"engine_sha256\": \"be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555\","
-            echo "  \"run_debian\": \"${{ inputs.run_debian }}\","
-            echo "  \"debian_image_sha512\": \"$(cat work/debian-sha512.txt 2>/dev/null | awk '{print $1}')\","
-            echo "  \"debian_image_sha256\": \"$(cat work/debian-sha256.txt 2>/dev/null | awk '{print $1}')\","
-            echo "  \"os_release\": \"$(cat work/debian-osrelease.txt 2>/dev/null)\","
-            echo "  \"stageA_rc\": \"$(cat work/stageA-rc.txt 2>/dev/null | cut -d= -f2)\","
-            echo "  \"stageB_rc\": \"$(cat work/stageB-rc.txt 2>/dev/null | cut -d= -f2)\","
-            echo "  \"stageB_transcript_bytes\": \"$(wc -c < work/stageB-transcript.txt 2>/dev/null)\","
-            echo "  \"stageC_rc\": \"$(cat work/stageC-rc.txt 2>/dev/null | cut -d= -f2)\","
-            echo "  \"stageD_rc\": \"$(cat work/stageD-rc.txt 2>/dev/null | cut -d= -f2)\","
-            echo "  \"stageC_gate\": \"${C_OK:-not-run}\"",
-            echo "  \"lifecycle_ok\": $(grep -qa LIFECYCLE_OK work/lifecycle.txt 2>/dev/null && echo true || echo false),"
-            echo "  \"guest_log_files\": [$(ls work/share9p 2>/dev/null | sed 's/.*/"&"/' | paste -sd, -)],"
-            echo "  \"markers\": {"
-            for m in FLOE_STAGEA_OK_42 FLOE_STAGEA_9P_OK FLOE_STAGEA_PING_OK \
-                     FLOE_STAGEC_ALIVE_42 FLOE_FORK_WAIT_OK FLOE_PIPE_OK \
-                     FLOE_SIGNAL_OK FLOE_PTY_OK FLOE_NO_PYTHON3 FLOE_NO_NODE \
-                     FLOE_STAGED_PING_OK FLOE_APT_UPDATE_RC=0 FLOE_APT_INSTALL_RC=0 \
-                     FLOE_NUMPY_OK FLOE_NODE_OK FLOE_PERSIST_OK; do
-              hit="false"
-              grep -qa "$m" work/stageA-transcript.txt work/stageC-transcript.txt \
-                work/stageD-transcript.txt work/stageE2-transcript.txt 2>/dev/null && hit="true"
-              echo "    \"$m\": $hit,"
-            done
-            echo "    \"_note\": \"true only means the literal string appeared in a console transcript; guest scripts assemble markers at runtime so TTY echo of the input line cannot produce them\""
-            echo "  }"
-            echo "}"
-          } | tee work/summary.json
+          python3 - <<'PY' | tee work/summary.json
+          import json, os, sys
+
+          def slurp(path):
+              try:
+                  with open(path, "r", errors="replace") as f:
+                      return f.read().strip()
+              except OSError:
+                  return ""
+
+          def rc(path):
+              raw = slurp(path)
+              return raw.split("=", 1)[1] if "=" in raw else ""
+
+          transcripts = ["work/stageA-transcript.txt", "work/stageC-transcript.txt",
+                         "work/stageD-transcript.txt", "work/stageE2-transcript.txt"]
+          blob = "\n".join(slurp(p) for p in transcripts)
+          markers = ["FLOE_STAGEA_OK_42", "FLOE_STAGEA_9P_OK", "FLOE_STAGEA_PING_OK",
+                     "FLOE_STAGEC_ALIVE_42", "FLOE_FORK_WAIT_OK", "FLOE_PIPE_OK",
+                     "FLOE_SIGNAL_OK", "FLOE_PTY_OK", "FLOE_NO_PYTHON3", "FLOE_NO_NODE",
+                     "FLOE_STAGED_PING_OK", "FLOE_APT_HTTPS_RC=0", "FLOE_APT_UPDATE_RC=0",
+                     "FLOE_APT_INSTALL_RC=0", "FLOE_PY_HTTPS_200", "FLOE_NUMPY_OK",
+                     "FLOE_NODE_OK", "FLOE_PERSIST_OK"]
+          share = sorted(os.path.basename(p) for p in
+                         (os.path.join("work/share9p", f) for f in os.listdir("work/share9p"))
+                         if os.path.isfile(p)) if os.path.isdir("work/share9p") else []
+          summary = {
+              "engine_sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
+              "run_debian": os.environ.get("INPUT_RUN_DEBIAN", ""),
+              "deb_package_versions": [l.strip() for l in
+                                       slurp("work/debian-osrelease.txt").splitlines() if l.strip()][:2],
+              "debian_image_sha512": slurp("work/debian-sha512.txt").split(" ")[0],
+              "debian_image_sha256": slurp("work/debian-sha256.txt").split(" ")[0],
+              "rootfs_image_size": slurp("work/debian-rootfs-size.txt").splitlines()[0] if slurp("work/debian-rootfs-size.txt") else "",
+              "stageA_rc": rc("work/stageA-rc.txt"),
+              "stageB_rc": rc("work/stageB-rc.txt"),
+              "stageB_transcript_bytes": os.path.getsize("work/stageB-transcript.txt") if os.path.exists("work/stageB-transcript.txt") else 0,
+              "stageC_rc": rc("work/stageC-rc.txt"),
+              "stageC_gate": os.environ.get("C_OK", "not-run"),
+              "stageD_rc": rc("work/stageD-rc.txt"),
+              "lifecycle_ok": "LIFECYCLE_OK" in slurp("work/lifecycle.txt"),
+              "guest_log_files": share,
+              "markers": {m: (m in blob) for m in markers},
+              "marker_note": "true only means the literal string appeared in a console transcript; guest scripts assemble markers at runtime so TTY echo of the input line cannot produce them",
+          }
+          print(json.dumps(summary, indent=2))
+          PY
           python3 -m json.tool work/summary.json > /dev/null && echo "summary.json valid"
 
       - name: Upload qualification artifacts
