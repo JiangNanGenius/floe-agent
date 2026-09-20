@@ -484,13 +484,11 @@ jobs:
           api_get /v1/betaFeedbackCrashSubmissions \
             --data-urlencode "filter[build]=$BUILD_ID" \
             --data-urlencode 'limit=200' \
-            --data-urlencode 'fields[betaFeedbackCrashSubmissions]=createdDate,comment,deviceModel,osVersion,locale,connectionType,build' \
+            --data-urlencode 'fields[betaFeedbackCrashSubmissions]=createdDate,build' \
             --data-urlencode 'include=build' \
             > "$RUNNER_TEMP/crash-submissions.json"
           count="$(jq '.data | length' "$RUNNER_TEMP/crash-submissions.json")"
           echo "crash-submission-count=$count"
-          jq -r '.data[] | "crash-submission id=\(.id) created=\(.attributes.createdDate) device=\(.attributes.deviceModel // "unknown") os=\(.attributes.osVersion // "unknown") comment=\((.attributes.comment // "") | tostring | .[0:200])"' \
-            "$RUNNER_TEMP/crash-submissions.json"
           while IFS= read -r submission_id; do
             if ! api_get "/v1/betaFeedbackCrashSubmissions/$submission_id/crashLog" \
               --data-urlencode 'fields[betaCrashLogs]=logText' \
@@ -499,7 +497,7 @@ jobs:
               continue
             fi
             echo "crash-log id=$submission_id begin"
-            jq -r '.data.attributes.logText // "no logText"' "$RUNNER_TEMP/crash-log-$submission_id.json" | cut -c1-60000
+            python3 FloeAgent/scripts/summarize_asc_crash.py "$RUNNER_TEMP/crash-log-$submission_id.json"
             echo
             echo "crash-log id=$submission_id end"
           done < <(jq -r '.data[].id' "$RUNNER_TEMP/crash-submissions.json")
