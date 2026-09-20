@@ -2,15 +2,15 @@
 //
 // Linux environments run their shell, Python and services inside one TinyEMU
 // guest. This file builds the app-side backend:
-//   - environment records declare `executionBackend == .linuxVM` (native
-//     stays the default),
+//   - new and migrated legacy environment records select `.linuxVM`,
+//     while explicitly selected native environments retain compatibility,
 //   - the descriptor exports the environment layer and the workspace over
 //     virtio-9p,
 //   - `RoutingLocalShellBackend` sends exec.shell into the guest for Linux
 //     environments and keeps the native ios_system substrate everywhere else.
 //
-// No qualified modern guest image exists yet. The image catalog reads
-// manifests from FloeAgent's app-owned LinuxGuest/images directory; starting a
+// The image catalog reads verified downloadable component manifests from
+// FloeAgent's app-owned LinuxGuest/images directory; starting a
 // Linux environment without a qualified manifest fails with the recorded
 // reason rather than falling back to the 2018 demo image. The backend keeps
 // environment ownership even without a real artifact root; image resolution
@@ -55,9 +55,8 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             imageID: defaultImageID,
             ramMB: nil,
             // Linux environments need apt/pip to install python3 and packages.
-            // The engine has a single slirp instance, and the registry already
-            // runs at most one guest per process, so enabling the network here
-            // cannot create a second networked VM.
+            // Each admitted guest owns its network instance; the registry
+            // controls concurrent VM admission and lifecycle.
             networkEnabled: true,
             serviceForwards: []
         )
