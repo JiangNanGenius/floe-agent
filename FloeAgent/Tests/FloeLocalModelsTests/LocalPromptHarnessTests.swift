@@ -205,6 +205,57 @@ struct LocalReplayedToolEvidenceTests {
     }
 }
 
+// MARK: - Cross-task history tools on-device admission
+
+@Suite("Local cross-task history admission")
+struct LocalHistoryAdmissionTests {
+    @Test("Conversation tools are admissible for MLX models and excluded for Apple Foundation Models")
+    func conversationToolsAreMLXAdmissible() {
+        let names: Set<String> = ["conversation.search", "conversation.read", "workspace.readFile", "ssh.execute"]
+        let mlx = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: "qwen3.8-4b-heretic-mlx4")
+        #expect(mlx.contains("conversation.search"))
+        #expect(mlx.contains("conversation.read"))
+        #expect(!mlx.contains("ssh.execute"))
+        let apple = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: AppleFoundationModelIdentity.remoteModelID)
+        #expect(apple.isDisjoint(with: ["conversation.search", "conversation.read"]))
+    }
+
+    @Test("Chinese and English history intents select the conversation pair")
+    @available(macOS 15.4, *)
+    func historyIntentSelectsConversationTools() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 16_384, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let schemas = [
+            ToolSchemaDescriptor(name: "conversation.search", description: "Search other Floe tasks", parametersJSON: #"{"type":"object"}"#),
+            ToolSchemaDescriptor(name: "conversation.read", description: "Read a page from another Floe task", parametersJSON: #"{"type":"object"}"#),
+            ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a workspace file", parametersJSON: #"{"type":"object"}"#)
+        ]
+        for userText in ["之前任务里是怎么配置的", "查一下历史记录", "what did we decide in the earlier chat history"] {
+            let request = ProviderStreamRequest(
+                provider: provider,
+                model: model,
+                messages: [
+                    (role: "system", content: "Run context: synthetic workspace."),
+                    (role: "user", content: userText)
+                ],
+                replayedToolPairs: [],
+                toolSchemas: schemas,
+                allToolNames: ["conversation.search", "conversation.read", "workspace.readFile"]
+            ).refreshingRuntimeClock()
+            let local = LocalProviderAdapter.buildPrompt(for: request)
+            let selected = Set(local.selectedTools.map(\.name))
+            #expect(selected.contains("conversation.search"), "user text: \(userText)")
+            #expect(selected.contains("conversation.read"), "user text: \(userText)")
+        }
+    }
+}
+
 
 // MARK: - Decode-rate provenance (PiP speed口径)
 

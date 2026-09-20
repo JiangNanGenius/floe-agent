@@ -187,7 +187,8 @@ public struct CatalogToolExecutor: ToolExecutor {
                 // These tools enforce their own bounded JSON pages. A second 4K
                 // cut here destroys the JSON and its continuation cursor.
                 maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
-                    (["skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 : 4096)
+                    (["skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
+                        (["conversation.search", "conversation.read"].contains(call.toolName) ? 98_304 : 4096))
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -3982,10 +3983,16 @@ enum ToolReplayPlanner {
     /// Same truncation strategy as `ContextEngine.pruneToolOutput`: outputs
     /// above 2 KiB keep a 1280-byte head and 640-byte tail around an explicit
     /// marker, with the original byte count and FNV-1a digest recorded.
+    /// Conversation envelopes additionally rebuild their metadata head — the
+    /// line is prepended so every downstream excerpt (deterministic
+    /// summarizer, replay render, tail cut) keeps the IDs and cursor a
+    /// follow-up history call needs.
     static func compactResultSummary(_ text: String) -> String {
         guard text.utf8.count > 2_048 else { return text }
+        let metadata = ConversationEnvelope.preservedMetadata(in: text)
+        let prefix = metadata.map { "\($0)\n" } ?? ""
         return """
-        \(text.prefix(1_280))
+        \(prefix)\(text.prefix(1_280))
         [middle of tool output compacted]
         \(text.suffix(640))
         [tool output compacted; originalBytes=\(text.utf8.count); digest=\(stableTextDigest(text))]
