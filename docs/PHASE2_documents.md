@@ -18,7 +18,11 @@ SourceControlCenter.refreshRepository()        SourceControlCenter.swift:206
 
 Preceding frames: `libsystem_pthread` → `ios_system set_session_errno (ios_system.m:197)` (immediately after `ios_exit` at ios_system.m:191, confirmed by nm: `ios_exit`=32576, `set_session_errno`=32624, `_exit`=32668) → `text parse_pos (sort.c:632)` → `_sigtramp` → `pthread_kill` → `abort` → Swift runtime (`swift_*`) → Foundation (`-[NSFileManager fileExistsAtPath:]` region, offsets +7123404/+158424).
 
-Interpretation: `repositoryRoot`'s `FileManager.fileExists(atPath:)` ancestor walk (line 25) executed on a thread whose ios_system session was inside/returning from a shell `sort` invocation that called `exit`. ios_system routes `exit` through `set_session_errno` → `pthread_exit`/kill semantics on the shared process, terminating the app (SIGKILL via Foundation namespace). The Foundation frame is the *location*, not the root cause; ownership of shell execution across threads (ios_system session state shared with an unrelated main-actor Git read) is the mechanism. **Git repair is owned by the dedicated Git task** (queued separately); the symbolicated stack above is the handoff evidence. The same pattern appears in payload 3 (build 204, UUID 20DD1CBB, not symbolicated with the build211 dSYM).
+Interpretation remains under investigation: the stack identifies the Git
+filesystem walk and ios_system/text frames, but symbol adjacency and shared
+process membership alone do not prove shell-thread exit caused the Foundation
+termination. The dedicated Git task owns root-cause verification and repair.
+The build204 payload is separate and was not symbolicated with build211 symbols.
 
 ### Crash B — 2026-09-20 22:01:31, SIGABRT 6
 
@@ -51,3 +55,16 @@ Top: `libsystem_kernel __pthread_kill` → `abort` → two `FloeOfficeNative` fr
 - Overlay rect conversion assumes the reported rect is in the web view's viewport CSS space (matches `getBoundingClientRect` + disabled scrolling/zooming). iPad verification pending on device/cloud build.
 - Crash A root cause (ios_system session threading) is evidence-supported but the definitive fix belongs to the Git task; Crash B root cause sits in the MLX model path owned by the assistant worker.
 - No TestFlight/upload performed here (explicitly out of scope); no secrets, transcripts, or raw log records are included in this document.
+
+## Coordinator integration review
+
+Integrated worker `3b289993` as `143f7793`. Corrected the native overlay's
+SwiftUI modifier order: clipping now occurs after the document frame but
+**before** its editor-pane offset. The previous clip after offset retained
+an unshifted clip boundary, truncating the right/bottom of a moved surface;
+this matches the reported partial document region. Device confirmation pending.
+
+Full App dSYM was removed prematurely by the worker during active Git analysis.
+Coordinator restored exact artifact `10604260760` into private
+`symbols-restore`, reverified App UUID, and notified the Git worker. Retain it
+until dependent investigation completes. No private contents are reproduced here.

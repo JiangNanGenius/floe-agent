@@ -376,10 +376,13 @@ struct WorkspaceIDEView: View {
                 ForEach(nativeDocumentRequests, id: \.path) { request in
                     nativeDocumentOverlay(request)
                         .frame(width: max(0, request.rect.width), height: max(0, request.rect.height))
+                        // Clip in the document's local bounds before moving
+                        // it into the editor pane. Clipping after offset cuts
+                        // away the right/bottom by the pane's origin offset.
+                        .clipped()
                         .offset(x: request.rect.minX, y: request.rect.minY)
                         .opacity(overlayVisible(request) ? 1 : 0)
                         .allowsHitTesting(overlayVisible(request))
-                        .clipped()
                 }
             }
             if let tab = tabs.activeTab {
