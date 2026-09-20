@@ -211,9 +211,11 @@ final class FloePlatformServices: @unchecked Sendable {
         maxOutputBytes: Int = 256 * 1024,
         cancellation: CancellationToken? = nil
     ) async throws -> LinuxCommandResult {
-        guard !argv.isEmpty else { throw FloeError.validationFailed("缺少 Linux 命令") }
+        guard !argv.isEmpty else {
+            throw FloeError.validationFailed(String(localized: "environment.packages.linux.command_missing"))
+        }
         guard let service = currentLinuxCommandService(), await service.supports(environmentID: id) else {
-            throw FloeError.validationFailed("Linux 环境尚未运行；请先启动 Floe Linux 环境")
+            throw FloeError.validationFailed(String(localized: "environment.packages.linux.guest_not_running"))
         }
         return try await service.run(
             environmentID: id,

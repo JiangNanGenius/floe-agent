@@ -151,6 +151,31 @@ private struct EnvironmentDetailView: View {
         let version: String
         var id: String { name }
     }
+    /// One shortcut in the maintained Linux recommendation list. `package` is
+    /// the real Debian binary package name passed verbatim to the guest's
+    /// apt-get; `commands` names the guest commands that package normally
+    /// provides, so nobody has to type a command where APT expects a package
+    /// name (xz-utils provides xz, openssh-client provides ssh/scp).
+    private struct LinuxRecommendation: Identifiable, Equatable {
+        let package: String
+        let commands: [String]
+        var id: String { package }
+    }
+    /// Short maintained list of common Debian packages; bilingual display
+    /// strings stay in Localizable.xcstrings. Whether an entry can actually be
+    /// installed depends on the guest's configured APT sources and is resolved
+    /// by the guest's own apt-get, so this list is a starting point, not a
+    /// verified compatibility matrix.
+    private static let recommendedLinuxPackages: [LinuxRecommendation] = [
+        LinuxRecommendation(package: "bash", commands: ["bash"]),
+        LinuxRecommendation(package: "bzip2", commands: ["bzip2"]),
+        LinuxRecommendation(package: "git", commands: ["git"]),
+        LinuxRecommendation(package: "openssh-client", commands: ["ssh", "scp", "sftp"]),
+        LinuxRecommendation(package: "sqlite3", commands: ["sqlite3"]),
+        LinuxRecommendation(package: "unzip", commands: ["unzip"]),
+        LinuxRecommendation(package: "xz-utils", commands: ["xz"]),
+        LinuxRecommendation(package: "zip", commands: ["zip"]),
+    ]
     let report: FloePlatformServices.EnvironmentReport
     let displayName: String
     @State private var current: FloePlatformServices.EnvironmentReport?
@@ -165,7 +190,6 @@ private struct EnvironmentDetailView: View {
     @State private var linuxPackages: [LinuxPackage] = []
     @State private var linuxLoading = false
     @State private var linuxError: String?
-    @State private var linuxSpecification = ""
     @State private var pendingLinuxRemoval: String?
     @ObservedObject private var jobs = EnvironmentPackageJobs.shared
     @Environment(\.dismiss) private var dismiss
@@ -223,17 +247,31 @@ private struct EnvironmentDetailView: View {
                     Button("environment.packages.refresh", systemImage: "arrow.clockwise") {
                         runLinux(["apt-get", "update"], String(localized: "environment.packages.linux.refresh_title"))
                     }.disabled(!writable)
-                    HStack {
-                        TextField("environment.packages.linux.placeholder", text: $linuxSpecification)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.go)
-                            .onSubmit { installLinuxPackage() }
-                        Button("environment.packages.install") { installLinuxPackage() }
-                            .disabled(!writable || linuxSpecification.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }.font(.subheadline)
+                    Text("environment.packages.linux.recommended.title").font(.subheadline.weight(.semibold))
+                    Text("environment.packages.linux.recommended.summary").font(.caption).foregroundStyle(.secondary)
+                    ForEach(Self.recommendedLinuxPackages.filter { matches($0.package) }) { recommendation in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(recommendation.package).font(.subheadline)
+                                Text(Self.recommendedDetail(recommendation)).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let version = installedLinuxVersion(of: recommendation.package) {
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text("environment.capabilities.installed").font(.caption).foregroundStyle(FloeTheme.success)
+                                    Text(version).font(.caption2).foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Button("environment.packages.install") { installLinuxPackage(recommendation.package) }
+                                    .buttonStyle(.borderless).disabled(!writable || linuxLoading)
+                            }
+                        }.font(.subheadline)
+                    }
                     if let linuxError {
                         Label(linuxError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(FloeTheme.destructive)
                     }
                     if linuxLoading { ProgressView("environment.packages.linux.loading") }
+                    Text("environment.packages.linux.installed.title").font(.subheadline.weight(.semibold))
                     if linuxPackages.isEmpty && linuxError == nil && !linuxLoading {
                         Text("environment.packages.linux.empty").font(.subheadline).foregroundStyle(.secondary)
                     }
@@ -312,14 +350,25 @@ private struct EnvironmentDetailView: View {
     }
     private func matches(_ name: String) -> Bool { query.isEmpty || name.localizedCaseInsensitiveContains(query) }
 
-    /// Standard apt semantics: the user's specification passes through to the
-    /// guest verbatim (only `-y` is added because this UI has no terminal).
-    private func installLinuxPackage() {
-        let specification = linuxSpecification.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !specification.isEmpty else { return }
-        linuxSpecification = ""
-        runLinux(["apt-get", "install", "-y", specification],
-                 String(format: String(localized: "environment.packages.linux.install_title"), specification))
+    /// nil until the guest's dpkg database reports the recommended package as
+    /// installed; architecture-qualified names keep their ":" qualifier.
+    private func installedLinuxVersion(of package: String) -> String? {
+        linuxPackages.first { $0.name == package || $0.name.hasPrefix(package + ":") }?.version
+    }
+
+    /// "Provides: xz" — display formatting of the command list only. The
+    /// guest receives the real package name above, never a command name.
+    private static func recommendedDetail(_ recommendation: LinuxRecommendation) -> String {
+        String(format: String(localized: "environment.packages.linux.recommended.provides"),
+               recommendation.commands.joined(separator: ", "))
+    }
+
+    /// Standard apt semantics: the selected recommended package name passes
+    /// through to the guest verbatim (only `-y` is added because this UI has
+    /// no terminal). The guest's own apt-get resolves whether it can install.
+    private func installLinuxPackage(_ package: String) {
+        runLinux(["apt-get", "install", "-y", package],
+                 String(format: String(localized: "environment.packages.linux.install_title"), package))
     }
 
     private func runLinux(_ argv: [String], _ title: String) {
