@@ -141,18 +141,34 @@ jobs:
             | tee work/debian-ext4-features.txt
           # The pinned 2018 bbl/demo kernel has NO EFI/GPT partition support (no
           # CONFIG_EFI_PARTITION strings in the image; a valid GPT disk is seen
-          # only through the protective MBR, so root=/dev/vda1 panics
-          # "VFS: Unable to mount root fs"). Verified 2026-09-20 in run
-          # 35493987238 and locally with a GPT disk accepted by macOS. The
-          # fallback route therefore boots the extracted ext4 partition as a
-          # whole-disk image (root=/dev/vda), which this kernel mounts fine.
-          RS=$(sudo parted -s "$LOOP" unit s print | awk -v p="$ROOTP" '$1==p {gsub(/s/,"",$2); gsub(/s/,"",$4); print $2, $4}')
-          RSTART=$(echo "$RS" | cut -d' ' -f1); REND=$(echo "$RS" | cut -d' ' -f2)
-          [ -n "$RSTART" ] && [ -n "$REND" ] || { echo "cannot resolve rootfs extent"; exit 1; }
+          # only through the protective MBR, so root=/dev/vda1 panics with
+          # "VFS: Unable to mount root fs on unknown-block(254,1)"). Verified
+          # 2026-09-20 in run 35493987238 and locally with a GPT disk macOS
+          # accepts (guest read-path md5 matched byte-for-byte). The fallback
+          # route therefore boots the extracted ext4 partition as a whole-disk
+          # image (root=/dev/vda), which this kernel mounts fine.
+          # parted "unit s print" columns are Number Start End Size ...:
+          # $2=start $3=end $4=size (sector units, "s" suffix).
+          PART_INFO=$(sudo parted -s "$LOOP" unit s print | \
+            awk -v p="$ROOTP" '$1==p {gsub(/s/,"",$2); gsub(/s/,"",$3); gsub(/s/,"",$4); print $2, $3, $4}')
+          RSTART=$(echo "$PART_INFO" | cut -d' ' -f1)
+          REND=$(echo "$PART_INFO" | cut -d' ' -f2)
+          RSIZE=$(echo "$PART_INFO" | cut -d' ' -f3)
+          echo "rootfs extent: start=$RSTART end=$REND size=$RSIZE sectors"
+          { [ -n "$RSTART" ] && [ -n "$REND" ] && [ -n "$RSIZE" ]; } || {
+            echo "cannot resolve rootfs extent from parted"; exit 1; }
+          if [ "$((REND - RSTART + 1))" != "$RSIZE" ]; then
+            echo "parted extent mismatch (end-start+1 != size); refusing to dd a truncated rootfs"
+            exit 1
+          fi
           dd if=work/debian13-riscv64.raw of=work/debian13-rootfs.img bs=512 \
-             skip="$RSTART" count="$((REND - RSTART + 1))" status=progress
-          sudo chmod 644 work/debian13-rootfs.img
+             skip="$RSTART" count="$RSIZE" status=progress
           ls -la work/debian13-rootfs.img | tee work/debian-rootfs-size.txt
+          # the extracted copy must be the same clean ext4 (not truncated)
+          sudo e2fsck -fy work/debian13-rootfs.img 2>&1 | tail -2 | tee -a work/debian-rootfs-size.txt
+          sudo tune2fs -l work/debian13-rootfs.img \
+            | grep -aE "Filesystem features|Block size|Filesystem state" | tee work/debian-ext4-features.txt
+          sudo chmod 644 work/debian13-rootfs.img
           mkdir -p work/mnt
           sudo mount -o ro "${LOOP}p${ROOTP}" work/mnt
           ls work/mnt/boot/ | tee work/boot-listing.txt
@@ -215,8 +231,23 @@ jobs:
           grep -a "Maximum resident" work/stageC-time.txt || true
           set -e
 
+      - name: Stage C gate — only continue to D/E with real userland evidence
+        if: ${{ always() && inputs.run_debian }}
+        run: |
+          C_RC=$(cat work/stageC-rc.txt 2>/dev/null | cut -d= -f2)
+          if [ "$C_RC" = "0" ] && grep -qa FLOE_STAGEC_ALIVE_42 work/stageC-transcript.txt \
+             && grep -qa FLOE_STAGEC_DONE work/stageC-transcript.txt; then
+            echo "C_OK=true" >> "$GITHUB_ENV"
+            echo "Stage C reached a real guest shell (rc=0, ALIVE+DONE markers)"
+          else
+            echo "C_OK=false" >> "$GITHUB_ENV"
+            echo "Stage C did not reach the guest shell (rc=$C_RC); D/E are skipped and the"
+            echo "panic/timeout transcript below is the recorded result, so no hour is wasted:"
+            tail -c 1200 work/stageC-transcript.txt || true
+          fi
+
       - name: Stage D — APT + python3-numpy + nodejs (network-permitting)
-        if: ${{ inputs.run_debian }}
+        if: ${{ inputs.run_debian && env.C_OK == 'true' }}
         run: |
           cat > work/stageD.txt <<'EOF'
           @20 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
@@ -246,7 +277,7 @@ jobs:
           set -e
 
       - name: Stage E — file persistence across reboot (write-through disk)
-        if: ${{ inputs.run_debian }}
+        if: ${{ inputs.run_debian && env.C_OK == 'true' }}
         run: |
           cat > work/stageE1.txt <<'EOF'
           @20 mount -t proc proc /proc
@@ -297,6 +328,7 @@ jobs:
             echo "  \"stageB_transcript_bytes\": \"$(wc -c < work/stageB-transcript.txt 2>/dev/null)\","
             echo "  \"stageC_rc\": \"$(cat work/stageC-rc.txt 2>/dev/null | cut -d= -f2)\","
             echo "  \"stageD_rc\": \"$(cat work/stageD-rc.txt 2>/dev/null | cut -d= -f2)\","
+            echo "  \"stageC_gate\": \"${C_OK:-not-run}\"",
             echo "  \"lifecycle_ok\": $(grep -qa LIFECYCLE_OK work/lifecycle.txt 2>/dev/null && echo true || echo false),"
             echo "  \"guest_log_files\": [$(ls work/share9p 2>/dev/null | sed 's/.*/"&"/' | paste -sd, -)],"
             echo "  \"markers\": {"
@@ -330,6 +362,8 @@ jobs:
             work/debian-sha512.txt
             work/debian-sha256.txt
             work/debian-osrelease.txt
+            work/debian-ext4-features.txt
+            work/debian-rootfs-size.txt
             work/boot-listing.txt
             work/partitions.txt
             work/share9p/*
