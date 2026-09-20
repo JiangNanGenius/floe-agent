@@ -239,11 +239,11 @@ upstream answer:
 
 ## 7. Evidence
 
-- Commit SHA: `34188ba5` (branch `codex/tinyemu-phase2-assistant`, base `46422286`)
+- Worker commit SHA: `fb6a8f26` (integrated as `aa8f491f`) (branch `codex/tinyemu-phase2-assistant`, base `46422286`)
 - Focused tests (executed, macOS arm64, Swift 6.4/Xcode-beta, SwiftPM
   scratch on internal disk; GRDB/MLX/llama frameworks from the existing
   verified caches — no dependency downloads, no device inference):
-  - `ConversationSearchTests` (12): notes-purpose exclusion, FTS ranking,
+  - `ConversationSearchTests` (7): notes-purpose exclusion, FTS ranking,
     workspace/date filters, CJK substring + title fallback, SQL-side
     exclusion before LIMIT, `conversation.list` envelope + current-task
     filter — **all passed**.
@@ -265,7 +265,7 @@ upstream answer:
     the scratch dir (no downloads). Earlier `swift test` runs rewrote
     `Package.resolved` (dropped whisperkit pin + originHash); the lockfile
     was restored and is byte-identical to the base commit.
-- Compiled but not executed locally:
+- Deferred to cloud compilation; not compiled or executed locally:
   - `NotesDocumentApprovalPolicyTests` (Qualification/NativeNotes host,
     iOS-only XCTest): scoped-handler grants, exec confinement/network
     gates, out-of-scope escalation. App-side SwiftUI files
@@ -285,7 +285,7 @@ upstream answer:
 重新加载"间隙加入有界结构化诊断日志，便于下次崩溃报告精确定位阶段；
 修复本地小窗口下"压缩无法缩小即失败"的上下文压缩死循环，压缩现在会
 确定性降级（更短摘要→丢弃最旧已摘要消息，原文仍在持久记录中），仅在
-受保护尾部本身超过窗口时才如实失败。二、跨会话访问：新增
+系统内容、受保护尾部和最小压缩提示的总预算超过窗口时才如实失败。二、跨会话访问：新增
 `conversation.list` 任务发现工具（与 FTS 分离）；`conversation.search`
 在 FTS 之外合并标题与中文子串匹配（unicode61 无法匹配中文子串）；
 新增 v44 迁移重建 message_fts 历史索引；空搜索仍返回明确的 noResults
