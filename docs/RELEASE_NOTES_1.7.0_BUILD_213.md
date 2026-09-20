@@ -1,7 +1,7 @@
-# Floe 1.7.0 (212) — TinyEMU and feedback repairs
+# Floe 1.7.0 (213) — TinyEMU and feedback repairs
 
-Status: cloud App compile failed on a nonexistent logger category. No IPA or upload.
-The corrected source continues as [Build 213](RELEASE_NOTES_1.7.0_BUILD_213.md); the Build212 tag is preserved.
+Status: source integration complete; Linux component published; App build next.
+No Build213 upload or installability claimed yet.
 
 This delivery makes Linux the default local environment and archives the native
 Python/Node runtimes outside the App payload. Shell, direct Python and services
