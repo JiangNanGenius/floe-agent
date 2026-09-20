@@ -368,13 +368,17 @@ struct WorkspaceIDEView: View {
                 // follow tab switches and resizes through the same stream.
                 // Hidden tabs stay mounted (invisible, no hit testing) so a
                 // PDF keeps its reading position and an Office session keeps
-                // its editor state across switches.
+                // its editor state across switches. A PDF overlay is also
+                // gated on the workbench's own active resource being that
+                // document: closing the web tab can leave a stale rect in the
+                // stream, and it must never float over an unrelated active
+                // text editor.
                 ForEach(nativeDocumentRequests, id: \.path) { request in
                     nativeDocumentOverlay(request)
                         .frame(width: max(0, request.rect.width), height: max(0, request.rect.height))
                         .offset(x: request.rect.minX, y: request.rect.minY)
-                        .opacity(request.visible ? 1 : 0)
-                        .allowsHitTesting(request.visible)
+                        .opacity(overlayVisible(request) ? 1 : 0)
+                        .allowsHitTesting(overlayVisible(request))
                         .clipped()
                 }
             }
@@ -429,6 +433,16 @@ struct WorkspaceIDEView: View {
 
     private var nativeDocumentRequests: [IDEWorkbenchState.IDENativeDocumentRequest] {
         state.nativeDocuments.values.sorted { $0.path < $1.path }
+    }
+
+    /// Whether a native PDF/Office overlay may show right now. The web stream
+    /// reports intersection visibility, but a closed or backgrounded web tab
+    /// can leave a stale rect with `visible == true` behind; only the document
+    /// the workbench reports as its active resource may actually cover the
+    /// editor, so a PDF never floats over an unrelated active text file.
+    private func overlayVisible(_ request: IDEWorkbenchState.IDENativeDocumentRequest) -> Bool {
+        guard request.visible else { return false }
+        return state.activePath == request.path
     }
 
     @ViewBuilder private func nativeDocumentOverlay(_ request: IDEWorkbenchState.IDENativeDocumentRequest) -> some View {

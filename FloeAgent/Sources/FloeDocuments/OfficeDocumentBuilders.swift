@@ -189,14 +189,18 @@ public enum OfficeDocumentBuilder {
             wordParagraph($0, style: nil, isTitle: false)
         }).joined()
         let entries: [String: String] = [
-            "[Content_Types].xml": xmlHeader + #"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>"#,
+            "[Content_Types].xml": xmlHeader + #"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>"#,
             "_rels/.rels": xmlHeader + relationships([
                 ("rId1", officeRelationship + "/officeDocument", "word/document.xml"),
                 ("rId2", "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties", "docProps/core.xml")
             ]),
             "docProps/core.xml": xmlHeader + wordCoreProperties(title: title),
-            "word/_rels/document.xml.rels": xmlHeader + relationships([]),
+            "word/_rels/document.xml.rels": xmlHeader + relationships([
+                ("rId1", officeRelationship + "/styles", "styles.xml"),
+                ("rId2", officeRelationship + "/theme", "theme/theme1.xml")
+            ]),
             "word/styles.xml": xmlHeader + wordStyles,
+            "word/theme/theme1.xml": xmlHeader + wordTheme(eastAsiaFont: wordEastAsiaFont),
             "word/document.xml": xmlHeader + #"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"# + body + #"<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#
         ]
         try writePackage(entries, to: url)
@@ -443,7 +447,33 @@ public enum OfficeDocumentBuilder {
 
     private static func wordParagraph(_ text: String, style: String?, isTitle: Bool) -> String {
         let styleXML = style.map { #"<w:pPr><w:pStyle w:val="\#($0)"/></w:pPr>"# } ?? ""
-        return #"<w:p>\#(styleXML)<w:r><w:t xml:space="preserve">\#(XMLText.escape(text))</w:t></w:r></w:p>"#
+        // Explicit per-run fonts: the engine's theme/docDefaults eastAsia
+        // resolution is unreliable on iOS, so every generated run names the
+        // installed CJK family directly. Without this Chinese glyphs render
+        // as empty squares in the native editor.
+        let runFonts = #"<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="\#(XMLText.escapeAttribute(wordEastAsiaFont))"/></w:rPr>"#
+        return #"<w:p>\#(styleXML)<w:r>\#(runFonts)<w:t xml:space="preserve">\#(XMLText.escape(text))</w:t></w:r></w:p>"#
+    }
+
+    /// East Asian font family written into every generated Word run and the
+    /// document defaults. The previous "Source Han Sans SC" family is not
+    /// installed on iOS, so the engine's fallback could render Chinese glyphs
+    /// as empty squares. "PingFang SC" is the system CJK family on every
+    /// supported iOS/iPadOS device (our entire target), and desktop Word
+    /// substitutes an installed CJK font when a named family is missing, so
+    /// generated documents stay readable in both places. Keep the font name
+    /// consistent in `wordStyles`, `wordTheme` and the per-run properties.
+    private static let wordEastAsiaFont = "PingFang SC"
+
+    /// Word resolves eastAsia glyphs through the minor theme font when a run
+    /// does not override it; a package without a theme part leaves theme-font
+    /// resolution to the renderer. This theme names the same CJK family as
+    /// the document defaults. The fmtScheme lists carry the DrawingML minimum
+    /// cardinalities (3 fills / 3 lines / 3 effects / 3 backgrounds) so the
+    /// part validates instead of being ignored by strict consumers.
+    private static func wordTheme(eastAsiaFont: String) -> String {
+        let ea = XMLText.escapeAttribute(eastAsiaFont)
+        return #"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Floe"><a:themeElements><a:clrScheme name="Floe"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2><a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2><a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4><a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="Floe"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface="\#(ea)"/><a:cs typeface="Arial"/></a:majorFont><a:minorFont><a:latin typeface="Arial"/><a:ea typeface="\#(ea)"/><a:cs typeface="Arial"/></a:minorFont></a:fontScheme><a:fmtScheme name="Floe"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#
     }
 
     /// Maps the generated title into the package core properties so Word shows
@@ -452,7 +482,10 @@ public enum OfficeDocumentBuilder {
         #"<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>"# + XMLText.escape(title) + #"</dc:title><dc:creator>Floe</dc:creator><cp:lastModifiedBy>Floe</cp:lastModifiedBy></cp:coreProperties>"#
     }
 
-    private static let wordStyles = #"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Source Han Sans SC"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="52"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style></w:styles>"#
+    private static var wordStyles: String {
+        let ea = XMLText.escapeAttribute(wordEastAsiaFont)
+        return #"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="\#(ea)"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="\#(ea)"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="\#(ea)"/><w:b/><w:sz w:val="52"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="\#(ea)"/><w:b/><w:sz w:val="32"/></w:rPr></w:style></w:styles>"#
+    }
 
     // MARK: - Workbook
 

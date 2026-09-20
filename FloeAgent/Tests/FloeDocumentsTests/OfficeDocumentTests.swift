@@ -28,6 +28,19 @@ struct OfficeDocumentTests {
         #expect(word.fields.map(\.text).contains("Launch brief"))
         #expect(word.fields.map(\.text).contains("第二段"))
 
+        // Chinese text must name an installed CJK font in every place Word or
+        // the pinned engine resolves fonts (docDefaults, theme, per-run),
+        // otherwise the native editor renders empty squares.
+        let wordPackage = try Archive(url: docx, accessMode: .read)
+        let styles = String(decoding: try read(wordPackage, path: "word/styles.xml"), as: UTF8.self)
+        #expect(styles.contains("w:eastAsia=\"PingFang SC\""))
+        #expect(!styles.contains("Source Han Sans SC"))
+        let theme = String(decoding: try read(wordPackage, path: "word/theme/theme1.xml"), as: UTF8.self)
+        #expect(theme.contains("<a:ea typeface=\"PingFang SC\"/>"))
+        let document = String(decoding: try read(wordPackage, path: "word/document.xml"), as: UTF8.self)
+        #expect(document.contains("w:eastAsia=\"PingFang SC\""))
+        let rels = String(decoding: try read(wordPackage, path: "word/_rels/document.xml.rels"), as: UTF8.self)
+        #expect(rels.contains("theme/theme1.xml"))
         let xlsx = root.appendingPathComponent("model.xlsx")
         try OfficeDocumentBuilder.createWorkbook(
             at: xlsx,

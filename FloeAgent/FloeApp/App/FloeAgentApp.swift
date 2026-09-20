@@ -523,7 +523,7 @@ struct RootView: View {
                     Color.black.opacity(0.18)
                         .ignoresSafeArea()
                         .onTapGesture { router.hideInspector() }
-                    NavigationStack { InspectorColumnView(route: route) }
+                    NavigationStack { InspectorColumnView(route: route).id(route.id) }
                         .frame(width: drawerWidth, height: proxy.size.height)
                         .background(FloeTheme.readingSurface)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -609,7 +609,11 @@ struct RootView: View {
                 if let inspectorRoute = router.inspectorRoute {
                     Divider()
                     NavigationStack {
-                        InspectorColumnView(route: inspectorRoute)
+                        // The inspector must be re-created per conversation:
+                        // its `.task` re-mounts the task workspace, but the
+                        // previous conversation's file tree/editor state must
+                        // never linger as a stale right-hand workspace.
+                        InspectorColumnView(route: inspectorRoute).id(inspectorRoute.id)
                     }
                     .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
                     .transition(.move(edge: .trailing).combined(with: .opacity))

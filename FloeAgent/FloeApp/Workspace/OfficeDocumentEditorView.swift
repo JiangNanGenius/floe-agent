@@ -1064,6 +1064,58 @@ final class OfficeFileSession: ObservableObject {
         await previewCurrent()
     }
 
+    /// Functional recovery for a failed session. A failed open/save/close can
+    /// leave a dead or wedged native controller on a retained working copy:
+    /// an engine close that timed out, an open watchdog timeout, or a runtime
+    /// failure. The retained working copy is the user's data — never deleted
+    /// here. Recovery tears the dead controller down (bounded, detached from
+    /// the engine's unsettled state) and re-activates a fresh preview of the
+    /// same working copy so unsaved content is visible again and the user can
+    /// save, keep, or discard it through the normal actions. When the session
+    /// itself is gone (open failed before a working copy existed) this simply
+    /// re-arms the owning loader, exactly like `retryPreview()`.
+    @discardableResult
+    func recoverFailedSession() async -> Bool {
+        guard phase == .failed else { return false }
+        if session == nil, controller == nil {
+            phase = .idle
+            error = nil
+            return true
+        }
+        guard !operating else { return false }
+        operating = true
+        defer { finishOperation() }
+        runtimeFailed = false
+        error = nil
+        do {
+            // closeController() is bounded and never blocks on the wedged
+            // engine: an unacknowledged native close settles at its timeout
+            // and frees this surface regardless.
+            try await closeController()
+            guard let session, let workspace else {
+                phase = .idle
+                return true
+            }
+            // Refresh the uncommitted marker from the actual working copy so
+            // the recovered surface never claims a clean state it cannot
+            // prove (a timed-out save may have written the copy without a
+            // receipt).
+            hasUncommittedChanges = (try? await workspace.hasUncommittedWorkingCopy(session)) ?? true
+            readOnly = true
+            editUnavailableReason = nil
+            try await activate(readOnly: true)
+            return true
+        } catch {
+            fail(error)
+            return false
+        }
+    }
+
+    /// True when the failed state is recoverable at all: either a retained
+    /// working copy exists (editable or preview failure), or the open failed
+    /// before any copy existed and the owning loader can simply re-arm.
+    var canRecoverFailedSession: Bool { phase == .failed }
+
     func resumeRecovery(id: UUID) async {
         guard !operating else { return }
         operating = true
@@ -1280,7 +1332,9 @@ final class OfficeFileSession: ObservableObject {
         native.onClosed = { [weak self, weak native] _ in
             guard let self, let native, self.controller === native, !self.expectedClose else { return }
             self.runtimeFailed = true
-            self.error = "文档已关闭，编辑副本已保留。"
+            self.error = OfficeInkText.t(
+                "文档已被文档引擎关闭；编辑副本已保留，可在“保留的文档”中恢复。",
+                "The document engine closed the document. Your editing copies were retained and can be recovered under Retained Documents.")
             self.phase = .failed
         }
         try OfficeExplicitSaveBridge.installEmbeddedControls(controller: native)
@@ -1400,10 +1454,16 @@ struct OfficeDocumentSurface: View {
             }
             if session.phase == .failed {
                 ContentUnavailableView {
-                    Label("无法打开文档", systemImage: "doc.badge.ellipsis")
-                } description: { Text(session.error ?? "请稍后重试。") } actions: {
-                    if session.readOnly {
-                        Button("重试") { Task { await session.retryPreview() } }
+                    Label(OfficeInkText.t("无法打开文档", "Document Unavailable"), systemImage: "doc.badge.ellipsis")
+                } description: { Text(session.error ?? OfficeInkText.t("请稍后重试。", "Please try again.")) } actions: {
+                    if session.canRecoverFailedSession {
+                        // Functional recovery, not a reworded retry: tears down
+                        // the wedged/dead controller (bounded), keeps the
+                        // retained working copy, and re-opens a truthful
+                        // preview of it so unsaved edits stay reachable.
+                        Button(OfficeInkText.t("恢复文档", "Recover Document")) {
+                            Task { _ = await session.recoverFailedSession() }
+                        }
                     }
                 }
             } else if session.phase != .ready {

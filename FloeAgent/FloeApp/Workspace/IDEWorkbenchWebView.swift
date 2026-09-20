@@ -47,7 +47,7 @@ import FloeWorkspace
             arguments: ["path": "/" + path], in: nil, contentWorld: .page)
     }
 
-    fileprivate func applyNativeDocumentMessage(_ body: [String: Any]) {
+    fileprivate func applyNativeDocumentMessage(_ body: [String: Any], in webView: WKWebView? = nil) {
         guard let path = body["path"] as? String,
               let relative = try? IDEWorkspaceSession.relativePath(path) else { return }
         if body["phase"] as? String == "unmount" {
@@ -59,7 +59,18 @@ import FloeWorkspace
               let width = rectBody["width"] as? CGFloat, let height = rectBody["height"] as? CGFloat,
               let rawKind = body["kind"] as? String, let kind = IDENativeDocumentKind(rawValue: rawKind)
         else { return }
-        let rect = CGRect(x: x, y: y, width: width, height: height)
+        // The web reports the component rectangle in CSS pixels relative to
+        // the viewport. The native overlay is positioned in the WKWebView's
+        // own coordinate space inside the SwiftUI ZStack, so the rect must be
+        // converted through the web view (CSS px → points → view bounds);
+        // otherwise a mismatched scale/origin shows up as a fixed narrow,
+        // clipped or offset region for PDF/Office documents.
+        var rect = CGRect(x: x, y: y, width: width, height: height)
+        if let webView {
+            rect = rect.applying(CGAffineTransform(scaleX: webView.scrollView.zoomScale,
+                                                   y: webView.scrollView.zoomScale))
+            rect = webView.scrollView.convert(rect, to: webView)
+        }
         // The web reports real visibility (intersection + size). Falling back
         // to the rectangle alone is only for older bridge payloads.
         let visible = (body["visible"] as? Bool) ?? (rect.width > 1 && rect.height > 1)
@@ -205,7 +216,7 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
             case "nativeDocument":
                 // The custom document component reports mount/rect/unmount
                 // for PDF/Office internal tabs; the native overlay follows.
-                state.applyNativeDocumentMessage(body)
+                state.applyNativeDocumentMessage(body, in: state.web)
                 replyHandler([:], nil)
             default:
                 guard let data = try? JSONSerialization.data(withJSONObject: body),

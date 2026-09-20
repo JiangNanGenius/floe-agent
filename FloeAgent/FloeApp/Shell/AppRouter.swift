@@ -110,7 +110,30 @@ final class AppRouter: ObservableObject {
     // MARK: - Cross-screen selection
 
     /// Canonical workbench selection shared by every idiom and entry point.
-    @Published var workbenchSelection: WorkbenchSelection = .newTask(workspaceID: nil)
+    @Published var workbenchSelection: WorkbenchSelection = .newTask(workspaceID: nil) {
+        didSet {
+            guard oldValue != workbenchSelection else { return }
+            // Switching the selected conversation in the sidebar must never
+            // leave the right-hand inspector pinned to the previous task's
+            // workspace (stale file tree / preview for a conversation the
+            // user no longer sees). Repoint workspace-backed inspector panes
+            // to the newly selected conversation, or close them when no
+            // conversation is selected anymore.
+            if let route = inspectorRoute {
+                switch route.content {
+                case .changes, .workspaceFiles, .browser, .progress, .childAgents, .permissions:
+                    if let conversationID = selectedConversationID,
+                       conversationID != route.conversationID {
+                        inspectorRoute = InspectorRoute(content: route.content, conversationID: conversationID)
+                    } else if selectedConversationID == nil {
+                        inspectorRoute = nil
+                    }
+                case .terminal:
+                    break
+                }
+            }
+        }
+    }
     /// The single compact-navigation projection of `workbenchSelection`.
     /// A user-driven NavigationStack pop writes this binding directly, so
     /// reconcile the canonical selection here as well as in router methods.
