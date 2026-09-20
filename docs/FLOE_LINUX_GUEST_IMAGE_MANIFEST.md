@@ -61,10 +61,12 @@ candidate runs the Debian userland on the pinned 2018 4.15 kernel.
 Package installation died inside apt's http/https methods with SIGILL
 (signal 4) because the engine trapped `FENCE.TSO` (0x8330000f) as illegal;
 `libapt-pkg.so.7.0.0` executes it at exactly the faulting offset, and
-`patches/0005-fence-hints.patch` now treats the FENCE family as the no-op
-hint the base ISA defines. Fixtures 207/208 predate that patch, so their
-Linux backend stays unqualified until a build carries it. Do not advertise
-the candidate as a complete, fully working Linux.
+`patches/0005-fence-hints.patch` implements the stronger ordinary-fence
+ordering already provided by this single-hart interpreter. Run 35500083112
+then passed real HTTPS APT update/install, NumPy, Node and Python HTTPS.
+Build 207 has no Linux backend; cancelled build 208 predates this fix.
+These results do not yet qualify a downloadable image: final runner clock,
+package ownership and the corresponding-source artifacts must be completed.
 
 ## Concrete follow-up artifacts (planned, none published yet)
 

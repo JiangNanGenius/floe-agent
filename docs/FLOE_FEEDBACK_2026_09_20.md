@@ -140,6 +140,11 @@ The APT SIGILL was traced to TinyEMU rejecting FENCE.TSO in libapt-pkg. The
 compatibility patch now also reaches the App's vendored engine; a read-only
 pristine-plus-patches comparison passed. The real guest runner compiled and
 executed in run35499020441, while package installation still failed there.
-The corrected CPU is undergoing a separate targeted HTTPS/APT/NumPy/Node probe
-in [run35500083112](https://github.com/JiangNanGenius/floe-agent/actions/runs/35500083112).
-This is not yet a qualified downloadable image.
+The corrected CPU passed real HTTPS APT update/install, NumPy 2.2.4, Node
+v20.19.2 and Python HTTPS 200 in
+[run 35500083112](https://github.com/JiangNanGenius/floe-agent/actions/runs/35500083112).
+The separate instruction probe failed because its script indentation was stripped;
+that harness fix is committed and awaits the final image smoke. Host boot now
+passes a fresh wall-clock value; the guest PID1 application and language package
+ownership fixes are being finished independently. This is not yet a qualified
+downloadable image.

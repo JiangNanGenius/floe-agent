@@ -44,8 +44,11 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
   真实启动，bash/glibc/python3 3.13.5/dpkg/9p/fork/管道/信号/pty 实测通过，断电重启后文件持久化。
   规格：`bbl64.bin` + 4.15 `kernel-riscv64.bin` + Debian13 rootfs 整盘 ext4，`root=/dev/vda`（2018 内核无 GPT 解析，
   不能 `root=/dev/vda1`），RAM 512–768MB，`console=hvc0 root=/dev/vda rw init=/usr/local/bin/floe-exec`。
-- 硬阻塞（不得宣称可用）：现代 Debian13 6.12 内核在 2018 bbl 上无控制台输出（需 FDT+OpenSBI）；guest 内
-  apt HTTPS 传输 SIGILL 诊断中。RAM OOM 创建失败是可恢复 NULL，不是致命错误。
+- 后续定向云端结果（run 35500083112）：修正 FENCE.TSO 处理并设置 guest 时钟后，默认 HTTPS 源的
+  apt update/install 返回 0，NumPy 2.2.4、Node v20.19.2 与 Python HTTPS 200 均有真实输出。
+  独立指令探针因脚本缩进错误未产出结果，修正后由最终镜像检查补验。App 启动时钟与安装归属仍在收口。
+- 现代 Debian13 6.12 内核在 2018 bbl 上仍无控制台输出（需 FDT+OpenSBI）；当前可用组合限于 4.15 内核
+  与 Debian13 用户态。RAM OOM 创建失败是可恢复 NULL，不是致命错误。
 - 分发是**另一个**决定：`LinuxGuestImageDistributionCatalog` 目前为空（没有已发布的 guest 来源/许可记录），
   所以 `floe-env image install` 与 UI 只报不可用；本地构建的镜像只能经
   `floe-env image import <id> <zip> <sha512>` 导入并标记为本地导入（永不自动成为可下载镜像）。
