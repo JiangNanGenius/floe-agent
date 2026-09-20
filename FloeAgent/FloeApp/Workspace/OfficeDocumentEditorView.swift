@@ -1146,7 +1146,7 @@ final class OfficeFileSession: ObservableObject {
     /// callback never fires (a task group would keep waiting on it).
     private static func withNativeDeadline(
         _ timeout: TimeInterval,
-        timeoutError: @autoclosure () -> NSError,
+        timeoutError: @escaping @autoclosure () -> NSError,
         _ nativeOperation: (@escaping (Result<Void, Error>) -> Void) -> Void
     ) async throws {
         let receipt = OfficeSaveReceipt()
