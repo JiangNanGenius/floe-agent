@@ -12,18 +12,38 @@ ROOT = Path(__file__).resolve().parents[2]
 CATALOG_KEY = "notes.navigation.backToNotes"
 
 class ReleaseVersionPreflightTests(unittest.TestCase):
-    def run_preflight(self, transform=lambda text: text, catalog_transform=lambda text: text):
+    def run_preflight(self, transform=lambda text: text, catalog_transform=lambda text: text, missing_office_lock=False):
         with tempfile.TemporaryDirectory(prefix="floe-release-version-test-") as temp:
             root = Path(temp)
             app = root / "FloeAgent"
             for name in ("project.yml", "scripts/release_preflight.sh",
                          "scripts/validate_localization_catalog.py",
                          "scripts/audit_native_runtime_free.py",
+                         "scripts/bootstrap_office_host.py",
                          "FloeAgent.xcodeproj/project.pbxproj", "FloeScreenShare/Info.plist",
                          "FloeApp/Resources/Localizable.xcstrings"):
                 target = app / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / name, target)
+            # Copy the small pinned source inputs used by the real Office gate;
+            # version fixtures must not weaken the release script itself.
+            office = Path("ThirdParty/Collabora")
+            lock = json.loads((ROOT / office / "engine.lock.json").read_text())
+            files = [office / "engine.lock.json"]
+            files += [office / "FloeOfficeNative" / name
+                      for name in lock["qualifiedHostArtifact"]["hostSourceSHA256"]]
+            if "filterOverlay" in lock["qualifiedHostArtifact"]:
+                files.append(office / "filter-overlay.lock.json")
+                filters = json.loads((ROOT / files[-1]).read_text())
+                files.append(office / filters["patch"])
+                files += [office / spec["patch"]
+                          for spec in filters.get("headerDependencies", {}).values()]
+            for name in files:
+                target = app / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / name, target)
+            if missing_office_lock:
+                (app / office / "engine.lock.json").unlink()
             project = app / "FloeAgent.xcodeproj/project.pbxproj"
             project.write_text(transform(project.read_text()))
             catalog = app / "FloeApp/Resources/Localizable.xcstrings"
@@ -36,6 +56,11 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
             return subprocess.run(["bash", str(app / "scripts/release_preflight.sh"),
                                    "v1.7.0-beta.999"], cwd=root, env=env,
                                   capture_output=True, text=True)
+
+    def test_missing_office_lock_is_rejected(self):
+        result = self.run_preflight(missing_office_lock=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("release preflight OK", result.stdout)
 
     def test_matching_generated_versions_pass(self):
         result = self.run_preflight()
