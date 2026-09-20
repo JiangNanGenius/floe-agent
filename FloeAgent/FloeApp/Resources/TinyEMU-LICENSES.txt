@@ -184,3 +184,33 @@ year range); only that file's trailing RCS identifiers are omitted.
  * SUCH DAMAGE.
  *
  */
+
+
+Downloaded Linux guest / 下载的 Linux 环境
+=========================================
+
+Image / 镜像: floe-debian13-riscv64-202609202607
+
+The Linux guest is a separate download. Its kernel is GPL-2.0, the bbl boot
+loader is BSD-3-Clause, the Floe runner is MPL-2.0, and the runner's statically
+linked glibc is LGPL-2.1. Debian packages retain their individual licenses.
+The TinyEMU engine notices above do not replace these guest notices.
+
+Linux 环境单独下载。内核采用 GPL-2.0，bbl 启动器采用 BSD-3-Clause，
+Floe 运行器采用 MPL-2.0，运行器静态链接的 glibc 采用 LGPL-2.1。
+Debian 软件包各自的许可证保持有效；以上 TinyEMU 引擎声明不替代这些声明。
+
+The component release provides the matching kernel/boot-loader sources,
+patches and build configuration; Debian package sources and their digest
+manifest; the runner source, relinkable object and relink instructions;
+and the exact glibc source. It also provides guest-copyrights.tar.gz and
+guest-common-licenses.tar.gz containing the image's notices and license texts.
+
+组件发布同时提供对应的内核和启动器源码、补丁、构建配置、Debian 包源码
+及校验清单，以及运行器源码、可重新链接的对象、链接说明和对应 glibc 源码。
+guest-copyrights.tar.gz 与 guest-common-licenses.tar.gz 包含镜像的版权声明
+和许可证全文。安装后，也可在 Linux 的 /usr/share/doc/*/copyright 与
+/usr/share/common-licenses 中查阅各包的声明和许可证。
+
+Source, notices and relink materials / 源码、声明和重新链接材料:
+https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1
