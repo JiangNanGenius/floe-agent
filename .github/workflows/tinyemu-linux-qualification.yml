@@ -104,7 +104,9 @@ jobs:
           mkdir -p work/mnt
           sudo mount -o ro "${LOOP}p${ROOTP}" work/mnt
           ls work/mnt/boot/ | tee work/boot-listing.txt
-          sudo cp work/mnt/boot/vmlinuz-* work/debian-vmlinuz
+          # riscv64 Debian ships uncompressed vmlinux-* (no vmlinuz-*)
+          sudo cp work/mnt/boot/vmlinux-* work/debian-vmlinuz 2>/dev/null || \
+            sudo cp work/mnt/boot/vmlinuz-* work/debian-vmlinuz
           sudo cp work/mnt/boot/initrd.img-* work/debian-initrd
           sudo chmod 644 work/debian-vmlinuz work/debian-initrd
           grep -a -m1 "PRETTY_NAME" work/mnt/etc/os-release | tee work/debian-osrelease.txt
