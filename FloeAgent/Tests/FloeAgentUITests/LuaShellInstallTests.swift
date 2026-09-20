@@ -9,26 +9,28 @@ import FloeTools
 
 /// Full-app acceptance for the open Lua item in
 /// `docs/qualification/build179-release/runtime/README.md`: install the signed
-/// `floe/lua` capability through the real shell `apt` command, execute a real
-/// Lua script through the WASI runtime, remove it, and prove it no longer runs.
+/// `floe/lua` capability through the dedicated wasm.packages entry, execute a
+/// real Lua script through the WASI runtime, remove it, and prove it no
+/// longer runs. The retired mixed apt route must refuse the same operand
+/// honestly (Debian packages require a Linux environment).
 ///
-/// The test drives the production shell command registry and app-injected
-/// `ShellWasmCapabilityRouter`/`CapabilityInstaller`/`SignedWasmCapabilityStore`.
-/// It downloads the artifact pinned by the signed bundled catalog and verifies
-/// its SHA-256; no mock runtime or synthetic module is substituted. A build
-/// without the app-hosted registry, the signed catalog, the installer or the
-/// WASI runtime fails loudly instead of skipping.
+/// The test drives the production tool registry and app-injected
+/// `SignedWasmCapabilityStore`. It downloads the artifact pinned by the
+/// signed bundled catalog and verifies its SHA-256; no mock runtime or
+/// synthetic module is substituted. A build without the app-hosted registry,
+/// the signed catalog, the installer or the WASI runtime fails loudly instead
+/// of skipping.
 @Suite("FloeApp.LuaShellInstall", .serialized)
 struct LuaShellInstallTests {
 
     @Test(.timeLimit(.minutes(4)))
-    func aptInstallRunsLuaAndRemoveDisablesIt() async throws {
+    func wasmEntryInstallsLuaAndRemoveDisablesIt() async throws {
         try #require(FloePlatformServices.shared.isConfigured,
                      "FloePlatformServices is not configured in this test host; the app environment did not initialize")
         let wasmStore = try #require(FloeShellCommandRegistry.shared.wasm,
                                      "The signed WASM catalog was not loaded from the app bundle")
-        try #require(FloeShellCommandRegistry.shared.installer != nil,
-                     "The signed capability installer is unavailable")
+        let wasmTool = try #require(ToolRunnerRegistry.shared.runner(named: "wasm.packages"),
+                                    "The wasm.packages tool is not registered")
         try #require(FloeShellCommandRegistry.shared.handler(for: "apt") != nil,
                      "The apt shell command is not registered")
         try #require(FloeShellCommandRegistry.shared.handler(for: "floe-lua") != nil,
@@ -36,9 +38,7 @@ struct LuaShellInstallTests {
         try #require(wasmStore.catalog.packages.contains(where: { $0.id == "floe/lua" }),
                      "The signed catalog does not contain floe/lua")
 
-        // A real project environment so the apt context provider resolves a
-        // writable container. Signed WASM capabilities are app-global, but the
-        // apt command still requires an attached environment.
+        // A real project environment so the shell binds a writable container.
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-lua-install-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -56,22 +56,40 @@ struct LuaShellInstallTests {
             variables: ["FLOE_ENVIRONMENT_ID": report.record.id]
         )
         let backend = IOSSystemShellBackend()
+        let toolContext = ToolContext(runID: UUID(), scope: .local,
+                                      workspaceRootURL: root, environment: toolEnvironment,
+                                      cancellation: CancellationToken())
 
         func runShell(_ command: String, timeout: TimeInterval = 180) async -> ShellRunOutcome {
             await backend.run(.init(command: command, cwd: ".", rootURL: root, timeout: timeout,
                                     maxOutputBytes: 64 * 1024, sessionID: UUID().uuidString,
                                     runID: UUID(), toolEnvironment: toolEnvironment), cancellation: nil)
         }
+        func runWasmTool(action: String) async throws -> ToolExecutionOutput {
+            try await wasmTool.execute(
+                argumentsJSON: Data("""
+                {"action":"\(action)","ids":["floe/lua"],"purpose":"full-app qualification of the signed Lua capability"}
+                """.utf8),
+                context: toolContext)
+        }
 
         do {
+            // The retired mixed route refuses honestly: apt on this device has
+            // no Linux environment and never installs WASM capabilities.
+            let aptAttempt = try expectExited(await runShell("apt install -y floe/lua", timeout: 60), label: "retired apt route")
+            #expect(aptAttempt.code == 100, "retired apt route did not fail closed: code=\(aptAttempt.code) out=\(aptAttempt.stdout)")
+            #expect(aptAttempt.stderr.contains("Linux environment"), "retired apt route did not name the Linux requirement: \(aptAttempt.stderr)")
+            #expect(await wasmStore.installedIDs().contains("floe/lua") == false,
+                    "the retired apt route installed a WASM capability")
+
             // Start from a known state; absent capabilities remove cleanly.
-            _ = await runShell("apt remove -y floe/lua", timeout: 120)
+            _ = try? await runWasmTool(action: "remove")
             let beforeIDs = await wasmStore.installedIDs()
             #expect(!beforeIDs.contains("floe/lua"), "floe/lua was still installed after the pre-test remove")
 
-            let install = try expectExited(await runShell("apt install -y floe/lua", timeout: 240), label: "apt install floe/lua")
-            #expect(install.code == 0, "apt install failed:\n\(install.stdout)\n\(install.stderr)")
-            #expect(install.stdout.contains("Setting up floe/lua"), "install output did not report the capability: \(install.stdout)")
+            let install = try await runWasmTool(action: "install")
+            #expect(install.exitStatus == 0, "wasm.packages install failed: \(install.summary)")
+            #expect(install.summary.contains("installed id=floe/lua"), "install output did not report the capability: \(install.summary)")
             let installedIDs = await wasmStore.installedIDs()
             #expect(installedIDs.contains("floe/lua"), "installer did not activate floe/lua")
 
@@ -79,14 +97,15 @@ struct LuaShellInstallTests {
             #expect(executed.code == 0, "floe-lua failed:\n\(executed.stdout)\n\(executed.stderr)")
             #expect(executed.stdout.contains("42"), "Lua script did not produce its result: \(executed.stdout)")
 
-            let removal = try expectExited(await runShell("apt remove -y floe/lua", timeout: 120), label: "apt remove floe/lua")
-            #expect(removal.code == 0, "apt remove failed:\n\(removal.stdout)\n\(removal.stderr)")
+            let removal = try await runWasmTool(action: "remove")
+            #expect(removal.exitStatus == 0, "wasm.packages remove failed: \(removal.summary)")
             let remainingIDs = await wasmStore.installedIDs()
             #expect(!remainingIDs.contains("floe/lua"), "floe/lua is still active after removal")
 
             let afterRemoval = try expectExited(await runShell("floe-lua -e \"print(2 + 40)\"", timeout: 60), label: "floe-lua after removal")
             #expect(afterRemoval.code == 127, "removed floe-lua did not fail closed: code=\(afterRemoval.code) out=\(afterRemoval.stdout)")
             #expect(afterRemoval.stderr.contains("not installed"), "removed floe-lua did not explain the missing capability: \(afterRemoval.stderr)")
+            #expect(afterRemoval.stderr.contains("wasm.packages"), "removed floe-lua did not point at the WASM entry: \(afterRemoval.stderr)")
         } catch {
             await deleteEnvironment(id: report.record.id, root: root)
             throw error

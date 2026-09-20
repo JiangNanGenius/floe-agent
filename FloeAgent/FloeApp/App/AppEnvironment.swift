@@ -97,9 +97,10 @@ final class AppEnvironment: ObservableObject {
     let shellSessionCenter: ShellSessionCenter
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
     /// Managed pure-Python installer shared by exec.localPython, exec.shell
-    /// and the apt capability layer.
+    /// and the python.packages tool.
     let managedPythonInstaller: ManagedPythonInstallService?
-    /// apt/pkg capability catalog and reviewed install routing.
+    /// Reviewed capability catalog and install routing behind the
+    /// python.packages tool and the retired apt compatibility shim.
     // SkillsCenter needs the fully initialized environment. Resolve this
     // dependency only when tool registration first asks for the installer.
     lazy var capabilityInstaller = CapabilityInstaller(
@@ -623,16 +624,18 @@ final class AppEnvironment: ObservableObject {
             webSearchAvailability: WebSearchSettingsCenter.toolIsAvailable,
             includeOnDeviceJavaScript: true
         )
-        // Local shell surface: exec.shell, interactive shell.* and apt.
+        // Local shell surface: exec.shell, interactive shell.* and the
+        // per-family package entries (python.packages, wasm.packages; the
+        // retired mixed apt tool stays as a hidden compatibility shim).
         registerShellTools(
             shell: localShellService,
             sessions: shellSessionCenter,
             pythonInstaller: managedPythonInstaller,
-            capabilityInstaller: capabilityInstaller
+            capabilityInstaller: capabilityInstaller,
+            wasmStore: wasmCapabilities
         )
         FloeShellCommandRegistry.shared.configure(
             python: localPythonService,
-            installer: capabilityInstaller,
             wasm: wasmCapabilities
         )
         FloeShellCommands.install()

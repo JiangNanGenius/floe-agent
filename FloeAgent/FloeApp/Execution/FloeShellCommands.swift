@@ -69,18 +69,12 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
     private var contexts: [String: ShellCommandContext] = [:]
     private var activeInvocations: [String: [UUID: CancellationToken]] = [:]
     private var pythonStorage: LocalPythonService?
-    private var installerStorage: CapabilityInstaller?
     private var wasmStorage: SignedWasmCapabilityStore?
     var wasm: SignedWasmCapabilityStore? { lock.withLock { wasmStorage } }
 
     var python: LocalPythonService? {
         lock.lock(); defer { lock.unlock() }
         return pythonStorage
-    }
-
-    var installer: CapabilityInstaller? {
-        lock.lock(); defer { lock.unlock() }
-        return installerStorage
     }
 
     var context: ShellCommandContext? { Self.invocation }
@@ -126,8 +120,8 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
         }
     }
     func context(sessionID: String) -> ShellCommandContext? { lock.withLock { contexts[sessionID] } }
-    func configure(python: LocalPythonService?, installer: CapabilityInstaller?, wasm: SignedWasmCapabilityStore? = nil) {
-        lock.withLock { self.pythonStorage = python; self.installerStorage = installer; self.wasmStorage = wasm }
+    func configure(python: LocalPythonService?, wasm: SignedWasmCapabilityStore? = nil) {
+        lock.withLock { self.pythonStorage = python; self.wasmStorage = wasm }
     }
 
     func register(_ name: String, handler: @escaping Handler) {
@@ -317,7 +311,7 @@ enum FloeShellCommands {
                 let installed = await store.installedIDs().contains(entry.id)
                 guard installed else {
                     let invoked = arguments.first.map { ($0 as NSString).lastPathComponent } ?? entry.command
-                    FloeShellWrite(stderr, "\(invoked): \(entry.id) is not installed; run `apt install \(entry.id)` to install the signed capability\n")
+                    FloeShellWrite(stderr, "\(invoked): \(entry.id) is not installed; install the signed capability with the wasm.packages tool\n")
                     return 127
                 }
                 var standardInput: String?
@@ -626,12 +620,12 @@ enum FloeShellCommands {
         }
     }
 
-    // Safe unconfigured fallback; the platform's environment-bound PackagesCLI
-    // replaces all of these during normal App initialization.
+    // Safe unconfigured fallback; the platform's environment-bound package
+    // registration replaces all of these during normal App initialization.
     private static func registerPackages(_ registry: FloeShellCommandRegistry) {
         for name in ["apt", "apt-get", "pkg", "apt-cache", "apt-mark", "dpkg", "dpkg-deb"] {
             registry.register(name) { _, _, stderr in
-                FloeShellWrite(stderr, "\(name): environment package service is not configured\n")
+                FloeShellWrite(stderr, "\(name): package commands are unavailable; apt requires a Linux environment and no package service is configured\n")
                 return 100
             }
         }

@@ -26,6 +26,11 @@ final class FloePlatformServices: @unchecked Sendable {
     private var envCommand: FloeEnvCommand?
     private var aptEngine: AptEngine?
     private var contextProvider: (@Sendable () async -> PackagesCLI.Context?)?
+    /// Injected Linux guest command runner (TinyEMU backend, supplied by the
+    /// app integration). Nil until a Linux environment backend exists; the
+    /// apt/dpkg shell commands then answer honestly that a Linux environment
+    /// is required instead of pretending to manage packages on iOS.
+    private var linuxCommandService: (any LinuxCommandRunning)?
     private var mediaRenderer: Any?
     private var baseSliceURL: URL?
     private var management: EnvironmentManagementService?
@@ -164,6 +169,19 @@ final class FloePlatformServices: @unchecked Sendable {
         return configured
     }
 
+    /// Late-injection seam for the Linux guest command runner. The TinyEMU
+    /// app integration sets this once its backend can own Linux environments;
+    /// shell command handlers read it per invocation, so registration order
+    /// does not matter.
+    func setLinuxCommandService(_ service: (any LinuxCommandRunning)?) {
+        lock.withLock { linuxCommandService = service }
+    }
+
+    /// Current Linux runner, read under the lock on every invocation.
+    private func currentLinuxCommandService() -> (any LinuxCommandRunning)? {
+        lock.withLock { linuxCommandService }
+    }
+
     func registerCommands(in commandRegistry: FloeShellCommandRegistry) {
         lock.lock()
         let envCommand = self.envCommand
@@ -184,23 +202,56 @@ final class FloePlatformServices: @unchecked Sendable {
         registerPythonPackageCommands(in: commandRegistry)
         registerNodeCommands(in: commandRegistry)
         registerMediaCommands(in: commandRegistry)
-        guard let aptEngine, let contextProvider else { return }
-        let cli = PackagesCLI(engine: aptEngine, contextProvider: contextProvider, wasmRouter: ShellWasmCapabilityRouter())
-        for name in ["apt", "apt-get", "pkg", "apt-cache", "apt-mark", "dpkg", "dpkg-deb"] {
+        registerLinuxPackageCommands(in: commandRegistry, aptEngine: aptEngine, contextProvider: contextProvider)
+
+    }
+
+    /// apt/dpkg command names mean real Linux distribution packages only.
+    /// When the shell's environment is a Linux guest backed by the injected
+    /// runner, argv is forwarded to the guest verbatim. Otherwise the apt
+    /// family fails honestly (no Linux environment), while dpkg/dpkg-deb keep
+    /// their reviewed host-side data-only archive operations through
+    /// PackagesCLI. WASM, Python and Node never resolve here.
+    private func registerLinuxPackageCommands(
+        in commandRegistry: FloeShellCommandRegistry,
+        aptEngine: AptEngine?,
+        contextProvider: (@Sendable () async -> PackagesCLI.Context?)?
+    ) {
+        let cli = aptEngine.flatMap { engine in
+            contextProvider.map { PackagesCLI(engine: engine, contextProvider: $0) }
+        }
+        for name in LinuxShellCommandRouter.routedCommandNames {
             commandRegistry.register(name) { arguments, stdout, stderr in
-                // The shell invocation's token reaches URLSession-backed
-                // downloads, so a timed-out or cancelled shell command stops
-                // its transfer instead of holding the engine run gate.
-                let result = await cli.run(command: name == "pkg" ? "apt" : name, arguments: arguments,
-                    cancellation: FloeShellCommandRegistry.shared.context?.cancellation)
-                if !result.output.isEmpty {
-                    let newline = result.output.hasSuffix("\n") ? "" : "\n"
-                    FloeShellWrite(result.exitCode == 0 ? stdout : stderr, result.output + newline)
+                let invocation = FloeShellCommandRegistry.shared.context
+                let router = LinuxShellCommandRouter(service: FloePlatformServices.shared.currentLinuxCommandService())
+                if let result = await router.runIfSupported(
+                    command: name,
+                    arguments: arguments,
+                    environmentID: invocation?.environment?.id,
+                    workingDirectory: invocation?.workingDirectory.path,
+                    cancellation: invocation?.cancellation
+                ) {
+                    if !result.stdout.isEmpty { FloeShellWrite(stdout, result.stdout.hasSuffix("\n") ? result.stdout : result.stdout + "\n") }
+                    if !result.stderr.isEmpty { FloeShellWrite(stderr, result.stderr.hasSuffix("\n") ? result.stderr : result.stderr + "\n") }
+                    return result.exitCode
                 }
-                return result.exitCode
+                if name == "dpkg" || name == "dpkg-deb", let cli {
+                    // Host-side reviewed data-only .deb operations (extract,
+                    // inspect, build, data-package install into an environment
+                    // layer). Executable payloads are refused inside PackagesCLI.
+                    let result = await cli.run(command: name, arguments: arguments,
+                        cancellation: invocation?.cancellation)
+                    if !result.output.isEmpty {
+                        let newline = result.output.hasSuffix("\n") ? "" : "\n"
+                        FloeShellWrite(result.exitCode == 0 ? stdout : stderr, result.output + newline)
+                    }
+                    return result.exitCode
+                }
+                let unavailable = LinuxShellCommandRouter.linuxRequiredOutput(command: name)
+                FloeShellWrite(stderr, unavailable.stderr + "\n")
+                return unavailable.exitCode
             }
         }
-
     }
 
     private func registerPythonPackageCommands(in registry: FloeShellCommandRegistry) {
