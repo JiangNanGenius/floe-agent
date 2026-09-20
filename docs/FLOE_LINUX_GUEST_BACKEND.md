@@ -1,9 +1,12 @@
 # Floe Linux 环境后端（TinyEMU RV64）/ Floe Linux Environment Backend
 
 日期 / Dated: 2026-09-20 · 状态 / Status: 源码已接线并通过轻量校验（C 目标编译 + 20 项行为检查 + 测试文件类型检查）；
-主 App 完整编译、Cloud CI 与合格 guest 镜像仍待执行。无合格镜像前，Linux 启动会诚实失败，不回落 2018 demo。
-/Source wired and lightly verified (C target build + 20 behavioral checks + test typecheck); the full App build and a
-qualified guest image remain. Without a qualified image, Linux start fails honestly and never falls back to the 2018 demo.
+guest 执行端已实现（`FloeAgent/LinuxGuest/`，含跨 chunk 输出丢字节的 host parser 修复与 13 项/66 个原生真链路断言）；
+主 App 完整编译、Cloud CI 镜像注入/交叉编译与合格 guest 镜像仍待执行。无合格镜像前，Linux 启动会诚实失败，不回落 2018 demo。
+/Source wired and lightly verified (C target build + 20 behavioral checks + test typecheck); the guest runner is now
+implemented (`FloeAgent/LinuxGuest/`, plus a host parser fix for output lost across console chunks, verified by 66
+native real-stdio assertions); the full App build, Cloud CI image injection/cross build and a qualified guest image
+remain. Without a qualified image, Linux start fails honestly and never falls back to the 2018 demo.
 
 ## 1. 接线范围 / What is wired
 
@@ -20,11 +23,12 @@ qualified guest image remain. Without a qualified image, Linux start fails hones
 | 注入 | `FloeApp/App/AppEnvironment.swift` | 构建唯一 `TinyEMULinuxCommandService`，经现有 `FloePlatformServices.setLinuxCommandService` 注入；无 `executionBackend .linuxVM` 时零行为变化 |
 | 生命周期 | `FloePlatformServices.resumeEnvironment/stopEnvironment` + `ContainerLifecycle.Hooks` | 启动环境 → 启动 guest（失败回滚为 stopped 并抛出真实原因）；停止/删除 → 停止 guest；`terminateWorkers` 校验 guest 已退出 |
 | apt/dpkg 入口 | 包 UI worker 的 `LinuxCommandService.swift`（协议，未改） | `registerLinuxPackageCommands` 经 `LinuxShellCommandRouter` 把 argv 原样送入本后端；owned 未运行时禁止宿主层回写 |
+| guest 执行端 | `FloeAgent/LinuxGuest/`（runner/、image/、tests/） | 静态 C runner：inline/分块 EXEC、PTY 会话、SPAWN/KILL/ALIVE、取消/回收；启动挂载脚本与镜像注入脚本；镜像注入与交叉编译待资格 CI |
 
 共享 guest / Shared guest: `TinyEMULinuxGuestRegistry` 是每个 `executionBackend == .linuxVM` 环境 guest 的唯一所有者
-（一个环境一个 guest，命令在通道内串行）。当前已接消费方：`exec.shell` 与 apt/dpkg/包 UI；guest 内
-localService 守护进程将复用同一会话与 hostfwd（其消费方尚未接线）。`exec.localPython` 等显式原生工具
-**按设计不静默重路由**；Linux shell 内的 `python3`/`node` 是 guest 程序。
+（一个环境一个 guest，命令在通道内串行）。当前已接消费方：`exec.shell`、`shell.*`、
+apt/dpkg/包 UI 与按所选环境分派的 `exec.localPython`；localService 消费方正在整合。
+Linux shell 内的 `python3`/`node` 是 guest 程序。
 
 9p 共享 / 9p shares：环境写层挂 `floe-env`，工作区挂 `workspace`（最多 4 个，engine `FLOE_VM_MAX_SHARES`）。
 服务转发 / service forwarding：`floe_vm_hostfwd_add/remove`（adapter `aeccdf1b`），IPv4 主机字节序，
@@ -43,11 +47,10 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
 
 ## 3. 未接线 / Not yet wired
 
-- guest 端 Floe runner 源码/启动注入由 guest runner worker（job-97a6a27d868f44cc，
-  `FloeAgent/LinuxGuest/`）实现；host 侧已按双方确认的帧名实现并等待其 commit 后做最小真实闭环。
-- `exec.localService`/后台服务（`FLOE-SPAWN/PID/KILL/ALIVE`，日志写 9p 文件 + hostfwd）协议已定，
-  host 侧消费尚未接线，是本任务剩余项。
-- 完整 App 编译与真机/模拟器验收由云端与主代理执行；本文件不声称设备结果。
+- guest runner 源码、构建与注入脚本已提交；host 侧 PTY API 已接线。
+- guest runner 的 riscv64 静态交叉编译、镜像注入与真实启动由核心资格 CI 验证，尚未完成。
+- `exec.localService` 的 host 消费方、共享 Python 目录与镜像 UI 续作仍在整合。
+- 完整 App 编译在云端执行；真机交互由用户验收，本轮不做模拟器界面回归。
 
 ## 3b. 可达入口 / Reachable selection
 
@@ -78,21 +81,21 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
 
 guest 控制台 runner 协议（行 = `\x1eFLOE-…\x1e` 分帧，串口上 `E` 为回显需关闭或由解析器丢弃）：
 
-1. 命令载荷分块（tty 行缓冲 4096 字节上限）：
-   `\x1eFLOE-EXEC <token> <payloadBytes> <chunkCount>\x1e\n` + `\x1eFLOE-CHUNK <token> <index> <b64>\x1e\n` ×N +
-   `\x1eFLOE-RUN <token>\x1e\n`；payload = u32 字段数，随后每字段 u32 长度 + 原始字节，
+1. 读入 `\x1eFLOE-EXEC <token> <base64>\n`（小信封）或
+   `\x1eFLOE-EXEC <token> <payloadBytes> <chunkCount>\x1e\n` +
+   `\x1eFLOE-CHUNK <token> <index> <base64>\x1e\n` ×N + `\x1eFLOE-RUN <token>\x1e\n`
+   （大信封，单块 ≤3000 base64 字符）；payload = u32 字段数，随后每字段 u32 长度 + 原始字节，
    顺序为 `[cwd, stdin, argv0, argv1, …]`。
 2. 输出 `\x1eFLOE-BEGIN <token>\x1e`，用 `\x1eFLOE-OUT <token>\x1e` / `\x1eFLOE-ERR <token>\x1e`
    分段 stdout/stderr（argv 必须原样 exec，不经 shell 重解析）。
 3. 以 `\x1eFLOE-END <token> <exit>\x1e` 结束；收到 Ctrl-C（0x03）时只杀当前命令进程组并返回 130。
-4. 交互会话：`\x1eFLOE-OPEN <token> <bytes> <chunks>\x1e`（payload 首字段 `pty`，随后 cwd/cols/rows/argv…）
-   + CHUNKs + RUN；host 输入 `\x1eFLOE-IN <token> <b64>\x1e`，信号
-   `\x1eFLOE-SIGNAL <token> INT|TERM|WINCH [rows] [cols]\x1e`，关闭 `\x1eFLOE-CLOSE <token>\x1e`；
-   guest 用 `\x1eFLOE-OUT <token>\x1e` 原始流输出并以 `\x1eFLOE-END <token> <exit>\x1e` 收尾。
-5. 后台服务（协议已定，host 消费待接线）：`\x1eFLOE-SPAWN <token> <bytes> <chunks>\x1e`
-   （payload `[cwd, logPath, argv…]`）→ `\x1eFLOE-PID <token> <pid>\x1e` + END；
-   `\x1eFLOE-KILL <token> <pid>\x1e`、`\x1eFLOE-ALIVE <token> <pid>\x1e`；日志写 9p 文件，端口转发用 hostfwd。
-6. runner 必须先把 9p 挂载点准备好，并在启动后即进入读循环；命令之间不得输出未分帧文本。
+4. runner 必须先把 9p 挂载点准备好（或由 init 脚本挂载），并在启动后即进入读循环；
+   命令之间不得输出未分帧文本。
+5. 镜像 cmdline：`console=hvc0 root=/dev/vda rw init=/usr/local/bin/floe-exec`
+   （runner 作为 PID 1 自挂载 proc/sys/devtmpfs/devpts/tmp 与存在的 9p tag；
+   init= 不能带参数，故不做 `/bin/bash` 兜底——bash 会抢控制台输入并吃掉 FLOE-EXEC 帧）。
+6. PTY 会话与后台服务帧见 [协议扩展](FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md)；
+   字段布局、分块与取消语义以该文为准。
 
 ## 5. 验证 / Verification
 
@@ -104,3 +107,10 @@ guest 控制台 runner 协议（行 = `\x1eFLOE-…\x1e` 分帧，串口上 `E` 
   截断、超时毒化 + Ctrl-C、取消、owns/supports、未合格镜像拒绝、启动/运行/按 task 停止、
   单 guest 限制、未启动报 notRunning、shell 路由诚实失败。
 - `LinuxGuestBackendTests.swift` 以 XCTest 桩模块类型检查通过；真实 XCTest 运行留给云端 CI。
+- guest 执行端：`bash FloeAgent/LinuxGuest/tests/host_protocol_check.sh` 在 macOS 原生编译 runner，
+  并抽取仓库真实 `LinuxGuestFraming` 驱动真实子进程；13 项检查 / 66 个断言全部通过（inline 与分块
+  EXEC 的 argv/stdin/cwd/stdout/stderr/exit、0x1e 与二进制输出、Ctrl-C 进程组取消与 SIGKILL 升级、
+  多次复用不挂死、PTY 输入/WINCH/CLOSE、SPAWN/PID/日志/ALIVE/KILL）。该检查抓出并修复了 host
+  parser 跨 chunk 丢输出（commit 见 git log `fix(execution): stream guest output across console chunks
+  without loss`）。riscv64 静态交叉编译与镜像内启动由核心资格 CI 验证，尚未执行。
+- 该 runner 检查不启动 TinyEMU、不下载镜像、不构成镜像资格证据。
