@@ -73,15 +73,29 @@ public actor LocalGitService {
         )
     }
 
+    /// Initializes a local repository at `root`. Local init never requires a
+    /// remote account: `authorName`/`authorEmail` are optional and are only
+    /// written when both are provided and valid; commit-time configuration
+    /// still applies a verified identity for every commit.
+    ///
+    /// Initialization is idempotent: when `root` already is a repository
+    /// (a `.git` entry at the root itself, not an ancestor), the existing
+    /// repository is opened and snapshotted unchanged — its HEAD, config and
+    /// history are never re-pointed or overwritten from here.
     @discardableResult
     public func initialize(
         at root: URL,
-        authorName: String,
-        authorEmail: String,
+        authorName: String? = nil,
+        authorEmail: String? = nil,
         initialBranch: String = "main"
     ) throws -> GitRepositorySnapshot {
+        if repositoryRoot(at: root) == root.standardizedFileURL {
+            return try snapshot(at: root)
+        }
         let repository = try Repository(at: root)
-        try configure(repository, authorName: authorName, authorEmail: authorEmail)
+        if let authorName, let authorEmail {
+            try configure(repository, authorName: authorName, authorEmail: authorEmail)
+        }
         let branchName = try Self.validBranch(initialBranch)
         try repository.config.set("init.defaultBranch", to: branchName)
         // `init.defaultBranch` only influences future initializations. Point

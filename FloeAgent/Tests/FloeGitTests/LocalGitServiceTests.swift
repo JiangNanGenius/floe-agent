@@ -88,6 +88,52 @@ struct LocalGitServiceTests {
         #expect(snapshot.repositoryRoot == root.standardizedFileURL)
     }
 
+    @Test("local init works without any remote author identity")
+    func initializeWithoutAuthor() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let git = LocalGitService()
+
+        // No GitHub sign-in and no author: initializing a local repository
+        // must still succeed and report the intended unborn branch.
+        let initialized = try await git.initialize(at: root)
+        #expect(initialized.isRepository)
+        #expect(initialized.branch == "main")
+        #expect(initialized.recentCommits.isEmpty)
+        #expect(initialized.changes.isEmpty)
+        // No identity was configured at init time; the first commit applies
+        // the commit-time identity instead.
+        let snapshot = try await git.snapshot(at: root)
+        #expect(snapshot.branch == "main")
+    }
+
+    @Test("initializing over an existing repository never re-points its HEAD")
+    func initializeIsIdempotentOnExistingRepository() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let git = LocalGitService()
+
+        _ = try await git.initialize(at: root, initialBranch: "main")
+        try Data("one\n".utf8).write(to: root.appendingPathComponent("a.txt"))
+        try await git.stageAll(at: root)
+        _ = try await git.commit(
+            at: root, message: "First",
+            authorName: "Floe Tests", authorEmail: "floe-tests@example.invalid"
+        )
+
+        // A second initialize (e.g. a repeated tool call) must leave the
+        // existing branch, config and history untouched.
+        let again = try await git.initialize(at: root, initialBranch: "trunk")
+        #expect(again.isRepository)
+        #expect(again.branch == "main")
+        #expect(again.recentCommits.count == 1)
+        #expect(again.changes.isEmpty)
+    }
+
     @Test("rejects paths and branches that escape or rewrite repository metadata")
     func validatesRepositoryInputs() async throws {
         let root = FileManager.default.temporaryDirectory

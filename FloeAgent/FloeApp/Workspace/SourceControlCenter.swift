@@ -211,16 +211,15 @@ final class SourceControlCenter: ObservableObject {
         }
     }
 
+    /// Local init stands alone: no GitHub sign-in is required and no remote
+    /// identity is consulted. The author identity is configured per commit —
+    /// the connected GitHub identity when present, otherwise a local default.
     func initializeRepository() async throws {
         guard let root = environment.workspaceCenter.currentRootURL else {
             throw FloeError.notFound("workspace")
         }
-        let identity = try await gitIdentity()
-        snapshot = try await git.initialize(
-            at: root,
-            authorName: identity.name,
-            authorEmail: identity.email
-        )
+        snapshot = try await git.initialize(at: root)
+        repositoryRoot = snapshot.repositoryRoot
     }
 
     func stageAll() async throws {
@@ -400,10 +399,17 @@ final class SourceControlCenter: ObservableObject {
         return repositoryRoot ?? root
     }
 
+    /// Commit identity: the connected GitHub account when one exists, else a
+    /// local default (`Floe <floe@local.floeagent>`) so local commits never
+    /// depend on a remote account. Every commit still (re)configures the
+    /// repository identity, so connecting GitHub later takes over from the
+    /// next commit onward.
+    static let localGitIdentity = (name: "Floe", email: "floe@local.floeagent")
+
     private func gitIdentity() async throws -> (name: String, email: String) {
         if let account { return (account.name ?? account.login, "\(account.login)@users.noreply.github.com") }
         guard let token = try credentials.token() else {
-            throw FloeError.invalidConfiguration("Connect GitHub to set the Git author identity")
+            return Self.localGitIdentity
         }
         let loaded = try await github.account(token: token)
         account = loaded

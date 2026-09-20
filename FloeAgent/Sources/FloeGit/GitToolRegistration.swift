@@ -40,9 +40,11 @@ public struct GitToolEnvironment: Sendable {
         return token
     }
 
+    /// Commit identity: the connected GitHub account when one exists, else a
+    /// local default so local commits never depend on a remote account.
     func identity() async throws -> (name: String, email: String) {
-        guard let token = try token(required: true) else {
-            throw FloeError.invalidConfiguration("Connect GitHub in Settings")
+        guard let token = try token(required: false) else {
+            return ("Floe", "floe@local.floeagent")
         }
         let account = try await github.account(token: token)
         return (account.name ?? account.login, "\(account.login)@users.noreply.github.com")
@@ -160,17 +162,14 @@ public struct GitLogTool: AgentTool {
 public struct GitInitializeTool: AgentTool {
     public typealias Arguments = GitEmptyArguments
     public static let name = "git.initialize"
-    public static let toolDescription = "Initialize a real Git repository in the current local workspace using the connected GitHub identity."
+    public static let toolDescription = "Initialize a real Git repository in the current local workspace. Local only; no remote account or author sign-in is required."
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true
     let environment: GitToolEnvironment
     public init(environment: GitToolEnvironment) { self.environment = environment }
     public func validate(_ args: Arguments) throws {}
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        let identity = try await environment.identity()
-        let snapshot = try await environment.git.initialize(
-            at: environment.root(context: context), authorName: identity.name, authorEmail: identity.email
-        )
+        let snapshot = try await environment.git.initialize(at: environment.root(context: context))
         return try GitToolOutput.make(snapshot)
     }
 }
@@ -203,7 +202,7 @@ public struct GitStageTool: AgentTool {
 public struct GitCommitTool: AgentTool {
     public struct Arguments: Decodable, Sendable { public let message: String }
     public static let name = "git.commit"
-    public static let toolDescription = "Create a real local Git commit from staged changes using the connected GitHub identity. Does not push."
+    public static let toolDescription = "Create a real local Git commit from staged changes using the connected GitHub identity when available, otherwise a local default identity. Does not push."
     public static let parametersJSON = #"{"type":"object","properties":{"message":{"type":"string","minLength":1,"maxLength":8192}},"required":["message"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true
