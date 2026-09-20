@@ -1973,7 +1973,13 @@ public actor FloeAgentRuntime {
             if stopReason == .endTurn,
                streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !didVerifyFinalAnswer,
-               !isFinalizingWithoutTools {
+               !isFinalizingWithoutTools,
+               // Weak on-device models are the observed source of turns that
+               // end with neither visible text nor a tool call (for example
+               // reasoning-only output after a search/read chain). Cloud
+               // semantics — and every existing cloud contract — stay
+               // unchanged.
+               configuration.provider.kind == .local {
                 // The search→read→answer chain (and every other route) only
                 // closes when something visible reached the user. One bounded
                 // continuation converts a silent empty turn into the final

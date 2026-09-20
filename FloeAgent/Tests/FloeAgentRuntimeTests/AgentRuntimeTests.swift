@@ -250,9 +250,10 @@ struct AgentRuntimeTests {
         sink: MockSink = MockSink(),
         verifyFinalAnswer: Bool = false,
         unchangedToolOutcomeLimit: Int = 3,
+        provider: ProviderProfile? = nil,
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil
     ) -> FloeAgentRuntime {
-        let provider = TestFixtures.localhostProvider()
+        let provider = provider ?? TestFixtures.localhostProvider()
         return FloeAgentRuntime(
             configuration: FloeAgentRuntime.Configuration(
                 provider: provider,
@@ -373,6 +374,54 @@ struct AgentRuntimeTests {
             return delta.text
         }
         #expect(visibleText == ["Draft answer", "Corrected answer"])
+    }
+
+    @Test("A local model turn with no visible answer earns one bounded continuation, then completes")
+    func noVisibleAnswerContinuationCompletes() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.completed(.init(stopReason: .endTurn))],
+            [.textDelta(.init(text: "最终回答")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let provider = TestFixtures.localhostProvider()
+        var localProvider = provider
+        localProvider.kind = .local
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, sink: sink, provider: localProvider)
+
+        try await runtime.start(goal: "总结刚才读到的内容")
+
+        #expect(adapter.requests.count == 2)
+        let continuationRequest = try #require(adapter.requests.dropFirst().first)
+        #expect(continuationRequest.messages.contains {
+            $0.role == "system" && $0.content.contains("produced neither a user-visible answer nor a tool call")
+        })
+        guard case .completed = await runtime.state else {
+            Issue.record("Expected the continued run to complete")
+            return
+        }
+    }
+
+    @Test("A second empty local model turn fails recoverably instead of looping")
+    func noVisibleAnswerSecondEmptyTurnFailsRecoverably() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.completed(.init(stopReason: .endTurn))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        var localProvider = TestFixtures.localhostProvider()
+        localProvider.kind = .local
+        let runtime = makeRuntime(adapter: adapter, provider: localProvider)
+
+        try await runtime.start(goal: "回答")
+
+        #expect(adapter.requests.count == 2)
+        guard case .failed(let failure) = await runtime.state else {
+            Issue.record("Expected a recoverable failure, got \(await runtime.state.name)")
+            return
+        }
+        #expect(failure.isRecoverable)
+        #expect(failure.message.contains("no visible answer"))
     }
 
     @Test("A promised action without a structured call is repaired once")

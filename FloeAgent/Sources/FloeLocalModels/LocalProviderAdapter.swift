@@ -1079,12 +1079,19 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             )
                         }
                         let visibleAnswer = Self.visibleAnswer(from: channels.answer)
-                        guard !visibleAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                            throw FloeError.validationFailed(
-                                "The local model returned internal reasoning without a final answer. Retry with thinking disabled."
+                        if visibleAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            // Was a hard validationFailed (non-recoverable
+                            // malformed run). The runtime now owns one bounded
+                            // no-visible-answer continuation with the full run
+                            // state intact; emit the empty completion so that
+                            // continuation can ask for the final answer once.
+                            FloeLogger(category: .providers).warning(
+                                "localVisibleAnswerMissing model=\(request.model.remoteModelID) reasoningCharacters=\(channels.reasoning.count) inputTokens=\(completion.inputTokens)"
                             )
                         }
-                        continuation.yield(.textDelta(.init(text: visibleAnswer)))
+                        if !visibleAnswer.isEmpty {
+                            continuation.yield(.textDelta(.init(text: visibleAnswer)))
+                        }
                         continuation.yield(.completed(.init(stopReason: .endTurn)))
                     }
                     continuation.finish()
