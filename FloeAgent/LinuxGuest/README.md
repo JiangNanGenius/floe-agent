@@ -12,10 +12,12 @@ and [`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../../docs/FLOE_LINUX_GU
 | Path | Purpose |
 | --- | --- |
 | `runner/floe_exec.c` | The guest runner: FLOE-EXEC framing, chunked envelopes, PTY sessions, background services, cancellation |
-| `runner/Makefile` | Host build (`host`) and static riscv64 cross build (`riscv64`) |
+| `runner/floe_clock.h` | Bounded `/proc/cmdline` reader + strict `floe.epoch=` parser (pure; no clock side effects) |
+| `runner/Makefile` | Host build (`host`), static riscv64 cross build (`riscv64`) and the pure clock check (`check-clock`) |
 | `image/floe-guest-init` | POSIX sh startup/mount script (pseudo-fs + 9p) |
 | `image/install-into-image.sh` | Loop-mount injector for the whole-disk ext4 guest image (CI helper) |
 | `tests/host_protocol_check.sh` + `tests/HostProtocolCheck.swift` | Real-stdio protocol check: compiles the repo's real `LinuxGuestFraming` and drives the runner through real child processes |
+| `tests/clock_arg_check.c` | Native pure-function check for the `floe.epoch=` parser and the bounded cmdline reader |
 
 ## Build
 
@@ -85,7 +87,40 @@ Mount options match the verified form: `trans=virtio,version=9p2000.L`
 `FLOE_WORKSPACE_DIR` when the mount exists, sets a default `PATH`, `HOME`,
 `TMPDIR`, `LANG` and `DEBIAN_FRONTEND=noninteractive`, and uses
 `/workspace` → `/floe/env` → `/root` → `/` as the default cwd when the host
-sends none.
+sends none. After the mounts (and before serving any frame) PID 1 also applies
+the host-supplied boot clock described below.
+
+## Boot clock (`floe.epoch=`)
+
+The pinned guest kernel has no usable RTC (`CONFIG_RTC_CLASS` is not enabled),
+so without help the guest clock starts at the image build date and TLS/apt
+signature checks fail. The host therefore appends one fresh parameter on every
+boot (`LinuxGuestBootArguments.commandLine` in
+`Sources/FloeExecution/Linux/LinuxGuestService.swift`):
+
+```
+console=hvc0 root=/dev/vda rw loglevel=4 init=/usr/local/bin/floe-exec floe.epoch=1758366000
+```
+
+- Only the guest **PID 1** applies it, and only after `guest_bring_up()` mounted
+  `/proc`: `floe_exec.c` reads `/proc/cmdline` with a fixed
+  `FLOE_EPOCH_CMDLINE_MAX` (4096-byte) bound and calls
+  `clock_settime(CLOCK_REALTIME)`, falling back to `settimeofday`. Non-PID-1
+  processes (the native host build, the protocol harness) compile the apply
+  step out or skip it and never change the host clock.
+- The parser (`runner/floe_clock.h`) is strict and side-effect free: exactly one
+  `floe.epoch=` token anchored at a field boundary, canonical digits only
+  (no `-`/`+`, no leading zeros, no trailing characters), value in
+  `[0, 253402300799]` (= 9999-12-31T23:59:59Z), no wrap on long digit strings.
+  A second occurrence is ambiguous and is rejected — neither value is used.
+- It never runs a shell and accepts no other kernel parameter; the console
+  command protocol is unchanged.
+- Missing, empty, invalid, out-of-range and duplicated values (and an
+  unreadable or truncated cmdline) leave the clock untouched and emit one
+  bounded stderr line, e.g. `floe-exec: clock NOT set: floe.epoch missing`; a
+  successful set logs `floe-exec: clock set from floe.epoch=<n>`. These
+  unframed boot diagnostics are dropped by the host parser before the first
+  `BEGIN`. The guest never reports a clock it did not actually set.
 
 ## Python / apt bootstrap (no circular dependency)
 
@@ -142,10 +177,21 @@ signalled.
 ## Verification
 
 ```sh
+# Boot-clock parser/reader only (fast: native compile + pure checks, no
+# protocol run, no command execution and no clock change):
+make -C FloeAgent/LinuxGuest/runner check-clock
+
+# Full host protocol suite (real runner child processes over real stdio):
 bash FloeAgent/LinuxGuest/tests/host_protocol_check.sh
 ```
 
-The check builds the runner for the current host, extracts the repository's
+`check-clock` compiles the real `floe_clock.h` with the runner's `-Werror`
+flags and checks a valid current epoch, zero, whitespace/token-boundary
+handling, very long digit strings, negative/signed values, empty values,
+duplicates, the exact upper bound, embedded near-miss keys, and the bounded
+reader's truncation reporting (including a key hidden beyond the bound).
+
+The protocol check builds the runner for the current host, extracts the repository's
 real `LinuxGuestFraming` parser/envelope, and drives the runner through real
 pipes and real child processes: argv escaping (quotes, spaces, newlines,
 0x1e bytes, UTF-8), stdin/cwd, stdout/stderr separation, exit codes, exec

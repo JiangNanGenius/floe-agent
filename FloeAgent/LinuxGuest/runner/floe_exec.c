@@ -62,9 +62,18 @@
 // cannot be killed within a hard deadline is abandoned (it stays an orphan
 // that PID 1 reaps later) so the channel can never hang.
 //
+// Boot clock: on Linux, when this process is PID 1, the runner applies the
+// host-supplied wall clock (`floe.epoch=<unix seconds>` on the kernel command
+// line) after mounting /proc and before serving any frame. Parsing is strict
+// and side-effect free (floe_clock.h): exactly one canonical numeric token,
+// bounded read, no shell, no other parameter. A missing, invalid,
+// out-of-range or duplicated value produces one bounded stderr diagnostic and
+// never a fake "synchronized" claim. The native host build (and any
+// non-PID-1 harness) never changes the host clock.
+//
 // Console discipline: nothing unframed is written between frames. Boot-time
-// diagnostics (mount failures) go to stderr and are discarded by the host
-// parser before the first BEGIN.
+// diagnostics (mount failures, clock state) go to stderr and are discarded by
+// the host parser before the first BEGIN.
 //
 // The runner is written in POSIX C so it can be compiled natively on the
 // developer host for protocol checks (mounts are Linux-only and compiled
@@ -85,11 +94,14 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "floe_clock.h"
 
 #ifdef __linux__
 #include <sys/mount.h>
@@ -1093,6 +1105,64 @@ static void guest_bring_up(void) {
 static void guest_bring_up(void) {}
 #endif
 
+// True only for the guest's init process. The floe-guest-init script reaches
+// the runner through exec, so PID 1 is preserved; anything else (the native
+// protocol harness, the developer host, a runner started inside a live guest)
+// must never own the machine clock.
+static int is_guest_pid1(void) {
+    return getpid() == 1;
+}
+
+#ifdef __linux__
+// Apply `floe.epoch=<unix seconds>` from /proc/cmdline to CLOCK_REALTIME.
+// Called only after guest_bring_up() mounted /proc and only by PID 1 (see
+// main). The command line is read with a fixed bound; any problem leaves the
+// clock untouched and says exactly that, so the guest never pretends the time
+// is synchronized. No shell, no allocation, no other kernel parameter.
+static void guest_apply_boot_epoch(void) {
+    char cmdline[FLOE_EPOCH_CMDLINE_MAX];
+    size_t len = 0;
+    int truncated = 0;
+    if (floe_cmdline_read_bounded("/proc/cmdline", cmdline, sizeof cmdline,
+                                  &len, &truncated) != 0) {
+        diag("floe-exec: clock NOT set: cannot read /proc/cmdline: %s\n",
+             strerror(errno));
+        return;
+    }
+    int64_t epoch = 0;
+    floe_epoch_status status = floe_epoch_parse(cmdline, len, &epoch);
+    if (status != FLOE_EPOCH_OK) {
+        diag("floe-exec: clock NOT set: floe.epoch %s%s\n",
+             floe_epoch_status_text(status), truncated ? " (cmdline truncated)" : "");
+        return;
+    }
+    if ((int64_t)(time_t)epoch != epoch) {
+        diag("floe-exec: clock NOT set: floe.epoch=%lld does not fit time_t\n",
+             (long long)epoch);
+        return;
+    }
+    struct timespec ts;
+    ts.tv_sec = (time_t)epoch;
+    ts.tv_nsec = 0;
+    if (clock_settime(CLOCK_REALTIME, &ts) != 0) {
+        // settimeofday is the explicit fallback for C libraries/kernels where
+        // clock_settime(CLOCK_REALTIME) is not wired through.
+        struct timeval tv;
+        tv.tv_sec = (time_t)epoch;
+        tv.tv_usec = 0;
+        if (settimeofday(&tv, NULL) != 0) {
+            diag("floe-exec: clock NOT set: floe.epoch=%lld rejected: %s\n",
+                 (long long)epoch, strerror(errno));
+            return;
+        }
+    }
+    diag("floe-exec: clock set from floe.epoch=%lld\n", (long long)epoch);
+}
+#else
+// Native host build: never touches the host clock.
+static void guest_apply_boot_epoch(void) {}
+#endif
+
 static const char *default_cwd(void) {
     const char *env = getenv("FLOE_GUEST_CWD");
     if (env && env[0] == '/' && access(env, X_OK) == 0) return env;
@@ -1844,6 +1914,12 @@ static void dispatch_inbound(guest_state *st, bytebuf *in) {
 int main(void) {
     if (getpid() == 1 || getenv("FLOE_GUEST_INIT") != NULL) {
         guest_bring_up();
+    }
+    if (is_guest_pid1()) {
+        // guest_bring_up() mounted /proc; the boot clock must be applied
+        // before any command frame is accepted. Non-PID-1 harnesses skip
+        // this entirely and never touch the host clock.
+        guest_apply_boot_epoch();
     }
     if (pipe(g_wake_pipe) == 0) {
         set_nonblocking(g_wake_pipe[0]);
