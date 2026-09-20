@@ -42,8 +42,8 @@ public struct ManagedPackageTool: AgentTool {
       "query":{"type":"string","description":"Search terms for action=search"},
       "ids":{"type":"array","maxItems":16,"items":{"type":"string","description":"Catalog ids such as floe/py-openpyxl or aliases"},"description":"Targets for show/install/remove/download"},
       "purpose":{"type":"string","description":"Recorded reason from the retired calling convention (unused)"},
-      "capabilities":{"type":"array","maxItems":16,"items":{"type":"string"},"description":"Recorded capabilities from the retired calling convention (unused)"},
-     "required":["action"],"additionalProperties":false}
+      "capabilities":{"type":"array","maxItems":16,"items":{"type":"string"},"description":"Recorded capabilities from the retired calling convention (unused)"}
+     },"required":["action"],"additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
