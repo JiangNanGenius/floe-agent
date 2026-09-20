@@ -17,6 +17,11 @@
         "file": "patches/0002-embeddable-error-propagation.patch",
         "purpose": "Recoverable create failures: iomem.c guest-RAM allocation returns NULL instead of exit(1); riscv_machine.c copy_bios returns 0/-1, checks kernel/initrd bounds before memcpy (upstream copied first) and releases the partial machine. Must be applied after 0001 to the same riscv_machine.c copy.",
         "applies_to": "riscv_machine.c (after 0001) and iomem.c"
+      },
+      {
+        "file": "patches/0005-fence-hints.patch",
+        "purpose": "Treat the FENCE family as the no-op ordering hint it is: accept FENCE.TSO (0x8330000f) and reserved fm encodings, and ignore the unused imm/rs1/rd fields of fence.i (Zifencei). Upstream trapped FENCE.TSO as illegal, which made Debian 13 libapt-pkg die with SIGILL (apt http/https methods).",
+        "applies_to": "riscv_cpu_template.h of the pinned tarball"
       }
     ],
     "trimmed_out": [
@@ -27,7 +32,7 @@
       "aes.c/sha256.c (only referenced by the HTTP filesystem path)",
       "KVM: not present on the RISC-V path upstream (x86-only)"
     ],
-    "patches_note": "The integrated app vendor tree also applies 0003-fs_disk-apple-stat-timestamps.patch and 0004-slirp-bootp-debug-typo.patch (tracked in that tree); the core tree ships 0001-0002 only. The vendor script must keep the 0001->0002 order for riscv_machine.c.",
+    "patches_note": "The integrated app vendor tree also applies 0003-fs_disk-apple-stat-timestamps.patch and 0004-slirp-bootp-debug-typo.patch (tracked in that tree). The vendor script must: apply 0001 then 0002 to the same riscv_machine.c copy, add riscv_cpu_template.h:0005, and rebuild VENDORED-SHA256SUMS (--check re-applies patches). 0005 changes riscv_cpu_template.h, so the tree that compiles riscv_cpu.c must include the patched header; the qualification Makefile copies riscv_cpu.c + the header into $(BUILD) so the quoted include resolves to the patched copy.",
     "license_files": {
       "MIT-LICENSE.txt": "a75690160a50d8085bcd25acf34faa5b1c484e15ffd0bd662e5f4d7a289da080",
       "licenses/SLIRP-COPYRIGHT.txt": "6aa542ccb77b884dbb8e8c4620f3471111e5648fe341147befcf933ea30d764f",

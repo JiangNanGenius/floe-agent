@@ -22,6 +22,8 @@ TINYEMU_SRC ?= tinyemu-2019-12-21
 # because the workspace may contain spaces).
 PATCH_DIR ?= patches
 PATCHES := $(sort $(wildcard $(PATCH_DIR)/*.patch))
+# PATCHES apply in sorted order; 0002 must follow 0001 because both touch
+# riscv_machine.c, and 0005 only touches riscv_cpu_template.h.
 ADAPTER ?= $(dir $(lastword $(MAKEFILE_LIST)))
 HOST_DIR ?=
 BUILD ?= out
@@ -43,8 +45,10 @@ SLIRP_OBJS := bootp ip_icmp mbuf slirp tcp_output cksum ip_input misc \
               socket tcp_subr udp if ip_output sbuf tcp_input tcp_timer
 # pristine-compiled core objects
 CORE_OBJS := virtio pci fs cutils simplefb json machine fs_disk softfp
-# sources replaced by patched build copies (see PATCHES)
-PATCHED_SRCS := riscv_machine.c iomem.c
+# sources replaced by patched build copies (see PATCHES). riscv_cpu.c is
+# copied too so its quoted include of riscv_cpu_template.h resolves to the
+# patched copy in $(BUILD) (the pristine tree keeps the unpatched header).
+PATCHED_SRCS := riscv_machine.c iomem.c riscv_cpu.c riscv_cpu_template.h
 
 OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(CORE_OBJS))) \
         $(addprefix $(BUILD)/slirp/,$(addsuffix .o,$(SLIRP_OBJS))) \
@@ -70,6 +74,7 @@ $(BUILD)/.prepared: $(PATCHES) | $(BUILD)/.dir
 	grep -q "poweroff_requested" $(BUILD)/riscv_machine.c
 	grep -q "floe_ram_oom" $(BUILD)/iomem.c
 	grep -q "static int copy_bios" $(BUILD)/riscv_machine.c
+	grep -q "FLOE-EMBED: FENCE/FENCE.TSO" $(BUILD)/riscv_cpu_template.h
 	touch $@
 
 $(BUILD)/riscv_machine.o: $(BUILD)/.prepared
@@ -84,11 +89,11 @@ $(BUILD)/%.o: $(TINYEMU_SRC)/%.c | $(BUILD)/.dir
 $(BUILD)/slirp/%.o: $(TINYEMU_SRC)/slirp/%.c | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/riscv_cpu64.o: $(TINYEMU_SRC)/riscv_cpu.c | $(BUILD)/.dir
-	$(CC) $(CFLAGS) -DMAX_XLEN=64 -c -o $@ $<
+$(BUILD)/riscv_cpu64.o: $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -DMAX_XLEN=64 -c -o $@ $(BUILD)/riscv_cpu.c
 
-$(BUILD)/riscv_cpu32.o: $(TINYEMU_SRC)/riscv_cpu.c | $(BUILD)/.dir
-	$(CC) $(CFLAGS) -DMAX_XLEN=32 -c -o $@ $<
+$(BUILD)/riscv_cpu32.o: $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -DMAX_XLEN=32 -c -o $@ $(BUILD)/riscv_cpu.c
 
 $(BUILD)/floe_vm.o: $(ADAPTER)floe_vm.c $(ADAPTER)floe_vm.h | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -c -o $@ $<
