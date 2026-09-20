@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import Combine
 import FloeDocuments
 import FloeWorkspace
 
@@ -735,11 +736,17 @@ private struct IDETabUnsavedBadge: View {
 @MainActor
 final class IDENativeDocumentStore: ObservableObject {
     private var sessions: [String: OfficeFileSession] = [:]
+    private var observations: [String: AnyCancellable] = [:]
 
     func session(for path: String) -> OfficeFileSession {
         if let existing = sessions[path] { return existing }
         let created = OfficeFileSession()
         sessions[path] = created
+        observations[path] = created.objectWillChange.sink { [weak self] in
+            // OfficeFileSession is main-actor owned. Forward on the next turn
+            // so the parent's edit controls read the updated child state.
+            Task { @MainActor [weak self] in self?.objectWillChange.send() }
+        }
         return created
     }
 
@@ -752,13 +759,17 @@ final class IDENativeDocumentStore: ObservableObject {
     }
 
     func release(_ path: String) async {
+        observations.removeValue(forKey: path)
         guard let session = sessions.removeValue(forKey: path) else { return }
+        objectWillChange.send()
         await session.release()
     }
 
     func releaseAll() async {
-        let owned = sessions.values
+        let owned = Array(sessions.values)
+        observations.removeAll()
         sessions.removeAll()
+        objectWillChange.send()
         for session in owned { await session.release() }
     }
 }
