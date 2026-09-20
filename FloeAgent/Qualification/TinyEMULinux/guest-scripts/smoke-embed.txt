@@ -1,0 +1,7 @@
+@6 uname -a
+@8 echo FLOE_EMBED_OK_$((6*7))
+@10 cat /proc/cpuinfo | head -4
+@12 mount -t 9p -o trans=virtio,version=9p2000.L /dev/root /mnt
+@14 echo host-share-proof > /mnt/floe_embed_9p.txt && echo FLOE_EMBED_9P_OK
+@16 sync
+@18 cat /proc/mounts | grep -E "9p|vda"
