@@ -122,8 +122,15 @@ The migration keeps and makes explicit these confinement rules:
    own guest mounts (same authority as `exec.shell` today). Package installs
    (`packages`/`pipCommand`, `pip install` in the shell, npm/pnpm changes)
    keep the existing review path (`isSoftwareInstallRequest`, managed-package
-   purpose review). Removing the in-process interpreter does **not** widen any
-   grant, and this migration adds no new auto-approved capability.
+   purpose review) — pip/npm/software installation inside the task's **own**
+   Linux environment follows the existing download policy and user task
+   authorization; this migration neither adds a blanket human approval for
+   in-environment installs nor a generic tool-name/code/installation prompt.
+   The Notes inherited grant flows through the same managed package purpose
+   review. Only genuinely out-of-scope effects (cross-workspace, credential,
+   remote-side changes) stay human-gated. Removing the in-process interpreter
+   does **not** widen any grant, and this migration adds no new auto-approved
+   capability.
 4. **Services.** `exec.localService` binds loopback only; the guest port is
    published through slirp host forwarding on `127.0.0.1` with the job-scoped
    ownership loop (cancel → real guest KILL, never a fake kill thread). The
@@ -139,16 +146,32 @@ The migration keeps and makes explicit these confinement rules:
 
 **Consumed from the engine worker (this commit, `Sources/FloeExecution/Linux`
 + `ThirdParty/TinyEMU` + `LinuxGuest/` are engine-owned; this worker does not
-edit them):**
+edit them; see `docs/PHASE2_engine.md` in the engine worktree):**
 
 - `TinyEMULinuxCommandService` (`LinuxCommandRunning`, `LinuxGuestControlling`,
   `LinuxGuestLocalServiceControlling`, `LinuxGuestPathMapping`).
 - `LinuxGuestPythonProvisioner` / `LinuxGuestNodeProvisioner`,
   `LinuxGuestLanguagePackages`, `LinuxGuestLocalServiceSupervisor` models,
   `LinuxGuestImageInstallationService`, `LinuxGuestImageDistributionCatalog`.
-- Integration requests raised to the engine worker (tracked in §7): engine-side
-  confirmation that the guest 9p server rejects `..`/symlink escapes outside
-  the exported share roots (the containment proof behind §4.1). No guest
+- Protocol v3 (additive, engine worker): concurrent token-routed commands
+  (per-guest table, no whole-channel busy for parallel runs), targeted
+  `FLOE-SIGNAL` command cancellation with TERM→KILL→reaped ordering and the
+  truthful `FLOE-ABANDONED` state, prioritized SPAWN/KILL/ALIVE control, and
+  — per coordinator request — multiple concurrent PTY sessions and two
+  networked VMs instead of the deferred single-PTY/single-network singleton.
+- Engine-side 9p containment: `fs_disk.c` canonicalizes walks and rejects
+  `..`/symlink escapes outside exported roots — this is the enforcement proof
+  behind §4.1 (the host path map alone is not claimed as containment).
+- Runner capability/version negotiation: the runner (guest `floe-exec`) is
+  updated in place inside the verified rootfs (no rootfs rebuild), and the
+  image manifest records runner source SHA + binary digest. The app surfaces
+  an **explicit "component update needed"** state when the installed image's
+  runner predates the required protocol — execution and settings name the
+  update entry; there is no silent retry against an old runner that would
+  answer with busy/125 rejections.
+- Integration requests raised to the engine worker (tracked in §7): runner
+  version/capability exposure on the image manifest and/or guest status so the
+  update-needed state is computed from data, not guessed. No guest
   `PYTHONPATH` change is requested: legacy Python reinstalls go through guest
   pip from the layer manifest instead (§3.2).
 
@@ -178,9 +201,11 @@ release workflows' verification steps (no release is started by this worker).
 
 ## 7. Open integration dependencies
 
-- Engine worker: 9p server walk/symlink escape enforcement proof (§3.3/§4.1);
-  single-guest-at-a-time and PTY resize semantics stay as documented in
-  `LinuxGuestService.swift`.
+- Engine worker: runner capability/version negotiation surfaced on the image
+  manifest or guest status (drives the app's explicit component-update-needed
+  state); 9p server walk/symlink escape enforcement proof (§3.3/§4.1);
+  multiple concurrent PTYs and two networked VMs per the coordinator request;
+  truthful `FLOE-ABANDONED` abandon state instead of END-while-running.
 - Notes/assistant worker: consume the §4 contract (per-task session
   environment + workspace share) for Notes guest work; no shared interpreter
   across documents.
