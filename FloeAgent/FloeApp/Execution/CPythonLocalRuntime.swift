@@ -232,6 +232,13 @@ extension CPythonLocalRuntime {
     /// script) inside the environment's Linux guest. The native runtime's
     /// compression helpers and package-phase gate stay untouched: this path
     /// only executes the guest's real python3 with the same script.
+    ///
+    /// The interpreter is the environment's single shared venv
+    /// (`/floe/env/python/venv`), which the shell, the pip command, the
+    /// managed installer and the package UI all resolve, so a package is
+    /// installed once. Host paths in the execution context (working directory,
+    /// `FLOE_PYTHON_*` values) are mapped through the environment's 9p shares
+    /// before they reach the guest.
     func runInLinuxGuest(
         _ request: ScriptExecutionRequest,
         environmentID: String,
@@ -244,19 +251,48 @@ extension CPythonLocalRuntime {
                 stdout: ""
             )
         }
+        let python: LinuxGuestPythonEnvironment
+        do {
+            python = try await LinuxGuestPythonProvisioner.shared.ensure(
+                environmentID: environmentID,
+                runner: guests,
+                cancellation: cancellation
+            )
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .jsException(message: error.localizedDescription, stdout: "")
+        }
+        if cancellation?.isCancelled == true { return .cancelled }
+        let pathMap = await (guests as? any LinuxGuestPathMapping)?.linuxGuestPathMap(environmentID: environmentID)
+
         var script = request.script
         if let inputJSON = request.inputJSON {
             script = "import json as _floe_json\ninput = _floe_json.loads(" + pyLiteral(inputJSON) + ")\n" + script
         }
         let timeout = max(0.05, min(request.timeout, 600))
-        var argv = ["python3", "-c", script]
+
+        var variables = request.pythonContext?.environment ?? [:]
+        if let pathMap, !pathMap.isEmpty {
+            variables = variables.mapValues { pathMap.guestPath(forHostPath: $0) ?? $0 }
+            if let environmentRoot = pathMap.environmentGuestRoot {
+                variables["FLOE_PYTHON_WRITABLE_LAYER"] = environmentRoot
+            }
+        }
+        variables["FLOE_PYTHON_PACKAGE_TARGET"] = python.sitePackages
+        variables["PYTHONUNBUFFERED"] = "1"
+        variables["VIRTUAL_ENV"] = python.venvPath
+        var argv: [String] = ["env"]
+        argv.append(contentsOf: LinuxGuestEnvironmentEncoding.argv(variables) ?? [])
+        argv.append(contentsOf: [python.pythonPath, "-c", script])
         argv.append(contentsOf: request.pythonContext?.arguments ?? [])
+
         let started = Date()
         do {
             let result = try await guests.run(
                 environmentID: environmentID,
                 argv: argv,
-                workingDirectory: nil,
+                workingDirectory: pathMap?.guestPath(forHostPath: request.pythonContext?.workingDirectory),
                 standardInput: request.pythonContext?.standardInput,
                 timeout: timeout,
                 maxOutputBytes: request.maxOutputBytes,

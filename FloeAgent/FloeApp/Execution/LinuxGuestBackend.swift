@@ -95,6 +95,14 @@ enum LinuxGuestBackendAssembly {
         )
         return TinyEMULinuxCommandService(registry: guestRegistry)
     }
+
+    /// Verified image storage on the same artifact root as the resolver: it
+    /// is what `floe-env image …` and the environment UI read. nil without a
+    /// durable artifact root, exactly like the guest backend itself.
+    static func makeImageService(artifactRoot: URL?) -> LinuxGuestImageInstallationService? {
+        guard let artifactRoot else { return nil }
+        return LinuxGuestImageInstallationService(root: artifactRoot, limits: .standard)
+    }
 }
 
 /// Routes one-shot shell runs by the request's environment runtime: Linux

@@ -31,6 +31,9 @@ final class FloePlatformServices: @unchecked Sendable {
     /// apt/dpkg shell commands then answer honestly that a Linux environment
     /// is required instead of pretending to manage packages on iOS.
     private var linuxCommandService: (any LinuxCommandRunning)?
+    /// Verified Linux guest image storage (import/remove/status). Set by the
+    /// app assembly on the same artifact root as the guest image resolver.
+    private var linuxImages: LinuxGuestImageInstallationService?
     private var mediaRenderer: Any?
     private var baseSliceURL: URL?
     private var management: EnvironmentManagementService?
@@ -202,6 +205,98 @@ final class FloePlatformServices: @unchecked Sendable {
         lock.withLock { linuxCommandService }
     }
 
+    /// The local-service supervisor inside the injected Linux runner, when the
+    /// backend supports guest services. `exec.localService` routes through
+    /// this for Linux environments so Node/Python services run in the guest.
+    func linuxLocalServiceController() -> (any LinuxGuestLocalServiceControlling)? {
+        lock.withLock { linuxCommandService as? any LinuxGuestLocalServiceControlling }
+    }
+
+    /// Injected verified image storage (same artifact root as the resolver).
+    func setLinuxImageService(_ service: LinuxGuestImageInstallationService?) {
+        lock.withLock { linuxImages = service }
+    }
+
+    /// Real image state for the environment UI: manifest present, digest
+    /// verification failure, and whether this build may distribute it.
+    func linuxImageStatus(id: String?) async -> LinuxGuestImageInstallationService.ImageStatus? {
+        guard let id, let images = lock.withLock({ linuxImages }) else { return nil }
+        return await images.status(id: id)
+    }
+
+    /// `floe-env image status|import|install|remove` — the reachable image
+    /// entry. `install` only downloads a catalog-pinned archive (none exists
+    /// yet); `import` takes an already-downloaded zip plus its SHA-512, which
+    /// is what a local qualification run produces.
+    func runImageCommand(arguments: [String]) async -> (output: String, exitCode: Int32) {
+        let usage = """
+        usage: floe-env image status <id>
+               floe-env image import <id> <archive.zip> <sha512>
+               floe-env image install <id>          (pinned Floe archive only)
+               floe-env image remove <id>
+        """
+        guard let images = lock.withLock({ linuxImages }) else {
+            return ("floe-env image: image storage is unavailable in this build (no durable artifact root); native environments are unchanged", 1)
+        }
+        let args = Array(arguments.dropFirst())
+        guard args.count >= 2 else { return (usage, 2) }
+        let action = args[1]
+        do {
+            switch action {
+            case "status":
+                guard args.count == 3 else { return (usage, 2) }
+                let status = await images.status(id: args[2])
+                var lines = [
+                    "image \(status.id): \(status.installed ? "installed" : "not installed")",
+                    "distributable: \(status.distributable ? "yes" : "no (no pinned Floe archive)")"
+                ]
+                if let failure = status.verificationFailure { lines.append("verification: \(failure)") }
+                else if status.installed { lines.append("verification: ok (artifacts match the qualification record)") }
+                if let image = status.image {
+                    lines.append("qualificationRun: \(image.qualificationRun ?? "-")")
+                    lines.append("cmdline: \(image.effectiveCmdline)")
+                }
+                return (lines.joined(separator: "\n"), 0)
+            case "import":
+                guard args.count == 5 else { return (usage, 2) }
+                guard let archiveURL = authorizedImageArchivePath(args[3]) else {
+                    return ("floe-env image: place the archive inside the current workspace or the image directory", 1)
+                }
+                let image = try await images.importArchive(at: archiveURL, expectedSHA512: args[4])
+                return ("installed \(image.id) (verified artifacts; qualificationRun=\(image.qualificationRun ?? "-"))", 0)
+            case "install":
+                guard args.count == 3 else { return (usage, 2) }
+                let image = try await images.installTrustedImage(id: args[2], downloader: LinuxGuestImageHTTPDownloader())
+                return ("installed \(image.id) from the pinned Floe archive", 0)
+            case "remove":
+                guard args.count == 3 else { return (usage, 2) }
+                try await images.removeImage(id: args[2])
+                return ("removed image \(args[2])", 0)
+            default:
+                return (usage, 2)
+            }
+        } catch {
+            return ("floe-env image: " + SecretRedactor.redact(error.localizedDescription), 1)
+        }
+    }
+
+    /// Image archives may be read only from the current workspace or from the
+    /// app's own image directory; an arbitrary host path is not an import
+    /// source.
+    private func authorizedImageArchivePath(_ path: String) -> URL? {
+        guard let images = lock.withLock({ linuxImages }) else { return nil }
+        let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        var allowed: [URL] = [images.imagesDirectory]
+        if let root = FloeShellCommandRegistry.shared.context?.rootURL {
+            allowed.append(root)
+        }
+        for base in allowed {
+            let resolved = base.resolvingSymlinksInPath().standardizedFileURL
+            if candidate.path.hasPrefix(resolved.path + "/") { return candidate }
+        }
+        return nil
+    }
+
     /// True when a running Linux guest backs this environment. The package UI
     /// reads real guest state only when this is true; otherwise it says a
     /// Linux environment is required instead of showing a host-side catalog.
@@ -230,6 +325,9 @@ final class FloePlatformServices: @unchecked Sendable {
         let guests = currentLinuxCommandService() as? any LinuxGuestControlling
         if backend != .linuxVM {
             await guests?.stopGuest(environmentID: id)
+            // A different backend must not reuse the Linux environment's
+            // shared-Python resolution.
+            await LinuxGuestPythonProvisioner.shared.forget(environmentID: id)
         }
         try await registry.setExecutionBackend(id: id, backend: backend)
         if backend == .linuxVM, let guests {
@@ -325,6 +423,11 @@ final class FloePlatformServices: @unchecked Sendable {
         commandRegistry.register("floe-env") { arguments, stdout, stderr in
             if arguments.first == "backend" {
                 let result = await FloePlatformServices.shared.runBackendCommand(arguments: arguments)
+                FloeShellWrite(result.exitCode == 0 ? stdout : stderr, result.output + "\n")
+                return result.exitCode
+            }
+            if arguments.first == "image" {
+                let result = await FloePlatformServices.shared.runImageCommand(arguments: arguments)
                 FloeShellWrite(result.exitCode == 0 ? stdout : stderr, result.output + "\n")
                 return result.exitCode
             }

@@ -364,6 +364,13 @@ final class AppEnvironment: ObservableObject {
         )
         self.linuxGuestService = linuxGuests
         FloePlatformServices.shared.setLinuxCommandService(linuxGuests)
+        // Verified image storage backs `floe-env image …`: digests are checked
+        // against the qualification record and archives are only promoted
+        // after extraction into an app-owned directory.
+        let linuxImageService = LinuxGuestBackendAssembly.makeImageService(
+            artifactRoot: try? FloeArtifactStore.root()
+        )
+        FloePlatformServices.shared.setLinuxImageService(linuxImageService)
 
         // Bundled CPython stays the native path; its runner now routes by
         // environment, so `exec.localPython` and the managed pip installs for

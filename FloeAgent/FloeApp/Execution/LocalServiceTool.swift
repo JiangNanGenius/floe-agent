@@ -178,6 +178,27 @@ struct LocalServiceTool: AgentTool {
         if await Self.responds(probe, request: request) {
             throw FloeError.validationFailed("The requested service port is already responding; choose another port")
         }
+        // Linux environments run the service inside their guest: the process
+        // is detached there, its log is appended to a file in the
+        // environment layer (readable here through the same 9p share) and its
+        // port is published with slirp host forwarding, so the preview/probe
+        // path below is identical to the native one.
+        if await FloePlatformServices.shared.linuxEnvironmentOwned(id: environment.id),
+           let controller = FloePlatformServices.shared.linuxLocalServiceController() {
+            return try await Self.runGuestService(
+                controller: controller,
+                args: args,
+                jobID: jobID,
+                environment: environment,
+                entry: entry,
+                cwd: cwd,
+                variables: variables,
+                endpoint: endpoint,
+                probe: probe,
+                context: context,
+                store: store
+            )
+        }
         var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
         let nativeID: String
         if args.runtime == "node" {
@@ -223,6 +244,90 @@ struct LocalServiceTool: AgentTool {
             // Cancellation belongs to the explicit token. Never throw out of
             // this ownership loop while a native worker may still be alive.
             try? await Task.sleep(for: .seconds(2))
+        }
+        snapshot.previewURL = nil
+        snapshot.boundAndRedact()
+        try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot))
+        return ToolExecutionOutput(digesting: String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self),
+            exitStatus: stopRequested || snapshot.state == "completed" ? 0 : 1)
+    }
+
+    /// Linux environment variant of the ownership loop. The guest process is
+    /// detached and its log lives in a 9p file, so "status" is a bounded tail
+    /// read and cancellation is an explicit guest KILL rather than a signal to
+    /// an in-process worker.
+    private static func runGuestService(
+        controller: any LinuxGuestLocalServiceControlling,
+        args: Arguments,
+        jobID: UUID,
+        environment: ToolEnvironment,
+        entry: URL,
+        cwd: URL,
+        variables: [String: String],
+        endpoint: URL,
+        probe: URLSession,
+        context: ToolContext,
+        store: BackgroundJobStore
+    ) async throws -> ToolExecutionOutput {
+        // The log must live inside the environment layer so the guest and the
+        // host read the same 9p file.
+        let logDirectory = environment.writableLayerURL.appendingPathComponent("services", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        let logFile = logDirectory.appendingPathComponent(jobID.uuidString + ".log")
+        let request = LinuxGuestLocalServiceRequest(
+            entry: entry.path,
+            runtime: args.runtime == "node" ? .node : .python,
+            arguments: args.arguments ?? [],
+            workingDirectory: cwd.path,
+            port: args.port,
+            logFile: logFile,
+            environment: variables
+        )
+        var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
+        let handle: LinuxGuestLocalServiceHandle
+        do {
+            handle = try await controller.startLocalService(
+                environmentID: environment.id,
+                request: request,
+                cancellation: context.cancellation
+            )
+        } catch {
+            throw FloeError.validationFailed(SecretRedactor.redact(String(describing: error)))
+        }
+        var stopRequested = false
+        var stopSent = false
+        var probeRequest = URLRequest(url: endpoint); probeRequest.httpMethod = "HEAD"
+        while true {
+            if context.cancellation.isCancelled { stopRequested = true }
+            if stopRequested && !stopSent {
+                stopSent = true
+                await controller.stopLocalService(handle)
+            }
+            let guest = await controller.localServiceSnapshot(handle)
+            snapshot.state = guest.state
+            snapshot.stdout = guest.stdout
+            snapshot.stderr = guest.stderr
+            snapshot.truncated = guest.truncated
+            if let error = guest.lastError, !error.isEmpty, guest.state != "stopped" {
+                snapshot.stderr += (snapshot.stderr.isEmpty ? "" : "\n") + error
+            }
+            if ["notFound", "stopped", "completed", "failed", "unavailable"].contains(snapshot.state) { break }
+            if stopRequested {
+                snapshot.state = "stopping"; snapshot.previewURL = nil
+                BrowserURLPolicy.revokeService(owner: jobID)
+            } else if snapshot.state == "running", await responds(probe, request: probeRequest) {
+                snapshot.previewURL = endpoint.absoluteString
+                BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: context.conversationID)
+            } else {
+                snapshot.previewURL = nil; BrowserURLPolicy.revokeService(owner: jobID)
+            }
+            snapshot.boundAndRedact()
+            do { try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot)) }
+            catch { stopRequested = true } // Persistence failure must not orphan a worker.
+            try? await Task.sleep(for: .seconds(2))
+        }
+        if !stopSent, snapshot.state == "running" || snapshot.state == "starting" {
+            await controller.stopLocalService(handle)
         }
         snapshot.previewURL = nil
         snapshot.boundAndRedact()

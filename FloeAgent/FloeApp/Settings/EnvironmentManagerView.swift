@@ -197,9 +197,28 @@ private struct EnvironmentDetailView: View {
     @State private var linuxError: String?
     @State private var pendingLinuxRemoval: String?
     @ObservedObject private var jobs = EnvironmentPackageJobs.shared
+    // Linux guest backend selection and real guest/image state. The picker
+    // writes through FloePlatformServices.setEnvironmentExecutionBackend, so
+    // the same code path the shell entry uses; status comes from the running
+    // service, never from the record alone.
+    @State private var backendSelection: EnvironmentExecutionBackend = .native
+    @State private var backendApplied: EnvironmentExecutionBackend = .native
+    @State private var backendBusy = false
+    @State private var guestStatus: LinuxGuestStatus?
     @Environment(\.dismiss) private var dismiss
     private var record: ContainerRecord { (current ?? report).record }
     private var writable: Bool { record.kind.isWritableLayer && record.state == .active && !record.requiresRebuild && !busy && !jobs.running.contains(report.id) }
+    private var backendEditable: Bool { record.kind.isWritableLayer && record.state != .deleting && !backendBusy }
+    /// backendUserMessage is the honest reason a Linux guest cannot run yet
+    /// (missing/unqualified image, no distributable archive).
+    private var backendUserMessage: String? {
+        guard backendSelection == .linuxVM else { return nil }
+        guard let status = guestStatus else { return String(localized: "environment.backend.checking") }
+        if status.running { return nil }
+        if let failure = status.imageVerificationFailure { return failure }
+        if status.imageInstalled == false { return String(localized: "environment.backend.image_missing") }
+        return status.lastError
+    }
 
     var body: some View {
         List {
@@ -215,6 +234,57 @@ private struct EnvironmentDetailView: View {
                     if let parent = record.parentID { LabeledContent("父环境", value: parent) }
                     LabeledContent("基础层版本", value: record.baseRevision)
                 }.font(.caption)
+            }
+            if busy { ProgressView("正在处理…") }
+            // Execution backend: native stays the default; Linux runs the
+            // shell/Python/services inside this environment's TinyEMU guest.
+            // The status text below is the real guest/image state, including
+            // the exact reason a guest cannot start.
+            Section("environment.backend.title") {
+                Picker("environment.backend.picker", selection: $backendSelection) {
+                    Text("environment.backend.native").tag(EnvironmentExecutionBackend.native)
+                    Text("environment.backend.linux").tag(EnvironmentExecutionBackend.linuxVM)
+                }
+                .pickerStyle(.segmented)
+                .disabled(!backendEditable)
+                .onChange(of: backendSelection) { _, newValue in
+                    guard newValue != backendApplied else { return }
+                    apply(backend: newValue)
+                }
+                if backendSelection == .linuxVM {
+                    if let status = guestStatus {
+                        LabeledContent("environment.backend.status", value: status.running ? String(localized: "environment.backend.status.running") : String(localized: "environment.backend.status.stopped"))
+                        if let imageID = status.imageID {
+                            LabeledContent("environment.backend.image", value: imageID)
+                        }
+                        if status.running, let startedAt = status.startedAt {
+                            LabeledContent("environment.backend.started", value: startedAt.formatted(date: .abbreviated, time: .shortened))
+                        }
+                        if let message = backendUserMessage {
+                            Label(message, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(FloeTheme.pending)
+                        }
+                        if status.imageDistributable != true {
+                            Text("environment.backend.distribution_hint")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        if status.running {
+                            Button("environment.backend.stop", systemImage: "stop") { apply(backend: .linuxVM, stopOnly: true) }
+                                .disabled(backendBusy)
+                        } else {
+                            Button("environment.backend.start", systemImage: "play") { apply(backend: .linuxVM) }
+                                .disabled(backendBusy || status.imageInstalled == false || status.imageVerificationFailure != nil)
+                        }
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } else {
+                    Text("environment.backend.native_hint")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             if busy { ProgressView("正在处理…") }
             if let error { Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive); Button("action.reload") { Task { await reload() } } } }
@@ -330,7 +400,12 @@ private struct EnvironmentDetailView: View {
         }
         .navigationTitle(record.name ?? displayName)
         .searchable(text: $query, prompt: "搜索软件包")
-        .task { await reload() }
+        .task {
+            await reload()
+            backendSelection = record.executionBackend ?? .native
+            backendApplied = backendSelection
+            await reloadGuestStatus()
+        }
         .refreshable { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }
         .confirmationDialog(
@@ -438,6 +513,34 @@ private struct EnvironmentDetailView: View {
             if linuxAvailable { await refreshLinuxPackages() } else { linuxPackages = []; linuxError = nil }
             error = nil
         } catch { self.error = String(describing: error) }
+    }
+    @MainActor private func reloadGuestStatus() async {
+        guestStatus = await FloePlatformServices.shared.linuxEnvironmentStatus(id: report.id)
+    }
+    /// Applies a backend choice through the same platform service the shell
+    /// entry uses; failures (unqualified image, guest start failure) surface
+    /// with their real reason and the record keeps the selection.
+    @MainActor private func apply(backend: EnvironmentExecutionBackend, stopOnly: Bool = false) {
+        backendBusy = true
+        Task {
+            defer { backendBusy = false }
+            do {
+                if stopOnly {
+                    try await FloePlatformServices.shared.stopEnvironment(id: report.id)
+                } else {
+                    try await FloePlatformServices.shared.setEnvironmentExecutionBackend(id: report.id, backend: backend)
+                }
+                backendApplied = backend
+                backendSelection = backend
+                await reload()
+                await reloadGuestStatus()
+            } catch {
+                backendSelection = backendApplied
+                self.error = String(describing: error)
+                await reload()
+                await reloadGuestStatus()
+            }
+        }
     }
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
         busy = true
