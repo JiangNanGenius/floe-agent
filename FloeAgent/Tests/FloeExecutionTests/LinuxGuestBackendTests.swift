@@ -585,13 +585,13 @@ final class LinuxGuestImageStoreTests: XCTestCase {
         XCTAssertNotNil(status.verificationFailure)
     }
 
-    func testTrustedInstallRefusesWhenNoArchiveIsPinned() async {
+    func testTrustedInstallRefusesAnUnpinnedImageID() async {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-images-\(UUID().uuidString)", isDirectory: true)
         let service = LinuxGuestImageInstallationService(root: root)
         do {
             _ = try await service.installTrustedImage(id: "floe-linux-base", downloader: NoopImageDownloader())
-            XCTFail("no distributable image is pinned in this build")
+            XCTFail("the requested image ID has no pinned archive")
         } catch let error as LinuxGuestImageInstallError {
             guard case .noDistributableImage = error else { return XCTFail("unexpected error \(error)") }
         } catch {

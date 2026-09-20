@@ -68,7 +68,7 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
 enum LinuxGuestBackendAssembly {
     /// Manifest id expected under `<artifact root>/LinuxGuest/images/<id>/`.
     /// The manifest must carry a passing modern-guest qualification record.
-    static let defaultImageID = "floe-debian13-riscv64-202609202607"
+    static let defaultImageID = LinuxGuestImageDistributionCatalog.defaultImageID
 
     /// Keep environment ownership available even when durable image storage is
     /// unavailable, so a Linux-selected request cannot fall back to native.

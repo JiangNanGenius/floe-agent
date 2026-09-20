@@ -62,8 +62,8 @@ Linux 环境选中的 Shell、local Python 与后台服务共用 guest 后端和
 停止的 Linux 环境不会回退到 iOS 原生包存储；TinyEMU 包含 FENCE.TSO 兼容补丁。
 本次元数据准备只做了以下定向检查：xcodegen 再生与工程一致性、本地化目录校验
 （1121 条，en + zh-Hans 完整）、四目标版本一致性；**未运行 App 构建、未做模拟器
-或 UI 回归、未运行完整测试**。真机验收由用户执行。可下载的 Linux 镜像目录在本
-候选版中仍为空，原生执行保持默认；镜像与对应源码材料完成前不提供下载。
+或 UI 回归、未运行完整测试**。真机验收由用户执行。本候选版固定了已通过云端组件验证的 Linux 镜像，原生执行保持默认。
+TestFlight 交付前，必须先完成组件镜像及对应源码的公开下载发布；镜像分发与 App 分发分别记录。
 
 ## English
 
@@ -78,9 +78,9 @@ the FENCE.TSO compatibility patch. This metadata preparation ran only focused
 checks: xcodegen regeneration and project consistency, the localization catalog
 gate (1121 entries, complete en + zh-Hans) and four-target version consistency;
 **no App build, simulator/UI regression or full test suite was run**. Physical
-acceptance belongs to the user. The downloadable Linux image catalog remains
-empty in this candidate and native execution stays the default; no image is
-offered until the image and its corresponding-source bundle are complete.
+acceptance belongs to the user. This candidate pins the cloud-qualified Linux image; native execution remains
+the default. Before TestFlight delivery, the component image and matching sources
+must be available at their public download URLs. Image and App delivery are tracked separately.
 
 ## 验证边界 / Verification boundary
 
@@ -95,3 +95,10 @@ and Floe QA availability are recorded separately only after they occur. Build
 207's existing TestFlight availability and build 209's failure remain
 independently recorded. This build includes no public Beta submission and is not
 an App Store production release.
+
+## Fixed Linux component
+
+- Component: `floe-linux-guest-20260920.1`; image `floe-debian13-riscv64-202609202607`.
+- Archive: 572643214 bytes; SHA-512 `ad691732212fd4c229e62f71bb6d97fd41a54e1b1f9e2eb1e1aa47b3edaffb7ef21ae31948439bae2d8eba9ffe7d61b7b2e1a3049ecf57fec88996ce5641d34a`.
+- Hash evidence: [run 35504351755](https://github.com/JiangNanGenius/floe-agent/actions/runs/35504351755), artifact `10602619348`. That run completed image packaging but its source-path check failed; publication is pending the corrected packaging run.
+- The package uses the verified kernel/bbl/disk bytes from image run35501535251. It uses Linux4.15 with Debian13 userland. SSH/SCP transfer and iPad performance remain user acceptance items.

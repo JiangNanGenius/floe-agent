@@ -24,7 +24,7 @@ build 210 App compilation and image distribution are being prepared. Device acce
 | 共享解释器 | `FloeExecution/Linux/LinuxGuestPythonEnvironment.swift` | Debian PEP 668 下不在系统解释器安装：首次按需 `apt-get install python3 python3-venv python3-pip` → `python3 -m venv`；半成品 venv 用 venv 内 `ensurepip` 修复；per-environment in-flight 合并，stop/delete/换后端即失效缓存，forget 后旧任务不会回填 |
 | Node 运行时 | `FloeExecution/Linux/LinuxGuestNodeEnvironment.swift` | guest 内探测 node/npm（缺失才 `apt-get install nodejs npm`）；pnpm 只探测、绝不隐式安装；per-environment 缓存与失效规则同 Python |
 | 镜像校验/导入 | `FloeExecution/Linux/LinuxGuestImageStore.swift` | 镜像必须在镜像目录内、非符号链接、大小与 SHA-512 与 `artifacts` 一致且清单记录资格 run；zip 导入拒绝 `..`/绝对路径/符号链接/超限；只在全部通过后原子替换 |
-| 镜像入口 | `FloeApp/Execution/FloePlatformServices.swift` + `FloeApp/Execution/LinuxGuestImageDownloader.swift` | `floe-env image status\|import\|install\|remove`；`install` 只下载本 build 固定（pinned）archive，当前 catalog 为空 → 诚实不可用；HTTPS→HTTPS 有界重定向，字节仍强校验 |
+| 镜像入口 | `FloeApp/Execution/FloePlatformServices.swift` + `FloeApp/Execution/LinuxGuestImageDownloader.swift` | `floe-env image status\|import\|install\|remove`；`install` 只下载本 build 固定（pinned）archive，catalog 固定组件版本及 SHA-512；HTTPS→HTTPS 有界重定向，字节仍强校验 |
 | 环境 UI | `FloeApp/Settings/EnvironmentManagerView.swift` | 环境详情提供 native/Linux 后端选择、真实 guest 状态（运行/停止/启动时间/镜像+资格原因），不依赖手输 `floe-env` |
 | 注入 | `FloeApp/App/AppEnvironment.swift` | 构建唯一 `TinyEMULinuxCommandService` 与 `LinuxGuestImageInstallationService`，经 `setLinuxCommandService` / `setLinuxImageService` 注入；非 `executionBackend == .linuxVM` 时零行为变化 |
 
@@ -54,8 +54,9 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
   App 启动时钟及 Python/Node 安装归属修复已接线，完整 App 编译及 iPad 验收另行记录。
 - 现代 Debian13 6.12 内核在 2018 bbl 上仍无控制台输出（需 FDT+OpenSBI）；当前可用组合限于 4.15 内核
   与 Debian13 用户态。RAM OOM 创建失败是可恢复 NULL，不是致命错误。
-- 分发是**另一个**决定：`LinuxGuestImageDistributionCatalog` 目前为空（没有已发布的 guest 来源/许可记录），
-  所以 `floe-env image install` 与 UI 只报不可用；本地构建的镜像只能经
+- `LinuxGuestImageDistributionCatalog` 固定组件 `floe-linux-guest-20260920.1` 的镜像 URL 与 SHA-512。
+  TestFlight 交付前，镜像、对应源码与版权材料须在该组件发布页可下载；目前组件发布正在进行。
+  本地构建的镜像可经
   `floe-env image import <id> <zip> <sha512>` 导入并标记为本地导入（永不自动成为可下载镜像）。
   guest 来源/许可缺口见 [guest 镜像清单](FLOE_LINUX_GUEST_IMAGE_MANIFEST.md)。
 - 因此：Linux 后端只在环境显式选择 `executionBackend == .linuxVM` 后启用，**默认不启用**；工具发现与界面

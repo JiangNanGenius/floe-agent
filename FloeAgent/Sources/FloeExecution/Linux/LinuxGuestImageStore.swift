@@ -11,9 +11,8 @@
 //  2. May this build distribute/download it?  Only when the archive digest is
 //     pinned by this build (LinuxGuestImageDistributionCatalog) *and* the
 //     manifest carries provenance (guest source + license obligations).
-//     The catalog is empty today: no distributable Floe Linux image exists
-//     yet, so the official download entry reports that honestly instead of
-//     offering whatever a manifest claims.
+//     The catalog pins a specific qualified image archive and its public
+//     source/notice record; downloaded manifests cannot add catalog entries.
 //  3. Import.  An already-downloaded zip archive or an extracted directory
 //     can be imported; extraction rejects absolute paths, `..`, symlinks and
 //     oversized payloads, and only a fully verified image is promoted into
@@ -214,10 +213,21 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
 }
 
 public enum LinuxGuestImageDistributionCatalog {
-    /// No distributable Floe Linux image exists yet. The scope of this change
-    /// is the current TestFlight build: adding an entry here is a release
-    /// action that requires a qualified image plus its source/license record.
-    public static let bundled: [LinuxGuestTrustedImage] = []
+    /// One fixed component release. Keep the App default and download entry aligned.
+    public static let defaultImageID = "floe-debian13-riscv64-202609202607"
+    public static let bundled: [LinuxGuestTrustedImage] = [
+        LinuxGuestTrustedImage(
+            id: defaultImageID,
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260920.1/floe-linux-guest-floe-debian13-riscv64-202609202607.zip")!,
+            archiveSHA512: "ad691732212fd4c229e62f71bb6d97fd41a54e1b1f9e2eb1e1aa47b3edaffb7ef21ae31948439bae2d8eba9ffe7d61b7b2e1a3049ecf57fec88996ce5641d34a",
+            provenance: LinuxGuestImageProvenance(
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/floe-linux-guest-20260920.1/FloeAgent/ThirdParty/TinyEMU/guest-image",
+                license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1",
+                distributionAllowed: true
+            )
+        )
+    ]
 
     public static func entry(id: String) -> LinuxGuestTrustedImage? {
         bundled.first { $0.id == id }
