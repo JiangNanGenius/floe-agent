@@ -3218,7 +3218,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Linux guest 内已安装"
+            "value": "Linux 环境中已安装"
           }
         }
       }
@@ -3297,13 +3297,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Shortcuts for common real Debian package names. Install runs the guest's own apt-get, so whether an entry resolves depends on the guest's configured APT sources; the app does not review or verify these packages, and this list does not claim every entry has been verified on this device."
+            "value": "Download common tools from the current Linux environment’s package sources. APT resolves dependencies and architecture compatibility during installation."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "常用 Debian 真实包名的快捷入口。安装执行 guest 内原生的 apt-get，条目能否解析取决于 guest 已配置的 APT 源；App 不审核、不校验这些软件包，此列表也不代表每个条目都已在本机验证。"
+            "value": "从当前 Linux 环境的软件源下载常用工具。安装时由 APT 解析依赖与架构兼容性。"
           }
         }
       }

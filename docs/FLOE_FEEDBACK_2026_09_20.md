@@ -38,7 +38,7 @@ Apple processing and internal-group availability remain required.
   are integrated. Tool schemas and 34 new bilingual strings were checked.
   The Linux UI reads the real guest package database when a runner is available;
   a stopped Linux environment must not fall back to host package storage.
-  A recommended Linux download list and actual backend integration remain pending. Shell and local Python in one Linux environment must
+  The recommended Linux download list is integrated; actual backend integration remains pending. Shell and local Python in one Linux environment must
   use the same interpreter/package installation. Linux ELF extensions are not
   directly loadable by iOS CPython.
 
@@ -76,3 +76,9 @@ Apple processing and internal-group availability remain required.
   It is a first device candidate for Office, internal IDE documents, Git, native
   mind maps and Shell repairs. Runtime and new Linux/package changes are still
   being integrated separately. Dispatch is not an upload or installability claim.
+
+The Linux recommendation table includes the packages for all 13 missing command
+names reported in the screenshots. This is a package mapping, not execution
+acceptance. For example, Debian trixie riscv64 [7zip file contents](https://packages.debian.org/trixie/riscv64/7zip/filelist)
+include `/usr/bin/7z`; the UI installs the real `7zip` package. Actual guest
+installation/execution remains unverified until a usable Linux image is ready.

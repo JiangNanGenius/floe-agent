@@ -167,14 +167,19 @@ private struct EnvironmentDetailView: View {
     /// by the guest's own apt-get, so this list is a starting point, not a
     /// verified compatibility matrix.
     private static let recommendedLinuxPackages: [LinuxRecommendation] = [
+        LinuxRecommendation(package: "7zip", commands: ["7z"]),
         LinuxRecommendation(package: "bash", commands: ["bash"]),
         LinuxRecommendation(package: "bzip2", commands: ["bzip2"]),
+        LinuxRecommendation(package: "coreutils", commands: ["nohup"]),
         LinuxRecommendation(package: "git", commands: ["git"]),
         LinuxRecommendation(package: "openssh-client", commands: ["ssh", "scp", "sftp"]),
+        LinuxRecommendation(package: "procps", commands: ["ps"]),
         LinuxRecommendation(package: "sqlite3", commands: ["sqlite3"]),
         LinuxRecommendation(package: "unzip", commands: ["unzip"]),
+        LinuxRecommendation(package: "util-linux", commands: ["setsid"]),
         LinuxRecommendation(package: "xz-utils", commands: ["xz"]),
         LinuxRecommendation(package: "zip", commands: ["zip"]),
+        LinuxRecommendation(package: "zsh", commands: ["zsh"]),
     ]
     let report: FloePlatformServices.EnvironmentReport
     let displayName: String
