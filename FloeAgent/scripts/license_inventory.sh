@@ -75,6 +75,8 @@ rows.extend([
     ("RoyalVNCKit (Floe synchronized queue)", "92d4427c73817d8f849bb289ff190aa4b40c44ea + Floe patch", "MIT", "https://github.com/JiangNanGenius/floe-agent/tree/main/FloeAgent/ThirdParty/RoyalVNCKit"),
     ("llama.cpp", "b10581", "MIT", "https://github.com/ggml-org/llama.cpp"),
     ("llama-ios-xcframework", "1.0.0", "MIT", "https://github.com/saitawngpha/llama-ios"),
+    ("TinyEMU / FloeTinyEMU engine", "2019-12-21 + Floe patches", "MIT", "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz"),
+    ("TinyEMU slirp (compiled subset)", "2019-12-21", "BSD-2-Clause (Danny Gasparovski files) and BSD-3-Clause (UC Regents files)", "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz"),
     ("PDFium", "chromium/8035", "BSD-3-Clause and bundled third-party notices", "https://pdfium.googlesource.com/pdfium/"),
     ("pdfium-binaries", "chromium/8035", "MIT", "https://github.com/bblanchon/pdfium-binaries"),
     ("libarchive", "3.8.9", "BSD-2-Clause and COPYING exceptions", "https://github.com/libarchive/libarchive"),

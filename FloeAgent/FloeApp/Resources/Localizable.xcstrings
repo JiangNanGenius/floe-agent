@@ -10073,6 +10073,57 @@
         }
       }
     },
+    "settings.diagnostics.tinyemu_licenses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TinyEMU (RISC-V) Licenses"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TinyEMU（RISC-V）许可证"
+          }
+        }
+      }
+    },
+    "settings.diagnostics.tinyemu_licenses.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "License notices for the bundled TinyEMU RISC-V engine: MIT core plus the BSD-2-Clause and BSD-3-Clause slirp subset."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随 App 打包的 TinyEMU RISC-V 引擎许可声明：MIT 核心，以及 BSD-2-Clause 与 BSD-3-Clause 的 slirp 子集。"
+          }
+        }
+      }
+    },
+    "settings.diagnostics.tinyemu_licenses.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The bundled TinyEMU license text could not be read from this build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法从此构建读取随 App 打包的 TinyEMU 许可文本。"
+          }
+        }
+      }
+    },
     "settings.diagnostics.logs": {
       "extractionState": "manual",
       "localizations": {

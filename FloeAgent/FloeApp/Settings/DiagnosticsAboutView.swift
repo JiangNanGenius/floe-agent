@@ -151,14 +151,25 @@ struct DiagnosticsAboutView: View {
                 Text("feedback.entry.footer")
             }
 
-            Section("settings.diagnostics.legal") {
+            Section {
                 Link(destination: licenseURL) {
                     Label("settings.diagnostics.licenses", systemImage: "doc.text")
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
+                NavigationLink {
+                    TinyEMULicensesView()
+                } label: {
+                    Label("settings.diagnostics.tinyemu_licenses", systemImage: "cpu")
+                }
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("diagnostics.tinyemu_licenses")
                 Label("settings.diagnostics.privacy.note", systemImage: "hand.raised")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
+            } header: {
+                Text("settings.diagnostics.legal")
+            } footer: {
+                Text("settings.diagnostics.tinyemu_licenses.footer")
             }
 
             if let errorMessage {
@@ -248,6 +259,43 @@ struct DiagnosticsAboutView: View {
             exportURL = IdentifiableDiagnosticsURL(url: url)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// TinyEMU (RISC-V engine) license notices, read from the local resource
+/// bundled with the app. A plain scrollable, selectable Text keeps the
+/// notices readable and copyable in place; no external file viewer or Safari
+/// hand-off is involved.
+private struct TinyEMULicensesView: View {
+    /// The bundled notice is small and never changes at runtime.
+    private static let bundledText: String = {
+        guard let url = Bundle.main.url(forResource: "TinyEMU-LICENSES", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return String(localized: "settings.diagnostics.tinyemu_licenses.unavailable")
+        }
+        return text
+    }()
+
+    var body: some View {
+        ScrollView {
+            Text(Self.bundledText)
+                .font(FloeTheme.Typography.evidence)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        .navigationTitle("settings.diagnostics.tinyemu_licenses")
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("diagnostics.tinyemu_licenses.text")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    UIPasteboard.general.string = Self.bundledText
+                } label: {
+                    Label("action.copy", systemImage: "doc.on.doc")
+                }
+            }
         }
     }
 }

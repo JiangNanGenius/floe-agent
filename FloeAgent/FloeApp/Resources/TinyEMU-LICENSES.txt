@@ -1,0 +1,186 @@
+TinyEMU 2019-12-21 - bundled license notices
+============================================
+
+Floe Agent embeds the TinyEMU RISC-V virtual machine engine (TinyEMU
+2019-12-21). The complete applicable notices are reproduced below from the
+pinned upstream release and from the engine sources vendored in
+FloeAgent/ThirdParty/TinyEMU. These are the full license texts, not
+summaries.
+
+Upstream: https://bellard.org/tinyemu/
+Release tarball: tinyemu-2019-12-21.tar.gz
+SHA-256: be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555
+
+Upstream rule (readme.txt section 5): "TinyEMU is released under the MIT
+license. If there is no explicit license in a file, the license from
+MIT-LICENSE.txt applies. The SLIRP library has its own license (two clause
+BSD license)."
+
+Notices in this file:
+  1. TinyEMU core and slirp glue - MIT License (Fabrice Bellard)
+  2. slirp - BSD 2-Clause grant (Danny Gasparovski)
+  3. slirp FreeBSD-derived files - BSD 3-Clause notice (Regents of the
+     University of California)
+
+Where these texts come from:
+  Section 1: FloeAgent/ThirdParty/TinyEMU/MIT-LICENSE.txt
+             verbatim copy; SHA-256
+             a75690160a50d8085bcd25acf34faa5b1c484e15ffd0bd662e5f4d7a289da080
+  Section 2: FloeAgent/ThirdParty/TinyEMU/licenses/SLIRP-COPYRIGHT.txt
+             SHA-256
+             6aa542ccb77b884dbb8e8c4620f3471111e5648fe341147befcf933ea30d764f
+  Section 3: inline headers of the compiled slirp sources under
+             FloeAgent/ThirdParty/TinyEMU/Sources/FloeTinyEMU/engine/slirp/
+
+Only the notices above apply to the bundled engine; no GPL/LGPL code is
+linked into the app's engine.
+
+1. TinyEMU core and slirp glue - MIT License
+-------------------------------------------
+
+Applies to the TinyEMU emulator proper, whose sources carry "Copyright (c)
+2016 Fabrice Bellard", "Copyright (c) 2016-2017 Fabrice Bellard" and
+"Copyright (c) 2017 Fabrice Bellard" headers. slirp glue written by the same
+author also carries this grant inline: slirp/bootp.c ("Copyright (c) 2004
+Fabrice Bellard") and slirp/slirp.c ("Copyright (c) 2004-2008 Fabrice
+Bellard"). The slirp files without an explicit header (bootp.h, libslirp.h,
+slirp.h, slirp_config.h, tftp.h) fall under this license per the upstream
+rule quoted above.
+
+Copyright (c) 2016-2017 Fabrice Bellard
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+2. slirp - BSD 2-Clause grant (Danny Gasparovski)
+-------------------------------------------------
+
+Applies to the compiled slirp files carrying the "Copyright (c) 1995 Danny
+Gasparovski" header: debug.h, if.c, if.h, main.h, mbuf.c, misc.c, misc.h,
+sbuf.c, sbuf.h, socket.c, socket.h. The six FreeBSD-derived files in section
+3 (ip_input.c, ip_output.c, tcp_input.c, tcp_output.c, tcp_subr.c, udp.c)
+additionally carry a second "Changes and additions relating to SLiRP /
+Copyright (c) 1995 Danny Gasparovski" header that points at the same terms.
+
+Slirp was written by Danny Gasparovski.
+Copyright (c), 1995,1996 All Rights Reserved.
+
+Slirp is maintained by Kelly Price <tygris+slirp@erols.com>
+
+Slirp is free software; "free" as in you don't have to pay for it, and you
+are free to do whatever you want with it.  I do not accept any donations,
+monetary or otherwise, for Slirp.  Instead, I would ask you to pass this
+potential donation to your favorite charity.  In fact, I encourage
+*everyone* who finds Slirp useful to make a small donation to their
+favorite charity (for example, GreenPeace).  This is not a requirement, but
+a suggestion from someone who highly values the service they provide.
+
+The copyright terms and conditions:
+
+---BEGIN---
+
+ Copyright (c) 1995,1996 Danny Gasparovski.  All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+
+ THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL
+ DANNY GASPAROVSKI OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---END---
+
+This basically means you can do anything you want with the software, except
+1) call it your own, and 2) claim warranty on it.  There is no warranty for
+this software.  None.  Nada.  If you lose a million dollars while using
+Slirp, that's your loss not mine.  So, ***USE AT YOUR OWN RISK!***.
+
+If these conditions cannot be met due to legal restrictions (E.g. where it
+is against the law to give out Software without warranty), you must cease
+using the software and delete all copies you have.
+
+Slirp uses code that is copyrighted by the following people/organizations:
+
+Juha Pirkola.
+Gregory M. Christy.
+The Regents of the University of California.
+Carnegie Mellon University.
+The Australian National University.
+RSA Data Security, Inc.
+
+Please read the top of each source file for the details on the various
+copyrights.
+
+3. slirp FreeBSD-derived files - BSD 3-Clause notice (Regents of the University of California)
+-------------------------------------------------------------------------------------------------
+
+The following compiled slirp files carry this notice inline. The terms are
+byte-identical in all of them; only the copyright years differ:
+
+  1982, 1986, 1993                     ip.h, ip_icmp.h, tcp.h, tcp_timer.h, tcpip.h, udp.h
+  1982, 1986, 1988, 1993               ip_icmp.c, ip_input.c, mbuf.h
+  1982, 1986, 1988, 1990, 1993         ip_output.c, tcp_output.c, tcp_subr.c, tcp_timer.c, udp.c
+  1982, 1986, 1993, 1994               tcp_var.h
+  1982, 1986, 1988, 1990, 1993, 1994   tcp_input.c
+  1988, 1992, 1993                     cksum.c
+
+The notice below is reproduced verbatim from slirp/tcp_input.c (the widest
+year range); only that file's trailing RCS identifiers are omitted.
+
+/*
+ * Copyright (c) 1982, 1986, 1988, 1990, 1993, 1994
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ */
