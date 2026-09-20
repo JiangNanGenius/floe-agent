@@ -133,11 +133,11 @@ struct ConversationToolsTests {
         let items = (0..<8).map {
             ConversationHistoryItem(
                 id: UUID(), kind: .message, role: "user",
-                content: String(repeating: "长历史正文\($0) ", count: 200), createdAt: Date()
+                content: String(repeating: "长历史正文\($0) ", count: 120), createdAt: Date()
             )
         }
         let rendered = ConversationEnvelope.referenceBody(title: "Floe task", items: items)
-        #expect(rendered.truncated == false)
+        #expect(rendered.deliveredCount == items.count)
         let envelope = try ConversationEnvelope.read(
             conversationID: taskID,
             block: rendered.body,
@@ -334,6 +334,246 @@ struct ConversationToolsTests {
         #expect(ConversationSpawnAuthority.isExplicitRequest("Create a new task for the audit"))
         #expect(!ConversationSpawnAuthority.isExplicitRequest("这个也许可以以后单独处理"))
     }
+
+    @Test("loop-read cursor delivers every long item exactly once and truly ends (budget-honoring reader)")
+    func paginationCoversEveryItemBudgetHonoringReader() async throws {
+        try await assertFullCoveragePagination(honorsByteBudget: true)
+    }
+
+    @Test("loop-read cursor delivers every long item exactly once and truly ends (budget-ignoring reader)")
+    func paginationCoversEveryItemBudgetIgnoringReader() async throws {
+        try await assertFullCoveragePagination(honorsByteBudget: false)
+    }
+
+    /// The regression this guards: referenceBody bounded the 24 KB page but
+    /// the envelope still shipped the reader's whole-page nextCursor and
+    /// listed every requested item as a source, so budget-dropped items were
+    /// skipped forever and the final page claimed the walk had ended.
+    private func assertFullCoveragePagination(honorsByteBudget: Bool) async throws {
+        let conversationID = UUID()
+        // ~6.3 KB rendered lines: three fit under the 24 KB budget, so seven
+        // items force a multi-page walk.
+        let items = (0..<7).map { index in
+            ConversationHistoryItem(
+                id: UUID(), kind: .message, role: index.isMultiple(of: 2) ? "user" : "assistant",
+                content: String(repeating: "历史内容\(index) ", count: 450),
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+            )
+        }
+        let reader = OffsetPagingConversationReader(items: items, honorsByteBudget: honorsByteBudget)
+        let tool = ConversationReadTool(reader: reader, currentConversationID: { _ in UUID() })
+
+        var deliveredInOrder: [String] = []
+        var cursor: String?
+        var pageCount = 0
+        while true {
+            let page = try await readEnvelopePage(tool: tool, conversationID: conversationID, cursor: cursor)
+            pageCount += 1
+            #expect(!page.sources.isEmpty, "every page must deliver at least one item")
+            // Sources describe only content actually present in this page body.
+            for id in page.sources {
+                #expect(page.reference.contains(id), "source \(id) must appear in the delivered body")
+            }
+            deliveredInOrder.append(contentsOf: page.sources)
+            guard page.hasMore, let next = page.cursor, pageCount <= items.count else {
+                #expect(!page.hasMore, "the last page must end the walk truthfully")
+                #expect(page.cursor == nil, "the last page must not carry a continuation cursor")
+                break
+            }
+            cursor = next
+        }
+        let allIDs = items.map(\.id.uuidString)
+        #expect(pageCount >= 2, "the budget must really have split the walk into pages")
+        // Flattened order equals the timeline order: no skipped, duplicated,
+        // or reordered item survived the cursor chain.
+        #expect(deliveredInOrder == allIDs)
+    }
+
+    @Test("a maximally long single item stays reachable and the cursor resumes at the first undelivered item")
+    func oversizedSingleItemRemainsReachable() async throws {
+        let conversationID = UUID()
+        // Item content cap is 16_384 characters; one rendered CJK line can
+        // exceed the whole-page byte budget. A budget-ignoring reader still
+        // delivers it whole — its tail is never capped away.
+        let tailMarker = "〖TAIL-9f3d〗"
+        let big = ConversationHistoryItem(
+            id: UUID(), kind: .message, role: "user",
+            content: String(repeating: "长", count: 16_370) + tailMarker,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let tail = ConversationHistoryItem(
+            id: UUID(), kind: .message, role: "assistant",
+            content: "short follow-up",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_200)
+        )
+        let reader = OffsetPagingConversationReader(items: [big, tail], honorsByteBudget: false)
+        let tool = ConversationReadTool(reader: reader, currentConversationID: { _ in UUID() })
+
+        let first = try await readEnvelopePage(tool: tool, conversationID: conversationID, cursor: nil)
+        #expect(first.sources == [big.id.uuidString])
+        #expect(first.reference.contains(big.id.uuidString))
+        #expect(first.reference.contains(tailMarker), "the whole item — including its tail — stays reachable")
+        #expect(!first.reference.contains(tail.id.uuidString))
+        #expect(first.hasMore)
+        // The exact old bug: the envelope carried the reader's whole-page
+        // cursor ("2"), which skipped `tail` and then reported the walk done.
+        let cursor = try #require(first.cursor)
+        #expect(cursor == "1", "the cursor must resume at the first undelivered item")
+
+        let second = try await readEnvelopePage(tool: tool, conversationID: conversationID, cursor: cursor)
+        #expect(second.sources == [tail.id.uuidString])
+        #expect(second.reference.contains(tail.id.uuidString))
+        #expect(!second.hasMore)
+        #expect(second.cursor == nil)
+    }
+
+    @Test("a single long item is segmented by real UTF-8 budget and its unique tail marker is read back across pages")
+    func oversizedItemSegmentedAcrossPages() async throws {
+        let conversationID = UUID()
+        let tailMarker = "〖TAIL-9f3d〗"
+        // ~37 KB of CJK plus a multi-scalar emoji: two segments minimum under
+        // the 24 KB page budget.
+        let big = ConversationHistoryItem(
+            id: UUID(), kind: .message, role: "user",
+            content: String(repeating: "数据", count: 6_000) + "👨‍👩‍👧‍👦"
+                + String(repeating: "尾声", count: 100) + tailMarker,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let tail = ConversationHistoryItem(
+            id: UUID(), kind: .message, role: "assistant",
+            content: "short follow-up",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_200)
+        )
+        let reader = OffsetPagingConversationReader(items: [big, tail], honorsByteBudget: true)
+        let tool = ConversationReadTool(reader: reader, currentConversationID: { _ in UUID() })
+
+        var cursor: String?
+        var pageCount = 0
+        var bigPages = 0
+        var sawResumeMarker = false
+        var sawContinuesMarker = false
+        var sawTailMarker = false
+        var tailDelivered = false
+        while true {
+            let page = try await readEnvelopePage(tool: tool, conversationID: conversationID, cursor: cursor)
+            pageCount += 1
+            #expect(
+                page.reference.utf8.count <= ConversationEnvelope.referenceBodyCharacterBudget + 600,
+                "every page must stay within the byte budget plus wrapper overhead"
+            )
+            if page.sources.contains(big.id.uuidString) {
+                bigPages += 1
+                sawResumeMarker = sawResumeMarker || page.reference.contains("content resumes at byte")
+                sawContinuesMarker = sawContinuesMarker || page.reference.contains("content continues; pass")
+            }
+            tailDelivered = tailDelivered || page.sources.contains(tail.id.uuidString)
+            sawTailMarker = sawTailMarker || page.reference.contains(tailMarker)
+            guard page.hasMore, let next = page.cursor, pageCount <= 10 else {
+                #expect(!page.hasMore, "the last page must end the walk truthfully")
+                break
+            }
+            cursor = next
+        }
+        #expect(bigPages >= 2, "the long item must span more than one page")
+        #expect(sawContinuesMarker, "a prefix segment must announce intra-item continuation")
+        #expect(sawResumeMarker, "a resumed segment must announce its byte offset")
+        #expect(sawTailMarker, "the item's unique tail marker must be read back via cursors")
+        #expect(tailDelivered, "the item after the long one must still be delivered")
+    }
+
+    @Test("paginate segments a long item losslessly at Character boundaries under a UTF-8 budget")
+    func paginateSegmentsLosslessly() {
+        let tailMarker = "〖TAIL-9f3d〗"
+        let full = String(repeating: "数据", count: 3_000) + "👨‍👩‍👧‍👦"
+            + String(repeating: "终", count: 2_000) + tailMarker
+        let item = ConversationHistoryItem(
+            id: UUID(), kind: .message, role: "user", content: full,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        var reassembled = ""
+        var offset = 0
+        var steps = 0
+        while true {
+            let page = ConversationEnvelope.paginate(
+                items: [item], startContentByteOffset: offset, limit: 1, byteBudget: 2_000
+            )
+            #expect(page.delivered.count == 1, "every page must make progress")
+            let segment = page.delivered[0]
+            #expect(
+                ConversationEnvelope.referenceLine(segment).utf8.count <= 2_000,
+                "a segment — markers included — must respect the byte budget"
+            )
+            reassembled += segment.content
+            steps += 1
+            #expect(steps <= 100)
+            switch page.continuation {
+            case .insideDeliveredItem(let nextOffset):
+                #expect(nextOffset > offset, "the intra-item cursor must advance")
+                offset = nextOffset
+            case .none:
+                // Lossless and duplication-free across the whole walk, with
+                // the multi-scalar emoji never split between pages.
+                #expect(reassembled == full)
+                #expect(reassembled.contains("👨‍👩‍👧‍👦"))
+                return
+            case .afterDeliveredItems:
+                Issue.record("a single undrained item must continue inside itself, not after itself")
+                return
+            }
+        }
+    }
+
+    @Test("paginate walks whole items and reports the true end of the timeline")
+    func paginateWholeItemsAndTrueEnd() {
+        let items = (0..<5).map { index in
+            ConversationHistoryItem(
+                id: UUID(), kind: .message, role: "user",
+                content: String(repeating: "历史内容\(index) ", count: 450),
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+            )
+        }
+        let first = ConversationEnvelope.paginate(items: items, limit: 50, byteBudget: 24_000)
+        #expect(first.delivered.count == 3)
+        #expect(first.continuation == .afterDeliveredItems)
+        let second = ConversationEnvelope.paginate(items: Array(items[3...]), limit: 50, byteBudget: 24_000)
+        #expect(second.delivered.count == 2)
+        #expect(second.continuation == .none)
+        // A reader holding more rows than the limit must still continue after
+        // a page that happened to fill exactly.
+        let exact = ConversationEnvelope.paginate(
+            items: Array(items[0..<3]), limit: 3, byteBudget: 24_000, hasMoreBeyond: true
+        )
+        #expect(exact.delivered.count == 3)
+        #expect(exact.continuation == .afterDeliveredItems)
+    }
+
+    private struct ReadEnvelopePage {
+        let hasMore: Bool
+        let cursor: String?
+        let sources: [String]
+        let reference: String
+    }
+
+    private func readEnvelopePage(
+        tool: ConversationReadTool,
+        conversationID: UUID,
+        cursor: String?
+    ) async throws -> ReadEnvelopePage {
+        let output = try await tool.execute(
+            .init(conversationID: conversationID, cursor: cursor),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 0)
+        let envelope = try #require(
+            JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any]
+        )
+        return ReadEnvelopePage(
+            hasMore: envelope["hasMore"] as? Bool ?? false,
+            cursor: envelope["cursor"] as? String,
+            sources: envelope["sources"] as? [String] ?? [],
+            reference: envelope["reference"] as? String ?? ""
+        )
+    }
 }
 
 private actor FakeConversationReader: ConversationHistoryReader {
@@ -367,4 +607,67 @@ private actor SpawnRecorder {
         self.request = request
         return result
     }
+}
+
+/// Mirrors the store's offset pagination so tool-level behavior tests
+/// exercise the same cursor contract as production. `honorsByteBudget`
+/// selects between the production reader (shared budget-true walk; cursors
+/// may carry an intra-item content offset as "itemOffset:byteOffset") and a
+/// foreign reader that ignores the budget entirely (the tool's bounded
+/// re-read must repair the cursor).
+private actor OffsetPagingConversationReader: ConversationHistoryReader {
+    let items: [ConversationHistoryItem]
+    let honorsByteBudget: Bool
+
+    init(items: [ConversationHistoryItem], honorsByteBudget: Bool) {
+        self.items = items
+        self.honorsByteBudget = honorsByteBudget
+    }
+
+    func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit] { [] }
+
+    func read(_ request: ConversationPageRequest) async throws -> ConversationHistoryPage {
+        var offset = 0
+        var contentOffset = 0
+        if let raw = request.cursor {
+            let parts = raw.split(separator: ":")
+            offset = parts.first.flatMap { Int($0) } ?? 0
+            if parts.count > 1 { contentOffset = Int(parts[1]) ?? 0 }
+        }
+        guard offset < items.count else {
+            return ConversationHistoryPage(conversationID: request.conversationID, items: [])
+        }
+        let end = min(offset + request.limit, items.count)
+        if honorsByteBudget, let budget = request.byteBudget {
+            let page = ConversationEnvelope.paginate(
+                items: Array(items[offset..<end]),
+                startContentByteOffset: contentOffset,
+                limit: request.limit,
+                byteBudget: budget,
+                hasMoreBeyond: end < items.count
+            )
+            let nextCursor: String?
+            switch page.continuation {
+            case .none:
+                nextCursor = nil
+            case .afterDeliveredItems:
+                let next = offset + page.delivered.count
+                nextCursor = next < items.count ? String(next) : nil
+            case .insideDeliveredItem(let byteOffset):
+                nextCursor = "\(offset + page.delivered.count - 1):\(byteOffset)"
+            }
+            return ConversationHistoryPage(
+                conversationID: request.conversationID,
+                items: page.delivered,
+                nextCursor: nextCursor
+            )
+        }
+        return ConversationHistoryPage(
+            conversationID: request.conversationID,
+            items: Array(items[offset..<end]),
+            nextCursor: end < items.count ? String(end) : nil
+        )
+    }
+
+    func readMessages(ids: [UUID]) async throws -> [ConversationHistoryMessage] { [] }
 }

@@ -181,12 +181,13 @@ public struct ConversationReadTool: AgentTool {
                 exitStatus: 1
             )
         }
-        let page: ConversationHistoryPage
+        var page: ConversationHistoryPage
         do {
             page = try await reader.read(ConversationPageRequest(
                 conversationID: args.conversationID,
                 cursor: args.cursor,
-                limit: args.limit ?? 50
+                limit: args.limit ?? 50,
+                byteBudget: ConversationEnvelope.referenceBodyCharacterBudget
             ))
         } catch {
             return ConversationSearchTool.output(
@@ -195,10 +196,49 @@ public struct ConversationReadTool: AgentTool {
                 exitStatus: 1
             )
         }
-        let rendered = ConversationEnvelope.referenceBody(
+        var rendered = ConversationEnvelope.referenceBody(
             title: "Floe task \(args.conversationID.uuidString)",
             items: page.items
         )
+        if rendered.deliveredCount < page.items.count {
+            // The reader ignored the byte budget (any non-store
+            // implementation). Re-read once, bounded to the items that
+            // actually fit, so the data layer regenerates nextCursor from
+            // the last truly delivered item. Trusting the original
+            // page.nextCursor here skipped every budget-dropped item and
+            // ended the walk with a false "finished" page.
+            do {
+                let boundedPage = try await reader.read(ConversationPageRequest(
+                    conversationID: args.conversationID,
+                    cursor: args.cursor,
+                    limit: rendered.deliveredCount,
+                    byteBudget: ConversationEnvelope.referenceBodyCharacterBudget
+                ))
+                let boundedRendered = ConversationEnvelope.referenceBody(
+                    title: "Floe task \(args.conversationID.uuidString)",
+                    items: boundedPage.items
+                )
+                guard boundedRendered.deliveredCount == boundedPage.items.count else {
+                    // A reader that changes page contents between identical
+                    // requests cannot paginate truthfully; stop explicitly
+                    // rather than fabricate a cursor.
+                    return ConversationSearchTool.output(
+                        "status=targetUnavailable conversationID=\(args.conversationID.uuidString) "
+                            + "reason=the history reader returned an unstable page; pagination stopped to avoid skipping content retryable=false",
+                        exitStatus: 1
+                    )
+                }
+                page = boundedPage
+                rendered = boundedRendered
+            } catch {
+                return ConversationSearchTool.output(
+                    "status=targetUnavailable conversationID=\(args.conversationID.uuidString) "
+                        + "reason=\(Self.sanitizedReason(error)) retryable=false",
+                    exitStatus: 1
+                )
+            }
+        }
+        // Sources describe only the items this page actually delivered.
         let sources = page.items.prefix(ConversationEnvelope.sourceIDLimit).map {
             $0.id.uuidString
         }

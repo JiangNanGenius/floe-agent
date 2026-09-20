@@ -133,6 +133,25 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         var createdAt: String
         var sequence: Int
         var itemID: String
+        /// UTF-8 byte offset inside `itemID`'s content at which the next page
+        /// resumes. 0 means the next page starts strictly after this item.
+        /// Decoded cursors written before segmentation default to 0.
+        var contentOffset: Int = 0
+
+        init(createdAt: String, sequence: Int, itemID: String, contentOffset: Int = 0) {
+            self.createdAt = createdAt
+            self.sequence = sequence
+            self.itemID = itemID
+            self.contentOffset = max(0, contentOffset)
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            createdAt = try container.decode(String.self, forKey: .createdAt)
+            sequence = try container.decode(Int.self, forKey: .sequence)
+            itemID = try container.decode(String.self, forKey: .itemID)
+            contentOffset = try container.decodeIfPresent(Int.self, forKey: .contentOffset) ?? 0
+        }
     }
     private let database: DatabaseManager
 
@@ -1076,23 +1095,45 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 """
             let rows: [Row]
             if let cursor = keysetCursor {
-                rows = try Row.fetchAll(db, sql: timeline + """
-                    SELECT item_id, run_id, item_kind, role, content, created_at,
-                           sequence, sort_sequence
-                    FROM timeline
-                    WHERE created_at > ?
-                       OR (created_at = ? AND sort_sequence > ?)
-                       OR (created_at = ? AND sort_sequence = ? AND item_id > ?)
-                    ORDER BY created_at, sort_sequence, item_id
-                    LIMIT ?
-                    """, arguments: [
-                        request.conversationID.uuidString,
-                        request.conversationID.uuidString,
-                        cursor.createdAt,
-                        cursor.createdAt, cursor.sequence,
-                        cursor.createdAt, cursor.sequence, cursor.itemID,
-                        request.limit + 1
-                    ])
+                if cursor.contentOffset > 0, request.byteBudget != nil {
+                    // Intra-item continuation: include the cursor's own row so
+                    // its unread content remainder starts this page.
+                    rows = try Row.fetchAll(db, sql: timeline + """
+                        SELECT item_id, run_id, item_kind, role, content, created_at,
+                               sequence, sort_sequence
+                        FROM timeline
+                        WHERE created_at > ?
+                           OR (created_at = ? AND sort_sequence > ?)
+                           OR (created_at = ? AND sort_sequence = ? AND item_id >= ?)
+                        ORDER BY created_at, sort_sequence, item_id
+                        LIMIT ?
+                        """, arguments: [
+                            request.conversationID.uuidString,
+                            request.conversationID.uuidString,
+                            cursor.createdAt,
+                            cursor.createdAt, cursor.sequence,
+                            cursor.createdAt, cursor.sequence, cursor.itemID,
+                            request.limit + 1
+                        ])
+                } else {
+                    rows = try Row.fetchAll(db, sql: timeline + """
+                        SELECT item_id, run_id, item_kind, role, content, created_at,
+                               sequence, sort_sequence
+                        FROM timeline
+                        WHERE created_at > ?
+                           OR (created_at = ? AND sort_sequence > ?)
+                           OR (created_at = ? AND sort_sequence = ? AND item_id > ?)
+                        ORDER BY created_at, sort_sequence, item_id
+                        LIMIT ?
+                        """, arguments: [
+                            request.conversationID.uuidString,
+                            request.conversationID.uuidString,
+                            cursor.createdAt,
+                            cursor.createdAt, cursor.sequence,
+                            cursor.createdAt, cursor.sequence, cursor.itemID,
+                            request.limit + 1
+                        ])
+                }
             } else {
                 rows = try Row.fetchAll(db, sql: timeline + """
                     SELECT item_id, run_id, item_kind, role, content, created_at,
@@ -1107,16 +1148,59 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                         legacyOffset ?? 0
                     ])
             }
-            let hasMore = rows.count > request.limit
+            let hasExtraRow = rows.count > request.limit
             let selectedRows = Array(rows.prefix(request.limit))
-            let items = try selectedRows.map(Self.historyItem)
-            let nextCursor: String? = if hasMore, let last = selectedRows.last {
-                try Self.encodeTimelineCursor(ConversationTimelineCursor(
-                    createdAt: last["created_at"],
-                    sequence: last["sort_sequence"],
-                    itemID: last["item_id"]
-                ))
-            } else { nil }
+            var items = try selectedRows.map(Self.historyItem)
+            var nextCursor: String?
+            if let byteBudget = request.byteBudget {
+                // Budget-true page walk: the cursor is generated from the last
+                // RETURNED row (whole item) or inside it (prefix segment), so
+                // the next page resumes at the first undelivered byte instead
+                // of skipping everything the budget dropped.
+                let resumeOffset: Int = {
+                    guard let cursor = keysetCursor, cursor.contentOffset > 0,
+                          let first: String = selectedRows.first?["item_id"],
+                          first == cursor.itemID else { return 0 }
+                    return cursor.contentOffset
+                }()
+                let page = ConversationEnvelope.paginate(
+                    items: items,
+                    startContentByteOffset: resumeOffset,
+                    limit: request.limit,
+                    byteBudget: byteBudget,
+                    hasMoreBeyond: hasExtraRow
+                )
+                items = page.delivered
+                switch page.continuation {
+                case .none:
+                    nextCursor = nil
+                case .afterDeliveredItems:
+                    if let last = selectedRows.prefix(page.delivered.count).last {
+                        nextCursor = try Self.encodeTimelineCursor(ConversationTimelineCursor(
+                            createdAt: last["created_at"],
+                            sequence: last["sort_sequence"],
+                            itemID: last["item_id"]
+                        ))
+                    }
+                case .insideDeliveredItem(let byteOffset):
+                    if let last = selectedRows.prefix(page.delivered.count).last {
+                        nextCursor = try Self.encodeTimelineCursor(ConversationTimelineCursor(
+                            createdAt: last["created_at"],
+                            sequence: last["sort_sequence"],
+                            itemID: last["item_id"],
+                            contentOffset: byteOffset
+                        ))
+                    }
+                }
+            } else {
+                nextCursor = if hasExtraRow, let last = selectedRows.last {
+                    try Self.encodeTimelineCursor(ConversationTimelineCursor(
+                        createdAt: last["created_at"],
+                        sequence: last["sort_sequence"],
+                        itemID: last["item_id"]
+                    ))
+                } else { nil }
+            }
             return ConversationHistoryPage(
                 conversationID: request.conversationID,
                 items: items,

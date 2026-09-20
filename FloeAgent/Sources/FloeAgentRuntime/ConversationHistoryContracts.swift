@@ -55,11 +55,21 @@ public struct ConversationPageRequest: Sendable, Codable, Hashable {
     public var conversationID: UUID
     public var cursor: String?
     public var limit: Int
+    /// Optional rendered-line byte budget (see
+    /// `ConversationEnvelope.referenceLine`). When set, the reader trims the
+    /// page to the items that actually fit — always keeping at least one —
+    /// and derives `nextCursor`/`hasMore` from the last returned item, so a
+    /// follow-up read can never skip content the previous page dropped.
+    /// Readers that ignore it stay compatible: callers detect a page that
+    /// still overflows and re-read with a reduced limit instead of trusting
+    /// the original cursor.
+    public var byteBudget: Int?
 
-    public init(conversationID: UUID, cursor: String? = nil, limit: Int = 50) {
+    public init(conversationID: UUID, cursor: String? = nil, limit: Int = 50, byteBudget: Int? = nil) {
         self.conversationID = conversationID
         self.cursor = cursor
         self.limit = min(100, max(1, limit))
+        self.byteBudget = byteBudget
     }
 }
 
@@ -107,6 +117,15 @@ public struct ConversationHistoryItem: Sendable, Codable, Hashable, Identifiable
     public var content: String
     public var createdAt: Date
     public var sequence: Int?
+    /// UTF-8 byte offset into the full item content at which this page's
+    /// `content` starts. 0 for a whole item. A reader that segments one long
+    /// item across pages sets this so the rendered line can announce the
+    /// resume point instead of silently presenting a prefix as the whole.
+    public var contentByteOffset: Int
+    /// True when `content` is a strict prefix segment and more of THIS SAME
+    /// item follows on the next page. The page cursor then resumes inside
+    /// the item instead of after it, so no tail is ever unreachable.
+    public var hasMoreContent: Bool
     public var isTrustedInstruction: Bool { false }
 
     public init(
@@ -116,7 +135,9 @@ public struct ConversationHistoryItem: Sendable, Codable, Hashable, Identifiable
         role: String? = nil,
         content: String,
         createdAt: Date,
-        sequence: Int? = nil
+        sequence: Int? = nil,
+        contentByteOffset: Int = 0,
+        hasMoreContent: Bool = false
     ) {
         self.id = id
         self.runID = runID
@@ -125,6 +146,8 @@ public struct ConversationHistoryItem: Sendable, Codable, Hashable, Identifiable
         self.content = String(content.prefix(16_384))
         self.createdAt = createdAt
         self.sequence = sequence
+        self.contentByteOffset = max(0, contentByteOffset)
+        self.hasMoreContent = hasMoreContent
     }
 
     public init(message: ConversationHistoryMessage) {
@@ -135,6 +158,21 @@ public struct ConversationHistoryItem: Sendable, Codable, Hashable, Identifiable
             content: message.content,
             createdAt: message.createdAt
         )
+    }
+
+    /// Pages persisted before segmentation carried no offset/continuation
+    /// keys; decode them as whole items.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        runID = try container.decodeIfPresent(UUID.self, forKey: .runID)
+        kind = try container.decode(ConversationHistoryItemKind.self, forKey: .kind)
+        role = try container.decodeIfPresent(String.self, forKey: .role)
+        content = try container.decode(String.self, forKey: .content)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        sequence = try container.decodeIfPresent(Int.self, forKey: .sequence)
+        contentByteOffset = try container.decodeIfPresent(Int.self, forKey: .contentByteOffset) ?? 0
+        hasMoreContent = try container.decodeIfPresent(Bool.self, forKey: .hasMoreContent) ?? false
     }
 }
 
