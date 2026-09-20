@@ -235,10 +235,13 @@ public actor TinyEMULinuxGuestRegistry {
         }
         pendingStops.remove(environmentID)
         var sessionRegistered = false
+        var quarantinedByFailure = false
         defer {
             startingEnvironments.remove(environmentID)
             pendingStops.remove(environmentID)
-            if !sessionRegistered { guestReservations[environmentID] = nil }
+            // A failed start whose VM refused to stop keeps its reservation:
+            // the quarantined session still owns the environment's disk.
+            if !sessionRegistered, !quarantinedByFailure { guestReservations[environmentID] = nil }
         }
 
         // Bound the device's guest budget here, before the image is verified
@@ -295,7 +298,15 @@ public actor TinyEMULinuxGuestRegistry {
             try await handle.start()
         } catch {
             lastErrors[environmentID] = error.localizedDescription
-            await handle.close()
+            quarantinedByFailure = await abandonFailedStart(
+                environmentID: environmentID,
+                descriptor: descriptor,
+                image: runtimeImage,
+                handle: handle,
+                channel: nil,
+                taskID: taskID,
+                error: error
+            )
             throw error
         }
 
@@ -324,14 +335,31 @@ public actor TinyEMULinuxGuestRegistry {
                 )
             } catch {
                 lastErrors[environmentID] = error.localizedDescription
-                await handle.close()
+                quarantinedByFailure = await abandonFailedStart(
+                    environmentID: environmentID,
+                    descriptor: descriptor,
+                    image: runtimeImage,
+                    handle: handle,
+                    channel: channel,
+                    taskID: taskID,
+                    error: error
+                )
                 throw error
             }
         }
         if pendingStops.remove(environmentID) != nil {
-            lastErrors[environmentID] = "the start was stopped before the guest was registered"
-            await handle.close()
-            throw LinuxGuestError.startFailed("the guest start was stopped before it completed")
+            let stopError = LinuxGuestError.startFailed("the guest start was stopped before it completed")
+            lastErrors[environmentID] = stopError.localizedDescription
+            quarantinedByFailure = await abandonFailedStart(
+                environmentID: environmentID,
+                descriptor: descriptor,
+                image: runtimeImage,
+                handle: handle,
+                channel: sessionChannel,
+                taskID: taskID,
+                error: stopError
+            )
+            throw stopError
         }
 
         var session = Session(
@@ -357,7 +385,15 @@ public actor TinyEMULinuxGuestRegistry {
             }
         } catch {
             lastErrors[environmentID] = error.localizedDescription
-            await handle.close()
+            quarantinedByFailure = await abandonFailedStart(
+                environmentID: environmentID,
+                descriptor: descriptor,
+                image: runtimeImage,
+                handle: handle,
+                channel: sessionChannel,
+                taskID: taskID,
+                error: error
+            )
             throw error
         }
         sessions[environmentID] = session
@@ -814,6 +850,49 @@ public actor TinyEMULinuxGuestRegistry {
     /// disks, forwards — are never touched by one environment's reset.
     public func reset(environmentID: String) async {
         await teardown(environmentID: environmentID, action: "reset")
+    }
+
+    /// Cleans up a start that failed after its VM was created. Closing the
+    /// handle *is* a stop attempt, so the same contract as stopGuest applies:
+    /// if the engine's stop budget elapses while the run loop is still alive,
+    /// the handle is not orphaned — it is retained as a quarantined session
+    /// with its admission reservation, so a later stop can recover it and no
+    /// new guest can boot on the same writable disk. Returns true when the
+    /// guest is quarantined.
+    private func abandonFailedStart(
+        environmentID: String,
+        descriptor: LinuxGuestEnvironmentDescriptor,
+        image: LinuxGuestImage,
+        handle: LinuxGuestSessionHandle,
+        channel: LinuxGuestCommandChannel?,
+        taskID: String?,
+        error: Error
+    ) async -> Bool {
+        if let channel { await channel.close() }
+        await handle.close()
+        guard await handle.isRunning() else { return false }
+        // The VM survived the close: own it instead of leaking it. The
+        // retained channel (never used if there was none) only exists so a
+        // later teardown can close the transport again.
+        let retainedChannel = channel ?? LinuxGuestCommandChannel(transport: handle.transport, limits: limits)
+        sessions[environmentID] = Session(
+            descriptor: descriptor,
+            image: image,
+            handle: handle,
+            channel: retainedChannel,
+            startedAt: Date(),
+            taskID: taskID,
+            forwards: []
+        )
+        quarantinedEnvironments.insert(environmentID)
+        lastErrors[environmentID] =
+            "the guest failed to start (\(error.localizedDescription)) and is still running; retry stopGuest (the persistent disk is preserved and no new guest will start on it)"
+        lastImpacts[environmentID] =
+            "start failed: \(environmentID) is STILL RUNNING (the VM refused to stop); the persistent disk and shares are preserved, the guest is quarantined and no new guest may start on this disk"
+        FloeLogger(category: .tools).error(
+            "Linux guest start failed and could not be destroyed environment=\(environmentID): \(error.localizedDescription); quarantined"
+        )
+        return true
     }
 
     private func teardown(environmentID: String, action: String) async {

@@ -1395,7 +1395,11 @@ enum RunnerUpgradeCheck {
             }
             try Recorder.expect(Fixture.sha512(ofFile: diskURL) == before, "the disk changed on a rejected start")
             try Recorder.expect(transport.installScripts.isEmpty, "an install ran without a runner artifact")
-            try Recorder.expect(transport.closeCount == 1, "the failed start did not close its VM")
+            // The failed start closes the channel and the handle (both funnel
+            // into the transport close); what matters is the VM is not left
+            // running when it can be stopped.
+            try Recorder.expect(transport.closeCount >= 1, "the failed start did not close its VM")
+            try Recorder.expect(!transport.isRunning, "the failed start left its VM running")
             try Recorder.expect(await registry.activeGuestCount == 0, "the failed start leaked an admission slot")
         }
     }
@@ -1616,6 +1620,56 @@ enum RunnerUpgradeCheck {
             try Recorder.expect(!recovered.running, "the recovered guest still reports running")
             try Recorder.expect((recovered.lastResetSharedImpact ?? "").contains("stopped and destroyed"),
                                 "the recovered stop impact is not truthful: \(recovered.lastResetSharedImpact ?? "-")")
+        }
+
+        await recorder.check("failed_start_whose_vm_refuses_stop_is_quarantined_not_orphaned") {
+            let harness = try makeHarness(
+                root: root,
+                name: "failed-start-refuses-stop",
+                configuration: .init(initialCaps: nil, postRebootCaps: Fixture.caps,
+                                     installRejects: true, refusesStop: true),
+                withShares: true
+            )
+            // Legacy runner -> the in-guest install is rejected -> start fails
+            // while the VM is alive and refuses to close.
+            do {
+                _ = try await withDeadline(60, "failed-start") {
+                    try await harness.registry.start(environmentID: "env-1", taskID: nil)
+                }
+                throw CheckFailure.message("a failed install reported a running guest")
+            } catch is CheckFailure {
+                throw CheckFailure.message("a failed install reported a running guest")
+            } catch {
+                // Expected: install rejection fails the start.
+            }
+            try Recorder.expect(harness.transport.isRunning, "the scenario needs a VM that refused to stop")
+            try Recorder.expect(harness.transport.installScripts.count == 1, "the install did not run")
+            // Same stop contract as stopGuest: the surviving VM is retained
+            // with its reservation instead of being orphaned.
+            try Recorder.expect(await harness.registry.activeGuestCount == 1,
+                                "the orphaned VM released its admission slot")
+            let status = await harness.registry.status(environmentID: "env-1")
+            try Recorder.expect(status.running, "a quarantined failed start reports not running")
+            try Recorder.expect((status.lastError ?? "").contains("still running"),
+                                "the failed start did not report the surviving VM: \(status.lastError ?? "-")")
+            try Recorder.expect(Fixture.sha512(ofFile: harness.diskURL) == harness.diskDigestBefore,
+                                "the persistent disk changed during the failed start")
+            // A new start must not boot a second VM on the same disk.
+            do {
+                _ = try await harness.registry.start(environmentID: "env-1", taskID: nil)
+                throw CheckFailure.message("a start after a failed start booted a second VM")
+            } catch let error as LinuxGuestError {
+                guard case .stopFailed = error else {
+                    throw CheckFailure.message("unexpected error after a failed start \(error)")
+                }
+            }
+            try Recorder.expect(harness.transport.startCount == 1, "a second VM was booted on the quarantined disk")
+            // stopGuest recovers the retained handle.
+            harness.transport.allowStop()
+            await harness.registry.stop(environmentID: "env-1")
+            try Recorder.expect(!harness.transport.isRunning, "the recovery stop did not stop the VM")
+            try Recorder.expect(await harness.registry.activeGuestCount == 0,
+                                "the recovery stop did not release the admission slot")
         }
     }
 

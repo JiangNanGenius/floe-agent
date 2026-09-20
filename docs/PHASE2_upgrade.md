@@ -122,6 +122,14 @@ really stops, releases the slot and records the truthful "stopped and
 destroyed" impact. `startGuest` on a quarantined environment throws
 `LinuxGuestError.stopFailed` instead of booting on the live disk.
 
+A start that fails *after* its VM was created (boot error, runner upgrade
+error, refused-forwards error, or a stop request during the start) runs the
+same contract through `abandonFailedStart`: close the channel and the handle,
+then ask `isRunning()`. A VM that survived becomes a quarantined session with
+its admission reservation retained, so the failed start cannot orphan a live
+VM and the next start refuses (`stopFailed`) instead of reusing the disk; a
+later `stopGuest` retries and recovers.
+
 ## Bounded admission
 
 Per-command/session caps do not bound process memory when every environment
@@ -146,7 +154,7 @@ compile of the module, then builds and runs the check):
 ==> compiling upgrade check (swift-version 6, object emit) and linking
 ==> running existing-disk upgrade checks
 
-checks passed: 16, failures: 0
+checks passed: 17, failures: 0
 ==> all runner upgrade checks passed
 ```
 
@@ -168,6 +176,7 @@ console that models one immutable console stream per VM):
 | unverified bytes | wrong digest / symlink never reach the guest; install failure stops with the disk preserved |
 | admission | duplicate concurrent start refused; count and RAM budget refuse without stopping running guests; slots release on stop |
 | refused stop | a VM that refuses to stop keeps `running` true, retains the session and its admission slot, reports the quarantine in status, refuses a new start on the same disk, and a retried stop recovers |
+| failed start + refused stop | a start that fails during the in-guest install while its VM refuses to close is quarantined (not orphaned): reservation retained, status reports the surviving VM, disk unchanged, no second VM, `stopGuest` recovers |
 
 Limits: the check is a host-side scripted-console integration check, not
 guest-image qualification and not riscv64 execution; the real runner/component
