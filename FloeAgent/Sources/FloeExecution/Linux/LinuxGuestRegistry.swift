@@ -174,7 +174,31 @@ public actor TinyEMULinuxGuestRegistry {
             throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: failure)
         }
 
-        let handle = try factory.makeSession(descriptor: descriptor, image: image, limits: limits)
+        // The verified manifest is not what the C engine can boot: its paths
+        // are relative to the image directory (the app has no usable cwd) and
+        // its disk is the shared, immutable base. Resolve bios/kernel/initrd
+        // to absolute files inside the verified directory and prepare (or
+        // reuse) this environment's own writable disk copy. A resolver
+        // without an image root is the in-memory test seam and cannot verify
+        // digests; the app never assembles one.
+        let runtimeImage: LinuxGuestImage
+        if let imageRoot = images.imageRoot {
+            do {
+                runtimeImage = try LinuxGuestRuntimeImagePreparer().prepare(
+                    image: image,
+                    imageDirectory: imageRoot.appendingPathComponent(descriptor.imageID, isDirectory: true),
+                    environmentID: environmentID,
+                    writableDirectory: descriptor.writableDirectory
+                )
+            } catch {
+                lastErrors[environmentID] = error.localizedDescription
+                throw error
+            }
+        } else {
+            runtimeImage = image
+        }
+
+        let handle = try factory.makeSession(descriptor: descriptor, image: runtimeImage, limits: limits)
         do {
             try await handle.start()
         } catch {
@@ -185,7 +209,7 @@ public actor TinyEMULinuxGuestRegistry {
 
         var session = Session(
             descriptor: descriptor,
-            image: image,
+            image: runtimeImage,
             handle: handle,
             channel: LinuxGuestCommandChannel(transport: handle.transport, limits: limits),
             startedAt: Date(),

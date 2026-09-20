@@ -84,11 +84,15 @@ final class FakeSessionLedger: @unchecked Sendable {
     private let lock = NSLock()
     private var environments: [String] = []
     private var consoles: [String: TestLinuxGuestConsole] = [:]
+    private var images: [String: LinuxGuestImage] = [:]
+    private var sessionCounts: [String: Int] = [:]
 
-    func record(environmentID: String, console: TestLinuxGuestConsole) {
+    func record(environmentID: String, image: LinuxGuestImage, console: TestLinuxGuestConsole) {
         lock.lock()
         environments.append(environmentID)
         consoles[environmentID] = console
+        images[environmentID] = image
+        sessionCounts[environmentID, default: 0] += 1
         lock.unlock()
     }
 
@@ -102,6 +106,20 @@ final class FakeSessionLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return consoles[environmentID]
+    }
+
+    /// The exact image the registry handed to the session factory — capture
+    /// point for the engine-path contract.
+    func image(for environmentID: String) -> LinuxGuestImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return images[environmentID]
+    }
+
+    func sessionCount(for environmentID: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessionCounts[environmentID, default: 0]
     }
 }
 
@@ -117,7 +135,7 @@ struct FakeSessionFactory: LinuxGuestSessionCreating {
         let console = TestLinuxGuestConsole { token in
             handler(descriptor.id, token)
         }
-        ledger.record(environmentID: descriptor.id, console: console)
+        ledger.record(environmentID: descriptor.id, image: image, console: console)
         let state = FakeSessionState()
         return LinuxGuestSessionHandle(
             transport: console,
@@ -603,6 +621,365 @@ final class LinuxGuestImageStoreTests: XCTestCase {
 private struct NoopImageDownloader: LinuxGuestImageDownloading {
     func download(_ url: URL, to destination: URL, maxBytes: Int64) async throws {
         throw LinuxGuestImageInstallError.downloadFailed("not used")
+    }
+}
+
+// MARK: - Runtime boot paths and per-environment disks
+
+/// A small on-disk qualified image: real files, real digests, relative
+/// manifest paths — exactly the shape the production resolver verifies.
+private struct RuntimeImageFixture {
+    var root: URL
+    var id: String
+    var manifest: LinuxGuestImage
+    var biosURL: URL
+    var kernelURL: URL
+    var initrdURL: URL
+    var diskURL: URL
+    var diskBytes: Data
+
+    var imageDirectory: URL { root.appendingPathComponent(id, isDirectory: true) }
+
+    var diskDigest: String {
+        manifest.artifactDigest(role: .disk)?.sha512 ?? "-"
+    }
+}
+
+private func makeTemporaryDirectory(_ name: String) throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("floe-\(name)-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func makeRuntimeImageFixture(
+    name: String,
+    id: String = "floe-runtime-test",
+    diskBytes: Data = Data(repeating: 0xA1, count: 8 * 1024)
+) throws -> RuntimeImageFixture {
+    let root = try makeTemporaryDirectory("runtime-images-\(name)")
+    let directory = root.appendingPathComponent(id, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let biosBytes = Data("bios-\(name)".utf8)
+    let kernelBytes = Data("kernel-\(name)".utf8)
+    let initrdBytes = Data("initrd-\(name)".utf8)
+    let bios = directory.appendingPathComponent("bbl64.bin")
+    let kernel = directory.appendingPathComponent("kernel-riscv64.bin")
+    let initrd = directory.appendingPathComponent("initrd.img")
+    let disk = directory.appendingPathComponent("disk.img")
+    try biosBytes.write(to: bios)
+    try kernelBytes.write(to: kernel)
+    try initrdBytes.write(to: initrd)
+    try diskBytes.write(to: disk)
+    let manifest = LinuxGuestImage(
+        id: id,
+        biosPath: "bbl64.bin",
+        kernelPath: "kernel-riscv64.bin",
+        initrdPath: "initrd.img",
+        diskPath: "disk.img",
+        diskReadWrite: true,
+        cmdline: "console=hvc0 root=/dev/vda rw",
+        qualified: true,
+        qualificationEvidence: "runtime path test \(name)",
+        qualificationRun: "run-\(name)",
+        artifacts: [
+            LinuxGuestImageArtifact(role: .bios, path: "bbl64.bin", sha512: FloeDigest.sha512Hex(biosBytes), bytes: Int64(biosBytes.count)),
+            LinuxGuestImageArtifact(role: .kernel, path: "kernel-riscv64.bin", sha512: FloeDigest.sha512Hex(kernelBytes), bytes: Int64(kernelBytes.count)),
+            LinuxGuestImageArtifact(role: .initrd, path: "initrd.img", sha512: FloeDigest.sha512Hex(initrdBytes), bytes: Int64(initrdBytes.count)),
+            LinuxGuestImageArtifact(role: .disk, path: "disk.img", sha512: FloeDigest.sha512Hex(diskBytes), bytes: Int64(diskBytes.count)),
+        ]
+    )
+    try JSONEncoder().encode(manifest).write(to: directory.appendingPathComponent("manifest.json"))
+    return RuntimeImageFixture(
+        root: root,
+        id: id,
+        manifest: manifest,
+        biosURL: bios,
+        kernelURL: kernel,
+        initrdURL: initrd,
+        diskURL: disk,
+        diskBytes: diskBytes
+    )
+}
+
+private func resolvedPath(_ url: URL) -> String {
+    url.resolvingSymlinksInPath().standardizedFileURL.path
+}
+
+private func runtimeDiskDirectory(writable: URL, environmentID: String) -> URL {
+    writable
+        .appendingPathComponent(LinuxGuestRuntimeImagePreparer.writableDirectoryName, isDirectory: true)
+        .appendingPathComponent("disks", isDirectory: true)
+        .appendingPathComponent(environmentID, isDirectory: true)
+}
+
+private func stagingFiles(under writable: URL) -> [String] {
+    guard let enumerator = FileManager.default.enumerator(at: writable, includingPropertiesForKeys: nil) else { return [] }
+    return enumerator.compactMap { ($0 as? URL)?.lastPathComponent }.filter { $0.contains(".staging-") }
+}
+
+/// Deterministic cancellation gate: the preparation task waits until the test
+/// has cancelled it, so `Task.checkCancellation()` inside the preparer is
+/// guaranteed to run against a cancelled task.
+private actor RuntimeCheckGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        let pending = waiters
+        waiters = []
+        for waiter in pending { waiter.resume() }
+    }
+}
+
+final class LinuxGuestRuntimeImageTests: XCTestCase {
+    private func makeRegistry(
+        fixture: RuntimeImageFixture,
+        descriptors: [String: LinuxGuestEnvironmentDescriptor],
+        ledger: FakeSessionLedger
+    ) -> TinyEMULinuxGuestRegistry {
+        TinyEMULinuxGuestRegistry(
+            environments: FakeEnvironmentProvider(descriptors: descriptors),
+            images: FileLinuxGuestImageResolver(root: fixture.root),
+            limits: .standard,
+            factory: FakeSessionFactory(ledger: ledger) { _, token in reply(token) }
+        )
+    }
+
+    func testStartResolvesAbsoluteVerifiedBootFilesAndPrivateDisk() async throws {
+        let fixture = try makeRuntimeImageFixture(name: "absolute")
+        let writable = try makeTemporaryDirectory("layer-absolute")
+        let ledger = FakeSessionLedger()
+        let registry = makeRegistry(
+            fixture: fixture,
+            descriptors: ["env-a": LinuxGuestEnvironmentDescriptor(id: "env-a", writableDirectory: writable, imageID: fixture.id)],
+            ledger: ledger
+        )
+
+        let started = try await registry.start(environmentID: "env-a", taskID: nil)
+        XCTAssertTrue(started)
+        let captured = try XCTUnwrap(ledger.image(for: "env-a"), "the factory must receive the prepared image")
+
+        XCTAssertTrue(captured.biosPath.hasPrefix("/"), "bios must be an absolute path, got \(captured.biosPath)")
+        XCTAssertEqual(captured.biosPath, resolvedPath(fixture.biosURL))
+        XCTAssertEqual(captured.kernelPath, resolvedPath(fixture.kernelURL))
+        XCTAssertEqual(captured.initrdPath, resolvedPath(fixture.initrdURL))
+        let diskPath = try XCTUnwrap(captured.diskPath)
+        XCTAssertTrue(diskPath.hasPrefix(resolvedPath(writable) + "/"), "disk must live under the environment writable root, got \(diskPath)")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: diskPath)), fixture.diskBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: diskPath))
+        // The verified base is the immutable verification source: starting an
+        // environment must not touch it.
+        XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: fixture.diskURL), fixture.diskDigest)
+
+        let origin = runtimeDiskDirectory(writable: writable, environmentID: "env-a")
+            .appendingPathComponent(LinuxGuestRuntimeImagePreparer.originFileName)
+        let originText = String(decoding: try Data(contentsOf: origin), as: UTF8.self)
+        XCTAssertTrue(originText.contains(fixture.id), "origin sidecar must record the source image id")
+        XCTAssertTrue(originText.contains(String(fixture.diskDigest.prefix(32))), "origin sidecar must record the verified base digest")
+    }
+
+    func testRestartReusesModifiedDiskAndKeepsVerifiedBase() async throws {
+        let fixture = try makeRuntimeImageFixture(name: "restart")
+        let writable = try makeTemporaryDirectory("layer-restart")
+        let ledger = FakeSessionLedger()
+        let registry = makeRegistry(
+            fixture: fixture,
+            descriptors: ["env-a": LinuxGuestEnvironmentDescriptor(id: "env-a", writableDirectory: writable, imageID: fixture.id)],
+            ledger: ledger
+        )
+
+        _ = try await registry.start(environmentID: "env-a", taskID: nil)
+        let firstDisk = try XCTUnwrap(ledger.image(for: "env-a")?.diskPath)
+        // Simulate guest package state written to the environment disk.
+        let marker = Data("apt-state".utf8)
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: firstDisk))
+        handle.seekToEndOfFile()
+        handle.write(marker)
+        try handle.close()
+        await registry.stop(environmentID: "env-a")
+
+        _ = try await registry.start(environmentID: "env-a", taskID: nil)
+        XCTAssertEqual(ledger.sessionCount(for: "env-a"), 2)
+        let secondDisk = try XCTUnwrap(ledger.image(for: "env-a")?.diskPath)
+        XCTAssertEqual(secondDisk, firstDisk, "a restart must reuse the environment disk")
+        let contents = try Data(contentsOf: URL(fileURLWithPath: secondDisk))
+        XCTAssertEqual(contents.count, fixture.diskBytes.count + marker.count, "a restart must not re-copy the base over the mutated disk")
+        XCTAssertEqual(contents.suffix(marker.count), marker)
+        XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: fixture.diskURL), fixture.diskDigest)
+        XCTAssertTrue(stagingFiles(under: writable).isEmpty)
+    }
+
+    func testEnvironmentsGetSeparateDisksEvenInOneWritableLayer() async throws {
+        let fixture = try makeRuntimeImageFixture(name: "isolation")
+        let shared = try makeTemporaryDirectory("layer-shared")
+        let ledger = FakeSessionLedger()
+        let registry = makeRegistry(
+            fixture: fixture,
+            descriptors: [
+                "env-a": LinuxGuestEnvironmentDescriptor(id: "env-a", writableDirectory: shared, imageID: fixture.id),
+                "env-b": LinuxGuestEnvironmentDescriptor(id: "env-b", writableDirectory: shared, imageID: fixture.id),
+            ],
+            ledger: ledger
+        )
+
+        _ = try await registry.start(environmentID: "env-a", taskID: nil)
+        let diskA = try XCTUnwrap(ledger.image(for: "env-a")?.diskPath)
+        let marker = Data("env-a-apt-state".utf8)
+        try marker.write(to: URL(fileURLWithPath: diskA), options: [])
+        await registry.stop(environmentID: "env-a")
+
+        _ = try await registry.start(environmentID: "env-b", taskID: nil)
+        let diskB = try XCTUnwrap(ledger.image(for: "env-b")?.diskPath)
+        XCTAssertNotEqual(diskA, diskB, "different environments must not share one writable disk")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: diskB)), fixture.diskBytes, "env-b must start from the base, not env-a's edits")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: diskA)), marker, "env-a's disk must keep its own state")
+        XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: fixture.diskURL), fixture.diskDigest)
+    }
+
+    func testStartWithoutWritableRootIsRejectedExplicitly() async throws {
+        let fixture = try makeRuntimeImageFixture(name: "no-root")
+        let ledger = FakeSessionLedger()
+        let registry = makeRegistry(
+            fixture: fixture,
+            // writableDirectory == nil: the production path must refuse
+            // instead of preparing a disk in some temporary directory.
+            descriptors: ["env-a": LinuxGuestEnvironmentDescriptor(id: "env-a", imageID: fixture.id)],
+            ledger: ledger
+        )
+
+        do {
+            _ = try await registry.start(environmentID: "env-a", taskID: nil)
+            XCTFail("starting without a writable root must fail")
+        } catch let error as LinuxGuestRuntimeImageError {
+            guard case .writableRootMissing = error else { return XCTFail("unexpected error \(error)") }
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertNil(ledger.image(for: "env-a"), "no VM session may be created without a writable root")
+        XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: fixture.diskURL), fixture.diskDigest)
+    }
+
+    func testUpdatedVerifiedBaseConflictsInsteadOfOverwritingEnvironmentDisk() async throws {
+        let fixture = try makeRuntimeImageFixture(name: "update")
+        let writable = try makeTemporaryDirectory("layer-update")
+        let ledger = FakeSessionLedger()
+        let registry = makeRegistry(
+            fixture: fixture,
+            descriptors: ["env-a": LinuxGuestEnvironmentDescriptor(id: "env-a", writableDirectory: writable, imageID: fixture.id)],
+            ledger: ledger
+        )
+        _ = try await registry.start(environmentID: "env-a", taskID: nil)
+        let disk = try XCTUnwrap(ledger.image(for: "env-a")?.diskPath)
+        let marker = Data("user-packages-preserved".utf8)
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: disk))
+        handle.seekToEndOfFile()
+        handle.write(marker)
+        try handle.close()
+        await registry.stop(environmentID: "env-a")
+
+        // A new qualification of the same image id installs different base
+        // bytes under the same paths (a real image update/re-import).
+        let updatedBytes = Data(repeating: 0xB2, count: 16 * 1024)
+        try updatedBytes.write(to: fixture.diskURL)
+        var updatedManifest = fixture.manifest
+        updatedManifest.artifacts = updatedManifest.artifacts?.map { artifact in
+            guard artifact.role == .disk else { return artifact }
+            return LinuxGuestImageArtifact(
+                role: .disk,
+                path: artifact.path,
+                sha512: FloeDigest.sha512Hex(updatedBytes),
+                bytes: Int64(updatedBytes.count)
+            )
+        }
+        try JSONEncoder().encode(updatedManifest).write(to: fixture.imageDirectory.appendingPathComponent("manifest.json"))
+
+        do {
+            _ = try await registry.start(environmentID: "env-a", taskID: nil)
+            XCTFail("an updated verified base must not silently replace the environment disk")
+        } catch let error as LinuxGuestRuntimeImageError {
+            guard case .diskOriginConflict = error else { return XCTFail("unexpected error \(error)") }
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        let preserved = try Data(contentsOf: URL(fileURLWithPath: disk))
+        XCTAssertEqual(preserved.suffix(marker.count), marker, "the environment disk must keep its own state")
+        XCTAssertEqual(preserved.count, fixture.diskBytes.count + marker.count)
+        XCTAssertTrue(stagingFiles(under: writable).isEmpty)
+    }
+
+    func testCancelledPreparationKeepsDiskAndCleansStaging() async throws {
+        let fixture = try makeRuntimeImageFixture(name: "cancel")
+        let writable = try makeTemporaryDirectory("layer-cancel")
+        let preparer = LinuxGuestRuntimeImagePreparer()
+        let arguments = (fixture, writable, preparer)
+        let diskURL = runtimeDiskDirectory(writable: writable, environmentID: "env-a").appendingPathComponent(LinuxGuestRuntimeImagePreparer.diskFileName)
+
+        // First preparation succeeds and establishes the environment disk.
+        _ = try preparer.prepare(
+            image: fixture.manifest,
+            imageDirectory: fixture.imageDirectory,
+            environmentID: "env-a",
+            writableDirectory: writable
+        )
+        let before = try Data(contentsOf: diskURL)
+
+        let gate = RuntimeCheckGate()
+        let task = Task { () -> LinuxGuestImage in
+            await gate.wait()
+            return try arguments.2.prepare(
+                image: arguments.0.manifest,
+                imageDirectory: arguments.0.imageDirectory,
+                environmentID: "env-a",
+                writableDirectory: arguments.1
+            )
+        }
+        task.cancel()
+        await gate.open()
+        do {
+            _ = try await task.value
+            XCTFail("a cancelled preparation must throw")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertEqual(try Data(contentsOf: diskURL), before, "cancellation must not touch the existing environment disk")
+        XCTAssertTrue(stagingFiles(under: writable).isEmpty)
+    }
+
+    func testFailedCopyCleansStagingAndLeavesNoDisk() async throws {
+        let fixture = try makeRuntimeImageFixture(name: "copy-failure")
+        let writable = try makeTemporaryDirectory("layer-copy-failure")
+        let preparer = LinuxGuestRuntimeImagePreparer()
+        // An unreadable base disk makes both the clone and the byte-copy path
+        // fail after the staged origin exists, so the cleanup path runs.
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fixture.diskURL.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: fixture.diskURL.path) }
+
+        do {
+            _ = try preparer.prepare(
+                image: fixture.manifest,
+                imageDirectory: fixture.imageDirectory,
+                environmentID: "env-a",
+                writableDirectory: writable
+            )
+            XCTFail("an unreadable base disk must fail preparation")
+        } catch is CancellationError {
+            XCTFail("an unreadable base disk must not report cancellation")
+        } catch {
+            // expected: explicit preparation failure
+        }
+        XCTAssertTrue(stagingFiles(under: writable).isEmpty, "a failed copy must remove its staging files")
+        let directory = runtimeDiskDirectory(writable: writable, environmentID: "env-a")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(LinuxGuestRuntimeImagePreparer.diskFileName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(LinuxGuestRuntimeImagePreparer.originFileName).path))
     }
 }
 
