@@ -257,6 +257,198 @@ struct LocalHistoryAdmissionTests {
 }
 
 
+// MARK: - Mixed-script prompt pressure
+
+@Suite("Local prompt token pressure")
+struct LocalPromptPressureTests {
+    @Test("The mixed-script estimate charges CJK per scalar and ASCII per bytes")
+    func mixedScriptEstimates() {
+        #expect(LocalPromptPressure.heuristicTokens(in: "") == 0)
+        #expect(LocalPromptPressure.heuristicTokens(in: "你好世界") >= 4)
+        #expect(LocalPromptPressure.heuristicTokens(in: "hello world") >= 2)
+        // A 12-character CJK string must never be estimated like 12 ASCII
+        // bytes; that mismatch was the character-vs-token budget gap.
+        #expect(LocalPromptPressure.heuristicTokens(in: "历史记录条目一二三四五六")
+            > LocalPromptPressure.heuristicTokens(in: "history items"))
+    }
+
+    @Test("Token clipping keeps head and tail and is idempotent")
+    func tokenClipping() {
+        let text = String(repeating: "开头标记。", count: 400)
+            + String(repeating: "结尾标记。", count: 400)
+        let clipped = LocalPromptPressure.clippedToTokens(text, limit: 160)
+        #expect(LocalPromptPressure.heuristicTokens(in: clipped) <= 160)
+        #expect(clipped.contains("开头标记"))
+        #expect(clipped.contains("结尾标记"))
+        #expect(LocalPromptPressure.clippedToTokens(clipped, limit: 160) == clipped)
+        #expect(LocalPromptPressure.clippedToTokens("短文本", limit: 160) == "短文本")
+    }
+
+    @Test("A CJK-heavy 8K local prompt stays inside the window and keeps the current request")
+    @available(macOS 15.4, iOS 26.0, *)
+    func cjkHeavyPromptFitsEightKWindow() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
+        var history: [(role: String, content: String)] = []
+        for index in 0..<30 {
+            let role = index.isMultiple(of: 2) ? "user" : "assistant"
+            history.append((
+                role: role,
+                content: "历史记录条目\(index)：" + String(
+                    repeating: "这段中文内容用于验证字符预算不等于模型实际token预算。",
+                    count: 6
+                )
+            ))
+        }
+        let current = "查一下之前任务里关于构建 204 的记录，并把结论总结出来。"
+        history.append((role: "user", content: current))
+        let schemas = [
+            ToolSchemaDescriptor(name: "conversation.search", description: "Search other Floe tasks", parametersJSON: #"{"type":"object","properties":{"query":{"type":"string"}}}"#),
+            ToolSchemaDescriptor(name: "conversation.read", description: "Read a page from another Floe task", parametersJSON: #"{"type":"object","properties":{"conversationID":{"type":"string"}}}"#),
+            ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a workspace file", parametersJSON: #"{"type":"object"}"#),
+            ToolSchemaDescriptor(name: "web.search", description: "Search the web", parametersJSON: #"{"type":"object"}"#)
+        ]
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: history,
+            toolSchemas: schemas,
+            allToolNames: schemas.map(\.name)
+        ).refreshingRuntimeClock()
+
+        let local = LocalProviderAdapter.buildPrompt(for: request)
+
+        #expect(!local.exceedsContextWindow)
+        #expect(local.estimatedPromptTokens <= local.windowPromptTokenBudget)
+        #expect(local.windowPromptTokenBudget == 8_192 - 1_024)
+        // The current request is protected: CJK clipping must never cut the
+        // correction the user just typed.
+        #expect(local.text.contains(current))
+        #expect(local.selectedTools.contains { $0.name == "conversation.search" })
+    }
+
+    @Test("An oversized current request is refused before any model allocation")
+    @available(macOS 15.4, iOS 26.0, *)
+    func oversizedCurrentRequestRefused() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
+        let oversized = String(repeating: "这是一条超过本地模型窗口的当前请求。", count: 1_200)
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [(role: "user", content: oversized)],
+            toolSchemas: [],
+            allToolNames: []
+        ).refreshingRuntimeClock()
+
+        let local = LocalProviderAdapter.buildPrompt(for: request)
+
+        #expect(local.exceedsContextWindow)
+        #expect(local.estimatedPromptTokens > local.windowPromptTokenBudget)
+    }
+
+    @Test("A tiny window smaller than the section floors is refused by the final guard")
+    @available(macOS 15.4, iOS 26.0, *)
+    func tinyWindowIsRefusedByFinalGuard() throws {
+        // The per-section floors can exceed a small window on their own; the
+        // final window check is the boundary that still refuses before any
+        // model or KV allocation.
+        let budgets = LocalPromptPressure.sectionTokenBudgets(
+            contextTokens: 512,
+            outputReserveTokens: 256,
+            nativeSchemaTokens: 0
+        )
+        let floors = budgets.directory + budgets.offeredTools
+            + budgets.runtimeInstructions + budgets.transcript
+            + budgets.evidence + budgets.replay
+        #expect(floors > 512 - 256)
+
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 512, maxOutputTokens: 256),
+            capabilities: [.text, .tools]
+        )
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [
+                (role: "system", content: "Tiny window runtime context."),
+                (role: "user", content: String(repeating: "继续回答这个很小窗口的问题。", count: 60))
+            ],
+            toolSchemas: [],
+            allToolNames: []
+        ).refreshingRuntimeClock()
+
+        let local = LocalProviderAdapter.buildPrompt(for: request)
+
+        #expect(local.exceedsContextWindow)
+        #expect(local.estimatedPromptTokens > local.windowPromptTokenBudget)
+    }
+
+    @Test("A clipped CJK receipt keeps its id and conversation cursor metadata")
+    @available(macOS 15.4, iOS 26.0, *)
+    func cjkReceiptKeepsMetadataOnSmallWindow() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 2_048, maxOutputTokens: 256),
+            capabilities: [.text, .tools]
+        )
+        let call = try ToolCall(
+            id: "receipt-cjk",
+            toolName: "conversation.read",
+            argumentsJSON: Data(#"{"conversationID":"11111111-1111-1111-1111-111111111111"}"#.utf8),
+            scope: .local
+        )
+        let metadata = "status=ok conversationID=11111111-1111-1111-1111-111111111111 "
+            + "cursor=opaque-cursor-42 hasMore=true sources=[22222222-2222-2222-2222-222222222222] "
+        let output = metadata + String(
+            repeating: "这是一页很长的中文历史记录内容，用于验证小窗口下回执不会被整条丢弃。",
+            count: 120
+        )
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [(role: "user", content: "读取之前任务的记录并总结")],
+            toolResults: [(callID: call.id, output: output)],
+            pendingToolCalls: [call],
+            toolSchemas: [ToolSchemaDescriptor(
+                name: "conversation.read",
+                description: "Read a page from another Floe task",
+                parametersJSON: #"{"type":"object"}"#
+            )],
+            allToolNames: ["conversation.read"]
+        ).refreshingRuntimeClock()
+
+        let local = LocalProviderAdapter.buildPrompt(for: request)
+
+        // The receipt is clipped by tokens but never dropped whole: the callID
+        // header and the head-anchored conversation metadata stay visible.
+        #expect(local.text.contains("TOOL RESULT receipt-cjk"))
+        #expect(local.text.contains("conversationID=11111111-1111-1111-1111-111111111111"))
+        #expect(local.text.contains("cursor=opaque-cursor-42"))
+        #expect(local.text.contains("sources=[22222222-2222-2222-2222-222222222222]"))
+        #expect(!local.exceedsContextWindow)
+    }
+}
+
 // MARK: - Decode-rate provenance (PiP speed口径)
 
 @Suite("Local decode-rate accounting")

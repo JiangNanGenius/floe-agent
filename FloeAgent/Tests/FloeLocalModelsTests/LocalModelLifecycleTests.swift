@@ -474,4 +474,60 @@ struct LocalModelLifecycleTests {
             #expect(engine.shutdownCount == 1)
         }
     }
+
+    // MARK: 7. Recoverable on-device boundary events
+
+    @Test("Local context overflow and memory rejection map onto bounded recovery events")
+    @available(macOS 15.4, iOS 26.0, *)
+    func recoverableBoundaryEvents() {
+        let overflow = LocalProviderAdapter.recoverableBoundaryEvent(
+            for: LocalInferenceError.promptTooLong
+        )
+        guard case .error(let overflowError)? = overflow else {
+            Issue.record("Expected a context-overflow provider event, got \(String(describing: overflow))")
+            return
+        }
+        #expect(overflowError.kind == .contextOverflow)
+        #expect(overflowError.providerMessage.contains("not replayed"))
+
+        let memory = LocalProviderAdapter.recoverableBoundaryEvent(
+            for: LocalInferenceError.insufficientMemory(required: 3_000_000_000, physical: 1_200_000_000)
+        )
+        guard case .error(let memoryError)? = memory else {
+            Issue.record("Expected a retryable memory provider event, got \(String(describing: memory))")
+            return
+        }
+        #expect(memoryError.kind == .rateLimited)
+
+        // Everything else keeps the existing thrown boundary: decode
+        // failures already had their own guarded recreate, and cancellation
+        // or model-load failures are not silently retried here.
+        #expect(LocalProviderAdapter.recoverableBoundaryEvent(
+            for: LocalInferenceError.decodeFailed
+        ) == nil)
+        #expect(LocalProviderAdapter.recoverableBoundaryEvent(
+            for: LocalInferenceError.modelLoadFailed
+        ) == nil)
+        #expect(LocalProviderAdapter.recoverableBoundaryEvent(
+            for: CancellationError()
+        ) == nil)
+        #expect(LocalProviderAdapter.recoverableBoundaryEvent(
+            for: FloeError.cancelled
+        ) == nil)
+    }
+
+    @Test("A prepared-token overflow produces the same recoverable event shape")
+    @available(macOS 15.4, iOS 26.0, *)
+    func preAllocationOverflowEventShape() {
+        let event = LocalProviderAdapter.contextOverflowEvent(
+            estimatedTokens: 9_000,
+            windowTokens: 7_168
+        )
+        guard case .error(let error) = event else {
+            Issue.record("Expected a context-overflow event")
+            return
+        }
+        #expect(error.kind == .contextOverflow)
+        #expect(error.providerMessage.contains("9000"))
+    }
 }

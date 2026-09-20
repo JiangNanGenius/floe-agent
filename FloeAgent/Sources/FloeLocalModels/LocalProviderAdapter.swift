@@ -934,8 +934,23 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     let prompt = promptBuild.text
                     let imageParts: [AppleFoundationImageInput] = []
                     FloeLogger(category: .providers).info(
-                        "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount)) replayedToolPairs=\(request.replayedToolPairs.count) pendingToolCalls=\(request.pendingToolCalls.count) pendingToolResults=\(request.toolResults.count) systemCharacters=\(promptBuild.systemInstructions.count)"
+                        "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) estimatedPromptTokens=\(promptBuild.estimatedPromptTokens) windowPromptTokens=\(promptBuild.windowPromptTokenBudget) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount)) replayedToolPairs=\(request.replayedToolPairs.count) pendingToolCalls=\(request.pendingToolCalls.count) pendingToolResults=\(request.toolResults.count) systemCharacters=\(promptBuild.systemInstructions.count)"
                     )
+                    // Refuse before the model maps or allocates anything when
+                    // the bounded prompt still cannot fit. The harness then
+                    // compacts once (or fails recoverably) with every settled
+                    // tool and checkpoint intact; nothing is replayed.
+                    guard !promptBuild.exceedsContextWindow else {
+                        FloeLogger(category: .providers).warning(
+                            "localPromptWindowExceeded model=\(request.model.remoteModelID) estimatedTokens=\(promptBuild.estimatedPromptTokens) windowTokens=\(promptBuild.windowPromptTokenBudget) systemCharacters=\(promptBuild.systemInstructions.count) transcriptCharacters=\(prompt.count) selectedTools=\(promptBuild.selectedToolCount)"
+                        )
+                        continuation.yield(Self.contextOverflowEvent(
+                            estimatedTokens: promptBuild.estimatedPromptTokens,
+                            windowTokens: promptBuild.windowPromptTokenBudget
+                        ))
+                        continuation.finish()
+                        return
+                    }
                     var completion: LocalRuntimeCompletion
                     if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
                         let availability = await AppleFoundationModelRuntime.shared.availability()
@@ -1096,10 +1111,63 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    // Recoverable on-device failures become normalized
+                    // provider events so the runtime keeps its bounded
+                    // recovery contract: a prepared-token overflow earns one
+                    // compaction, a memory preflight rejection earns bounded
+                    // retries from the saved checkpoint. Both leave every
+                    // settled tool and its checkpoint untouched.
+                    if let event = Self.recoverableBoundaryEvent(for: error) {
+                        continuation.yield(event)
+                        continuation.finish()
+                    } else {
+                        continuation.finish(throwing: error)
+                    }
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// A prepared-prompt overflow observed by the real tokenizer inside the
+    /// engine (or by the adapter's pre-allocation heuristic) is a
+    /// context-pressure signal, not a malformed request. This event routes it
+    /// through the runtime's single compaction recovery; a second overflow
+    /// ends recoverably with the run state saved.
+    static func contextOverflowEvent(
+        estimatedTokens: Int,
+        windowTokens: Int
+    ) -> AgentEvent {
+        .error(AgentEvent.NormalizedError(
+            kind: .contextOverflow,
+            providerMessage: "The on-device prompt exceeded the local model context window (estimated \(estimatedTokens) tokens, window \(windowTokens)). Compacting the conversation and retrying once; completed tools are not replayed."
+        ))
+    }
+
+    /// Maps the two local failures that still preserve a fully recoverable run
+    /// state onto the harness's bounded recovery paths. Everything else keeps
+    /// the existing thrown boundary: cancellation, decode failure after the
+    /// engine's own guarded recreate, model load failure and vision failures
+    /// are not silently retried here.
+    static func recoverableBoundaryEvent(for error: Error) -> AgentEvent? {
+        guard let localError = error as? LocalInferenceError else { return nil }
+        switch localError {
+        case .promptTooLong:
+            return .error(AgentEvent.NormalizedError(
+                kind: .contextOverflow,
+                providerMessage: "The prepared on-device prompt (including native tool schemas) exceeded the local model context window. Compacting the conversation and retrying once; completed tools are not replayed."
+            ))
+        case .insufficientMemory(let required, let available):
+            return .error(AgentEvent.NormalizedError(
+                // Resource exhaustion is transient and retryable; the
+                // harness retries from the saved dispatch checkpoint after
+                // the engine tears down and reclaims, and ends with a
+                // recoverable failure when headroom never appears.
+                kind: .rateLimited,
+                providerMessage: "Insufficient process memory headroom before on-device generation (model bytes \(required), available \(available)). Retrying from the saved checkpoint; completed tools are not replayed."
+            ))
+        default:
+            return nil
         }
     }
 
@@ -1186,6 +1254,20 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let selectedToolCount: Int
         let requiresToolCall: Bool
         let sourceCharacters: Int
+        /// Heuristic mixed-script estimate of the assembled system envelope
+        /// plus transcript plus the native tool schemas selected for this
+        /// turn. It is not a strict upper bound for the real tokenizer, so the
+        /// engine's prepared-token guard remains the final admission decision;
+        /// this value only decides whether starting the model at all looks
+        /// hopeless.
+        let estimatedPromptTokens: Int
+        /// `contextTokens - outputReserve`: the prompt plus native schemas must
+        /// stay at or below this.
+        let windowPromptTokenBudget: Int
+        /// True when even the bounded sections cannot fit. The adapter refuses
+        /// before any model/KV allocation so the runtime can compact once
+        /// instead of starting a prefill that cannot succeed.
+        let exceedsContextWindow: Bool
     }
 
     /// The runtime composes a concise local protocol at its source. Preserve
@@ -1236,14 +1318,35 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let includeToolDirectory = inventoryRequested || actionRequested
             || !selectedTools.isEmpty || !request.pendingToolCalls.isEmpty
         let budgets = promptBudgets(contextTokens: contextTokens)
+        // Native schemas are part of the prepared prompt: MLX renders them
+        // through the model's chat template, so they consume real tokens even
+        // though this adapter never repeats their parameters in prose. Reserve
+        // them before any section allowance, counted with the mixed-script
+        // estimator rather than a per-schema constant.
+        let outputReserveTokens = LocalPromptPressure.outputReserveTokens(
+            configuredMaxOutputTokens: request.model.limits.configuredMaxOutputTokens,
+            contextTokens: contextTokens
+        )
+        let nativeSchemaTokens = LocalPromptPressure.heuristicTokens(
+            in: selectedTools.map {
+                $0.name + "\n" + $0.description + "\n" + $0.parametersJSON
+            }.joined(separator: "\n")
+        )
+        let tokenBudgets = LocalPromptPressure.sectionTokenBudgets(
+            contextTokens: contextTokens,
+            outputReserveTokens: outputReserveTokens,
+            nativeSchemaTokens: nativeSchemaTokens
+        )
         // The harness composes its runtime envelope as one system message.
         // Bound it for the on-device context: an unbounded envelope is the
         // largest first-chat-only input and the settings benchmark never
         // exercises it. Head and tail survive so run context and the live
-        // clock are both retained.
-        let boundedRuntimeInstructions = clipped(
-            runtimeInstructions,
-            limit: budgets.runtimeInstructionsCharacters
+        // clock are both retained. Token clipping runs after the historical
+        // character clip so a CJK-heavy envelope cannot overrun the window
+        // while English prompts keep their established shape.
+        let boundedRuntimeInstructions = LocalPromptPressure.clippedToTokens(
+            clipped(runtimeInstructions, limit: budgets.runtimeInstructionsCharacters),
+            limit: tokenBudgets.runtimeInstructions
         )
 
         var sections: [String] = []
@@ -1251,16 +1354,23 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // questions. Keep it in system context alongside runtime instructions.
         if includeToolDirectory, !availableTools.isEmpty {
             let names = availableTools.map(\.name).sorted().joined(separator: ", ")
-            sections.append("AVAILABLE TOOL NAMES (authoritative): \(clipped(names, limit: budgets.directoryCharacters))")
+            let boundedNames = LocalPromptPressure.clippedToTokens(
+                clipped(names, limit: budgets.directoryCharacters),
+                limit: tokenBudgets.directory
+            )
+            sections.append("AVAILABLE TOOL NAMES (authoritative): \(boundedNames)")
         }
         if !selectedTools.isEmpty {
-            let offered = selectedTools.map { tool in
-                // The same full schema is already rendered by the native MLX
-                // or Foundation Models tool interface. Repeating parameters
-                // here doubled constrained-context memory with no added
-                // authority; retain a short human-readable index only.
-                "- \(tool.name): \(clipped(tool.description, limit: 120))"
-            }.joined(separator: "\n")
+            let offered = LocalPromptPressure.clippedToTokens(
+                selectedTools.map { tool in
+                    // The same full schema is already rendered by the native MLX
+                    // or Foundation Models tool interface. Repeating parameters
+                    // here doubled constrained-context memory with no added
+                    // authority; retain a short human-readable index only.
+                    "- \(tool.name): \(clipped(tool.description, limit: 120))"
+                }.joined(separator: "\n"),
+                limit: tokenBudgets.offeredTools
+            )
             let invocationInstructions: String
             if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
                 invocationInstructions = "To call one, use only the native Foundation Models tool interface. Never print a tool call or tool result as JSON."
@@ -1304,6 +1414,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
         var transcriptSections: [String] = []
         var transcriptCharacters = 0
+        var transcriptTokens = 0
         for (index, message) in request.effectiveMessages.enumerated().reversed() where message.role != "system" {
             let raw = message.content.compactMap { part -> String? in
                 if case .text(let value) = part { return value }
@@ -1318,6 +1429,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 let line = "USER: \(raw)"
                 transcriptSections.insert(line, at: 0)
                 transcriptCharacters += line.count
+                transcriptTokens += LocalPromptPressure.heuristicTokens(in: line)
                 continue
             }
             let remaining = budgets.transcriptCharacters - transcriptCharacters
@@ -1327,27 +1439,80 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 continue
             }
             let line = "\(message.role.uppercased()): \(clipped(raw, limit: min(800, remaining)))"
+            let lineTokens = LocalPromptPressure.heuristicTokens(in: line)
+            guard transcriptTokens + lineTokens <= tokenBudgets.transcript else {
+                // Same rule as the character budget: stop once older history
+                // fills the section, but never let it hide a newer turn.
+                if index < (latestUserIndex ?? Int.max) { break }
+                continue
+            }
             transcriptSections.insert(line, at: 0)
             transcriptCharacters += line.count
+            transcriptTokens += lineTokens
         }
         sections.append(contentsOf: transcriptSections)
         // Give pending receipts their own bounded allowance. A long current
         // user request must not consume it and make completed calls disappear.
         // The prepared-token guard still enforces the total model context.
         var evidenceBudget = budgets.evidenceCharacters
+        var evidenceTokens = 0
         if !isAppleToolFollowUp {
-            for call in request.pendingToolCalls.suffix(2) where evidenceBudget > 80 {
-                let line = "ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) \(String(decoding: call.argumentsJSON, as: UTF8.self))"
-                let bounded = clipped(line, limit: min(500, evidenceBudget))
-                sections.append(bounded)
-                evidenceBudget -= bounded.count
+            // The newest receipt must survive even a nearly exhausted
+            // allowance. Reserve header + a short body for the pending results
+            // before the request-argument lines can spend the section, then
+            // clip each body to the remaining tokens instead of dropping the
+            // whole line. Head/tail clipping keeps the callID header plus the
+            // conversation envelope's cursor/source metadata (which sits at
+            // the body head) visible on a small window.
+            let receiptMinimums = request.toolResults.suffix(2).map { result in
+                LocalPromptPressure.heuristicTokens(in: "TOOL RESULT \(result.callID): ") + 48
             }
-            for result in request.toolResults.suffix(2) where evidenceBudget > 80 {
-                let line = "TOOL RESULT \(result.callID): \(result.output)"
-                let bounded = clipped(line, limit: min(700, evidenceBudget))
-                sections.append(bounded)
-                evidenceBudget -= bounded.count
+            var requestTokenCeiling = max(
+                0,
+                tokenBudgets.evidence - min(tokenBudgets.evidence, receiptMinimums.reduce(0, +))
+            )
+            var requestLines: [String] = []
+            for call in request.pendingToolCalls.suffix(2).reversed() where evidenceBudget > 80 {
+                let header = "ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) "
+                let headerTokens = LocalPromptPressure.heuristicTokens(in: header)
+                let remainingTokens = min(
+                    requestTokenCeiling,
+                    tokenBudgets.evidence - evidenceTokens
+                )
+                guard remainingTokens >= headerTokens + 24 else { break }
+                let body = LocalPromptPressure.clippedToTokens(
+                    clipped(
+                        String(decoding: call.argumentsJSON, as: UTF8.self),
+                        limit: min(500, max(24, evidenceBudget))
+                    ),
+                    limit: remainingTokens - headerTokens
+                )
+                let line = header + body
+                requestLines.append(line)
+                let lineTokens = LocalPromptPressure.heuristicTokens(in: line)
+                evidenceBudget -= min(evidenceBudget, line.count)
+                evidenceTokens += lineTokens
+                requestTokenCeiling = max(0, requestTokenCeiling - lineTokens)
             }
+            sections.append(contentsOf: requestLines.reversed())
+            var receiptLines: [String] = []
+            for result in request.toolResults.suffix(2).reversed() {
+                let header = "TOOL RESULT \(result.callID): "
+                let headerTokens = LocalPromptPressure.heuristicTokens(in: header)
+                let remainingTokens = tokenBudgets.evidence - evidenceTokens
+                guard remainingTokens >= headerTokens + 24 else { break }
+                let body = LocalPromptPressure.clippedToTokens(
+                    clipped(
+                        result.output,
+                        limit: min(700, max(24, budgets.evidenceCharacters))
+                    ),
+                    limit: remainingTokens - headerTokens
+                )
+                let line = header + body
+                receiptLines.append(line)
+                evidenceTokens += LocalPromptPressure.heuristicTokens(in: line)
+            }
+            sections.append(contentsOf: receiptLines.reversed())
         }
         // Settled pairs from earlier turns. On-device adapters previously
         // rendered only the current pending pair, so a small local model
@@ -1356,23 +1521,43 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // fresh instructions or a new user turn.
         if !isAppleToolFollowUp, !request.replayedToolPairs.isEmpty {
             var replayBudget = budgets.replayCharacters
+            var replayTokens = 0
             var lines: [String] = []
             // Walk newest → oldest so budget exhaustion drops the oldest
-            // evidence first; render chronologically afterwards.
+            // evidence first; render chronologically afterwards. Every pair
+            // reserves its two headers and a short result body before the call
+            // arguments can spend the pair's allowance, so a CJK-heavy
+            // argument line cannot swallow the freshest result whole.
             for pair in request.replayedToolPairs.suffix(budgets.replayPairCount).reversed()
             where replayBudget > 120 {
                 let call = pair.call
+                let result = pair.result
+                let callHeader = "EARLIER TOOL CALL \(call.toolName) id=\(call.id) args="
+                let resultHeader = "EARLIER TOOL RESULT id=\(result.callID) status=\(result.status.rawValue) "
+                let headerTokens = LocalPromptPressure.heuristicTokens(in: callHeader)
+                    + LocalPromptPressure.heuristicTokens(in: resultHeader)
+                let remainingTokens = tokenBudgets.replay - replayTokens
+                guard remainingTokens >= headerTokens + 48 else { break }
+                let bodyTokens = remainingTokens - headerTokens
+                let callBodyTokens = max(24, bodyTokens * 40 / 100)
+                let resultBodyTokens = max(24, bodyTokens - callBodyTokens)
                 let arguments = String(decoding: call.argumentsJSON, as: UTF8.self)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let callLine = "EARLIER TOOL CALL \(call.toolName) id=\(call.id) args=\(clipped(arguments, limit: min(320, replayBudget)))"
-                replayBudget -= callLine.count
-                lines.append(callLine)
-                guard replayBudget > 80 else { break }
-                let result = pair.result
+                let callLine = callHeader + LocalPromptPressure.clippedToTokens(
+                    clipped(arguments, limit: min(320, max(24, replayBudget))),
+                    limit: callBodyTokens
+                )
                 let output = result.outputSummary.trimmingCharacters(in: .whitespacesAndNewlines)
-                let resultLine = "EARLIER TOOL RESULT id=\(result.callID) status=\(result.status.rawValue) \(clipped(output, limit: min(520, replayBudget)))"
-                replayBudget -= resultLine.count
+                let resultLine = resultHeader + LocalPromptPressure.clippedToTokens(
+                    clipped(output, limit: min(520, max(24, replayBudget))),
+                    limit: resultBodyTokens
+                )
+                let pairTokens = LocalPromptPressure.heuristicTokens(in: callLine)
+                    + LocalPromptPressure.heuristicTokens(in: resultLine)
+                lines.append(callLine)
                 lines.append(resultLine)
+                replayBudget -= min(replayBudget, callLine.count + resultLine.count)
+                replayTokens += pairTokens
             }
             lines.reverse()
             if !lines.isEmpty {
@@ -1402,6 +1587,21 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let system = "You are Floe, a concise and natural on-device assistant. The latest user message may be a request or ordinary conversation. Respond normally and warmly to greetings, small talk, questions, brainstorming, opinions, and follow-ups; never demand a more explicit task merely because no tool is needed. Ask a clarifying question only when missing information materially changes a consequential action. Tool execution and approval are enforced by the app. \(directoryInstructions) \(toolInstructions) \(invocationPriority) Think silently. Never print private chain-of-thought, drafts, self-corrections, or a 'Thinking Process' section. A requested implementation plan or checklist is user-visible work, not private reasoning. Follow the task's output format."
             + (toolContext.isEmpty ? "" : "\n\n" + toolContext)
             + (boundedRuntimeInstructions.isEmpty ? "" : "\n\n" + boundedRuntimeInstructions)
+        // Final pre-allocation check: the assembled envelope plus the native
+        // tool schemas plus the output reserve must fit the advertised window.
+        // If only the protected current request is over, the adapter refuses
+        // before MLX allocates the KV cache; the runtime then compacts once or
+        // reports a recoverable failure instead of a doomed prefill. Apple
+        // Foundation Models is excluded: it receives the structured
+        // `appleConversation`, not this flattened transcript, and keeps its
+        // existing watchdog/error contract.
+        let windowPromptTokenBudget = max(512, contextTokens - outputReserveTokens)
+        let estimatedPromptTokens = LocalPromptPressure.heuristicTokens(in: system)
+            + LocalPromptPressure.heuristicTokens(in: transcript)
+            + nativeSchemaTokens
+        let exceedsContextWindow = request.model.remoteModelID
+            != AppleFoundationModelIdentity.remoteModelID
+            && estimatedPromptTokens > windowPromptTokenBudget
         return PromptBuild(
             systemInstructions: system,
             // MLX receives structured system/user messages and applies the
@@ -1415,7 +1615,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
             fallbackTools: availableTools,
             selectedToolCount: selectedTools.count,
             requiresToolCall: requiredInvocation && !selectedTools.isEmpty,
-            sourceCharacters: sourceCharacters
+            sourceCharacters: sourceCharacters,
+            estimatedPromptTokens: estimatedPromptTokens,
+            windowPromptTokenBudget: windowPromptTokenBudget,
+            exceedsContextWindow: exceedsContextWindow
         )
     }
 
