@@ -166,18 +166,50 @@ static BlockDevice *floe_block_device_init(const char *filename,
 
     bs = mallocz(sizeof(*bs));
     bf = mallocz(sizeof(*bf));
+    if (!bs || !bf) {
+        free(bs);
+        free(bf);
+        fclose(f);
+        return NULL;
+    }
     bf->mode = mode;
     bf->nb_sectors = file_size / SECTOR_SIZE;
     bf->f = f;
     if (mode == BF_MODE_SNAPSHOT) {
         bf->sector_table = mallocz(sizeof(bf->sector_table[0]) *
                                    bf->nb_sectors);
+        if (!bf->sector_table) {
+            free(bf);
+            free(bs);
+            fclose(f);
+            return NULL;
+        }
     }
     bs->get_sector_count = bf_get_sector_count;
     bs->read_async = bf_read_async;
     bs->write_async = bf_write_async;
     bs->opaque = bf;
     return bs;
+}
+
+static void floe_block_device_destroy(BlockDevice *bs)
+{
+    BlockDeviceFile *bf;
+    int64_t i;
+    if (!bs)
+        return;
+    bf = bs->opaque;
+    if (bf) {
+        if (bf->f)
+            fclose(bf->f);
+        if (bf->sector_table) {
+            for (i = 0; i < bf->nb_sectors; i++)
+                free(bf->sector_table[i]);
+            free(bf->sector_table);
+        }
+        free(bf);
+    }
+    free(bs);
 }
 
 /*******************************************************/
@@ -251,6 +283,17 @@ static EthernetDevice *floe_slirp_open(void)
     net->select_poll = floe_slirp_select_poll1;
     return net;
 }
+
+static void floe_slirp_close(EthernetDevice *net)
+{
+    if (!net)
+        return;
+    if (floe_slirp_state) {
+        slirp_cleanup(floe_slirp_state);
+        floe_slirp_state = NULL; /* allow a later VM to use networking again */
+    }
+    free(net);
+}
 #endif /* CONFIG_SLIRP */
 
 /*******************************************************/
@@ -294,10 +337,43 @@ struct FloeVM {
     FloeConsole console;
     CharacterDevice console_dev;
     BlockDevice *disk;
+    FSDevice *shares[FLOE_VM_MAX_SHARES];
+    int share_opened;
 #ifdef CONFIG_SLIRP
     EthernetDevice *net;
 #endif
 };
+
+/* Free everything the adapter itself allocated (partial state allowed).
+ * The VirtMachine, if created, is ended separately by the caller. */
+static void floe_vm_free_resources(FloeVM *vm)
+{
+    int i;
+    floe_block_device_destroy(vm->disk);
+    vm->disk = NULL;
+    for (i = 0; i < vm->share_opened; i++) {
+        if (vm->shares[i])
+            fs_end(vm->shares[i]); /* upstream: fs_disk_end + free(fs) */
+        free(vm->p.tab_fs[i].tag);
+        vm->shares[i] = NULL;
+        vm->p.tab_fs[i].tag = NULL;
+    }
+    vm->share_opened = 0;
+#ifdef CONFIG_SLIRP
+    floe_slirp_close(vm->net);
+    vm->net = NULL;
+#endif
+    free(vm->p.files[VM_FILE_BIOS].buf);
+    free(vm->p.files[VM_FILE_KERNEL].buf);
+    free(vm->p.files[VM_FILE_INITRD].buf);
+    vm->p.files[VM_FILE_BIOS].buf = NULL;
+    vm->p.files[VM_FILE_KERNEL].buf = NULL;
+    vm->p.files[VM_FILE_INITRD].buf = NULL;
+    free(vm->p.machine_name);
+    free(vm->p.cmdline);
+    vm->p.machine_name = NULL;
+    vm->p.cmdline = NULL;
+}
 
 static uint8_t *floe_load_file(const char *path, int *plen)
 {
@@ -395,8 +471,14 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
             goto fail;
         }
         p->tab_fs[p->fs_count].tag = strdup(cfg->shares[i].tag);
+        if (!p->tab_fs[p->fs_count].tag) {
+            fs_end(fs);
+            goto fail;
+        }
         p->tab_fs[p->fs_count].fs_dev = fs;
         p->fs_count++;
+        vm->shares[vm->share_opened] = fs;
+        vm->share_opened++;
     }
 
 #ifdef CONFIG_SLIRP
@@ -420,10 +502,7 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
 
  fail:
     fprintf(stderr, "floe_vm: create failed\n");
-    /* conservative cleanup for the qualification prototype */
-    free(vm->p.files[VM_FILE_BIOS].buf);
-    free(vm->p.files[VM_FILE_KERNEL].buf);
-    free(vm->p.files[VM_FILE_INITRD].buf);
+    floe_vm_free_resources(vm); /* symmetric partial cleanup */
     pthread_mutex_destroy(&vm->console.lock);
     free(vm);
     return NULL;
@@ -507,13 +586,18 @@ void floe_vm_destroy(FloeVM *vm)
 {
     if (!vm)
         return;
-    if (vm->m)
+    /* Ends the machine (frees CPU state + guest RAM + machine struct).
+     * Upstream note: virtio device structs (a few hundred bytes each) are
+     * not individually freed by TinyEMU's riscv_machine_end; that is an
+     * upstream process-exit design. All adapter-owned resources (disk
+     * FILE handles + snapshot tables, 9p FS devices + tags, slirp state,
+     * file buffers) are released below, and the slirp singleton is reset
+     * so a later VM can use networking again. */
+    if (vm->m) {
         virt_machine_end(vm->m);
-    free(vm->p.files[VM_FILE_BIOS].buf);
-    free(vm->p.files[VM_FILE_KERNEL].buf);
-    free(vm->p.files[VM_FILE_INITRD].buf);
-    free(vm->p.machine_name);
-    free(vm->p.cmdline);
+        vm->m = NULL;
+    }
+    floe_vm_free_resources(vm);
     pthread_mutex_destroy(&vm->console.lock);
     free(vm);
 }

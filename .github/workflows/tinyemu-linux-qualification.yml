@@ -74,6 +74,13 @@ jobs:
           test -f work/share9p/floe_ci_9p.txt
           grep -a FLOE_STAGEA_PING_OK work/stageA-transcript.txt
 
+      - name: Lifecycle regression (repeatable create/destroy, failure cleanup, slirp reset)
+        run: |
+          IMG=work/src/diskimage-linux-riscv-2018-09-23
+          work/build/lifecycle_test "$IMG/bbl64.bin" "$IMG/kernel-riscv64.bin" \
+            "$IMG/root-riscv64.bin" work/share9p | tee work/lifecycle.txt
+          grep -a LIFECYCLE_OK work/lifecycle.txt
+
       - name: Fetch Debian 13 riscv64 nocloud image (record resolved SHA512)
         run: |
           cd work
@@ -256,6 +263,7 @@ jobs:
             work/*-transcript.txt
             work/*-time.txt
             work/*-rc.txt
+            work/lifecycle.txt
             work/summary.json
             work/debian-sha512.txt
             work/debian-sha256.txt
