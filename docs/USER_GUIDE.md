@@ -1,6 +1,6 @@
 # Floe Agent User Guide
 
-Build 214 integrates the TinyEMU/Linux migration and the complete feedback repair batch. Cloud packaging and TestFlight delivery are still pending; see [Build 214 status and acceptance limits](RELEASE_NOTES_1.7.0_BUILD_214.md). The Build 191/192 descriptions below are historical snapshots, not current release availability.
+Build 214 is available in internal Floe QA TestFlight (Apple VALID, unexpired, IN_BETA_TESTING verified September 20 at 21:32 UTC). It includes the TinyEMU/Linux migration and all feedback code repairs. [Delivery and device acceptance limits](qualification/build214-release/README.md). The Build 191/192 descriptions below are historical snapshots.
 
 Current internal release: **1.7.0 (191) / beta.48**, installable in Floe QA. The GitHub developer IPA and Feather feed are published. Three UI failures were waived for internal device testing only; full acceptance is not claimed. [Delivery and limitations](qualification/build191-release/README.md). Historical screenshots retain their build labels.
 

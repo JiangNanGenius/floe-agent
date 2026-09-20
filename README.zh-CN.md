@@ -26,7 +26,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（207）**。已于 9 月 20 日 08:51 UTC 核实 Apple VALID、未过期、现有私有 Floe QA 组和 IN_BETA_TESTING。此版交付 Office／IDE／Git／思维导图／Shell 修复；本地模型、跨任务与 Linux 增量继续单独收口。真机验收由测试者完成。[交付证据](docs/TESTFLIGHT_1.7.0_BETA.md) · [修复进度](docs/FLOE_FEEDBACK_2026_09_20.md)。
+**当前内部 TestFlight：1.7.0（214）**。9 月 20 日 21:32 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。TinyEMU/Linux 成为主要本地环境，原生 Python/Node 不再打包；包含本轮全部反馈修复。只做定向轻量检查与云端 App 构建，真机验收由用户完成。[交付证据](docs/qualification/build214-release/README.md)。
 
 Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**Build 201（`v1.7.0-beta.58`，源码 `be06cece`）是此前的内部 Floe QA TestFlight 交付版本**：Apple `buildID` `ea0f0b12-6fad-4a55-b1f2-ac2033328c74` 于 2026-09-19 17:44 UTC 核实 `VALID`、未过期、唯一私有 Floe QA 组和 `IN_BETA_TESTING`，中英文测试说明均已保存并读回（[Build 201 说明](docs/RELEASE_NOTES_1.7.0_BUILD_201.md)、[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)）。该构建的发布作业因冻结标签检出中缺少发布说明文件而停止，带来源证明的未签名 GitHub prerelease `v1.7.0-beta.58` 与 Feather 源均由同一保留工件恢复，未重新构建、未二次上传。**Build196（`v1.7.0-beta.53`，源码 `0771aee5`）仍在内部 Floe QA TestFlight 组可安装**：Apple `buildID` `27355e88-2f37-4c60-8b6e-713db546773b` 于 2026-09-19 02:24 UTC 核实 `VALID`、未过期、唯一私有 Floe QA 组和 `IN_BETA_TESTING`，中英文测试说明均已保存（[Build 196 说明](docs/RELEASE_NOTES_1.7.0_BUILD_196.md)、[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)）。该构建对冻结提交只用验收上传 SDK 编译一次，未签名设备 IPA（`bd080ba7…80c4`）与匹配私有符号在签名前留存；带来源证明的未签名 GitHub prerelease 与 Feather 源均由同一工件发布。Build194（`v1.7.0-beta.51`）与 Build195（`v1.7.0-beta.52`）已被 Apple 接受（`VALID`）但从未发布；Build192（`v1.7.0-beta.49`）与 Build193（`v1.7.0-beta.50`）编译失败。四个标签均作为证据保留。按用户要求跳过模拟器/界面验收，本次属内部真机测试，不代表完整验收。正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
@@ -166,7 +166,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 ### Python 执行
 
-Floe 内置适合日常脚本、文件、压缩包、JSON、SQLite 和基础数据工作的 Python 3.13。模型可以为当前任务申请安装兼容的软件包；下载前会检查用途，安装内容也会经过安全检查。NumPy、Pillow 和 pandas 在支持的构建中原生提供，以运行时检查返回的版本和可用性为准。未提供的 SciPy、Matplotlib 等二进制依赖可使用明确标注的浏览器 Pyodide 路径或可信 SSH 主机。需要完整本机环境、商业授权或特殊系统组件的工作，仍应转到用户已经信任的 SSH 主机。无论选择哪条路径，Floe 都会明确显示成功、失败、超时或能力限制，不会把未执行的操作说成已经完成。
+本地 Python、Node.js、Shell 和服务统一运行在选定的 TinyEMU/Linux 环境中，可从设置 → 执行列表下载经校验的 Linux 组件。Shell 与直接 Python 入口共享该环境的文件和软件包；apt/dpkg 安装 Linux 包，Python 使用 pip/venv，Node 使用 npm。iOS 原生 Python/Node 的源码与构建配方已封存，运行时不再打进本版 App。二进制包须匹配 Linux 客体 ABI，iOS wheel 不会作为 Linux 二进制复用；WASM 保留为独立兼容能力。
 
 技能可以附带受限的 `.py` 文件和锁定版本的纯 Python 依赖。Floe 在创建或安装技能时验证脚本路径与源码、解析并检查通用 wheel，并记录获准的脚本和依赖指纹。后续运行只能复用这份完全相同的已审计代码，变化的任务数据通过 JSON 单独传入；修改脚本或依赖、提权、危险文件改动、凭据和外部副作用仍回到正常审批流程。
 

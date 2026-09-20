@@ -4,7 +4,7 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前内部 TestFlight：1.7.0（211）**。已于 9 月 20 日 11:45 UTC 核实 Apple VALID、未过期、现有私有 Floe QA 组和 IN_BETA_TESTING。本轮全部反馈代码修复已包含，另有可选 TinyEMU Linux、镜像下载和环境持久磁盘。只做轻量检查及云端构建上传验证，真机验收由测试者完成。[交付证据](TESTFLIGHT_1.7.0_BETA.md) · [修复进度](FLOE_FEEDBACK_2026_09_20.md)。
+**当前内部 TestFlight：1.7.0（214）**。9 月 20 日 21:32 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。TinyEMU/Linux 成为主要本地环境，原生 Python/Node 不再打包；包含本轮全部反馈修复。只做定向轻量检查与云端 App 构建，真机验收由用户完成。[交付证据](qualification/build214-release/README.md)。
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 

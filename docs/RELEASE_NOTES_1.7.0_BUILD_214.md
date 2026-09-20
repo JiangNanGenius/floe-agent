@@ -1,7 +1,8 @@
 # Floe 1.7.0 (214) — TinyEMU and feedback repairs
 
-Status: source integration complete; Linux component published; App build next.
-No Build214 upload or installability claimed yet.
+Status: available in internal Floe QA TestFlight. Apple VALID, unexpired and
+IN_BETA_TESTING verified at 2026-09-20T21:32:34Z.
+[Source, artifacts, upload and limits](qualification/build214-release/README.md).
 
 This delivery makes Linux the default local environment and archives the native
 Python/Node runtimes outside the App payload. Shell, direct Python and services
@@ -28,5 +29,6 @@ Engine and guest licenses remain separate, with corresponding sources and
 notices delivered with the Linux component. No production App Store or public
 App release is included.
 
-Source tag, cloud run, retained IPA/symbols, upload and Floe QA availability
-will be recorded after the corresponding steps complete.
+The App source is `33759e44` / `v1.7.0-beta.71`. Packaging-only recovery
+`c4dddb79` reused the saved IPA, removed an accidentally embedded SDK link stub,
+then re-signed and uploaded without rebuilding. Full evidence is linked above.

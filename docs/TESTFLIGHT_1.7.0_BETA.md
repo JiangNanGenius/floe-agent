@@ -1,6 +1,15 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (211) — available in Floe QA
+## Current internal delivery: 1.7.0 (214) — available in Floe QA
+
+Apple VALID, unexpired, the existing private Floe QA group and IN_BETA_TESTING
+verified at 2026-09-20T21:32:34Z. English and Simplified Chinese beta notes
+are saved and verified. App source `33759e44` / `v1.7.0-beta.71`;
+packaging recovery `c4dddb79` reused the retained IPA without rebuilding.
+[TinyEMU migration, all feedback repairs, artifacts and validation limits](qualification/build214-release/README.md).
+
+
+## Previous internal delivery: 1.7.0 (211) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.68`, source `cc45d67023814b10f72a57afc562dbbe118ae224`.
 [Build/upload 35505655482](https://github.com/JiangNanGenius/floe-agent/actions/runs/35505655482)

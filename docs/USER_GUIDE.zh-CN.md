@@ -1,6 +1,6 @@
 # Floe Agent 使用指南
 
-Build 214 已集成 TinyEMU/Linux 迁移和本轮全部反馈修复，云端打包及 TestFlight 交付仍在进行。请以 [Build 214 状态与验收范围](RELEASE_NOTES_1.7.0_BUILD_214.md)为准；下方 Build 191/192 说明是历史记录，不代表当前可安装版本。
+Build 214 已在内部 Floe QA TestFlight 可安装（9 月 20 日 21:32 UTC 核实 Apple VALID、未过期及 IN_BETA_TESTING），包含 TinyEMU/Linux 迁移及本轮全部反馈代码修复。[交付与真机验收范围](qualification/build214-release/README.md)。下方 Build 191/192 说明为历史记录。
 
 当前内部测试版为 **1.7.0（191）/ beta.48**，Floe QA 已可安装；GitHub 开发者 IPA 和 Feather 源均已发布。三项界面失败经用户豁免，仅供内部真机测试，不代表完整验收。[交付与限制](qualification/build191-release/README.md)。以下历史截图保留原构建来源。
 
