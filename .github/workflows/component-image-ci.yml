@@ -1,0 +1,252 @@
+# component-image-ci — build the Floe Linux guest image candidate and its
+# corresponding-source bundle as reviewable component artifacts.
+#
+# Scope: this workflow never touches app code, versions, tags, releases or
+# TestFlight. It downloads the pinned inputs, builds the image and the source
+# bundle, boots the image twice for real capability checks, and uploads
+# artifacts with digests. Publishing/announcing is the primary agent's call.
+#
+# Jobs (independent so a retry does not rebuild the other):
+#   image   — fetch pinned inputs, build engine + image, boot-verify twice,
+#             package the zip + manifest + evidence.
+#   sources — exact kernel/bbl source, runner relink material, cross-toolchain
+#             source and the Debian binary->source corresponding sources.
+#
+# Manual runs can build only one job; `sources` alone needs the run id that
+# holds the image evidence (its small package inventory), which is enough to
+# fetch sources without re-downloading the image.
+name: component-image-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Build + boot-verify the guest image (heavy)'
+        type: boolean
+        default: true
+      sources:
+        description: 'Build the corresponding-source bundle'
+        type: boolean
+        default: true
+      rebuild_kernel:
+        description: 'Also rebuild kernel+bbl inside the source job (very heavy)'
+        type: boolean
+        default: false
+      image_run_id:
+        description: 'With sources only: run id that holds linux-guest-image-evidence-*'
+        type: string
+        default: ''
+  push:
+    branches:
+      - codex/feedback-linux-image
+      - component-image-ci
+    paths:
+      - 'FloeAgent/LinuxGuest/**'
+      - 'FloeAgent/ThirdParty/TinyEMU/guest-image/**'
+      - '.github/workflows/component-image-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: component-image-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: ${{ github.event_name == 'push' || inputs.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies (mount/convert/zip tooling + riscv64 cross compiler)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils parted e2fsprogs gcc-riscv64-linux-gnu \
+            zip unzip curl python3 >/dev/null
+
+      - name: Lint the component scripts (no heavy build yet)
+        run: |
+          set -euo pipefail
+          for f in FloeAgent/LinuxGuest/image/*.sh; do bash -n "$f"; done
+          for f in FloeAgent/LinuxGuest/image/*.py; do python3 -m py_compile "$f"; done
+          bash -n FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh
+          python3 -c 'import json; json.load(open("FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json"))'
+          echo "script lint ok"
+
+      - name: Runner clock parser (native pure-function check)
+        run: |
+          set -euo pipefail
+          grep -q 'floe.epoch' FloeAgent/LinuxGuest/runner/floe_clock.h
+          make -C FloeAgent/LinuxGuest/runner check-clock
+
+      - name: Build + boot-verify + package the image candidate
+        run: |
+          set -euo pipefail
+          sudo bash FloeAgent/LinuxGuest/image/build-guest-image.sh \
+            --work "${{ runner.temp }}/floe-image-work" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            2>&1 | tee "${{ runner.temp }}/floe-image-build.log"
+
+      - name: Stage the flat evidence bundle (stable artifact layout)
+        if: always()
+        run: |
+          set -euo pipefail
+          W="${{ runner.temp }}/floe-image-work"
+          B="${{ runner.temp }}/floe-image-bundle"
+          rm -rf "$B"
+          mkdir -p "$B"
+          if [ -d "$W/evidence" ]; then cp -a "$W/evidence/." "$B/"; fi
+          if [ -f "$W/image/manifest.json" ]; then cp "$W/image/manifest.json" "$B/manifest.json"; fi
+          if [ -f "$W/image/SHA512SUMS" ]; then cp "$W/image/SHA512SUMS" "$B/SHA512SUMS"; fi
+          ls -la "$B" | head -30
+
+      - name: Show the evidence summary
+        if: always()
+        run: |
+          W="${{ runner.temp }}/floe-image-work"
+          for f in build-summary.txt runner-toolchain.txt boot-stage1-rc.txt boot-stage2-rc.txt \
+                   debian-input-verified.txt disk-ext4-features-final.txt; do
+            if [ -f "$W/evidence/$f" ]; then
+              echo "--- $f"; cat "$W/evidence/$f"
+            fi
+          done
+          if [ -f "$W/evidence/image-capability-report.txt" ]; then
+            echo "--- image-capability-report.txt"; cat "$W/evidence/image-capability-report.txt"
+          fi
+          tail -c 2000 "${{ runner.temp }}/floe-image-build.log" || true
+
+      - name: Upload the image candidate (zip + manifest)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-image-candidate-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-image-work/image/*.zip
+            ${{ runner.temp }}/floe-image-work/image/manifest.json
+            ${{ runner.temp }}/floe-image-work/image/SHA512SUMS
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the image evidence (small, flat, self-contained record)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # A single staged directory keeps the artifact root stable:
+          # guest-packages.tsv (etc.) is at the root, not under evidence/.
+          name: linux-guest-image-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-image-bundle/
+          if-no-files-found: error
+          retention-days: 30
+
+  sources:
+    needs: image
+    if: ${{ always() && (github.event_name == 'push' || inputs.sources) && (needs.image.result == 'success' || needs.image.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 curl ca-certificates dpkg-dev >/dev/null
+
+      - name: Download the image evidence (package inventory + runner object)
+        uses: actions/download-artifact@v4
+        with:
+          # The evidence and its artifact name always come from the same run.
+          name: linux-guest-image-evidence-${{ (github.event_name == 'workflow_dispatch' && inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}
+          path: ${{ runner.temp }}/floe-image-evidence
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ (github.event_name == 'workflow_dispatch' && inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}
+
+      - name: Build the corresponding-source bundle
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          if [ "${{ inputs.rebuild_kernel }}" = "true" ]; then EXTRA="--rebuild-kernel"; fi
+          # shellcheck disable=SC2086
+          sudo bash FloeAgent/LinuxGuest/image/collect-corresponding-sources.sh \
+            --out "${{ runner.temp }}/floe-sources" \
+            --packages "${{ runner.temp }}/floe-image-evidence/guest-packages.tsv" \
+            --image-evidence "${{ runner.temp }}/floe-image-evidence" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            $EXTRA 2>&1 | tee "${{ runner.temp }}/floe-sources.log"
+
+      - name: Show the source bundle summary
+        if: always()
+        run: |
+          for f in SOURCES-MANIFEST.md debian-source-gaps.tsv debian-index/indexes.tsv; do
+            if [ -f "${{ runner.temp }}/floe-sources/$f" ]; then
+              echo "--- $f"; head -60 "${{ runner.temp }}/floe-sources/$f"
+            fi
+          done
+          tail -c 2000 "${{ runner.temp }}/floe-sources.log" || true
+
+      - name: Upload upstream + relink + toolchain sources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-upstream-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-sources/upstream/
+            ${{ runner.temp }}/floe-sources/runner-relink/
+            ${{ runner.temp }}/floe-sources/toolchain-source/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # The Debian corresponding sources are ~2-3 GB across many files; each
+      # shard stays well below the 2 GB per-upload limit so no single artifact
+      # is oversized (shards are produced by debian-source-map.py fetch).
+      - name: Upload Debian corresponding sources (shard 1)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-debian-1-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-sources/debian-sources/shard-1/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload Debian corresponding sources (shard 2)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-debian-2-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-sources/debian-sources/shard-2/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload Debian corresponding sources (shard 3)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-debian-3-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-sources/debian-sources/shard-3/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload Debian corresponding sources (shard 4)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-debian-4-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-sources/debian-sources/shard-4/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the source manifest/evidence (small)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-source-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-sources/*.md
+            ${{ runner.temp }}/floe-sources/*.sha512
+            ${{ runner.temp }}/floe-sources/*.tsv
+            ${{ runner.temp }}/floe-sources/debian-index/
+            ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.sha256
+            ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.tsv
+          if-no-files-found: error
+          retention-days: 30
