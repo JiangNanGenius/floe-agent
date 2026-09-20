@@ -1,6 +1,48 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (207) — available in Floe QA
+## Current internal delivery: 1.7.0 (211) — available in Floe QA
+
+Immutable tag `v1.7.0-beta.68`, source `cc45d67023814b10f72a57afc562dbbe118ae224`.
+[Build/upload 35505655482](https://github.com/JiangNanGenius/floe-agent/actions/runs/35505655482)
+passed the accepted-SDK App build (Xcode 26.6 / 17F113), retained unsigned IPA
+artifact `10604086426` and matching symbols `10604260760` before signing, then
+validated and uploaded the same source. Signed TestFlight evidence is artifact
+`10603957238`. Apple transport reported VERIFY SUCCEEDED and UPLOAD SUCCEEDED;
+upload receipt `80b1ce7e-5865-488a-b4de-2963115c5c74` names `org.floeagent.ios`,
+version 1.7.0, build 211. Upload succeeded at 2026-09-20 11:16:18 UTC.
+
+Apple build `80b1ce7e-5865-488a-b4de-2963115c5c74` is **VALID, unexpired and
+IN_BETA_TESTING**, attached to exactly the existing private **Floe QA** group,
+verified at **2026-09-20 11:45:30 UTC**. English and Simplified Chinese notes were
+saved and read back by [prepare 35508651864](https://github.com/JiangNanGenius/floe-agent/actions/runs/35508651864);
+[verify 35508707395](https://github.com/JiangNanGenius/floe-agent/actions/runs/35508707395)
+confirmed version, expiration, group identity and internal beta state.
+The initial upload PROCESSING delay resolved without a rebuild or re-upload.
+
+This build contains the complete September 20 feedback code set: Office lifecycle
+and recovery; PDF/Office in IDE tabs; Git initialization; native free-position
+mind maps; Shell gate/session recovery; cross-task history through final replies;
+local-model context/recovery; separate Linux/Python/Node/WASM package entries;
+and the optional TinyEMU backend shared by Shell, local Python and services.
+Settings can download the pinned Linux image; verified boot paths are absolute,
+and each environment retains a separate writable disk across restarts.
+[Release notes](RELEASE_NOTES_1.7.0_BUILD_211.md) and
+[test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_211.json) describe device acceptance.
+
+The [Linux component](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1)
+is publicly downloadable with corresponding sources, package license notices and
+LGPL relink materials. It is separate from this internal App delivery. No public
+App GitHub/Feather or App Store production release was requested or performed.
+Only focused checks plus cloud App compilation/signing/Apple validation were
+required. Simulator/UI regression and the full test matrix were waived; physical
+acceptance belongs to the user. Kernel 4.15/Debian13 guest performance, real SSH/SCP
+transfers and all device interactions remain unverified on iPad.
+
+Build209 failed compilation; build210 was cancelled before upload to finish the
+settings download action. Their immutable sources and failure/cancellation
+records remain preserved; neither is an installable release.
+
+## Previous internal delivery: 1.7.0 (207) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.64`, source `41b03ad516c454f6d05bf9f9fa4e31733b4a9340`.
 [Build/upload 35497153478](https://github.com/JiangNanGenius/floe-agent/actions/runs/35497153478)

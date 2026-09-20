@@ -1,17 +1,16 @@
 # September 20 feedback repair and delivery
 
-Status: build 207 remains the installable deliverable in the existing Floe QA
-TestFlight group; Apple VALID, unexpired and IN_BETA_TESTING were verified at
-08:51:56 UTC. Build 208 was cancelled before upload after a Linux
-package-ownership gap was found. Build 209 (`v1.7.0-beta.66`, source `43a10a0a`)
-passed release preflight but failed the accepted-SDK cloud App compile in
-[run 35501871606](https://github.com/JiangNanGenius/floe-agent/actions/runs/35501871606)
-with five optional-unwrap errors, before IPA retention, signing or upload; no
-Apple build ID exists for build 209. Those errors are corrected at `33a72da9`,
-and build210 added the fixed Linux image catalog. Its cloud run35504683419 was
-cancelled before upload when the missing image-download UI action was found.
-Build211 completes that settings flow. Physical-device acceptance remains with the user. Integration starts from `b16cb18e` (the build 204 delivery record). The
-prior build remains independently recorded.
+Status: **build211 is installable in the existing private Floe QA TestFlight group**.
+Source `cc45d67023814b10f72a57afc562dbbe118ae224`, tag `v1.7.0-beta.68`.
+[Build/upload 35505655482](https://github.com/JiangNanGenius/floe-agent/actions/runs/35505655482)
+passed; IPA and symbols were retained before signing. Apple VALID, unexpired,
+exactly the existing Floe QA group and IN_BETA_TESTING were verified at
+2026-09-20 11:45:30 UTC by [35508707395](https://github.com/JiangNanGenius/floe-agent/actions/runs/35508707395).
+All feedback code changes below are included. Physical-device acceptance remains
+with the user. Build207 remains independently available; build208 was cancelled,
+build209 failed compilation (fixed at `33a72da9`), and build210 was cancelled
+before upload to finish the missing settings image-download action. Their tags
+and evidence are unchanged. Integration started from `b16cb18e`.
 
 The user requested code-first delivery, focused checks and an expedited
 TestFlight build. Simulator/UI regression is waived for this delivery; the user
@@ -28,7 +27,7 @@ Apple processing and internal-group availability remain required.
 | Mind-map controls and movement | Replace MindElixir with a native editor using shared Canvas geometry. Use icon controls; persist independent node positions, explicit relayout/reparent actions, undo, styles, links, images and export. | Nine focused model/layout cases and a FloeNotes object build passed. Existing data without positions remains readable. Visual/device acceptance pending. |
 | Shell busy/no output and service errors | Serialize interactive and one-shot sessions on the actual native engine gate; retain ownership until the worker exits. Flush queued input before EOF, close failed input descriptors once, honor pre-cancelled opens. Validate service entry/cwd/runtime/port before persisting a job. | 71 native bridge host checks and 18 extracted SessionIO host checks passed. Their new defect cases fail against the earlier source. These are host harnesses, not iOS runtime proof. An uncooperative native command cannot safely be force-unlocked. |
 
-## Runtime and package changes prepared for build 209, carried into build 210
+## Runtime and package changes delivered in build211
 
 - Cross-task search/read pagination and final-response continuation: preserve
   cursor/source identifiers through bounded tool envelopes and compression,
@@ -37,7 +36,7 @@ Apple processing and internal-group availability remain required.
   Cloud-provider empty completion now gets one bounded continuation after a
   successful history lookup. Empty budget/no-progress finalization is a
   recoverable failure, including when tools must stay disabled. App compilation
-  and physical acceptance of these changes remain pending.
+  passed in build211; physical acceptance remains pending.
 - Local-model recovery is integrated: native tokenizer overflow now reaches
   one compaction retry; existing low-memory rejection reaches bounded recovery.
   Prompt shaping accounts for selected tool schemas and mixed-script text with

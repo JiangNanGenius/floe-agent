@@ -37,9 +37,13 @@ Office recovery copies are retained, but an engine process failure can still req
 
 ## Verification and delivery
 
-Only focused code checks and the accepted-SDK cloud App build are required here; simulator/UI
+Build211 is available in the existing private Floe QA group. Apple VALID, unexpired
+and IN_BETA_TESTING were verified at 2026-09-20 11:45:30 UTC.
+[Delivery evidence](TESTFLIGHT_1.7.0_BETA.md).
+
+Only focused code checks and the accepted-SDK cloud App build were required here; simulator/UI
 regression and the full test matrix are waived at the user's request. Build, retained IPA/symbols,
-signed upload, Apple processing and existing Floe QA availability are recorded separately after they occur.
+signed upload, Apple processing and existing Floe QA availability are recorded separately in the delivery record.
 
 Build209 failed compilation. Build210 was cancelled before upload because settings lacked the
 image-download button, although the installer and terminal command existed. Both immutable records

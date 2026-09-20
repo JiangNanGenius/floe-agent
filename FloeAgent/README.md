@@ -1,6 +1,6 @@
 # Floe Agent Engineering Guide
 
-**Current internal TestFlight: 1.7.0 (207).** Apple VALID, unexpired status, the existing private Floe QA group and IN_BETA_TESTING were verified on September 20 at 08:51 UTC. This delivers the Office/IDE/Git/mind-map/Shell repair slice; local-model, cross-task and Linux increments continue separately. Device acceptance belongs to the tester. [Delivery evidence](../docs/TESTFLIGHT_1.7.0_BETA.md) · [repair progress](../docs/FLOE_FEEDBACK_2026_09_20.md).
+**Current internal TestFlight: 1.7.0 (211).** Apple VALID, unexpired status, the existing private Floe QA group and IN_BETA_TESTING were verified on September 20 at 11:45 UTC. This includes all September 20 feedback code fixes and the optional TinyEMU Linux backend with image download and persistent environments. Only focused checks and cloud build/upload validation were required; device acceptance belongs to the tester. [Delivery evidence](../docs/TESTFLIGHT_1.7.0_BETA.md).
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
