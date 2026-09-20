@@ -341,6 +341,9 @@ struct FloeVM {
     int share_opened;
 #ifdef CONFIG_SLIRP
     EthernetDevice *net;
+    struct { int is_udp; uint32_t host_ipv4; int host_port; }
+        hostfwds[FLOE_VM_MAX_HOSTFWD];
+    int hostfwd_count;
 #endif
 };
 
@@ -360,6 +363,16 @@ static void floe_vm_free_resources(FloeVM *vm)
     }
     vm->share_opened = 0;
 #ifdef CONFIG_SLIRP
+    /* remove adapter-registered forwards first (closes their listening
+       fds; upstream slirp_cleanup does not close them) */
+    if (vm->net && floe_slirp_state) {
+        for (i = 0; i < vm->hostfwd_count; i++) {
+            struct in_addr ha = { .s_addr = htonl(vm->hostfwds[i].host_ipv4) };
+            slirp_remove_hostfwd(floe_slirp_state, vm->hostfwds[i].is_udp,
+                                 ha, vm->hostfwds[i].host_port);
+        }
+        vm->hostfwd_count = 0;
+    }
     floe_slirp_close(vm->net);
     vm->net = NULL;
 #endif
@@ -417,6 +430,13 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
         fprintf(stderr, "floe_vm: bios_path and ram_mb are required\n");
         return NULL;
     }
+    /* resource-budget backstop only; the engine itself propagates malloc
+       failure as a recoverable create error (patch 0002) */
+    if (cfg->ram_mb > (1u << 20)) {
+        fprintf(stderr, "floe_vm: ram_mb=%llu exceeds 1TB backstop\n",
+                (unsigned long long)cfg->ram_mb);
+        return NULL;
+    }
 
     vm = mallocz(sizeof(*vm));
     pthread_mutex_init(&vm->console.lock, NULL);
@@ -438,8 +458,10 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
 
     p->files[VM_FILE_BIOS].buf = floe_load_file(cfg->bios_path,
                                                 &p->files[VM_FILE_BIOS].len);
-    if (!p->files[VM_FILE_BIOS].buf)
+    if (!p->files[VM_FILE_BIOS].buf) {
+        fprintf(stderr, "floe_vm: cannot load bios %s\n", cfg->bios_path);
         goto fail;
+    }
     if (cfg->kernel_path) {
         p->files[VM_FILE_KERNEL].buf =
             floe_load_file(cfg->kernel_path, &p->files[VM_FILE_KERNEL].len);
@@ -493,8 +515,10 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
 #endif
 
     vm->m = virt_machine_init(p);
-    if (!vm->m)
+    if (!vm->m) {
+        fprintf(stderr, "floe_vm: machine init failed\n");
         goto fail;
+    }
 
     if (vm->m->net)
         vm->m->net->device_set_carrier(vm->m->net, TRUE);
@@ -580,6 +604,62 @@ int floe_vm_poweroff_requested(const FloeVM *vm)
     if (!vm || !vm->m)
         return 0;
     return riscv_machine_poweroff_requested(vm->m);
+}
+
+int floe_vm_hostfwd_add(FloeVM *vm, int is_udp, uint32_t host_ipv4,
+                        int host_port, uint32_t guest_ipv4, int guest_port)
+{
+#ifdef CONFIG_SLIRP
+    struct in_addr ha, ga;
+    if (!vm || !vm->net || !floe_slirp_state)
+        return -1;
+    if (host_port <= 0 || host_port > 65535 || guest_port <= 0 ||
+        guest_port > 65535)
+        return -1;
+    if (vm->hostfwd_count >= FLOE_VM_MAX_HOSTFWD)
+        return -1;
+    ha.s_addr = htonl(host_ipv4);
+    ga.s_addr = htonl(guest_ipv4);
+    if (slirp_add_hostfwd(floe_slirp_state, is_udp, ha, host_port,
+                          ga, guest_port) < 0)
+        return -1;
+    vm->hostfwds[vm->hostfwd_count].is_udp = is_udp;
+    vm->hostfwds[vm->hostfwd_count].host_ipv4 = host_ipv4;
+    vm->hostfwds[vm->hostfwd_count].host_port = host_port;
+    vm->hostfwd_count++;
+    return 0;
+#else
+    (void)vm; (void)is_udp; (void)host_ipv4; (void)host_port;
+    (void)guest_ipv4; (void)guest_port;
+    return -1;
+#endif
+}
+
+int floe_vm_hostfwd_remove(FloeVM *vm, int is_udp, uint32_t host_ipv4,
+                           int host_port)
+{
+#ifdef CONFIG_SLIRP
+    struct in_addr ha;
+    int i;
+    if (!vm || !vm->net || !floe_slirp_state)
+        return -1;
+    ha.s_addr = htonl(host_ipv4);
+    if (slirp_remove_hostfwd(floe_slirp_state, is_udp, ha, host_port) < 0)
+        return -1;
+    for (i = 0; i < vm->hostfwd_count; i++) {
+        if (vm->hostfwds[i].is_udp == is_udp &&
+            vm->hostfwds[i].host_ipv4 == host_ipv4 &&
+            vm->hostfwds[i].host_port == host_port) {
+            vm->hostfwds[i] = vm->hostfwds[vm->hostfwd_count - 1];
+            vm->hostfwd_count--;
+            break;
+        }
+    }
+    return 0;
+#else
+    (void)vm; (void)is_udp; (void)host_ipv4; (void)host_port;
+    return -1;
+#endif
 }
 
 void floe_vm_destroy(FloeVM *vm)

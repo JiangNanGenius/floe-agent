@@ -46,6 +46,7 @@ extern "C" {
 typedef struct FloeVM FloeVM;
 
 #define FLOE_VM_MAX_SHARES 4
+#define FLOE_VM_MAX_HOSTFWD 16
 
 typedef struct {
     const char *tag;       /* 9p mount tag visible to the guest */
@@ -84,6 +85,19 @@ int floe_vm_run_slice(FloeVM *vm, int timeout_ms);
 
 /* Non-blocking: 1 if the guest requested poweroff (HTIF tohost shutdown). */
 int floe_vm_poweroff_requested(const FloeVM *vm);
+
+/* host->guest TCP/UDP port forwarding through slirp (for localService:
+   a guest Node/Python service becomes reachable on the host loopback).
+   IPv4 addresses are in HOST byte order; host_ipv4 should normally be
+   0x7F000001 (127.0.0.1); guest_ipv4 = 0 selects the guest's DHCP address
+   (10.0.2.15). Callable from the run_slice thread while the VM runs, or
+   any thread while it is paused. Forwards added here are removed
+   automatically by floe_vm_destroy (listening fds are closed).
+   Returns 0 on success, -1 on error (no network, table full, bad args). */
+int floe_vm_hostfwd_add(FloeVM *vm, int is_udp, uint32_t host_ipv4,
+                        int host_port, uint32_t guest_ipv4, int guest_port);
+int floe_vm_hostfwd_remove(FloeVM *vm, int is_udp, uint32_t host_ipv4,
+                           int host_port);
 
 /* Stop and free the VM. Safe to call after poweroff request. */
 void floe_vm_destroy(FloeVM *vm);

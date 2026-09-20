@@ -22,7 +22,8 @@ bash "$TP/license_check.sh" "$WORK/src/tinyemu-2019-12-21"
 
 echo "== build =="
 make -f "$TP/adapter/Makefile" TINYEMU_SRC="$WORK/src/tinyemu-2019-12-21" \
-     BUILD="$WORK/build" HOST_DIR=. ${MACOS:+MACOS=1} -j2
+     PATCH_DIR="$TP/patches" BUILD="$WORK/build" HOST_DIR=. \
+     ${MACOS:+MACOS=1} -j2
 
 IMG="$WORK/src/diskimage-linux-riscv-2018-09-23"
 cat > "$WORK/script.txt" <<'EOF'
