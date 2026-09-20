@@ -1,6 +1,7 @@
 # Floe 1.7.0 (212) — TinyEMU and feedback repairs
 
-Status: source integration in progress; no upload or installability claimed yet.
+Status: source integration complete; Linux component cloud qualification in progress.
+No Build212 upload or installability claimed yet.
 
 This delivery makes Linux the default local environment and archives the native
 Python/Node runtimes outside the App payload. Shell, direct Python and services
