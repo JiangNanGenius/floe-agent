@@ -69,11 +69,41 @@ enum NotesToolRegistration {
         ToolCatalog.register(NotesSearchTool.self)
         ToolCatalog.register(NotesEditTool.self)
         ToolCatalog.register(NotesAttachFileTool.self)
+        ToolCatalog.register(NotesStageAttachmentTool.self)
         ToolRunnerRegistry.shared.register(NotesReadTool())
         ToolRunnerRegistry.shared.register(NotesSearchTool())
         ToolRunnerRegistry.shared.register(NotesEditTool())
         ToolRunnerRegistry.shared.register(NotesAttachFileTool())
+        ToolRunnerRegistry.shared.register(NotesStageAttachmentTool())
     }
+}
+
+/// The reduced catalog a Notes assistant run can see at all, and the subset
+/// whose handlers are concretely scoped to the current document or the
+/// current task's confined scratch. Anything outside the catalog is not
+/// offered to the model; anything inside the catalog but outside the scoped
+/// subset keeps the ordinary human approval card.
+enum NotesAssistantToolCatalog {
+    /// Every tool a document-assistant run may use. External share/send and
+    /// remote actions are deliberately absent.
+    static let toolNames: Set<String> = [
+        "notes.read", "notes.search", "notes.edit", "notes.attachFile", "notes.stageAttachment",
+        "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
+        "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
+        "workspace.applyPatch", "workspace.createDirectory", "workspace.moveFile",
+        "document.pdf.inspect", "document.pdf.render", "document.office.inspect",
+        "image.ocr", "image.inspect",
+        "exec.localPython", "exec.shell",
+        "conversation.search", "conversation.read", "conversation.list",
+        "checklist.readPlan", "checklist.updatePlan", "memory.recall",
+        "tools.search", "tools.list"
+    ]
+
+    /// Deterministic auto-grant: handlers bounded to the granted document or
+    /// the task scratch. `image.inspect` is excluded because it ships
+    /// document bytes to a provider; exec tools are additionally gated on
+    /// the task network policy inside the approval policy.
+    static let scopedAutoGrantToolNames: Set<String> = toolNames.subtracting(["image.inspect"])
 }
 
 struct NotesSearchTool: AgentTool {
@@ -1198,20 +1228,129 @@ struct NotesAttachFileTool: AgentTool {
         return try NotesReadTool.output(["documentID": result.id.uuidString, "revision": String(result.revision), "attachmentID": attachment.id.uuidString, "status": "saved"])
     }
 }
-/// Opening the dedicated document assistant grants undoable edits to that document.
-/// Other tools retain normal approval; document text cannot broaden the native grant.
+/// Stages one resource of an already-granted document into the task's
+/// confined workspace so Python/Shell processing (conversion, charts, OCR)
+/// can work on real bytes. Read grant only; the document is never modified
+/// and the copy never leaves the task scratch.
+struct NotesStageAttachmentTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let documentID: UUID; let resourceID: UUID
+        let targetPath: String?; let expectedRevision: Int?
+    }
+    static let name = "notes.stageAttachment"
+    static let toolDescription = "Copy one resource (image, PDF/Office, audio, video or other attachment, up to 512 MB) from a Notes document this conversation may already read into the current task workspace, so exec.localPython/exec.shell or inspection tools can process it. Read notes.read first to obtain documentID and a resourceID that belongs to that document; pass expectedRevision when known. Writes only inside the task workspace (default inputs/<resourceID>-<fileName>); never modifies the document, never reads paths outside the granted document's own resources."
+    static let parametersJSON = #"{"type":"object","properties":{"documentID":{"type":"string"},"resourceID":{"type":"string"},"targetPath":{"type":"string","maxLength":512},"expectedRevision":{"type":"integer","minimum":1}},"required":["documentID","resourceID"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
+    static let isSideEffecting = true
+    static let maximumStagedBytes = 512 * 1_024 * 1_024
+
+    func validate(_ args: Arguments) throws {
+        guard (args.expectedRevision ?? 1) > 0, (args.targetPath ?? "").utf8.count <= 512 else {
+            throw NoteError.invalidOperation("暂存参数无效。")
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let store = try await NotesRepository.shared.store()
+        try await store.authorize(conversationID: context.conversationID, documentID: args.documentID, editing: false)
+        let document = try await store.document(args.documentID)
+        if let expected = args.expectedRevision, document.revision != expected { throw NoteError.conflict }
+        guard document.resourceIDs.contains(args.resourceID) else {
+            throw NoteError.invalidOperation("该资源不属于这份已授权文档。")
+        }
+        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation("任务没有工作区。") }
+        let defaultName = "inputs/\(args.resourceID.uuidString)-\(Self.sanitizedFileName(of: document, resourceID: args.resourceID))"
+        let relative = args.targetPath ?? defaultName
+        try context.authorizeWorkspacePath(relative)
+        let guardrail = WorkspacePathGuard(rootURL: root)
+        let destination = try guardrail.resolve(relative)
+        let source = try await store.resourceURL(args.resourceID)
+        let size = (try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard size <= Self.maximumStagedBytes else { throw NoteError.invalidOperation("附件超过 512 MB 暂存上限。") }
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
+        return try NotesReadTool.output([
+            "documentID": document.id.uuidString,
+            "resourceID": args.resourceID.uuidString,
+            "path": relative,
+            "bytes": String(size),
+            "status": "staged"
+        ])
+    }
+
+    private static func sanitizedFileName(of document: NoteDocument, resourceID: UUID) -> String {
+        let recorded = document.nodes
+            .flatMap { ($0.attachments ?? []) }
+            .first(where: { $0.resourceID == resourceID })?.fileName
+        let raw = recorded ?? "resource.bin"
+        let last = (raw as NSString).lastPathComponent
+        let allowed = last.unicodeScalars.map {
+            CharacterSet.alphanumerics.contains($0) || ".-_".unicodeScalars.contains($0) ? Character($0) : "-"
+        }
+        let cleaned = String(String(allowed).prefix(80))
+        return cleaned.isEmpty ? "resource.bin" : cleaned
+    }
+}
+
+/// Opening the dedicated document assistant grants the operations whose
+/// handlers are concretely scoped to that document or to this task's confined
+/// scratch workspace (see NotesAssistantToolCatalog). Execution tools
+/// additionally require a guest-confined session environment: without one the
+/// policy fails closed to the human card. External share/send actions,
+/// provider-backed semantic sends of document bytes, other documents,
+/// destructive or remote effects, and every non-local scope keep the human
+/// card; the catastrophic gate still runs first. Document text and tool
+/// output are never consulted to grant scope.
 struct NotesDocumentApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     let conversationID: UUID
     let store: NotesStore
+    /// True only when the run's session environment was ensured with an
+    /// explicit `.linuxVM` backend, so an auto-granted script executes inside
+    /// the task's own guest mounts (engine 9p share list + walk/symlink
+    /// enforcement), never in a shared or native interpreter.
+    let executionConfined: Bool
+    /// `TaskPolicy.networkAllowed != false`: the task's download/execution
+    /// policy. When false, network-capable calls (exec, shell, package
+    /// installs) escalate instead of inheriting scope.
+    let networkPermitted: Bool
     let policyName = "document-assistant"
+
+    init(conversationID: UUID, store: NotesStore, executionConfined: Bool = false, networkPermitted: Bool = true) {
+        self.conversationID = conversationID
+        self.store = store
+        self.executionConfined = executionConfined
+        self.networkPermitted = networkPermitted
+    }
 
     func requiresModelReview(_ action: ProposedAction) -> Bool { false }
 
     func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
-        guard action.toolCall.toolName == NotesEditTool.name,
-              case .local = action.toolCall.scope else {
+        guard case .local = action.toolCall.scope else {
             return try await HumanApprovalPolicy().decide(action)
         }
+        let name = action.toolCall.toolName
+        if name == NotesEditTool.name {
+            return try await decideDocumentEdit(action)
+        }
+        guard NotesAssistantToolCatalog.scopedAutoGrantToolNames.contains(name) else {
+            return try await HumanApprovalPolicy().decide(action)
+        }
+        if name == "exec.localPython" || name == "exec.shell" {
+            guard executionConfined else {
+                return .escalateToHuman(reason: "Script execution in a Notes task requires its own Linux guest environment; confirm to run this once while that is unavailable")
+            }
+            guard networkPermitted else {
+                return .escalateToHuman(reason: "This task's policy disallows network access; running scripts or installing packages needs your confirmation")
+            }
+        }
+        return .allow(scope: .init(toolName: name, singleUse: true), expiresAt: nil)
+    }
+
+    private func decideDocumentEdit(_ action: ProposedAction) async throws -> ApprovalDecision {
         struct Target: Decodable { let documentID: UUID }
         guard let target = try? JSONDecoder().decode(Target.self, from: action.toolCall.argumentsJSON),
               try await store.assistantConversation(documentID: target.documentID) == conversationID else {

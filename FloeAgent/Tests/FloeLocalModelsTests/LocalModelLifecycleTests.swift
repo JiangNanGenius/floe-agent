@@ -530,4 +530,30 @@ struct LocalModelLifecycleTests {
         #expect(error.kind == .contextOverflow)
         #expect(error.providerMessage.contains("9000"))
     }
+
+    @Test("GDN-family prefill chunk is capped at the validated 32; other families keep their tier batch")
+    @available(macOS 15.4, iOS 26.0, *)
+    func gdnPrefillChunkCeiling() {
+        let roomy = LocalInferenceResourceProfile(
+            tier: .roomy, contextSize: 16_384, batchSize: 128,
+            gpuLayers: 99, maximumOutputTokens: 1_536
+        )
+        let constrained = LocalInferenceResourceProfile(
+            tier: .constrained, contextSize: 8_192, batchSize: 32,
+            gpuLayers: 12, maximumOutputTokens: 1_024
+        )
+        for gdnID in ["qwen3.5-4b-mlx4", "qwen3.8-4b-heretic-mlx4", "qwen3.5-9b-q4km"] {
+            let adjusted = LocalModelRuntime.adjustedProfile(for: gdnID, profile: roomy)
+            #expect(adjusted.batchSize == 32, "\(gdnID) must cap the GDN prefill chunk")
+            #expect(adjusted.contextSize == roomy.contextSize)
+            #expect(adjusted.maximumOutputTokens == roomy.maximumOutputTokens)
+            #expect(adjusted.tier == roomy.tier)
+        }
+        // Already-validated constrained values are untouched.
+        #expect(LocalModelRuntime.adjustedProfile(for: "qwen3.5-4b-mlx4", profile: constrained).batchSize == 32)
+        // Non-GDN families keep their tier batch.
+        for otherID in ["gemma4-4b-mlx4", "llama3.2-3b-mlx4"] {
+            #expect(LocalModelRuntime.adjustedProfile(for: otherID, profile: roomy).batchSize == 128)
+        }
+    }
 }

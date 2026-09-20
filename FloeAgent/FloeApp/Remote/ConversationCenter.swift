@@ -13,6 +13,7 @@
 import Foundation
 import CryptoKit
 import FloeCore
+import FloeEnvironments
 import FloeModels
 import FloeAgentRuntime
 import FloeLocalModels
@@ -819,7 +820,40 @@ final class ConversationCenter: ObservableObject {
         } else {
             nil
         }
+        let conversationRecord = try? await environment.conversationStore.conversation(id: conversationID)
+        let isNotesAssistant = conversationRecord?.purpose == .notes
+        // Notes assistant runs get their own confined scratch workspace, not a
+        // project workspace lease: staged inputs and generated outputs live
+        // only there, and the workspace ceiling plus the guest share list
+        // confine every script to this task's own mounts.
+        let notesScratchRoot: URL? = if isNotesAssistant {
+            try? NotesRepository.assistantWorkspace(conversationID: conversationID)
+        } else {
+            nil
+        }
+        // The session environment for a Notes task is explicitly Linux-backed
+        // (never a shared or native interpreter): the approval policy
+        // auto-grants script execution only when this ensure succeeded.
+        var notesExecutionConfined = false
+        if let notesScratchRoot {
+            let workspaceID = FloeDigest.sha256Hex(
+                Data(notesScratchRoot.resolvingSymlinksInPath().standardizedFileURL.path.utf8)
+            )
+            if let record = try? await environment.environmentRegistry.ensureSessionContainer(
+                conversationID: conversationID.uuidString,
+                workspaceID: workspaceID,
+                workspaceRootPath: notesScratchRoot.path,
+                executionBackend: .linuxVM
+            ) {
+                notesExecutionConfined = record.executionBackend == .linuxVM
+            } else {
+                FloeLogger(category: .persistence).warning(
+                    "notesAssistantEnvironmentUnavailable conversation=\(conversationID)"
+                )
+            }
+        }
         let taskRootLease: WorkspaceCenter.TaskRootLease? = if runSurface == .ordinary,
+                                                              !isNotesAssistant,
                                                               let canonicalWorkspace {
             try? await environment.workspaceCenter.acquireTaskRoot(
                 canonicalWorkspace,
@@ -828,8 +862,11 @@ final class ConversationCenter: ObservableObject {
         } else {
             nil
         }
+        let runWorkspaceRoot = taskRootLease?.url ?? notesScratchRoot
         var workspaceAttachmentPaths = taskRootLease.map {
             importRunAttachments(currentUserAttachments, into: $0.url)
+        } ?? notesScratchRoot.map {
+            importRunAttachments(currentUserAttachments, into: $0)
         } ?? []
         if let root = taskRootLease?.url,
            let evidencePath = persistVisualEvidenceHandoff(
@@ -911,12 +948,19 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames = allowedToolNames.map { $0.intersection(withoutMemory) }
                 ?? withoutMemory
         }
-        if taskRootLease == nil {
+        if taskRootLease == nil && notesScratchRoot == nil {
             let nonWorkspace = Set(availableDescriptors.lazy
                 .map(\.name)
                 .filter { !$0.hasPrefix("workspace.") && !$0.hasPrefix("preview.") })
             allowedToolNames = allowedToolNames.map { $0.intersection(nonWorkspace) }
                 ?? nonWorkspace
+        }
+        if isNotesAssistant {
+            // Reduced catalog for the document assistant: scoped handlers
+            // only; external share/send and remote actions are not offered.
+            allowedToolNames = (allowedToolNames
+                ?? Set(availableDescriptors.map(\.name)))
+                .intersection(NotesAssistantToolCatalog.toolNames)
         }
         if runSurface != .canvas {
             // Canvas tools belong to canvas runs only. Offering them in
@@ -966,7 +1010,7 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames: allowedToolNames,
             preapprovedPythonScriptSHA256: skills.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: skills.preapprovedPythonPackages,
-            workspaceRootURL: taskRootLease?.url,
+            workspaceRootURL: runWorkspaceRoot,
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled,
             // Use the runtime's unbounded default. Progress/timeout guards,
@@ -999,7 +1043,11 @@ final class ConversationCenter: ObservableObject {
         return ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider),
-            policy: await approvalPolicy(for: taskPolicy, primaryModel: model),
+            policy: await approvalPolicy(
+                for: taskPolicy,
+                primaryModel: model,
+                notesExecutionConfined: notesExecutionConfined
+            ),
             executor: catalogExecutor,
             credentials: credentials,
             gate: environment.catastrophicGate,
@@ -1067,11 +1115,17 @@ final class ConversationCenter: ObservableObject {
     /// after device-owner authentication in the task inspector.
     private func approvalPolicy(
         for taskPolicy: TaskPolicy,
-        primaryModel: ModelProfile
+        primaryModel: ModelProfile,
+        notesExecutionConfined: Bool = false
     ) async -> any ApprovalPolicy {
         if (try? await environment.conversationStore.conversation(id: taskPolicy.conversationID))?.purpose == .notes,
            let store = try? await NotesRepository.shared.store() {
-            return NotesDocumentApprovalPolicy(conversationID: taskPolicy.conversationID, store: store)
+            return NotesDocumentApprovalPolicy(
+                conversationID: taskPolicy.conversationID,
+                store: store,
+                executionConfined: notesExecutionConfined,
+                networkPermitted: taskPolicy.networkAllowed != false
+            )
         }
         let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID
             ?? generalAuxiliaryProviderAndModel()?.1.id)

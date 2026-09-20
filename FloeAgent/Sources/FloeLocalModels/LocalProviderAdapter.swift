@@ -690,16 +690,18 @@ public actor LocalModelRuntime {
                 )
             }
             let availableMemory = viable.availableBytes
-            let profile = LocalInferenceResourcePolicy.profile(
+            let measuredProfile = LocalInferenceResourcePolicy.profile(
                 mappedBytes: mappedBytes,
                 // Re-evaluate the tier for every load. Background tasks,
                 // decoded images and a previously loaded model can all change
                 // the process allowance without changing installed RAM.
                 physicalMemoryBytes: availableMemory
             )
+            let profile = Self.adjustedProfile(for: modelID, profile: measuredProfile)
+            let gdnChunkCapped = profile.batchSize != measuredProfile.batchSize
             let loadStartedAt = Date()
             FloeLogger(category: .providers).info(
-                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) settleSamples=\(samples.count - 1)"
+                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) gdnChunkCapped=\(gdnChunkCapped) settleSamples=\(samples.count - 1)"
             )
             let loaded: any LocalModelTextEngine
             do {
@@ -802,6 +804,39 @@ public actor LocalModelRuntime {
         loadState = .unloaded
         FloeLogger(category: .providers).info(
             "localInferenceEngineReleased reason=\(reason) model=\(prepared.key.modelID) vision=\(prepared.key.includesVisionProjector)"
+        )
+    }
+
+    /// Qwen3.5/3.8 gated-delta-net prefill chunk ceiling — a targeted
+    /// mitigation pending device evidence, not a proven root-cause fix.
+    /// Build211 dSYM symbolication terminates at
+    /// `Qwen35GatedDeltaNet.generalConv` (`Qwen35.swift:445`, the conv-state
+    /// slice) during chunked prefill. Inspection of the pinned upstream code
+    /// shows the slice's shape preconditions hold on every path reachable
+    /// from Floe's single-batch, fresh-cache, one-prefill-per-generation
+    /// usage, so the abort is consistent with — not proof of — a Metal
+    /// evaluation failure whose transient graph scales with the chunk size.
+    /// The constrained tier already ships 32 as the validated chunk for this
+    /// abort class (see the Gemma comment in LocalInferenceResourcePolicy);
+    /// larger tiers get the same ceiling for the GDN family only, trading
+    /// prefill latency for a smaller, already-validated per-eval graph.
+    /// Model IDs are the curated catalog IDs (`qwen3.5-4b-mlx4`,
+    /// `qwen3.8-4b-heretic-mlx4`, …); every other family keeps its profile.
+    static func adjustedProfile(
+        for modelID: String,
+        profile: LocalInferenceResourceProfile
+    ) -> LocalInferenceResourceProfile {
+        let gdnPrefillChunkCeiling: UInt32 = 32
+        let gdnPrefixes = ["qwen3.5", "qwen3.8", "qwen3-next", "qwen3next"]
+        let lower = modelID.lowercased()
+        guard gdnPrefixes.contains(where: { lower.hasPrefix($0) }),
+              profile.batchSize > gdnPrefillChunkCeiling else { return profile }
+        return LocalInferenceResourceProfile(
+            tier: profile.tier,
+            contextSize: profile.contextSize,
+            batchSize: gdnPrefillChunkCeiling,
+            gpuLayers: profile.gpuLayers,
+            maximumOutputTokens: profile.maximumOutputTokens
         )
     }
 
@@ -1013,6 +1048,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         )
                     }
                     if let deferred = completion.deferredToolCall {
+                        FloeLogger(category: .providers).info(
+                            "localToolGapBegan model=\(request.model.remoteModelID) tool=\(deferred.toolName) engineUnloaded=true phase=toolExecution"
+                        )
                         continuation.yield(.toolRequest(deferred))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                         continuation.finish()
@@ -1030,10 +1068,26 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         FloeLogger(category: .providers).warning(
                             "localToolInvocationRepairStarted model=\(request.model.remoteModelID) outputCharacters=\(channels.answer.count) selectedTools=\(promptBuild.selectedToolCount)"
                         )
+                        // The repair only needs to re-emit the invocation,
+                        // but "继续" / "把它导出" style requests reference
+                        // earlier files, tool results and the unfinished
+                        // objective — a latest-user-text-only prompt would
+                        // disconnect the call from its referents. Build a
+                        // bounded referential prompt instead of replaying
+                        // the whole transcript: recent turns, the settled
+                        // and pending tool evidence with their call IDs, the
+                        // full current request, then the directive. Build211
+                        // crash evidence terminates inside the Qwen3.5 GDN
+                        // prefill graph, so this stays byte-bounded instead
+                        // of a second full prefill.
+                        let repairPrompt = Self.repairPrompt(
+                            for: request,
+                            directive: "Your previous answer did not invoke a tool. Perform the requested action now using exactly one offered tool."
+                        )
                         let repair = try await runtime.completeMeasured(
                             modelID: request.model.remoteModelID,
                             instructions: promptBuild.systemInstructions + "\n\nRepair the missing invocation using exactly one offered tool. Preserve the same user request, capability and approval boundaries. Never claim the action succeeded.",
-                            prompt: prompt + "\n\nYour previous answer did not invoke a tool. Perform the requested action now using exactly one offered tool.",
+                            prompt: repairPrompt,
                             images: [],
                             tools: promptBuild.selectedTools,
                             maxTokens: 256
@@ -1085,6 +1139,13 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         tokensPerSecond: completion.tokensPerSecond
                     )))
                     if let call = parsedToolCall {
+                        // Phase marker for crash-report triage: the resident
+                        // engine is already unloaded at this point (see
+                        // finishSuccess), so a termination after this line is
+                        // inside the tool-execution gap, not inside decode.
+                        FloeLogger(category: .providers).info(
+                            "localToolGapBegan model=\(request.model.remoteModelID) tool=\(call.toolName) engineUnloaded=true phase=toolExecution"
+                        )
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                     } else {
@@ -1671,7 +1732,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
             "image.ocr", "document.pdf.inspect", "document.pdf.render",
             "exec.localPython", "exec.javascript", "exec.compatEvaluator",
             "memory.recall", "git.status", "git.diff", "git.log",
-            "conversation.search", "conversation.read"
+            "conversation.search", "conversation.read", "conversation.list",
+            // Bounded document-assistant handlers: read/search are read-only,
+            // edit stays behind the Notes approval policy like anywhere else.
+            // Heavier surfaces (attachFile/stageAttachment) stay cloud-side.
+            "notes.read", "notes.search", "notes.edit"
     ]
 
     private static func selectTools(
@@ -1693,6 +1758,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
             (["历史", "过往", "以前", "之前", "聊天记录", "任务历史", "过往任务", "查找历史",
               "history", "previous", "earlier", "chat history", "past task", "conversation history"],
              ["conversation."]),
+            (["手记", "导图", "笔记", "思维导图", "主题", "note", "notes", "mindmap", "mind map", "topic"],
+             ["notes."]),
             (["git", "github", "版本控制", "源码管理", "代码仓库", "仓库", "分支", "提交", "暂存", "克隆", "拉取", "推送",
               "source control", "repository", "repo", "branch", "commit", "stage", "clone", "fetch", "pull", "push"],
              ["git.", "github.", "cloudworkspace.git"]),
@@ -1917,6 +1984,55 @@ public struct LocalProviderAdapter: ProviderAdapter {
             reasoning: reasoningParts.joined(separator: "\n\n"),
             answer: answer
         )
+    }
+
+    /// Bounded referential prompt for the tool-invocation repair pass.
+    /// Sections (all byte-clipped, newest-first where budget is tight):
+    /// the unfinished objective from the latest user turn, settled and
+    /// pending tool evidence with call IDs, and the newest recent turns so
+    /// references like "继续" or "把它导出" still resolve. Old bulk transcript
+    /// never enters the repair prefill.
+    static func repairPrompt(
+        for request: ProviderStreamRequest,
+        directive: String
+    ) -> String {
+        func text(of message: ProviderMessage) -> String {
+            message.content.compactMap { part -> String? in
+                if case .text(let value) = part { return value }
+                return nil
+            }.joined(separator: "\n")
+        }
+        var sections: [String] = []
+        // Chronological: recent turns → settled tool work → pending
+        // call/results → the full current request → directive.
+        let recentTurns = request.effectiveMessages
+            .filter { $0.role == "user" || $0.role == "assistant" }
+            .suffix(4)
+            .dropLast(1)
+        for message in recentTurns {
+            let body = clipped(text(of: message), limit: 600)
+            guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            sections.append("\(message.role.uppercased()): \(body)")
+        }
+        for pair in request.replayedToolPairs.suffix(2) {
+            let call = pair.call
+            let result = pair.result
+            sections.append("""
+            EARLIER TOOL CALL \(call.toolName) id=\(call.id) args=\(clipped(String(decoding: call.argumentsJSON, as: UTF8.self), limit: 320))
+            EARLIER TOOL RESULT id=\(result.callID) status=\(result.status.rawValue) \(clipped(result.outputSummary, limit: 520))
+            """)
+        }
+        for call in request.pendingToolCalls.suffix(2) {
+            sections.append("ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) \(clipped(String(decoding: call.argumentsJSON, as: UTF8.self), limit: 500))")
+        }
+        for result in request.toolResults.suffix(2) {
+            sections.append("TOOL RESULT \(result.callID): \(clipped(result.output, limit: 700))")
+        }
+        if let latestUser = request.effectiveMessages.last(where: { $0.role == "user" }) {
+            sections.append("USER: \(clipped(text(of: latestUser), limit: 4_096))")
+        }
+        sections.append(directive)
+        return sections.joined(separator: "\n\n")
     }
 
     private static func clipped(_ text: String, limit: Int) -> String {

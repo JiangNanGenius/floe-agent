@@ -113,6 +113,7 @@ struct NotesMindMapWindow: View {
     @State private var images: [UUID: Data] = [:]
     @State private var selected: UUID?
     @State private var inspector: MindMapNode?
+    @State private var topicActions: MindMapTopicActions?
     let onAssistant: (NoteDocument) -> Void
     @State private var expanded = false
     @AppStorage private var relativeX: Double
@@ -178,6 +179,7 @@ struct NotesMindMapWindow: View {
                 .offset(x: x, y: y)
         }
         .task(id: link.documentID) {
+            topicActions = nil
             await session.open(using: parentSession.store)
             if let map = session.documents.first(where: { $0.id == link.documentID }) { await session.select(map) }
         }
@@ -210,6 +212,10 @@ struct NotesMindMapWindow: View {
                         Button("完整编辑器", systemImage: "arrow.up.forward.app") {
                             Task { if let map = session.document { await parentSession.select(map); close() } }
                         }
+                        Button("notes.mindmap.addChild", systemImage: "arrow.turn.down.right") { topicActions?.addChild() }
+                            .disabled(topicActions?.isEnabled != true)
+                        Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { topicActions?.addSibling() }
+                            .disabled(topicActions?.isEnabled != true || topicActions?.canAddSibling != true)
                         Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
                             .disabled(!session.canUndo || session.pendingWrites > 0)
                         Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
@@ -232,6 +238,12 @@ struct NotesMindMapWindow: View {
             if let document = session.document, document.deletedAt == nil {
                 if !condensed {
                   HStack(spacing: 16) {
+                    Button("notes.mindmap.addChild", systemImage: "arrow.turn.down.right") { topicActions?.addChild() }
+                        .disabled(topicActions?.isEnabled != true)
+                        .accessibilityIdentifier("notes.mindmap.addChild")
+                    Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { topicActions?.addSibling() }
+                        .disabled(topicActions?.isEnabled != true || topicActions?.canAddSibling != true)
+                        .accessibilityIdentifier("notes.mindmap.addSibling")
                     Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }.disabled(!session.canUndo)
                     Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }.disabled(!session.canRedo)
                     Button("主题附件", systemImage: "paperclip") { inspector = selectedNode }
@@ -243,7 +255,7 @@ struct NotesMindMapWindow: View {
                 }
                 NoteMindMapView(document: document, onEdit: { edits, revision in
                     try await session.commit(edits, documentID: document.id, expectedRevision: revision)
-                }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 }, images: images, onSelection: { selected = $0 })
+                }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 }, images: images, onSelection: { selected = $0 }, onTopicActions: { topicActions = $0 })
             } else {
                 ContentUnavailableView("导图不可用", systemImage: "doc.questionmark", description: Text("请在文档导图列表中检查关联或从回收站恢复。"))
             }

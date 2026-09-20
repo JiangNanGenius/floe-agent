@@ -735,6 +735,15 @@ let package = Package(
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")
             ]
+        ),
+        .testTarget(
+            name: "FloeNotesTests",
+            dependencies: ["FloeNotes"],
+            path: "Tests/FloeNotesTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
         )
     ]
 )

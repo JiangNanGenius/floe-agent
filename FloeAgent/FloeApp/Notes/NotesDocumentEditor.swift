@@ -19,6 +19,7 @@ struct NotesDocumentEditor: View {
     @State private var elementImages: [UUID: Data] = [:]
     @State private var mapImages: [UUID: Data] = [:]
     @State private var selectedMapNodeID: UUID?
+    @State private var mapTopicActions: MindMapTopicActions?
     @State private var mapImageTargetID: UUID?
     @State private var importingImage = false
     @State private var inspectingElement: NoteElement?
@@ -150,7 +151,8 @@ struct NotesDocumentEditor: View {
                 else { NoteMindMapView(document: document, onEdit: { edits, revision in
                     try await session.commit(edits, documentID: document.id, expectedRevision: revision)
                 }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 },
-                   images: mapImages, onSelection: { selectedMapNodeID = $0 }) }
+                   images: mapImages, onSelection: { selectedMapNodeID = $0 },
+                   onTopicActions: { mapTopicActions = $0 }) }
             } else if let page {
                 writingTools
                 Divider()
@@ -192,6 +194,7 @@ struct NotesDocumentEditor: View {
         .background(Color(uiColor: .secondarySystemBackground))
         .allowsHitTesting(!session.isSwitchingDocument)
         .onChange(of: pageID) { _, _ in showingPencilMenu = false; rememberEditor() }
+        .onChange(of: document.id) { _, _ in mapTopicActions = nil }
         .onChange(of: tool) { _, _ in showingPencilMenu = false; rememberEditor() }
         .onChange(of: scenePhase) { _, value in
             if value != .active { rememberEditor(); session.persistTabs() }
@@ -505,6 +508,14 @@ struct NotesDocumentEditor: View {
                 Button("页面", systemImage: "rectangle.stack") { showPages = true }
                     .frame(minWidth: 44, minHeight: 44)
             } else if document.kind == .mindMap {
+                Button("notes.mindmap.addChild", systemImage: "arrow.turn.down.right") { mapTopicActions?.addChild() }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .disabled(mapTopicActions?.isEnabled != true)
+                    .accessibilityIdentifier("notes.mindmap.addChild")
+                Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { mapTopicActions?.addSibling() }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .disabled(mapTopicActions?.isEnabled != true || mapTopicActions?.canAddSibling != true)
+                    .accessibilityIdentifier("notes.mindmap.addSibling")
                 Button("主题内容与附件", systemImage: "paperclip") { topicToInspect = selectedMapNode }
                     .frame(minWidth: 44, minHeight: 44)
                     .disabled(selectedMapNode == nil || session.pendingWrites > 0)

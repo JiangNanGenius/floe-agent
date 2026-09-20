@@ -16,6 +16,11 @@ struct NoteMindMapView: View {
     let onError: (String) -> Void
     var images: [UUID: Data] = [:]
     var onSelection: (UUID?) -> Void = { _ in }
+    /// The add-child/add-sibling actions live in the surrounding editor's own
+    /// compact icon control group (document header or floating-window row),
+    /// not in a second floating cluster over the canvas. The view publishes
+    /// fresh actions whenever selection or busy state changes.
+    var onTopicActions: (MindMapTopicActions) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var viewport = CanvasViewportTransform(scale: 1, pan: .zero)
@@ -33,6 +38,7 @@ struct NoteMindMapView: View {
     @State private var fittedKey: String?
     @State private var decodedImages: [UUID: UIImage] = [:]
     @State private var panBaseline: CGSize?
+    @State private var frameCache = MindMapFrameCache()
     @FocusState private var keyboardFocused: Bool
 
     // MARK: - Layout
@@ -51,8 +57,12 @@ struct NoteMindMapView: View {
         return output
     }
 
+    /// Layout frames are expensive enough to cache by content: SwiftUI
+    /// re-evaluates body on every gesture tick, and recomputing the whole
+    /// tree per evaluation showed up as the map's main cost. The key is the
+    /// document plus measured sizes, so any real change still re-lays out.
     private var frames: [UUID: NoteRect] {
-        MindMapLayout.frames(document: document, sizes: sizes)
+        frameCache.frames(document: document, sizes: sizes, includeCollapsed: false)
     }
 
     private var renderedFrames: [UUID: NoteRect] {
@@ -109,7 +119,6 @@ struct NoteMindMapView: View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
                 mapCanvas(size: geometry.size)
-                toolbarOverlay
                 MindMapMultiTouchNavigator(
                     onActiveChanged: { active in
                         isMultiTouchNavigating = active
@@ -169,6 +178,22 @@ struct NoteMindMapView: View {
         .focused($keyboardFocused)
         .onAppear { keyboardFocused = true }
         .onKeyPress { press in handleKeyPress(press) }
+        .onAppear { publishTopicActions() }
+        .onChange(of: selectedID) { _, _ in publishTopicActions() }
+        .onChange(of: editingID) { _, _ in publishTopicActions() }
+        .onChange(of: committing) { _, _ in publishTopicActions() }
+        .onChange(of: document.nodes) { _, _ in publishTopicActions() }
+    }
+
+    private func publishTopicActions() {
+        onTopicActions(MindMapTopicActions(
+            isEnabled: !committing && editingID == nil,
+            // The root topic has no siblings; without a non-root reference
+            // there is nothing a sibling could attach to.
+            canAddSibling: referenceNode?.parentID != nil,
+            addChild: { addTopic(sibling: false) },
+            addSibling: { addTopic(sibling: true) }
+        ))
     }
 
     private func fitIfNeeded(in size: CGSize, force: Bool = false) {
@@ -176,36 +201,6 @@ struct NoteMindMapView: View {
         guard force || fittedKey != key else { return }
         fittedKey = key
         fit(in: size)
-    }
-
-    @ViewBuilder private var toolbarOverlay: some View {
-        HStack(spacing: 2) {
-            Button {
-                addTopic(sibling: false)
-            } label: {
-                Label("notes.mindmap.addChild", systemImage: "arrow.turn.down.right")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 44, height: 44)
-            }
-            .help("notes.mindmap.addChild.help")
-            .disabled(committing || editingID != nil)
-            .accessibilityIdentifier("notes.mindmap.addChild")
-            Button {
-                addTopic(sibling: true)
-            } label: {
-                Label("notes.mindmap.addSibling", systemImage: "arrow.turn.right")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 44, height: 44)
-            }
-            .help("notes.mindmap.addSibling.help")
-            .disabled(committing || editingID != nil)
-            .accessibilityIdentifier("notes.mindmap.addSibling")
-        }
-        .buttonStyle(NotesToolbarButtonStyle())
-        .padding(6)
-        .background(.bar, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.top, 10)
-        .padding(.leading, 10)
     }
 
     private func mapCanvas(size: CGSize) -> some View {
@@ -339,7 +334,7 @@ struct NoteMindMapView: View {
                     if mode == .subtree {
                         moving.formUnion(MindMapLayout.descendants(of: node.id, in: document).map(\.id))
                     }
-                    let fullFrames = MindMapLayout.frames(document: document, sizes: sizes, includeCollapsed: true)
+                    let fullFrames = frameCache.frames(document: document, sizes: sizes, includeCollapsed: true)
                     drag = NodeDrag(nodeID: node.id, mode: mode, movingIDs: moving,
                                     pinFrames: fullFrames, translation: .zero)
                 }
@@ -654,6 +649,16 @@ struct NoteMindMapView: View {
 
 // MARK: - Node card
 
+/// Add-child/add-sibling surface handed to the surrounding editor's own
+/// control group. Closures capture the view's current state boxes, so the
+/// host renders plain buttons and never reaches into editor state.
+struct MindMapTopicActions {
+    let isEnabled: Bool
+    let canAddSibling: Bool
+    let addChild: @MainActor () -> Void
+    let addSibling: @MainActor () -> Void
+}
+
 private struct MindMapNodeCard: View {
     let node: MindMapNode
     let isSelected: Bool
@@ -781,6 +786,32 @@ private struct MindMapNodeSizeKey: PreferenceKey {
     static let defaultValue: [UUID: CGSize] = [:]
     static func reduce(value: inout [UUID: CGSize], nextValue: () -> [UUID: CGSize]) {
         nextValue().forEach { value[$0.key] = $0.value }
+    }
+}
+
+/// Memoizes one layout pass per (document, sizes, collapsed-set) key. View
+/// structs are recreated every evaluation, so the cache lives in a reference
+/// box held in @State; misses compute through the memoized O(n) layout pass.
+private final class MindMapFrameCache {
+    private struct Key: Equatable {
+        let document: NoteDocument
+        let sizes: [UUID: MindMapSize]
+        let includeCollapsed: Bool
+    }
+    private var key: Key?
+    private var value: [UUID: NoteRect] = [:]
+
+    func frames(document: NoteDocument, sizes: [UUID: MindMapSize], includeCollapsed: Bool) -> [UUID: NoteRect] {
+        let key = Key(document: document, sizes: sizes, includeCollapsed: includeCollapsed)
+        if self.key == key { return value }
+        let frames = MindMapLayout.frames(
+            document: document,
+            sizes: sizes,
+            includeCollapsed: includeCollapsed
+        )
+        self.key = key
+        self.value = frames
+        return frames
     }
 }
 

@@ -163,6 +163,50 @@ struct LocalReplayedToolEvidenceTests {
         #expect(!local.text.contains("EARLIER COMPLETED TOOL WORK"))
     }
 
+    @Test("The repair prompt keeps bounded referential context instead of the whole transcript")
+    @available(macOS 15.4, *)
+    func repairPromptKeepsReferentialContext() throws {
+        let settledCall = try ToolCall(
+            id: "call-7",
+            toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":"exports/summary.md"}"#.utf8),
+            scope: .local
+        )
+        let settled = ReplayedToolPair(
+            call: settledCall,
+            result: ToolResult(
+                callID: "call-7",
+                status: .ok,
+                outputSummary: "Read exports/summary.md: 12 sections ready for export.",
+                outputDigest: "digest"
+            )
+        )
+        var request = try request(replayedPairs: [settled])
+        // An early bulk turn that must never enter the repair prefill, with
+        // enough later turns that it falls outside the bounded recent window.
+        request.messages.insert(
+            (role: "user", content: "BULK-MARKER " + String(repeating: "old transcript ", count: 400)),
+            at: 1
+        )
+        request.messages.append((role: "user", content: "先总结一下这份文件"))
+        request.messages.append((role: "assistant", content: "我已经读完了 exports/summary.md，可以导出。"))
+        request.messages.append((role: "user", content: "继续，把它导出为 PDF"))
+        let prompt = LocalProviderAdapter.repairPrompt(
+            for: request,
+            directive: "REPAIR-DIRECTIVE"
+        )
+        // Referents survive: the settled file, the assistant's last turn, the
+        // current continuation request and the call IDs.
+        #expect(prompt.contains("exports/summary.md"))
+        #expect(prompt.contains("call-7"))
+        #expect(prompt.contains("继续，把它导出为 PDF"))
+        #expect(prompt.contains("我已经读完了"))
+        #expect(prompt.contains("REPAIR-DIRECTIVE"))
+        // Old bulk transcript stays out of the second prefill.
+        #expect(!prompt.contains("BULK-MARKER"))
+        #expect(prompt.count < 8_000)
+    }
+
     @Test("The replay projection stays bounded and keeps the newest pairs")
     @available(macOS 15.4, *)
     func replayProjectionIsBounded() throws {
@@ -210,14 +254,33 @@ struct LocalReplayedToolEvidenceTests {
 @Suite("Local cross-task history admission")
 struct LocalHistoryAdmissionTests {
     @Test("Conversation tools are admissible for MLX models and excluded for Apple Foundation Models")
+    @available(macOS 15.4, *)
     func conversationToolsAreMLXAdmissible() {
-        let names: Set<String> = ["conversation.search", "conversation.read", "workspace.readFile", "ssh.execute"]
+        let names: Set<String> = ["conversation.search", "conversation.read", "conversation.list", "workspace.readFile", "ssh.execute"]
         let mlx = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: "qwen3.8-4b-heretic-mlx4")
         #expect(mlx.contains("conversation.search"))
         #expect(mlx.contains("conversation.read"))
+        #expect(mlx.contains("conversation.list"))
         #expect(!mlx.contains("ssh.execute"))
         let apple = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: AppleFoundationModelIdentity.remoteModelID)
-        #expect(apple.isDisjoint(with: ["conversation.search", "conversation.read"]))
+        #expect(apple.isDisjoint(with: ["conversation.search", "conversation.read", "conversation.list"]))
+    }
+
+    @Test("Bounded Notes tools are admissible for MLX models")
+    @available(macOS 15.4, *)
+    func notesToolsAreMLXAdmissible() {
+        let names: Set<String> = [
+            "notes.read", "notes.search", "notes.edit",
+            "notes.attachFile", "notes.stageAttachment", "mail.send"
+        ]
+        let mlx = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: "qwen3.8-4b-heretic-mlx4")
+        #expect(mlx.contains("notes.read"))
+        #expect(mlx.contains("notes.search"))
+        #expect(mlx.contains("notes.edit"))
+        // Heavier staging surfaces stay cloud-side; external sends stay out.
+        #expect(!mlx.contains("notes.attachFile"))
+        #expect(!mlx.contains("notes.stageAttachment"))
+        #expect(!mlx.contains("mail.send"))
     }
 
     @Test("Chinese and English history intents select the conversation pair")

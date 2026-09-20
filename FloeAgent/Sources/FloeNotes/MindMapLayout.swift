@@ -47,11 +47,13 @@ public enum MindMapLayout {
         includeCollapsed: Bool = false
     ) -> [UUID: NoteRect] {
         guard let root = document.nodes.first(where: { $0.parentID == nil }) else { return [:] }
+        // One pass builds the children index and memoizes subtree heights:
+        // previously every sibling re-walked its whole subtree and every
+        // parent re-filtered the full node list, making each layout O(n²)
+        // or worse on a per-body-evaluation hot path. Output is unchanged.
+        let pass = LayoutPass(document: document, sizes: sizes, metrics: metrics, includeCollapsed: includeCollapsed)
         var output: [UUID: NoteRect] = [:]
-        let direction = normalizedDirection(document.mindMapDirection)
-        place(root, originX: nil, centerY: 0, inheritedSide: direction == 0 ? 0 : 1,
-              direction: direction, document: document, sizes: sizes, metrics: metrics,
-              includeCollapsed: includeCollapsed, output: &output)
+        pass.place(root, originX: nil, centerY: 0, inheritedSide: pass.direction == 0 ? 0 : 1, output: &output)
         return output
     }
 
@@ -88,7 +90,7 @@ public enum MindMapLayout {
         guard let parent = document.nodes.first(where: { $0.id == parentID }) else { return nil }
         let fallback = NoteRect(x: 0, y: 0, width: metrics.defaultNodeWidth, height: metrics.defaultNodeHeight)
         let parentFrame = frames[parentID] ?? fallback
-        let sign = childSide(parent: parent, direction: normalizedDirection(document.mindMapDirection)) == 0 ? -1.0 : 1.0
+        let sign = childSide(parent: parent, document: document) == 0 ? -1.0 : 1.0
         let centerX = parentFrame.x + parentFrame.width / 2
             + sign * (parentFrame.width / 2 + metrics.horizontalGap + metrics.defaultNodeWidth / 2)
         let centerY: Double
@@ -117,112 +119,150 @@ public enum MindMapLayout {
 
     /// Direction the given parent's children grow toward in this document.
     public static func childSide(parent: MindMapNode, document: NoteDocument) -> Side {
-        childSide(parent: parent, direction: normalizedDirection(document.mindMapDirection))
+        switch normalizedDirection(document.mindMapDirection) {
+        case 0: return 0
+        case 1: return 1
+        default:
+            if let override = parent.direction, override == 0 || override == 1 { return override }
+            return 1
+        }
     }
 
     // MARK: - Private
 
+    /// Per-`frames` workspace: children indexed once in display order and
+    /// subtree heights memoized, so one layout pass is O(n) instead of
+    /// re-walking subtrees per sibling. Pure value semantics on the outside;
+    /// the class box is scoped to a single pass and never shared.
+    private final class LayoutPass {
+        let sizes: [UUID: MindMapSize]
+        let metrics: MindMapLayoutMetrics
+        let includeCollapsed: Bool
+        let direction: Int
+        private var childrenByParent: [UUID: [MindMapNode]] = [:]
+        private var measuredHeights: [UUID: Double] = [:]
+
+        init(document: NoteDocument, sizes: [UUID: MindMapSize], metrics: MindMapLayoutMetrics, includeCollapsed: Bool) {
+            self.sizes = sizes
+            self.metrics = metrics
+            self.includeCollapsed = includeCollapsed
+            self.direction = MindMapLayout.normalizedDirection(document.mindMapDirection)
+            var map: [UUID: [MindMapNode]] = [:]
+            for node in document.nodes {
+                guard let parentID = node.parentID else { continue }
+                map[parentID, default: []].append(node)
+            }
+            for (parentID, children) in map {
+                map[parentID] = children.sorted {
+                    $0.order == $1.order ? $0.id.uuidString < $1.id.uuidString : $0.order < $1.order
+                }
+            }
+            childrenByParent = map
+        }
+
+        /// Children that take part in layout: the topic itself always shows,
+        /// but a collapsed topic hides its whole subtree.
+        func layoutChildren(of node: MindMapNode) -> [MindMapNode] {
+            guard includeCollapsed || !node.isCollapsed else { return [] }
+            return childrenByParent[node.id] ?? []
+        }
+
+        func resolvedSize(_ node: MindMapNode) -> MindMapSize {
+            if let size = sizes[node.id], size.isValid { return size }
+            return MindMapSize(width: metrics.defaultNodeWidth, height: metrics.defaultNodeHeight)
+        }
+
+        /// Subtree column height, memoized per node within this pass.
+        func measure(_ node: MindMapNode) -> Double {
+            if let cached = measuredHeights[node.id] { return cached }
+            let size = resolvedSize(node)
+            let children = layoutChildren(of: node)
+            let value: Double
+            if children.isEmpty {
+                value = size.height
+            } else {
+                let sum = children.reduce(0.0) { $0 + measure($1) }
+                value = max(size.height, sum + Double(children.count - 1) * metrics.siblingGap)
+            }
+            measuredHeights[node.id] = value
+            return value
+        }
+
+        func childSide(parent: MindMapNode) -> Side {
+            if direction == 0 { return 0 }
+            if direction == 1 { return 1 }
+            if let override = parent.direction, override == 0 || override == 1 { return override }
+            return 1
+        }
+
+        /// Balanced-mode side assignment for one parent's children.
+        /// Deterministic: children visit in display order and join the
+        /// lighter column unless a per-topic direction override pins them.
+        func balancedAssignment(parent: MindMapNode) -> [UUID: Side] {
+            let children = layoutChildren(of: parent)
+            var weights: [UUID: Double] = [:]
+            func weight(_ node: MindMapNode) -> Double {
+                if let cached = weights[node.id] { return cached }
+                let value = 1 + layoutChildren(of: node).reduce(0.0) { $0 + weight($1) }
+                weights[node.id] = value
+                return value
+            }
+            var assignment: [UUID: Side] = [:]
+            var totals: [Side: Double] = [0: 0, 1: 0]
+            for child in children {
+                if let override = child.direction, override == 0 || override == 1 {
+                    assignment[child.id] = override
+                    totals[override, default: 0] += weight(child)
+                } else {
+                    let target = (totals[0] ?? 0) <= (totals[1] ?? 0) ? 0 : 1
+                    assignment[child.id] = target
+                    totals[target, default: 0] += weight(child)
+                }
+            }
+            return assignment
+        }
+
+        func place(
+            _ node: MindMapNode,
+            originX: Double?,
+            centerY: Double,
+            inheritedSide: Side,
+            output: inout [UUID: NoteRect]
+        ) {
+            let size = resolvedSize(node)
+            let frame: NoteRect
+            if let position = node.position, position.isValid {
+                frame = NoteRect(x: position.x - size.width / 2, y: position.y - size.height / 2,
+                                 width: size.width, height: size.height)
+            } else if let originX {
+                frame = NoteRect(x: originX, y: centerY - size.height / 2, width: size.width, height: size.height)
+            } else {
+                frame = NoteRect(x: -size.width / 2, y: -size.height / 2, width: size.width, height: size.height)
+            }
+            output[node.id] = frame
+
+            let children = layoutChildren(of: node)
+            guard !children.isEmpty else { return }
+            let assignment = direction == 2 ? balancedAssignment(parent: node) : [:]
+            let columnHeight = children.reduce(0.0) { $0 + measure($1) }
+                + Double(children.count - 1) * metrics.siblingGap
+            var cursor = (frame.y + frame.height / 2) - columnHeight / 2
+            for child in children {
+                let side = direction == 2 ? (assignment[child.id] ?? inheritedSide) : inheritedSide
+                let sign = side == 0 ? -1.0 : 1.0
+                let childSize = resolvedSize(child)
+                let childOriginX = sign < 0
+                    ? frame.x - metrics.horizontalGap - childSize.width
+                    : frame.x + frame.width + metrics.horizontalGap
+                let childCenterY = cursor + measure(child) / 2
+                place(child, originX: childOriginX, centerY: childCenterY, inheritedSide: side, output: &output)
+                cursor += measure(child) + metrics.siblingGap
+            }
+        }
+    }
+
     private static func normalizedDirection(_ value: Int?) -> Int {
         guard let value, (0...2).contains(value) else { return 2 }
         return value
-    }
-
-    /// Children that take part in layout: the topic itself always shows, but a
-    /// collapsed topic hides its whole subtree.
-    private static func layoutChildren(of node: MindMapNode, in document: NoteDocument, includeCollapsed: Bool = false) -> [MindMapNode] {
-        guard includeCollapsed || !node.isCollapsed else { return [] }
-        return orderedChildren(of: node.id, in: document)
-    }
-
-    private static func childSide(parent: MindMapNode, direction: Int) -> Side {
-        if direction == 0 { return 0 }
-        if direction == 1 { return 1 }
-        if let override = parent.direction, override == 0 || override == 1 { return override }
-        return 1
-    }
-
-    /// Balanced-mode side assignment for one parent's children. Deterministic:
-    /// children visit in display order and join the lighter column unless a
-    /// per-topic direction override pins them.
-    private static func balancedAssignment(parent: MindMapNode, in document: NoteDocument, includeCollapsed: Bool = false) -> [UUID: Side] {
-        let children = layoutChildren(of: parent, in: document, includeCollapsed: includeCollapsed)
-        var weights: [UUID: Double] = [:]
-        func weight(_ node: MindMapNode) -> Double {
-            if let cached = weights[node.id] { return cached }
-            let value = 1 + layoutChildren(of: node, in: document, includeCollapsed: includeCollapsed).reduce(0.0) { $0 + weight($1) }
-            weights[node.id] = value
-            return value
-        }
-        var assignment: [UUID: Side] = [:]
-        var totals: [Side: Double] = [0: 0, 1: 0]
-        for child in children {
-            if let override = child.direction, override == 0 || override == 1 {
-                assignment[child.id] = override
-                totals[override, default: 0] += weight(child)
-            } else {
-                let target = (totals[0] ?? 0) <= (totals[1] ?? 0) ? 0 : 1
-                assignment[child.id] = target
-                totals[target, default: 0] += weight(child)
-            }
-        }
-        return assignment
-    }
-
-    private static func measure(_ node: MindMapNode, document: NoteDocument, sizes: [UUID: MindMapSize], metrics: MindMapLayoutMetrics, includeCollapsed: Bool = false) -> Double {
-        let size = resolvedSize(node, sizes: sizes, metrics: metrics)
-        let children = layoutChildren(of: node, in: document, includeCollapsed: includeCollapsed)
-        guard !children.isEmpty else { return size.height }
-        let sum = children.reduce(0.0) { $0 + measure($1, document: document, sizes: sizes, metrics: metrics, includeCollapsed: includeCollapsed) }
-        return max(size.height, sum + Double(children.count - 1) * metrics.siblingGap)
-    }
-
-    private static func resolvedSize(_ node: MindMapNode, sizes: [UUID: MindMapSize], metrics: MindMapLayoutMetrics) -> MindMapSize {
-        if let size = sizes[node.id], size.isValid { return size }
-        return MindMapSize(width: metrics.defaultNodeWidth, height: metrics.defaultNodeHeight)
-    }
-
-    private static func place(
-        _ node: MindMapNode,
-        originX: Double?,
-        centerY: Double,
-        inheritedSide: Side,
-        direction: Int,
-        document: NoteDocument,
-        sizes: [UUID: MindMapSize],
-        metrics: MindMapLayoutMetrics,
-        includeCollapsed: Bool,
-        output: inout [UUID: NoteRect]
-    ) {
-        let size = resolvedSize(node, sizes: sizes, metrics: metrics)
-        let frame: NoteRect
-        if let position = node.position, position.isValid {
-            frame = NoteRect(x: position.x - size.width / 2, y: position.y - size.height / 2,
-                             width: size.width, height: size.height)
-        } else if let originX {
-            frame = NoteRect(x: originX, y: centerY - size.height / 2, width: size.width, height: size.height)
-        } else {
-            frame = NoteRect(x: -size.width / 2, y: -size.height / 2, width: size.width, height: size.height)
-        }
-        output[node.id] = frame
-
-        let children = layoutChildren(of: node, in: document, includeCollapsed: includeCollapsed)
-        guard !children.isEmpty else { return }
-        let assignment = direction == 2 ? balancedAssignment(parent: node, in: document, includeCollapsed: includeCollapsed) : [:]
-        let columnHeight = children.reduce(0.0) { $0 + measure($1, document: document, sizes: sizes, metrics: metrics, includeCollapsed: includeCollapsed) }
-            + Double(children.count - 1) * metrics.siblingGap
-        var cursor = (frame.y + frame.height / 2) - columnHeight / 2
-        for child in children {
-            let childSide = direction == 2 ? (assignment[child.id] ?? inheritedSide) : inheritedSide
-            let sign = childSide == 0 ? -1.0 : 1.0
-            let childSize = resolvedSize(child, sizes: sizes, metrics: metrics)
-            let childOriginX = sign < 0
-                ? frame.x - metrics.horizontalGap - childSize.width
-                : frame.x + frame.width + metrics.horizontalGap
-            let childCenterY = cursor + measure(child, document: document, sizes: sizes, metrics: metrics, includeCollapsed: includeCollapsed) / 2
-            place(child, originX: childOriginX, centerY: childCenterY, inheritedSide: childSide,
-                  direction: direction, document: document, sizes: sizes, metrics: metrics,
-                  includeCollapsed: includeCollapsed, output: &output)
-            cursor += measure(child, document: document, sizes: sizes, metrics: metrics, includeCollapsed: includeCollapsed) + metrics.siblingGap
-        }
     }
 }

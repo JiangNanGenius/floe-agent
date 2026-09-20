@@ -104,6 +104,11 @@ final class AppEnvironment: ObservableObject {
     /// Explicit native tools (exec.localPython, …) are never rerouted. nil
     /// only where the engine is not built in.
     let linuxGuestService: TinyEMULinuxCommandService?
+    /// Layered-environment registry. Exposed so task-scoped wiring (for
+    /// example the Notes document assistant) can ensure its own session
+    /// environment with an explicit backend instead of inheriting a shared
+    /// or default one.
+    let environmentRegistry: EnvironmentRegistry
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
     /// Managed pure-Python installer shared by exec.localPython, exec.shell
     /// and the python.packages tool.
@@ -349,6 +354,7 @@ final class AppEnvironment: ObservableObject {
             baseRevision: FloePlatformServices.environmentBaseRevision,
             compatibleBaseRevisions: ["156"]
         )
+        self.environmentRegistry = environmentRegistry
         let containerCAS = ContainerCAS(roots: environmentRoots)
         let environmentExecutions = EnvironmentExecutionCoordinator(roots: environmentRoots, registry: environmentRegistry)
         ToolEnvironmentRouting.shared.configure { context in try await environmentExecutions.acquire(context) }

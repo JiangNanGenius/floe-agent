@@ -4,6 +4,7 @@ import Testing
 @testable import FloeAgentRuntime
 @testable import FloeModels
 @testable import FloePersistence
+import FloeTools
 
 @Suite("Conversation full-text search")
 struct ConversationSearchTests {
@@ -120,6 +121,147 @@ struct ConversationSearchTests {
             query: "needle", startDate: base.addingTimeInterval(60)
         ))
         #expect(futureOnly.isEmpty)
+    }
+
+    @Test("Agent search matches Chinese substrings, titles and respects date range")
+    func agentSearchSubstringFallback() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let store = SQLiteIntelligenceStore(database: database)
+        let base = Date(timeIntervalSince1970: 1_700_400_000)
+
+        // Content hit: the CJK run is one unicode61 token ("季度总结报告"),
+        // so the shorter substring can only match through the literal
+        // fallback, never through FTS.
+        let contentHit = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: contentHit, title: "无关标题", createdAt: base, updatedAt: base
+        ))
+        try await conversationStore.appendMessage(PersistedMessage(
+            id: UUID(), conversationID: contentHit, role: "user",
+            content: "请整理这份季度总结报告", createdAt: base
+        ))
+        // Title-only hit: no message contains the query.
+        let titleHit = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: titleHit, title: "季度总结草稿", createdAt: base, updatedAt: base
+        ))
+        try await conversationStore.appendMessage(PersistedMessage(
+            id: UUID(), conversationID: titleHit, role: "user",
+            content: "unrelated body", createdAt: base
+        ))
+        // Out-of-range message must not surface through the fallback either.
+        let outOfRange = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: outOfRange, title: "季度总结旧任务", createdAt: base, updatedAt: base
+        ))
+        try await conversationStore.appendMessage(PersistedMessage(
+            id: UUID(), conversationID: outOfRange, role: "user",
+            content: "季度总结报告（旧）", createdAt: base.addingTimeInterval(-86_400 * 30)
+        ))
+        let notesConversation = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: notesConversation, title: "季度总结手记", createdAt: base, updatedAt: base,
+            purpose: .notes
+        ))
+        try await conversationStore.appendMessage(PersistedMessage(
+            id: UUID(), conversationID: notesConversation, role: "user",
+            content: "季度总结报告", createdAt: base
+        ))
+
+        let hits = try await store.search(ConversationSearchRequest(query: "季度总结"))
+        #expect(hits.map(\.conversationID).contains(contentHit))
+        #expect(hits.map(\.conversationID).contains(titleHit))
+        #expect(hits.first(where: { $0.conversationID == titleHit })?.snippet.hasPrefix("[title match]") == true)
+        #expect(hits.map(\.conversationID).contains(notesConversation) == false)
+        // Both candidates have an in-range message, so the old conversation
+        // still matches an unbounded query; the range filter is what drops it.
+        let ranged = try await store.search(ConversationSearchRequest(
+            query: "季度总结", startDate: base.addingTimeInterval(-3_600)
+        ))
+        #expect(ranged.map(\.conversationID).contains(outOfRange) == false)
+        #expect(ranged.map(\.conversationID).contains(contentHit))
+        // Title anchor messages are date-filtered too: the old conversation's
+        // only message is out of range, so its title match disappears.
+        #expect(ranged.map(\.conversationID).contains(titleHit))
+    }
+
+    @Test("Substring fallback excludes FTS-hit conversations in SQL so they cannot consume the limit")
+    func substringFallbackExcludesFTSHits() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let store = SQLiteIntelligenceStore(database: database)
+        let base = Date(timeIntervalSince1970: 1_700_500_000)
+
+        // Five conversations produce FTS hits (whole-token "anchor"). Three
+        // more match only as a literal substring inside a longer token. With
+        // limit=8, a fallback that re-returned the five FTS conversations
+        // from its own SQL allowance would hide one of the substring-only
+        // tasks; SQL-side exclusion surfaces all three.
+        var ftsIDs: [UUID] = []
+        for index in 0..<5 {
+            let id = UUID()
+            ftsIDs.append(id)
+            try await conversationStore.saveConversation(ConversationRecord(
+                id: id, title: "fts \(index)", createdAt: base, updatedAt: base
+            ))
+            try await conversationStore.appendMessage(PersistedMessage(
+                id: UUID(), conversationID: id, role: "user",
+                content: "anchor item \(index)", createdAt: base
+            ))
+        }
+        var substringIDs: [UUID] = []
+        for (index, body) in ["anchorage details", "theanchorpoint", "ananchoredlisting"].enumerated() {
+            let id = UUID()
+            substringIDs.append(id)
+            try await conversationStore.saveConversation(ConversationRecord(
+                id: id, title: "substring \(index)", createdAt: base, updatedAt: base
+            ))
+            try await conversationStore.appendMessage(PersistedMessage(
+                id: UUID(), conversationID: id, role: "user",
+                content: body, createdAt: base
+            ))
+        }
+
+        let hits = try await store.search(ConversationSearchRequest(query: "anchor", limit: 8))
+        #expect(hits.count == 8)
+        #expect(ftsIDs.allSatisfy { hits.map(\.conversationID).contains($0) })
+        #expect(substringIDs.allSatisfy { hits.map(\.conversationID).contains($0) })
+        // No conversation is duplicated across the two passes.
+        #expect(Set(hits.map(\.conversationID)).count == hits.count)
+    }
+
+    @Test("conversation.list returns recent searchable tasks and excludes Notes sessions")
+    func conversationListDiscovery() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let store = SQLiteIntelligenceStore(database: database)
+        let base = Date(timeIntervalSince1970: 1_700_600_000)
+        let older = UUID(), newer = UUID(), notes = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: older, title: "older", createdAt: base, updatedAt: base
+        ))
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: newer, title: "newer", createdAt: base, updatedAt: base.addingTimeInterval(120)
+        ))
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: notes, title: "notes", createdAt: base, updatedAt: base.addingTimeInterval(240),
+            purpose: .notes
+        ))
+        let entries = try await store.list(ConversationListRequest())
+        #expect(entries.map(\.conversationID) == [newer, older])
+        #expect(entries.map(\.title) == ["newer", "older"])
+
+        let tool = ConversationListTool(reader: store) { _ in newer }
+        let output = try await tool.execute(.init(), context: ToolContext(runID: UUID(), cancellation: CancellationToken(), conversationID: newer))
+        let text = output.summary
+        // The current conversation is filtered out of the discovery envelope.
+        #expect(text.contains(newer.uuidString) == false)
+        #expect(text.contains(older.uuidString))
+        #expect(text.contains("\"trust\":\"untrustedHistoricalData\""))
     }
 
     private static func iso(_ date: Date) -> String {

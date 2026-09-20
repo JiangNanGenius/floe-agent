@@ -1017,7 +1017,8 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
 
     public func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit] {
         let match = Self.ftsQuery(request.query)
-        guard !match.isEmpty else { return [] }
+        let trimmed = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !match.isEmpty || !trimmed.isEmpty else { return [] }
         return try await database.reader { db in
             // bm25()/snippet() are FTS5 auxiliary functions that are only valid
             // while the FTS cursor is producing the row. Evaluating them in the
@@ -1026,35 +1027,85 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             // requested context". They live in the inner query instead; the
             // `LIMIT -1` blocks SQLite subquery flattening, which would pull
             // them back into the aggregate and re-trigger the same error.
-            var innerFilters = ["message_fts MATCH ?"]
-            var arguments: StatementArguments = [match]
-            if let start = request.startDate { innerFilters.append("m.created_at >= ?"); arguments += [Self.date(start)] }
-            if let end = request.endDate { innerFilters.append("m.created_at <= ?"); arguments += [Self.date(end)] }
-            var outerFilters = ["c.is_searchable = 1", "c.purpose = 'ordinary'"]
+            var hits: [ConversationSearchHit] = []
+            if !match.isEmpty {
+                var innerFilters = ["message_fts MATCH ?"]
+                var arguments: StatementArguments = [match]
+                if let start = request.startDate { innerFilters.append("m.created_at >= ?"); arguments += [Self.date(start)] }
+                if let end = request.endDate { innerFilters.append("m.created_at <= ?"); arguments += [Self.date(end)] }
+                var outerFilters = ["c.is_searchable = 1", "c.purpose = 'ordinary'"]
+                if let workspaceID = request.workspaceID {
+                    outerFilters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
+                }
+                arguments += [request.limit]
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT f.message_id, f.conversation_id, f.created_at,
+                           c.title, MIN(wc.workspace_id) AS workspace_id,
+                           f.snippet, MIN(f.rank) AS best_rank
+                    FROM (
+                        SELECT m.id AS message_id, m.conversation_id, m.created_at,
+                               bm25(message_fts) AS rank,
+                               snippet(message_fts, 0, '[', ']', '…', 24) AS snippet
+                        FROM message_fts
+                        JOIN messages m ON m.rowid = message_fts.rowid
+                        WHERE \(innerFilters.joined(separator: " AND "))
+                        LIMIT -1
+                    ) f
+                    JOIN conversations c ON c.id = f.conversation_id
+                    LEFT JOIN conversation_workspace_ownership wc ON wc.conversation_id = c.id
+                    WHERE \(outerFilters.joined(separator: " AND "))
+                    GROUP BY f.message_id
+                    ORDER BY best_rank, f.created_at DESC LIMIT ?
+                    """, arguments: arguments)
+                hits = rows.compactMap(Self.searchHit)
+            }
+            // unicode61 tokenizes a CJK run as one token, so a Chinese
+            // substring that is not a whole token can never MATCH. Titles are
+            // not in the FTS table at all. Fill the remaining allowance with
+            // literal, case-insensitive substring matches (content first,
+            // then titles), one per conversation the FTS pass did not hit.
+            if hits.count < request.limit, !trimmed.isEmpty {
+                let excluded = Set(hits.map(\.conversationID))
+                hits.append(contentsOf: try Self.substringHits(
+                    db: db,
+                    request: request,
+                    query: trimmed,
+                    excluding: excluded
+                ))
+            }
+            return Array(hits.prefix(request.limit))
+        }
+    }
+
+    /// Agent discovery listing: recent searchable ordinary tasks, newest
+    /// activity first. Separate from FTS so a query-free "what was I working
+    /// on" never depends on tokenizer behavior.
+    public func list(_ request: ConversationListRequest) async throws -> [ConversationListEntry] {
+        try await database.reader { db in
+            var filters = ["c.is_searchable = 1", "c.purpose = 'ordinary'"]
+            var arguments: StatementArguments = []
             if let workspaceID = request.workspaceID {
-                outerFilters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
+                filters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
             }
             arguments += [request.limit]
             let rows = try Row.fetchAll(db, sql: """
-                SELECT f.message_id, f.conversation_id, f.created_at,
-                       c.title, MIN(wc.workspace_id) AS workspace_id,
-                       f.snippet, MIN(f.rank) AS best_rank
-                FROM (
-                    SELECT m.id AS message_id, m.conversation_id, m.created_at,
-                           bm25(message_fts) AS rank,
-                           snippet(message_fts, 0, '[', ']', '…', 24) AS snippet
-                    FROM message_fts
-                    JOIN messages m ON m.rowid = message_fts.rowid
-                    WHERE \(innerFilters.joined(separator: " AND "))
-                    LIMIT -1
-                ) f
-                JOIN conversations c ON c.id = f.conversation_id
+                SELECT c.id AS conversation_id, c.title, c.updated_at,
+                       MIN(wc.workspace_id) AS workspace_id
+                FROM conversations c
                 LEFT JOIN conversation_workspace_ownership wc ON wc.conversation_id = c.id
-                WHERE \(outerFilters.joined(separator: " AND "))
-                GROUP BY f.message_id
-                ORDER BY best_rank, f.created_at DESC LIMIT ?
+                WHERE \(filters.joined(separator: " AND "))
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC LIMIT ?
                 """, arguments: arguments)
-            return rows.compactMap(Self.searchHit)
+            return rows.compactMap { row -> ConversationListEntry? in
+                guard let id = UUID(uuidString: row["conversation_id"]) else { return nil }
+                return ConversationListEntry(
+                    conversationID: id,
+                    workspaceID: (row["workspace_id"] as String?).flatMap(UUID.init(uuidString:)),
+                    title: row["title"],
+                    updatedAt: Self.parseDate(row["updated_at"])
+                )
+            }
         }
     }
 
@@ -1377,6 +1428,158 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     private static func ftsQuery(_ value: String) -> String {
         value.split(whereSeparator: \.isWhitespace).prefix(16)
             .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " AND ")
+    }
+
+    /// Literal substring fallback for CJK and title matching. Each query
+    /// carries exactly one aggregate (MAX created_at) so SQLite's bare-column
+    /// rule pins the message id and snippet to the latest in-range row per
+    /// conversation. Workspace ids are bulk-loaded afterwards to keep that
+    /// rule intact. Same visibility, date and workspace filters as the FTS
+    /// pass; conversations already returned by FTS are excluded in SQL so
+    /// they cannot consume the LIMIT.
+    private static func substringHits(
+        db: Database,
+        request: ConversationSearchRequest,
+        query: String,
+        excluding: Set<UUID>
+    ) throws -> [ConversationSearchHit] {
+        let escaped = query.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        let like = "%\(escaped)%"
+        let excludedIDs = excluding.map(\.uuidString).sorted()
+        let exclusionClause = excludedIDs.isEmpty
+            ? ""
+            : " AND c.id NOT IN (\(excludedIDs.map { _ in "?" }.joined(separator: ",")))"
+        let workspaceClause = request.workspaceID == nil
+            ? ""
+            : " AND EXISTS(SELECT 1 FROM conversation_workspace_ownership wc WHERE wc.conversation_id = c.id AND wc.workspace_id = ?)"
+
+        // Content matches: latest in-range matching message per conversation.
+        // instr() needs the raw query; LIKE needs the escaped %pattern%.
+        var contentSQL = """
+            SELECT m.id AS message_id, m.conversation_id, MAX(m.created_at) AS created_at,
+                   c.title,
+                   substr(m.content, max(1, instr(lower(m.content), lower(?)) - 45), 180) AS snippet
+            FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+              AND m.content LIKE ? ESCAPE '\\'
+            """
+        var contentArguments: StatementArguments = [query, like]
+        if let workspaceID = request.workspaceID {
+            contentSQL += workspaceClause
+            contentArguments += [workspaceID.uuidString]
+        }
+        if let start = request.startDate {
+            contentSQL += " AND m.created_at >= ?"
+            contentArguments += [Self.date(start)]
+        }
+        if let end = request.endDate {
+            contentSQL += " AND m.created_at <= ?"
+            contentArguments += [Self.date(end)]
+        }
+        contentSQL += exclusionClause
+        contentArguments += StatementArguments(excludedIDs)
+        contentSQL += " GROUP BY m.conversation_id ORDER BY created_at DESC LIMIT ?"
+        contentArguments += [request.limit]
+
+        struct Partial {
+            var conversationID: UUID
+            var messageID: UUID
+            var title: String
+            var snippet: String
+            var createdAt: Date
+        }
+        var partials: [Partial] = []
+        var seen = excluding
+        for row in try Row.fetchAll(db, sql: contentSQL, arguments: contentArguments) {
+            guard let conversationID = UUID(uuidString: row["conversation_id"]),
+                  let messageID = UUID(uuidString: row["message_id"]),
+                  seen.insert(conversationID).inserted else { continue }
+            partials.append(Partial(
+                conversationID: conversationID,
+                messageID: messageID,
+                title: row["title"],
+                snippet: row["snippet"],
+                createdAt: parseDate(row["created_at"])
+            ))
+        }
+
+        // Title-only matches, anchored to the latest in-range message.
+        if partials.count < request.limit {
+            var titleSQL = """
+                SELECT c.id AS conversation_id, c.title, c.updated_at,
+                       MAX(m.created_at) AS message_created_at, m.id AS message_id
+                FROM conversations c
+                JOIN messages m ON m.conversation_id = c.id
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+                  AND c.title LIKE ? ESCAPE '\\'
+                """
+            var titleArguments: StatementArguments = [like]
+            if let workspaceID = request.workspaceID {
+                titleSQL += workspaceClause
+                titleArguments += [workspaceID.uuidString]
+            }
+            if let start = request.startDate {
+                titleSQL += " AND m.created_at >= ?"
+                titleArguments += [Self.date(start)]
+            }
+            if let end = request.endDate {
+                titleSQL += " AND m.created_at <= ?"
+                titleArguments += [Self.date(end)]
+            }
+            titleSQL += exclusionClause
+            titleArguments += StatementArguments(excludedIDs)
+            titleSQL += " GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ?"
+            titleArguments += [request.limit]
+            for row in try Row.fetchAll(db, sql: titleSQL, arguments: titleArguments) {
+                guard let conversationID = UUID(uuidString: row["conversation_id"]),
+                      let messageID = UUID(uuidString: row["message_id"]),
+                      seen.insert(conversationID).inserted else { continue }
+                let title: String = row["title"]
+                let createdAt: String = row["message_created_at"] ?? row["updated_at"]
+                partials.append(Partial(
+                    conversationID: conversationID,
+                    messageID: messageID,
+                    title: title,
+                    snippet: "[title match] \(title)",
+                    createdAt: parseDate(createdAt)
+                ))
+                if partials.count >= request.limit { break }
+            }
+        }
+
+        let workspaces = try Self.workspaceIDs(db: db, conversationIDs: partials.map(\.conversationID))
+        return partials.prefix(request.limit).map {
+            ConversationSearchHit(
+                conversationID: $0.conversationID,
+                messageID: $0.messageID,
+                workspaceID: workspaces[$0.conversationID],
+                conversationTitle: $0.title,
+                snippet: $0.snippet,
+                createdAt: $0.createdAt
+            )
+        }
+    }
+
+    private static func workspaceIDs(db: Database, conversationIDs: [UUID]) throws -> [UUID: UUID] {
+        guard !conversationIDs.isEmpty else { return [:] }
+        let ids = conversationIDs.map(\.uuidString)
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT conversation_id, MIN(workspace_id) AS workspace_id
+            FROM conversation_workspace_ownership
+            WHERE conversation_id IN (\(ids.map { _ in "?" }.joined(separator: ",")))
+            GROUP BY conversation_id
+            """, arguments: StatementArguments(ids))
+        var output: [UUID: UUID] = [:]
+        for row in rows {
+            guard let conversationID = UUID(uuidString: row["conversation_id"]),
+                  let workspace: String = row["workspace_id"],
+                  let workspaceID = UUID(uuidString: workspace) else { continue }
+            output[conversationID] = workspaceID
+        }
+        return output
     }
 
     private static func date(_ value: Date) -> String { ISO8601DateFormatter().string(from: value) }

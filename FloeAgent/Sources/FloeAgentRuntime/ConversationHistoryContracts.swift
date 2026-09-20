@@ -51,8 +51,34 @@ public struct ConversationSearchHit: Sendable, Codable, Hashable, Identifiable {
     }
 }
 
-public struct ConversationPageRequest: Sendable, Codable, Hashable {
+/// Discovery listing separate from full-text search: recent searchable
+/// tasks, newest activity first. Used by `conversation.list`.
+public struct ConversationListRequest: Sendable, Codable, Hashable {
+    public var workspaceID: UUID?
+    public var limit: Int
+
+    public init(workspaceID: UUID? = nil, limit: Int = 20) {
+        self.workspaceID = workspaceID
+        self.limit = min(50, max(1, limit))
+    }
+}
+
+public struct ConversationListEntry: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID { conversationID }
     public var conversationID: UUID
+    public var workspaceID: UUID?
+    public var title: String
+    public var updatedAt: Date
+
+    public init(conversationID: UUID, workspaceID: UUID? = nil, title: String, updatedAt: Date) {
+        self.conversationID = conversationID
+        self.workspaceID = workspaceID
+        self.title = String(title.prefix(256))
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct ConversationPageRequest: Sendable, Codable, Hashable {    public var conversationID: UUID
     public var cursor: String?
     public var limit: Int
     /// Optional rendered-line byte budget (see
@@ -222,6 +248,14 @@ public protocol ConversationHistoryReader: Sendable {
     func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit]
     func read(_ request: ConversationPageRequest) async throws -> ConversationHistoryPage
     func readMessages(ids: [UUID]) async throws -> [ConversationHistoryMessage]
+    /// Discovery listing separate from FTS. Default implementation returns
+    /// an empty page so existing readers stay source-compatible; the store
+    /// implementation overrides it with the real recency listing.
+    func list(_ request: ConversationListRequest) async throws -> [ConversationListEntry]
+}
+
+public extension ConversationHistoryReader {
+    func list(_ request: ConversationListRequest) async throws -> [ConversationListEntry] { [] }
 }
 
 public enum ConversationHistoryInjection {
