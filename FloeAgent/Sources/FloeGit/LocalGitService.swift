@@ -38,39 +38,48 @@ public actor LocalGitService {
             return GitRepositorySnapshot(isRepository: false)
         }
         let repository = try Repository.open(at: repositoryRoot)
-        let branch: String?
-        if let currentBranch = try? repository.branch.current.name {
-            branch = currentBranch
-        } else {
-            branch = try symbolicHeadBranchName(at: repositoryRoot)
-        }
-        let branches = (try? repository.branch.list(.local).map(\.name).sorted()) ?? []
-        let changes = try repository.status().compactMap(Self.change(from:))
-            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-        let commits: [GitCommitSummary]
-        if repository.isEmpty || repository.isHEADUnborn {
-            commits = []
-        } else {
-            commits = Array(try repository.log().prefix(min(max(commitLimit, 1), 100))).map {
-                GitCommitSummary(
-                    oid: $0.id.hex,
-                    shortOID: $0.id.abbreviated,
-                    message: $0.summary,
-                    author: $0.author.name,
-                    date: $0.date
-                )
+        // SwiftGitX collections (branch/status/remote/log) borrow the raw
+        // repository pointer without retaining the `Repository`; its deinit
+        // frees that pointer and shuts the runtime down. Optimized builds
+        // may end an object's lifetime at its last use rather than at scope
+        // end, so the whole borrowed read sequence stays inside one
+        // `withExtendedLifetime` — no borrowed collection can outlive the
+        // owner that keeps the native pointer valid.
+        return try withExtendedLifetime(repository) {
+            let branch: String?
+            if let currentBranch = try? repository.branch.current.name {
+                branch = currentBranch
+            } else {
+                branch = try symbolicHeadBranchName(at: repositoryRoot)
             }
+            let branches = (try? repository.branch.list(.local).map(\.name).sorted()) ?? []
+            let changes = try repository.status().compactMap(Self.change(from:))
+                .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+            let commits: [GitCommitSummary]
+            if repository.isEmpty || repository.isHEADUnborn {
+                commits = []
+            } else {
+                commits = Array(try repository.log().prefix(min(max(commitLimit, 1), 100))).map {
+                    GitCommitSummary(
+                        oid: $0.id.hex,
+                        shortOID: $0.id.abbreviated,
+                        message: $0.summary,
+                        author: $0.author.name,
+                        date: $0.date
+                    )
+                }
+            }
+            return GitRepositorySnapshot(
+                isRepository: true,
+                branch: branch,
+                detachedHEAD: repository.isHEADDetached,
+                branches: branches,
+                remoteURL: repository.remote["origin"]?.url.absoluteString,
+                changes: changes,
+                recentCommits: commits,
+                repositoryRoot: repositoryRoot
+            )
         }
-        return GitRepositorySnapshot(
-            isRepository: true,
-            branch: branch,
-            detachedHEAD: repository.isHEADDetached,
-            branches: branches,
-            remoteURL: repository.remote["origin"]?.url.absoluteString,
-            changes: changes,
-            recentCommits: commits,
-            repositoryRoot: repositoryRoot
-        )
     }
 
     /// Initializes a local repository at `root`. Local init never requires a
@@ -92,12 +101,17 @@ public actor LocalGitService {
         if repositoryRoot(at: root) == root.standardizedFileURL {
             return try snapshot(at: root)
         }
-        let repository = try Repository(at: root)
-        if let authorName, let authorEmail {
-            try configure(repository, authorName: authorName, authorEmail: authorEmail)
-        }
         let branchName = try Self.validBranch(initialBranch)
-        try repository.config.set("init.defaultBranch", to: branchName)
+        let repository = try Repository(at: root)
+        // Same borrowed-owner discipline as `snapshot`: config access
+        // borrows the raw repository pointer, so the owner's lifetime is
+        // pinned across every borrowed use, not just each expression.
+        try withExtendedLifetime(repository) {
+            if let authorName, let authorEmail {
+                try configure(repository, authorName: authorName, authorEmail: authorEmail)
+            }
+            try repository.config.set("init.defaultBranch", to: branchName)
+        }
         // `init.defaultBranch` only influences future initializations. Point
         // this repository's unborn HEAD at the requested branch immediately.
         try withRawRepository(at: root) { rawRepository in
