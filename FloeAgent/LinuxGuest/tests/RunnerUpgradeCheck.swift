@@ -1411,7 +1411,7 @@ enum RunnerUpgradeCheck {
                 name: "wrong-digest",
                 configuration: .init(initialCaps: nil, postRebootCaps: Fixture.caps),
                 withShares: true,
-                
+
                 corruptRunnerDigest: true
             )
             do {
@@ -1435,7 +1435,7 @@ enum RunnerUpgradeCheck {
                 name: "symlink-runner",
                 configuration: .init(initialCaps: nil, postRebootCaps: Fixture.caps),
                 withShares: true,
-                
+
                 runnerPath: "floe-exec-link"
             )
             do {
@@ -1486,7 +1486,7 @@ enum RunnerUpgradeCheck {
                 configuration: .init(initialCaps: Fixture.caps, postRebootCaps: Fixture.caps,
                                      runnerAlreadyCurrent: true, bootDelayMilliseconds: 600),
                 withShares: true,
-                
+
                 maxActiveGuests: 4,
                 maxGuestRAMMB: 1024
             )
@@ -1522,7 +1522,7 @@ enum RunnerUpgradeCheck {
                     name: "admission-\(nameCounter)",
                     configuration: .init(initialCaps: Fixture.caps, postRebootCaps: Fixture.caps, runnerAlreadyCurrent: true),
                     withShares: true,
-                    
+
                     environmentIDs: ["env-1", "env-2", "env-3"],
                     maxActiveGuests: limit,
                     maxGuestRAMMB: ram
