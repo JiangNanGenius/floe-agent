@@ -96,7 +96,10 @@ grep -q "$(sha256sum "$runner" | cut -d' ' -f1)" "$evidence/runner-injection.log
     || die "injected runner hash does not match the built runner"
 
 # 4. post-injection filesystem check + new disk digest, then swap into place.
-e2fsck -fy "$work/disk-base-copy.img" >"$evidence/e2fsck-after-injection.log" 2>&1 || true
+fsck_status=0
+e2fsck -fy "$work/disk-base-copy.img" >"$evidence/e2fsck-after-injection.log" 2>&1 || fsck_status=$?
+# 0 = clean, 1 = corrected; all other statuses must block publication.
+[ "$fsck_status" -le 1 ] || die "post-injection e2fsck failed ($fsck_status)"
 tail -3 "$evidence/e2fsck-after-injection.log"
 mv "$work/disk-base-copy.img" "$image_dir/disk.img"
 {

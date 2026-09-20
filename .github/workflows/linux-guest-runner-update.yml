@@ -287,6 +287,9 @@ jobs:
             --script FloeAgent/LinuxGuest/image/floe-guest-init \
             --repo "$GITHUB_WORKSPACE" \
             --base-url "$SERVER/$REPO/releases/download/$BASE_TAG"
+          # The verified archive stores mode 0600; extraction runs as root.
+          # Hand only these four prepared files back to the unprivileged host.
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/image/"{bbl64.bin,kernel-riscv64.bin,disk.img,manifest-base.json}
 
       - name: Host GPL gate on engine build sources
         run: |
