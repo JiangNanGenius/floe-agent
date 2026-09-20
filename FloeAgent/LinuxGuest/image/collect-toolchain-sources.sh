@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$out" ] || die "--out is required"
 mkdir -p "$out"
-for tool in dpkg-query apt-get apt-cache sha256sum; do
+for tool in dpkg-query apt-get apt-cache sha256sum curl; do
     command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"
 done
 
@@ -159,11 +159,53 @@ for name in "${!wanted[@]}"; do
     fetch_source "$name" "${wanted[$name]}" "exact installed version" || true
 done
 
-# glibc source: try the version implied by the cross libc first, then the
-# archive's current glibc, and record precisely which one landed.
+# Direct pool fetch (Launchpad +files) for an exact version the apt index no
+# longer lists, verified against the .dsc's own SHA-256 list.
+fetch_dsc_from_launchpad() { # fetch_dsc_from_launchpad <source> <version>
+    local source="$1" version="$2"
+    local base="https://launchpad.net/ubuntu/+archive/primary/+files"
+    local dsc_file="$out/${source}_${version}.dsc"
+    if ! curl -fsSL --retry 2 --max-time 300 -o "$dsc_file" "$base/${source}_${version}.dsc"; then
+        rm -f "$dsc_file"
+        return 1
+    fi
+    local ok=1 sha size file target got_sha got_size
+    while read -r sha size file; do
+        [ -n "$sha" ] || continue
+        target="$out/$file"
+        if [ -f "$target" ] && [ "$(sha256sum "$target" | cut -d' ' -f1)" = "$sha" ]; then
+            continue
+        fi
+        if ! curl -fsSL --retry 2 --max-time 900 -o "$target.part" "$base/$file"; then
+            rm -f "$target.part"
+            ok=0
+            break
+        fi
+        got_size="$(stat -c %s "$target.part")"
+        got_sha="$(sha256sum "$target.part" | cut -d' ' -f1)"
+        if [ "$got_size" != "$size" ] || [ "$got_sha" != "$sha" ]; then
+            rm -f "$target.part"
+            ok=0
+            break
+        fi
+        mv "$target.part" "$target"
+        printf 'fetched %s via launchpad (dsc sha256 %s)\n' "$file" "${sha:0:16}" >>"$notes"
+    done < <(awk '/^Checksums-Sha256:/{flag=1;next} flag&&/^ /{print $1, $2, $3; next} flag&&!/^ /{flag=0}' "$dsc_file")
+    [ "$ok" = 1 ] || return 1
+    printf 'fetched %s via launchpad (%s)\n' "${source}_${version}.dsc" "$version" >>"$notes"
+    return 0
+}
+
+# glibc source: exact version from the cross libc first, then the Launchpad
+# pool for that exact version, then the archive's current glibc (recorded as a
+# gap, never silently substituted).
 glibc_fetched=0
 if [ -n "$glibc_version" ]; then
     fetch_source glibc "$glibc_version" "glibc version implied by cross libc" && glibc_fetched=1
+fi
+if [ "$glibc_fetched" = 0 ] && [ -n "$glibc_version" ]; then
+    log "trying the Launchpad pool for glibc=$glibc_version"
+    fetch_dsc_from_launchpad glibc "$glibc_version" && glibc_fetched=1
 fi
 if [ "$glibc_fetched" = 0 ]; then
     fetch_source glibc "" "exact cross glibc version not in the index; fetched current glibc instead" \
