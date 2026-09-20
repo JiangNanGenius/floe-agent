@@ -21,9 +21,15 @@ actor EnvironmentLanguagePackageService {
     }
     private let coordinator: EnvironmentExecutionCoordinator
     private let python: ManagedPythonInstallService?
+    /// Linux guest ownership. Environments whose execution backend is
+    /// `linuxVM` install, remove and list language packages inside their own
+    /// guest (shared Python venv, environment `usr/lib/node_modules`); the
+    /// host-side layer scanner and the iOS Node runtime never apply to them.
+    private let linux: LinuxGuestLanguagePackages?
     private var busy: Set<String> = []
-    init(coordinator: EnvironmentExecutionCoordinator, python: ManagedPythonInstallService?) {
-        self.coordinator = coordinator; self.python = python
+    init(coordinator: EnvironmentExecutionCoordinator, python: ManagedPythonInstallService?,
+         linux: LinuxGuestLanguagePackages? = nil) {
+        self.coordinator = coordinator; self.python = python; self.linux = linux
     }
 
     func packages(environmentID: String, language: Language) async throws -> [Package] {
@@ -33,6 +39,26 @@ actor EnvironmentLanguagePackageService {
         let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: CancellationToken())
         do {
             guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
+            if let linux, await linux.owns(environmentID: environmentID) {
+                // The readback comes from the same guest installation the
+                // shell and the installers use. A stopped guest reports the
+                // honest "start the Linux environment" error instead of
+                // scanning host-layer paths that the guest does not own.
+                let result: [Package]
+                switch language {
+                case .python:
+                    result = try await linux.pythonInventory(environment: environment, cancellation: CancellationToken())
+                        .map { Package(name: $0.name, version: $0.version,
+                                       layerID: $0.writable ? "python/venv" : "guest-system",
+                                       writable: $0.writable) }
+                case .node:
+                    result = try await linux.nodeInventory(environment: environment, cancellation: CancellationToken())
+                        .map { Package(name: $0.name, version: $0.version,
+                                       layerID: "usr/lib/node_modules", writable: true) }
+                }
+                await lease.finish()
+                return result.sorted { ($0.writable ? "0" : "1") + $0.name < ($1.writable ? "0" : "1") + $1.name }
+            }
             if language == .node { try nodeInstaller().recover(environment) }
             else if let python { try await python.recover(environment: environment) }
             var result: [Package] = []
@@ -106,7 +132,17 @@ actor EnvironmentLanguagePackageService {
                 } else {
                     let preference = try readNodePreference(environment)
                     let manager = try NodePackageManagerPolicy.resolve(preference: preference, workspace: lease.context.workspaceRootURL)
-                    output = try await nodeInstaller().change(environment, specification: specification, remove: remove, manager: manager, cancellation: token)
+                    if let linux, await linux.owns(environmentID: environmentID) {
+                        output = try await linux.nodeChange(
+                            environment: environment,
+                            specifications: [specification],
+                            remove: remove,
+                            manager: manager,
+                            cancellation: token
+                        )
+                    } else {
+                        output = try await nodeInstaller().change(environment, specification: specification, remove: remove, manager: manager, cancellation: token)
+                    }
                 }
                 await lease.finish()
                 return output.isEmpty ? "依赖已更新" : output
@@ -121,6 +157,15 @@ actor EnvironmentLanguagePackageService {
         guard !busy.contains(environment.id) else { throw FloeError.validationFailed("此环境正在安装或卸载依赖") }
         busy.insert(environment.id)
         defer { busy.remove(environment.id) }
+        if let linux, await linux.owns(environmentID: environment.id) {
+            return try await linux.nodeChange(
+                environment: environment,
+                specifications: change.specifications,
+                remove: change.remove,
+                manager: manager,
+                cancellation: cancellation
+            )
+        }
         return try await nodeInstaller().change(environment, specifications: change.specifications,
             remove: change.remove, manager: manager, cancellation: cancellation)
     }
@@ -180,8 +225,28 @@ actor EnvironmentLanguagePackageService {
             }
             let selected = try readNodePreference(environment)
             let result: NodeManagerSelection
-            do { result = .init(preference: selected, resolved: try NodePackageManagerPolicy.resolve(preference: selected, workspace: lease.context.workspaceRootURL)) }
-            catch { result = .init(preference: selected, issue: error.localizedDescription) }
+            do {
+                let resolved = try NodePackageManagerPolicy.resolve(preference: selected, workspace: lease.context.workspaceRootURL)
+                if let linux, await linux.owns(environmentID: environmentID) {
+                    if await linux.isRunning(environmentID: environmentID) {
+                        let managers = await linux.nodeManagers(environmentID: environmentID, cancellation: CancellationToken())
+                        if resolved == .pnpm, managers.pnpmPath == nil {
+                            // pnpm is never installed implicitly; an explicit
+                            // selection reports the missing guest manager
+                            // before any change is attempted.
+                            result = .init(preference: selected, resolved: resolved,
+                                           issue: "guest 中尚未发现 pnpm；请在 guest 中安装 pnpm 或改用 npm")
+                        } else {
+                            result = .init(preference: selected, resolved: resolved)
+                        }
+                    } else {
+                        result = .init(preference: selected, resolved: nil,
+                                       issue: "Linux 环境未运行；请先启动该环境再安装 Node 依赖")
+                    }
+                } else {
+                    result = .init(preference: selected, resolved: resolved)
+                }
+            } catch { result = .init(preference: selected, issue: error.localizedDescription) }
             await lease.finish()
             return result
         } catch { await lease.finish(); throw error }

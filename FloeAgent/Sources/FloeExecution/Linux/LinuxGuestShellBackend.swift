@@ -47,12 +47,15 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         let timeout = limits.clampedTimeout(request.timeout)
         let maxOutput = limits.clampedOutputBytes(request.maxOutputBytes)
         do {
-            // The environment's shared Python venv comes first on PATH when it
-            // exists, so `python3`/`pip` in a shell command are the same
-            // interpreter and site-packages as exec.localPython and the
-            // managed installer. The preamble is a guarded no-op before the
-            // first Python use and never renames the commands.
-            let command = LinuxGuestPythonEnvironment.activationPreamble() + request.command
+            // The environment's shared Python venv and Node prefix come first
+            // on PATH when they exist, so `python3`/`pip`/`node` in a shell
+            // command resolve to the same interpreter, environment-level
+            // modules and package directories as exec.localPython, npm/pnpm
+            // and the package UI. The preamble is a guarded no-op before the
+            // first use and never renames the commands.
+            let command = LinuxGuestPythonEnvironment.activationPreamble()
+                + LinuxGuestNodeEnvironment.activationPreamble()
+                + request.command
             let result = try await runner.run(
                 environmentID: environmentID,
                 argv: ["/bin/sh", "-c", command],
@@ -94,10 +97,11 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
         let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Interactive shells enter the environment's shared Python venv as
-        // well (guarded no-op when it does not exist yet), so a terminal
-        // `python3`/`pip` matches exec.localPython.
+        // Interactive shells enter the environment's shared Python venv and
+        // Node prefix as well (guarded no-ops when they do not exist yet), so
+        // a terminal `python3`/`pip`/`node` matches the package entries.
         let preamble = LinuxGuestPythonEnvironment.activationPreamble()
+            + LinuxGuestNodeEnvironment.activationPreamble()
         let argv = command.isEmpty
             ? ["/bin/sh", "-c", preamble + "exec /bin/sh -i"]
             : ["/bin/sh", "-c", preamble + command]

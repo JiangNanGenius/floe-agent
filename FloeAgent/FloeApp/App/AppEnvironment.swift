@@ -380,7 +380,11 @@ final class AppEnvironment: ObservableObject {
             service: localPythonService
         )
         let managedPython = localPythonService.map {
-            ManagedPythonInstallService(python: $0, packagesChanged: { await FloeShellCommands.refreshPythonCommands() })
+            ManagedPythonInstallService(
+                python: $0,
+                linux: linuxGuests.map { LinuxGuestLanguagePackages(runner: $0) },
+                packagesChanged: { await FloeShellCommands.refreshPythonCommands() }
+            )
         }
         self.managedPythonInstaller = managedPython
 
@@ -479,7 +483,11 @@ final class AppEnvironment: ObservableObject {
                 )
             },
             baseSliceURL: nil,
-            languageManagement: EnvironmentLanguagePackageService(coordinator: environmentExecutions, python: managedPython)
+            languageManagement: EnvironmentLanguagePackageService(
+                coordinator: environmentExecutions,
+                python: managedPython,
+                linux: linuxGuests.map { LinuxGuestLanguagePackages(runner: $0) }
+            )
         )
 
         self.localModelsCenter.onCatalogChanged = { [weak self] in
@@ -496,6 +504,7 @@ final class AppEnvironment: ObservableObject {
         // registered here in one place, in a deterministic order.
         registerAllAgentTools(
             localPythonService: localPythonService,
+            localPythonInstaller: managedPython,
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService
         )
@@ -560,6 +569,7 @@ final class AppEnvironment: ObservableObject {
     /// model's tool catalog.
     private func registerAllAgentTools(
         localPythonService: LocalPythonService?,
+        localPythonInstaller: ManagedPythonInstallService?,
         sshCommandService: SSHCommandService?,
         cloudWorkspaceService: CloudWorkspaceService?
     ) {
@@ -629,6 +639,7 @@ final class AppEnvironment: ObservableObject {
         }
         registerExecutionTools(
             localPythonService: localPythonService,
+            localPythonInstaller: localPythonInstaller,
             sshCommandService: sshCommandService,
             interactiveShellService: interactiveShell,
             cloudWorkspaceService: cloudWorkspaceService,

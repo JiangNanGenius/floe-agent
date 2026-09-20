@@ -96,6 +96,9 @@ public actor LinuxGuestPythonProvisioner {
 
     private var cached: [String: LinuxGuestPythonEnvironment] = [:]
     private var inFlight: [String: Task<LinuxGuestPythonEnvironment, Error>] = [:]
+    /// Bumped on forget/stop so a provisioning task that finishes after the
+    /// guest stopped can never write its stale result back into the cache.
+    private var generations: [String: Int] = [:]
 
     public init() {}
 
@@ -105,6 +108,7 @@ public actor LinuxGuestPythonProvisioner {
 
     public func forget(environmentID: String) {
         cached[environmentID] = nil
+        generations[environmentID, default: 0] += 1
         inFlight[environmentID]?.cancel()
         inFlight[environmentID] = nil
     }
@@ -122,6 +126,7 @@ public actor LinuxGuestPythonProvisioner {
             throw LinuxGuestPythonProvisionError.guestNotRunning(environmentID)
         }
         if cancellation?.isCancelled == true { throw CancellationError() }
+        let generation = generations[environmentID] ?? 0
         let task = Task { [weak self] () throws -> LinuxGuestPythonEnvironment in
             guard let self else { throw CancellationError() }
             let environment = try await self.provision(
@@ -129,7 +134,8 @@ public actor LinuxGuestPythonProvisioner {
                 runner: runner,
                 cancellation: cancellation
             )
-            await self.store(environment)
+            try Task.checkCancellation()
+            await self.store(environment, generation: generation)
             return environment
         }
         inFlight[environmentID] = task
@@ -141,7 +147,8 @@ public actor LinuxGuestPythonProvisioner {
         return try await task.value
     }
 
-    private func store(_ environment: LinuxGuestPythonEnvironment) {
+    private func store(_ environment: LinuxGuestPythonEnvironment, generation: Int) {
+        guard generations[environment.environmentID] ?? 0 == generation else { return }
         cached[environment.environmentID] = environment
     }
 

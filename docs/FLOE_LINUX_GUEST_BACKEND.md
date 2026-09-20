@@ -19,7 +19,10 @@ qualified guest image remain. Without a qualified image, Linux start fails hones
 | localService | `FloeExecution/Linux/LinuxGuestLocalService.swift` | `exec.localService` 在 guest 内 detach 运行：`env PORT=… <venv python|node> entry`、日志写环境层 `services/<job>.log`（9p 同文件读取，有界 tail + 脱敏）、hostfwd 发布端口、snapshot/stop |
 | shell 路由 | `FloeExecution/Linux/LinuxGuestShellBackend.swift` + `FloeApp/Execution/LinuxGuestBackend.swift` | `exec.shell` 在 Linux 环境交 guest `/bin/sh -c` 原样执行；`shell.*` 交互会话走 guest PTY（`FLOE-OPEN/IN/SIGNAL/CLOSE`）；命令前缀仅做受保护的 venv 激活 |
 | localPython 路由 | `FloeApp/Execution/CPythonLocalRuntime.swift` | Linux 环境里 `exec.localPython`、pip 命令、托管安装器与包 UI 都执行该 guest 的**同一个 venv**（`/floe/env/python/venv`，`--system-site-packages`），host 路径经 9p 映射；非 Linux 环境仍走内置 CPython，`ArchiveCompressedBridge` 等 host 内部调用不变 |
-| 共享解释器 | `FloeExecution/Linux/LinuxGuestPythonEnvironment.swift` | Debian PEP 668 下不在系统解释器安装：首次按需 `apt-get install python3 python3-venv python3-pip` → `python3 -m venv`；半成品 venv 用 venv 内 `ensurepip` 修复；per-environment in-flight 合并，stop/delete/换后端即失效缓存 |
+| Python 包归属 | `FloeExecution/Linux/LinuxGuestLanguagePackages.swift` | Linux 环境用 guest venv 的真实 `python3 -m pip`（用户源配置、guest 缓存，不套 iOS 纯 Python wheel 限制、不用 host staging）；`exec.localPython`/`python.packages`/pip 命令/包 UI 读回同一 venv；停止时诚实报错，不回退 host |
+| Node 包归属 | 同上 + `FloeExecution/Linux/LinuxGuestNodeEnvironment.swift` | guest 自己的 npm/pnpm 在 `/floe/env/var/floe-node-transaction` 暂存并原子替换 `<layer>/usr/lib/node_modules`；保留安装脚本、bin 链接与 riscv64 原生扩展；顶层 CLI 链接到 `<layer>/usr/bin`（guest PATH） |
+| 共享解释器 | `FloeExecution/Linux/LinuxGuestPythonEnvironment.swift` | Debian PEP 668 下不在系统解释器安装：首次按需 `apt-get install python3 python3-venv python3-pip` → `python3 -m venv`；半成品 venv 用 venv 内 `ensurepip` 修复；per-environment in-flight 合并，stop/delete/换后端即失效缓存，forget 后旧任务不会回填 |
+| Node 运行时 | `FloeExecution/Linux/LinuxGuestNodeEnvironment.swift` | guest 内探测 node/npm（缺失才 `apt-get install nodejs npm`）；pnpm 只探测、绝不隐式安装；per-environment 缓存与失效规则同 Python |
 | 镜像校验/导入 | `FloeExecution/Linux/LinuxGuestImageStore.swift` | 镜像必须在镜像目录内、非符号链接、大小与 SHA-512 与 `artifacts` 一致且清单记录资格 run；zip 导入拒绝 `..`/绝对路径/符号链接/超限；只在全部通过后原子替换 |
 | 镜像入口 | `FloeApp/Execution/FloePlatformServices.swift` + `FloeApp/Execution/LinuxGuestImageDownloader.swift` | `floe-env image status\|import\|install\|remove`；`install` 只下载本 build 固定（pinned）archive，当前 catalog 为空 → 诚实不可用；HTTPS→HTTPS 有界重定向，字节仍强校验 |
 | 环境 UI | `FloeApp/Settings/EnvironmentManagerView.swift` | 环境详情提供 native/Linux 后端选择、真实 guest 状态（运行/停止/启动时间/镜像+资格原因），不依赖手输 `floe-env` |
@@ -117,6 +120,33 @@ guest 控制台 runner 协议（行首 `\x1e`，末尾接受 `\n` 或闭合 `\x1
    `\x1eFLOE-ALIVE <token> <pid>\x1e` → END 0/3，仅认 runner 自建 pid。
 6. runner 启动即挂载 9p 并进入读循环；命令之间不得输出未分帧文本。OPEN/SPAWN 固定分块（不适用 inline 快路径）。
 
+## 4.1 Linux 语言包归属（Python/Node）/ Language package ownership
+
+`executionBackend == .linuxVM` 的环境，其 Python/Node 包状态完全属于 guest；原生 iOS 路径（内置 CPython 的
+纯 Python wheel 事务、nodejs-mobile 托管安装）不参与。唯一的 host 侧语言包路径（`usr/lib/floe-python/site-packages`、
+`usr/lib/floe-python` 事务）只服务 non-Linux 环境。
+
+- Python：唯一安装是共享 venv（guest `/floe/env/python/venv`，host `<layer>/python/venv`）。安装/卸载/查询/列表
+  在 guest 内执行真实 `venv/bin/python3 -m pip`（`PIP_INDEX_URL` 取环境自身 `var/language-package-sources.json`，
+  `PIP_CACHE_DIR=<layer>/var/pip-cache`）：不套 iOS 的 `--only-binary/--platform any/--abi none` 纯 Python wheel
+  限制，不使用 host staging/transaction，riscv64 wheel 按 pip 自身规则解析；`pip install` 的生命周期由 pip 决定。
+  `exec.localPython`（含其 `packages`）、`exec.shell` 的 `packages`、`python.packages` 与包 UI 都读回同一个
+  venv（`importlib.metadata`：venv 条目可写，`--system-site-packages` 的 guest 系统条目为继承只读）。
+  `exec.localPython` 的 pip/subprocess 静态拒绝只对 non-Linux 环境生效（`ManagedPythonInstallService.isLinuxGuestEnvironment`）。
+- Node：在 guest 内用 guest 自己的 npm/pnpm 安装，沿用原生托管安装的 staged/recoverable 事务语义
+  （`/floe/env/var/floe-node-transaction` 暂存 → guest 内校验/写 metadata → 原子替换 `<layer>/usr/lib/node_modules`），
+  但保留真实 Linux 语义：允许 lifecycle 脚本、bin 链接与 riscv64 原生扩展；安装完成后把顶层包 CLI 链接到
+  `<layer>/usr/bin`（guest `/floe/env/usr/bin`，host 侧同一目录），shell/`exec.localService` 的 PATH、NODE_PATH
+  由激活前缀指向该环境前缀。标准项目安装（guest 内 `npm install` 无 `-g`）仍写项目 `./node_modules`，语义不变。
+- 停止/未启动的 guest：安装、卸载、列表全部返回"先启动 Linux 环境"的诚实错误，绝不回退 host 层目录或 host Node；
+  `stopGuest`/删除/切换后端会同时失效 Python 与 Node 按环境缓存，`forget` 之后旧 provisioning 任务不会回填缓存。
+- 源/manager 配置仍保存在环境层（`var/language-package-sources.json`、`var/node-package-manager.json`），guest 与
+  UI 读到同一份；manager 选择先探测 guest 实际拥有的 npm/pnpm，缺失的 pnpm 只报清楚缺失，绝不隐式安装。
+
+镜像制作要求（供 image/source 任务对齐；本仓库不制作镜像）：guest 至少提供 `python3`（可用 `venv`/`ensurepip`，
+即 `python3-venv`/`python3-pip`）、`nodejs` + `npm`、`base64`（coreutils）、可用 APT 源与 `ca-certificates`；
+`pnpm` 存在即被采用。
+
 ## 5. 验证 / Verification
 
 - `bash FloeAgent/ThirdParty/TinyEMU/vendor_swift_sources.sh [pristine]` + `--check`：pristine + 0001–0004 补丁一致。
@@ -131,6 +161,14 @@ guest 控制台 runner 协议（行首 `\x1e`，末尾接受 `\n` 或闭合 `\x1
   AsyncStream（guest 只能服务一条命令）；`ControlParser` 的 PID marker 格式错误。修复后顺序命令与 SPAWN 均通过。
 - `FloeAgent/Tests/FloeExecutionTests/LinuxGuestBackendTests.swift`（含路径映射/镜像/控制帧/supervisor/顺序命令回归）
   以 XCTest 桩类型检查通过；真实 XCTest 与完整 App 编译留给云端 CI。
+- 语言包归属定向检查（2026-09-20，CommandLineTools，无 XCTest；日志
+  `Local/Private/LinuxGuestCheck/language-ownership-check.log`）：`LanguageOwnershipCheck` 34/34 通过 —— guest venv
+  真实 pip argv/源配置/缓存目录、无 iOS wheelhouse 参数、host 路径不进入 guest；owned-but-stopped 时 host Python
+  零调用且 guest 零命令；native 环境仍走内置解释器；Node 在 guest 事务目录内运行 guest npm（保留 scripts/bin 链接）、
+  提交替换 `<layer>/usr/lib/node_modules` 并链接 CLI 到 `<layer>/usr/bin`、无 host Node/宿主路径；停止时拒绝
+  change/inventory；forget 清空缓存。该切片以 `swift build`（Swift 6 + StrictConcurrency）对象编译通过；
+  `FloeAgent/Tests/FloeExecutionTests/LinuxGuestLanguagePackageTests.swift` 为云端 CI 的 XCTest 版本。
+- 本机 CommandLineTools 无 XCTest 模块，`swift test` 无法运行（记录为工具链限制，不是产品结果）；完整 App 编译由云端执行。
 - NOT run：完整 package/App 构建、真机/模拟器、riscv64 镜像资格（核心 CI：交叉编译/注入/`FLOE_RUNNER_OK`）。
 
 ## Guest runner protocol evidence

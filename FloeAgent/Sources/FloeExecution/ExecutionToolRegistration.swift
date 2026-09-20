@@ -31,6 +31,7 @@ public func registerExecutionTools(
     registry: ToolRunnerRegistry = .shared,
     service: any ScriptExecutionService = JavaScriptExecutionService(),
     localPythonService: LocalPythonService? = nil,
+    localPythonInstaller: ManagedPythonInstallService? = nil,
     sshCommandService: SSHCommandService? = nil,
     interactiveShellService: InteractiveShellSessionService? = nil,
     cloudWorkspaceService: CloudWorkspaceService? = nil,
@@ -129,7 +130,7 @@ public func registerExecutionTools(
         registry.register(WasmExecutionTool(service: service))
     }
     if let localPythonService {
-        registry.register(LocalPythonTool(service: localPythonService))
+        registry.register(LocalPythonTool(service: localPythonService, installer: localPythonInstaller))
     }
     if let sshCommandService {
         let cloudWorkspaceService = cloudWorkspaceService ?? CloudWorkspaceService(

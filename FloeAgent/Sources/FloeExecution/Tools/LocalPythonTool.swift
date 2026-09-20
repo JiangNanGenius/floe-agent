@@ -89,9 +89,13 @@ public struct LocalPythonTool: AgentTool {
     static let maxOutputBytesCap = 256 * 1024
 
     private let service: LocalPythonService
+    /// Shared managed installer (including Linux guest routing). A caller that
+    /// does not inject one keeps the native bundled-runtime behavior.
+    private let installer: ManagedPythonInstallService
 
-    public init(service: LocalPythonService) {
+    public init(service: LocalPythonService, installer: ManagedPythonInstallService? = nil) {
         self.service = service
+        self.installer = installer ?? ManagedPythonInstallService(python: service)
     }
 
     public func validate(_ args: Arguments) throws {
@@ -110,16 +114,6 @@ public struct LocalPythonTool: AgentTool {
         if let inputJSON = args.inputJSON,
            (try? JSONSerialization.jsonObject(with: Data(inputJSON.utf8))) == nil {
             throw FloeError.validationFailed("inputJSON must contain valid JSON")
-        }
-        let normalizedScript = args.script.lowercased()
-        let forbiddenInstallMarkers = [
-            "import pip", "from pip", "ensurepip", "-m pip", "pip._internal",
-            "subprocess", "os.system("
-        ]
-        if forbiddenInstallMarkers.contains(where: normalizedScript.contains) {
-            throw FloeError.validationFailed(
-                "Put a direct `pip install package...` request in `pipCommand` (or use `packages`) so Floe can review it before download; pip, subprocess, and shell installation inside `script` are unavailable"
-            )
         }
         let packages = try Self.requestedPackages(args)
         guard packages.count <= 16 else {
@@ -152,10 +146,19 @@ public struct LocalPythonTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        // The pip/subprocess restriction protects the bundled iOS interpreter
+        // (audit hook, bundled frameworks). A Linux environment runs its own
+        // guest Python where these are ordinary language features, so the
+        // check is applied only when the selected environment is not a Linux
+        // guest. The ownership answer is true even while the guest is stopped:
+        // a stopped guest fails later with the honest "start it" error instead
+        // of silently enforcing native policy.
+        if await !installer.isLinuxGuestEnvironment(context.environment) {
+            try Self.validateNativeScriptPolicy(args.script)
+        }
         var packageOutput = ""
         let packages = try Self.requestedPackages(args)
         if !packages.isEmpty {
-            let installer = ManagedPythonInstallService(python: service)
             let installOutcome = await installer.install(
                 specs: packages,
                 timeout: Self.maxTimeout,
@@ -209,6 +212,22 @@ public struct LocalPythonTool: AgentTool {
         packages.append(contentsOf: try ManagedPythonPackageSpecParser.parse(command: args.pipCommand))
         var seen = Set<String>()
         return packages.filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    /// Bundled-interpreter policy, applied only to non-Linux environments.
+    /// The Linux guest's own Python is allowed to use pip, subprocess and the
+    /// operating system, exactly like the native `python3` it replaces.
+    static func validateNativeScriptPolicy(_ script: String) throws {
+        let normalizedScript = script.lowercased()
+        let forbiddenInstallMarkers = [
+            "import pip", "from pip", "ensurepip", "-m pip", "pip._internal",
+            "subprocess", "os.system("
+        ]
+        if forbiddenInstallMarkers.contains(where: normalizedScript.contains) {
+            throw FloeError.validationFailed(
+                "Put a direct `pip install package...` request in `pipCommand` (or use `packages`) so Floe can review it before download; pip, subprocess, and shell installation inside `script` are unavailable"
+            )
+        }
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {

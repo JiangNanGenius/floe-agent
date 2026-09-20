@@ -16,11 +16,34 @@ public struct ManagedPythonInstallService: Sendable {
     }
 
     private let python: LocalPythonService
+    /// Linux guest package ownership. When the selected environment is owned
+    /// by the Linux backend, the guest's own venv pip performs the install and
+    /// the iOS wheelhouse/staging path is never used.
+    private let linux: LinuxGuestLanguagePackages?
     private let packagesChanged: @Sendable () async -> Void
 
-    public init(python: LocalPythonService, packagesChanged: @escaping @Sendable () async -> Void = {}) {
+    public init(
+        python: LocalPythonService,
+        linux: LinuxGuestLanguagePackages? = nil,
+        packagesChanged: @escaping @Sendable () async -> Void = {}
+    ) {
         self.python = python
+        self.linux = linux
         self.packagesChanged = packagesChanged
+    }
+
+    private func linuxOwns(_ environment: ToolEnvironment?) async -> Bool {
+        guard let environment, let linux else { return false }
+        return await linux.owns(environmentID: environment.id)
+    }
+
+    /// True when the selected environment is owned by the Linux backend (its
+    /// guest may still be stopped). `exec.localPython` uses this to keep the
+    /// bundled-interpreter restrictions — no pip/subprocess/OS installs —
+    /// away from scripts that actually run in the guest, where those are
+    /// normal Python behavior.
+    public func isLinuxGuestEnvironment(_ environment: ToolEnvironment?) async -> Bool {
+        await linuxOwns(environment)
     }
 
     public static func executionContext(_ environment: ToolEnvironment?) -> PythonExecutionContext? {
@@ -50,6 +73,15 @@ public struct ManagedPythonInstallService: Sendable {
 
     /// Called before inventory or removal so a process interruption cannot hide the previous generation.
     public func recover(environment: ToolEnvironment) async throws {
+        if await linuxOwns(environment) {
+            // The guest's real pip is not the native staged transaction, so
+            // there is nothing host-side to recover; the guest must still be
+            // running or the operation reports the honest "start it" error.
+            guard let linux, await linux.isRunning(environmentID: environment.id) else {
+                throw FloeError.validationFailed(LinuxGuestError.notRunning(environmentID: environment.id).localizedDescription)
+            }
+            return
+        }
         guard let script = Self.installerScript(packageJSON: nil, recoverOnly: true) else {
             throw FloeError.invalidConfiguration("Python recovery resource is unavailable")
         }
@@ -78,6 +110,24 @@ public struct ManagedPythonInstallService: Sendable {
                 try ManagedPythonPackageSpecParser.validate(spec)
             } catch {
                 return .failed(message: "Invalid package spec \(spec): \(error.localizedDescription)")
+            }
+        }
+        if let environment, let linux, await linux.owns(environmentID: environment.id) {
+            do {
+                let output = try await linux.pythonInstall(
+                    specs: uniqueSpecs,
+                    environment: environment,
+                    timeout: timeout,
+                    cancellation: cancellation
+                )
+                let verification = await linux.pythonVerification(specs: uniqueSpecs, environment: environment)
+                await packagesChanged()
+                let base = output.isEmpty ? "pip install \(uniqueSpecs.joined(separator: " "))" : output
+                return .ok(output: base + "\n" + verification)
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return .failed(message: error.localizedDescription)
             }
         }
         let encoded = (try? JSONEncoder().encode(uniqueSpecs)).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
@@ -169,6 +219,21 @@ public struct ManagedPythonInstallService: Sendable {
     /// module/script. Effective versions follow the resolved Python path order.
     public func inspect(command: String, arguments: [String], environment: ToolEnvironment,
                         cancellation: CancellationToken?) async -> Outcome {
+        if await linuxOwns(environment), let linux {
+            do {
+                let output = try await linux.pythonInspect(
+                    command: command,
+                    arguments: arguments,
+                    environment: environment,
+                    cancellation: cancellation
+                )
+                return .ok(output: output)
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return .failed(message: error.localizedDescription)
+            }
+        }
         let source = """
         import importlib.metadata as _metadata, json as _json, re as _re, sys as _sys
         _command, _arguments = input['command'], input['arguments']
@@ -230,6 +295,23 @@ public struct ManagedPythonInstallService: Sendable {
     /// RECORD lists, then the dist-info directory. Bundled (read-only)
     /// distributions cannot be removed and report a clear failure.
     public func uninstall(distribution: String, environment: ToolEnvironment? = nil, cancellation: CancellationToken? = nil) async -> Outcome {
+        if let environment, let linux, await linux.owns(environmentID: environment.id) {
+            do { try await recover(environment: environment) }
+            catch { return .failed(message: error.localizedDescription) }
+            do {
+                let output = try await linux.pythonUninstall(
+                    distribution: distribution,
+                    environment: environment,
+                    cancellation: cancellation
+                )
+                await packagesChanged()
+                return .ok(output: output)
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return .failed(message: error.localizedDescription)
+            }
+        }
         if let environment {
             do { try await recover(environment: environment) }
             catch { return .failed(message: error.localizedDescription) }
@@ -263,7 +345,13 @@ public struct ManagedPythonInstallService: Sendable {
 
     /// Distributions visible to the interpreter: bundled site-packages and
     /// the managed mutable root. Bundled entries cannot be uninstalled.
+    /// A Linux environment reads the guest's shared venv instead; a stopped
+    /// guest reports the honest not-running error from the install/uninstall
+    /// paths and never a host-side catalog here.
     public func installedDistributions(environment: ToolEnvironment? = nil) async -> [String] {
+        if let environment, let linux, await linux.owns(environmentID: environment.id) {
+            return await linux.pythonDistributionNames(environment: environment)
+        }
         let script = """
         import sys, importlib.metadata, re
         _roots = [p for p in sys.path if p.endswith('site-packages') or p.endswith('PythonPackages')]

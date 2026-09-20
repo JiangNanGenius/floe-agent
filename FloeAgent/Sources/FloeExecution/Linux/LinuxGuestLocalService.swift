@@ -226,6 +226,19 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         variables["FLOE_SERVICE_PORT"] = String(request.port)
         variables["FLOE_ENVIRONMENT_ID"] = environmentID
         variables["PYTHONUNBUFFERED"] = "1"
+        // Environment-level Node packages are the ones the package UI and the
+        // managed installer write; a service must resolve them the same way
+        // the guest shell does (PATH for bins, NODE_PATH for require).
+        variables["NODE_PATH"] = LinuxGuestNodeEnvironment.guestNodeModules
+        let inheritedPath = variables["PATH"] ?? ""
+        variables["PATH"] = LinuxGuestNodeEnvironment.guestBin + ":"
+            + LinuxGuestPythonEnvironment.guestVenvPath + "/bin:"
+            + (inheritedPath.isEmpty ? LinuxGuestNodeEnvironment.defaultGuestPath : inheritedPath)
+        // The environment layer's home/tmp exist as soon as the environment is
+        // prepared (the coordinator creates them); a service that writes a
+        // cache/config must not inherit a host path.
+        if variables["HOME"] == nil { variables["HOME"] = LinuxGuestMountPoint.environment + "/home" }
+        if variables["TMPDIR"] == nil { variables["TMPDIR"] = LinuxGuestMountPoint.environment + "/tmp" }
         if let injected = LinuxGuestEnvironmentEncoding.argv(variables) {
             command = ["env"] + injected + command
         }

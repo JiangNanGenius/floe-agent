@@ -516,18 +516,20 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     public func stopGuest(environmentID: String) async {
         // Services die with their guest: kill them explicitly first so the
         // host forwarding table and the job log are closed out, not just
-        // discarded with the VM. The shared-Python cache is dropped as well;
-        // a restart re-probes the (persistent) venv instead of trusting a
-        // path resolved before the layer was remounted.
+        // discarded with the VM. The shared interpreter caches are dropped as
+        // well; a restart re-probes the (persistent) venv/Node environment
+        // instead of trusting paths resolved before the layer was remounted.
         await localServices.stopLocalServices(environmentID: environmentID)
         await registry.stop(environmentID: environmentID)
         await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+        await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
     }
 
     public func deleteGuest(environmentID: String) async {
         await localServices.stopLocalServices(environmentID: environmentID)
         await registry.stop(environmentID: environmentID)
         await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+        await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
     }
 
     public func guestIsRunning(environmentID: String) async -> Bool {

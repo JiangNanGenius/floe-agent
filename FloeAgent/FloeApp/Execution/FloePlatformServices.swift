@@ -326,8 +326,9 @@ final class FloePlatformServices: @unchecked Sendable {
         if backend != .linuxVM {
             await guests?.stopGuest(environmentID: id)
             // A different backend must not reuse the Linux environment's
-            // shared-Python resolution.
+            // shared-Python or Node resolution.
             await LinuxGuestPythonProvisioner.shared.forget(environmentID: id)
+            await LinuxGuestNodeProvisioner.shared.forget(environmentID: id)
         }
         try await registry.setExecutionBackend(id: id, backend: backend)
         if backend == .linuxVM, let guests {

@@ -274,6 +274,20 @@ struct LocalServiceTool: AgentTool {
         let logDirectory = environment.writableLayerURL.appendingPathComponent("services", isDirectory: true)
         try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
         let logFile = logDirectory.appendingPathComponent(jobID.uuidString + ".log")
+        // Host-side defaults (HOME/TMPDIR/PATH/NODE_PATH/PYTHONPATH,
+        // npm_config_* …) point at macOS paths the guest cannot see. Only the
+        // invocation identity and explicitly environment-owned values cross
+        // into the guest; the supervisor adds the guest directories and the
+        // environment-level module path itself.
+        var guestVariables = variables
+        let hostDefaults = IOSSystemNodeRuntime.defaultEnvironment(containerRoot: environment.writableLayerURL, workspaceRoot: cwd)
+        for (key, value) in hostDefaults where guestVariables[key] == value {
+            guestVariables.removeValue(forKey: key)
+        }
+        let hostOnlyKeys: Set<String> = ["HOME", "TMPDIR", "PATH", "NODE_PATH", "PYTHONPATH", "PNPM_HOME", "PWD"]
+        guestVariables = guestVariables.filter { key, _ in
+            !hostOnlyKeys.contains(key) && !key.hasPrefix("npm_config_") && !key.hasPrefix("FLOE_PYTHON_")
+        }
         let request = LinuxGuestLocalServiceRequest(
             entry: entry.path,
             runtime: args.runtime == "node" ? .node : .python,
@@ -281,7 +295,7 @@ struct LocalServiceTool: AgentTool {
             workingDirectory: cwd.path,
             port: args.port,
             logFile: logFile,
-            environment: variables
+            environment: guestVariables
         )
         var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
         let handle: LinuxGuestLocalServiceHandle
