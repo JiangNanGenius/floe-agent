@@ -66,6 +66,16 @@ hint the base ISA defines. Fixtures 207/208 predate that patch, so their
 Linux backend stays unqualified until a build carries it. Do not advertise
 the candidate as a complete, fully working Linux.
 
+## Concrete follow-up artifacts (planned, none published yet)
+
+| Artifact | How to produce it | Why |
+| --- | --- | --- |
+| `image-manifest.json` | by the image build/qualification job: image digest, kernel/bbl revisions + patch hashes, rootfs size, `dpkg-query -W` hash, runner sha256, toolchain versions | one reviewable record per released image |
+| `guest-package-manifest.txt` + `guest-copyrights.tar` | in the guest: `dpkg-query -W -f='${Package} ${Version} ${Architecture}\n'` plus `/usr/share/doc/*/copyright` | per-package license/source mapping for the installed set |
+| `source/` mirror | fetch riscv-linux @ `a3b1e7a…` and riscv-pk @ `ac2c910b…` plus the two diffs and the kernel config (already in `FloeAgent/ThirdParty/TinyEMU/guest-image/`) and host them next to the image | GPL-2.0/BSD-3 corresponding source without depending on upstream availability |
+| `glibc/` record | glibc version of the cross toolchain plus its source or relinkable objects for the static runner | LGPL-2.1 §6 for the statically linked runner |
+| notices bundle | host engine MIT/BSD texts (`MIT-LICENSE.txt`, `licenses/SLIRP-COPYRIGHT.txt`, inline Regents BSD) + guest notices | app open-source acknowledgements path |
+
 ## Distribution checklist (required before any bundled image ships)
 
 1. Package the corresponding source for the kernel and boot loader from the
