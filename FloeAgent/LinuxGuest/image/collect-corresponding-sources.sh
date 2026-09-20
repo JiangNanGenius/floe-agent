@@ -184,77 +184,24 @@ MD
 # ---------------------------------------------------------------------------
 toolchain_src="$out/toolchain-source"
 mkdir -p "$toolchain_src"
-: >"$toolchain_src/apt-cache-showsrc.txt"
 if [ "$skip_upstream" = 0 ]; then
-    if command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1; then
-        if [ ! -d /etc/apt/sources.list.d ] || [ ! -w /etc/apt/sources.list.d ]; then
-            log "WARNING: cannot add deb-src (not root or no sources.list.d); recording package versions only"
-        else
-            codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-noble}")"
-            printf 'deb-src http://archive.ubuntu.com/ubuntu %s main universe\n' "$codename" \
-                >/etc/apt/sources.list.d/floe-source.list
-            if apt-get update -qq >"$toolchain_src/apt-update-src.log" 2>&1; then
-                # Resolve the source package for every binary that actually
-                # provides the compiler/libs (the `gcc-riscv64-linux-gnu`
-                # metapackage points at gcc-defaults, not at the compiler).
-                compiler_binary="$(command -v riscv64-linux-gnu-gcc 2>/dev/null || true)"
-                compiler_pkg=""
-                [ -n "$compiler_binary" ] && compiler_pkg="$(dpkg -S "$compiler_binary" 2>/dev/null | cut -d: -f1 | head -1)"
-                libc_dev_pkg="$(dpkg -S "$(riscv64-linux-gnu-gcc -print-file-name=libc.a 2>/dev/null)" 2>/dev/null | cut -d: -f1 | head -1 || true)"
-                libgcc_pkg="$(dpkg -S "$(riscv64-linux-gnu-gcc -print-file-name=libgcc.a 2>/dev/null)" 2>/dev/null | cut -d: -f1 | head -1 || true)"
-                source_names=""
-                for binary in gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu \
-                               "$compiler_pkg" "$libc_dev_pkg" "$libgcc_pkg"; do
-                    [ -n "$binary" ] || continue
-                    name="$(apt-cache show "$binary" 2>/dev/null | awk -F': ' '/^Source:/{split($2, a, " "); print a[1]; exit}')"
-                    [ -n "$name" ] || name="$binary"
-                    source_names="$source_names $name"
-                done
-                source_names="$(printf '%s\n' $source_names | sort -u | tr '\n' ' ')"
-                log "cross-toolchain packages: compiler=$compiler_pkg libc-dev=$libc_dev_pkg libgcc=$libgcc_pkg"
-                log "cross-toolchain source packages:$source_names"
-                for name in $source_names; do
-                    apt-cache showsrc "$name" >>"$toolchain_src/apt-cache-showsrc.txt" 2>&1 || true
-                done
-                (
-                    cd "$toolchain_src"
-                    # shellcheck disable=SC2086 # deliberate word list
-                    apt-get source --download-only -qq $source_names
-                ) >>"$toolchain_src/apt-get-source.log" 2>&1 || log "WARNING: apt-get source failed; see toolchain-source/apt-get-source.log"
-            else
-                log "WARNING: apt-get update with deb-src failed; see toolchain-source/apt-update-src.log"
-            fi
-        fi
-    fi
-fi
-(
-    cd "$toolchain_src"
-    # shellcheck disable=SC2086 # deliberate word list, empty entries filtered
-    dpkg-query -W -f='${binary:Package}\t${Version}\n' \
-        gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu \
-        ${compiler_pkg:-} ${libc_dev_pkg:-} ${libgcc_pkg:-} 2>/dev/null || true
-    riscv64-linux-gnu-gcc --version 2>/dev/null | head -1 || true
-    printf 'libc.a=%s\n' "$(riscv64-linux-gnu-gcc -print-file-name=libc.a 2>/dev/null || true)"
-    printf 'libgcc.a=%s\n' "$(riscv64-linux-gnu-gcc -print-file-name=libgcc.a 2>/dev/null || true)"
-) >"$toolchain_src/toolchain-versions.txt" 2>&1 || true
-if compgen -G "$toolchain_src/*.dsc" >/dev/null; then
-    (cd "$toolchain_src" && sha256sum ./*.dsc ./*.tar.* ./*.diff.* 2>/dev/null >toolchain-sources.sha256) || true
+    log "cross-toolchain corresponding sources (exact installed versions)"
+    bash "$script_dir/collect-toolchain-sources.sh" --out "$toolchain_src" \
+        || log "WARNING: toolchain source collection reported a problem; see toolchain-source/TOOLCHAIN-GAPS.txt"
 fi
 {
     printf '## 3. Cross toolchain / glibc source\n\n'
-    if compgen -G "$toolchain_src/*.dsc" >/dev/null; then
-        printf 'Distribution source packages downloaded into `toolchain-source/`:\n\n```\n'
-        (cd "$toolchain_src" && ls -1 ./*.dsc 2>/dev/null)
-        printf '```\n\n'
+    if [ -f "$toolchain_src/toolchain-sources.md" ]; then
+        cat "$toolchain_src/toolchain-sources.md"
+        printf '\n'
     else
-        printf 'NOT FETCHED in this run: the distribution source download was skipped or\n'
-        printf 'failed (no network/deb-src/root). `toolchain-source/toolchain-versions.txt`\n'
-        printf 'still records the exact compiler and cross packages; obtain the matching\n'
-        printf '`glibc` / `cross-toolchain-base` source package before public distribution.\n\n'
+        printf 'NOT COLLECTED in this run (--skip-upstream or a hard failure).\n\n'
     fi
-    printf '```\n'
-    cat "$toolchain_src/toolchain-versions.txt" 2>/dev/null || true
-    printf '```\n\n'
+    if [ -s "$toolchain_src/TOOLCHAIN-GAPS.txt" ]; then
+        printf 'Open gaps (must be resolved before public distribution):\n\n```\n'
+        cat "$toolchain_src/TOOLCHAIN-GAPS.txt"
+        printf '```\n\n'
+    fi
 } >>"$summary"
 
 # ---------------------------------------------------------------------------
