@@ -224,6 +224,27 @@ final class FloePlatformServices: @unchecked Sendable {
         return await images.status(id: id)
     }
 
+    /// True when this build has injected verified image storage. The settings
+    /// UI offers the download entry only when storage really exists, so the
+    /// button never promises an install this build cannot perform.
+    func linuxGuestImageStorageAvailable() -> Bool {
+        lock.withLock { linuxImages != nil }
+    }
+
+    /// Narrow install entry for the pinned Floe Linux image, reachable from
+    /// environment settings. It uses the same verified storage and the same
+    /// bounded HTTPS downloader as `floe-env image install`; the id must be a
+    /// pinned catalog entry (installTrustedImage refuses anything else), and
+    /// nothing is written into an environment layer — the image belongs to the
+    /// App and is shared by every Linux environment.
+    func installLinuxGuestImage(id: String) async throws -> String {
+        guard let images = lock.withLock({ linuxImages }) else {
+            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
+        }
+        let image = try await images.installTrustedImage(id: id, downloader: LinuxGuestImageHTTPDownloader())
+        return image.id
+    }
+
     /// `floe-env image status|import|install|remove` — the reachable image
     /// entry. `install` only downloads a catalog-pinned archive (none exists
     /// yet); `import` takes an already-downloaded zip plus its SHA-512, which

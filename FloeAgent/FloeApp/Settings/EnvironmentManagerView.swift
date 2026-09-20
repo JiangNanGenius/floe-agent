@@ -205,10 +205,26 @@ private struct EnvironmentDetailView: View {
     @State private var backendApplied: EnvironmentExecutionBackend = .native
     @State private var backendBusy = false
     @State private var guestStatus: LinuxGuestStatus?
+    @State private var imageStorageAvailable = false
     @Environment(\.dismiss) private var dismiss
     private var record: ContainerRecord { (current ?? report).record }
     private var writable: Bool { record.kind.isWritableLayer && record.state == .active && !record.requiresRebuild && !busy && !jobs.running.contains(report.id) }
     private var backendEditable: Bool { record.kind.isWritableLayer && record.state != .deleting && !backendBusy }
+    /// One App-shared install job per pinned image id, never per environment:
+    /// the image is shared storage, so tapping download in a second
+    /// environment must join the running task instead of starting another.
+    private static let imageJobPrefix = "linux-image:"
+    private var imageJobID: String? {
+        guard let imageID = guestStatus?.imageID else { return nil }
+        return Self.imageJobPrefix + imageID
+    }
+    /// The pinned image is missing or failed digest verification and this
+    /// build distributes it: the one state where the install/retry entry is
+    /// actionable. The id comes from the guest descriptor, never user input.
+    private var canInstallGuestImage: Bool {
+        guard let status = guestStatus, status.imageDistributable == true else { return false }
+        return status.imageInstalled != true || status.imageVerificationFailure != nil
+    }
     /// backendUserMessage is the honest reason a Linux guest cannot run yet
     /// (missing/unqualified image, no distributable archive).
     private var backendUserMessage: String? {
@@ -276,6 +292,14 @@ private struct EnvironmentDetailView: View {
                         } else {
                             Button("environment.backend.start", systemImage: "play") { apply(backend: .linuxVM) }
                                 .disabled(backendBusy || status.imageInstalled == false || status.imageVerificationFailure != nil)
+                        }
+                        // The pinned guest image is App-shared storage, not an
+                        // environment layer. When this build can distribute it
+                        // and it is missing (or failed digest verification),
+                        // the real install path is reachable from here: fixed
+                        // catalog id, no URL input, service-owned task.
+                        if canInstallGuestImage, imageStorageAvailable {
+                            imageInstallControls
                         }
                     } else {
                         ProgressView().controlSize(.small)
@@ -407,7 +431,7 @@ private struct EnvironmentDetailView: View {
             await reloadGuestStatus()
         }
         .refreshable { await reload() }
-        .onChange(of: jobs.revision) { Task { await reload() } }
+        .onChange(of: jobs.revision) { Task { await reload(); await reloadGuestStatus() } }
         .confirmationDialog(
             pendingLinuxRemoval.map { String(format: String(localized: "environment.packages.linux.remove_confirm"), $0) } ?? "",
             isPresented: Binding(get: { pendingLinuxRemoval != nil }, set: { if !$0 { pendingLinuxRemoval = nil } }),
@@ -429,6 +453,53 @@ private struct EnvironmentDetailView: View {
         } message: { Text("将停止此环境的任务并删除其依赖和容器数据。有子会话的项目须先清理子会话；停止失败时保留数据。") }
     }
     private func matches(_ name: String) -> Bool { query.isEmpty || name.localizedCaseInsensitiveContains(query) }
+
+    /// Download/retry entry for the pinned App-shared guest image. While the
+    /// shared job runs, every environment opened on the same image id shows
+    /// the same busy state and cannot start a second download.
+    @ViewBuilder
+    private var imageInstallControls: some View {
+        if let jobID = imageJobID {
+            if jobs.running.contains(jobID) {
+                ProgressView("environment.backend.image_downloading")
+                Button("action.cancel_task", role: .cancel) { jobs.cancel(id: jobID) }
+                    .font(.caption)
+            } else {
+                if let message = jobs.messages[jobID], !message.isEmpty {
+                    Text(message).font(.caption).textSelection(.enabled)
+                        .foregroundStyle(jobs.failures.contains(jobID) ? FloeTheme.destructive : .secondary)
+                }
+                if jobs.failures.contains(jobID) {
+                    Button("environment.backend.image_retry", systemImage: "arrow.down.circle") { installGuestImage() }
+                        .disabled(backendBusy)
+                } else {
+                    Button("environment.backend.image_download", systemImage: "arrow.down.circle") { installGuestImage() }
+                        .disabled(backendBusy)
+                }
+            }
+        }
+    }
+
+    /// Starts the one App-shared download job for the pinned image id. The
+    /// task lives in EnvironmentPackageJobs.shared, so leaving this view does
+    /// not cancel it; a second environment tapping the same id joins it.
+    private func installGuestImage() {
+        guard let imageID = guestStatus?.imageID else { return }
+        let jobID = Self.imageJobPrefix + imageID
+        jobs.start(id: jobID,
+                   title: String(format: String(localized: "environment.backend.image_download_title"), imageID)) {
+            do {
+                let installed = try await FloePlatformServices.shared.installLinuxGuestImage(id: imageID)
+                return String(format: String(localized: "environment.backend.image_installed"), installed)
+            } catch {
+                // The image service wraps every download failure, including a
+                // cancelled transfer. A user cancel is reported as a cancel so
+                // the shared task state stays honest.
+                if Task.isCancelled { throw CancellationError() }
+                throw error
+            }
+        }
+    }
 
     /// nil until the guest's dpkg database reports the recommended package as
     /// installed; architecture-qualified names keep their ":" qualifier.
@@ -515,6 +586,7 @@ private struct EnvironmentDetailView: View {
         } catch { self.error = String(describing: error) }
     }
     @MainActor private func reloadGuestStatus() async {
+        imageStorageAvailable = FloePlatformServices.shared.linuxGuestImageStorageAvailable()
         guestStatus = await FloePlatformServices.shared.linuxEnvironmentStatus(id: report.id)
     }
     /// Applies a backend choice through the same platform service the shell
@@ -535,10 +607,18 @@ private struct EnvironmentDetailView: View {
                 await reload()
                 await reloadGuestStatus()
             } catch {
-                backendSelection = backendApplied
                 self.error = String(describing: error)
+                // A failed guest start can leave the requested backend already
+                // recorded (for example when the image is missing). Re-read
+                // the record before deciding what the picker shows, so the
+                // Linux section — including the image download entry — stays
+                // reachable instead of snapping back to a native selection
+                // the record no longer has.
                 await reload()
                 await reloadGuestStatus()
+                let recorded = (current ?? report).record.executionBackend ?? .native
+                backendApplied = recorded
+                backendSelection = recorded
             }
         }
     }

@@ -2781,6 +2781,74 @@
         }
       }
     },
+    "environment.backend.image_download": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download and install guest image"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载并安装客户机镜像"
+          }
+        }
+      }
+    },
+    "environment.backend.image_download_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloading Linux image %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载 Linux 镜像 %@"
+          }
+        }
+      }
+    },
+    "environment.backend.image_downloading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloading and verifying the guest image…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载并校验客户机镜像…"
+          }
+        }
+      }
+    },
+    "environment.backend.image_installed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed Linux image %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装 Linux 镜像 %@"
+          }
+        }
+      }
+    },
     "environment.backend.image_missing": {
       "extractionState": "manual",
       "localizations": {
@@ -2794,6 +2862,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "此环境尚未安装客户机镜像；请先用 floe-env image import 导入经过校验的镜像。"
+          }
+        }
+      }
+    },
+    "environment.backend.image_retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry image download"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试下载镜像"
+          }
+        }
+      }
+    },
+    "environment.backend.image_store_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build has no durable image storage directory, so the Linux guest image cannot be downloaded here. Native environments are unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此版本没有可用的镜像存储目录，无法在此下载 Linux 客户机镜像。原生环境不受影响。"
           }
         }
       }
