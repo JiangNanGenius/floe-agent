@@ -476,9 +476,11 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
     /// manifest already names an init, it is left untouched (verified images
     /// must point at the runner).
     public var effectiveCmdline: String {
-        let base = cmdline ?? "console=hvc0 root=/dev/vda rw loglevel=4"
-        guard !base.contains("init=") else { return base }
-        return base + " init=" + LinuxGuestImage.runnerGuestPath
+        LinuxGuestBootArguments.commandLine(
+            base: cmdline,
+            runnerPath: Self.runnerGuestPath,
+            epoch: Int64(Date().timeIntervalSince1970)
+        )
     }
 
     /// Absolute guest path of the injected Floe runner.
@@ -641,4 +643,21 @@ public protocol LinuxGuestConsoleTransport: Sendable {
     func close() async
     /// Console output chunks in order. A single consumer iterates it.
     func output() async -> AsyncStream<Data>
+}
+
+/// The fallback kernel has no RTC. Supply a fresh wall clock at each boot so
+/// HTTPS and package signature dates use the device's time, not the image date.
+/// The guest PID1 consumes this numeric parameter before accepting commands.
+enum LinuxGuestBootArguments {
+    static func commandLine(base: String?, runnerPath: String, epoch: Int64) -> String {
+        let configured = base ?? "console=hvc0 root=/dev/vda rw loglevel=4"
+        var fields = configured.split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .filter { !$0.hasPrefix("floe.epoch=") }
+        if !fields.contains(where: { $0.hasPrefix("init=") }) {
+            fields.append("init=" + runnerPath)
+        }
+        fields.append("floe.epoch=" + String(epoch))
+        return fields.joined(separator: " ")
+    }
 }
