@@ -49,6 +49,43 @@ node / numpy, file-persistence across reboot, PTY/fork/exec/signal checks,
 boot/memory/time measurements. iPad performance: **pending** — no device
 measurements exist yet; never extrapolate from the above.
 
+## Cloud results (2026-09-20, ubuntu-latest, raw transcripts kept as artifacts)
+
+Honest status, including what does **not** work:
+
+- **Modern Debian 13 (kernel 6.12.107) does not boot on the 2018 bbl.**
+  Stage B produced a 0-byte console transcript (rc=2 timeout): Linux removed
+  the legacy SBI v0.1 interface that bbl implements in 5.9, so the kernel
+  never reaches the virtio console. A modern guest needs FDT generation +
+  OpenSBI in the engine — future work, not a configuration tweak. The 2018
+  demo image is a smoke fixture, **not** a complete Linux.
+- **The 4.15 fallback kernel could not use the Debian GPT cloud image.**
+  Stage C/D/E panicked with `VFS: Unable to mount root fs on
+  unknown-block(254,1)`; the guest saw only the protective MBR and mapped
+  `vda1` to the whole disk. Root cause (reproduced locally with a synthetic
+  GPT that macOS accepts): the pinned 2018 buildroot kernel has no
+  EFI/GPT partition parser, while the disk read path is byte-exact (guest
+  `dd` md5 matched the host). Fix in the workflow: extract the ext4
+  partition to a partitionless image and boot `root=/dev/vda`; D/E only run
+  when Stage C shows real guest-shell evidence.
+- **Lean push run (build + lifecycle + Stage A): passing.** Stage A markers
+  come from real guest output (markers are assembled at runtime, so a TTY
+  echo of the input line cannot fake them), and `lifecycle_test` passes
+  repeatable create/destroy, hostfwd bind/remove/destroy checked by real TCP
+  connects, oversized BIOS/kernel recoverable failures, and the RAM-OOM
+  negative case on Linux (2 GB guest under a 1 GB `RLIMIT_AS` fails create
+  cleanly through the `floe_ram_oom` path instead of exiting the host).
+
+## Evidence rules for this qualification
+
+Guest markers are only ever emitted by commands that build them at runtime
+(`echo X_$((6*7))`, `printf 'X_%s' OK`) and `--until` uses the same form, so
+`grep`/`--until` cannot match the console echo of the input line. Command
+exit codes are captured from the command itself (`cmd >log 2>&1; printf
+'RC=%d\n' $?`), never from the tail of a pipeline, and raw apt/dpkg logs are
+exported to the host through the 9p share. Debian stages are opt-in
+(`workflow_dispatch` input `run_debian`), so a push stays a few-minute check.
+
 ## Notes for app integration (phase 2B handoff)
 
 The engine is ready to be driven by the shell/localPython backend work:
