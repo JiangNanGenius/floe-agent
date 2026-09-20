@@ -104,6 +104,22 @@ original `origin.json` are preserved byte-for-byte (the origin is the honest
 record of the bytes the clone came from); an unrelated origin is still a
 `diskOriginConflict` and nothing is overwritten.
 
+## Truthful stop and quarantine
+
+`stopGuest`/`resetGuest` do not report a stop the engine did not perform. The
+registry marks the environment's teardown in flight before its close awaits
+(so a concurrent `startGuest` cannot slip past the removed session and boot a
+second VM on the same disk), then after closing both the channel and the
+handle it asks `handle.isRunning()`. `TinyEMUGuestMachine.stop()` may time out
+and deliberately keep a VM whose run loop did not leave its last slice; in
+that case the session and its admission reservation are retained, the
+environment is quarantined, `guestStatus.running` stays true and
+`lastError`/`lastResetSharedImpact` say the VM is still running and that no new
+guest will start on that disk. A later `stopGuest` retries and, once the VM
+really stops, releases the slot and records the truthful "stopped and
+destroyed" impact. `startGuest` on a quarantined environment throws
+`LinuxGuestError.stopFailed` instead of booting on the live disk.
+
 ## Bounded admission
 
 Per-command/session caps do not bound process memory when every environment
@@ -128,7 +144,7 @@ compile of the module, then builds and runs the check):
 ==> compiling upgrade check (swift-version 6, object emit) and linking
 ==> running existing-disk upgrade checks
 
-checks passed: 15, failures: 0
+checks passed: 16, failures: 0
 ==> all runner upgrade checks passed
 ```
 
@@ -149,6 +165,7 @@ console that models one immutable console stream per VM):
 | missing artifact | `runnerUpgradeRequired`, disk preserved, VM closed, slot released |
 | unverified bytes | wrong digest / symlink never reach the guest; install failure stops with the disk preserved |
 | admission | duplicate concurrent start refused; count and RAM budget refuse without stopping running guests; slots release on stop |
+| refused stop | a VM that refuses to stop keeps `running` true, retains the session and its admission slot, reports the quarantine in status, refuses a new start on the same disk, and a retried stop recovers |
 
 Limits: the check is a host-side scripted-console integration check, not
 guest-image qualification and not riscv64 execution; the real runner/component

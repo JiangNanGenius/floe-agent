@@ -140,6 +140,10 @@ final class ScriptedGuestTransport: LinuxGuestConsoleTransport, @unchecked Senda
         var installRejects = false
         /// Delay the VM boot so a duplicate concurrent start can interleave.
         var bootDelayMilliseconds = 0
+        /// The VM refuses to stop (the engine's stop budget elapsed and the
+        /// run loop is still alive): the transport keeps reporting running
+        /// until `allowStop()` is called.
+        var refusesStop = false
     }
 
     let configuration: Configuration
@@ -158,6 +162,7 @@ final class ScriptedGuestTransport: LinuxGuestConsoleTransport, @unchecked Senda
     // Guest-visible state and observations.
     private var runnerInstalled = false
     private var installedDigest: String?
+    private var refusesStop: Bool
     private(set) var outputRequests = 0
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -178,9 +183,15 @@ final class ScriptedGuestTransport: LinuxGuestConsoleTransport, @unchecked Senda
 
     init(configuration: Configuration) {
         self.configuration = configuration
+        self.refusesStop = configuration.refusesStop
         // A TinyEMU machine creates its console stream at init and only
         // finishes it on close: the stream is NOT renewed across stop/start.
         makeStreamLocked()
+    }
+
+    /// Let a later stop attempt actually stop the VM (recovery path).
+    func allowStop() {
+        withLock { refusesStop = false }
     }
 
     func setShareRoots(guestToHost: [String: String]) {
@@ -247,10 +258,12 @@ final class ScriptedGuestTransport: LinuxGuestConsoleTransport, @unchecked Senda
     }
 
     func machineStop() async {
-        debug("machineStop")
+        debug("machineStop refusesStop=\(withLock { refusesStop })")
         withLock {
             stopCount += 1
-            running = false
+            // A refused stop leaves the VM alive: the engine's stop budget
+            // elapsed while the run loop was still in a slice.
+            if !refusesStop { running = false }
             // Not finishing the stream is the production behaviour and the
             // point of the single-reader design: the router survives the
             // reboot.
@@ -262,9 +275,10 @@ final class ScriptedGuestTransport: LinuxGuestConsoleTransport, @unchecked Senda
     func machineClose() async {
         withLock {
             closeCount += 1
-            running = false
+            // Production close() = stop() (may time out and keep the VM) then
+            // sink.finish(): the stream ends even when the VM survives.
+            if !refusesStop { running = false }
             closed = true
-            // Only close finishes the console stream (production sink.finish()).
             continuation?.finish()
             continuation = nil
             stream = nil
@@ -914,6 +928,7 @@ enum RunnerUpgradeCheck {
         await checkMissingRunnerArtifactRejects(recorder: recorder, root: root)
         await checkUnverifiedRunnerBytesReject(recorder: recorder, root: root)
         await checkAdmissionBounds(recorder: recorder, root: root)
+        await checkRefusedStopQuarantines(recorder: recorder, root: root)
 
         print("")
         print("checks passed: \(recorder.passes), failures: \(recorder.failures.count)")
@@ -1548,6 +1563,59 @@ enum RunnerUpgradeCheck {
             try Recorder.expect(await ramLimited.registry.reservedGuestRAMMB == 512, "the RAM reservation is wrong")
             await ramLimited.registry.stopAll()
             try Recorder.expect(await ramLimited.registry.activeGuestCount == 0, "stopAll did not release every slot")
+        }
+    }
+
+    // MARK: 8. truthful stop / quarantine
+
+    static func checkRefusedStopQuarantines(recorder: Recorder, root: URL) async {
+        await recorder.check("refused_stop_reports_still_running_and_quarantines_the_disk") {
+            let harness = try makeHarness(
+                root: root,
+                name: "refused-stop",
+                configuration: .init(initialCaps: Fixture.caps, postRebootCaps: Fixture.caps,
+                                     runnerAlreadyCurrent: true, refusesStop: true),
+                withShares: true
+            )
+            _ = try await withDeadline(30, "refused-stop start") {
+                try await harness.registry.start(environmentID: "env-1", taskID: nil)
+            }
+            try Recorder.expect(harness.transport.startCount == 1, "the first start did not boot once")
+
+            await harness.registry.stop(environmentID: "env-1")
+            let status = await harness.registry.status(environmentID: "env-1")
+            try Recorder.expect(status.running, "a refused stop reported the guest as stopped")
+            try Recorder.expect((status.lastError ?? "").contains("still running"),
+                                "no truthful stop error was recorded: \(status.lastError ?? "-")")
+            try Recorder.expect((status.lastResetSharedImpact ?? "").contains("STILL RUNNING"),
+                                "the stop impact does not report the quarantine: \(status.lastResetSharedImpact ?? "-")")
+            try Recorder.expect(await harness.registry.activeGuestCount == 1,
+                                "the quarantined guest released its admission slot")
+            try Recorder.expect(harness.transport.startCount == 1, "the refused stop destroyed or replaced the VM")
+            try Recorder.expect(Fixture.sha512(ofFile: harness.diskURL) == harness.diskDigestBefore,
+                                "the persistent disk changed during the failed stop")
+
+            // A new start must not boot a second VM on the same disk.
+            do {
+                _ = try await harness.registry.start(environmentID: "env-1", taskID: nil)
+                throw CheckFailure.message("a start after a failed stop booted a second VM")
+            } catch let error as LinuxGuestError {
+                guard case .stopFailed = error else {
+                    throw CheckFailure.message("unexpected error after a failed stop \(error)")
+                }
+            }
+            try Recorder.expect(harness.transport.startCount == 1, "a second VM was booted on the quarantined disk")
+
+            // A retry recovers: the second stop attempt really stops the VM.
+            harness.transport.allowStop()
+            await harness.registry.stop(environmentID: "env-1")
+            try Recorder.expect(!harness.transport.isRunning, "the retry stop did not stop the VM")
+            try Recorder.expect(await harness.registry.activeGuestCount == 0,
+                                "the successful retry did not release the admission slot")
+            let recovered = await harness.registry.status(environmentID: "env-1")
+            try Recorder.expect(!recovered.running, "the recovered guest still reports running")
+            try Recorder.expect((recovered.lastResetSharedImpact ?? "").contains("stopped and destroyed"),
+                                "the recovered stop impact is not truthful: \(recovered.lastResetSharedImpact ?? "-")")
         }
     }
 
