@@ -39,7 +39,7 @@ Notes for review:
   them.
 - Nothing in the compiled subset is GPL/LGPL; the host-side GPL gate
   (`license_check.sh`) is unchanged. Guest-side components (Linux kernel,
-  bbl, Debian packages) are tracked separately in
-  `GUEST-IMAGE-MANIFEST.md`.
+  bbl, Debian packages, the static runner's glibc) are tracked separately in
+  [`docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md`](../../../docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md).
 
 This directory is documentation only; it changes no build input.
