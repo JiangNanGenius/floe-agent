@@ -48,7 +48,7 @@ enum LinuxGuestRuntimeImageError: Error, LocalizedError, Sendable, Equatable {
         case .diskPreparationFailed(let path, let reason):
             return "cannot prepare the Linux guest disk at \(path): \(reason)"
         case .diskOriginConflict(let disk, let existing, let verified):
-            return "Linux environment disk \(disk) was created from \(existing), but the verified image is now \(verified); refusing to overwrite the environment state"
+            return "Linux environment disk \(disk) was created from \(existing), the verified image is \(verified), and the manifest declares no compatible predecessor origin; refusing to overwrite the environment state"
         }
     }
 }
@@ -84,6 +84,26 @@ struct LinuxGuestRuntimeDiskOrigin: Codable, Equatable, Sendable {
     }
 }
 
+/// Runner-upgrade ledger next to one environment disk. The disk is a mutable
+/// clone of a verified base image, so replacing the base image's runner does
+/// NOT update the runner inside this disk; after the in-guest upgrade runs,
+/// the guest-reported runner capability line is recorded here and later
+/// starts skip the upgrade when it matches the current image's expectation.
+struct LinuxGuestRuntimeRunnerState: Codable, Equatable, Sendable {
+    static let currentVersion = 1
+
+    var version: Int
+    /// CAPS line the guest runner reported (e.g. "runner=2.0.0 protocol=3 …").
+    var runnerCapabilities: String
+    var upgradedAt: Date
+
+    init(runnerCapabilities: String, upgradedAt: Date = Date()) {
+        self.version = Self.currentVersion
+        self.runnerCapabilities = runnerCapabilities
+        self.upgradedAt = upgradedAt
+    }
+}
+
 /// Turns a verified manifest into engine-ready paths. Stateless and
 /// synchronous: the registry calls it inside the actor that already owns
 /// digest verification, so nothing here re-verifies the base bytes.
@@ -94,8 +114,98 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
     static let writableDirectoryName = "LinuxGuest"
     static let diskFileName = "disk.img"
     static let originFileName = "origin.json"
+    static let runnerStateFileName = "runner.json"
 
     init() {}
+
+    /// Directory that holds one environment's writable guest disk and its
+    /// sidecars. Shared by prepare() and the runner-upgrade ledger.
+    public static func environmentDiskDirectory(writableDirectory: URL, environmentID: String) -> URL {
+        writableDirectory.standardizedFileURL
+            .appendingPathComponent(writableDirectoryName, isDirectory: true)
+            .appendingPathComponent("disks", isDirectory: true)
+            .appendingPathComponent(environmentID, isDirectory: true)
+    }
+
+    // MARK: runner upgrade ledger
+
+    /// The runner capability line recorded for this environment's disk, nil
+    /// when the ledger is absent/unreadable (treated as "unknown — check the
+    /// guest", never as "new").
+    public static func recordedRunnerCapabilities(
+        writableDirectory: URL,
+        environmentID: String,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let url = environmentDiskDirectory(writableDirectory: writableDirectory, environmentID: environmentID)
+            .appendingPathComponent(runnerStateFileName)
+        guard let data = try? Data(contentsOf: url),
+              let state = try? JSONDecoder().decode(LinuxGuestRuntimeRunnerState.self, from: data),
+              state.version == LinuxGuestRuntimeRunnerState.currentVersion else { return nil }
+        return state.runnerCapabilities
+    }
+
+    /// Records the runner capability line the guest reported after a
+    /// successful in-guest runner upgrade. Atomic write; a crash leaves the
+    /// previous ledger (the next start re-checks the guest, which is safe).
+    public static func recordRunnerCapabilities(
+        _ capabilities: String,
+        writableDirectory: URL,
+        environmentID: String,
+        fileManager: FileManager = .default
+    ) throws {
+        let directory = environmentDiskDirectory(writableDirectory: writableDirectory, environmentID: environmentID)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(runnerStateFileName)
+        let state = LinuxGuestRuntimeRunnerState(runnerCapabilities: capabilities)
+        try JSONEncoder().encode(state).write(to: url, options: .atomic)
+    }
+
+    // MARK: verified artifact bytes
+
+    /// Resolves one declared artifact path to a regular file inside the
+    /// verified image directory and returns its bytes only after the size and
+    /// SHA-512 recorded for it match. Shared by disk preparation and the
+    /// in-guest runner upgrade so neither loads a path, symlink or byte count
+    /// that the verifier never checked. The caller may still hold its own copy
+    /// of the digest check, but the checks are the same on both paths.
+    static func loadVerifiedArtifact(
+        _ artifact: LinuxGuestImageArtifact,
+        imageDirectory: URL,
+        role: String,
+        fileManager: FileManager = .default
+    ) throws -> Data {
+        let url = try Self.resolveArtifact(
+            path: artifact.path,
+            role: role,
+            imageDirectory: imageDirectory,
+            fileManager: fileManager
+        )
+        let data: Data
+        do {
+            data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        } catch {
+            throw LinuxGuestRuntimeImageError.diskPreparationFailed(
+                path: url.path,
+                reason: "cannot read the \(role): \(error.localizedDescription)"
+            )
+        }
+        guard Int64(data.count) == artifact.bytes else {
+            throw LinuxGuestRuntimeImageError.diskPreparationFailed(
+                path: url.path,
+                reason: "\(role) size mismatch: manifest declares \(artifact.bytes) bytes, the file has \(data.count)"
+            )
+        }
+        let expected = artifact.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let actual = FloeDigest.sha512Hex(data)
+        guard actual == expected else {
+            throw LinuxGuestRuntimeImageError.diskPreparationFailed(
+                path: url.path,
+                reason: "\(role) SHA-512 mismatch; the file bytes do not match the verified manifest"
+            )
+        }
+        return data
+    }
 
     /// Returns a copy of `image` whose boot paths are absolute files inside
     /// `imageDirectory` and whose disk (when declared) is the environment's
@@ -109,14 +219,14 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
     ) throws -> LinuxGuestImage {
         try Task.checkCancellation()
         var runtime = image
-        runtime.biosPath = try resolveArtifact(
+        runtime.biosPath = try Self.resolveArtifact(
             path: image.biosPath,
             role: "bios",
             imageDirectory: imageDirectory,
             fileManager: fileManager
         ).path
         if let kernelPath = image.kernelPath {
-            runtime.kernelPath = try resolveArtifact(
+            runtime.kernelPath = try Self.resolveArtifact(
                 path: kernelPath,
                 role: "kernel",
                 imageDirectory: imageDirectory,
@@ -124,7 +234,7 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
             ).path
         }
         if let initrdPath = image.initrdPath {
-            runtime.initrdPath = try resolveArtifact(
+            runtime.initrdPath = try Self.resolveArtifact(
                 path: initrdPath,
                 role: "initrd",
                 imageDirectory: imageDirectory,
@@ -152,12 +262,14 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
 
     /// Absolute path of one declared artifact. The manifest path may be
     /// relative (portable form) or absolute (local images); either way it must
-    /// resolve to a regular file inside the verified image directory.
-    private func resolveArtifact(
+    /// resolve to a regular file inside the verified image directory. Static
+    /// and shared so the runner-upgrade path applies the same containment,
+    /// symlink and regular-file checks as the boot artifacts.
+    static func resolveArtifact(
         path: String,
         role: String,
         imageDirectory: URL,
-        fileManager: FileManager
+        fileManager: FileManager = .default
     ) throws -> URL {
         guard !path.isEmpty, !path.contains("\u{0}") else {
             throw LinuxGuestRuntimeImageError.artifactUnavailable(
@@ -203,7 +315,7 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
         writableDirectory: URL?,
         fileManager: FileManager
     ) throws -> URL {
-        let base = try resolveArtifact(
+        let base = try Self.resolveArtifact(
             path: diskPath,
             role: "disk",
             imageDirectory: imageDirectory,
@@ -317,17 +429,38 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
         if let data = try? Data(contentsOf: originURL) {
             origin = try? Self.decodeOrigin(data)
         }
-        guard let origin,
-              origin.version == LinuxGuestRuntimeDiskOrigin.currentVersion,
-              origin.imageID == image.id,
-              origin.artifactSHA512 == verifiedDigest else {
-            throw LinuxGuestRuntimeImageError.diskOriginConflict(
-                disk: disk.path,
-                existing: origin?.summary ?? "an unrecorded base",
-                verified: verified
-            )
+        if let origin, origin.version == LinuxGuestRuntimeDiskOrigin.currentVersion {
+            if origin.imageID == image.id, origin.artifactSHA512 == verifiedDigest {
+                return disk
+            }
+            // Runner-only component release: the manifest names the exact
+            // predecessor base image(s) whose disks it may adopt. All three
+            // recorded fields must match; the mutable disk and its original
+            // origin.json stay exactly as they are (the origin is the honest
+            // record of the bytes this disk was cloned from, and the runner is
+            // replaced in-guest from the verified standalone artifact).
+            if acceptsOrigin(origin, image: image) {
+                return disk
+            }
         }
-        return disk
+        throw LinuxGuestRuntimeImageError.diskOriginConflict(
+            disk: disk.path,
+            existing: origin?.summary ?? "an unrecorded base",
+            verified: verified
+        )
+    }
+
+    /// True when the environment disk's recorded origin matches one of the
+    /// manifest's declared compatible predecessors exactly (image id,
+    /// SHA-512 and byte count). An unrelated origin never matches.
+    private func acceptsOrigin(_ origin: LinuxGuestRuntimeDiskOrigin, image: LinuxGuestImage) -> Bool {
+        guard let origins = image.compatibleOrigins, !origins.isEmpty else { return false }
+        let originDigest = origin.artifactSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return origins.contains { candidate in
+            candidate.imageID.trimmingCharacters(in: .whitespacesAndNewlines) == origin.imageID
+                && candidate.artifactSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == originDigest
+                && candidate.artifactBytes == origin.artifactBytes
+        }
     }
 
     /// Copies the verified base to a sibling staging file. An APFS clone is
