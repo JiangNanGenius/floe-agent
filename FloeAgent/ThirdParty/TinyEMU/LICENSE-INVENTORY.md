@@ -39,6 +39,46 @@ GPL/LGPL source is used by the engine**, and no code was taken from QEMU
 (GPL) or iSH (GPL); TinyEMU is an independent MIT implementation by
 Fabrice Bellard.
 
+## Complete license/copyright texts on record (added 2026-09-20)
+
+The pinned tarball ships only `MIT-LICENSE.txt`; the slirp files reference a
+`COPYRIGHT` file it does not contain. Both applicable texts are now kept
+next to the engine so review does not depend on re-deriving them:
+
+| File | sha256 | Origin |
+| --- | --- | --- |
+| `MIT-LICENSE.txt` | `a75690160a50d8085bcd25acf34faa5b1c484e15ffd0bd662e5f4d7a289da080` | verbatim copy from the pinned tarball |
+| `licenses/SLIRP-COPYRIGHT.txt` | `6aa542ccb77b884dbb8e8c4620f3471111e5648fe341147befcf933ea30d764f` | restored verbatim from `raw.githubusercontent.com/qemu/qemu/v3.1.0/slirp/COPYRIGHT` (identical at v2.5.0/v2.12.0); the later v4.0.0 variant adds a third clause (sha256 `b28aecf4796a6a22054167f0a976de13d9db335669d37afd2dc7ea4c335e1e13`). See `licenses/README.md` |
+
+Consequently the slirp rows above are **BSD-2-clause** terms for the
+Gasparovski-only files (`mbuf.c`, `socket.c`, `if.c`, `misc.c`, `sbuf.c`,
+`bootp.c`, ...) and the **full 3-clause BSD notice inline** for the
+FreeBSD-derived files (`tcp_input.c`, `tcp_output.c`, `tcp_subr.c`,
+`tcp_timer.c`, `udp.c`, `cksum.c`, `ip_input.c`, `ip_output.c`,
+`ip_icmp.c`). The conclusion does not change: no GPL/LGPL in the host
+engine build.
+
+## Engine patch set (core)
+
+| Patch | Applies to | Purpose |
+| --- | --- | --- |
+| `patches/0001-htif-poweroff-callback.patch` | `riscv_machine.c` | guest poweroff becomes an observable flag instead of `exit(0)` |
+| `patches/0002-embeddable-error-propagation.patch` | `riscv_machine.c` (after 0001), `iomem.c` | recoverable create failures: RAM OOM returns NULL, `copy_bios` returns 0/-1 with bounds checks before `memcpy` |
+
+The integrated app vendor tree (`FloeAgent/ThirdParty/TinyEMU/Sources/`,
+SwiftPM target `FloeTinyEMU`) additionally carries `0003` (Darwin
+`stat`-timestamp shim for `fs_disk.c`) and `0004` (slirp `bootp` debug typo);
+those are tracked there and must be listed in that tree's provenance when it
+lands. `0002` must be applied after `0001` to the same `riscv_machine.c`
+copy; the vendoring script has to keep that order.
+
+## Guest image licensing
+
+See [GUEST-IMAGE-MANIFEST.md](../../../docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md)
+for the exact boot loader/kernel revisions, the kernel config, the Debian
+userland obligations and the concrete gaps that currently make the candidate
+image **not distributable as a bundled artifact**.
+
 ## Guest-side GPL separation (host gate invariant)
 
 The *guest* images used for qualification (TinyEMU buildroot demo, Debian
