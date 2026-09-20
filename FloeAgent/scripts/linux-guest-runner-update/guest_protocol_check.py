@@ -106,7 +106,7 @@ CC_CMD = ("rm -f /floe/cc{0}.start; echo s >/floe/cc{0}.start; i=0; "
           "while [ $i -lt 100 ]; do {files} && break; "
           "i=$((i+1)); sleep 0.2; done; "
           "if {files}; then n=$((3+1)); printf 'FLOE_CC%d_OF_%d\\n' {0} $n; "
-          "else printf 'FLOE_CC%d_%s\\n' {0} NO_OVERLAP; exit 7; fi").format(0, files=CC_FILES)
+          "else printf 'FLOE_CC%d_%s\\n' {0} NO_OVERLAP; exit 7; fi").format("{0}", files=CC_FILES)
 
 # The host's --until marker: the runner's terminal END frame, not the guest's
 # own last printf (see the module docstring on the terminal race).

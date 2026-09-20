@@ -262,6 +262,10 @@ def check_guest_protocol(out):
     expect(any(t == b"\x03" for t in seen_tokens), "script exercises the legacy 0x03 cancel")
     expect(any(t.startswith(b"\x1eFLOE-EXEC p3done ") for t in seen_tokens),
            "script ends with the terminal END token")
+    expect(all(("echo s >/floe/cc%d.start" % n) in guest_protocol_check.CC_CMD.format(n)
+               and ("\\n' %d $n" % n) in guest_protocol_check.CC_CMD.format(n)
+               for n in (1, 2, 3, 4)),
+           "each concurrent command owns its distinct barrier file and output marker")
     expect(b"NO_OVERLAP" in guest_protocol_check.CC_CMD.format(1).encode()
            and b"exit 7" in guest_protocol_check.CC_CMD.format(1).encode(),
            "overlap barrier fails closed on timeout (marker + exit 7)")
