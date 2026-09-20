@@ -227,6 +227,7 @@ def check_target_commit(repo, base_commit, target):
 
     # --- engine artifact contract (runnerArtifact/runnerCapabilities) -------
     engine_bytes = gh_file("FloeAgent/Sources/FloeExecution/Linux/LinuxGuestService.swift", target)
+    engine_source = ""
     if require(engine_bytes is not None, "target commit contains LinuxGuestService.swift"):
         engine_source = engine_bytes.decode("utf-8", "replace")
         roles, has_fields = pipeline_contract.engine_runner_contract(engine_source)
@@ -249,6 +250,27 @@ def check_target_commit(repo, base_commit, target):
         require("runnerArtifact" in registry_source,
                 "registry has the in-guest runner upgrade path that consumes runnerArtifact")
         facts["engineRegistryConsumer"] = "runnerArtifact" in registry_source
+
+    # --- runner-only predecessor compatibility ------------------------------
+    # A runner-only update ships a different disk digest, so an environment
+    # disk copied from the published base image is only accepted when the
+    # manifest declares that verified predecessor. Fail before dispatch when
+    # the engine has no recognizable field for it.
+    runtime_bytes = gh_file("FloeAgent/Sources/FloeExecution/Linux/LinuxGuestRuntimeImage.swift", target)
+    require(runtime_bytes is not None, "target commit contains LinuxGuestRuntimeImage.swift")
+    runtime_source = runtime_bytes.decode("utf-8", "replace") if runtime_bytes is not None else ""
+    try:
+        origin = pipeline_contract.compatible_origin_contract(
+            engine_source, runtime_source, os.environ.get("COMPATIBLE_ORIGIN_FIELD"))
+        ok("engine compatible-origin field %r over %s: %s" % (origin["field"], origin["elementType"],
+                                                              json.dumps(origin["keys"])))
+        facts["compatibleOrigin"] = origin
+    except ValueError as error:
+        fail("compatible-origin contract: %s" % error)
+    require(os.environ.get("BASE_IMAGE_ID", "").strip() != "",
+            "base image id is pinned for the predecessor origin record")
+    require(os.environ.get("BASE_DISK_BYTES", "").strip() != "",
+            "base disk byte size is pinned for the predecessor origin record")
 
 
 def main():

@@ -23,7 +23,10 @@ Produces (under --out, which the caller uploads as a workflow artifact):
 
 Engine artifact contract (LinuxGuestImage in LinuxGuestService.swift):
   * the manifest carries `runnerArtifact` (role/path/sha512/bytes) pointing at
-    the standalone runner inside the image directory and ZIP, and
+    the standalone runner inside the image directory and ZIP, the exact
+    engine-compatible-origin field naming the pinned base image as the
+    verified predecessor (values read from the pinned base manifest bytes, so
+    existing environment disks upgrade instead of being rejected), and
   * `runnerCapabilities`, the exact CAPS payload the guest answered in this
     run (cross-checked against the runner source constants of the same commit),
     so an environment whose persistent disk still boots an older runner can be
@@ -35,7 +38,8 @@ step's job after this record exists.
 Required env:
   COMPONENT_TAG IMAGE_ID TARGET_COMMIT RUNNER_VERSION_QUAL RUN_URL REPO SERVER
   BASE_TAG BASE_ZIP BASE_ZIP_BYTES BASE_ZIP_SHA512 BASE_ZIP_SHA256
-  BASE_MANIFEST_SHA512 BASE_BBL_SHA512 BASE_KERNEL_SHA512 BASE_DISK_SHA512
+  BASE_MANIFEST_SHA512 BASE_IMAGE_ID BASE_DISK_SHA512 BASE_DISK_BYTES
+  BASE_BBL_SHA512 BASE_KERNEL_SHA512
   BASE_RELEASE_URL BASE_SOURCE_OFFER_URL BASE_ASSET_DIGESTS_JSON
      ({"asset name": {"bytes": n, "sha256": hex}} — unchanged base assets the
       new release references instead of re-uploading)
@@ -165,10 +169,14 @@ def main():
                 "guest CAPS payload %r equals the runner source constants %r" % (caps_payload, source_caps))
         require(caps.get("protocol") == 3, "guest CAPS payload says protocol=3")
 
-    # --- engine artifact contract: role + required fields --------------------
+    # --- engine artifact contract: role, fields, compatible-origin schema ----
     engine_path = os.path.join(args.repo, "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestService.swift")
+    runtime_path = os.path.join(args.repo, "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestRuntimeImage.swift")
     role = None
     role_policy = None
+    origin_contract = None
+    engine_source = ""
+    runtime_source = ""
     if require(os.path.isfile(engine_path), "engine LinuxGuestService.swift is in the checkout"):
         with open(engine_path, "r", encoding="utf-8") as handle:
             engine_source = handle.read()
@@ -180,6 +188,17 @@ def main():
             ok("runnerArtifact role %r (%s): %s" % (role, role_policy, role_reason))
         except ValueError as error:
             fail("runnerArtifact role: %s" % error)
+    if require(os.path.isfile(runtime_path), "engine LinuxGuestRuntimeImage.swift is in the checkout"):
+        with open(runtime_path, "r", encoding="utf-8") as handle:
+            runtime_source = handle.read()
+    try:
+        origin_contract = pipeline_contract.compatible_origin_contract(
+            engine_source, runtime_source, env.get("COMPATIBLE_ORIGIN_FIELD"))
+        ok("compatible-origin field %r over %s (%s)"
+           % (origin_contract["field"], origin_contract["elementType"],
+              json.dumps(origin_contract["keys"])))
+    except ValueError as error:
+        fail("compatible-origin contract: %s" % error)
 
     # --- base member reuse gates --------------------------------------------
     checks = (
@@ -197,6 +216,36 @@ def main():
     disk_sha512 = sha(disk_path, "sha512")
     require(disk_sha512 != env["BASE_DISK_SHA512"],
             "updated disk.img digest differs from the base (runner really replaced)")
+
+    # The verified predecessor: values taken from the pinned base manifest
+    # bytes (whose own sha512 is pinned), not from notes. Existing environment
+    # disks come from exactly this image, so the manifest declares it as a
+    # compatible origin for the runner-only upgrade.
+    predecessor = None
+    base_manifest_path = os.path.join(args.image_dir, "manifest-base.json")
+    if os.path.isfile(base_manifest_path):
+        with open(base_manifest_path, "r", encoding="utf-8") as handle:
+            try:
+                base_manifest = json.load(handle)
+            except ValueError as error:
+                base_manifest = None
+                fail("base manifest is valid JSON: %s" % error)
+        if base_manifest is not None:
+            base_disk = next((artifact for artifact in base_manifest.get("artifacts", [])
+                              if artifact.get("role") == "disk"), None)
+            require(base_manifest.get("id") == env["BASE_IMAGE_ID"],
+                    "base manifest id is the pinned predecessor %s" % env["BASE_IMAGE_ID"])
+            require(base_disk is not None
+                    and base_disk.get("sha512") == env["BASE_DISK_SHA512"]
+                    and int(base_disk.get("bytes", -1)) == int(env["BASE_DISK_BYTES"]),
+                    "base manifest disk artifact matches the pinned predecessor digest+bytes")
+            require(base_manifest.get("id") != image_id,
+                    "the new image id differs from the predecessor id")
+            predecessor = {"imageID": base_manifest.get("id"),
+                           "sha512": base_disk.get("sha512") if base_disk else None,
+                           "bytes": int(base_disk["bytes"]) if base_disk else None}
+            ok("predecessor origin verified from the pinned base manifest: %s (%d bytes, %s…)"
+               % (predecessor["imageID"], predecessor["bytes"], (predecessor["sha512"] or "")[:16]))
 
     # The standalone runner inside the image directory (and ZIP): existing
     # writable disks upgrade from exactly these bytes.
@@ -256,6 +305,10 @@ def main():
     manifest["runnerArtifact"] = {"role": role, "path": RUNNER_MEMBER,
                                   "sha512": runner_sha512, "bytes": runner_bytes}
     manifest["runnerCapabilities"] = caps_payload
+    origin_entry = {origin_contract["keys"]["image_id"]: predecessor["imageID"],
+                    origin_contract["keys"]["sha512"]: predecessor["sha512"],
+                    origin_contract["keys"]["bytes"]: predecessor["bytes"]}
+    manifest[origin_contract["field"]] = [origin_entry]
     with open(manifest_path, "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
         handle.write("\n")
@@ -264,6 +317,8 @@ def main():
         handle.write("\n")
     ok("manifest carries runnerArtifact (path %s, role %s) + runnerCapabilities %r"
        % (RUNNER_MEMBER, role, caps_payload))
+    ok("manifest declares the verified predecessor origin %s.%s=%r"
+       % (origin_contract["field"], origin_contract["keys"]["image_id"], predecessor["imageID"]))
 
     result = subprocess.run([sys.executable, cmd[1], "verify", "--image-dir", args.image_dir,
                              "--manifest", manifest_path], capture_output=True, text=True)
@@ -476,6 +531,8 @@ def main():
              "- manifest fields `runnerArtifact` (role `%s`) + `runnerCapabilities`: present, so an\n"
              "  environment whose persistent disk still boots an older runner upgrades in-guest from these\n"
              "  verified bytes instead of being wiped\n"
+             "- verified predecessor origin: `%s` declares `%s` (disk sha512 `%s`, %d bytes) as the\n"
+             "  compatible runner-only origin, taken from the pinned base manifest bytes\n"
              "- cmdline: `console=hvc0 root=/dev/vda rw loglevel=4`\n\n"
              "## Focused qualification (actual guest boot, this run)\n\n"
              "HELLO/CAPS protocol-3 negotiation; 4-way concurrent EXEC with a real 9p overlap barrier;\n"
@@ -486,7 +543,9 @@ def main():
              "Release state: **draft** (`draft: true`, `latest: false`, tag does not start with `v`).\n"
              % (image_id, image_id, env["GITHUB_RUN_ID"], base_tag, target, image_zip_name, zip_bytes,
                 zip_sha512, zip_sha256, RUNNER_MEMBER, runner_bytes, runner_sha512, caps_payload, role,
-                verdict.get("serviceTicks", 0), len(verdict.get("checks", []))))
+                origin_contract["field"], predecessor["imageID"], predecessor["sha512"],
+                predecessor["bytes"], verdict.get("serviceTicks", 0),
+                len(verdict.get("checks", []))))
     with open(os.path.join(args.out, "RELEASE-NOTES.md"), "w", encoding="utf-8") as handle:
         handle.write(notes)
 
@@ -501,14 +560,16 @@ def main():
              "| Debian userland packages | per package | base release Debian source assets (unchanged, referenced) |\n\n"
              "## What changed vs the base\n\n"
              "Only the runner (`floe_exec.c`, `floe_clock.h`, `Makefile` output). Every other binary in the\n"
-             "image is byte-identical to the published base `%s`; the reused-source archive `%s` carries the\n"
+             "image is byte-identical to the published base `%s` (whose manifest is a reused, pinned member);\n"
+             "the manifest declares `%s` -> `%s` as the verified compatible origin so existing environment\n"
+             "disks keep their installed packages. The reused-source archive `%s` carries the\n"
              "base asset URLs plus the digests re-verified at package time. No zero-gap claim is made beyond\n"
              "those verified digests and the recorded cross-toolchain version comparison.\n\n"
              "## Relink (LGPL-2.1 §6)\n\n"
              "`%s` carries `floe_exec.c`, `floe_clock.h`, `Makefile`, the relocatable object, the exact link\n"
              "command (`toolchain.txt`), the runner constants (`runner-constants.txt`) and `RELINK.md`.\n"
-             % (image_id, relink_name, RUNNER_MEMBER, relink_name, base_tag, ref_name, base_tag, ref_name,
-                relink_name))
+             % (image_id, relink_name, RUNNER_MEMBER, relink_name, base_tag, ref_name,
+                origin_contract["field"], predecessor["imageID"], base_tag, ref_name, relink_name))
     with open(os.path.join(args.out, "SOURCE-OFFER.md"), "w", encoding="utf-8") as handle:
         handle.write(offer)
 
@@ -533,6 +594,9 @@ def main():
                            "sha512": runner_sha512, "bytes": runner_bytes,
                            "binarySha256": runner_sha256, "sourceCommit": target},
         "runnerCapabilities": caps_payload,
+        "predecessorOrigin": {"field": origin_contract["field"],
+                              "keys": origin_contract["keys"],
+                              "entry": origin_entry},
         "runnerConstants": constants,
         "protocolCheck": {"failures": verdict.get("failures"), "checks": len(verdict.get("checks", [])),
                           "serviceTicks": verdict.get("serviceTicks"),

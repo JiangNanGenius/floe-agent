@@ -98,12 +98,12 @@ def engine_runner_contract(swift_source):
 def choose_runner_role(roles, override=None):
     """Pick the JSON role for runnerArtifact from the engine's enum.
 
-    Returns (role, policy, reason) or raises ValueError when no role works.
-    `runner` is the exact role; `disk` is the recorded compatibility fallback
-    for engine revisions whose Role enum has no runner case (the registry
-    upgrade path reads path/sha512/bytes and never the role, and the artifact
-    is not part of `declaredArtifacts`). Nothing is written silently: the
-    caller records `policy` in the distribution record.
+    Returns (role, policy, reason) or raises ValueError. The engine ships a
+    distinct `runner` case for the runner artifact; the runner-only update must
+    not reuse the `disk` role (the disk artifact already owns it and a verifier
+    keyed by role would collide), so a missing `runner` case fails closed with
+    an actionable message. RUNNER_ARTIFACT_ROLE stays as an explicit override
+    validated against the same enum.
     """
     if roles is None:
         raise ValueError("could not find LinuxGuestImageArtifact.Role in the engine source")
@@ -114,12 +114,128 @@ def choose_runner_role(roles, override=None):
                              % (override, roles))
         return override, "explicit-override", "RUNNER_ARTIFACT_ROLE was set explicitly"
     if "runner" in roles:
-        return "runner", "engine-runner-role", "engine Role enum has an exact runner case"
-    if "disk" in roles:
-        return "disk", "compat-disk-role", (
-            "engine Role enum %s has no runner case; the fallback role is unused by the "
-            "registry upgrade path and only has to remain decodable" % roles)
-    raise ValueError("engine Role enum %s has neither a runner nor a disk case" % roles)
+        return "runner", "engine-runner-role", "engine Role enum has a distinct runner case"
+    raise ValueError(
+        "engine Role enum %s has no distinct runner case; the runnerArtifact must not reuse "
+        "the disk role (verifier collision). Add `case runner` to LinuxGuestImageArtifact.Role, "
+        "or set RUNNER_ARTIFACT_ROLE explicitly after reviewing the verifier." % roles)
+
+
+# --- compatible-origin (runner-only predecessor) contract -------------------
+
+ORIGIN_FIELD_CANDIDATES = ("compatibleOrigins", "compatibleOrigin", "acceptedOrigins",
+                           "predecessorOrigins", "supersedesOrigins")
+
+STORED_PROPERTY_PATTERN = re.compile(
+    r"^\s*(?:public\s+|internal\s+|package\s+|private\s+)?(?:var|let)\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
+    r"(?P<type>[\[\]A-Za-z_][A-Za-z0-9_.\[\]<>,?! ]*?)\s*(?P<tail>[={].*)?$", re.M)
+
+
+def swift_struct_properties(source, type_name):
+    """Stored (non-computed) properties of one Swift struct."""
+    match = re.search(r"(?:public\s+)?struct\s+%s\b[^{]*\{" % re.escape(type_name), source)
+    if not match:
+        return None
+    body = source[match.end():]
+    depth = 1
+    out = []
+    for line in body.splitlines():
+        if depth == 0:
+            break
+        stripped = line.strip()
+        if stripped and "static" not in stripped:
+            property_match = STORED_PROPERTY_PATTERN.match(line)
+            if property_match and not (property_match.group("tail") or "").startswith("{"):
+                out.append((property_match.group("name"), property_match.group("type").strip()))
+        depth += line.count("{") - line.count("}")
+    return out
+
+
+def compatible_origin_contract(service_source, runtime_source, override=None):
+    """The engine's compatible-origin manifest field and its entry keys.
+
+    A runner-only update replaces the runner inside the pinned base disk: the
+    new disk digest differs, so an existing environment disk (created from the
+    published base image) is only accepted when the manifest explicitly
+    declares that verified predecessor. The engine owns that schema; this
+    reads it from the target commit's Swift sources instead of assuming a
+    field name:
+
+      1. COMPATIBLE_ORIGIN_FIELD (or the `override` argument) wins after
+         validation;
+      2. the preferred names below are tried first;
+      3. otherwise any array-of-struct property on LinuxGuestImage is accepted
+         when the element struct has stored properties for the image id, the
+         SHA-512 and the byte size.
+
+    Returns {"field", "elementType", "keys", "required"} or raises ValueError
+    listing the arrays it inspected and the semantic each one lacked, so a
+    schema change fails the preflight with an actionable message instead of
+    writing a field the app cannot decode.
+    """
+    sources = [source for source in (service_source, runtime_source) if source]
+    properties = None
+    for source in sources:
+        properties = swift_struct_properties(source, "LinuxGuestImage")
+        if properties:
+            break
+    if not properties:
+        raise ValueError("could not find LinuxGuestImage in the engine sources")
+
+    candidates = []
+    override = (override or "").strip()
+    if override:
+        candidates.append(override)
+    candidates += [name for name in ORIGIN_FIELD_CANDIDATES
+                   if name not in candidates]
+    candidates += [name for name, _type in properties if name not in candidates]
+
+    inspected = []
+    for name in candidates:
+        declared = next((type_text for property_name, type_text in properties
+                         if property_name == name), None)
+        if declared is None:
+            continue
+        element_match = re.fullmatch(r"\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\??", declared.strip())
+        if not element_match:
+            if name == override:
+                raise ValueError("COMPATIBLE_ORIGIN_FIELD=%r is not an array of a struct (%s)"
+                                 % (name, declared))
+            continue
+        element = element_match.group(1)
+        element_properties = None
+        for source in sources:
+            element_properties = swift_struct_properties(source, element)
+            if element_properties:
+                break
+        if not element_properties:
+            if name == override:
+                raise ValueError("COMPATIBLE_ORIGIN_FIELD=%r references %s, whose stored properties "
+                                 "were not found" % (name, element))
+            continue
+        keys = {}
+        for property_name, _type in element_properties:
+            lowered = property_name.lower()
+            if "image" in lowered and "id" in lowered:
+                keys["image_id"] = property_name
+            elif "sha512" in lowered or "digest" in lowered:
+                keys["sha512"] = property_name
+            elif "byte" in lowered or "size" in lowered:
+                keys["bytes"] = property_name
+        missing = [semantic for semantic in ("image_id", "sha512", "bytes") if semantic not in keys]
+        inspected.append((name, element, missing))
+        if missing:
+            continue
+        return {"field": name, "elementType": element, "keys": keys,
+                "required": [property_name for property_name, _ in element_properties]}
+    detail = "; ".join("%s[%s] lacks %s" % (name, element, ",".join(missing))
+                       for name, element, missing in inspected) or "no array-of-struct property"
+    raise ValueError(
+        "engine has no recognizable compatible-origin array on LinuxGuestImage (%s); a runner-only "
+        "update must declare the verified predecessor image so existing environment disks can "
+        "upgrade instead of being rejected. Set COMPATIBLE_ORIGIN_FIELD only after reviewing the "
+        "engine decoder." % detail)
 
 
 def toolchain_packages(text):

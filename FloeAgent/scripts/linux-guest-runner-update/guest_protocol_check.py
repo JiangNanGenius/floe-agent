@@ -6,7 +6,8 @@ generate: write the timed floe_vm_host script that drives one real guest boot
   through capability negotiation, concurrent one-shot commands, targeted and
   legacy cancellation with channel recovery, concurrent PTY sessions and the
   background-service control channel. Every frame is the exact wire format the
-  host sends (base64 inline payloads, closing-mark control frames).
+  host sends (base64 inline payloads, closing-mark control frames). It also
+  writes the terminal marker the host must wait for (see below).
 
 assert:   verify the boot transcript and the 9p share against the expected
   frames/markers and write a JSON verdict. Exit 1 on any failure and keep the
@@ -15,6 +16,19 @@ assert:   verify the boot transcript and the 9p share against the expected
 Marker honesty: guest markers are produced by printf commands assembled at
 runtime; frame payloads are base64, so a transcript hit can only come from the
 guest executing, never from the console echo of the input line.
+
+Concurrency honesty: the four overlap commands only print their success marker
+after all four start-files exist; a bounded wait expires into a distinct
+FLOE_CC<n>_NO_OVERLAP marker plus exit 7. Sequential execution therefore fails
+the check twice (forbidden marker and non-zero END), and the assert also
+requires every FLOE-END cc<n> 0.
+
+Terminal race: floe_vm_host stops on the first marker substring seen in the
+guest console stream. Waiting for the guest-printed FLOE_P3_DONE can cut the
+boot before the runner's terminal END frame is transcribed ("final end" then
+fails); the terminal marker written for `--until` is therefore the runner's
+own terminal frame, FLOE-END p3done 0, which the guest emits after its final
+output. The assert still requires both the guest marker and that END.
 """
 import argparse
 import base64
@@ -83,17 +97,25 @@ def sh(token, command):
 
 
 # Concurrency barrier: each of the four commands drops its own start file in
-# the 9p share and spins (bounded) until all four exist. Sequential execution
-# can never pass the barrier, so the FLOE_CC<n>_OK markers are real overlap
-# evidence. The marker text is built at runtime ($((3+1))).
+# the 9p share and spins (bounded) until all four exist. The success marker is
+# printed only after that condition was re-checked; the bounded wait expiring
+# prints a distinct NO_OVERLAP marker and exits 7, so sequential execution can
+# never pass (the marker text is built at runtime: $((3+1))).
+CC_FILES = " && ".join("[ -f /floe/cc%d.start ]" % n for n in (1, 2, 3, 4))
 CC_CMD = ("rm -f /floe/cc{0}.start; echo s >/floe/cc{0}.start; i=0; "
-          "while [ $i -lt 100 ]; do "
-          "[ -f /floe/cc1.start ] && [ -f /floe/cc2.start ] && [ -f /floe/cc3.start ] && [ -f /floe/cc4.start ] && break; "
+          "while [ $i -lt 100 ]; do {files} && break; "
           "i=$((i+1)); sleep 0.2; done; "
-          "n=$((3+1)); printf 'FLOE_CC%d_OF_%d\\n' {0} $n")
+          "if {files}; then n=$((3+1)); printf 'FLOE_CC%d_OF_%d\\n' {0} $n; "
+          "else printf 'FLOE_CC%d_%s\\n' {0} NO_OVERLAP; exit 7; fi").format(0, files=CC_FILES)
+
+# The host's --until marker: the runner's terminal END frame, not the guest's
+# own last printf (see the module docstring on the terminal race).
+TERMINAL_TOKEN = "p3done"
+TERMINAL_MARKER = "FLOE-END %s 0" % TERMINAL_TOKEN
 
 
-def generate(out_path):
+def generate(out_path, terminal_out=None):
+    """Write the timed script; also the marker the host must wait for."""
     lines = []
 
     def at(second, frame):
@@ -135,12 +157,15 @@ def generate(out_path):
         at(102, frame)
     at(110, control(b"ALIVE", "alivebad", b"999999"))
     at(110, control(b"KILL", "killbad", b"999999"))
-    # 8. final marker the boot waits for.
-    at(118, sh("p3done", "printf 'FLOE_P3_%s\\n' DONE"))
+    # 8. final guest marker plus the terminal END frame the host waits for.
+    at(118, sh(TERMINAL_TOKEN, "printf 'FLOE_P3_%s\\n' DONE"))
 
     with open(out_path, "wb") as handle:
         handle.write(b"\n".join(lines) + b"\n")
-    print("wrote %s (%d timed lines)" % (out_path, len(lines)))
+    if terminal_out:
+        with open(terminal_out, "w", encoding="utf-8") as handle:
+            handle.write(TERMINAL_MARKER + "\n")
+    print("wrote %s (%d timed lines, terminal marker %r)" % (out_path, len(lines), TERMINAL_MARKER))
     return 0
 
 
@@ -167,7 +192,7 @@ REQUIRED = [
     ("unknown alive honest 3", rb"FLOE-END alivebad 3"),
     ("unknown kill honest 3", rb"FLOE-END killbad 3"),
     ("final marker", rb"FLOE_P3_DONE"),
-    ("final end", rb"FLOE-END p3done 0"),
+    ("final end", re.escape(TERMINAL_MARKER).encode()),
 ]
 
 FORBIDDEN = [
@@ -177,6 +202,8 @@ FORBIDDEN = [
     ("command table overflow", rb"command table full"),
     ("session table overflow", rb"session table full"),
     ("cancelme wrong exit", rb"FLOE-END cancelme (0|125|130)\b"),
+    ("overlap barrier timeout", rb"FLOE_CC[0-9]_NO_OVERLAP"),
+    ("overlap command non-zero exit", rb"FLOE-END cc[0-9] (?!0\b)[0-9]+"),
 ]
 
 
@@ -259,13 +286,15 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     gen = sub.add_parser("generate", help="write the timed floe_vm_host script")
     gen.add_argument("--out", required=True)
+    gen.add_argument("--terminal-out", default=None,
+                     help="write the exact --until marker for the host (terminal END frame)")
     chk = sub.add_parser("assert", help="verify the transcript + 9p share, write the JSON verdict")
     chk.add_argument("--transcript", required=True)
     chk.add_argument("--share", required=True)
     chk.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.command == "generate":
-        return generate(args.out)
+        return generate(args.out, args.terminal_out)
     return run_assert(args.transcript, args.share, args.out)
 
 

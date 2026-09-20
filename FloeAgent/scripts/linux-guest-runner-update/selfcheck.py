@@ -59,13 +59,45 @@ public enum LinuxGuestImageArtifact {
         case kernel
         case initrd
         case disk
+        case runner
     }
+}
+public struct LinuxGuestImageCompatibleOrigin: Codable {
+    public var imageID: String
+    public var sha512: String
+    public var bytes: Int64
 }
 public struct LinuxGuestImage {
     public var runnerArtifact: LinuxGuestImageArtifact?
     public var runnerCapabilities: String?
+    public var compatibleOrigins: [LinuxGuestImageCompatibleOrigin]?
 }
 """
+# The engine may name the origin keys after the disk-origin sidecar
+# (artifactSHA512/artifactBytes); the packaging must follow the engine.
+ENGINE_SOURCE_ALIAS_ORIGIN = ENGINE_SOURCE.replace(
+    """public struct LinuxGuestImageCompatibleOrigin: Codable {
+    public var imageID: String
+    public var sha512: String
+    public var bytes: Int64
+}""",
+    """public struct LinuxGuestImageCompatibleOrigin: Codable {
+    public var imageID: String
+    public var artifactSHA512: String
+    public var artifactBytes: Int64
+}""")
+# An engine field with an arbitrary name must still be found and followed.
+ENGINE_SOURCE_ODD_ORIGIN_NAME = ENGINE_SOURCE.replace(
+    "compatibleOrigins: [LinuxGuestImageCompatibleOrigin]?",
+    "runnerCompatibleDiskOrigins: [LinuxGuestImageCompatibleOrigin]?").replace(
+    "    public var compatibleOrigins: [LinuxGuestImageCompatibleOrigin]?\n", "")
+ENGINE_SOURCE_ODD_ORIGIN_NAME = ENGINE_SOURCE_ODD_ORIGIN_NAME.replace(
+    "    public var runnerCapabilities: String?\n",
+    "    public var runnerCapabilities: String?\n"
+    "    public var runnerCompatibleDiskOrigins: [LinuxGuestImageCompatibleOrigin]?\n")
+ENGINE_SOURCE_NO_ORIGIN = ENGINE_SOURCE.replace(
+    "    public var compatibleOrigins: [LinuxGuestImageCompatibleOrigin]?\n", "")
+ENGINE_SOURCE_NO_RUNNER_ROLE = ENGINE_SOURCE.replace("        case runner\n", "")
 ENGINE_SOURCE_NO_CONTRACT = """\
 public enum LinuxGuestImageArtifact {
     public enum Role: String, Codable, Sendable {
@@ -79,6 +111,11 @@ public struct LinuxGuestImage {
 }
 """
 VERDICT_CHECKS = ["boot clock applied", "HELLO answered", "final marker"]
+# Pinned predecessor identity for the synthetic base manifest (the package
+# must read these from the manifest bytes, not from notes).
+BASE_IMAGE_ID = "floe-debian13-riscv64-base-selfcheck"
+BASE_DISK_SHA512 = "c" * 128
+BASE_DISK_BYTES = 4096
 
 
 def sha(path, algo="sha512"):
@@ -159,18 +196,34 @@ def check_contract(out):
     parsed = pipeline_contract.parse_caps(caps)
     expect(parsed is not None and parsed["protocol"] == 3, "CAPS payload parses back")
     roles, has_fields = pipeline_contract.engine_runner_contract(ENGINE_SOURCE)
-    expect(has_fields and roles == ["bios", "disk", "initrd", "kernel"], "engine contract + Role enum parse")
+    expect(has_fields and roles == ["bios", "disk", "initrd", "kernel", "runner"],
+           "engine contract + Role enum parse")
     role, policy, _ = pipeline_contract.choose_runner_role(roles)
-    expect(role == "disk" and policy == "compat-disk-role",
-           "Role enum without a runner case falls back to the recorded disk role")
-    role, policy, _ = pipeline_contract.choose_runner_role(roles + ["runner"])
     expect(role == "runner" and policy == "engine-runner-role",
-           "Role enum with a runner case uses it")
+           "engine with a distinct runner role uses it")
     try:
-        pipeline_contract.choose_runner_role(["bios", "kernel"])
-        raise SystemExit("selfcheck FAIL: a Role enum without runner/disk must fail")
+        pipeline_contract.choose_runner_role([name for name in roles if name != "runner"])
+        raise SystemExit("selfcheck FAIL: a Role enum without a runner case must fail closed")
     except ValueError:
-        print("selfcheck OK: unusable Role enum fails closed", flush=True)
+        print("selfcheck OK: a Role enum without a distinct runner case fails closed", flush=True)
+    origin = pipeline_contract.compatible_origin_contract(ENGINE_SOURCE, "")
+    expect(origin["field"] == "compatibleOrigins"
+           and origin["keys"] == {"image_id": "imageID", "sha512": "sha512", "bytes": "bytes"},
+           "compatible-origin field and keys derive from the engine source")
+    alias = pipeline_contract.compatible_origin_contract(ENGINE_SOURCE_ALIAS_ORIGIN, "")
+    expect(alias["keys"] == {"image_id": "imageID", "sha512": "artifactSHA512",
+                             "bytes": "artifactBytes"},
+           "engine-side origin key names are followed, not guessed")
+    odd = pipeline_contract.compatible_origin_contract(ENGINE_SOURCE_ODD_ORIGIN_NAME, "")
+    expect(odd["field"] == "runnerCompatibleDiskOrigins",
+           "an arbitrary engine field name is detected without a hardcoded list")
+    for source, label in ((ENGINE_SOURCE_NO_ORIGIN, "no compatible-origin field"),
+                          (ENGINE_SOURCE_NO_CONTRACT, "no engine artifact contract")):
+        try:
+            pipeline_contract.compatible_origin_contract(source, "")
+            raise SystemExit("selfcheck FAIL: %s must fail closed" % label)
+        except ValueError:
+            print("selfcheck OK: %s fails closed" % label, flush=True)
     base = "binary gcc-riscv64-linux-gnu 4:13.2.0-7ubuntu1 source gcc-defaults 1.209\n"
     expect(not pipeline_contract.toolchain_record_gaps(base, base), "identical toolchain records have no gaps")
     expect(pipeline_contract.toolchain_record_gaps(base, base.replace("4:13.2.0", "4:13.3.0")),
@@ -184,7 +237,11 @@ def check_contract(out):
 
 def check_guest_protocol(out):
     script_path = os.path.join(out, "p3-script.txt")
-    guest_protocol_check.generate(script_path)
+    terminal_path = os.path.join(out, "p3-terminal.txt")
+    guest_protocol_check.generate(script_path, terminal_path)
+    expect(open(terminal_path, encoding="utf-8").read().strip() == guest_protocol_check.TERMINAL_MARKER
+           == "FLOE-END p3done 0",
+           "generated terminal marker is the runner's terminal END frame")
     lines = open(script_path, "rb").read().splitlines()
     expect(0 < len(lines) <= 128, "generated script has a bounded number of commands")
     seen_tokens = set()
@@ -203,6 +260,11 @@ def check_guest_protocol(out):
     expect(any(b"\x1eFLOE-OPEN" in t for t in seen_tokens), "script opens PTY sessions")
     expect(any(b"\x1eFLOE-SPAWN" in t for t in seen_tokens), "script spawns the background service")
     expect(any(t == b"\x03" for t in seen_tokens), "script exercises the legacy 0x03 cancel")
+    expect(any(t.startswith(b"\x1eFLOE-EXEC p3done ") for t in seen_tokens),
+           "script ends with the terminal END token")
+    expect(b"NO_OVERLAP" in guest_protocol_check.CC_CMD.format(1).encode()
+           and b"exit 7" in guest_protocol_check.CC_CMD.format(1).encode(),
+           "overlap barrier fails closed on timeout (marker + exit 7)")
 
     share = os.path.join(out, "share9p")
     os.makedirs(share, exist_ok=True)
@@ -221,6 +283,13 @@ def check_guest_protocol(out):
                 transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4", broken=True))
     expect(quiet(guest_protocol_check.run_assert, bad, share, os.path.join(out, "bad-verdict.json")) == 1,
            "a transcript without the recovery marker fails closed")
+    no_overlap = write(os.path.join(out, "no-overlap-transcript.txt"),
+                       transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4")
+                       .replace(b"FLOE_CC1_OF_4", b"FLOE_CC1_NO_OVERLAP")
+                       .replace(b"FLOE-END cc1 0", b"FLOE-END cc1 7"))
+    expect(quiet(guest_protocol_check.run_assert, no_overlap, share,
+                 os.path.join(out, "no-overlap-verdict.json")) == 1,
+           "a barrier-timeout (sequential) transcript fails closed")
     legacy = write(os.path.join(out, "legacy-transcript.txt"),
                    transcript_for("runner=1.0.0 protocol=2 maxCommands=1 maxSessions=1"))
     expect(quiet(guest_protocol_check.run_assert, legacy, share,
@@ -241,7 +310,17 @@ def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="
     paths["bbl"] = write(os.path.join(image_dir, "bbl64.bin"), b"bbl-bytes" * 64)
     paths["kernel"] = write(os.path.join(image_dir, "kernel-riscv64.bin"), b"kernel-bytes" * 128)
     paths["manifest-base"] = write(os.path.join(image_dir, "manifest-base.json"),
-                                   json.dumps({"id": "base-image"}) + "\n")
+                                   json.dumps({
+                                       "id": BASE_IMAGE_ID,
+                                       "biosPath": "bbl64.bin",
+                                       "kernelPath": "kernel-riscv64.bin",
+                                       "diskPath": "disk.img",
+                                       "diskReadWrite": True,
+                                       "qualified": True,
+                                       "artifacts": [{"role": "disk", "path": "disk.img",
+                                                      "sha512": BASE_DISK_SHA512,
+                                                      "bytes": BASE_DISK_BYTES}],
+                                   }, indent=1) + "\n")
     paths["disk"] = write(os.path.join(image_dir, "disk.img"), b"disk-with-protocol-3-runner" * 256)
 
     runner_bin = write(os.path.join(runner_out, "floe-exec-riscv64"),
@@ -271,6 +350,14 @@ def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="
     shutil.copyfile(writer_path, write(os.path.join(repo, "FloeAgent/LinuxGuest/image/write-image-manifest.py"), ""))
     write(os.path.join(repo, "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestService.swift"),
           engine_source if engine_source else ENGINE_SOURCE)
+    write(os.path.join(repo, "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestRuntimeImage.swift"),
+          "// synthetic runtime-image source for the pipeline self-check\n"
+          "struct LinuxGuestRuntimeDiskOrigin {\n"
+          "    var version: Int\n"
+          "    var imageID: String\n"
+          "    var artifactSHA512: String\n"
+          "    var artifactBytes: Int64\n"
+          "}\n")
     for name, payload in (("floe_exec.c", RUNNER_SOURCE),
                           ("floe_clock.h", "/* synthetic clock */\n"),
                           ("Makefile", "riscv64:\n\t@true\n")):
@@ -303,7 +390,8 @@ def package_env(paths, base_toolchain, caps="runner=2.0.0 protocol=3 maxCommands
         "BASE_ZIP_BYTES": "123", "BASE_ZIP_SHA512": "a" * 128, "BASE_ZIP_SHA256": "b" * 64,
         "BASE_MANIFEST_SHA512": sha(paths["manifest-base"]),
         "BASE_BBL_SHA512": sha(paths["bbl"]), "BASE_KERNEL_SHA512": sha(paths["kernel"]),
-        "BASE_DISK_SHA512": "c" * 128,
+        "BASE_IMAGE_ID": BASE_IMAGE_ID, "BASE_DISK_SHA512": BASE_DISK_SHA512,
+        "BASE_DISK_BYTES": str(BASE_DISK_BYTES),
         "BASE_RELEASE_URL": "https://github.com/example/floe-agent/releases/tag/floe-linux-guest-base",
         "BASE_SOURCE_OFFER_URL": "https://github.com/example/floe-agent/releases/download/floe-linux-guest-base/SOURCE-OFFER.md",
         "BASE_ASSET_DIGESTS_JSON": json.dumps({
@@ -341,12 +429,16 @@ def check_package(out):
 
     manifest = json.load(open(os.path.join(paths["out"], "manifest.json")))
     artifact = manifest.get("runnerArtifact") or {}
-    expect(artifact.get("path") == "floe-exec-riscv64" and artifact.get("role") == "disk",
-           "manifest runnerArtifact uses the path and the recorded compat role")
+    expect(artifact.get("path") == "floe-exec-riscv64" and artifact.get("role") == "runner",
+           "manifest runnerArtifact uses the standalone path and the distinct runner role")
     expect(artifact.get("sha512") == sha(paths["runner_bin"]) and artifact.get("bytes") ==
            os.path.getsize(paths["runner_bin"]), "manifest runnerArtifact digest/size match the built runner")
     expect(manifest.get("runnerCapabilities") == "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4",
            "manifest runnerCapabilities is the verbatim CAPS payload")
+    expect(manifest.get("compatibleOrigins") == [{"imageID": BASE_IMAGE_ID,
+                                                  "sha512": BASE_DISK_SHA512,
+                                                  "bytes": BASE_DISK_BYTES}],
+           "manifest declares the verified predecessor as a compatible origin")
 
     zip_name = "floe-linux-guest-%s.zip" % env["IMAGE_ID"]
     zip_path = os.path.join(paths["out"], zip_name)
@@ -361,9 +453,11 @@ def check_package(out):
                "archive runner bytes match runnerArtifact.sha512")
 
     distribution = json.load(open(os.path.join(paths["out"], "distribution.json")))
-    expect(distribution["runnerArtifact"]["role"] == "disk"
-           and distribution["runnerArtifact"]["rolePolicy"] == "compat-disk-role",
-           "distribution records the role policy")
+    expect(distribution["runnerArtifact"]["role"] == "runner"
+           and distribution["runnerArtifact"]["rolePolicy"] == "engine-runner-role",
+           "distribution records the runner role policy")
+    expect(distribution["predecessorOrigin"]["entry"]["imageID"] == BASE_IMAGE_ID,
+           "distribution records the verified predecessor origin")
     expect(distribution["runnerCapabilities"] == manifest["runnerCapabilities"],
            "distribution records the CAPS payload")
     expect(distribution["toolchainComparison"] and not distribution["toolchainComparison"]["gaps"],
@@ -409,13 +503,33 @@ def check_package(out):
     args, env = package_env(no_contract, base_toolchain)
     expect(run_package(args, env).returncode != 0, "engine without the artifact contract fails closed")
 
-    runner_override = make_fixture(os.path.join(out, "override"),
-                                   engine_source=ENGINE_SOURCE.replace("case disk", "case disk\n        case runner"))
-    args, env = package_env(runner_override, base_toolchain)
-    expect(run_package(args, env).returncode == 0, "engine with a runner role packages")
-    override_manifest = json.load(open(os.path.join(runner_override["out"], "manifest.json")))
-    expect(override_manifest["runnerArtifact"]["role"] == "runner",
-           "an engine that adds the runner role is used verbatim")
+    alias_paths = make_fixture(os.path.join(out, "aliasorigin"),
+                               engine_source=ENGINE_SOURCE_ALIAS_ORIGIN)
+    args, env = package_env(alias_paths, base_toolchain)
+    expect(run_package(args, env).returncode == 0, "engine with sidecar-style origin keys packages")
+    alias_manifest = json.load(open(os.path.join(alias_paths["out"], "manifest.json")))
+    expect(alias_manifest["compatibleOrigins"] == [{"imageID": BASE_IMAGE_ID,
+                                                    "artifactSHA512": BASE_DISK_SHA512,
+                                                    "artifactBytes": BASE_DISK_BYTES}],
+           "manifest origin entry uses the engine's own key names")
+
+    no_role = make_fixture(os.path.join(out, "norole"), engine_source=ENGINE_SOURCE_NO_RUNNER_ROLE)
+    args, env = package_env(no_role, base_toolchain)
+    expect(run_package(args, env).returncode != 0, "engine without a distinct runner role fails closed")
+
+    no_origin = make_fixture(os.path.join(out, "noorigin"), engine_source=ENGINE_SOURCE_NO_ORIGIN)
+    args, env = package_env(no_origin, base_toolchain)
+    expect(run_package(args, env).returncode != 0, "engine without a compatible-origin field fails closed")
+
+    odd_paths = make_fixture(os.path.join(out, "oddorigin"),
+                             engine_source=ENGINE_SOURCE_ODD_ORIGIN_NAME)
+    args, env = package_env(odd_paths, base_toolchain)
+    expect(run_package(args, env).returncode == 0, "engine with an unusual origin field name packages")
+    odd_manifest = json.load(open(os.path.join(odd_paths["out"], "manifest.json")))
+    expect(odd_manifest.get("runnerCompatibleDiskOrigins") == [{"imageID": BASE_IMAGE_ID,
+                                                                "sha512": BASE_DISK_SHA512,
+                                                                "bytes": BASE_DISK_BYTES}],
+           "manifest writes the engine's actual origin field name")
 
 
 def main():

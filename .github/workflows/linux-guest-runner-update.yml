@@ -19,12 +19,14 @@
 #      never --clobber, unique tag from inputs)
 #
 # The manifest always carries the engine's upgrade contract: `runnerArtifact`
-# (role/path/sha512/bytes of the standalone runner in the archive) plus
-# `runnerCapabilities` (the exact CAPS payload the guest answered, cross-checked
-# against the runner source constants), so an existing environment disk with an
-# older runner upgrades in-guest instead of being wiped. The JSON role is
-# derived from the engine's LinuxGuestImageArtifact.Role enum at the target
-# commit (`runner` when it exists, else the recorded `disk` compat fallback).
+# (role/path/sha512/bytes of the standalone runner in the archive, role
+# `runner`) plus `runnerCapabilities` (the exact CAPS payload the guest
+# answered, cross-checked against the runner source constants), and the
+# engine's compatible-origin field naming the pinned base image as the verified
+# runner-only predecessor (so an existing environment disk keeps its installed
+# packages and upgrades its runner in-guest instead of being rejected). The
+# field name and its entry keys are read from the target commit's engine
+# sources; a missing distinct runner role or origin field fails the preflight.
 #
 # Dispatch requires an immutable 40-hex target_commit. Publishing stays with
 # the primary agent after review; this workflow never publishes.
@@ -79,6 +81,10 @@ env:
   BASE_ZIP_SHA512: ad691732212fd4c229e62f71bb6d97fd41a54e1b1f9e2eb1e1aa47b3edaffb7ef21ae31948439bae2d8eba9ffe7d61b7b2e1a3049ecf57fec88996ce5641d34a
   BASE_ZIP_SHA256: 325284058fc1c8e6fa0ac7190322b72cc67978e9519fa56948e272ea3b092448
   BASE_MANIFEST_SHA512: 8e1112760f2f95277461ff8660743f3eb3c26f73a50c17530be7c6452f3dbc6bd8d81b3b4eada3753faf618c67d9efb1d1c1f4b494a79cbcd6184c1426b40cdc
+  # predecessor identity for the compatible-origin manifest field (read from
+  # the pinned base manifest bytes at package time, never from notes)
+  BASE_IMAGE_ID: floe-debian13-riscv64-202609202607
+  BASE_DISK_BYTES: '3085959168'
   BASE_BBL_SHA512: f467da0f8724a175d600a57ccc55663ec0f7145defb38992359c130064fffa7c84e7870b98184255933f3e7dd98143b0fd3443990d7ea1ca0be5e659bef0cecc
   BASE_KERNEL_SHA512: 4e969132f845434d975a499bf16344d5fd93c969edaa3b70fb6f4441cd43b2f3734daf3b33afbc4f0582caeceecc299cd5369b18804dae23e3d51090b4f95ff8
   BASE_DISK_SHA512: 31553063cacc88ae9a963456ff1f46ab5455ba28844a31dbd03b22f0fb18daa59c3e0fa98a975e7b95e9a67accdc9bf671e6de1b9a3e4e12a7291d3edaa519e7
@@ -303,7 +309,13 @@ jobs:
           EVID="$RUNNER_TEMP/protocol-evidence"
           mkdir -p "$EVID/share9p"
           python3 FloeAgent/scripts/linux-guest-runner-update/guest_protocol_check.py \
-            generate --out "$EVID/p3-script.txt"
+            generate --out "$EVID/p3-script.txt" --terminal-out "$EVID/p3-terminal.txt"
+          # --until is the runner's terminal END frame, not the guest's last
+          # printf: the host stops on the first marker substring in the console
+          # stream, so waiting for FLOE_P3_DONE could end the boot before the
+          # final FLOE-END frame is transcribed. The assert requires both.
+          UNTIL="$(cat "$EVID/p3-terminal.txt")"
+          echo "until=$UNTIL" | tee "$EVID/p3-until.txt"
           CMDLINE="console=hvc0 root=/dev/vda rw loglevel=4 init=/usr/local/bin/floe-exec floe.epoch=$(date +%s)"
           set +e
           timeout 420 "$RUNNER_TEMP/tinyemu-build/floe_vm_host" \
@@ -314,7 +326,7 @@ jobs:
             --share floe="$EVID/share9p" \
             --script "$EVID/p3-script.txt" \
             --transcript "$EVID/p3-transcript.txt" \
-            --until FLOE_P3_DONE --max-s 400 > "$EVID/p3-stdout.txt" 2> "$EVID/p3-stderr.txt"
+            --until "$UNTIL" --max-s 400 > "$EVID/p3-stdout.txt" 2> "$EVID/p3-stderr.txt"
           echo "boot_rc=$?" | tee "$EVID/boot-rc.txt"
           set -e
           wc -c "$EVID/p3-transcript.txt"
