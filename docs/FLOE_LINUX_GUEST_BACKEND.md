@@ -55,7 +55,8 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
 - 现代 Debian13 6.12 内核在 2018 bbl 上仍无控制台输出（需 FDT+OpenSBI）；当前可用组合限于 4.15 内核
   与 Debian13 用户态。RAM OOM 创建失败是可恢复 NULL，不是致命错误。
 - `LinuxGuestImageDistributionCatalog` 固定组件 `floe-linux-guest-20260920.1` 的镜像 URL 与 SHA-512。
-  TestFlight 交付前，镜像、对应源码与版权材料须在该组件发布页可下载；目前组件发布正在进行。
+  镜像、对应源码与版权材料已于 2026-09-20 10:37:28 UTC 在该组件发布页公开；
+  公开镜像 URL 返回 HTTP 200，大小 572643214 字节，源码说明可直接读取。
   本地构建的镜像可经
   `floe-env image import <id> <zip> <sha512>` 导入并标记为本地导入（永不自动成为可下载镜像）。
   guest 来源/许可缺口见 [guest 镜像清单](FLOE_LINUX_GUEST_IMAGE_MANIFEST.md)。

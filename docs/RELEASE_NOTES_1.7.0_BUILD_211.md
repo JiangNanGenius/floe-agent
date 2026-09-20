@@ -9,6 +9,7 @@ Git 初始化、原生思维导图的图标按钮与自由拖动、Shell 会话�
 Linux、Python、Node、WASM 有独立包入口。可选 Linux 环境使用 TinyEMU；其 Shell、
 local Python 与后台服务共用 guest 后端、Python venv 与文件。原生执行保持默认。
 环境设置提供固定镜像下载入口，复用已有镜像安装服务；下载任务不依赖页面的存活。
+启动时解析已验证镜像的绝对路径；每个环境使用独立持久磁盘，保留安装的软件包。
 对应源码、版权文本和重新链接材料随 Linux 组件发布。
 
 镜像采用 Linux4.15 内核与 Debian13 用户态，已通过两次真实云端启动、HTTPS APT/Python、
@@ -26,7 +27,8 @@ Linux, Python, Node and WASM have distinct package entries. The optional TinyEMU
 shares its guest backend, Python venv and files between Shell, local Python and background services.
 Native execution remains the default. Environment settings provide a fixed-image download entry
 through the existing image service; the task survives dismissal of the view. Matching sources,
-notices and relink materials are distributed with the Linux component.
+notices and relink materials are distributed with the Linux component. Verified boot artifacts use
+absolute paths; each environment receives its own persistent writable disk, preserving installed packages.
 
 The image uses Linux4.15 with Debian13 userland. Two real cloud boots, signed HTTPS APT/Python,
 11 command operations and six instruction probes passed. SSH was a client-version check and SCP
@@ -47,4 +49,6 @@ not an App Store production release.
 Linux component: `floe-linux-guest-20260920.1`, image `floe-debian13-riscv64-202609202607`.
 Archive: 572643214 bytes; SHA-512
 `ad691732212fd4c229e62f71bb6d97fd41a54e1b1f9e2eb1e1aa47b3edaffb7ef21ae31948439bae2d8eba9ffe7d61b7b2e1a3049ecf57fec88996ce5641d34a`.
-The component release must be public with its source assets before Floe QA delivery.
+The [component release](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1)
+and its corresponding source assets became public on 2026-09-20 at 10:37:28 UTC. The public image
+URL returns HTTP 200 with the pinned 572643214-byte length; the source offer is publicly readable.
