@@ -1,0 +1,538 @@
+# linux-guest-runner-update — runner-only Linux guest component update and
+# delivery pipeline (TinyEMU phase 2).
+#
+# Reuses the immutable published base component floe-linux-guest-20260920.1
+# (13 assets, digests pinned below) instead of a full apt/image rebuild:
+#   1. preflight (read-only, also the only thing a registration push does)
+#   2. pipeline self-check (synthetic, no network)
+#   3. cross-build the static riscv64 protocol-3 runner from the exact
+#      dispatch target commit (+ LGPL-2.1 §6 relink object), pinning the cross
+#      toolchain to the exact versions the base component used
+#   4. fetch + verify the base image archive, replace ONLY floe-exec in the
+#      whole-disk ext4 via the repo's install-into-image.sh
+#   5. boot the updated image once under the real TinyEMU host and run the
+#      focused protocol check (negotiation, concurrency, cancel + recovery,
+#      PTYs, background service) — not the full package/SMP/UI matrix
+#   6. package manifest/catalog ZIP (including the standalone verified runner)
+#      + runnerArtifact/runnerCapabilities + relink + reused-source references
+#   7. create/complete the DRAFT prerelease (never published, never latest,
+#      never --clobber, unique tag from inputs)
+#
+# The manifest always carries the engine's upgrade contract: `runnerArtifact`
+# (role/path/sha512/bytes of the standalone runner in the archive) plus
+# `runnerCapabilities` (the exact CAPS payload the guest answered, cross-checked
+# against the runner source constants), so an existing environment disk with an
+# older runner upgrades in-guest instead of being wiped. The JSON role is
+# derived from the engine's LinuxGuestImageArtifact.Role enum at the target
+# commit (`runner` when it exists, else the recorded `disk` compat fallback).
+#
+# Dispatch requires an immutable 40-hex target_commit. Publishing stays with
+# the primary agent after review; this workflow never publishes.
+
+name: linux-guest-runner-update
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_commit:
+        description: 'Full 40-hex commit with the integrated protocol-3 runner/adapter sources'
+        required: true
+        type: string
+      component_tag:
+        description: 'New unique component tag (floe-linux-guest-*, no leading v, never latest, never reused)'
+        required: true
+        type: string
+      image_id:
+        description: 'New unique image id embedded in the manifest and archive name (differs from the base id)'
+        required: true
+        type: string
+  push:
+    # Registration path only: pushing this workflow file on the task branch
+    # runs the read-only preflight so the coordinator can then dispatch from
+    # this branch against an immutable ref. No tag, release or mutation.
+    branches:
+      - codex/tinyemu-phase2
+    paths:
+      - .github/workflows/linux-guest-runner-update.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: linux-guest-runner-update
+  cancel-in-progress: false
+
+env:
+  REPO: JiangNanGenius/floe-agent
+  SERVER: https://github.com
+  RELEASE_MARKER: '<!-- floe-linux-guest-runner-update:v1 -->'
+  COMPONENT_TAG: ${{ inputs.component_tag || 'floe-linux-guest-runnerupdate-preflight' }}
+  IMAGE_ID: ${{ inputs.image_id || 'floe-debian13-riscv64-runnerupdate-preflight' }}
+  TARGET_COMMIT: ${{ inputs.target_commit || '' }}
+  # --- pinned published base component (verified 2026-09-21 via GitHub API;
+  #     published prerelease on b9cffd427a6ba32f9bc9fd6a5197e6f33ef00707) ---
+  BASE_TAG: floe-linux-guest-20260920.1
+  BASE_TARGET_COMMIT: b9cffd427a6ba32f9bc9fd6a5197e6f33ef00707
+  BASE_ZIP: floe-linux-guest-floe-debian13-riscv64-202609202607.zip
+  BASE_ZIP_BYTES: '572643214'
+  BASE_ZIP_SHA512: ad691732212fd4c229e62f71bb6d97fd41a54e1b1f9e2eb1e1aa47b3edaffb7ef21ae31948439bae2d8eba9ffe7d61b7b2e1a3049ecf57fec88996ce5641d34a
+  BASE_ZIP_SHA256: 325284058fc1c8e6fa0ac7190322b72cc67978e9519fa56948e272ea3b092448
+  BASE_MANIFEST_SHA512: 8e1112760f2f95277461ff8660743f3eb3c26f73a50c17530be7c6452f3dbc6bd8d81b3b4eada3753faf618c67d9efb1d1c1f4b494a79cbcd6184c1426b40cdc
+  BASE_BBL_SHA512: f467da0f8724a175d600a57ccc55663ec0f7145defb38992359c130064fffa7c84e7870b98184255933f3e7dd98143b0fd3443990d7ea1ca0be5e659bef0cecc
+  BASE_KERNEL_SHA512: 4e969132f845434d975a499bf16344d5fd93c969edaa3b70fb6f4441cd43b2f3734daf3b33afbc4f0582caeceecc299cd5369b18804dae23e3d51090b4f95ff8
+  BASE_DISK_SHA512: 31553063cacc88ae9a963456ff1f46ab5455ba28844a31dbd03b22f0fb18daa59c3e0fa98a975e7b95e9a67accdc9bf671e6de1b9a3e4e12a7291d3edaa519e7
+  # base runner-relink asset: the small toolchain record that proves which
+  # cross-toolchain versions the base toolchain-source asset covers
+  BASE_RELINK_ASSET: linux-guest-runner-relink-35503144437.tar
+  BASE_RELINK_SHA256: 2937ba7fa68456f29fd8e5cd34fe49ccbf4db30582bdcb7907e1602848253579
+  # base toolchain-source asset: holds toolchain-versions.txt, the owning
+  # packages + source versions the base corresponding-source bundle covers
+  BASE_TOOLCHAIN_SOURCE_ASSET: linux-guest-toolchain-source-35503144437.tar
+  BASE_TOOLCHAIN_SOURCE_SHA256: 9556964932d879ce9fcdc00d8832ec33ebfc11190615d843e19976a7171bd659
+
+jobs:
+  preflight:
+    name: preflight (${{ github.event_name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize the pinned base asset table
+        env:
+          PINS_OUT: ${{ runner.temp }}/floe-runner-update/base-assets.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$PINS_OUT")"
+          python3 - <<'PINS_PY'
+          import json, os
+          assets = {
+            "SHA256SUMS": {"bytes": 942, "sha256": "e301aa42e8695baec36147880de42e2f01e8bf19482aafe1c2731e86b4a818f5"},
+            "SHA512SUMS": {"bytes": 572, "sha256": "92c9215490a634995874530c0e5042619069257bab4dbd1583ae1a8b1413dae2"},
+            "SOURCE-OFFER.md": {"bytes": 3531, "sha256": "28c922c7893e38cbf03f95091e96ba1d773f44724f09d88e815d65fc4ffe32e4"},
+            "RELEASE-NOTES.md": {"bytes": 1695, "sha256": "d70d709ec457c826f3a21d06d8e491b4bc6ebfda384b20e515ae41960bec36d2"},
+            "distribution.json": {"bytes": 15251, "sha256": "f11ab8f03c821b0bcf75544525a6d30db8c271a608eaa0b29372c25d38518dca"},
+            "manifest.json": {"bytes": 1853, "sha256": "9f5ca94d997ab483a3aee54d7b06e4ed6f27536b65aec40fad5ada78fe9854fb"},
+            "floe-linux-guest-floe-debian13-riscv64-202609202607.zip": {"bytes": 572643214, "sha256": "325284058fc1c8e6fa0ac7190322b72cc67978e9519fa56948e272ea3b092448"},
+            "linux-guest-image-evidence-35501535251.tar": {"bytes": 2549760, "sha256": "3f2d0ae8471ba39c85e8583db74fd7576ec41bfca1ff9601da112af29d74b07d"},
+            "linux-guest-runner-relink-35503144437.tar": {"bytes": 225280, "sha256": "2937ba7fa68456f29fd8e5cd34fe49ccbf4db30582bdcb7907e1602848253579"},
+            "linux-guest-source-index-35503144437.tar": {"bytes": 12083200, "sha256": "1516cafbb8153109d69505a12cea081dd614a6c1c34e52281088127a834fe18e"},
+            "linux-guest-sources-debian-shard-1-35503144437.tar": {"bytes": 1044510720, "sha256": "9ec939aed8d6149679adbfc32f377af95c866a37b0475ee101c9deef2d2cfc17"},
+            "linux-guest-sources-upstream-35503144437.tar": {"bytes": 1020907520, "sha256": "c1371c8398567c5cfb0ed3738094105d094266d80a5f0fe72c6234cdd36ae736"},
+            "linux-guest-toolchain-source-35503144437.tar": {"bytes": 47247360, "sha256": "9556964932d879ce9fcdc00d8832ec33ebfc11190615d843e19976a7171bd659"},
+          }
+          with open(os.environ["PINS_OUT"], "w", encoding="utf-8") as handle:
+              json.dump(assets, handle, indent=2)
+              handle.write("\n")
+          print("pinned %d base assets" % len(assets))
+          PINS_PY
+
+      - name: Read-only preflight (workflow contract, tag policy, base release, target commit)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_FILE: ${{ github.workspace }}/.github/workflows/linux-guest-runner-update.yml
+          PREFLIGHT_OUT: ${{ runner.temp }}/floe-runner-update/preflight.json
+          BASE_ASSETS_JSON_FILE: ${{ runner.temp }}/floe-runner-update/base-assets.json
+        run: |
+          set -euo pipefail
+          BASE_ASSETS_JSON="$(cat "$BASE_ASSETS_JSON_FILE")"
+          export BASE_ASSETS_JSON
+          python3 FloeAgent/scripts/linux-guest-runner-update/verify_base_release.py
+
+      - name: Upload the preflight record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-runner-update-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-runner-update/preflight.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  update:
+    name: runner update (draft only)
+    needs: preflight
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      RUNNER_VERSION_QUAL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out the exact target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_commit }}
+          fetch-depth: 1
+
+      - name: Re-verify the checked-out commit
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_COMMIT" \
+            || { echo "checkout drifted from the dispatch target"; exit 1; }
+          echo "checked out $TARGET_COMMIT"
+
+      - name: Pipeline self-check (synthetic, no network)
+        run: |
+          set -euo pipefail
+          python3 FloeAgent/scripts/linux-guest-runner-update/selfcheck.py \
+            --repo "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/selfcheck"
+
+      - name: Cross toolchain + image tools (pinned to the base component)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl e2fsprogs unzip file >/dev/null
+          # The base toolchain-source asset is reused only if the cross packages
+          # are byte-for-byte the versions it was collected from. Fetch the
+          # digest-pinned base records (225 KB relink + 47 MB source bundle),
+          # then install exactly the versions they name, so the static link is
+          # reproducible and the correspondence claim is true by construction.
+          curl -fL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/base-relink.tar" \
+            "$SERVER/$REPO/releases/download/$BASE_TAG/$BASE_RELINK_ASSET"
+          echo "$BASE_RELINK_SHA256  $RUNNER_TEMP/base-relink.tar" | sha256sum -c -
+          curl -fL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/base-toolchain-source.tar" \
+            "$SERVER/$REPO/releases/download/$BASE_TAG/$BASE_TOOLCHAIN_SOURCE_ASSET"
+          echo "$BASE_TOOLCHAIN_SOURCE_SHA256  $RUNNER_TEMP/base-toolchain-source.tar" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/base-relink" "$RUNNER_TEMP/base-toolchain-source"
+          tar -xf "$RUNNER_TEMP/base-relink.tar" -C "$RUNNER_TEMP/base-relink"
+          test -f "$RUNNER_TEMP/base-relink/toolchain.txt"
+          if ! tar -xf "$RUNNER_TEMP/base-toolchain-source.tar" -C "$RUNNER_TEMP/base-toolchain-source" \
+            --wildcards '*toolchain-versions.txt'; then
+            echo "::error::the base toolchain-source asset carries no toolchain-versions.txt"
+            tar -tf "$RUNNER_TEMP/base-toolchain-source.tar" | head -20
+            exit 1
+          fi
+          base_versions=""
+          base_versions="$(find "$RUNNER_TEMP/base-toolchain-source" -name toolchain-versions.txt | head -1)"
+          test -n "$base_versions"
+          cp "$base_versions" "$RUNNER_TEMP/base-toolchain.txt"
+          cat "$RUNNER_TEMP/base-relink/toolchain.txt" >> "$RUNNER_TEMP/base-toolchain.txt"
+          # Pinned install spec: every owning package the base record names,
+          # plus the metapackages the base relink record names.
+          python3 - "$RUNNER_TEMP/base-toolchain.txt" > "$RUNNER_TEMP/base-toolchain-pins.txt" <<'PIN_PY'
+          import re, sys
+          text = open(sys.argv[1], "r", errors="replace").read()
+          specs = set()
+          specs.update("%s=%s" % match for match in re.findall(r"^binary\s+(\S+)\s+(\S+)", text, re.M))
+          specs.update("%s=%s" % match for match in re.findall(r"^toolchain_package\s+(\S+)\s+(\S+)", text, re.M))
+          if not specs:
+              raise SystemExit("the base toolchain records name no packages")
+          print("\n".join(sorted(specs)))
+          PIN_PY
+          sudo apt-get install -y -qq binutils-riscv64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-riscv64-cross >/dev/null
+          # shellcheck disable=SC2046  # apt-get takes the pinned specs as separate arguments
+          if ! sudo apt-get install -y -qq $(tr '\n' ' ' < "$RUNNER_TEMP/base-toolchain-pins.txt"); then
+            echo "::error::the base cross-toolchain versions are not installable on this runner image:"
+            cat "$RUNNER_TEMP/base-toolchain-pins.txt"
+            exit 1
+          fi
+          riscv64-linux-gnu-gcc --version | head -1
+          # shellcheck disable=SC2046  # dpkg-query takes the package names as separate arguments
+          dpkg-query -W -f='requested ${binary:Package} ${Version}\n' \
+            $(awk -F= '{print $1}' "$RUNNER_TEMP/base-toolchain-pins.txt")
+
+      - name: Build the static protocol-3 runner (+ relink object)
+        run: |
+          set -euo pipefail
+          bash FloeAgent/scripts/linux-guest-runner-update/build_runner.sh \
+            --repo "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/runner-build"
+
+      - name: Cross-toolchain correspondence gate (before the image download)
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/base-toolchain.txt" "$RUNNER_TEMP/runner-build/toolchain-versions.txt" \
+            "$RUNNER_TEMP/runner-build/toolchain.txt" "$RUNNER_TEMP/toolchain-comparison.json" <<'CMP_PY'
+          import json, sys
+          sys.path.insert(0, "FloeAgent/scripts/linux-guest-runner-update")
+          import pipeline_contract
+
+          base_text = open(sys.argv[1], "r", errors="replace").read()
+          new_versions = open(sys.argv[2], "r", errors="replace").read()
+          new_toolchain = open(sys.argv[3], "r", errors="replace").read()
+          gaps = pipeline_contract.toolchain_record_gaps(base_text, new_versions)
+          gaps += pipeline_contract.toolchain_gaps(base_text, new_toolchain)
+          record = {"base": sys.argv[1], "binaryPackages": pipeline_contract.binary_packages(base_text),
+                    "packages": pipeline_contract.toolchain_packages(base_text), "gaps": gaps}
+          with open(sys.argv[4], "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          print("compared %d binary package(s) and %d metapackage(s)"
+                % (len(record["binaryPackages"]), len(record["packages"])))
+          if gaps:
+              print("\n".join("GAP: %s" % gap for gap in gaps))
+              raise SystemExit(
+                  "the cross toolchain differs from the base component; the base toolchain-source "
+                  "asset would not cover this static link — collect corresponding sources instead")
+          CMP_PY
+
+      - name: Fetch the pinned base image and replace only the runner
+        run: |
+          set -euo pipefail
+          sudo -E bash FloeAgent/scripts/linux-guest-runner-update/prepare_image.sh \
+            --work "$RUNNER_TEMP/image-work" --image-dir "$RUNNER_TEMP/image" \
+            --runner "$RUNNER_TEMP/runner-build/floe-exec-riscv64" \
+            --script FloeAgent/LinuxGuest/image/floe-guest-init \
+            --repo "$GITHUB_WORKSPACE" \
+            --base-url "$SERVER/$REPO/releases/download/$BASE_TAG"
+
+      - name: Host GPL gate on engine build sources
+        run: |
+          set -euo pipefail
+          bash FloeAgent/ThirdParty/TinyEMU/fetch_source.sh "$RUNNER_TEMP/tinyemu-src"
+          bash FloeAgent/ThirdParty/TinyEMU/license_check.sh "$RUNNER_TEMP/tinyemu-src/tinyemu-2019-12-21"
+
+      - name: Build the TinyEMU qualification host
+        run: |
+          set -euo pipefail
+          cd FloeAgent/Qualification/TinyEMULinux
+          make -f ../../ThirdParty/TinyEMU/adapter/Makefile \
+            TINYEMU_SRC="$RUNNER_TEMP/tinyemu-src/tinyemu-2019-12-21" \
+            PATCH_DIR=../../ThirdParty/TinyEMU/patches \
+            BUILD="$RUNNER_TEMP/tinyemu-build" HOST_DIR=. -j"$(nproc)"
+
+      - name: Boot the updated image and run the focused protocol check
+        run: |
+          set -euo pipefail
+          EVID="$RUNNER_TEMP/protocol-evidence"
+          mkdir -p "$EVID/share9p"
+          python3 FloeAgent/scripts/linux-guest-runner-update/guest_protocol_check.py \
+            generate --out "$EVID/p3-script.txt"
+          CMDLINE="console=hvc0 root=/dev/vda rw loglevel=4 init=/usr/local/bin/floe-exec floe.epoch=$(date +%s)"
+          set +e
+          timeout 420 "$RUNNER_TEMP/tinyemu-build/floe_vm_host" \
+            --bios "$RUNNER_TEMP/image/bbl64.bin" \
+            --kernel "$RUNNER_TEMP/image/kernel-riscv64.bin" \
+            --disk "$RUNNER_TEMP/image/disk.img" --rw \
+            --ram 512 --cmdline "$CMDLINE" \
+            --share floe="$EVID/share9p" \
+            --script "$EVID/p3-script.txt" \
+            --transcript "$EVID/p3-transcript.txt" \
+            --until FLOE_P3_DONE --max-s 400 > "$EVID/p3-stdout.txt" 2> "$EVID/p3-stderr.txt"
+          echo "boot_rc=$?" | tee "$EVID/boot-rc.txt"
+          set -e
+          wc -c "$EVID/p3-transcript.txt"
+          python3 FloeAgent/scripts/linux-guest-runner-update/guest_protocol_check.py \
+            assert --transcript "$EVID/p3-transcript.txt" --share "$EVID/share9p" \
+            --out "$EVID/protocol-check.json"
+
+      - name: Package the component (manifest, catalog ZIP, relink, source references)
+        env:
+          BASE_RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/floe-linux-guest-20260920.1
+          BASE_SOURCE_OFFER_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/floe-linux-guest-20260920.1/SOURCE-OFFER.md
+          REUSED_ASSETS: >-
+            linux-guest-sources-upstream-35503144437.tar
+            linux-guest-sources-debian-shard-1-35503144437.tar
+            linux-guest-toolchain-source-35503144437.tar
+            linux-guest-source-index-35503144437.tar
+            linux-guest-image-evidence-35501535251.tar
+        run: |
+          set -euo pipefail
+          python3 - <<'REF_PY'
+          import json, os, subprocess
+          release = json.loads(subprocess.run(
+              ["gh", "api", "repos/%s/releases/tags/%s" % (os.environ["REPO"], os.environ["BASE_TAG"])],
+              capture_output=True, text=True, check=True).stdout)
+          table = {asset["name"]: {"bytes": asset["size"],
+                                   "sha256": (asset.get("digest") or "").removeprefix("sha256:")}
+                   for asset in release["assets"]}
+          os.environ  # noqa - record is consumed via file below
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "base-asset-digests.json"), "w") as handle:
+              json.dump(table, handle)
+          print("re-verified %d base asset digests at package time" % len(table))
+          REF_PY
+          BASE_ASSET_DIGESTS_JSON="$(cat "$RUNNER_TEMP/base-asset-digests.json")"
+          export BASE_ASSET_DIGESTS_JSON
+          python3 FloeAgent/scripts/linux-guest-runner-update/package_component.py \
+            --image-dir "$RUNNER_TEMP/image" \
+            --runner-out "$RUNNER_TEMP/runner-build" \
+            --protocol-verdict "$RUNNER_TEMP/protocol-evidence/protocol-check.json" \
+            --injection-log "$RUNNER_TEMP/image-work/evidence/runner-injection.log" \
+            --base-toolchain-file "$RUNNER_TEMP/base-toolchain.txt" \
+            --repo "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/component-package"
+
+      - name: Save the component package (before any release step)
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-runner-update-package-${{ github.run_id }}
+          path: ${{ runner.temp }}/component-package/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Save the protocol evidence (either way)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-runner-update-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/protocol-evidence/
+            ${{ runner.temp }}/image-work/evidence/
+            ${{ runner.temp }}/runner-build/
+            ${{ runner.temp }}/selfcheck/
+            ${{ runner.temp }}/toolchain-comparison.json
+            ${{ runner.temp }}/base-toolchain.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Create or resume the DRAFT component release
+        run: |
+          set -euo pipefail
+          export PKG="$RUNNER_TEMP/component-package"
+          python3 - <<'RELEASE_PY'
+          import json, os, subprocess, sys, time
+
+          REPO = os.environ["REPO"]
+          TAG = os.environ["COMPONENT_TAG"]
+          TARGET = os.environ["TARGET_COMMIT"]
+          MARKER = os.environ["RELEASE_MARKER"]
+          PKG = os.environ["PKG"]
+
+          def gh(*args, allow_failure=False):
+              result = subprocess.run(["gh", *args], capture_output=True, text=True)
+              if result.returncode != 0 and not allow_failure:
+                  raise SystemExit("gh %s failed: %s%s" % (" ".join(args[:4]), result.stdout, result.stderr))
+              return result
+
+          def api(path, allow_missing=False):
+              result = gh("api", path, allow_failure=True)
+              if result.returncode != 0:
+                  if allow_missing:
+                      return None
+                  raise SystemExit("gh api %s failed: %s%s" % (path, result.stdout, result.stderr))
+              return json.loads(result.stdout)
+
+          def find_release():
+              release = api("repos/%s/releases/tags/%s" % (REPO, TAG), allow_missing=True)
+              if release is not None:
+                  return release
+              listed = api("repos/%s/releases?per_page=100" % REPO) or []
+              matches = [item for item in listed if item.get("tag_name") == TAG]
+              if not matches:
+                  return None
+              if len(matches) == 1 and matches[0].get("draft") and MARKER in (matches[0].get("body") or ""):
+                  return matches[0]
+              raise SystemExit("release %s exists but is not our single marked draft; refusing to touch it" % TAG)
+
+          def required_release():
+              found = find_release()
+              if found is None:
+                  raise SystemExit("release %s is not visible after the upload step" % TAG)
+              return found
+
+          files = sorted(os.path.join(PKG, name) for name in os.listdir(PKG)
+                         if os.path.isfile(os.path.join(PKG, name)) and not name.startswith("."))
+          notes = os.path.join(PKG, "RELEASE-NOTES.md")
+          release = find_release()
+          if release is None:
+              if api("repos/%s/git/ref/tags/%s" % (REPO, TAG), allow_missing=True) is not None:
+                  raise SystemExit("tag %s already exists; refusing to overwrite it" % TAG)
+              print(gh("release", "create", TAG, "--repo", REPO, "--draft", "--prerelease", "--latest=false",
+                       "--target", TARGET,
+                       "--title", "Floe Linux guest runner update %s (component release)" % os.environ["IMAGE_ID"],
+                       "--notes-file", notes).stdout.strip())
+          elif not (release.get("draft") and release.get("tag_name") == TAG and MARKER in (release.get("body") or "")):
+              raise SystemExit("release %s exists and is not our draft; refusing to touch it" % TAG)
+          else:
+              print("resuming draft %s" % release.get("html_url"))
+
+          release = required_release()
+          existing = {asset["name"]: asset for asset in release.get("assets", [])}
+          planned, skipped = [], []
+          import hashlib
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          for path in files:
+              name = os.path.basename(path)
+              size = os.path.getsize(path)
+              digest = "sha256:" + sha256(path)
+              current = existing.get(name)
+              if current:
+                  if current.get("size") == size and (not current.get("digest") or current["digest"] == digest):
+                      skipped.append(name)
+                      continue
+                  raise SystemExit("release already has a different asset %s; refusing to overwrite" % name)
+              planned.append(path)
+          if planned:
+              print(gh("release", "upload", TAG, *planned, "--repo", REPO).stdout.strip())
+          release = required_release()
+          assets = {asset["name"]: asset for asset in release.get("assets", [])}
+          problems = []
+          for path in files:
+              name = os.path.basename(path)
+              asset = assets.get(name)
+              if not asset:
+                  problems.append("missing asset %s" % name)
+                  continue
+              if asset.get("size") != os.path.getsize(path):
+                  problems.append("size mismatch for %s" % name)
+              if asset.get("digest") and asset["digest"] != "sha256:" + sha256(path):
+                  problems.append("digest mismatch for %s" % name)
+          extra = sorted(set(assets) - {os.path.basename(path) for path in files})
+          if extra:
+              problems.append("unexpected pre-existing assets: %s" % extra)
+          if not release.get("draft"):
+              problems.append("release is not a draft")
+          if problems:
+              raise SystemExit("release verification failed: %s" % "; ".join(problems))
+          record = {"syncedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "url": release.get("html_url"), "id": release.get("id"), "tag": TAG,
+                    "targetCommitish": release.get("target_commitish"),
+                    "draft": release.get("draft"), "prerelease": release.get("prerelease"),
+                    "assets": [{"name": name, "size": asset.get("size"), "digest": asset.get("digest")}
+                               for name, asset in sorted(assets.items())],
+                    "uploaded": [os.path.basename(path) for path in planned], "skipped": skipped}
+          with open(os.path.join(PKG, "release-record.json"), "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          print("draft %s: %d asset(s) (%d uploaded, %d already present)"
+                % (record["url"], len(assets), len(planned), len(skipped)))
+          print("state: draft=%s prerelease=%s latest=never" % (record["draft"], record["prerelease"]))
+          RELEASE_PY
+
+      - name: Save the release record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-runner-update-release-record-${{ github.run_id }}
+          path: ${{ runner.temp }}/component-package/release-record.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Floe Linux guest runner update"
+            echo ""
+            echo "- component tag: \`$COMPONENT_TAG\` (draft, prerelease, never latest)"
+            echo "- image id: \`$IMAGE_ID\`"
+            echo "- target commit: \`$TARGET_COMMIT\`"
+            echo "- base: \`$BASE_TAG\` ($BASE_ZIP, sha256 $BASE_ZIP_SHA256)"
+            echo ""
+            if [ -f "$RUNNER_TEMP/protocol-evidence/protocol-check.json" ]; then
+              echo "### protocol verdict"
+              echo '```json'
+              cat "$RUNNER_TEMP/protocol-evidence/protocol-check.json"
+              echo '```'
+            fi
+            if [ -f "$RUNNER_TEMP/component-package/distribution.json" ]; then
+              echo "### distribution record"
+              echo '```json'
+              cat "$RUNNER_TEMP/component-package/distribution.json"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
