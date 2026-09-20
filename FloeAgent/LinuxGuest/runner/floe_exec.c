@@ -1,4 +1,4 @@
-// floe_exec.c — Floe Linux guest command runner.
+// floe_exec.c — Floe Linux guest command runner (protocol 3).
 //
 // The Floe app runs one long-lived runner on the guest's virtio console
 // (hvc0). The host speaks a line-framed protocol; every host→guest frame
@@ -11,8 +11,16 @@
 //   \x1eFLOE-ERR <token>\x1e <stderr bytes until the next marker>
 //   \x1eFLOE-END <token> <exit code>\x1e
 //
-// One-shot commands
-// -----------------
+// Capability negotiation (protocol 3)
+// -----------------------------------
+// The host opens the channel with `\x1eFLOE-HELLO <token>\x1e` and the
+// runner answers `FLOE-CAPS <token> runner=<version> protocol=3
+// maxCommands=N maxSessions=M` + `FLOE-END <token> 0`. Older hosts never
+// send HELLO and are still served (one command at a time is a host choice,
+// not a guest requirement).
+//
+// One-shot commands — CONCURRENT
+// ------------------------------
 // Inline (small envelopes, so one tty line stays under 4 kB):
 //
 //   \x1eFLOE-EXEC <token> <base64 payload>\n
@@ -26,41 +34,50 @@
 // payload: u32 fieldCount, then per field u32 byteCount + raw bytes,
 //          field order = [cwd, stdin, argv0, argv1, ...]
 //
-// OPEN/SPAWN use the same chunked envelope with a different field layout and
-// the frame name OPEN or SPAWN in place of EXEC.
+// Up to MAX_CONCURRENT_COMMANDS commands run in parallel, each with its own
+// pipes, cwd, process group and cancellation state. Every response frame
+// carries the command's token, so the host demultiplexes. Only a full
+// command table rejects a new EXEC (END 125, "command table full").
 //
-// Interactive PTY session
-// -----------------------
+// Interactive PTY sessions — CONCURRENT
+// -------------------------------------
 //   OPEN payload fields = [mode="pty", cwd, cols, rows, argv0, argv1, ...]
 //   host input:  \x1eFLOE-IN <token> <base64>\n
-//   signals:     \x1eFLOE-SIGNAL <token> INT|TERM|WINCH <rows> <cols>\x1e
+//   signals:     \x1eFLOE-SIGNAL <token> INT|TERM|KILL|WINCH <rows> <cols>\x1e
 //   close:       \x1eFLOE-CLOSE <token>\x1e
 //   guest: BEGIN, OUT stream (pty merged output), END with the real status
-//   (130/143 when the host initiated INT/TERM).
+//   (128+signal when the host initiated INT/TERM/KILL).
+// Up to MAX_CONCURRENT_SESSIONS independent PTYs run at the same time;
+// IN/SIGNAL/CLOSE are routed by token. Only a full session table rejects an
+// OPEN (END 125, "session table full").
 //
-// Background services
-// -------------------
+// Background services (prioritized control channel)
+// -------------------------------------------------
 //   SPAWN payload fields = [cwd, logPath, argv0, argv1, ...]
 //   guest: \x1eFLOE-PID <token> <pid>\x1e + \x1eFLOE-END <token> 0\x1e (never
 //   waits for the process); stdout/stderr are appended to logPath.
 //   \x1eFLOE-KILL <token> <pid>\x1e  -> END 0 (owned pid) or END 3 (unknown)
 //   \x1eFLOE-ALIVE <token> <pid>\x1e -> END 0 (owned/alive) or END 3
-// Only pids this runner spawned are ever signalled (bounded table).
+// Only pids this runner spawned are ever signalled (bounded table). Control
+// frames are accepted at any time, including while commands/sessions run.
 //
-// It is the guest half of FloeExecution/Linux/LinuxGuestCommandChannel.swift;
-// the byte format is a contract, not a security boundary. argv is executed
-// verbatim with execvp (never through a shell), stdin is the decoded `stdin`
-// field followed by EOF, stdout and stderr are streamed as separate framed
-// sections, and the exit code is the child's real wait status (128+signal
-// when it dies from a signal).
+// Cancellation and truthful termination
+// -------------------------------------
+// Targeted: `\x1eFLOE-SIGNAL <token> INT|TERM|KILL\x1e` interrupts exactly
+// one command or session's process group. Legacy: a raw 0x03 byte cancels
+// every in-flight command (the console is in raw mode, so it is a byte, not
+// SIGINT). Escalation is TERM (or the requested signal), SIGKILL after a
+// grace period, then reaping. END is emitted ONLY after the process group is
+// actually reaped. A child that cannot be killed within a hard deadline is
+// quarantined: the runner emits `\x1eFLOE-FAILED <token> unreaped\x1e`
+// instead of END and never claims the process stopped; the pid stays in a
+// bounded unreaped table until waitpid collects it, and the host treats the
+// guest as failed (VM reset), never as cleanly stopped.
 //
-// Cancellation: the host writes a raw 0x03 byte (the console is in raw mode,
-// so it is a byte, not SIGINT). The runner kills only its own current
-// command's process group (SIGTERM, then SIGKILL after a grace period), reaps
-// it and reports exit 130. Processes that do not belong to the current
-// command or to a pid this runner spawned are never signalled. A child that
-// cannot be killed within a hard deadline is abandoned (it stays an orphan
-// that PID 1 reaps later) so the channel can never hang.
+// argv is executed verbatim with execvp (never through a shell), stdin is
+// the decoded `stdin` field followed by EOF, stdout and stderr are streamed
+// as separate framed sections, and the exit code is the child's real wait
+// status (128+signal when it dies from a signal).
 //
 // Boot clock: on Linux, when this process is PID 1, the runner applies the
 // host-supplied wall clock (`floe.epoch=<unix seconds>` on the kernel command
@@ -111,6 +128,9 @@
 #define FLOE_MARK 0x1e
 #define FLOE_CANCEL 0x03
 
+#define FLOE_RUNNER_VERSION "2.0.0"
+#define FLOE_PROTOCOL_VERSION 3
+
 // Bound on unconsumed console input. The host command envelope is capped at
 // LinuxGuestLimits.maxCommandBytes (32 KiB) by the app; this is far above it.
 #define MAX_INBOUND (256 * 1024)
@@ -129,8 +149,8 @@
 #define FORWARD_CAP (4 * 1024 * 1024)
 // SIGTERM -> SIGKILL grace after a cancel or session close.
 #define CANCEL_GRACE_MS 750
-// If a cancelled child cannot be killed within this window, abandon it so the
-// channel keeps serving (PID 1 reaps it when it finally dies).
+// If a cancelled child cannot be killed within this window, it is
+// quarantined (FAILED, never END) so the channel never hangs.
 #define CANCEL_ABANDON_MS 5000
 // After a child is reaped, keep draining pipes until they are quiet for this
 // long (a grandchild may still hold them open).
@@ -138,6 +158,13 @@
 #define POLL_SLICE_MS 20
 // Buffered host input for one PTY session (base64 FLOE-IN frames).
 #define SESSION_INPUT_CAP (1024 * 1024)
+// Concurrency tables.
+#define MAX_CONCURRENT_COMMANDS 8
+#define MAX_CONCURRENT_SESSIONS 4
+#define MAX_ASSEMBLIES 8
+// A cancelled child that survives SIGKILL is quarantined here until waitpid
+// collects it; bounded so the table can never grow without limit.
+#define MAX_UNREAPED 16
 // Background service bookkeeping.
 #define MAX_SPAWNED 32
 #define MAX_PENDING_KILLS 32
@@ -256,6 +283,36 @@ static int emit_marker(const char *name, const char *token) {
     return write_all(STDOUT_FILENO, buf, (size_t)n);
 }
 
+// Current console section owner: which token's unmarked bytes belong to.
+// With concurrent commands and sessions the runner must re-announce a
+// token's section every time another token has written since the last frame
+// — the host router attributes bytes with no frame marker to the last
+// BEGIN/OUT/ERR owner, so a per-command flag is not enough. The runner is a
+// single event loop, so one global owner is exact.
+static char g_section_token[MAX_TOKEN];
+static int g_section_kind; // 0 = none, 1 = stdout (OUT), 2 = stderr (ERR)
+
+static void section_mark(const char *token, int kind) {
+    snprintf(g_section_token, sizeof g_section_token, "%s", token);
+    g_section_kind = kind;
+}
+
+static void section_release(const char *token) {
+    if (g_section_kind != 0 && strcmp(g_section_token, token) == 0) {
+        g_section_token[0] = '\0';
+        g_section_kind = 0;
+    }
+}
+
+// Emits the token's section marker unless that section is already the
+// current owner; returns 0 when the bytes may be written.
+static int ensure_section(const char *token, int kind) {
+    if (g_section_kind == kind && strcmp(g_section_token, token) == 0) return 0;
+    if (emit_marker(kind == 2 ? "ERR" : "OUT", token) != 0) return -1;
+    section_mark(token, kind);
+    return 0;
+}
+
 static int emit_end(const char *token, int code) {
     char buf[MAX_TOKEN + 48];
     int n = snprintf(buf, sizeof buf, "\x1e" "FLOE-END %s %d\x1e", token, code);
@@ -263,18 +320,65 @@ static int emit_end(const char *token, int code) {
     return write_all(STDOUT_FILENO, buf, (size_t)n);
 }
 
-// BEGIN + ERR + END, used when a frame cannot be served (busy guest,
-// malformed payload, failed setup). `begin` is only set for EXEC, whose host
-// parser ignores everything before BEGIN.
+// Distinct failure frame for a token whose process was abandoned alive: the
+// host must treat the guest as failed (quarantine/reset), never as stopped.
+static int emit_failed(const char *token, const char *reason) {
+    char buf[MAX_TOKEN + 64];
+    int n = snprintf(buf, sizeof buf, "\x1e" "FLOE-FAILED %s %s\x1e", token, reason);
+    if (n <= 0 || (size_t)n >= sizeof buf) return -1;
+    return write_all(STDOUT_FILENO, buf, (size_t)n);
+}
+
+// Capability answer to FLOE-HELLO.
+static int emit_caps(const char *token) {
+    char buf[MAX_TOKEN + 128];
+    int n = snprintf(buf, sizeof buf,
+                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d\x1e",
+                     token, FLOE_RUNNER_VERSION, FLOE_PROTOCOL_VERSION,
+                     MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_SESSIONS);
+    if (n <= 0 || (size_t)n >= sizeof buf) return -1;
+    if (write_all(STDOUT_FILENO, buf, (size_t)n) != 0) return -1;
+    return emit_end(token, 0);
+}
+
+// Error text followed by END, shared by the failure frames. Nothing is
+// written when the token is empty (already rejected by handle_frame).
+static void emit_message(const char *message) {
+    if (!message || message[0] == '\0') return;
+    size_t len = strlen(message);
+    (void)write_all(STDOUT_FILENO, message, len);
+    if (message[len - 1] != '\n') (void)write_all(STDOUT_FILENO, "\n", 1);
+}
+
+// BEGIN + ERR + END, used when a command frame cannot be served (table full,
+// malformed payload, failed setup). BEGIN is required by the host command
+// parser, which ignores everything before it (or before FAILED).
 static void emit_failure(const char *token, int begin, int code, const char *message) {
-    if (begin && token[0] != '\0') (void)emit_marker("BEGIN", token);
-    if (token[0] != '\0') (void)emit_marker("ERR", token);
-    if (message && message[0] != '\0') {
-        size_t len = strlen(message);
-        (void)write_all(STDOUT_FILENO, message, len);
-        if (message[len - 1] != '\n') (void)write_all(STDOUT_FILENO, "\n", 1);
+    if (token[0] != '\0') {
+        if (begin) {
+            (void)emit_marker("BEGIN", token);
+            section_mark(token, 1);
+        }
+        (void)ensure_section(token, 2);
     }
-    if (token[0] != '\0') (void)emit_end(token, code);
+    emit_message(message);
+    if (token[0] != '\0') {
+        (void)emit_end(token, code);
+        section_release(token);
+    }
+}
+
+// Failure frame for an OPEN/session that never started. The host's session
+// parser has no ERR section — everything between OUT and END is terminal
+// output — so the reason is delivered as session output followed by the real
+// exit code. Never a silent hang.
+static void emit_session_failure(const char *token, int code, const char *message) {
+    if (token[0] != '\0') (void)ensure_section(token, 1);
+    emit_message(message);
+    if (token[0] != '\0') {
+        (void)emit_end(token, code);
+        section_release(token);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +649,7 @@ static int spawn_request_parse(const unsigned char *payload, size_t plen, spawn_
 }
 
 // ---------------------------------------------------------------------------
-// Chunked envelope assembly
+// Chunked envelope assembly (per-token, so concurrent transfers interleave)
 // ---------------------------------------------------------------------------
 
 enum {
@@ -556,6 +660,7 @@ enum {
 };
 
 typedef struct {
+    int used;
     int kind;
     char token[MAX_TOKEN];
     size_t expected;
@@ -564,21 +669,39 @@ typedef struct {
     bytebuf payload;
 } assembly;
 
+static assembly g_asm[MAX_ASSEMBLIES];
+
 static void asm_reset(assembly *a) {
     bb_free(&a->payload);
     memset(a, 0, sizeof *a);
 }
 
-static void asm_begin(assembly *a, int kind, const char *token, size_t expected, uint32_t chunks) {
-    asm_reset(a);
-    a->kind = kind;
-    snprintf(a->token, sizeof a->token, "%s", token);
-    a->expected = expected;
-    a->chunks_expected = chunks;
+static assembly *asm_find(const char *token) {
+    for (int i = 0; i < MAX_ASSEMBLIES; i++) {
+        if (g_asm[i].used && strcmp(g_asm[i].token, token) == 0) return &g_asm[i];
+    }
+    return NULL;
+}
+
+static assembly *asm_begin(int kind, const char *token, size_t expected, uint32_t chunks) {
+    assembly *slot = asm_find(token);
+    if (!slot) {
+        for (int i = 0; i < MAX_ASSEMBLIES; i++) {
+            if (!g_asm[i].used) { slot = &g_asm[i]; break; }
+        }
+    }
+    if (!slot) return NULL; // table full: the frame is dropped, RUN never comes
+    asm_reset(slot);
+    slot->used = 1;
+    slot->kind = kind;
+    snprintf(slot->token, sizeof slot->token, "%s", token);
+    slot->expected = expected;
+    slot->chunks_expected = chunks;
+    return slot;
 }
 
 static int asm_chunk(assembly *a, const char *token, uint32_t index, const unsigned char *body, size_t body_len) {
-    if (a->kind == ASM_NONE || strcmp(a->token, token) != 0) return -1;
+    if (!a || a->kind == ASM_NONE || strcmp(a->token, token) != 0) return -1;
     if (index >= a->chunks_expected) return -1;
     if (index < a->chunks_received) return 0; // duplicate chunk: ignore
     if (index != a->chunks_received) return -1; // out of order: abort
@@ -599,7 +722,7 @@ static int asm_chunk(assembly *a, const char *token, uint32_t index, const unsig
 }
 
 // ---------------------------------------------------------------------------
-// Command state (one-shot EXEC)
+// Command state (one-shot EXEC), one slot per concurrent command
 // ---------------------------------------------------------------------------
 
 typedef struct {
@@ -611,8 +734,9 @@ typedef struct {
     int stdin_open, out_open, err_open;
     size_t stdin_off;
     size_t out_sent, err_sent;
-    int section; // 0 = none, 1 = stdout, 2 = stderr
     int cancel_requested;
+    int cancel_signal; // signal the host asked for (INT/TERM/KILL)
+    int term_sent;
     int sigkill_sent;
     int abandon_deadline_set;
     int64_t cancel_deadline;
@@ -623,12 +747,20 @@ typedef struct {
     char token[MAX_TOKEN];
 } command_state;
 
-static int emit_section(command_state *c, int section) {
-    if (c->section == section) return 0;
-    const char *name = section == 2 ? "ERR" : "OUT";
-    if (emit_marker(name, c->token) != 0) return -1;
-    c->section = section;
-    return 0;
+static command_state g_commands[MAX_CONCURRENT_COMMANDS];
+
+static command_state *command_find(const char *token) {
+    for (int i = 0; i < MAX_CONCURRENT_COMMANDS; i++) {
+        if (g_commands[i].active && strcmp(g_commands[i].token, token) == 0) return &g_commands[i];
+    }
+    return NULL;
+}
+
+static command_state *command_free_slot(void) {
+    for (int i = 0; i < MAX_CONCURRENT_COMMANDS; i++) {
+        if (!g_commands[i].active) return &g_commands[i];
+    }
+    return NULL;
 }
 
 static void close_stream(int *fd, int *open) {
@@ -650,7 +782,10 @@ static void forward_stream(command_state *c, int which) {
                 size_t room = FORWARD_CAP - *sent;
                 size_t n = (size_t)got < room ? (size_t)got : room;
                 if (n > 0) {
-                    if (emit_section(c, which == 2 ? 2 : 1) == 0) {
+                    // Re-announce the section whenever another token wrote in
+                    // between; the host routes unmarked bytes to the last
+                    // announced owner.
+                    if (ensure_section(c->token, which == 2 ? 2 : 1) == 0) {
                         (void)write_all(STDOUT_FILENO, buf, n);
                     }
                     *sent += n;
@@ -699,25 +834,74 @@ static void signal_command(command_state *c, int sig) {
     if (c->pid > 0) kill(c->pid, sig);
 }
 
-static void request_cancel(command_state *c) {
+// The first signal is the one the host asked for (INT by default), then TERM
+// after the grace window, then SIGKILL as the final escalation. SIGKILL is
+// final; everything else still ends with a real waitpid reap or a quarantine
+// FAILED. The reported exit code is 128 + the requested signal, and END is
+// emitted only after the child is really reaped.
+static void request_cancel(command_state *c, int sig) {
     if (!c->active || c->cancel_requested || c->exited) return;
     c->cancel_requested = 1;
+    if (c->cancel_signal == 0) c->cancel_signal = sig;
     c->cancel_deadline = now_ms() + CANCEL_GRACE_MS;
     c->abandon_deadline = now_ms() + CANCEL_ABANDON_MS;
     c->abandon_deadline_set = 1;
-    signal_command(c, SIGTERM);
+    if (sig == SIGKILL) {
+        c->term_sent = 1;
+        c->sigkill_sent = 1;
+        signal_command(c, SIGKILL);
+        return;
+    }
+    if (sig == SIGTERM) c->term_sent = 1;
+    signal_command(c, sig);
 }
 
 static void enforce_cancel(command_state *c) {
     if (!c->active || !c->cancel_requested || c->exited) return;
-    if (!c->sigkill_sent && now_ms() >= c->cancel_deadline) {
+    if (now_ms() < c->cancel_deadline) return;
+    if (!c->term_sent) {
+        c->term_sent = 1;
+        c->cancel_deadline = now_ms() + CANCEL_GRACE_MS;
+        signal_command(c, SIGTERM);
+        return;
+    }
+    if (!c->sigkill_sent) {
         c->sigkill_sent = 1;
         signal_command(c, SIGKILL);
     }
 }
 
 // ---------------------------------------------------------------------------
-// PTY session
+// Unreaped quarantine (a cancelled child that even SIGKILL could not reap)
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    int used;
+    pid_t pid;
+} unreaped_slot;
+
+static unreaped_slot g_unreaped[MAX_UNREAPED];
+
+static void unreaped_record(pid_t pid) {
+    for (int i = 0; i < MAX_UNREAPED; i++) {
+        if (!g_unreaped[i].used) {
+            g_unreaped[i].used = 1;
+            g_unreaped[i].pid = pid;
+            return;
+        }
+    }
+    // Table full: nothing more can be tracked; the child is still never
+    // claimed stopped (the caller already emitted FAILED).
+}
+
+static void unreaped_forget(pid_t pid) {
+    for (int i = 0; i < MAX_UNREAPED; i++) {
+        if (g_unreaped[i].used && g_unreaped[i].pid == pid) g_unreaped[i].used = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PTY session, one slot per concurrent interactive terminal
 // ---------------------------------------------------------------------------
 
 typedef struct {
@@ -741,6 +925,22 @@ typedef struct {
     int abandon_deadline_set;
     int64_t abandon_deadline;
 } pty_session;
+
+static pty_session g_sessions[MAX_CONCURRENT_SESSIONS];
+
+static pty_session *session_find(const char *token) {
+    for (int i = 0; i < MAX_CONCURRENT_SESSIONS; i++) {
+        if (g_sessions[i].active && strcmp(g_sessions[i].token, token) == 0) return &g_sessions[i];
+    }
+    return NULL;
+}
+
+static pty_session *session_free_slot(void) {
+    for (int i = 0; i < MAX_CONCURRENT_SESSIONS; i++) {
+        if (!g_sessions[i].active) return &g_sessions[i];
+    }
+    return NULL;
+}
 
 static void session_close_master(pty_session *s) {
     if (s->master_fd >= 0) close(s->master_fd);
@@ -769,8 +969,12 @@ static void session_forward_output(pty_session *s) {
                 size_t room = FORWARD_CAP - s->forwarded;
                 size_t n = (size_t)got < room ? (size_t)got : room;
                 if (n > 0) {
-                    (void)emit_marker("OUT", s->token);
-                    (void)write_all(STDOUT_FILENO, buf, n);
+                    // The host routes unmarked bytes to the last announced
+                    // owner, so re-announce this session after any other
+                    // command/session wrote in between.
+                    if (ensure_section(s->token, 1) == 0) {
+                        (void)write_all(STDOUT_FILENO, buf, n);
+                    }
                     s->forwarded += n;
                 }
             }
@@ -844,7 +1048,8 @@ static void session_request_kill(pty_session *s, int sig) {
     s->kill_deadline = now_ms() + CANCEL_GRACE_MS;
     s->abandon_deadline_set = 1;
     s->abandon_deadline = now_ms() + CANCEL_ABANDON_MS;
-    session_signal(s, sig);
+    session_signal(s, sig == SIGKILL ? SIGKILL : sig);
+    if (sig == SIGKILL) s->sigkill_sent = 1;
 }
 
 static void session_enforce_kill(pty_session *s) {
@@ -983,7 +1188,9 @@ static void child_close_wake_pipe(void) {
 // The child gets its stdio from the three pipe ends and must not keep any
 // other copy of the six pipe fds: a leftover write end of the child's own
 // stdin pipe would keep the pipe open after the runner closes its copy, so
-// the child would never see EOF.
+// the child would never see EOF. With concurrent commands, the child must
+// also not inherit other commands' pipe ends, so every runner-side fd is
+// O_CLOEXEC and only the three dup2 targets survive exec.
 static pid_t spawn_command_child(
     const exec_request *req,
     const char *cwd,
@@ -1027,6 +1234,17 @@ static pid_t spawn_command_child(
         _exit(127);
     }
     return pid;
+}
+
+static int pipe_cloexec(int fds[2]) {
+#ifdef __linux__
+    return pipe2(fds, O_CLOEXEC);
+#else
+    if (pipe(fds) != 0) return -1;
+    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,7 +1444,7 @@ static void record_command_exit(command_state *c, int status) {
     if (WIFEXITED(status)) code = WEXITSTATUS(status);
     else if (WIFSIGNALED(status)) code = 128 + WTERMSIG(status);
     else code = 128;
-    c->exit_code = c->cancel_requested ? 130 : code;
+    c->exit_code = c->cancel_requested ? 128 + c->cancel_signal : code;
     c->last_data = now_ms();
     close_stream(&c->in_fd, &c->stdin_open);
 }
@@ -1242,7 +1460,7 @@ static void record_session_exit(pty_session *s, int status) {
     s->kill_deadline_set = 0;
 }
 
-static void reap_all(command_state *cmd, pty_session *sess) {
+static void reap_all(void) {
     for (;;) {
         int status = 0;
         pid_t p = waitpid(-1, &status, WNOHANG);
@@ -1250,25 +1468,45 @@ static void reap_all(command_state *cmd, pty_session *sess) {
         if (p < 0) {
             if (errno == EINTR) continue;
             if (errno == ECHILD) {
-                if (cmd->active && !cmd->exited && cmd->pid > 0) {
-                    cmd->exited = 1;
-                    cmd->exit_code = cmd->cancel_requested ? 130 : 128;
-                    cmd->last_data = now_ms();
-                    close_stream(&cmd->in_fd, &cmd->stdin_open);
+                // Every child vanished without waitpid seeing it: mark any
+                // still-active slot exited so END goes out instead of a hang.
+                for (int i = 0; i < MAX_CONCURRENT_COMMANDS; i++) {
+                    command_state *cmd = &g_commands[i];
+                    if (cmd->active && !cmd->exited && cmd->pid > 0) {
+                        cmd->exited = 1;
+                        cmd->exit_code = cmd->cancel_requested ? 128 + cmd->cancel_signal : 128;
+                        cmd->last_data = now_ms();
+                        close_stream(&cmd->in_fd, &cmd->stdin_open);
+                    }
                 }
-                if (sess->active && !sess->exited && sess->pid > 0) {
-                    sess->exited = 1;
-                    sess->exit_code = 128;
-                    sess->last_data = now_ms();
+                for (int i = 0; i < MAX_CONCURRENT_SESSIONS; i++) {
+                    pty_session *sess = &g_sessions[i];
+                    if (sess->active && !sess->exited && sess->pid > 0) {
+                        sess->exited = 1;
+                        sess->exit_code = 128;
+                        sess->last_data = now_ms();
+                    }
                 }
             }
             return;
         }
-        if (cmd->active && !cmd->exited && p == cmd->pid) {
-            record_command_exit(cmd, status);
-        } else if (sess->active && !sess->exited && p == sess->pid) {
-            record_session_exit(sess, status);
-        } else {
+        unreaped_forget(p);
+        int claimed = 0;
+        for (int i = 0; i < MAX_CONCURRENT_COMMANDS && !claimed; i++) {
+            command_state *cmd = &g_commands[i];
+            if (cmd->active && !cmd->exited && p == cmd->pid) {
+                record_command_exit(cmd, status);
+                claimed = 1;
+            }
+        }
+        for (int i = 0; i < MAX_CONCURRENT_SESSIONS && !claimed; i++) {
+            pty_session *sess = &g_sessions[i];
+            if (sess->active && !sess->exited && p == sess->pid) {
+                record_session_exit(sess, status);
+                claimed = 1;
+            }
+        }
+        if (!claimed) {
             // A background service (or an orphaned grandchild): reap it and
             // drop it from the SPAWN table so ALIVE answers honestly.
             spawned_forget(p);
@@ -1289,13 +1527,15 @@ static void clear_command(command_state *c) {
     c->in_fd = c->out_fd = c->err_fd = -1;
 }
 
-// Emits BEGIN, an error and END for a command that could not start.
+// Emits BEGIN, ERR and END for a command that could not start. BEGIN is
+// required: the host parser only routes output for a token after BEGIN.
 static void fail_command(command_state *c, int code, const char *message) {
     (void)emit_marker("BEGIN", c->token);
-    c->section = 1;
-    (void)emit_section(c, 2);
-    if (message) (void)write_all(STDOUT_FILENO, message, strlen(message));
+    section_mark(c->token, 1);
+    (void)ensure_section(c->token, 2);
+    emit_message(message);
     (void)emit_end(c->token, code);
+    section_release(c->token);
     clear_command(c);
 }
 
@@ -1311,7 +1551,7 @@ static void start_command(command_state *c, const char *token, exec_request *req
     int in_pipe[2] = {-1, -1};
     int out_pipe[2] = {-1, -1};
     int err_pipe[2] = {-1, -1};
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    if (pipe_cloexec(in_pipe) != 0 || pipe_cloexec(out_pipe) != 0 || pipe_cloexec(err_pipe) != 0) {
         if (in_pipe[0] >= 0) { close(in_pipe[0]); close(in_pipe[1]); }
         if (out_pipe[0] >= 0) { close(out_pipe[0]); close(out_pipe[1]); }
         if (err_pipe[0] >= 0) { close(err_pipe[0]); close(err_pipe[1]); }
@@ -1360,7 +1600,7 @@ static void start_command(command_state *c, const char *token, exec_request *req
         clear_command(c);
         return;
     }
-    c->section = 1; // stdout is the implicit section right after BEGIN
+    section_mark(c->token, 1); // stdout is the implicit section after BEGIN
 
     if (c->req.input_len == 0) {
         close(c->in_fd);
@@ -1378,7 +1618,7 @@ static int command_drain_done(const command_state *c) {
 }
 
 static void finish_command(command_state *c) {
-    int code = c->cancel_requested ? 130 : c->exit_code;
+    int code = c->cancel_requested ? 128 + c->cancel_signal : c->exit_code;
     // Final bounded drain for anything already buffered in the pipes.
     for (int i = 0; i < 64 && (c->out_open || c->err_open); i++) {
         int before = c->out_open + c->err_open;
@@ -1389,19 +1629,25 @@ static void finish_command(command_state *c) {
     close_stream(&c->in_fd, &c->stdin_open);
     close_stream(&c->out_fd, &c->out_open);
     close_stream(&c->err_fd, &c->err_open);
+    // BEGIN went out after fork; a child that never printed still gets a
+    // well-formed stream (BEGIN + END is legal; sections are optional).
     (void)emit_end(c->token, code);
+    section_release(c->token);
     exec_request_free(&c->req);
     memset(c, 0, sizeof *c);
     c->in_fd = c->out_fd = c->err_fd = -1;
 }
 
-// Abandons a child that cannot be killed (uninterruptible sleep). The status
-// is collected later by reap_all so no zombie accumulates.
-static void abandon_command(command_state *c) {
+// Quarantines a child that cannot be killed (uninterruptible sleep). The
+// runner emits FAILED — never END — so the host reports a failed guest
+// instead of a clean stop. The pid is reaped asynchronously by reap_all.
+static void quarantine_command(command_state *c) {
     close_stream(&c->in_fd, &c->stdin_open);
     close_stream(&c->out_fd, &c->out_open);
     close_stream(&c->err_fd, &c->err_open);
-    (void)emit_end(c->token, 130);
+    unreaped_record(c->pid);
+    (void)emit_failed(c->token, "unreaped");
+    section_release(c->token);
     exec_request_free(&c->req);
     memset(c, 0, sizeof *c);
     c->in_fd = c->out_fd = c->err_fd = -1;
@@ -1421,35 +1667,37 @@ static void finish_session(pty_session *s) {
     int code = s->exit_code;
     if (s->killed_signal != 0) code = 128 + s->killed_signal;
     (void)emit_end(s->token, code);
+    section_release(s->token);
     session_free(s);
     s->master_fd = -1;
 }
 
-// Abandons a session whose process cannot be killed; the pty is closed and
-// the host gets an END so the channel never hangs.
-static void abandon_session(pty_session *s) {
+// Quarantines a session whose process cannot be killed; the pty is closed
+// and the host gets FAILED (never END) so it resets the guest instead of
+// reporting a clean terminal exit.
+static void quarantine_session(pty_session *s) {
     session_close_master(s);
-    int code = s->killed_signal != 0 ? 128 + s->killed_signal : (s->exit_code ? s->exit_code : 128);
-    (void)emit_end(s->token, code);
+    unreaped_record(s->pid);
+    (void)emit_failed(s->token, "unreaped");
+    section_release(s->token);
     session_free(s);
     s->master_fd = -1;
 }
 
-static void start_session(command_state *cmd, pty_session *s, const char *token,
-                          open_request *req) {
+static void start_session(pty_session *s, const char *token, open_request *req) {
     memset(s, 0, sizeof *s);
     s->master_fd = -1;
 
-    int master = posix_openpt(O_RDWR);
+    int master = posix_openpt(O_RDWR | O_CLOEXEC);
     if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) {
         if (master >= 0) close(master);
-        emit_failure(token, 0, 125, "floe-exec: cannot allocate a pty");
+        emit_session_failure(token, 125, "floe-exec: cannot allocate a pty");
         return;
     }
     const char *slave_name = ptsname(master);
     if (!slave_name) {
         close(master);
-        emit_failure(token, 0, 125, "floe-exec: cannot name the pty slave");
+        emit_session_failure(token, 125, "floe-exec: cannot name the pty slave");
         return;
     }
     char slave_path[256];
@@ -1465,7 +1713,7 @@ static void start_session(command_state *cmd, pty_session *s, const char *token,
     pid_t pid = fork();
     if (pid < 0) {
         close(master);
-        emit_failure(token, 0, 125, "floe-exec: cannot fork the session");
+        emit_session_failure(token, 125, "floe-exec: cannot fork the session");
         return;
     }
     if (pid == 0) {
@@ -1510,8 +1758,10 @@ static void start_session(command_state *cmd, pty_session *s, const char *token,
     s->pgid = pid;
     s->master_fd = master;
     s->last_data = now_ms();
-    (void)cmd; // sessions and commands are mutually exclusive
+    // BEGIN announces the session to the host (its parser also accepts a
+    // first OUT); an output-less session still ends with a well-formed END.
     (void)emit_marker("BEGIN", s->token);
+    section_mark(s->token, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1544,7 +1794,7 @@ static void do_spawn(const char *token, const unsigned char *payload, size_t ple
             (void)dup2(nullfd, STDIN_FILENO);
             if (nullfd > STDERR_FILENO) close(nullfd);
         }
-        int logfd = open(req.log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        int logfd = open(req.log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
         if (logfd < 0) {
             // stdout/stderr are still the runner's console here; stay silent
             // and let the reap path report the service as gone.
@@ -1558,7 +1808,7 @@ static void do_spawn(const char *token, const unsigned char *payload, size_t ple
             child_message("floe-exec: chdir '%s' failed: %s\n", cwd, strerror(errno));
             _exit(126);
         }
-        if (req.argc > 0 && req.argv[0][0] != '\0') {
+        if (req.argc > 0 && req.argv[0] != NULL && req.argv[0][0] != '\0') {
             execvp(req.argv[0], req.argv);
             int saved = errno;
             if (saved == ENOENT) {
@@ -1592,12 +1842,6 @@ static void do_spawn(const char *token, const unsigned char *payload, size_t ple
 // Inbound frame dispatch
 // ---------------------------------------------------------------------------
 
-typedef struct {
-    command_state *cmd;
-    pty_session *session;
-    assembly *asm_state;
-} guest_state;
-
 static int parse_two_decimals(const unsigned char *args, size_t len, size_t *first, uint32_t *second) {
     char buf[64];
     if (len == 0 || len >= sizeof buf) return -1;
@@ -1618,45 +1862,45 @@ static int parse_two_decimals(const unsigned char *args, size_t len, size_t *fir
     return 0;
 }
 
-static int start_exec_payload(command_state *cmd, pty_session *sess, const char *token,
-                              const unsigned char *payload, size_t plen) {
+static int start_exec_payload(const char *token, const unsigned char *payload, size_t plen) {
     exec_request req;
     if (exec_request_parse(payload, plen, &req) != 0) {
         emit_failure(token, 1, 125, "floe-exec: malformed EXEC payload");
         return -1;
     }
-    if (cmd->active || sess->active) {
+    command_state *slot = command_free_slot();
+    if (!slot) {
         exec_request_free(&req);
-        emit_failure(token, 1, 125, "floe-exec: guest is busy with another command or session");
+        emit_failure(token, 1, 125, "floe-exec: command table full");
         return -1;
     }
-    start_command(cmd, token, &req);
+    start_command(slot, token, &req);
     return 0;
 }
 
-static int start_open_payload(command_state *cmd, pty_session *sess, const char *token,
-                              const unsigned char *payload, size_t plen) {
+static int start_open_payload(const char *token, const unsigned char *payload, size_t plen) {
     open_request req;
     if (open_request_parse(payload, plen, &req) != 0) {
-        emit_failure(token, 0, 125, "floe-exec: malformed OPEN payload");
+        emit_session_failure(token, 125, "floe-exec: malformed OPEN payload");
         return -1;
     }
     if (!req.mode || strcmp(req.mode, "pty") != 0) {
         open_request_free(&req);
-        emit_failure(token, 0, 125, "floe-exec: unsupported OPEN mode");
+        emit_session_failure(token, 125, "floe-exec: unsupported OPEN mode");
         return -1;
     }
-    if (cmd->active || sess->active) {
+    pty_session *slot = session_free_slot();
+    if (!slot) {
         open_request_free(&req);
-        emit_failure(token, 0, 125, "floe-exec: guest is busy with another command or session");
+        emit_session_failure(token, 125, "floe-exec: session table full");
         return -1;
     }
-    start_session(cmd, sess, token, &req);
+    start_session(slot, token, &req);
     open_request_free(&req);
     return 0;
 }
 
-static void handle_frame(guest_state *st, const unsigned char *body, size_t len) {
+static void handle_frame(const unsigned char *body, size_t len) {
     const unsigned char *name_end = memchr(body, ' ', len);
     if (!name_end) return;
     size_t name_len = (size_t)(name_end - body);
@@ -1675,15 +1919,16 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
     const unsigned char *args = token_end ? token_end + 1 : rest + rest_len;
     size_t args_len = token_end ? rest_len - token_len - 1 : 0;
 
-    command_state *cmd = st->cmd;
-    pty_session *sess = st->session;
-    assembly *asm_state = st->asm_state;
+    if (name_len == 5 && memcmp(body, "HELLO", 5) == 0) {
+        (void)emit_caps(token);
+        return;
+    }
 
     if (name_len == 4 && memcmp(body, "EXEC", 4) == 0) {
         size_t payload_bytes = 0;
         uint32_t chunks = 0;
         if (parse_two_decimals(args, args_len, &payload_bytes, &chunks) == 0) {
-            asm_begin(asm_state, ASM_EXEC, token, payload_bytes, chunks);
+            (void)asm_begin(ASM_EXEC, token, payload_bytes, chunks);
             return;
         }
         size_t cap = args_len / 4 * 3 + 4;
@@ -1698,7 +1943,7 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
             emit_failure(token, 1, 125, "floe-exec: malformed inline EXEC payload");
             return;
         }
-        (void)start_exec_payload(cmd, sess, token, payload, (size_t)decoded);
+        (void)start_exec_payload(token, payload, (size_t)decoded);
         free(payload);
         return;
     }
@@ -1707,7 +1952,7 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
         size_t payload_bytes = 0;
         uint32_t chunks = 0;
         if (parse_two_decimals(args, args_len, &payload_bytes, &chunks) != 0) return;
-        asm_begin(asm_state, ASM_OPEN, token, payload_bytes, chunks);
+        (void)asm_begin(ASM_OPEN, token, payload_bytes, chunks);
         return;
     }
 
@@ -1715,7 +1960,7 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
         size_t payload_bytes = 0;
         uint32_t chunks = 0;
         if (parse_two_decimals(args, args_len, &payload_bytes, &chunks) != 0) return;
-        asm_begin(asm_state, ASM_SPAWN, token, payload_bytes, chunks);
+        (void)asm_begin(ASM_SPAWN, token, payload_bytes, chunks);
         return;
     }
 
@@ -1733,32 +1978,46 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
         if (errno != 0 || !index_tail || *index_tail != '\0' || index < 0) return;
         const unsigned char *chunk_body = index_end + 1;
         size_t chunk_len = args_len - index_len - 1;
-        if (asm_chunk(asm_state, token, (uint32_t)index, chunk_body, chunk_len) != 0) {
-            asm_reset(asm_state);
+        assembly *a = asm_find(token);
+        if (asm_chunk(a, token, (uint32_t)index, chunk_body, chunk_len) != 0 && a) {
+            asm_reset(a);
         }
         return;
     }
 
     if (name_len == 3 && memcmp(body, "RUN", 3) == 0) {
-        if (asm_state->kind == ASM_NONE || strcmp(asm_state->token, token) != 0) return;
-        if (asm_state->chunks_received != asm_state->chunks_expected ||
-            asm_state->payload.len != asm_state->expected) {
-            emit_failure(token, asm_state->kind == ASM_EXEC, 125,
-                         "floe-exec: incomplete chunked payload");
-            asm_reset(asm_state);
+        assembly *a = asm_find(token);
+        if (!a || a->kind == ASM_NONE) return;
+        if (a->chunks_received != a->chunks_expected ||
+            a->payload.len != a->expected) {
+            if (a->kind == ASM_OPEN) {
+                emit_session_failure(token, 125, "floe-exec: incomplete chunked payload");
+            } else {
+                emit_failure(token, a->kind == ASM_EXEC, 125,
+                             "floe-exec: incomplete chunked payload");
+            }
+            asm_reset(a);
             return;
         }
-        int kind = asm_state->kind;
-        unsigned char *payload = asm_state->payload.data;
-        size_t plen = asm_state->payload.len;
-        asm_state->payload.data = NULL;
-        asm_state->payload.len = 0;
-        asm_state->payload.cap = 0;
-        asm_reset(asm_state);
+        int kind = a->kind;
+        unsigned char *payload = a->payload.data;
+        size_t plen = a->payload.len;
+        // Detach the payload but keep the slot marked used until the
+        // pointers are copied out; then clear it without freeing the
+        // (now owned by us) payload bytes.
+        a->payload.data = NULL;
+        a->payload.len = 0;
+        a->payload.cap = 0;
+        a->kind = ASM_NONE;
+        a->used = 0;
+        a->token[0] = '\0';
+        a->expected = 0;
+        a->chunks_expected = 0;
+        a->chunks_received = 0;
         if (kind == ASM_EXEC) {
-            (void)start_exec_payload(cmd, sess, token, payload, plen);
+            (void)start_exec_payload(token, payload, plen);
         } else if (kind == ASM_OPEN) {
-            (void)start_open_payload(cmd, sess, token, payload, plen);
+            (void)start_open_payload(token, payload, plen);
         } else {
             do_spawn(token, payload, plen);
         }
@@ -1767,7 +2026,8 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
     }
 
     if (name_len == 2 && memcmp(body, "IN", 2) == 0) {
-        if (!sess->active || strcmp(sess->token, token) != 0) return;
+        pty_session *sess = session_find(token);
+        if (!sess) return;
         size_t cap = args_len / 4 * 3 + 4;
         unsigned char *decoded = malloc(cap);
         if (!decoded) return;
@@ -1780,12 +2040,10 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
     }
 
     if (name_len == 6 && memcmp(body, "SIGNAL", 6) == 0) {
-        if (!sess->active || strcmp(sess->token, token) != 0) return;
-        if (args_len >= 3 && memcmp(args, "INT", 3) == 0) {
-            session_request_kill(sess, SIGINT);
-        } else if (args_len >= 4 && memcmp(args, "TERM", 4) == 0) {
-            session_request_kill(sess, SIGTERM);
-        } else if (args_len >= 5 && memcmp(args, "WINCH", 5) == 0) {
+        int sig = 0;
+        if (args_len >= 5 && memcmp(args, "WINCH", 5) == 0) {
+            pty_session *sess = session_find(token);
+            if (!sess) return;
             unsigned char rows_buf[16] = {0};
             unsigned char cols_buf[16] = {0};
             long rows = 0, cols = 0;
@@ -1815,12 +2073,28 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
                 (void)ioctl(sess->master_fd, TIOCSWINSZ, &ws);
                 if (sess->pgid > 0) kill(-sess->pgid, SIGWINCH);
             }
+            return;
+        }
+        if (args_len >= 3 && memcmp(args, "INT", 3) == 0) sig = SIGINT;
+        else if (args_len >= 4 && memcmp(args, "TERM", 4) == 0) sig = SIGTERM;
+        else if (args_len >= 4 && memcmp(args, "KILL", 4) == 0) sig = SIGKILL;
+        else return;
+        // Targeted cancellation: sessions first, then one-shot commands.
+        pty_session *sess = session_find(token);
+        if (sess) {
+            session_request_kill(sess, sig);
+            return;
+        }
+        command_state *cmd = command_find(token);
+        if (cmd) {
+            request_cancel(cmd, sig);
         }
         return;
     }
 
     if (name_len == 5 && memcmp(body, "CLOSE", 5) == 0) {
-        if (sess->active && strcmp(sess->token, token) == 0) {
+        pty_session *sess = session_find(token);
+        if (sess) {
             session_request_kill(sess, SIGTERM);
         }
         return;
@@ -1866,7 +2140,7 @@ static void handle_frame(guest_state *st, const unsigned char *body, size_t len)
     }
 }
 
-static void dispatch_inbound(guest_state *st, bytebuf *in) {
+static void dispatch_inbound(bytebuf *in) {
     static const char prefix[] = "\x1e" "FLOE-";
     const size_t prefix_len = sizeof prefix - 1;
     for (;;) {
@@ -1905,7 +2179,7 @@ static void dispatch_inbound(guest_state *st, bytebuf *in) {
             return; // incomplete frame
         }
         if (line_len > prefix_len) {
-            handle_frame(st, in->data + prefix_len, line_len - prefix_len);
+            handle_frame(in->data + prefix_len, line_len - prefix_len);
         }
         bb_consume(in, consume);
     }
@@ -1914,6 +2188,22 @@ static void dispatch_inbound(guest_state *st, bytebuf *in) {
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
+
+// Pollfd owner kinds for the dynamic poll set.
+enum {
+    OWNER_CONSOLE = 0,
+    OWNER_WAKE,
+    OWNER_CMD_OUT,
+    OWNER_CMD_ERR,
+    OWNER_CMD_IN,
+    OWNER_SESSION_IN,
+    OWNER_SESSION_OUT,
+};
+
+typedef struct {
+    int kind;
+    int index; // command/session slot
+} poll_owner;
 
 int main(void) {
     if (getpid() == 1 || getenv("FLOE_GUEST_INIT") != NULL) {
@@ -1934,68 +2224,89 @@ int main(void) {
     int console = STDIN_FILENO;
     set_console_raw(console);
 
+    for (int i = 0; i < MAX_CONCURRENT_COMMANDS; i++) g_commands[i].in_fd = -1;
+    for (int i = 0; i < MAX_CONCURRENT_COMMANDS; i++) {
+        g_commands[i].out_fd = -1;
+        g_commands[i].err_fd = -1;
+    }
+    for (int i = 0; i < MAX_CONCURRENT_SESSIONS; i++) g_sessions[i].master_fd = -1;
+
     bytebuf inbound = {0};
-    command_state cmd;
-    memset(&cmd, 0, sizeof cmd);
-    cmd.in_fd = cmd.out_fd = cmd.err_fd = -1;
-    pty_session sess;
-    memset(&sess, 0, sizeof sess);
-    sess.master_fd = -1;
-    assembly asm_state;
-    memset(&asm_state, 0, sizeof asm_state);
-    guest_state st = {&cmd, &sess, &asm_state};
 
     for (;;) {
-        struct pollfd fds[8];
+        struct pollfd fds[2 + MAX_CONCURRENT_COMMANDS * 3 + MAX_CONCURRENT_SESSIONS * 2];
+        poll_owner owners[2 + MAX_CONCURRENT_COMMANDS * 3 + MAX_CONCURRENT_SESSIONS * 2];
         int n = 0;
-        int i_console = n++;
-        fds[i_console].fd = console;
-        fds[i_console].events = POLLIN;
-        fds[i_console].revents = 0;
+        int i_console = n;
+        owners[n].kind = OWNER_CONSOLE;
+        owners[n].index = -1;
+        fds[n].fd = console;
+        fds[n].events = POLLIN;
+        fds[n].revents = 0;
+        n++;
 
         int i_wake = -1;
         if (g_wake_pipe[0] >= 0) {
-            i_wake = n++;
-            fds[i_wake].fd = g_wake_pipe[0];
-            fds[i_wake].events = POLLIN;
-            fds[i_wake].revents = 0;
+            i_wake = n;
+            owners[n].kind = OWNER_WAKE;
+            owners[n].index = -1;
+            fds[n].fd = g_wake_pipe[0];
+            fds[n].events = POLLIN;
+            fds[n].revents = 0;
+            n++;
         }
-        int i_out = -1, i_err = -1, i_in = -1, i_master = -1, i_min = -1;
-        if (cmd.active) {
-            if (cmd.out_open && cmd.out_fd >= 0) {
-                i_out = n++;
-                fds[i_out].fd = cmd.out_fd;
-                fds[i_out].events = POLLIN;
-                fds[i_out].revents = 0;
+
+        int any_active = 0;
+        for (int i = 0; i < MAX_CONCURRENT_COMMANDS; i++) {
+            command_state *cmd = &g_commands[i];
+            if (!cmd->active) continue;
+            any_active = 1;
+            if (cmd->out_open && cmd->out_fd >= 0) {
+                owners[n].kind = OWNER_CMD_OUT;
+                owners[n].index = i;
+                fds[n].fd = cmd->out_fd;
+                fds[n].events = POLLIN;
+                fds[n].revents = 0;
+                n++;
             }
-            if (cmd.err_open && cmd.err_fd >= 0) {
-                i_err = n++;
-                fds[i_err].fd = cmd.err_fd;
-                fds[i_err].events = POLLIN;
-                fds[i_err].revents = 0;
+            if (cmd->err_open && cmd->err_fd >= 0) {
+                owners[n].kind = OWNER_CMD_ERR;
+                owners[n].index = i;
+                fds[n].fd = cmd->err_fd;
+                fds[n].events = POLLIN;
+                fds[n].revents = 0;
+                n++;
             }
-            if (cmd.stdin_open && cmd.in_fd >= 0) {
-                i_in = n++;
-                fds[i_in].fd = cmd.in_fd;
-                fds[i_in].events = POLLOUT;
-                fds[i_in].revents = 0;
+            if (cmd->stdin_open && cmd->in_fd >= 0) {
+                owners[n].kind = OWNER_CMD_IN;
+                owners[n].index = i;
+                fds[n].fd = cmd->in_fd;
+                fds[n].events = POLLOUT;
+                fds[n].revents = 0;
+                n++;
             }
-        } else if (sess.active) {
-            if (sess.master_fd >= 0) {
-                i_master = n++;
-                fds[i_master].fd = sess.master_fd;
-                fds[i_master].events = POLLIN;
-                fds[i_master].revents = 0;
-                if (sess.input_len > sess.input_off) {
-                    i_min = n++;
-                    fds[i_min].fd = sess.master_fd;
-                    fds[i_min].events = POLLOUT;
-                    fds[i_min].revents = 0;
-                }
+        }
+        for (int i = 0; i < MAX_CONCURRENT_SESSIONS; i++) {
+            pty_session *sess = &g_sessions[i];
+            if (!sess->active || sess->master_fd < 0) continue;
+            any_active = 1;
+            owners[n].kind = OWNER_SESSION_IN;
+            owners[n].index = i;
+            fds[n].fd = sess->master_fd;
+            fds[n].events = POLLIN;
+            fds[n].revents = 0;
+            n++;
+            if (sess->input_len > sess->input_off) {
+                owners[n].kind = OWNER_SESSION_OUT;
+                owners[n].index = i;
+                fds[n].fd = sess->master_fd;
+                fds[n].events = POLLOUT;
+                fds[n].revents = 0;
+                n++;
             }
         }
 
-        int timeout = (cmd.active || sess.active) ? POLL_SLICE_MS : -1;
+        int timeout = any_active ? POLL_SLICE_MS : -1;
         int ready = poll(fds, (nfds_t)n, timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -2016,10 +2327,11 @@ int main(void) {
             if (got > 0) {
                 for (ssize_t i = 0; i < got; i++) {
                     if (chunk[i] == FLOE_CANCEL) {
-                        if (cmd.active) {
-                            request_cancel(&cmd);
-                        } else if (sess.active) {
-                            session_request_kill(&sess, SIGINT);
+                        // Legacy interrupt-all byte: every in-flight command
+                        // gets TERM escalation; sessions keep their own
+                        // CLOSE/SIGNAL semantics.
+                        for (int c = 0; c < MAX_CONCURRENT_COMMANDS; c++) {
+                            if (g_commands[c].active) request_cancel(&g_commands[c], SIGINT);
                         }
                         continue;
                     }
@@ -2028,17 +2340,21 @@ int main(void) {
                         bb_consume(&inbound, inbound.len);
                     }
                 }
-                dispatch_inbound(&st, &inbound);
+                dispatch_inbound(&inbound);
                 continue; // poll set may have changed (command/session started)
             }
             if (got == 0) {
                 // Console EOF: the guest is being stopped.
-                if (cmd.active) signal_command(&cmd, SIGKILL);
-                if (sess.active) session_signal(&sess, SIGKILL);
+                for (int c = 0; c < MAX_CONCURRENT_COMMANDS; c++) {
+                    if (g_commands[c].active) signal_command(&g_commands[c], SIGKILL);
+                }
+                for (int s = 0; s < MAX_CONCURRENT_SESSIONS; s++) {
+                    if (g_sessions[s].active) session_signal(&g_sessions[s], SIGKILL);
+                }
                 bb_free(&inbound);
-                clear_command(&cmd);
-                session_free(&sess);
-                asm_reset(&asm_state);
+                for (int c = 0; c < MAX_CONCURRENT_COMMANDS; c++) clear_command(&g_commands[c]);
+                for (int s = 0; s < MAX_CONCURRENT_SESSIONS; s++) session_free(&g_sessions[s]);
+                for (int a = 0; a < MAX_ASSEMBLIES; a++) asm_reset(&g_asm[a]);
                 return 0;
             }
             if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -2047,42 +2363,63 @@ int main(void) {
             }
         }
 
-        if (cmd.active) {
-            if (i_out >= 0 && (fds[i_out].revents & (POLLIN | POLLHUP | POLLERR))) {
-                forward_stream(&cmd, 1);
+        for (int f = 0; f < n; f++) {
+            if (fds[f].revents == 0) continue;
+            switch (owners[f].kind) {
+            case OWNER_CMD_OUT:
+                if (fds[f].revents & (POLLIN | POLLHUP | POLLERR)) {
+                    forward_stream(&g_commands[owners[f].index], 1);
+                }
+                break;
+            case OWNER_CMD_ERR:
+                if (fds[f].revents & (POLLIN | POLLHUP | POLLERR)) {
+                    forward_stream(&g_commands[owners[f].index], 2);
+                }
+                break;
+            case OWNER_CMD_IN:
+                if (fds[f].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                    feed_stdin(&g_commands[owners[f].index]);
+                }
+                break;
+            case OWNER_SESSION_IN:
+                if (fds[f].revents & (POLLIN | POLLHUP | POLLERR)) {
+                    session_forward_output(&g_sessions[owners[f].index]);
+                }
+                break;
+            case OWNER_SESSION_OUT:
+                if (fds[f].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                    session_feed_input(&g_sessions[owners[f].index]);
+                }
+                break;
+            default:
+                break;
             }
-            if (i_err >= 0 && (fds[i_err].revents & (POLLIN | POLLHUP | POLLERR))) {
-                forward_stream(&cmd, 2);
-            }
-            if (i_in >= 0 && (fds[i_in].revents & (POLLOUT | POLLERR | POLLHUP))) {
-                feed_stdin(&cmd);
-            }
-            reap_all(&cmd, &sess);
-            enforce_cancel(&cmd);
-            if (cmd.active && cmd.cancel_requested && cmd.abandon_deadline_set &&
-                !cmd.exited && now_ms() >= cmd.abandon_deadline) {
-                abandon_command(&cmd);
-            } else if (cmd.active && cmd.exited && command_drain_done(&cmd)) {
-                finish_command(&cmd);
-            }
-        } else if (sess.active) {
-            if (i_master >= 0 && (fds[i_master].revents & (POLLIN | POLLHUP | POLLERR))) {
-                session_forward_output(&sess);
-            }
-            if (i_min >= 0 && (fds[i_min].revents & (POLLOUT | POLLERR | POLLHUP))) {
-                session_feed_input(&sess);
-            }
-            reap_all(&cmd, &sess);
-            session_enforce_kill(&sess);
-            if (sess.active && sess.abandon_deadline_set && !sess.exited &&
-                now_ms() >= sess.abandon_deadline) {
-                abandon_session(&sess);
-            } else if (sess.active && session_done(&sess)) {
-                finish_session(&sess);
-            }
-        } else {
-            reap_all(&cmd, &sess);
         }
+
+        reap_all();
         kills_enforce();
+
+        for (int c = 0; c < MAX_CONCURRENT_COMMANDS; c++) {
+            command_state *cmd = &g_commands[c];
+            if (!cmd->active) continue;
+            enforce_cancel(cmd);
+            if (cmd->cancel_requested && cmd->abandon_deadline_set &&
+                !cmd->exited && now_ms() >= cmd->abandon_deadline) {
+                quarantine_command(cmd);
+            } else if (cmd->exited && command_drain_done(cmd)) {
+                finish_command(cmd);
+            }
+        }
+        for (int s = 0; s < MAX_CONCURRENT_SESSIONS; s++) {
+            pty_session *sess = &g_sessions[s];
+            if (!sess->active) continue;
+            session_enforce_kill(sess);
+            if (sess->abandon_deadline_set && !sess->exited &&
+                now_ms() >= sess->abandon_deadline) {
+                quarantine_session(sess);
+            } else if (session_done(sess)) {
+                finish_session(sess);
+            }
+        }
     }
 }
