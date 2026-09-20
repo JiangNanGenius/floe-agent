@@ -1,6 +1,6 @@
 # Floe 1.7.0 (212) — TinyEMU and feedback repairs
 
-Status: source integration complete; Linux component cloud qualification in progress.
+Status: source integration complete; Linux component published; App build next.
 No Build212 upload or installability claimed yet.
 
 This delivery makes Linux the default local environment and archives the native
