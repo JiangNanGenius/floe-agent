@@ -16,7 +16,23 @@
  * Threading model: the embedder runs floe_vm_run_slice() from a single VM
  * thread. floe_vm_console_input() may be called from any thread (queued).
  * Console output is delivered through the callback from within run_slice.
- */
+ *
+ * Lifecycle contract (verified by Qualification/TinyEMULinux):
+ *  - create/destroy are repeatable: destroy releases the guest RAM, disk
+ *    FILE handles + snapshot tables, 9p FS devices + tags, slirp state and
+ *    file buffers; a failed create frees its partial allocations.
+ *  - Networking uses one process-wide slirp instance: at most ONE VM with
+ *    net_enable=1 may exist at a time; after that VM is destroyed a new
+ *    networked VM can be created. Multiple simultaneous non-networked VMs
+ *    are allowed by the adapter (upstream TinyEMU is not reentrant-safe
+ *    across threads; run all slices from the same VM thread pool and do
+ *    not drive two VMs concurrently from two threads).
+ *  - Upstream engine fatal paths: guest RAM allocation failure exit(1)
+ *    (iomem.c), internal device-invariant abort()s (virtio.c/riscv_cpu.c)
+ *    remain from upstream and would terminate the host process; they are
+ *    not reachable via valid guest behavior but are engine defects the
+ *    embedder should know about. The guest-poweroff exit(0) IS fixed by
+ *    patches/0001. */
 #ifndef FLOE_VM_H
 #define FLOE_VM_H
 

@@ -45,7 +45,7 @@ OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(CORE_OBJS))) \
 
 TARGETS := $(BUILD)/libfloevm.a
 ifneq ($(HOST_DIR),)
-TARGETS += $(BUILD)/floe_vm_host
+TARGETS += $(BUILD)/floe_vm_host $(BUILD)/lifecycle_test
 endif
 
 all: $(TARGETS)
@@ -86,6 +86,12 @@ $(BUILD)/floe_vm_host.o: $(HOST_DIR)/floe_vm_host.c $(ADAPTER)floe_vm.h | $(BUIL
 	$(CC) $(CFLAGS) -I$(ADAPTER) -c -o $@ $<
 
 $(BUILD)/floe_vm_host: $(BUILD)/floe_vm_host.o $(BUILD)/libfloevm.a
+	$(CC) -o $@ $^ $(LIBS)
+
+$(BUILD)/lifecycle_test.o: $(HOST_DIR)/lifecycle_test.c $(ADAPTER)floe_vm.h | $(BUILD)/.dir
+	$(CC) $(CFLAGS) -I$(ADAPTER) -c -o $@ $<
+
+$(BUILD)/lifecycle_test: $(BUILD)/lifecycle_test.o $(BUILD)/libfloevm.a
 	$(CC) -o $@ $^ $(LIBS)
 
 clean:
