@@ -20,7 +20,8 @@
 #    (patches/0001 poweroff callback, then patches/0002 recoverable OOM +
 #    copy_bios bounds), iomem.c (patches/0002), fs_disk.c (patches/0003
 #    Apple stat timestamps) and slirp/bootp.c (patches/0004, an upstream
-#    typo that only compiles with DEBUG undefined). --check rebuilds the
+#    typo that only compiles with DEBUG undefined), and riscv_cpu_template.h
+#    (patches/0005 FENCE compatibility). --check rebuilds the
 #    pristine tree + patches + rename and diffs, so a hand-edited vendored
 #    file fails the check.
 #  - adapter/floe_vm.{c,h} are symlinked from ../../adapter (single source).
@@ -66,7 +67,8 @@ tcpip.h tftp.h udp.h"
 PATCHES="0001-htif-poweroff-callback.patch \
 0002-embeddable-error-propagation.patch \
 0003-fs_disk-apple-stat-timestamps.patch \
-0004-slirp-bootp-debug-typo.patch"
+0004-slirp-bootp-debug-typo.patch \
+0005-fence-hints.patch"
 
 # slirp declares its own BSD structs (ipovly/tcpcb/sbuf/udphdr/arphdr/icmp)
 # whose tags collide with Darwin SDK umbrella-module headers when compiled

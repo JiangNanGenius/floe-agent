@@ -6,11 +6,11 @@
              case 0: /* fence */
 -                if (insn & 0xf00fff80)
 -                    goto illegal_insn;
-+                /* FLOE-EMBED: FENCE/FENCE.TSO and every reserved fm encoding
-+                   are ordering hints that must be ignored rather than
-+                   trapped (the base ISA defines FENCE.TSO next to FENCE and
-+                   requires ignoring the unused fm/rs1/rd/pred/succ fields);
-+                   this single-hart interpreter has nothing to order.
++                /* FLOE-EMBED: Execute FENCE/FENCE.TSO and reserved fm
++                   encodings with the stronger ordinary-fence semantics.
++                   This single-hart interpreter completes guest memory and
++                   device accesses in program order, so no extra ordering
++                   work is needed here; unused rs1/rd fields are ignored.
 +                   Upstream TinyEMU trapped FENCE.TSO (0x8330000f), which is
 +                   what Debian 13's libapt-pkg executes -- apt's http and
 +                   https methods died with SIGILL inside libapt-pkg. */

@@ -1352,11 +1352,19 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
             funct3 = (insn >> 12) & 7;
             switch(funct3) {
             case 0: /* fence */
-                if (insn & 0xf00fff80)
-                    goto illegal_insn;
+                /* FLOE-EMBED: Execute FENCE/FENCE.TSO and reserved fm
+                   encodings with the stronger ordinary-fence semantics.
+                   This single-hart interpreter completes guest memory and
+                   device accesses in program order, so no extra ordering
+                   work is needed here; unused rs1/rd fields are ignored.
+                   Upstream TinyEMU trapped FENCE.TSO (0x8330000f), which is
+                   what Debian 13's libapt-pkg executes -- apt's http and
+                   https methods died with SIGILL inside libapt-pkg. */
                 break;
             case 1: /* fence.i */
-                if (insn != 0x0000100f)
+                /* FLOE-EMBED: Zifencei requires ignoring the unused
+                   imm[11:0]/rs1/rd fields; only funct3/opcode select it. */
+                if ((insn & 0x0000707f) != 0x0000100f)
                     goto illegal_insn;
                 break;
 #if XLEN >= 128
