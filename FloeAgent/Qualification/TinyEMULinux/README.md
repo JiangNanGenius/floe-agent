@@ -59,22 +59,37 @@ Honest status, including what does **not** work:
   never reaches the virtio console. A modern guest needs FDT generation +
   OpenSBI in the engine — future work, not a configuration tweak. The 2018
   demo image is a smoke fixture, **not** a complete Linux.
-- **The 4.15 fallback kernel could not use the Debian GPT cloud image.**
-  Stage C/D/E panicked with `VFS: Unable to mount root fs on
-  unknown-block(254,1)`; the guest saw only the protective MBR and mapped
-  `vda1` to the whole disk. Root cause (reproduced locally with a synthetic
-  GPT that macOS accepts): the pinned 2018 buildroot kernel has no
-  EFI/GPT partition parser, while the disk read path is byte-exact (guest
-  `dd` md5 matched the host). Fix in the workflow: extract the ext4
-  partition to a partitionless image and boot `root=/dev/vda`; D/E only run
-  when Stage C shows real guest-shell evidence.
-- **Lean push run (build + lifecycle + Stage A): passing.** Stage A markers
-  come from real guest output (markers are assembled at runtime, so a TTY
-  echo of the input line cannot fake them), and `lifecycle_test` passes
-  repeatable create/destroy, hostfwd bind/remove/destroy checked by real TCP
-  connects, oversized BIOS/kernel recoverable failures, and the RAM-OOM
+- **Debian 13 userland on the 2018 4.15 kernel now really runs** (run
+  35500083112, apt_probe): `apt-get update` over the default **HTTPS**
+  sources with normal signature verification fetched 28.1 MB in 1m36s
+  (rc=0), `apt-get install -y --no-install-recommends python3-numpy nodejs`
+  succeeded (rc=0), `import numpy` reported 2.2.4, `node -e` reported
+  v20.19.2, and Python HTTPS returned 200. Multi-process/fork/pipe/signal/
+  PTY, 9p sharing and write-through persistence (reboot readback) pass in
+  the same image. Two fixes were required: `patches/0005-fence-hints.patch`
+  (upstream trapped `FENCE.TSO`, which Debian's libapt-pkg executes — apt's
+  http and https methods died with SIGILL before any network work) and
+  setting the guest clock (a 1970 clock made TLS report "certificate is not
+  yet valid").
+- **The 4.15 fallback kernel cannot use the Debian GPT cloud image.** It
+  has no EFI/GPT parser, so the ext4 partition is extracted and booted as a
+  partitionless image (`root=/dev/vda`); the guest disk read path itself was
+  verified byte-exact.
+- **Lean push run (build + lifecycle + Stage A): passing.** Lifecycle covers
+  repeatable create/destroy, hostfwd bind/remove/destroy by real TCP
+  connect, oversized BIOS/kernel recoverable failures and the RAM-OOM
   negative case on Linux (2 GB guest under a 1 GB `RLIMIT_AS` fails create
   cleanly through the `floe_ram_oom` path instead of exiting the host).
+- **Guest runner verified in the real engine**: static riscv64 cross-build,
+  injection into the rootfs image, PID1 startup and one real
+  `\x1eFLOE-EXEC` frame returning `FLOE-BEGIN`/`FLOE-END … 0`.
+- A separate `apt_probe=true` dispatch exists for targeted re-checks; it
+  skips Stage A/B/C/E and drives one real sequential guest script from the
+  9p share. The first such run's instruction probe printed an
+  `IndentationError` (a harness `sed` stripped the Python indentation), so
+  no `FLOE_INSN_*` evidence came from that run even though APT itself
+  passed; the probe is fixed and its `fence_tso=OK` marker is now part of
+  the required evidence, to be re-confirmed in the final image smoke.
 
 ## Evidence rules for this qualification
 
