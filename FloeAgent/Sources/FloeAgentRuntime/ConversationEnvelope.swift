@@ -26,6 +26,15 @@ public enum ConversationEnvelope {
     /// Maximum source identifiers listed in the read envelope head.
     public static let sourceIDLimit = 24
 
+    /// Character ceiling for one assembled envelope. The runtime grants
+    /// conversation tools a 98_304-character tool-result summary boundary
+    /// (`maximumSummaryCharacters`, counted in characters); an assembled page
+    /// that could cross it would be cut mid-JSON by the generic boundary.
+    /// Segmented pages never approach it; only a budget-ignoring reader
+    /// delivering a gigantic item whole can, and that case must fail
+    /// explicitly instead of shipping a silently cuttable page.
+    public static let maximumEnvelopeCharacters = 96_000
+
     /// Search results as a structured envelope. `ids` carries the deduplicated
     /// conversation identifiers a follow-up conversation.read needs, so they
     /// survive compaction even when every hit body is dropped.

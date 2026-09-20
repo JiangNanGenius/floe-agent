@@ -481,6 +481,67 @@ struct ConversationToolsTests {
         #expect(tailDelivered, "the item after the long one must still be delivered")
     }
 
+    @Test("the real constructor preserves >20_000 characters and the store path reads the unique tail back across segments")
+    func realConstructorLongItemTailReadable() async throws {
+        let conversationID = UUID()
+        let tailMarker = "〖TAIL-20000-end〗"
+        let full = String(repeating: "数据", count: 10_240) + "👨‍👩‍👧‍👦"
+            + String(repeating: "终章", count: 60) + tailMarker
+        #expect(full.count > 20_000)
+        let big = ConversationHistoryItem(
+            id: UUID(), kind: .message, role: "user", content: full,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        // Regression guard: the item initializer must not silently cap stored
+        // content — the read path paginates by UTF-8 budget instead.
+        #expect(big.content == full)
+        let reader = OffsetPagingConversationReader(items: [big], honorsByteBudget: true)
+        let tool = ConversationReadTool(reader: reader, currentConversationID: { _ in UUID() })
+
+        var cursor: String?
+        var pageCount = 0
+        var sawTailMarker = false
+        while true {
+            let page = try await readEnvelopePage(tool: tool, conversationID: conversationID, cursor: cursor)
+            pageCount += 1
+            #expect(page.sources == [big.id.uuidString])
+            #expect(
+                page.reference.utf8.count <= ConversationEnvelope.referenceBodyCharacterBudget + 600
+            )
+            sawTailMarker = sawTailMarker || page.reference.contains(tailMarker)
+            guard page.hasMore, let next = page.cursor, pageCount <= 20 else {
+                #expect(!page.hasMore)
+                break
+            }
+            cursor = next
+        }
+        #expect(pageCount >= 3, "~61 KB of CJK must take several 24 KB segments")
+        #expect(sawTailMarker, "the >20_000-character tail marker must be read back via cursors")
+    }
+
+    @Test("a budget-ignoring reader with an undeliverably large item fails explicitly instead of a silent tail cut")
+    func undeliverableItemFailsExplicitly() async throws {
+        let conversationID = UUID()
+        // 120_000 ASCII characters: delivered whole, the assembled envelope
+        // would cross the runtime's 98_304-character tool-result boundary
+        // and be cut mid-JSON.
+        let huge = ConversationHistoryItem(
+            id: UUID(), kind: .message, role: "user",
+            content: String(repeating: "x", count: 120_000),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let reader = OffsetPagingConversationReader(items: [huge], honorsByteBudget: false)
+        let tool = ConversationReadTool(reader: reader, currentConversationID: { _ in UUID() })
+        let output = try await tool.execute(
+            .init(conversationID: conversationID),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 1)
+        #expect(output.summary.contains("status=pageTooLarge"))
+        #expect(output.summary.contains("retryable=false"))
+        #expect(output.summary.contains(conversationID.uuidString))
+    }
+
     @Test("paginate segments a long item losslessly at Character boundaries under a UTF-8 budget")
     func paginateSegmentsLosslessly() {
         let tailMarker = "〖TAIL-9f3d〗"

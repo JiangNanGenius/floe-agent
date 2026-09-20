@@ -143,7 +143,14 @@ public struct ConversationHistoryItem: Sendable, Codable, Hashable, Identifiable
         self.runID = runID
         self.kind = kind
         self.role = role
-        self.content = String(content.prefix(16_384))
+        // No character cap here: the durable row already holds the full stored
+        // content, and a second silent truncation at the read boundary made
+        // every tail beyond it unreachable. Page bounds are enforced by
+        // ConversationEnvelope.paginate at render time. Content an upstream
+        // writer already truncated keeps that writer's explicit markers
+        // (e.g. "[tool output compacted; originalBytes=…]"), so nothing here
+        // ever claims completeness the store does not have.
+        self.content = content
         self.createdAt = createdAt
         self.sequence = sequence
         self.contentByteOffset = max(0, contentByteOffset)

@@ -448,6 +448,11 @@ public actor FloeAgentRuntime {
     /// action boundary once; a hard cap keeps weak models from turning the
     /// harness correction itself into a loop.
     private var deferredActionRepairCount = 0
+    /// A provider turn that ends with neither visible text nor a tool call
+    /// earns exactly one bounded continuation asking for the final answer;
+    /// a second empty turn fails recoverably instead of looping or closing
+    /// the run with an invisible answer.
+    private var noVisibleAnswerContinuationCount = 0
     private var malformedToolRepairCount = 0
     private var malformedToolRepairRequested = false
     /// Set by tool/compaction handling to request another provider turn.
@@ -1965,6 +1970,25 @@ public actor FloeAgentRuntime {
     /// completion and transitions terminally.
     private func finishOrSteer(stopReason: AgentEvent.StopReason) async {
         guard !pendingSteers.isEmpty else {
+            if stopReason == .endTurn,
+               streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !didVerifyFinalAnswer,
+               !isFinalizingWithoutTools {
+                // The search→read→answer chain (and every other route) only
+                // closes when something visible reached the user. One bounded
+                // continuation converts a silent empty turn into the final
+                // answer; a repeated empty turn ends recoverably with the
+                // saved state intact.
+                if noVisibleAnswerContinuationCount == 0 {
+                    await beginNoVisibleAnswerContinuation()
+                } else {
+                    await failRun(
+                        message: "The model returned no visible answer or tool call after one continuation. The run state is saved; resume or retry the task.",
+                        recoverable: true
+                    )
+                }
+                return
+            }
             if shouldRepairDeferredActionPromise(stopReason: stopReason) {
                 await beginDeferredActionRepair()
                 return
@@ -2046,6 +2070,25 @@ public actor FloeAgentRuntime {
         messages.append(ConversationMessage(
             role: "system",
             content: "Harness control: your previous response promised an immediate action but emitted no structured tool call. If that action is still required, issue the actual tool call now. If no suitable tool is available or the action is blocked, give a final answer with the exact reason. Do not merely promise another future action."
+        ))
+        modelTurnContinuationRequested = true
+    }
+
+    /// Bounded continuation for a turn that produced neither visible text nor
+    /// a structured tool call — for example a search/read chain that stopped
+    /// before the answer. Runs at most once per run; tool schemas stay
+    /// available so a genuinely unfinished action can still be issued.
+    private func beginNoVisibleAnswerContinuation() async {
+        noVisibleAnswerContinuationCount += 1
+        await transition(to: .verifying)
+        await publishLiveness(
+            phase: .verifying,
+            message: "Model returned no visible answer; requesting the final answer once",
+            isRecoverable: true
+        )
+        messages.append(ConversationMessage(
+            role: "system",
+            content: "Harness control: your previous turn produced neither a user-visible answer nor a tool call. Answer the user's latest request now in visible text, using evidence already gathered (including any search or read results), or issue the one tool call that is still required, or state the concrete blocker plainly. Do not repeat completed tool work and do not end without a visible answer."
         ))
         modelTurnContinuationRequested = true
     }

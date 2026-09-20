@@ -242,14 +242,26 @@ public struct ConversationReadTool: AgentTool {
         let sources = page.items.prefix(ConversationEnvelope.sourceIDLimit).map {
             $0.id.uuidString
         }
-        return ConversationSearchTool.output(
-            try ConversationEnvelope.read(
-                conversationID: args.conversationID,
-                block: rendered.body,
-                nextCursor: page.nextCursor,
-                sources: sources
-            )
+        let envelope = try ConversationEnvelope.read(
+            conversationID: args.conversationID,
+            block: rendered.body,
+            nextCursor: page.nextCursor,
+            sources: sources
         )
+        guard envelope.count <= ConversationEnvelope.maximumEnvelopeCharacters else {
+            // Reachable only with a budget-ignoring reader whose single item
+            // is gigantic: shipping this page would let the generic
+            // tool-result boundary cut the JSON mid-body and strand the item
+            // tail. Fail explicitly instead of pretending the walk can
+            // continue. Budget-honoring readers segment long items, so their
+            // pages never reach this guard.
+            return ConversationSearchTool.output(
+                "status=pageTooLarge conversationID=\(args.conversationID.uuidString) "
+                    + "reason=a single history item exceeds the deliverable page size and this reader cannot continue inside an item retryable=false",
+                exitStatus: 1
+            )
+        }
+        return ConversationSearchTool.output(envelope)
     }
 
     private static func sanitizedReason(_ error: Error) -> String {
