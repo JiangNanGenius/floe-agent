@@ -236,6 +236,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          python3 scripts/audit_native_runtime_free.py --app "$APP_PATH"
           scripts/package_unsigned_ipa.sh "$APP_PATH" release-assets "$ASSET_NAME"
           cp "$RUNNER_TEMP/bundle-normalization.json" release-assets/
       # The unsigned IPA artifact is the single public subject of this build:
@@ -505,6 +506,7 @@ jobs:
             ditto -c -k --sequesterRsrc --keepParent Payload "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
           )
           unzip -t "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+          python3 scripts/audit_native_runtime_free.py --ipa "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
           xcrun altool --validate-app \
             --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
             --type ios \
