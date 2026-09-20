@@ -82,6 +82,15 @@ public actor TinyEMULinuxGuestRegistry {
     /// Environments asked to stop while their start was in flight; the start
     /// tears its own handle down instead of registering a session.
     private var pendingStops: Set<String> = []
+    /// Environments whose teardown is in flight. The actor is reentrant across
+    /// the close awaits, so a concurrent start must not see a removed session
+    /// and boot a second VM on the same environment disk.
+    private var teardownsInFlight: Set<String> = []
+    /// Environments whose VM survived a stop (the engine run loop did not exit
+    /// inside its budget). The session and its admission reservation are kept,
+    /// no new guest may boot on that environment's disk, and a later stop can
+    /// still recover it.
+    private var quarantinedEnvironments: Set<String> = []
     /// Admission reservations: environment id → reserved guest RAM (MB).
     /// Covers starts in flight and running sessions alike, so concurrent
     /// starts cannot oversubscribe the device's guest budget.
@@ -197,6 +206,20 @@ public actor TinyEMULinuxGuestRegistry {
     public func start(environmentID: String, taskID: String?) async throws -> Bool {
         guard let descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
+        }
+        if teardownsInFlight.contains(environmentID) {
+            throw LinuxGuestError.stopFailed(
+                environmentID: environmentID,
+                detail: "a stop is still in progress; this environment's disk is not reused until it finishes"
+            )
+        }
+        if quarantinedEnvironments.contains(environmentID) {
+            // The previous VM never confirmed its stop: booting another VM on
+            // the same writable disk would corrupt it. Retry stopGuest.
+            throw LinuxGuestError.stopFailed(
+                environmentID: environmentID,
+                detail: "the previous guest is still running after a failed stop; retry stopGuest and wait for it to succeed, nothing was started"
+            )
         }
         if let existing = sessions[environmentID], await existing.handle.isRunning() {
             return true
@@ -801,6 +824,14 @@ public actor TinyEMULinuxGuestRegistry {
         if startingEnvironments.contains(environmentID) {
             pendingStops.insert(environmentID)
         }
+        // One teardown per environment: a second stop call while the first is
+        // awaiting close must not race it, and a start must not slip past the
+        // removed session (see start's teardownsInFlight guard).
+        guard teardownsInFlight.insert(environmentID).inserted else {
+            lastImpacts[environmentID] = "\(action): a stop is already in progress for \(environmentID); no second teardown was started"
+            return
+        }
+        defer { teardownsInFlight.remove(environmentID) }
         for (sessionID, terminal) in terminalSessions where terminal.environmentID == environmentID {
             terminalSessions.removeValue(forKey: sessionID)
             await terminal.handle.close()
@@ -810,15 +841,34 @@ public actor TinyEMULinuxGuestRegistry {
             // start that will not register one.
             if !startingEnvironments.contains(environmentID) {
                 guestReservations[environmentID] = nil
+                quarantinedEnvironments.remove(environmentID)
             }
             return
         }
         await session.channel.close()
         await session.handle.close()
+        // Truthful stop: the engine may have refused to destroy a VM whose
+        // run loop did not leave its last slice inside the stop budget. The
+        // guest is then NOT stopped, so the session, its admission slot and
+        // the disk stay owned by this environment until a later stop really
+        // succeeds; a start on the same disk would otherwise corrupt it.
+        if await session.handle.isRunning() {
+            sessions[environmentID] = session
+            quarantinedEnvironments.insert(environmentID)
+            lastErrors[environmentID] =
+                "the Linux guest did not stop within the engine's budget and is still running; retry stopGuest (the persistent disk is preserved and no new guest will start on it)"
+            lastImpacts[environmentID] =
+                "\(action): \(environmentID) is STILL RUNNING (the VM refused to stop); the persistent disk and shares are preserved, the guest is quarantined and no new guest may start on this disk"
+            FloeLogger(category: .tools).error(
+                "Linux guest \(action) environment=\(environmentID) still running after the stop budget; quarantined"
+            )
+            return
+        }
+        quarantinedEnvironments.remove(environmentID)
         guestReservations[environmentID] = nil
         // The disk and shares are untouched; only runtime state was dropped.
         lastImpacts[environmentID] =
-            "\(action): guest runtime for \(environmentID) destroyed; persistent disk and shares preserved; other environments untouched"
+            "\(action): guest runtime for \(environmentID) stopped and destroyed; persistent disk and shares preserved; other environments untouched"
         FloeLogger(category: .tools).info(
             "Linux guest \(action) environment=\(environmentID) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB)"
         )

@@ -30,6 +30,11 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     /// before a VM is created; no other running guest is ever killed or
     /// stopped to make room, and nothing waits forever for a slot.
     case capacityReached(detail: String)
+    /// A stop did not actually stop the VM (the engine run loop did not leave
+    /// its last slice inside its budget), so the guest stays quarantined: its
+    /// disk is not reused by a new VM and the reserved capacity is retained
+    /// until a later stop succeeds.
+    case stopFailed(environmentID: String, detail: String)
     case startFailed(String)
     case outputLimitExceeded(limit: Int)
     case timedOut(seconds: TimeInterval)
@@ -50,9 +55,11 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
         case .imageNotQualified(_, let reason):
             return "Linux guest image is not qualified: \(reason)"
         case .guestBusy(let id):
-            return "Linux guest \(id) is already running or starting; wait for the current start to finish"
+            return "Linux guest \(id) is already running, starting or stopping; wait for the current operation to finish"
         case .capacityReached(let detail):
             return "Linux guest capacity reached: \(detail)"
+        case .stopFailed(let id, let detail):
+            return "Linux guest \(id) did not stop: \(detail)"
         case .startFailed(let detail):
             return "Linux guest failed to start: \(detail)"
         case .outputLimitExceeded(let limit):
