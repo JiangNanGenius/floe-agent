@@ -35,9 +35,12 @@ mark() {
     printf 'FLOE_STAGE1_%s\n' "$1"
 }
 
+# ca-certificates is the CA store the host's shared Python/Node paths and the
+# guest's own HTTPS checks rely on; it is normally part of the cloud image but
+# is named explicitly so the image contract does not depend on that.
 PACKAGES="procps util-linux coreutils bash zsh zip unzip p7zip-full xz-utils \
 bzip2 sqlite3 openssh-client python3 python3-pip python3-venv python3-numpy \
-nodejs npm"
+nodejs npm ca-certificates"
 
 note "stage1 start utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 note "kernel cmdline: $(cat /proc/cmdline 2>/dev/null)"

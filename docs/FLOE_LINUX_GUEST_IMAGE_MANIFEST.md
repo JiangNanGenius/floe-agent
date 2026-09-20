@@ -7,6 +7,14 @@ which gaps remain. It complements `LICENSE-INVENTORY.md` (host engine only)
 and is intentionally separate: the MIT host engine and the guest components
 keep their own licenses; nothing here requires relicensing the Floe host.
 
+The component pipeline that builds, boot-verifies and source-packages a
+candidate (inputs pinned in
+[`pinned-inputs.json`](../FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json))
+is documented in [the build guide](FLOE_LINUX_GUEST_IMAGE_BUILD.md). Its
+artifacts are GitHub component artifacts with recorded digests; they are not a
+public release, and the source bundle they contain is not yet a published
+source offer.
+
 Pinned demo archive: `diskimage-linux-riscv-2018-09-23.tar.gz`
 (sha256 `808ecc1b32efdd76103172129b77b46002a616dff2270664207c291e4fde9e14`,
 `https://bellard.org/tinyemu/diskimage-linux-riscv-2018-09-23.tar.gz`).
@@ -20,12 +28,12 @@ riscv-linux a3b1e7acc6a181e04e9a943942084395df4498dd
 
 | Component | Artifact | Exact source | License | Material on hand | Remaining gap |
 | --- | --- | --- | --- | --- | --- |
-| Boot loader | `bbl64.bin` | riscv-pk `ac2c910b18c3e36cfd85080472e78ad2fe484325` (verified reachable 2026-09-20) | BSD-3-Clause (Regents of the University of California, 2013; `LICENSE` verified) | `FloeAgent/ThirdParty/TinyEMU/guest-image/riscv-pk.diff` + `readme.txt` (in-tree) | Toolchain/build recipe beyond the archive's configs is not pinned; no source tarball mirrored by us |
-| Kernel | `kernel-riscv64.bin` (`Linux 4.15.0-00049-ga3b1e7a-dirty`) | riscv-linux `a3b1e7acc6a181e04e9a943942084395df4498dd` (verified reachable; `COPYING` GPL-2.0 available) | GPL-2.0 | `guest-image/riscv-linux.diff` + exact `guest-image/config_linux_riscv64` (in-tree) | No source mirror held by us; no rebuild attempted (no local kernel builds by policy) |
+| Boot loader | `bbl64.bin` | riscv-pk `ac2c910b18c3e36cfd85080472e78ad2fe484325` (verified reachable 2026-09-20) | BSD-3-Clause (Regents of the University of California, 2013; `LICENSE` verified) | diff + `readme.txt` in-tree; `build-kernel-bbl.sh` fetches the revision, applies the diff and packages `upstream/riscv-pk-<rev>-src.tar.gz` + LICENSE in the component artifact | No rebuild was run (`compile_verified: false` in the pins); the bundle is not yet published as a source offer |
+| Kernel | `kernel-riscv64.bin` (`Linux 4.15.0-00049-ga3b1e7a-dirty`) | riscv-linux `a3b1e7acc6a181e04e9a943942084395df4498dd` (verified reachable; `COPYING` GPL-2.0 available) | GPL-2.0 | diff + exact `config_linux_riscv64` in-tree; same script packages `upstream/riscv-linux-<rev>-src.tar.gz` (diff applied), config and COPYING with SHA-512 digests | No rebuild was run in CI (`--rebuild` exists and is documented); the bundle is not yet published as a source offer |
 | 2018 demo rootfs | `root-riscv64.bin` | buildroot (busybox + kernel) | GPL-2.0 and others | buildroot/root configs inside the demo archive (not vendored) | **Qualification-only, never distributed** — unchanged conclusion |
-| Candidate userland | Debian 13 (trixie) riscv64 nocloud cloud image | fetched at run time from `cdimage.debian.org` (daily; resolved SHA512 recorded per run, e.g. `6e417af7e77963ea…`) | per-package (Debian `copyright` files) | fetched image, `dpkg -l` listing, apt logs in the qualification evidence | **No package→copyright/source manifest generated; daily image is not digest-pinned.** Bundling requires mirroring corresponding sources or distributing only as an on-device download from Debian with their source availability |
-| Floe guest runner (source) | `/usr/local/bin/floe-exec` (injected) | this repository (`FloeAgent/LinuxGuest/`) | MPL-2.0 (repository license) | source in-tree; CI builds a static riscv64 binary and records its sha256 | none |
-| Floe guest runner (static runtime) | same binary embeds a **static glibc** | cross toolchain `gcc-riscv64-linux-gnu` on ubuntu-latest (glibc from that toolchain) | LGPL-2.1 (glibc) | none yet | A statically linked glibc is redistributed inside the image, so the image must carry glibc's license text and the corresponding source (or object files/relinkable material per LGPL §6, plus the exact toolchain/version record). Recorded now; nothing is distributed yet. |
+| Candidate userland | Debian 13 (trixie) riscv64 nocloud cloud image | dated daily build `20260920-2607`, sha512 `7106e0d8…`, sha256 `bd477108…` (digest-pinned; build fails closed if the dated URL rotates or bytes change) | per-package (Debian `copyright` files) | fetched image + apt logs + `dpkg-query` inventory (657 packages) + `/usr/share/doc/*/copyright` bundle in the evidence artifact; binary→source→file→sha256 mapping and the verified `.dsc`/orig/debian downloads in the source artifact | Corresponding sources exist as component artifacts but are **not published as a source offer**; unmapped packages (if any) are listed in `debian-source-gaps.tsv` and must be resolved first |
+| Floe guest runner (source) | `/usr/local/bin/floe-exec` (injected) | this repository (`FloeAgent/LinuxGuest/`) | MPL-2.0 (repository license) | source in-tree; CI builds a static riscv64 binary and records its sha256 (`360fede9…` for the run recorded in the qualification log) plus the relink object | none |
+| Floe guest runner (static runtime) | same binary embeds a **static glibc** | cross toolchain `gcc-riscv64-linux-gnu` on ubuntu-latest (`libc6-dev-riscv64-cross` 2.39, gcc 13.3.0) | LGPL-2.1 (glibc) | `runner-relink/` carries `floe_exec.c`, `floe_clock.h`, the compiled `.o`, the exact link command, the toolchain versions and `RELINK.md`; `toolchain-source/` holds the distribution source packages when the fetch succeeds | The bundle is not published; the glibc source fetch is best-effort and reported as a gap when the distribution source is unavailable |
 
 Modifications Floe applies to the candidate image (documentation of changes,
 not source obligations): clear `orphan_file` / `metadata_csum_seed` on the
@@ -67,6 +75,18 @@ then passed real HTTPS APT update/install, NumPy, Node and Python HTTPS.
 Build 207 has no Linux backend; cancelled build 208 predates this fix.
 These results do not yet qualify a downloadable image: final runner clock,
 package ownership and the corresponding-source artifacts must be completed.
+
+Two further runtime facts. The guest kernel has no RTC (`CONFIG_RTC_CLASS`
+off), so the host appends `floe.epoch=<unix seconds>` to the kernel command
+line on every boot and the guest runner consumes it as PID 1
+(`FloeAgent/LinuxGuest/runner/floe_clock.h`, host `LinuxGuestBootArguments`);
+every image boot is verified with that parameter, never with a `date -s`
+workaround. And the direct FENCE instruction probe from run 35500083112
+emitted **no** markers because of a harness indentation bug, not an engine
+result; the probe code is fixed and the candidate build re-runs it while
+recording the actual status. Until that corrected output exists, the probe is
+neither claimed as passing nor as failing — the APT/NumPy/Node/HTTPS
+capability stands on its own independent evidence.
 
 ## Concrete follow-up artifacts (planned, none published yet)
 

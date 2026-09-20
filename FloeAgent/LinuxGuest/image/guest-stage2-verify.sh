@@ -223,22 +223,26 @@ else
     cmd_result sqlite3 FAIL "sqlite3 output='$sqlite_out'"
 fi
 
-# ssh (client version)
+# ssh: presence/version only. No remote host exists in this build, so no
+# connection is made and none is claimed.
 ssh_version="$(ssh -V 2>&1)"
 case "$ssh_version" in
-    OpenSSH*) cmd_result ssh OK "$ssh_version" ;;
+    OpenSSH*) cmd_result ssh OK "client version only, no connection made: $ssh_version" ;;
     *) cmd_result ssh FAIL "ssh -V output='$ssh_version'" ;;
 esac
 
-# scp: OpenSSH scp has no -V, so prove the real client runs by making it
-# attempt a session (there is deliberately no sshd in this image; exit 255
-# with a connection error means the client stack executed and tried).
+# scp: OpenSSH scp has no -V, so the client is exercised with a negative
+# attempt against localhost:1. There is deliberately no sshd in this image,
+# so this proves the client stack starts and fails as a client; it is NOT a
+# transfer success and the docs say so. The full output is kept so nothing is
+# inferred from a single line.
 scp_out="$(scp -o BatchMode=yes -o ConnectTimeout=2 -P 1 /etc/hostname localhost:/tmp/floe-scp-probe 2>&1)"
 scp_rc=$?
+scp_detail="$(printf '%s' "$scp_out" | tr '\n' ' ' | cut -c1-240)"
 case "$scp_out" in
-    *"Connection refused"*|*"Connection timed out"*|*"ssh:"*)
-        cmd_result scp OK "client attempted ssh session (rc=$scp_rc): $(printf '%s' "$scp_out" | head -1)" ;;
-    *) cmd_result scp FAIL "scp rc=$scp_rc output='$scp_out'" ;;
+    *"Connection refused"*|*"Connection timed out"*|*"Address family not supported"*|*"ssh: connect"*)
+        cmd_result scp OK "client-only negative attempt, no transfer (rc=$scp_rc): $scp_detail" ;;
+    *) cmd_result scp FAIL "scp rc=$scp_rc output='$scp_detail'" ;;
 esac
 
 # 6. FENCE / instruction probe (diagnostic; harness fixed in 0bf0ffb4) -------

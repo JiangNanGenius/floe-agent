@@ -36,6 +36,18 @@ on:
         description: 'With sources only: run id that holds linux-guest-image-evidence-*'
         type: string
         default: ''
+      skip_debian:
+        description: 'Sources job: skip the (large) Debian package-source download'
+        type: boolean
+        default: false
+      skip_upstream:
+        description: 'Sources job: skip kernel/bbl/glibc source fetching'
+        type: boolean
+        default: false
+      metadata_run_id:
+        description: 'Metadata only: run id holding linux-guest-image-candidate-* (no rebuild)'
+        type: string
+        default: ''
   push:
     branches:
       - codex/feedback-linux-image
@@ -84,9 +96,12 @@ jobs:
       - name: Build + boot-verify + package the image candidate
         run: |
           set -euo pipefail
+          # GitHub expressions expand before `sudo` runs, so values survive
+          # the environment reset sudo performs.
           sudo bash FloeAgent/LinuxGuest/image/build-guest-image.sh \
             --work "${{ runner.temp }}/floe-image-work" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --source-ref "${{ github.sha }}" \
             2>&1 | tee "${{ runner.temp }}/floe-image-build.log"
 
       - name: Stage the flat evidence bundle (stable artifact layout)
@@ -151,7 +166,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq python3 curl ca-certificates dpkg-dev >/dev/null
+          sudo apt-get install -y -qq python3 curl ca-certificates dpkg-dev gcc-riscv64-linux-gnu >/dev/null
 
       - name: Download the image evidence (package inventory + runner object)
         uses: actions/download-artifact@v4
@@ -166,13 +181,15 @@ jobs:
         run: |
           set -euo pipefail
           EXTRA=""
-          if [ "${{ inputs.rebuild_kernel }}" = "true" ]; then EXTRA="--rebuild-kernel"; fi
+          if [ "${{ inputs.rebuild_kernel }}" = "true" ]; then EXTRA="$EXTRA --rebuild-kernel"; fi
+          if [ "${{ inputs.skip_debian }}" = "true" ]; then EXTRA="$EXTRA --skip-debian"; fi
+          if [ "${{ inputs.skip_upstream }}" = "true" ]; then EXTRA="$EXTRA --skip-upstream"; fi
           # shellcheck disable=SC2086
           sudo bash FloeAgent/LinuxGuest/image/collect-corresponding-sources.sh \
             --out "${{ runner.temp }}/floe-sources" \
             --packages "${{ runner.temp }}/floe-image-evidence/guest-packages.tsv" \
             --image-evidence "${{ runner.temp }}/floe-image-evidence" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             $EXTRA 2>&1 | tee "${{ runner.temp }}/floe-sources.log"
 
       - name: Show the source bundle summary
@@ -249,4 +266,81 @@ jobs:
             ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.sha256
             ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.tsv
           if-no-files-found: error
+          retention-days: 30
+
+  # Metadata-only repair: rewrite manifest.json provenance for an already-built
+  # candidate and repack the zip without touching one image byte. The original
+  # manifest is kept in the artifact as the first-attempt record.
+  metadata:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.metadata_run_id != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the existing candidate (no image rebuild)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-guest-image-candidate-${{ inputs.metadata_run_id }}
+          path: ${{ runner.temp }}/floe-candidate
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.metadata_run_id }}
+
+      - name: Rewrite the manifest provenance and repack the identical image
+        run: |
+          set -euo pipefail
+          C="${{ runner.temp }}/floe-candidate"
+          W="${{ runner.temp }}/floe-catalog"
+          rm -rf "$W"; mkdir -p "$W"
+          ZIP="$(find "$C" -name '*.zip' -type f | sort | head -1)"
+          test -n "$ZIP" || { echo "no candidate zip in the artifact"; exit 1; }
+          unzip -q "$ZIP" -d "$W"
+          cp "$W/manifest.json" "$W/manifest-original.json"
+          ORIG="$W/manifest-original.json"
+          ID="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['id'])" "$ORIG")"
+          CMDLINE="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('cmdline',''))" "$ORIG")"
+          EVIDENCE="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('qualificationEvidence',''))" "$ORIG")"
+          LICENSE="$(python3 -c "import json,sys;print((json.load(open(sys.argv[1])).get('provenance') or {}).get('license',''))" "$ORIG")"
+          python3 FloeAgent/LinuxGuest/image/write-image-manifest.py write \
+            --image-dir "$W" --id "$ID" \
+            --bios "$W/bbl64.bin" --kernel "$W/kernel-riscv64.bin" --disk "$W/disk.img" \
+            --cmdline "$CMDLINE" \
+            --qualification-run "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.metadata_run_id }}" \
+            --qualification-evidence "$EVIDENCE" \
+            --source-url "${{ github.server_url }}/${{ github.repository }}/tree/${{ github.sha }}/FloeAgent/LinuxGuest" \
+            --build-configuration-url "${{ github.server_url }}/${{ github.repository }}/tree/${{ github.sha }}/FloeAgent/ThirdParty/TinyEMU/guest-image" \
+            --license "$LICENSE" \
+            --qualified
+          python3 FloeAgent/LinuxGuest/image/write-image-manifest.py verify --image-dir "$W"
+          OLD_ZIP_SHA="$(sha512sum "$ZIP" | cut -d' ' -f1)"
+          rm -f "$W/$(basename "$ZIP")"
+          ( cd "$W" && zip -q "$(basename "$ZIP")" manifest.json bbl64.bin kernel-riscv64.bin disk.img )
+          ( cd "$W" && sha512sum manifest.json bbl64.bin kernel-riscv64.bin disk.img >SHA512SUMS )
+          {
+            printf '# Manifest provenance repair (no image rebuild)\n\n'
+            printf 'The bios/kernel/disk bytes are the artifact built by run %s; only\n' "${{ inputs.metadata_run_id }}"
+            printf 'manifest.json was rewritten (real source commit in the provenance URLs)\n'
+            printf 'and the zip repacked so the archive is self-consistent. manifest-original.json\n'
+            printf 'is kept beside it as the first-attempt record.\n\n'
+            printf -- '- image run: %s/%s/actions/runs/%s\n' "${{ github.server_url }}" "${{ github.repository }}" "${{ inputs.metadata_run_id }}"
+            printf -- '- original archive sha512: `%s`\n' "$OLD_ZIP_SHA"
+            printf -- '- corrected archive sha512: `%s`\n' "$(sha512sum "$W/$(basename "$ZIP")" | cut -d' ' -f1)"
+            printf -- '- disk.img sha512: `%s`\n' "$(sha512sum "$W/disk.img" | cut -d' ' -f1)"
+            printf -- '- source commit: `%s`\n' "${{ github.sha }}"
+          } > "$W/manifest-fix.md"
+          ls -la "$W"
+
+      - name: Show the repaired manifest
+        if: always()
+        run: |
+          cat "${{ runner.temp }}/floe-catalog/manifest.json" || true
+          cat "${{ runner.temp }}/floe-catalog/manifest-fix.md" || true
+
+      - name: Upload the corrected catalog artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-image-catalog-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-catalog/
+          if-no-files-found: warn
           retention-days: 30

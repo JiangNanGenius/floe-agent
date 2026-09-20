@@ -108,8 +108,10 @@
     "python3-venv",
     "python3-numpy",
     "nodejs",
-    "npm"
+    "npm",
+    "ca-certificates"
   ],
+  "preparation_note": "The host's shared Python venv (/floe/env/python/venv) and Node module/bin paths (/floe/env/...) need python3-venv, python3-pip, nodejs and npm inside the guest; base64 is part of coreutils. pnpm is not installed implicitly.",
   "commands_to_verify": [
     "ps",
     "setsid",

@@ -111,7 +111,23 @@ if [ -n "$image_evidence" ] && [ -d "$image_evidence" ]; then
     fi
     cp "$image_evidence/zip-sha512.txt" "$relink/" 2>/dev/null || true
 else
-    log "WARNING: no image evidence directory; the relink object may be missing"
+    log "note: no image evidence directory; the relink object is built below if possible"
+fi
+
+# The runner object is LGPL-2.1 §6 relink material. Prefer the object the
+# image job compiled; otherwise compile it here from the same sources with the
+# same flags, so a sources-only retry is still complete.
+if [ ! -f "$relink/floe-exec-riscv64.o" ]; then
+    if command -v riscv64-linux-gnu-gcc >/dev/null 2>&1; then
+        log "building runner relink object (image evidence had none)"
+        riscv64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE \
+            -static -I"$repo/FloeAgent/LinuxGuest/runner" \
+            -c -o "$relink/floe-exec-riscv64.o" "$repo/FloeAgent/LinuxGuest/runner/floe_exec.c" \
+            >"$relink/object-build.log" 2>&1
+        sha256sum "$relink/floe-exec-riscv64.o" >>"$relink/toolchain.txt" 2>/dev/null || true
+    else
+        log "WARNING: riscv64 cross compiler unavailable and no prebuilt object; RELINK.md still ships the exact source and command"
+    fi
 fi
 cat >"$relink/RELINK.md" <<'MD'
 # Relinking the Floe runner against a modified glibc (LGPL-2.1 §6)
@@ -178,13 +194,24 @@ if [ "$skip_upstream" = 0 ]; then
             printf 'deb-src http://archive.ubuntu.com/ubuntu %s main universe\n' "$codename" \
                 >/etc/apt/sources.list.d/floe-source.list
             if apt-get update -qq >"$toolchain_src/apt-update-src.log" 2>&1; then
+                # Resolve the source package for every binary that actually
+                # provides the compiler/libs (the `gcc-riscv64-linux-gnu`
+                # metapackage points at gcc-defaults, not at the compiler).
+                compiler_binary="$(command -v riscv64-linux-gnu-gcc 2>/dev/null || true)"
+                compiler_pkg=""
+                [ -n "$compiler_binary" ] && compiler_pkg="$(dpkg -S "$compiler_binary" 2>/dev/null | cut -d: -f1 | head -1)"
+                libc_dev_pkg="$(dpkg -S "$(riscv64-linux-gnu-gcc -print-file-name=libc.a 2>/dev/null)" 2>/dev/null | cut -d: -f1 | head -1 || true)"
+                libgcc_pkg="$(dpkg -S "$(riscv64-linux-gnu-gcc -print-file-name=libgcc.a 2>/dev/null)" 2>/dev/null | cut -d: -f1 | head -1 || true)"
                 source_names=""
-                for binary in gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu; do
-                    name="$(apt-cache show "$binary" 2>/dev/null | awk -F': ' '/^Source:/{print $2; exit}')"
+                for binary in gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu \
+                               "$compiler_pkg" "$libc_dev_pkg" "$libgcc_pkg"; do
+                    [ -n "$binary" ] || continue
+                    name="$(apt-cache show "$binary" 2>/dev/null | awk -F': ' '/^Source:/{split($2, a, " "); print a[1]; exit}')"
                     [ -n "$name" ] || name="$binary"
                     source_names="$source_names $name"
                 done
                 source_names="$(printf '%s\n' $source_names | sort -u | tr '\n' ' ')"
+                log "cross-toolchain packages: compiler=$compiler_pkg libc-dev=$libc_dev_pkg libgcc=$libgcc_pkg"
                 log "cross-toolchain source packages:$source_names"
                 for name in $source_names; do
                     apt-cache showsrc "$name" >>"$toolchain_src/apt-cache-showsrc.txt" 2>&1 || true
@@ -202,10 +229,13 @@ if [ "$skip_upstream" = 0 ]; then
 fi
 (
     cd "$toolchain_src"
+    # shellcheck disable=SC2086 # deliberate word list, empty entries filtered
     dpkg-query -W -f='${binary:Package}\t${Version}\n' \
-        gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu 2>/dev/null || true
+        gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu \
+        ${compiler_pkg:-} ${libc_dev_pkg:-} ${libgcc_pkg:-} 2>/dev/null || true
     riscv64-linux-gnu-gcc --version 2>/dev/null | head -1 || true
-    riscv64-linux-gnu-gcc -print-file-name=libc.a 2>/dev/null || true
+    printf 'libc.a=%s\n' "$(riscv64-linux-gnu-gcc -print-file-name=libc.a 2>/dev/null || true)"
+    printf 'libgcc.a=%s\n' "$(riscv64-linux-gnu-gcc -print-file-name=libgcc.a 2>/dev/null || true)"
 ) >"$toolchain_src/toolchain-versions.txt" 2>&1 || true
 if compgen -G "$toolchain_src/*.dsc" >/dev/null; then
     (cd "$toolchain_src" && sha256sum ./*.dsc ./*.tar.* ./*.diff.* 2>/dev/null >toolchain-sources.sha256) || true

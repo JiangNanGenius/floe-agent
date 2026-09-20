@@ -39,6 +39,7 @@
 #   --pins FILE           pinned inputs JSON
 #   --image-id ID         manifest id (default: derived from the Debian build)
 #   --run-url URL         qualification run URL recorded in the manifest
+#   --source-ref REF      git commit recorded in the provenance source URLs
 #   --skip-fetch          reuse already-downloaded sources/images
 #   --skip-engine         reuse an existing engine build in <work>/build
 #   --boot-max-s N        per-boot timeout seconds (default 2700)
@@ -61,6 +62,7 @@ repo=""
 pins=""
 image_id=""
 run_url=""
+source_ref=""
 skip_fetch=0
 skip_engine=0
 boot_max_s=2700
@@ -75,6 +77,7 @@ while [ $# -gt 0 ]; do
         --pins) pins="${2:-}"; shift 2 ;;
         --image-id) image_id="${2:-}"; shift 2 ;;
         --run-url) run_url="${2:-}"; shift 2 ;;
+        --source-ref) source_ref="${2:-}"; shift 2 ;;
         --skip-fetch) skip_fetch=1; shift ;;
         --skip-engine) skip_engine=1; shift ;;
         --boot-max-s) boot_max_s="${2:-}"; shift 2 ;;
@@ -132,6 +135,9 @@ cmdline="console=hvc0 root=/dev/vda rw loglevel=4"
 image_id="${image_id:-floe-debian13-riscv64-$(printf '%s' "$daily_build" | tr -d '-')}"
 runner_src="$repo/FloeAgent/LinuxGuest/runner/floe_exec.c"
 [ -f "$runner_src" ] || die "runner source not found: $runner_src"
+if [ -z "$source_ref" ]; then
+    source_ref="$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+fi
 
 # ---------------------------------------------------------------------------
 step "1/9 fetch + verify pinned sources (TinyEMU + 2018 demo archive)"
@@ -243,6 +249,9 @@ riscv64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE \
 } >"$evidence_dir/runner-toolchain.txt"
 file "$runner_dir/floe-exec-riscv64" | grep -q 'statically linked' || die "runner is not statically linked"
 sha256sum "$runner_dir/floe-exec-riscv64" | tee "$evidence_dir/runner-sha256.txt"
+# The compiled object is LGPL-2.1 §6 relink material: it must travel with the
+# evidence bundle, not only in the ephemeral runner dir.
+cp "$runner_dir/floe-exec-riscv64.o" "$evidence_dir/floe-exec-riscv64.o"
 
 # ---------------------------------------------------------------------------
 step "6/9 inject the runner into the image"
@@ -393,8 +402,8 @@ python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" write \
     --cmdline "$cmdline" \
     --qualification-run "${run_url:-local-unpublished}" \
     --qualification-evidence "$evidence_text" \
-    --source-url "https://github.com/JiangNanGenius/floe-agent/tree/${GITHUB_SHA:-unknown}/FloeAgent/LinuxGuest" \
-    --build-configuration-url "https://github.com/JiangNanGenius/floe-agent/tree/${GITHUB_SHA:-unknown}/FloeAgent/ThirdParty/TinyEMU/guest-image" \
+    --source-url "https://github.com/JiangNanGenius/floe-agent/tree/${source_ref}/FloeAgent/LinuxGuest" \
+    --build-configuration-url "https://github.com/JiangNanGenius/floe-agent/tree/${source_ref}/FloeAgent/ThirdParty/TinyEMU/guest-image" \
     --license "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1" \
     "${qualified_flag[@]+"${qualified_flag[@]}"}"
 python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" verify --image-dir "$image_dir"
