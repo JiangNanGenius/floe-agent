@@ -196,19 +196,38 @@ final class SourceControlCenter: ObservableObject {
         errorMessage = nil
     }
 
+    /// Monotonic refresh generation. Every call to `refreshRepository`
+    /// captures the current workspace root and this generation; only the
+    /// latest generation may publish. An earlier refresh (A) that finishes
+    /// after a workspace switch to B is discarded instead of overwriting B's
+    /// state — each call schedules its own snapshot rather than joining a
+    /// stale in-flight task, so switching workspaces always schedules B.
+    private var refreshGeneration: UInt64 = 0
+
     func refreshRepository() async {
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         guard let root = environment.workspaceCenter.currentRootURL else {
             snapshot = GitRepositorySnapshot(isRepository: false)
             repositoryRoot = nil
             return
         }
         do {
-            snapshot = try await git.snapshot(at: root)
-            repositoryRoot = snapshot.repositoryRoot
+            let updated = try await git.snapshot(at: root)
+            guard isCurrentRefresh(generation, root: root) else { return }
+            snapshot = updated
+            repositoryRoot = updated.repositoryRoot
             errorMessage = nil
         } catch {
+            guard isCurrentRefresh(generation, root: root) else { return }
             errorMessage = SecretRedactor.redact(error.localizedDescription)
         }
+    }
+
+    /// True while `generation` is still the newest refresh and the workspace
+    /// still resolves to the same root the snapshot was taken for.
+    private func isCurrentRefresh(_ generation: UInt64, root: URL) -> Bool {
+        generation == refreshGeneration && environment.workspaceCenter.currentRootURL == root
     }
 
     /// Local init stands alone: no GitHub sign-in is required and no remote

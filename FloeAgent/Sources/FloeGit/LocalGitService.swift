@@ -12,25 +12,80 @@ public actor LocalGitService {
     /// Walks up from `root` through its ancestors to the nearest directory
     /// that contains a `.git` entry — a directory for an ordinary repository,
     /// or a *file* for a linked worktree or submodule. Returns that repository
-    /// root, or nil when no ancestor is a repository.
+    /// root, or nil when no ancestor within the ownership boundary is a
+    /// repository.
     ///
-    /// The previous root-only existence check reported "not a repository" for
-    /// a workspace that lives *inside* a Git repository (or a worktree), which
-    /// hid the source-control tree entirely. Discovery keeps those workspaces
-    /// functional while unchanged repository roots behave exactly as before.
+    /// Discovery is bounded by the *ownership boundary* — the app sandbox
+    /// container on device (the user home on macOS) — instead of climbing
+    /// through system directories above it. The boundary itself is still
+    /// checked (a dotfiles home may be a repository); a workspace opened
+    /// outside the container (for example a security-scoped cloud or external
+    /// folder) still terminates at the filesystem root exactly as before.
+    ///
+    /// The existence probe is a direct POSIX `stat` rather than
+    /// `FileManager.fileExists`. Build 211's FOUNDATION-namespace termination
+    /// has `repositoryRoot(at:)` at its innermost app frame, and within that
+    /// frame the probe call is the recorded location
+    /// (`LocalGitService.swift:25` in the matching dSYM's line table), so the
+    /// Foundation file-manager call was on the crashing path. The exact
+    /// Foundation-level trigger is not proven, so this is an evidenced
+    /// mitigation of the observed operation, not a claimed root-cause fix.
+    /// There is deliberately **no arbitrary ancestor limit**: a repository or
+    /// worktree stays discoverable at any depth below the boundary.
     public func repositoryRoot(at root: URL) -> URL? {
+        repositoryRoot(at: root, ownershipBoundary: Self.ownershipBoundary)
+    }
+
+    /// The directory above which a workspace's repository is never searched:
+    /// the app sandbox container on device, the user home on macOS.
+    static var ownershipBoundary: URL {
+        URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+    }
+
+    /// Testable core of `repositoryRoot(at:)` with an explicit boundary, so
+    /// the stop condition is verified deterministically instead of depending
+    /// on the real home directory.
+    func repositoryRoot(at root: URL, ownershipBoundary: URL) -> URL? {
+        // A non-file or pathless URL has no meaningful ancestors; probing it
+        // previously fed an empty or malformed path into Foundation.
+        guard root.isFileURL else { return nil }
+
         var candidate = root.standardizedFileURL
-        let fileManager = FileManager.default
+        // The boundary can be reached through a symlinked spelling (`/var`
+        // vs `/private/var` on iOS), so both spellings are stop points.
+        let boundary = ownershipBoundary.standardizedFileURL
+        var boundaryPaths: Set<String> = [boundary.path]
+        let resolvedBoundary = boundary.resolvingSymlinksInPath().path
+        if !resolvedBoundary.isEmpty { boundaryPaths.insert(resolvedBoundary) }
+
         while true {
-            if fileManager.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
-                return candidate
-            }
+            let path = candidate.path
+            guard !path.isEmpty, path.hasPrefix("/") else { return nil }
+
+            if Self.hasGitEntry(in: path) { return candidate }
+
+            // The boundary itself is checked first so a repository that *is*
+            // the boundary (for example a dotfiles home) is still found; any
+            // directory above it is outside every supported workspace.
+            if boundaryPaths.contains(path) { return nil }
+
             let parent = candidate.deletingLastPathComponent()
             // `deletingLastPathComponent` of the filesystem root returns the
-            // root itself; that is where the walk stops.
+            // root itself; that is where the walk stops for any root that is
+            // not under the ownership boundary (for example a security-scoped
+            // folder on an external or cloud volume).
             if parent == candidate { return nil }
             candidate = parent
         }
+    }
+
+    /// Single-syscall probe for the `.git` marker (a directory for an
+    /// ordinary repository, a file for a linked worktree or submodule).
+    /// `stat` follows symlinks, matching the previous `fileExists` semantics,
+    /// and never throws.
+    private static func hasGitEntry(in directory: String) -> Bool {
+        var info = stat()
+        return stat(directory + "/.git", &info) == 0
     }
 
     public func snapshot(at root: URL, commitLimit: Int = 30) throws -> GitRepositorySnapshot {

@@ -170,6 +170,92 @@ struct LocalGitServiceTests {
         #expect(snapshot.recentCommits.first?.author == "Custom User")
     }
 
+    @Test("repositoryRoot rejects non-file URLs and stops at the ownership boundary")
+    func repositoryRootOwnershipBoundary() async throws {
+        let git = LocalGitService()
+
+        // A non-file URL has no meaningful ancestors and must be rejected
+        // instead of being fed into the filesystem walk.
+        if let remote = URL(string: "https://example.invalid/repo") {
+            #expect(await git.repositoryRoot(at: remote) == nil)
+        }
+
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        // An ordinary repository *above* the boundary must not be reported:
+        // the boundary is the highest directory a workspace may resolve to.
+        let repository = base.appendingPathComponent("outer", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: repository.appendingPathComponent(".git"), withIntermediateDirectories: true
+        )
+        let boundary = repository.appendingPathComponent("boundary", isDirectory: true)
+        var workspace = boundary
+        for index in 0..<40 {
+            workspace = workspace.appendingPathComponent("d\(index)", isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        #expect(await git.repositoryRoot(at: workspace, ownershipBoundary: boundary) == nil)
+        // The same workspace resolves once the boundary sits above the repo.
+        #expect(await git.repositoryRoot(at: workspace, ownershipBoundary: base)
+            == repository.standardizedFileURL)
+
+        // The boundary itself may be the repository (a dotfiles home), and it
+        // is still found because the boundary is checked before stopping.
+        try FileManager.default.createDirectory(
+            at: boundary.appendingPathComponent(".git"), withIntermediateDirectories: true
+        )
+        #expect(await git.repositoryRoot(at: workspace, ownershipBoundary: boundary)
+            == boundary.standardizedFileURL)
+    }
+
+    @Test("repositoryRoot keeps deep repositories and worktrees discoverable")
+    func repositoryRootPreservesDeepDiscovery() async throws {
+        let git = LocalGitService()
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        // A repository 70 levels down (deeper than any ancestor cap) with the
+        // workspace five levels below it is still discovered and snapshotted.
+        var repository = base.appendingPathComponent("repo", isDirectory: true)
+        for index in 0..<70 {
+            repository = repository.appendingPathComponent("r\(index)", isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+        _ = try await git.initialize(at: repository, initialBranch: "main")
+        var workspace = repository
+        for index in 0..<5 {
+            workspace = workspace.appendingPathComponent("w\(index)", isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        #expect(await git.repositoryRoot(at: workspace) == repository.standardizedFileURL)
+        let snapshot = try await git.snapshot(at: workspace)
+        #expect(snapshot.isRepository)
+        #expect(snapshot.repositoryRoot == repository.standardizedFileURL)
+
+        // A deep path with no repository anywhere above it terminates as nil
+        // (the crashing refresh path) instead of failing or looping.
+        var empty = base.appendingPathComponent("empty", isDirectory: true)
+        for index in 0..<70 {
+            empty = empty.appendingPathComponent("e\(index)", isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        #expect(await git.repositoryRoot(at: empty) == nil)
+        let emptySnapshot = try await git.snapshot(at: empty)
+        #expect(!emptySnapshot.isRepository)
+
+        // A `.git` *file* (linked worktree or submodule) is still a marker.
+        let worktree = base.appendingPathComponent("worktree/sub", isDirectory: true)
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        try Data("gitdir: /elsewhere\n".utf8)
+            .write(to: worktree.deletingLastPathComponent().appendingPathComponent(".git"))
+        #expect(await git.repositoryRoot(at: worktree)
+            == worktree.deletingLastPathComponent().standardizedFileURL)
+    }
+
     @Test("rejects paths and branches that escape or rewrite repository metadata")
     func validatesRepositoryInputs() async throws {
         let root = FileManager.default.temporaryDirectory

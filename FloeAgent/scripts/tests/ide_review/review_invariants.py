@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Regression net for the independently fixed Build191 IDE review findings.
+"""Regression net for the independently fixed Build191 IDE review findings and
+the Build211 Git crash repair.
 
 Static invariant checks only; the behavioral evidence lives in the
-build_and_run*.sh harnesses. These checks fail if one of the reviewed fixes is
-silently reverted.
+build_and_run*.sh harnesses (for the Git repair:
+`ide_review/git_repair211_main.swift` via `run_git_review_harness.sh`). These
+checks fail if one of the reviewed fixes is silently reverted.
 """
 from __future__ import annotations
 
@@ -87,6 +89,32 @@ check(".task(id: tab.id)" not in ide,
 check("await tabs.releaseAll()" in ide, "IDE: teardown happens on IDE close")
 check("func close(_ id: String) async" in tabs and "await tab.release()" in tabs,
       "Tabs: release only on actual tab close/releaseAll")
+
+# --- Git build211 repair: bounded discovery + latest-only refresh -----------
+# The crash frames resolve to LocalGitService.repositoryRoot(at:) line 25
+# (the ancestor walk's existence probe) < snapshot < refreshRepository. The
+# repair keeps discovery unbounded in depth but bounded by the app sandbox /
+# home ownership boundary, and replaces the Foundation file-manager probe with
+# one POSIX stat. Behavioural proof: git_repair211_main.swift (17 checks).
+check("guard root.isFileURL else { return nil }" in git,
+      "Git: non-file URLs never reach the ancestor walk")
+check("func repositoryRoot(at root: URL, ownershipBoundary: URL) -> URL?" in git,
+      "Git: discovery has an explicit, testable ownership boundary")
+check("boundaryPaths.contains(path)" in git,
+      "Git: walk stops at the ownership boundary")
+check("private static func hasGitEntry(in directory: String)" in git
+      and 'stat(directory + "/.git", &info) == 0' in git,
+      "Git: .git marker probed with one POSIX stat")
+check("0..<64" not in git and '"/System"' not in git and '"/private"' not in git,
+      "Git: no arbitrary ancestor cap or system-directory denylist")
+check("refreshGeneration &+= 1" in center,
+      "SourceControlCenter: every refresh captures a new generation")
+check("isCurrentRefresh(generation, root: root)" in center,
+      "SourceControlCenter: stale results cannot publish")
+check("generation == refreshGeneration && environment.workspaceCenter.currentRootURL == root" in center,
+      "SourceControlCenter: generation and workspace root both guard publishing")
+check("await refreshTask.value" not in center,
+      "SourceControlCenter: a workspace switch no longer joins the stale task")
 
 print(f"\n{checks - len(failures)}/{checks} review invariant checks passed")
 if failures:
