@@ -231,6 +231,13 @@ private struct EnvironmentDetailView: View {
         guard backendSelection == .linuxVM else { return nil }
         guard let status = guestStatus else { return String(localized: "environment.backend.checking") }
         if status.running { return nil }
+        // A distributable image that is missing is exactly the state the
+        // download entry below fixes, so show the actionable prompt instead of
+        // the resolver's raw "no manifest" failure. Without a distributable
+        // archive the recorded reason and the distribution hint stay honest.
+        if status.imageInstalled == false, status.imageDistributable == true, imageStorageAvailable {
+            return String(localized: "environment.backend.image_missing")
+        }
         if let failure = status.imageVerificationFailure { return failure }
         if status.imageInstalled == false { return String(localized: "environment.backend.image_missing") }
         return status.lastError

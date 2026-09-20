@@ -2770,13 +2770,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Guest image"
+            "value": "Linux image"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "客户机镜像"
+            "value": "Linux 镜像"
           }
         }
       }
@@ -2787,13 +2787,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Download and install guest image"
+            "value": "Download and install Linux"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "下载并安装客户机镜像"
+            "value": "下载并安装 Linux"
           }
         }
       }
@@ -2821,13 +2821,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Downloading and verifying the guest image…"
+            "value": "Downloading and verifying Linux…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在下载并校验客户机镜像…"
+            "value": "正在下载并校验 Linux…"
           }
         }
       }
@@ -2855,13 +2855,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No guest image is installed for this environment; import a verified image (floe-env image import) before starting."
+            "value": "Linux is not installed yet. Download it first; start becomes available when the download completes."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此环境尚未安装客户机镜像；请先用 floe-env image import 导入经过校验的镜像。"
+            "value": "尚未安装 Linux，请先下载，完成后即可启动。"
           }
         }
       }
@@ -2889,13 +2889,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This build has no durable image storage directory, so the Linux guest image cannot be downloaded here. Native environments are unchanged."
+            "value": "This build has no durable image storage, so the Linux image cannot be downloaded here."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此版本没有可用的镜像存储目录，无法在此下载 Linux 客户机镜像。原生环境不受影响。"
+            "value": "此版本没有可用的镜像存储，无法在此下载 Linux 镜像。"
           }
         }
       }

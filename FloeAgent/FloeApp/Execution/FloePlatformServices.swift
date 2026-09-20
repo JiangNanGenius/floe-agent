@@ -246,9 +246,9 @@ final class FloePlatformServices: @unchecked Sendable {
     }
 
     /// `floe-env image status|import|install|remove` — the reachable image
-    /// entry. `install` only downloads a catalog-pinned archive (none exists
-    /// yet); `import` takes an already-downloaded zip plus its SHA-512, which
-    /// is what a local qualification run produces.
+    /// entry. `install` downloads the catalog-pinned Floe archive; `import`
+    /// takes an already-downloaded zip plus its SHA-512, which is what a local
+    /// qualification run produces.
     func runImageCommand(arguments: [String]) async -> (output: String, exitCode: Int32) {
         let usage = """
         usage: floe-env image status <id>
