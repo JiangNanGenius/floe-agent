@@ -1,3 +1,7 @@
+# Cancelled before upload
+
+Build 210 / beta.67 (source `f6f97691`, run35504683419) was cancelled before upload after the environment settings image-download entry was found missing. The candidate had the installer and CLI, but the intended UI flow was incomplete. Build211 adds that entry. The original preparation record follows.
+
 # Floe Agent 1.7.0 (210) — 内部测试候选版 / internal-testing candidate
 
 > **状态：本提交只做 Build 210 的版本元数据准备：`FloeAgent/project.yml` 四个目标

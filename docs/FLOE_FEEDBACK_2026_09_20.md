@@ -8,9 +8,9 @@ passed release preflight but failed the accepted-SDK cloud App compile in
 [run 35501871606](https://github.com/JiangNanGenius/floe-agent/actions/runs/35501871606)
 with five optional-unwrap errors, before IPA retention, signing or upload; no
 Apple build ID exists for build 209. Those errors are corrected at `33a72da9`,
-and build 210 is prepared from that source with a new metadata commit; its cloud
-build has not been dispatched yet. Physical-device acceptance remains with the
-user. Integration starts from `b16cb18e` (the build 204 delivery record). The
+and build210 added the fixed Linux image catalog. Its cloud run35504683419 was
+cancelled before upload when the missing image-download UI action was found.
+Build211 completes that settings flow. Physical-device acceptance remains with the user. Integration starts from `b16cb18e` (the build 204 delivery record). The
 prior build remains independently recorded.
 
 The user requested code-first delivery, focused checks and an expedited
@@ -184,3 +184,7 @@ Python/Node provisioner caches and invalidates in-flight cache publication.
 The focused language ownership executable passed; the module slice compiled.
 The CLT XCTest attempt failed to resolve XCTest and is not recorded as a pass.
 Full App validation and device acceptance remain separate.
+
+### Build210 cancelled; build211 completes image installation in settings
+
+Build210 beta.67 / sourcef6f97691 / run35504683419 was cancelled before upload: the fixed image and CLI installer were ready, but settings exposed status/start/stop without an image-download action. Build211 adds that missing consumer through the existing installation service and keeps downloads service-owned. No UI qualification is added. The component packaging and source assets are independent of the App build.
