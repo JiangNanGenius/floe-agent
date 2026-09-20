@@ -1,8 +1,9 @@
 # September 20 feedback repair and delivery
 
-Status: all host repair code is integrated. Build 207 compiled and uploaded
-successfully; build 208 is now compiling the full integrated repair set. Apple
-availability and physical-device acceptance are recorded separately. Integration starts from `b16cb18e` (the build 204
+Status: build 207 compiled and uploaded successfully; Apple processing is still
+pending. Build 208 was cancelled before upload after a Linux package-ownership
+gap was found. That code path is being corrected for build 209. Physical-device
+acceptance remains with the user. Integration starts from `b16cb18e` (the build 204
 delivery record). The prior build remains independently recorded.
 
 The user requested code-first delivery, focused checks and an expedited
@@ -108,10 +109,10 @@ the summary is Linux package acceptance. Guest image distribution still requires
 accurate corresponding-source and license records. Native execution remains the
 default while those conditions are unresolved.
 
-## Full integrated candidate: build 208
+## Cancelled integrated candidate: build 208
 
 [Run 35499610010](https://github.com/JiangNanGenius/floe-agent/actions/runs/35499610010)
-is building immutable `v1.7.0-beta.65` at source
+was cancelled at immutable `v1.7.0-beta.65`, source
 `37fe9864e16999bcbd55f93ad9bd36bb306a4b49`. This includes the original repair slice,
 local-model and cross-task recovery, package entry split, actual guest runner,
 App Linux services/PTY/shared Python routing and verified image import code.
@@ -124,3 +125,21 @@ the guest protocol harness passed 66 assertions. These do not qualify the
 current Linux image. The catalog remains empty and native execution stays the
 default while APT compatibility and the exact image source record are unresolved.
 See [build 208 test notes](RELEASE_NOTES_1.7.0_BUILD_208.md).
+
+### Follow-up found before build 208 upload
+
+`EnvironmentLanguagePackageService` still read Python/Node metadata from native
+layer paths and used the native Node installer even for a selected Linux guest.
+Mapping a Python interpreter alone did not establish correct installer staging
+and readback. Build 208 was cancelled before upload to avoid shipping that
+new ownership mismatch. The original build 207 repair slice is unaffected.
+OpenCode is closing install/remove/list/source handling across guest package UI,
+tools and Shell before the next candidate.
+
+The APT SIGILL was traced to TinyEMU rejecting FENCE.TSO in libapt-pkg. The
+compatibility patch now also reaches the App's vendored engine; a read-only
+pristine-plus-patches comparison passed. The real guest runner compiled and
+executed in run35499020441, while package installation still failed there.
+The corrected CPU is undergoing a separate targeted HTTPS/APT/NumPy/Node probe
+in [run35500083112](https://github.com/JiangNanGenius/floe-agent/actions/runs/35500083112).
+This is not yet a qualified downloadable image.

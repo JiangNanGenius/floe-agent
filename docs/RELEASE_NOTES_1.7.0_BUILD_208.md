@@ -1,4 +1,8 @@
-# Floe 1.7.0 build 208 — internal device candidate
+# Floe 1.7.0 build 208 — cancelled before upload
+
+This candidate was stopped after review found guest Python/Node package
+management still using native storage paths. It was not offered in TestFlight.
+The planned scope below is historical; the correction targets build 209.
 
 This candidate collects the September 20 feedback code. It includes the first
 Office/IDE/Git/mind-map/Shell repair slice from build 207 plus bounded local-model
