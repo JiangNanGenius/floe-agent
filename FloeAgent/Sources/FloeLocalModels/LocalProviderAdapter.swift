@@ -1460,8 +1460,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             "workspace.applyPatch",
             "image.ocr", "document.pdf.inspect", "document.pdf.render",
             "exec.localPython", "exec.javascript", "exec.compatEvaluator",
-            "memory.recall", "git.status", "git.diff", "git.log",
-            "conversation.search", "conversation.read"
+            "memory.recall", "git.status", "git.diff", "git.log"
     ]
 
     private static func selectTools(
@@ -1480,9 +1479,6 @@ public struct LocalProviderAdapter: ProviderAdapter {
             (["python", "javascript", "js", "脚本", "计算", "运行", "execute", "script", "compute"], ["exec."]),
             (["ssh", "主机", "远程", "终端", "服务器", "host", "remote", "terminal", "server"], ["ssh."]),
             (["记忆", "memory", "偏好"], ["memory."]),
-            (["历史", "过往", "以前", "之前", "聊天记录", "任务历史", "过往任务", "查找历史",
-              "history", "previous", "earlier", "chat history", "past task", "conversation history"],
-             ["conversation."]),
             (["git", "github", "版本控制", "源码管理", "代码仓库", "仓库", "分支", "提交", "暂存", "克隆", "拉取", "推送",
               "source control", "repository", "repo", "branch", "commit", "stage", "clone", "fetch", "pull", "push"],
              ["git.", "github.", "cloudworkspace.git"]),

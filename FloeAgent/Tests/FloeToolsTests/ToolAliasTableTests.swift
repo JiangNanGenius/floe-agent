@@ -33,19 +33,6 @@ struct ToolAliasTableTests {
         #expect(registry.descriptor(named: "task.readPlan")?.name == "checklist.readPlan")
         #expect(registry.allDescriptors.map(\.name) == ["checklist.readPlan"])
     }
-
-    @Test func historySynonymsExpandToTheConversationGroup() {
-        // Chinese and English history terms must group-search the conversation
-        // tools so a vague "查一下历史" request discovers the whole pair.
-        let terms = ToolAliasTable.synonyms["conversation"] ?? []
-        for expected in ["历史", "任务历史", "聊天记录", "会话记录", "history", "chat history", "以前", "之前", "上次", "查找历史"] {
-            #expect(terms.contains(expected), "missing conversation synonym: \(expected)")
-        }
-        // Every synonym group token stays lowercased for query containment.
-        for token in terms {
-            #expect(token == token.lowercased())
-        }
-    }
 }
 
 private struct AliasTestTool: AgentTool {

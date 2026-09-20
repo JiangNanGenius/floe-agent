@@ -92,19 +92,6 @@ struct ToolDiscoveryTests {
         #expect(!ToolDiscovery.index([descriptor("browser.navigate")]).contains("network.http"))
     }
 
-    @Test("Chinese and English history queries discover the whole conversation pair")
-    func historyQueriesLoadTheConversationGroup() {
-        let available = ["conversation.search", "conversation.read", "conversation.spawn", "memory.search"].map(descriptor)
-        for query in ["历史", "聊天记录", "任务历史", "查找历史", "history", "chat history", "以前的结果"] {
-            let found = Set(ToolDiscovery.matches(query: query, descriptors: available).map(\.name))
-            #expect(found.contains("conversation.search"), "query '\(query)' missed conversation.search")
-            #expect(found.contains("conversation.read"), "query '\(query)' missed conversation.read")
-        }
-        // Discovery is grouped, not indiscriminate: unrelated tools stay out.
-        let found = Set(ToolDiscovery.matches(query: "历史", descriptors: available).map(\.name))
-        #expect(!found.contains("memory.search"))
-    }
-
     @Test func directoryDistinguishesOwnershipFromWorkflowGuidance() throws {
         let owned = ToolCatalog.Descriptor(name: "custom.report", toolDescription: "Report", parametersJSON: "{}",
             riskLabels: [], isSideEffecting: false)

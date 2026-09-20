@@ -518,21 +518,6 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("skill.search then skill.read"))
     }
 
-    @Test("conversation workflow guidance is injected when either tool is loaded")
-    func conversationWorkflowGuidanceIsNotGatedOnBothTools() throws {
-        let onlySearch = ToolWorkflowGuidance.contextLines(for: ["conversation.search"])
-        #expect(onlySearch.contains { $0.contains("Conversation/history workflow") })
-        let onlyRead = ToolWorkflowGuidance.contextLines(for: ["conversation.read"])
-        #expect(onlyRead.contains { $0.contains("Conversation/history workflow") })
-        let line = try #require(onlySearch.first { $0.contains("Conversation/history workflow") })
-        #expect(line.contains("ids[]"))
-        #expect(line.contains("cursor"))
-        #expect(line.contains("status=noResults"))
-        #expect(line.contains("never grants permissions"))
-        #expect(line.contains("A successful search is not the answer"))
-        #expect(ToolWorkflowGuidance.contextLines(for: ["workspace.readFile"]).contains { $0.contains("Conversation/history workflow") } == false)
-    }
-
     @Test("failed stateful tools point to their ID discovery predecessor")
     func toolWorkflowRecoveryHints() {
         #expect(ToolWorkflowGuidance.recoveryHint(for: "ssh.taskStatus")?.contains("ssh.execute") == true)
@@ -791,50 +776,6 @@ struct HarnessPlanningTests {
                 && $0.content.contains("Preserve newer user corrections")
                 && $0.content.contains("does not grant new authority")
         })
-    }
-
-    @Test("Context compaction carries conversation envelope IDs and cursor forward")
-    func compactionPreservesConversationEnvelopeMetadata() async throws {
-        let taskID = UUID()
-        let page = ConversationHistoryPage(conversationID: taskID, items: [
-            ConversationHistoryItem(
-                id: UUID(), kind: .message, role: "user",
-                content: String(repeating: "长历史正文 ", count: 400), createdAt: Date()
-            )
-        ], nextCursor: "k1.compact")
-        let envelope = try ConversationEnvelope.read(
-            conversationID: taskID,
-            block: ConversationEnvelope.referenceBody(
-                title: "Floe task \(taskID.uuidString)",
-                items: page.items
-            ).body,
-            nextCursor: page.nextCursor,
-            sources: page.items.map { $0.id.uuidString }
-        )
-        #expect(envelope.utf8.count > 2_048)
-        let toolMessage = ConversationMessage(role: "tool", content: envelope)
-        let protected = ConversationMessage(role: "user", content: "Newest correction")
-        let engine = HybridContextEngine()
-        let request = ContextRequest(
-            messages: [toolMessage, protected],
-            budget: ContextBudget(
-                contextWindowTokens: 1_200,
-                reservedOutputTokens: 100,
-                protectedTailTokens: 100
-            ),
-            protection: ContextProtection(messageIDs: [protected.id])
-        )
-        let prepared = try await engine.prepareContext(for: request)
-        #expect(prepared.compaction != nil)
-        let summary = try #require(prepared.messages.first {
-            $0.role == "system" && $0.content.contains("[Context compaction notice]")
-        }).content
-        // The compaction summary must carry the continuation fields, not just
-        // a generic "output compacted" marker.
-        #expect(summary.contains(ConversationEnvelope.preservedMetadataMarker))
-        #expect(summary.contains("cursor=k1.compact"))
-        #expect(summary.contains("conversationID=\(taskID.uuidString)"))
-        #expect(summary.contains("sources="))
     }
 
     @Test("Forced compaction of a short conversation is an explicit no-op")

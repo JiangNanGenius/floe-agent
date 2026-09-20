@@ -536,14 +536,8 @@ public actor HybridContextEngine: ContextEngine {
         var copy = message
         let originalCount = message.content.utf8.count
         let digest = stableTextDigest(message.content)
-        // Conversation history envelopes rebuild their metadata head so a
-        // compaction pass can never drop the IDs/cursor the next read needs.
-        // The line is prepended: every downstream excerpt (deterministic
-        // summarizer, replay render, tail cut) keeps head-first content.
-        let metadata = ConversationEnvelope.preservedMetadata(in: message.content)
-        let prefix = metadata.map { "\($0)\n" } ?? ""
         copy.content = """
-        \(prefix)\(message.content.prefix(1_280))
+        \(message.content.prefix(1_280))
         [middle of tool output compacted]
         \(message.content.suffix(640))
         [tool output compacted; originalBytes=\(originalCount); digest=\(digest)]
