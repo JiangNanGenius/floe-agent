@@ -54,8 +54,10 @@ schema must not move while the pipeline builds):
 
 1. **Live probe, every start.** The booted runner is probed with FLOE-HELLO on
    the production channel, bounded by `LinuxGuestLimits.runnerProbeTimeout`
-   (default 60 s: a guest that has just started may still be booting; shorter
-   values are test overrides, never production). The runner-upgrade ledger
+   (default 60 s boot/negotiation budget: `handle.start()` only launches the
+   VM thread, so a fresh interpreter boot can take tens of seconds before the
+   runner reads the console; shorter values are test overrides, never
+   production). The runner-upgrade ledger
    (`runner.json` next to the disk) is *recorded* after a successful live
    answer/upgrade and **never** used to skip the probe: a stale ledger with a
    silent runner still upgrades.
