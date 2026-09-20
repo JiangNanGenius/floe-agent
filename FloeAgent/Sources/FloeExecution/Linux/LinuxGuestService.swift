@@ -114,8 +114,12 @@ public struct LinuxGuestLimits: Sendable, Equatable {
     /// never killed to make room.
     public var maxGuestRAMMB: Int
     /// How long the start path waits for the booted runner's FLOE-HELLO
-    /// answer before treating it as a legacy (pre-protocol-3) runner. Always
-    /// finite: a silent runner never hangs a start.
+    /// answer before treating it as a legacy (pre-protocol-3) runner. This is
+    /// a real guest boot/negotiation budget, not a handshake timeout:
+    /// `handle.start()` returns when the VM thread is launched, so a fresh
+    /// interpreter boot can take tens of seconds before the runner reads the
+    /// console. Default 60s, always finite; a silent runner never hangs a
+    /// start. Tests override it with a small value.
     public var runnerProbeTimeout: TimeInterval
 
     public init(
@@ -134,7 +138,7 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         maxConcurrentSessions: Int = 4,
         maxActiveGuests: Int = 4,
         maxGuestRAMMB: Int = 1536,
-        runnerProbeTimeout: TimeInterval = 5
+        runnerProbeTimeout: TimeInterval = 60
     ) {
         self.defaultRAMMB = defaultRAMMB
         self.maxRAMMB = maxRAMMB
