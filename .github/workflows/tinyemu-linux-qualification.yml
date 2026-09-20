@@ -34,6 +34,10 @@ on:
         description: 'Also run the heavy Debian 13 riscv64 stages (B/C/D/E)'
         type: boolean
         default: false
+      guest_runner:
+        description: 'Cross-build FloeAgent/LinuxGuest, inject it into the rootfs image and boot it as PID1'
+        type: boolean
+        default: false
   push:
     branches: [codex/feedback-linux]
     paths:
@@ -180,6 +184,25 @@ jobs:
           grep -a -m1 "PRETTY_NAME" work/mnt/etc/os-release | tee work/debian-osrelease.txt
           sudo umount work/mnt
 
+      - name: Guest runner (FLOE-EXEC) cross-build + inject into the rootfs image
+        if: ${{ inputs.run_debian && inputs.guest_runner }}
+        run: |
+          if [ ! -f FloeAgent/LinuxGuest/runner/floe_exec.c ]; then
+            echo "FloeAgent/LinuxGuest sources are not on this ref; skipping runner verification"
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-riscv64-linux-gnu >/dev/null
+          make -C FloeAgent/LinuxGuest/runner riscv64
+          file FloeAgent/LinuxGuest/runner/floe-exec-riscv64 | tee work/floe-exec-file.txt
+          grep -q "statically linked" work/floe-exec-file.txt
+          sha256sum FloeAgent/LinuxGuest/runner/floe-exec-riscv64 | tee work/floe-exec-sha256.txt
+          sudo bash FloeAgent/LinuxGuest/image/install-into-image.sh \
+            --image work/debian13-rootfs.img \
+            --runner FloeAgent/LinuxGuest/runner/floe-exec-riscv64 \
+            --script FloeAgent/LinuxGuest/image/floe-guest-init 2>&1 | tee work/floe-exec-injected.txt
+          echo "RUNNER_OK=true" >> "$GITHUB_ENV"
+
       - name: Stage B — Debian 13 modern kernel vs 2018 bbl (compatibility probe; failure is recorded, not hidden)
         if: ${{ inputs.run_debian }}
         run: |
@@ -245,6 +268,36 @@ jobs:
             echo "panic/timeout transcript below is the recorded result, so no hour is wasted:"
             tail -c 1200 work/stageC-transcript.txt || true
           fi
+
+      - name: Stage R — injected FLOE-EXEC runner as PID1, one real EXEC frame
+        if: ${{ inputs.run_debian && inputs.guest_runner && env.C_OK == 'true' && env.RUNNER_OK == 'true' }}
+        run: |
+          python3 - <<'PY'
+          import base64, struct
+          def field(b):
+              return struct.pack(">I", len(b)) + b
+          fields = [b"/", b"", b"/bin/sh", b"-c", b"printf 'FLOE_RUNNER_%s\\n' OK"]
+          payload = struct.pack(">I", len(fields)) + b"".join(field(f) for f in fields)
+          frame = b"\x1eFLOE-EXEC runnerexec " + base64.b64encode(payload) + b"\n"
+          with open("work/stageR.txt", "wb") as f:
+              f.write(b"@30 " + frame)
+          PY
+          set +e
+          work/build/floe_vm_host \
+            --bios work/src/diskimage-linux-riscv-2018-09-23/bbl64.bin \
+            --kernel work/src/diskimage-linux-riscv-2018-09-23/kernel-riscv64.bin \
+            --disk work/debian13-rootfs.img --rw \
+            --ram 512 --cmdline "console=hvc0 root=/dev/vda rw init=/usr/local/bin/floe-exec" \
+            --net --share floe=work/share9p \
+            --script work/stageR.txt --transcript work/stageR-transcript.txt \
+            --until FLOE_RUNNER_OK --max-s 240 > work/stageR-stdout.txt 2>&1
+          echo "stageR_rc=$?" | tee work/stageR-rc.txt
+          set -e
+          if grep -qa "Kernel panic" work/stageR-transcript.txt; then
+            echo "Stage R: kernel panic while booting the injected runner"; exit 1
+          fi
+          grep -a FLOE_RUNNER_OK work/stageR-transcript.txt
+          grep -a "FLOE-END runnerexec 0" work/stageR-transcript.txt
 
       - name: Stage D — APT + python3-numpy + nodejs (network-permitting)
         if: ${{ inputs.run_debian && env.C_OK == 'true' }}
@@ -362,6 +415,9 @@ jobs:
               "stageC_gate": os.environ.get("C_OK", "not-run"),
               "stageD_rc": rc("work/stageD-rc.txt"),
               "lifecycle_ok": "LIFECYCLE_OK" in slurp("work/lifecycle.txt"),
+              "guest_runner_sha256": slurp("work/floe-exec-sha256.txt"),
+              "guest_runner_inject": slurp("work/floe-exec-injected.txt")[-400:],
+              "guest_runner_stageR_rc": rc("work/stageR-rc.txt"),
               "guest_log_files": share,
               "markers": {m: (m in blob) for m in markers},
               "marker_note": "true only means the literal string appeared in a console transcript; guest scripts assemble markers at runtime so TTY echo of the input line cannot produce them",
@@ -386,6 +442,11 @@ jobs:
             work/debian-osrelease.txt
             work/debian-ext4-features.txt
             work/debian-rootfs-size.txt
+            work/floe-exec-file.txt
+            work/floe-exec-sha256.txt
+            work/floe-exec-injected.txt
+            work/stageR-transcript.txt
+            work/stageR-rc.txt
             work/boot-listing.txt
             work/partitions.txt
             work/share9p/*
