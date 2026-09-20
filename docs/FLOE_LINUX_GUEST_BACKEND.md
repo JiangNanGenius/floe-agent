@@ -1,9 +1,9 @@
 # Floe Linux 环境后端（TinyEMU RV64）/ Floe Linux Environment Backend
 
 日期 / Dated: 2026-09-20 · 状态 / Status: host 消费侧已接线并通过轻量真链路检查（见 §5）；
-完整 App 编译与合格 guest 镜像仍待云端执行。无合格镜像时 Linux 启动诚实失败，不回落 2018 demo。
-/Source wired and lightly verified (host consumers + real-stdio guest runner checks, §5); the full App build and a
-qualified guest image remain. Without a qualified image, Linux start fails honestly and never falls back to the 2018 demo.
+最终 guest 镜像已完成云端组件验证；210 App 编译与镜像分发正在准备。
+/Source wired and lightly verified (§5). The final guest image passed cloud component qualification;
+build 210 App compilation and image distribution are being prepared. Device acceptance remains with the user.
 
 ## 1. 接线范围 / What is wired
 
@@ -38,7 +38,7 @@ guest runner（`FloeAgent/LinuxGuest/`）在启动时挂载这些 tag；host 的
 服务转发 / service forwarding：`floe_vm_hostfwd_add/remove`（adapter `aeccdf1b`），IPv4 主机字节序，
 guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 可用。
 
-## 2. 诚实状态：guest 镜像未合格 / Honest status: no qualified guest image
+## 2. 镜像验证与分发状态 / Image qualification and distribution
 
 - 本仓库**不随包提供任何 guest 镜像**。镜像清单从 App 数据目录 `LinuxGuest/images/<id>/manifest.json`
   读取；`qualified: true` 本身**不可信**：清单还必须带 `qualificationRun` 与每个 artifact 的 `sha512`/`bytes`，
@@ -49,7 +49,9 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
   不能 `root=/dev/vda1`），RAM 512–768MB，`console=hvc0 root=/dev/vda rw init=/usr/local/bin/floe-exec`。
 - 后续定向云端结果（run 35500083112）：修正 FENCE.TSO 处理并设置 guest 时钟后，默认 HTTPS 源的
   apt update/install 返回 0，NumPy 2.2.4、Node v20.19.2 与 Python HTTPS 200 均有真实输出。
-  独立指令探针因脚本缩进错误未产出结果，修正后由最终镜像检查补验。App 启动时钟与安装归属仍在收口。
+  最终镜像 run 35501535251 已通过两次真实启动、PID1 floe.epoch 时钟、HTTPS APT/Python、
+  11 项命令操作与 6 项 FENCE 指令检查；SSH 仅验证版本，SCP 仅验证失败连接，尚无实际传输验收。
+  App 启动时钟及 Python/Node 安装归属修复已接线，完整 App 编译及 iPad 验收另行记录。
 - 现代 Debian13 6.12 内核在 2018 bbl 上仍无控制台输出（需 FDT+OpenSBI）；当前可用组合限于 4.15 内核
   与 Debian13 用户态。RAM OOM 创建失败是可恢复 NULL，不是致命错误。
 - 分发是**另一个**决定：`LinuxGuestImageDistributionCatalog` 目前为空（没有已发布的 guest 来源/许可记录），
@@ -66,7 +68,7 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
 - shell：`floe-env backend <id|owner-id> native|linux`；切到 linux 会尝试启动 guest，失败返回真实原因（exit 3，
   环境保持 linuxVM 选择，apt/dpkg 不回写宿主层）。
 - 镜像：`floe-env image status|import|install|remove`（见 §1/§2）。
-- 无持久 artifact 根时后端与镜像存储整体不可用（不回落临时目录），日志给出原因。
+- 无持久 artifact 根时镜像存储不可用，Linux 环境归属仍然保留并报出缺失原因；不会改在原生解释器执行。
 
 ## 4. Guest 镜像契约 / Guest image contract
 
@@ -75,25 +77,25 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
 
 ```json
 {
-  "id": "floe-linux-base",
+  "id": "floe-debian13-riscv64-202609202607",
   "biosPath": "bbl64.bin",
   "kernelPath": "kernel-riscv64.bin",
   "initrdPath": null,
-  "diskPath": "rootfs.ext4",
+  "diskPath": "disk.img",
   "diskReadWrite": true,
   "cmdline": "console=hvc0 root=/dev/vda rw",
   "qualified": true,
-  "qualificationEvidence": "run 35497742193: console + apt/dpkg + python3 + reboot",
-  "qualificationRun": "35497742193",
+  "qualificationEvidence": "run 35501535251: two boots, HTTPS APT/Python and instruction checks",
+  "qualificationRun": "35501535251",
   "artifacts": [
     {"role": "bios", "path": "bbl64.bin", "sha512": "<128 hex>", "bytes": 123456},
     {"role": "kernel", "path": "kernel-riscv64.bin", "sha512": "<128 hex>", "bytes": 123456},
-    {"role": "disk", "path": "rootfs.ext4", "sha512": "<128 hex>", "bytes": 12345678}
+    {"role": "disk", "path": "disk.img", "sha512": "<128 hex>", "bytes": 12345678}
   ],
   "provenance": {
     "sourceURL": "https://…/guest-image-sources",
     "buildConfigurationURL": "https://…/guest-image-sources/build.md",
-    "license": "GPL-2.0-or-later (guest userland) · BSD-3 (bbl)",
+    "license": "GPL-2.0 kernel; BSD-3-Clause bbl; MPL-2.0 runner; LGPL-2.1 glibc; per-package Debian licenses",
     "distributionAllowed": false
   }
 }
