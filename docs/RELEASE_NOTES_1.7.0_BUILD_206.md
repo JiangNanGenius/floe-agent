@@ -1,8 +1,9 @@
 # Floe Agent 1.7.0 (206) — internal device test candidate
 
 Not uploaded yet. This replaces the [failed Build205 candidate](qualification/build205-release/build205-bootstrap-failure.md).
-Its Office native framework must be rebuilt and pinned to the changed host
-source before dispatch. The App and its three extensions use build 206.
+Its Office native framework was rebuilt in run35495484711 and pinned to the
+changed source; native compile/link, Swift import and local artifact inventory
+verification passed. The App and its three extensions use build 206.
 
 Included repairs: Office close during an in-flight open; PDF/Office in IDE
 internal document tabs; local Git initialization without GitHub login and
@@ -20,6 +21,6 @@ acceptance is the user's next step. Preserve the unsigned IPA and matching priva
 symbols before signing; verify Apple processing and Floe QA availability separately.
 
 本候选替代未上传的 Build205。包含 Office 生命周期、IDE 内部文档标签、
-本地 Git 初始化、原生思维导图与 Shell 修复；Office 原生宿主会先按新源码
-重新构建并锁定工件。跨任务、本地模型与 Linux／安装架构继续处理，不计作
+本地 Git 初始化、原生思维导图与 Shell 修复；Office 原生宿主已按新源码
+重新构建并校验、锁定工件。跨任务、本地模型与 Linux／安装架构继续处理，不计作
 本包已完成。只做必要代码检查、云 App 编译和上传校验，真机操作由用户验收。
