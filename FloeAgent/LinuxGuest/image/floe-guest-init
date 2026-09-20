@@ -1,0 +1,51 @@
+#!/bin/sh
+# floe-guest-init — Floe Linux guest startup / 9p mount script.
+#
+# Boots the Debian userland as the kernel init process (init=...), mounts the
+# pseudo-filesystems a normal userland expects, mounts every virtio-9p share
+# the host exported, then execs the Floe guest runner on the console.
+#
+# The runner also performs these mounts itself when it is PID 1, so the
+# preferred cmdline is simply:
+#
+#   console=hvc0 root=/dev/vda rw init=/usr/local/bin/floe-exec
+#
+# This script exists for images that prefer an explicit, auditable startup
+# step (and for a recovery shell in the qualification VM):
+#
+#   console=hvc0 root=/dev/vda rw init=/usr/local/lib/floe/floe-guest-init
+#
+# It must stay POSIX sh (Debian /bin/sh = dash).
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root
+export TERM=dumb
+export DEBIAN_FRONTEND=noninteractive
+
+# already_mounted TARGET: true when /proc/mounts already lists TARGET.
+already_mounted() {
+    [ -r /proc/mounts ] && grep -qs " $1 " /proc/mounts
+}
+
+mkdir -p /proc /sys /dev /dev/pts /dev/shm /tmp /run /root /floe/env /workspace 2>/dev/null
+
+already_mounted /proc || mount -t proc proc /proc 2>/dev/null || true
+already_mounted /sys || mount -t sysfs sysfs /sys 2>/dev/null || true
+already_mounted /dev || mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /dev/pts /dev/shm 2>/dev/null
+already_mounted /dev/pts || mount -t devpts devpts /dev/pts 2>/dev/null || true
+already_mounted /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm 2>/dev/null || true
+already_mounted /tmp || mount -t tmpfs -o mode=1777 tmpfs /tmp 2>/dev/null || true
+already_mounted /run || mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
+
+# virtio-9p shares exported by FloeVMConfig. The pinned 2018 kernel has 9p
+# built in; Debian's versioned modules cannot be loaded, so nothing here is
+# an insmod. Missing shares are fine (mount returns non-zero and is ignored).
+already_mounted /floe || mount -t 9p -o trans=virtio,version=9p2000.L floe /floe 2>/dev/null || true
+already_mounted /floe/env || mount -t 9p -o trans=virtio,version=9p2000.L floe-env /floe/env 2>/dev/null || true
+already_mounted /workspace || mount -t 9p -o trans=virtio,version=9p2000.L workspace /workspace 2>/dev/null || true
+
+# Hand the console to the runner. FLOE_GUEST_INIT tells it to re-attempt the
+# mounts (idempotent) and keeps behaviour identical to the self-mounting
+# init=/usr/local/bin/floe-exec path.
+FLOE_GUEST_INIT=1 exec /usr/local/bin/floe-exec
