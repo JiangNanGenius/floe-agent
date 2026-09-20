@@ -14,6 +14,7 @@
  * Exit 0 = all checks passed; 1 = failure (each failure is printed).
  */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
