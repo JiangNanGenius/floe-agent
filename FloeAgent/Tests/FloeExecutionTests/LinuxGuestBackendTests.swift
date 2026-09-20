@@ -156,8 +156,24 @@ private func makeImage(qualified: Bool = true) -> LinuxGuestImage {
         .appendingPathComponent("floe-linux-test-\(UUID().uuidString)", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let bios = directory.appendingPathComponent("bbl64.bin")
-    FileManager.default.createFile(atPath: bios.path, contents: Data("bios".utf8))
-    return LinuxGuestImage(id: "test-image", biosPath: bios.path, qualified: qualified)
+    let contents = Data("bios".utf8)
+    FileManager.default.createFile(atPath: bios.path, contents: contents)
+    let artifacts = [
+        LinuxGuestImageArtifact(
+            role: .bios,
+            path: bios.path,
+            sha512: FloeDigest.sha512Hex(contents),
+            bytes: Int64(contents.count)
+        )
+    ]
+    return LinuxGuestImage(
+        id: "test-image",
+        biosPath: bios.path,
+        qualified: qualified,
+        qualificationEvidence: qualified ? "native protocol check \(UUID().uuidString)" : nil,
+        qualificationRun: qualified ? "run-test-1" : nil,
+        artifacts: qualified ? artifacts : nil
+    )
 }
 
 private func reply(_ token: String, stdout: String = "hi", stderr: String = "oops", exit: Int32 = 0) -> [Data] {
@@ -246,6 +262,18 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         let text = String(decoding: console.written, as: UTF8.self)
         XCTAssertTrue(text.contains("\u{1e}FLOE-EXEC "))
+    }
+
+    func testSequentialCommandsShareOneConsoleReader() async throws {
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in reply(token, stdout: token, stderr: "", exit: 0) }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let first = try await channel.run(argv: ["/bin/echo", "1"], timeout: 5)
+        let second = try await channel.run(argv: ["/bin/echo", "2"], timeout: 5)
+        XCTAssertEqual(first.exitCode, 0)
+        XCTAssertEqual(second.exitCode, 0)
+        XCTAssertEqual(first.stdout, "T1")
+        XCTAssertEqual(second.stdout, "T2")
     }
 
     func testRunTimesOutAndPoisonsTheChannel() async throws {
@@ -474,6 +502,305 @@ final class LinuxGuestShellBackendTests: XCTestCase {
             guard case .notRunning = error else { return XCTFail("unexpected error \(error)") }
         } catch {
             XCTFail("unexpected error \(error)")
+        }
+    }
+}
+
+// MARK: - Host/guest path mapping
+
+final class LinuxGuestPathMapTests: XCTestCase {
+    func testMapsPathsInsideSharesAndRejectsEscapes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-map-\(UUID().uuidString)", isDirectory: true)
+        let layer = root.appendingPathComponent("layer", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let map = LinuxGuestPathMap(shares: [
+            LinuxGuestShare(tag: LinuxGuestShare.environmentTag, hostDirectory: layer),
+            LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace),
+        ])
+        XCTAssertEqual(
+            map.guestPath(forHostPath: workspace.appendingPathComponent("src/main.py").path),
+            "/workspace/src/main.py"
+        )
+        XCTAssertEqual(map.guestPath(forHostPath: layer.path), "/floe/env")
+        XCTAssertNil(map.guestPath(forHostPath: "/etc/passwd"))
+        XCTAssertNil(map.guestPath(forHostPath: workspace.appendingPathComponent("../escape").path))
+        XCTAssertEqual(
+            map.hostPath(forGuestPath: "/floe/env/python/venv"),
+            layer.appendingPathComponent("python/venv")
+        )
+        XCTAssertNil(map.hostPath(forGuestPath: "/etc/passwd"))
+        XCTAssertEqual(map.environmentGuestRoot, "/floe/env")
+        XCTAssertEqual(map.workspaceGuestRoot, "/workspace")
+    }
+}
+
+// MARK: - Image verification and import
+
+final class LinuxGuestImageStoreTests: XCTestCase {
+    func testQualifiedFlagWithoutDigestsIsNotTrusted() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-flag-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let bios = directory.appendingPathComponent("bbl64.bin")
+        FileManager.default.createFile(atPath: bios.path, contents: Data("bios".utf8))
+        let flagOnly = LinuxGuestImage(id: "flag-only", biosPath: bios.path, qualified: true, qualificationEvidence: "user wrote true")
+        XCTAssertNotNil(flagOnly.qualificationFailure(), "a hand-written qualified flag without a run/digests must not start")
+    }
+
+    func testImportDirectoryVerifiesDigestsAndDetectsTampering() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-images-\(UUID().uuidString)", isDirectory: true)
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-src-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let contents = Data("bios-bytes".utf8)
+        try contents.write(to: source.appendingPathComponent("bbl64.bin"))
+        let manifest = LinuxGuestImage(
+            id: "floe-test",
+            biosPath: "bbl64.bin",
+            diskReadWrite: false,
+            cmdline: "console=hvc0 root=/dev/vda rw",
+            qualified: true,
+            qualificationEvidence: "import test",
+            qualificationRun: "run-local-1",
+            artifacts: [
+                LinuxGuestImageArtifact(role: .bios, path: "bbl64.bin", sha512: FloeDigest.sha512Hex(contents), bytes: Int64(contents.count))
+            ]
+        )
+        try JSONEncoder().encode(manifest).write(to: source.appendingPathComponent("manifest.json"))
+
+        let service = LinuxGuestImageInstallationService(root: root)
+        let imported = try await service.importDirectory(at: source)
+        XCTAssertEqual(imported.id, "floe-test")
+        var status = await service.status(id: "floe-test")
+        XCTAssertTrue(status.installed)
+        XCTAssertNil(status.verificationFailure)
+        XCTAssertFalse(status.distributable, "a local import is never a downloadable Floe image")
+
+        // Rewriting the artifact must invalidate the digest check.
+        try Data("tampered".utf8).write(to: service.imagesDirectory.appendingPathComponent("floe-test/bbl64.bin"))
+        status = await service.status(id: "floe-test")
+        XCTAssertNotNil(status.verificationFailure)
+    }
+
+    func testTrustedInstallRefusesWhenNoArchiveIsPinned() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-images-\(UUID().uuidString)", isDirectory: true)
+        let service = LinuxGuestImageInstallationService(root: root)
+        do {
+            _ = try await service.installTrustedImage(id: "floe-linux-base", downloader: NoopImageDownloader())
+            XCTFail("no distributable image is pinned in this build")
+        } catch let error as LinuxGuestImageInstallError {
+            guard case .noDistributableImage = error else { return XCTFail("unexpected error \(error)") }
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+}
+
+private struct NoopImageDownloader: LinuxGuestImageDownloading {
+    func download(_ url: URL, to destination: URL, maxBytes: Int64) async throws {
+        throw LinuxGuestImageInstallError.downloadFailed("not used")
+    }
+}
+
+// MARK: - Control frames and service supervisor
+
+final class LinuxGuestControlFrameTests: XCTestCase {
+    func testExecKeepsInlineFastPathAndChunksLargePayloads() {
+        let small = LinuxGuestFraming.payload(of: ["true"], workingDirectory: nil, standardInput: nil)
+        let smallFrames = LinuxGuestFraming.payloadFrames(name: "EXEC", token: "T", payload: small)
+        XCTAssertEqual(smallFrames.count, 1)
+        XCTAssertTrue(String(decoding: smallFrames[0], as: UTF8.self).hasPrefix("\u{1e}FLOE-EXEC T "))
+
+        let large = LinuxGuestFraming.payload(
+            of: ["/bin/sh", "-c", String(repeating: "x", count: 8_000)],
+            workingDirectory: nil,
+            standardInput: nil
+        )
+        let largeFrames = LinuxGuestFraming.payloadFrames(name: "EXEC", token: "T", payload: large)
+        XCTAssertGreaterThan(largeFrames.count, 1)
+        XCTAssertTrue(String(decoding: largeFrames.last!, as: UTF8.self).contains("FLOE-RUN T"))
+    }
+
+    func testSpawnAndOpenAlwaysUseTheChunkedEnvelope() {
+        let payload = LinuxGuestFraming.servicePayload(of: ["true"], workingDirectory: nil, logPath: "/floe/env/services/job.log")
+        let frames = LinuxGuestFraming.payloadFrames(name: "SPAWN", token: "T", payload: payload, allowInline: false)
+        XCTAssertGreaterThan(frames.count, 1)
+        XCTAssertTrue(String(decoding: frames[0], as: UTF8.self).contains("FLOE-SPAWN T "))
+    }
+
+    func testControlParserReadsPidAndExitAcrossChunks() {
+        var parser = LinuxGuestFraming.ControlParser(token: "T")
+        let full = Data("\u{1e}FLOE-PID T 4242\u{1e}\u{1e}FLOE-END T 0\u{1e}".utf8)
+        let split = full.index(full.startIndex, offsetBy: 11)
+        XCTAssertEqual(parser.feed(Data(full[..<split])), .needMore)
+        guard case .finished(let exit) = parser.feed(Data(full[split...])) else {
+            return XCTFail("control parser did not finish")
+        }
+        XCTAssertEqual(exit, 0)
+        XCTAssertEqual(parser.pid, 4242)
+    }
+}
+
+final class FakeServiceHost: LinuxGuestLocalServiceHosting, @unchecked Sendable {
+    let lock = NSLock()
+    private var alive = true
+    private(set) var spawnedArgv: [String] = []
+    private(set) var spawnedCwd: String?
+    private(set) var spawnedLog: String?
+    private(set) var killed: [Int32] = []
+    private(set) var forwards: [LinuxGuestServiceForward] = []
+    let descriptor: LinuxGuestEnvironmentDescriptor
+
+    init(descriptor: LinuxGuestEnvironmentDescriptor) {
+        self.descriptor = descriptor
+    }
+
+    func supports(environmentID: String) async -> Bool { true }
+    func ownsLinuxEnvironment(environmentID: String) async -> Bool { true }
+
+    func run(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        timeout: TimeInterval,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        let joined = argv.joined(separator: " ")
+        if joined.contains("sysconfig.get_paths") {
+            return LinuxCommandResult(stdout: "/floe/env/python/venv/lib/python3.12/site-packages\n", stderr: "", exitCode: 0)
+        }
+        if joined.contains("command -v python3") { return LinuxCommandResult(stdout: "python-ok\n", stderr: "", exitCode: 0) }
+        if joined.contains("bin/pip") { return LinuxCommandResult(stdout: "pip-ok\n", stderr: "", exitCode: 0) }
+        if joined.contains("--version") { return LinuxCommandResult(stdout: "Python 3.12.5\n", stderr: "", exitCode: 0) }
+        return LinuxCommandResult(stdout: "", stderr: "", exitCode: 0)
+    }
+
+    func guestDescriptor(environmentID: String) async -> LinuxGuestEnvironmentDescriptor? { descriptor }
+
+    func guestSpawn(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        logPath: String,
+        timeout: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> Int32 {
+        lock.withLock {
+            spawnedArgv = argv
+            spawnedCwd = workingDirectory
+            spawnedLog = logPath
+        }
+        return 4242
+    }
+
+    func guestServiceAlive(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
+        lock.withLock { alive }
+    }
+
+    func guestKillService(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
+        lock.withLock {
+            killed.append(pid)
+            let wasAlive = alive
+            alive = false
+            return wasAlive
+        }
+    }
+
+    func guestEnsureForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
+        lock.withLock { forwards.append(forward) }
+    }
+
+    func guestRemoveForward(environmentID: String, forward: LinuxGuestServiceForward) async {
+        lock.withLock { forwards.removeAll { $0 == forward } }
+    }
+}
+
+final class LinuxGuestLocalServiceSupervisorTests: XCTestCase {
+    func testSpawnUsesSharedVenvMappedPathsAndForwards() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let layer = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-svc-\(UUID().uuidString)", isDirectory: true)
+        let services = layer.appendingPathComponent("services", isDirectory: true)
+        try FileManager.default.createDirectory(at: services, withIntermediateDirectories: true)
+        let entry = layer.appendingPathComponent("app.py")
+        try Data("print('hi')".utf8).write(to: entry)
+        let log = services.appendingPathComponent("job.log")
+        try Data("log line\n".utf8).write(to: log)
+
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID,
+            shares: [LinuxGuestShare(tag: LinuxGuestShare.environmentTag, hostDirectory: layer)],
+            imageID: "test-image"
+        )
+        let host = FakeServiceHost(descriptor: descriptor)
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        defer { Task { await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID) } }
+
+        let handle = try await supervisor.startLocalService(
+            environmentID: environmentID,
+            request: LinuxGuestLocalServiceRequest(
+                entry: entry.path,
+                runtime: .python,
+                arguments: ["--flag"],
+                workingDirectory: layer.path,
+                port: 8123,
+                logFile: log,
+                environment: ["FOO": "bar"]
+            ),
+            cancellation: nil
+        )
+        XCTAssertEqual(handle.pid, 4242)
+        XCTAssertEqual(host.spawnedCwd, "/floe/env")
+        XCTAssertEqual(host.spawnedLog, "/floe/env/services/job.log")
+        XCTAssertTrue(host.spawnedArgv.contains("PORT=8123"), host.spawnedArgv.joined(separator: " "))
+        XCTAssertTrue(host.spawnedArgv.contains("FOO=bar"))
+        XCTAssertTrue(host.spawnedArgv.contains("/floe/env/app.py"))
+        XCTAssertEqual(handle.forward, LinuxGuestServiceForward(hostAddress: "127.0.0.1", hostPort: 8123, guestPort: 8123))
+        XCTAssertEqual(host.forwards.count, 1)
+
+        let running = await supervisor.localServiceSnapshot(handle)
+        XCTAssertEqual(running.state, "running")
+        XCTAssertEqual(running.stdout, "log line\n")
+
+        await supervisor.stopLocalService(handle)
+        XCTAssertEqual(host.killed, [4242])
+        XCTAssertTrue(host.forwards.isEmpty)
+    }
+
+    func testWorkingDirectoryOutsideSharesIsAnError() async throws {
+        let environmentID = "env-\(UUID().uuidString)"
+        let layer = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-svc-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: layer, withIntermediateDirectories: true)
+        let entry = layer.appendingPathComponent("app.py")
+        try Data("print('hi')".utf8).write(to: entry)
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID,
+            shares: [LinuxGuestShare(tag: LinuxGuestShare.environmentTag, hostDirectory: layer)],
+            imageID: "test-image"
+        )
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: FakeServiceHost(descriptor: descriptor))
+        do {
+            _ = try await supervisor.startLocalService(
+                environmentID: environmentID,
+                request: LinuxGuestLocalServiceRequest(
+                    entry: entry.path,
+                    runtime: .node,
+                    workingDirectory: "/etc",
+                    port: 8124,
+                    logFile: layer.appendingPathComponent("services/job.log")
+                ),
+                cancellation: nil
+            )
+            XCTFail("a working directory outside the shares must not silently fall back")
+        } catch let error as LinuxGuestError {
+            guard case .invalidConfiguration = error else { return XCTFail("unexpected error \(error)") }
         }
     }
 }
