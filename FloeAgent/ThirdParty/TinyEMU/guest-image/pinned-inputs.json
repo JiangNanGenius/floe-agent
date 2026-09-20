@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "description": "Pinned inputs for the Floe Linux guest image candidate. Every value here was observed by the TinyEMU qualification runs (run 35500083112, branch codex/feedback-linux). The component-image-ci workflow reads this file; it must never be edited to make a check pass, only as a reviewed input upgrade.",
+  "engine": {
+    "name": "TinyEMU",
+    "version": "2019-12-21",
+    "url": "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
+    "sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
+    "license": "MIT (core); slirp BSD-2-Clause; sha256.c/aes.c public domain",
+    "patches": {
+      "patches/0001-htif-poweroff-callback.patch": "a9a991c4a8223d7a1b352e3091a807ab020a0303fdf59716f29cbf5aaff3651a",
+      "patches/0002-embeddable-error-propagation.patch": "8c004a000084987db0c9a6e37b458a1ab2c4390239fa5bdf12de815d14e11233",
+      "patches/0003-fs_disk-apple-stat-timestamps.patch": "d5b505a942ca32c2074a6ba63cd45f94b13aad107d77de37abd0a0a7ec4404b1",
+      "patches/0004-slirp-bootp-debug-typo.patch": "ea2684cfbcc8c8621b0dca95d0267142222021f643ddfb2c91ddf63871657abc",
+      "patches/0005-fence-hints.patch": "c9a5e7c9fba9953f6435fe9b3fc2ae549931c746ea9b510e1dd81bcc3f757b1c"
+    },
+    "required_patch_marker": "FLOE-EMBED: Execute FENCE/FENCE.TSO",
+    "patch_note": "The qualification Makefile applies every *.patch in order and greps the FENCE marker, so a build whose 0005 did not land fails immediately (upstream TinyEMU trapped FENCE.TSO as illegal, which killed Debian's libapt-pkg with SIGILL). 0003 is Apple-guarded and 0004 only fixes a slirp debug format string; neither changes RISC-V behavior."
+  },
+  "demo_archive": {
+    "name": "diskimage-linux-riscv-2018-09-23",
+    "url": "https://bellard.org/tinyemu/diskimage-linux-riscv-2018-09-23.tar.gz",
+    "sha256": "808ecc1b32efdd76103172129b77b46002a616dff2270664207c291e4fde9e14",
+    "license_note": "Qualification-only source of the boot loader and fallback kernel. The buildroot rootfs in this archive is never shipped; only bbl64.bin and kernel-riscv64.bin are copied into the candidate image.",
+    "bios": {
+      "path": "bbl64.bin",
+      "sha256": "293610cea7af6c75e4a8337e16c0d62834becbf31ffd9cca35e0c211602349db",
+      "bytes": 53786
+    },
+    "kernel": {
+      "path": "kernel-riscv64.bin",
+      "sha256": "293aef345c8e996320de4ca7fc87ff48155a183b3dde00d2f269c8e461b067c5",
+      "bytes": 3946740,
+      "version_ident": "Linux 4.15.0-00049-ga3b1e7a-dirty"
+    },
+    "never_ship": [
+      "root-riscv64.bin (buildroot demo rootfs)"
+    ]
+  },
+  "bios_source": {
+    "project": "riscv-pk",
+    "repository": "https://github.com/riscv/riscv-pk",
+    "revision": "ac2c910b18c3e36cfd85080472e78ad2fe484325",
+    "revision_committed_utc": "2018-09-17T20:03:38Z",
+    "license": "BSD-3-Clause (Regents of the University of California)",
+    "diff": "riscv-pk.diff",
+    "build_script": "build-kernel-bbl.sh",
+    "compile_verified": false
+  },
+  "kernel_source": {
+    "project": "riscv-linux",
+    "repository": "https://github.com/riscvarchive/riscv-linux",
+    "revision": "a3b1e7acc6a181e04e9a943942084395df4498dd",
+    "revision_committed_utc": "2018-07-19T20:17:41Z",
+    "license": "GPL-2.0",
+    "diff": "riscv-linux.diff",
+    "config": "config_linux_riscv64",
+    "build_script": "build-kernel-bbl.sh",
+    "compile_verified": false
+  },
+  "debian_image": {
+    "suite": "trixie",
+    "variant": "nocloud-riscv64",
+    "daily_build": "20260920-2607",
+    "url": "https://cdimage.debian.org/cdimage/cloud/trixie/daily/20260920-2607/debian-13-nocloud-riscv64-daily-20260920-2607.qcow2",
+    "url_note": "Debian rotates daily cloud builds; the dated directory is the pinned URL and the SHA-512 below is the trust anchor. If the dated directory is gone, the input is unavailable and the build must fail rather than silently use another daily build.",
+    "sha512": "7106e0d8cdc881446ee3adf83220a9c655fcf06590b709c5d7a49d703ffc2c22bf19fa1fd00c1b85ffd3136879cc577638f98a99e407b5db08c94d4cb423aadc",
+    "sha256": "bd4771089994ee362a6d1f68e85b18f62b2e811229ee96140f04106c07f071fb",
+    "bytes": 410189824,
+    "rootfs_partition": {
+      "filesystem": "ext4",
+      "extracted_bytes": 3085959168,
+      "block_size": 4096,
+      "cleared_features": [
+        "orphan_file",
+        "metadata_csum_seed"
+      ],
+      "features_after_clear": "has_journal ext_attr resize_inode dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum"
+    },
+    "layout_note": "The 2018 bbl/kernel has no EFI/GPT partition parser, so the ext4 rootfs is extracted from the GPT image and booted as a partitionless whole-disk image (root=/dev/vda). The Debian 6.12 kernel boots is not used: it produces no console output under the 2018 bbl (Linux removed legacy SBI v0.1 in 5.9)."
+  },
+  "guest_runner": {
+    "source": "FloeAgent/LinuxGuest/runner/floe_exec.c",
+    "host_path": "/usr/local/bin/floe-exec",
+    "license": "MPL-2.0 (repository license)",
+    "static_runtime_license": "LGPL-2.1 (glibc, statically linked)",
+    "cmdline_parameter": "floe.epoch=<unix seconds>",
+    "cmdline_note": "The fallback kernel has no RTC. The Floe host appends floe.epoch=<Date()> on every boot (LinuxGuestImage.effectiveCmdline); the runner consumes it as PID 1 and sets CLOCK_REALTIME. The candidate image must be verified with this parameter, never with a separate date -s workaround."
+  },
+  "capability_packages": {
+    "ps": "procps",
+    "setsid": "util-linux",
+    "nohup": "coreutils",
+    "bash": "bash",
+    "zsh": "zsh",
+    "zip": "zip",
+    "unzip": "unzip",
+    "7z": "p7zip-full",
+    "xz": "xz-utils",
+    "bzip2": "bzip2",
+    "sqlite3": "sqlite3",
+    "ssh": "openssh-client",
+    "scp": "openssh-client"
+  },
+  "preparation_packages": [
+    "python3",
+    "python3-pip",
+    "python3-venv",
+    "python3-numpy",
+    "nodejs",
+    "npm"
+  ],
+  "commands_to_verify": [
+    "ps",
+    "setsid",
+    "nohup",
+    "bash",
+    "zsh",
+    "zip",
+    "unzip",
+    "7z",
+    "xz",
+    "bzip2",
+    "sqlite3",
+    "ssh",
+    "scp"
+  ]
+}
