@@ -2,7 +2,7 @@
 
 Status: build 207 is available in the existing Floe QA TestFlight group; Apple
 VALID, unexpired and IN_BETA_TESTING were verified at 08:51:56 UTC. Build 208 was cancelled before upload after a Linux package-ownership
-gap was found. That code path is being corrected for build 209. Physical-device
+gap was found. That code path is now corrected for build 209, whose cloud App build is next. Physical-device
 acceptance remains with the user. Integration starts from `b16cb18e` (the build 204
 delivery record). The prior build remains independently recorded.
 
@@ -21,7 +21,7 @@ Apple processing and internal-group availability remain required.
 | Mind-map controls and movement | Replace MindElixir with a native editor using shared Canvas geometry. Use icon controls; persist independent node positions, explicit relayout/reparent actions, undo, styles, links, images and export. | Nine focused model/layout cases and a FloeNotes object build passed. Existing data without positions remains readable. Visual/device acceptance pending. |
 | Shell busy/no output and service errors | Serialize interactive and one-shot sessions on the actual native engine gate; retain ownership until the worker exits. Flush queued input before EOF, close failed input descriptors once, honor pre-cancelled opens. Validate service entry/cwd/runtime/port before persisting a job. | 71 native bridge host checks and 18 extracted SessionIO host checks passed. Their new defect cases fail against the earlier source. These are host harnesses, not iOS runtime proof. An uncooperative native command cannot safely be force-unlocked. |
 
-## Runtime and package changes integrated in build 208
+## Runtime and package changes for build 209 (208 was cancelled)
 
 - Cross-task search/read pagination and final-response continuation: preserve
   cursor/source identifiers through bounded tool envelopes and compression,
@@ -148,3 +148,18 @@ that harness fix is committed and awaits the final image smoke. Host boot now
 passes a fresh wall-clock value; the guest PID1 application and language package
 ownership fixes are being finished independently. This is not yet a qualified
 downloadable image.
+
+
+### Build 209 package ownership correction
+
+Guest Python install/remove/inspection now use the shared venv and configured
+index. Guest Node install/remove/inventory and command links use the same
+persistent environment; Linux scripts and native addons are supported without
+inheriting the iOS native installer's restrictions. Native paths retain their
+existing policy. The local Python tool applies native-only script constraints
+only after resolving the selected backend. Stopping or changing backend drops
+Python/Node provisioner caches and invalidates in-flight cache publication.
+
+The focused language ownership executable passed; the module slice compiled.
+The CLT XCTest attempt failed to resolve XCTest and is not recorded as a pass.
+Full App validation and device acceptance remain separate.
