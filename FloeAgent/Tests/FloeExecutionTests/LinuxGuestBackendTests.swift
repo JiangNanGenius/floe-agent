@@ -41,7 +41,17 @@ final class TestLinuxGuestConsole: LinuxGuestConsoleTransport, @unchecked Sendab
         lock.unlock()
     }
 
-    func output() async -> AsyncStream<Data> { stream }
+    func output() async -> AsyncStream<Data> {
+        recordOutputCall()
+        return stream
+    }
+
+    /// Synchronous helper: NSLock must not be taken in an async context.
+    private func recordOutputCall() {
+        lock.lock()
+        defer { lock.unlock() }
+        outputCalls += 1
+    }
 
     func write(_ bytes: [UInt8]) async throws {
         let handler = record(bytes)
@@ -63,10 +73,47 @@ final class TestLinuxGuestConsole: LinuxGuestConsoleTransport, @unchecked Sendab
         continuation.finish()
     }
 
+    /// Injects console bytes directly (router test seam).
+    func push(_ chunks: [Data]) {
+        for chunk in chunks { continuation.yield(chunk) }
+    }
+
+    /// Token of the first FLOE frame in `bytes`, stopping at the frame
+    /// terminator (a naive space split returns "uuid\u{1e}\n", which the
+    /// channel correctly rejects as not a valid token).
+    private var outputCalls = 0
+
+    var outputCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return outputCalls
+    }
+
+    static func tokens(in bytes: [UInt8], name: String) -> [String] {
+        let text = String(decoding: bytes, as: UTF8.self)
+        var result: [String] = []
+        var search = text.startIndex
+        while let range = text.range(of: "\u{1e}FLOE-\(name) ", range: search..<text.endIndex) {
+            let token = text[range.upperBound...].prefix { character in
+                character != " " && character != "\u{1e}" && character != "\n" && character != "\r"
+            }
+            if !token.isEmpty { result.append(String(token)) }
+            search = range.upperBound
+        }
+        return result
+    }
+
     static func token(in bytes: [UInt8]) -> String? {
-        guard let text = String(bytes: bytes, encoding: .utf8),
-              let range = text.range(of: "\u{1e}FLOE-EXEC ") else { return nil }
-        return text[range.upperBound...].split(separator: " ").first.map(String.init)
+        guard let text = String(bytes: bytes, encoding: .utf8) else { return nil }
+        for name in ["EXEC", "HELLO", "SPAWN", "KILL", "ALIVE", "OPEN"] {
+            if let range = text.range(of: "\u{1e}FLOE-\(name) ") {
+                let token = text[range.upperBound...].prefix { character in
+                    character != " " && character != "\u{1e}" && character != "\n" && character != "\r"
+                }
+                return token.isEmpty ? nil : String(token)
+            }
+        }
+        return nil
     }
 }
 
@@ -194,6 +241,10 @@ private func makeImage(qualified: Bool = true) -> LinuxGuestImage {
     )
 }
 
+private func caps(_ token: String) -> [Data] {
+    [Data("\u{1e}FLOE-CAPS \(token) runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4\u{1e}\u{1e}FLOE-END \(token) 0\u{1e}".utf8)]
+}
+
 private func reply(_ token: String, stdout: String = "hi", stderr: String = "oops", exit: Int32 = 0) -> [Data] {
     var data = Data()
     data.append(Data("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-OUT \(token)\u{1e}".utf8))
@@ -272,7 +323,7 @@ final class LinuxGuestFramingTests: XCTestCase {
 final class LinuxGuestCommandChannelTests: XCTestCase {
     func testRunCollectsStdoutStderrAndExit() async throws {
         let console = TestLinuxGuestConsole()
-        console.setHandler { token in reply(token) }
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
         let channel = LinuxGuestCommandChannel(transport: console)
         let result = try await channel.run(argv: ["dpkg-query", "-W"], timeout: 5)
         XCTAssertEqual(result.stdout, "hi")
@@ -284,7 +335,7 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
 
     func testSequentialCommandsShareOneConsoleReader() async throws {
         let console = TestLinuxGuestConsole()
-        console.setHandler { token in reply(token, stdout: token, stderr: "", exit: 0) }
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : reply(token, stdout: token, stderr: "", exit: 0) }
         let channel = LinuxGuestCommandChannel(transport: console)
         let first = try await channel.run(argv: ["/bin/echo", "1"], timeout: 5)
         let second = try await channel.run(argv: ["/bin/echo", "2"], timeout: 5)
@@ -294,24 +345,51 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
         XCTAssertEqual(second.stdout, "T2")
     }
 
-    func testRunTimesOutAndPoisonsTheChannel() async throws {
+    func testRunTimesOutWithTargetedInterruptAndPoisonsOnSilence() async throws {
+        // A guest that never answers the targeted interrupt is quarantined:
+        // the caller fails with consoleUnavailable (never a "stopped"
+        // claim) and the channel poisons so the owner resets the guest.
         let console = TestLinuxGuestConsole()
-        console.setHandler { _ in [] }
-        let channel = LinuxGuestCommandChannel(transport: console)
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : [] }
+        let channel = LinuxGuestCommandChannel(transport: console, limits: LinuxGuestLimits(interruptGrace: 0.1))
         do {
             _ = try await channel.run(argv: ["sleep", "100"], timeout: 0.2)
+            XCTFail("expected a failure")
+        } catch let error as LinuxGuestError {
+            guard case .consoleUnavailable = error else { return XCTFail("unexpected error \(error)") }
+        }
+        let poisoned = await channel.isPoisoned
+        XCTAssertTrue(poisoned)
+        let text = String(decoding: console.written, as: UTF8.self)
+        XCTAssertTrue(text.contains("FLOE-SIGNAL"), "timeout must send the targeted SIGNAL, not the legacy byte")
+        XCTAssertFalse(console.written.contains(0x03), "the legacy interrupt-all byte is no longer used for one command")
+    }
+
+    func testRunTimeoutSurfacesAfterGuestConfirmsReap() async throws {
+        // The guest answers the targeted interrupt with END 130 (reaped):
+        // only then does the timeout surface — never before the proof.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            return [Data("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-END \(token) 130\u{1e}".utf8)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        do {
+            _ = try await channel.run(argv: ["sleep", "100"], timeout: 0.3)
             XCTFail("expected a timeout")
         } catch let error as LinuxGuestError {
             guard case .timedOut = error else { return XCTFail("unexpected error \(error)") }
         }
         let poisoned = await channel.isPoisoned
-        XCTAssertTrue(poisoned)
-        XCTAssertTrue(console.written.contains(0x03), "timeout must interrupt the guest command")
+        XCTAssertFalse(poisoned, "a confirmed reap must not poison the channel")
     }
 
-    func testRunCancellationInterrupts() async throws {
+    func testRunCancellationSurfacesAfterGuestConfirmsReap() async throws {
         let console = TestLinuxGuestConsole()
-        console.setHandler { _ in [] }
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            return [Data("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-END \(token) 130\u{1e}".utf8)]
+        }
         let channel = LinuxGuestCommandChannel(transport: console)
         let token = CancellationToken()
         let task = Task {
@@ -323,11 +401,268 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
             _ = try await task.value
             XCTFail("expected cancellation")
         } catch FloeError.cancelled {
-            // expected
+            // expected — surfaced only after the guest's END confirmed the reap
         }
         let poisoned = await channel.isPoisoned
-        XCTAssertTrue(poisoned)
-        XCTAssertTrue(console.written.contains(0x03))
+        XCTAssertFalse(poisoned)
+        let text = String(decoding: console.written, as: UTF8.self)
+        XCTAssertTrue(text.contains("FLOE-SIGNAL"))
+    }
+
+    // MARK: protocol-3 router / transport
+
+    func testRouterPreservesRawRSAndLeadingNewline() async throws {
+        // Bytes that look like frames but are not (unknown name, no token,
+        // split markers) and leading newlines must reach the caller exactly.
+        let console = TestLinuxGuestConsole()
+        var payloadBytes: [UInt8] = [0x0a, 0x1e, 0x1e]
+        payloadBytes.append(contentsOf: Array("mid".utf8))
+        payloadBytes.append(0x1e)
+        payloadBytes.append(contentsOf: Array("FLOE-X".utf8))
+        payloadBytes.append(contentsOf: [0x1e, 0x0a, 0x1e])
+        let payload = Data(payloadBytes)
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            var stream = Data()
+            stream.append(Data("\u{1e}FLOE-BEGIN \(token)\u{1e}".utf8))
+            stream.append(Data("\u{1e}FLOE-OUT \(token)\u{1e}".utf8))
+            stream.append(payload)
+            stream.append(Data("\u{1e}FLOE-END \(token) 0\u{1e}".utf8))
+            return payloadBytes.isEmpty ? [stream] : stream.map { Data([$0]) } // bytewise: split frames
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let result = try await channel.run(argv: ["/bin/cat"], timeout: 5)
+        XCTAssertEqual(result.stdout, String(decoding: payload, as: UTF8.self))
+        XCTAssertEqual(result.exitCode, 0)
+    }
+
+    func testInterleavedCommandOutputStaysPerToken() async throws {
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : [] }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        async let first = channel.run(argv: ["/bin/echo", "a"], timeout: 5)
+        async let second = channel.run(argv: ["/bin/echo", "b"], timeout: 5)
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count < 2 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let tokens = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC")
+        XCTAssertEqual(tokens.count, 2)
+        guard tokens.count == 2 else { return }
+        let a = tokens[0]
+        let b = tokens[1]
+        // Realistic shape: each command announces its own BEGIN, then the two
+        // streams interleave.
+        var stream = Data()
+        stream.append(Data("\u{1e}FLOE-BEGIN \(a)\u{1e}".utf8))
+        stream.append(Data("\u{1e}FLOE-BEGIN \(b)\u{1e}".utf8))
+        stream.append(Data("\u{1e}FLOE-OUT \(a)\u{1e}".utf8))
+        stream.append(Data("alpha-1".utf8))
+        stream.append(Data("\u{1e}FLOE-OUT \(b)\u{1e}".utf8))
+        stream.append(Data("beta-1".utf8))
+        stream.append(Data("\u{1e}FLOE-OUT \(a)\u{1e}".utf8))
+        stream.append(Data("alpha-2".utf8))
+        stream.append(Data("\u{1e}FLOE-END \(b) 0\u{1e}".utf8))
+        stream.append(Data("\u{1e}FLOE-END \(a) 0\u{1e}".utf8))
+        console.push(stream.map { Data([$0]) })
+        let resultA = try await first
+        let resultB = try await second
+        // The task/token mapping is not deterministic, so assert by content:
+        // each token sees exactly its own bytes and nothing from the other.
+        XCTAssertEqual(Set([resultA.stdout, resultB.stdout]), Set(["alpha-1alpha-2", "beta-1"]))
+        XCTAssertEqual(resultA.exitCode, 0)
+        XCTAssertEqual(resultB.exitCode, 0)
+    }
+
+    func testTimeoutKeepsTokenForLateFailedQuarantine() async throws {
+        // The guest is silent after BEGIN; the token must stay registered so
+        // a late FAILED (quarantine) is observed — never a timeout/stopped
+        // claim, and the channel poisons.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            return [Data("\u{1e}FLOE-BEGIN \(token)\u{1e}".utf8)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let task = Task {
+            try await channel.run(argv: ["sleep", "100"], timeout: 0.2)
+        }
+        let signalDeadline = Date().addingTimeInterval(5)
+        while Date() < signalDeadline {
+            let text = String(decoding: console.written, as: UTF8.self)
+            if text.contains("FLOE-SIGNAL") { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let signalTokens = TestLinuxGuestConsole.tokens(in: console.written, name: "SIGNAL")
+        XCTAssertEqual(signalTokens.count, 1, "targeted SIGNAL must address exactly one token")
+        guard let token = signalTokens.first else { return }
+        console.push([Data("\u{1e}FLOE-FAILED \(token) unreaped\u{1e}".utf8)])
+        do {
+            _ = try await task.value
+            XCTFail("late FAILED was not surfaced")
+        } catch let error as LinuxGuestError {
+            guard case .consoleUnavailable(let detail) = error else { return XCTFail("unexpected \(error)") }
+            XCTAssertTrue(detail.contains("unreaped") || detail.contains("abandoned"), detail)
+        }
+        let poisoned = await channel.isPoisoned
+        XCTAssertTrue(poisoned, "a quarantine must poison the channel")
+    }
+
+    func testSessionParserStripsReannouncedOutputMarkers() async throws {
+        // The runner re-announces OUT when another token wrote in between;
+        // those marker bytes must not be shown as terminal output.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            guard token == "sess-1" else { return [] }
+            var stream = Data()
+            stream.append(Data("\u{1e}FLOE-BEGIN sess-1\u{1e}".utf8))
+            stream.append(Data("\u{1e}FLOE-OUT sess-1\u{1e}".utf8))
+            stream.append(Data("one".utf8))
+            stream.append(Data("\u{1e}FLOE-OUT sess-1\u{1e}".utf8))
+            stream.append(Data("two".utf8))
+            stream.append(Data("\u{1e}FLOE-END sess-1 0\u{1e}".utf8))
+            return [stream]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let session = try await channel.openSession(
+            sessionID: "sess-1", argv: ["/bin/sh"], workingDirectory: nil, columns: 80, rows: 24
+        )
+        var output = Data()
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let chunk = await session.nextOutput(timeoutMs: 100) {
+                output.append(chunk)
+            } else if await session.isFinished {
+                break
+            }
+        }
+        XCTAssertEqual(String(decoding: output, as: UTF8.self), "onetwo")
+        let exit = await session.terminalExitCode
+        XCTAssertEqual(exit, 0)
+    }
+
+    func testOutputLessSessionFinishes() async throws {
+        // BEGIN + END with no output must resolve (the old parser only opened
+        // on OUT and hung forever).
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            guard token == "sess-quiet" else { return [] }
+            return [Data("\u{1e}FLOE-BEGIN sess-quiet\u{1e}\u{1e}FLOE-END sess-quiet 0\u{1e}".utf8)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let session = try await channel.openSession(
+            sessionID: "sess-quiet", argv: ["/bin/true"], workingDirectory: nil, columns: 80, rows: 24
+        )
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, await !session.isFinished {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let finished = await session.isFinished
+        XCTAssertTrue(finished, "output-less session did not finish")
+        let exit = await session.terminalExitCode
+        XCTAssertEqual(exit, 0)
+    }
+
+    func testOpenFailureSurfacesMessageAndExitCode() async throws {
+        // An OPEN failure is OUT + reason + END 125 (no ERR section in a
+        // session stream): the message is terminal output and the code is the
+        // real one, not a hang and not a quarantine.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            guard token == "sess-full" else { return [] }
+            var stream = Data()
+            stream.append(Data("\u{1e}FLOE-OUT sess-full\u{1e}".utf8))
+            stream.append(Data("floe-exec: session table full\n".utf8))
+            stream.append(Data("\u{1e}FLOE-END sess-full 125\u{1e}".utf8))
+            return [stream]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let session = try await channel.openSession(
+            sessionID: "sess-full", argv: ["/bin/sh"], workingDirectory: nil, columns: 80, rows: 24
+        )
+        var output = Data()
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let chunk = await session.nextOutput(timeoutMs: 100) {
+                output.append(chunk)
+            } else if await session.isFinished {
+                break
+            }
+        }
+        XCTAssertTrue(String(decoding: output, as: UTF8.self).contains("session table full"))
+        let exit = await session.terminalExitCode
+        XCTAssertEqual(exit, 125)
+        let failure = await session.failure
+        XCTAssertNil(failure, "an OPEN failure is not a quarantine")
+    }
+
+    func testConcurrentNegotiationUsesOneProbeAndOneReader() async throws {
+        // Two concurrent run() calls must share one HELLO probe and one
+        // console reader: a second iterator on the transport stream would
+        // split frames between two consumers.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        async let first = channel.run(argv: ["/bin/echo", "1"], timeout: 5)
+        async let second = channel.run(argv: ["/bin/echo", "2"], timeout: 5)
+        _ = try await first
+        _ = try await second
+        let helloCount = TestLinuxGuestConsole.tokens(in: console.written, name: "HELLO").count
+        XCTAssertEqual(helloCount, 1, "concurrent runs must share one HELLO probe")
+        XCTAssertEqual(console.outputCallCount, 1, "the console must have exactly one reader")
+    }
+
+    func testLegacyModeSwitchKeepsSingleReader() async throws {
+        // The runner upgrade switches the SAME channel to legacy serial mode,
+        // uploads with the same reader, then returns to protocol 3 — it must
+        // never cancel the transport stream and start a second reader.
+        let console = TestLinuxGuestConsole()
+        let current = TestFlag()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") {
+                return current.value ? caps(token) : []
+            }
+            return reply(token, stdout: "legacy-ok\n", stderr: "", exit: 0)
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        do {
+            _ = try await channel.probeCapabilities(timeout: 0.3, requireCurrentProtocol: true)
+            XCTFail("legacy runner was accepted")
+        } catch let error as LinuxGuestError {
+            guard case .runnerUpgradeRequired = error else { return XCTFail("unexpected \(error)") }
+        }
+        try await channel.enterLegacySerialMode()
+        let result = try await channel.run(argv: ["/bin/true"], timeout: 3)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "legacy-ok\n")
+        await channel.resetRouterState()
+        await channel.leaveLegacySerialMode()
+        current.value = true
+        let capsLine = try await channel.probeCapabilities(timeout: 2, requireCurrentProtocol: true)
+        XCTAssertTrue(capsLine?.contains("protocol=3") == true)
+        XCTAssertEqual(console.outputCallCount, 1, "legacy upgrade must keep one reader")
+    }
+}
+
+/// Small mutable flag for handler closures (NSLock-backed like the console).
+final class TestFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+        set {
+            lock.lock()
+            stored = newValue
+            lock.unlock()
+        }
     }
 }
 
@@ -349,7 +684,7 @@ final class LinuxGuestRegistryTests: XCTestCase {
 
     func testOwnsStoppedGuestButSupportsOnlyRunning() async {
         let ledger = FakeSessionLedger()
-        let factory = FakeSessionFactory(ledger: ledger) { _, token in reply(token) }
+        let factory = FakeSessionFactory(ledger: ledger) { _, token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
         let registry = makeRegistry(
             descriptors: ["env-1": makeDescriptor(id: "env-1")],
             images: ["test-image": makeImage()],
@@ -366,7 +701,7 @@ final class LinuxGuestRegistryTests: XCTestCase {
 
     func testStartRejectsUnqualifiedImage() async {
         let ledger = FakeSessionLedger()
-        let factory = FakeSessionFactory(ledger: ledger) { _, token in reply(token) }
+        let factory = FakeSessionFactory(ledger: ledger) { _, token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
         let registry = makeRegistry(
             descriptors: ["env-1": makeDescriptor(id: "env-1")],
             images: ["test-image": makeImage(qualified: false)],
@@ -387,7 +722,7 @@ final class LinuxGuestRegistryTests: XCTestCase {
 
     func testLifecycleRunsCommandsAndStops() async throws {
         let ledger = FakeSessionLedger()
-        let factory = FakeSessionFactory(ledger: ledger) { _, token in reply(token, stdout: "ok", stderr: "", exit: 0) }
+        let factory = FakeSessionFactory(ledger: ledger) { _, token in token.hasPrefix("hello-") ? caps(token) : reply(token, stdout: "ok", stderr: "", exit: 0) }
         let registry = makeRegistry(
             descriptors: ["env-1": makeDescriptor(id: "env-1")],
             images: ["test-image": makeImage()],
@@ -415,9 +750,9 @@ final class LinuxGuestRegistryTests: XCTestCase {
         XCTAssertFalse(running)
     }
 
-    func testSecondGuestIsRejectedWhileOneRuns() async throws {
+    func testTwoEnvironmentsRunGuestsConcurrently() async throws {
         let ledger = FakeSessionLedger()
-        let factory = FakeSessionFactory(ledger: ledger) { _, token in reply(token) }
+        let factory = FakeSessionFactory(ledger: ledger) { _, token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
         let registry = makeRegistry(
             descriptors: [
                 "env-1": makeDescriptor(id: "env-1"),
@@ -427,18 +762,19 @@ final class LinuxGuestRegistryTests: XCTestCase {
             factory: factory
         )
         _ = try await registry.start(environmentID: "env-1", taskID: nil)
-        do {
-            _ = try await registry.start(environmentID: "env-2", taskID: nil)
-            XCTFail("the engine supports one running guest at a time")
-        } catch let error as LinuxGuestError {
-            guard case .guestBusy = error else { return XCTFail("unexpected error \(error)") }
-        }
+        let second = try await registry.start(environmentID: "env-2", taskID: nil)
+        XCTAssertTrue(second, "per-VM engine state allows independent guests")
+        let firstRunning = await registry.status(environmentID: "env-1").running
+        let secondRunning = await registry.status(environmentID: "env-2").running
+        XCTAssertTrue(firstRunning)
+        XCTAssertTrue(secondRunning)
         await registry.stop(environmentID: "env-1")
+        await registry.stop(environmentID: "env-2")
     }
 
     func testRunBeforeStartReportsNotRunning() async {
         let ledger = FakeSessionLedger()
-        let factory = FakeSessionFactory(ledger: ledger) { _, token in reply(token) }
+        let factory = FakeSessionFactory(ledger: ledger) { _, token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
         let registry = makeRegistry(
             descriptors: ["env-1": makeDescriptor(id: "env-1")],
             images: ["test-image": makeImage()],
@@ -471,7 +807,7 @@ final class LinuxGuestShellBackendTests: XCTestCase {
             environments: FakeEnvironmentProvider(descriptors: ["env-1": makeDescriptor(id: "env-1")]),
             images: FakeImageResolver(images: [:]),
             limits: .standard,
-            factory: FakeSessionFactory(ledger: FakeSessionLedger()) { _, token in reply(token) }
+            factory: FakeSessionFactory(ledger: FakeSessionLedger()) { _, token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
         ))
         let backend = LinuxGuestShellBackend(runner: service)
         let request = ShellRunRequest(
@@ -498,7 +834,7 @@ final class LinuxGuestShellBackendTests: XCTestCase {
             environments: FakeEnvironmentProvider(descriptors: [:]),
             images: FakeImageResolver(images: [:]),
             limits: .standard,
-            factory: FakeSessionFactory(ledger: FakeSessionLedger()) { _, token in reply(token) }
+            factory: FakeSessionFactory(ledger: FakeSessionLedger()) { _, token in token.hasPrefix("hello-") ? caps(token) : reply(token) }
         ))
         let backend = LinuxGuestShellBackend(runner: service)
         do {

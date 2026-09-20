@@ -1,0 +1,4 @@
+module FloeTinyEMU {
+    header "floe_tinyemu_stub.h"
+    export *
+}
