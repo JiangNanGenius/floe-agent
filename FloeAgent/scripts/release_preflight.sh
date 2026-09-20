@@ -28,6 +28,17 @@ if ! python3 scripts/validate_localization_catalog.py FloeApp/Resources/Localiza
     exit 1
 fi
 
+# The native Office framework is a separately compiled, pinned dependency.
+# Fail before bootstrapping/building the App if its source changed without a
+# matching rebuilt artifact. This is the same read-only check as bootstrap.
+python3 -B - <<'PY'
+import sys
+sys.path.insert(0, 'scripts')
+from bootstrap_office_host import LOCK, checked_lock
+checked_lock(LOCK)
+print('Office native source pin OK')
+PY
+
 setting() {
     local key="$1"
     awk -F': ' -v key="$key" '$1 ~ "^[[:space:]]*" key "$" {gsub(/[\"[:space:]]/, "", $2); print $2; exit}' project.yml
