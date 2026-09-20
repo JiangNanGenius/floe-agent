@@ -57,8 +57,8 @@ struct LuaShellInstallTests {
         )
         let backend = IOSSystemShellBackend()
         let toolContext = ToolContext(runID: UUID(), scope: .local,
-                                      workspaceRootURL: root, environment: toolEnvironment,
-                                      cancellation: CancellationToken())
+                                      workspaceRootURL: root, cancellation: CancellationToken(),
+                                      environment: toolEnvironment)
 
         func runShell(_ command: String, timeout: TimeInterval = 180) async -> ShellRunOutcome {
             await backend.run(.init(command: command, cwd: ".", rootURL: root, timeout: timeout,

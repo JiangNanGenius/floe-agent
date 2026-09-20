@@ -2035,6 +2035,18 @@ public actor FloeAgentRuntime {
                     await emit(.textDelta(.init(text: streamText)))
                 }
             }
+            // Forced budget/no-progress finalization also owes a visible
+            // result. Keep tools disabled and preserve the checkpoint instead
+            // of reporting an empty turn as successful completion.
+            if streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !didVerifyFinalAnswer,
+               configuration.provider.kind == .local || historyLookupSucceededInRun {
+                await failRun(
+                    message: "The model returned no visible answer before the run stopped. The run state is saved; resume or retry the task.",
+                    recoverable: true
+                )
+                return
+            }
             await emit(.completed(.init(stopReason: stopReason)))
             await completeRun(stopReason: stopReason)
             return
