@@ -163,6 +163,38 @@ let package = Package(
             path: "Sources/FloeLlamaVisionShim",
             publicHeadersPath: "include"
         ),
+        // Pinned TinyEMU 2019-12-21 RV64 engine (MIT/BSD/PD, see
+        // ThirdParty/TinyEMU/LICENSE-INVENTORY.md) compiled for the app.
+        // Sources are vendored by ThirdParty/TinyEMU/vendor_swift_sources.sh
+        // (pristine + patches 0001/0002; --check verifies). Interpreted
+        // execution only: no JIT, no dynamic code generation.
+        .target(
+            name: "FloeTinyEMU",
+            dependencies: [],
+            path: "ThirdParty/TinyEMU/Sources/FloeTinyEMU",
+            exclude: ["engine/riscv_cpu.c"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("engine"),
+                .headerSearchPath("engine/slirp"),
+                .headerSearchPath("shims"),
+                .define("_FILE_OFFSET_BITS", to: "64"),
+                .define("_LARGEFILE_SOURCE"),
+                .define("_GNU_SOURCE"),
+                .define("CONFIG_VERSION", to: "\"2019-12-21\""),
+                .define("CONFIG_SLIRP"),
+                .define("CONFIG_RISCV_MAX_XLEN", to: "64"),
+                // slirp declares BSD-internal records (mbuf/ip/tcphdr/…, all
+                // mechanically renamed by vendor_swift_sources.sh) that the
+                // Darwin umbrella PCM rejects; with Xcode 26/clang 21 the
+                // module importer segfaults on the ODR comparison of the
+                // renamed tree. Compiling this vendored C target without
+                // Clang modules keeps the same sources and flags otherwise,
+                // and Swift still imports the target through its module map.
+                .unsafeFlags(["-fno-modules"])
+            ],
+            linkerSettings: [.linkedLibrary("m")]
+        ),
         .target(
             name: "FloeLocalModelCatalog",
             dependencies: ["FloeCore"],

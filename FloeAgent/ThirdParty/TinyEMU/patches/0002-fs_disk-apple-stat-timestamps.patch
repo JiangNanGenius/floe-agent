@@ -1,0 +1,19 @@
+--- a/fs_disk.c
++++ b/fs_disk.c
+@@ -38,6 +38,16 @@
+ #include "cutils.h"
+ #include "list.h"
+ #include "fs.h"
++
++/* FLOE-EMBED: Apple SDKs (macOS/iOS) spell the stat timestamp members
++ * st_atimespec/st_mtimespec/st_ctimespec. The Makefile qualification build
++ * injects this mapping with -include on macOS; the SwiftPM C target cannot
++ * force-include, so the vendored copy carries the mapping. */
++#ifdef __APPLE__
++#define st_atim st_atimespec
++#define st_mtim st_mtimespec
++#define st_ctim st_ctimespec
++#endif
+ 
+ typedef struct {
+     FSDevice common;
