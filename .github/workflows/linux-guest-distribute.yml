@@ -829,8 +829,12 @@ jobs:
                       if digests:
                           tarballs[name] = digests
               check.require(len(tarballs) >= 2, "upstream carries kernel and boot loader source tarballs (%d)" % len(tarballs))
-              for name in ("riscv-linux.diff", "riscv-pk.diff", "config_linux_riscv64"):
-                  check.require(os.path.isfile(os.path.join(upstream, name)), "upstream/%s is present" % name)
+              # build-kernel-bbl.sh copies each pinned patch (and the kernel config) into
+              # the matching *-src tree before tarring it, so the shipped corresponding
+              # source keeps them at upstream/riscv-pk-src/ and upstream/riscv-linux-src/.
+              for relative in ("riscv-pk-src/riscv-pk.diff", "riscv-linux-src/riscv-linux.diff",
+                               "riscv-linux-src/config_linux_riscv64"):
+                  check.require(os.path.isfile(os.path.join(upstream, relative)), "upstream/%s is present" % relative)
               facts["upstream"] = {"manifest_sha256": sha(os.path.join(upstream, "SOURCE-MANIFEST.md"), "sha256"), "pins": pinned, "tarballs": tarballs}
 
               # --- license texts that must travel with the image --------------------
