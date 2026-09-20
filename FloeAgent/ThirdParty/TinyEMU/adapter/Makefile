@@ -16,7 +16,12 @@
 # (see Qualification/TinyEMULinux/run_local_smoke.sh for a full driver)
 
 TINYEMU_SRC ?= tinyemu-2019-12-21
-PATCH ?= $(dir $(lastword $(MAKEFILE_LIST)))../patches/0001-htif-poweroff-callback.patch
+# PATCH_DIR default assumes make runs from FloeAgent/ThirdParty/TinyEMU;
+# callers invoking from elsewhere pass it explicitly (make's wildcard
+# cannot resolve ".." inside patterns, and paths must stay relative
+# because the workspace may contain spaces).
+PATCH_DIR ?= patches
+PATCHES := $(sort $(wildcard $(PATCH_DIR)/*.patch))
 ADAPTER ?= $(dir $(lastword $(MAKEFILE_LIST)))
 HOST_DIR ?=
 BUILD ?= out
@@ -36,12 +41,15 @@ endif
 
 SLIRP_OBJS := bootp ip_icmp mbuf slirp tcp_output cksum ip_input misc \
               socket tcp_subr udp if ip_output sbuf tcp_input tcp_timer
-CORE_OBJS := virtio pci fs cutils iomem simplefb json machine fs_disk softfp
+# pristine-compiled core objects
+CORE_OBJS := virtio pci fs cutils simplefb json machine fs_disk softfp
+# sources replaced by patched build copies (see PATCHES)
+PATCHED_SRCS := riscv_machine.c iomem.c
 
 OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(CORE_OBJS))) \
         $(addprefix $(BUILD)/slirp/,$(addsuffix .o,$(SLIRP_OBJS))) \
         $(BUILD)/riscv_cpu32.o $(BUILD)/riscv_cpu64.o \
-        $(BUILD)/riscv_machine.o
+        $(BUILD)/riscv_machine.o $(BUILD)/iomem.o
 
 TARGETS := $(BUILD)/libfloevm.a
 ifneq ($(HOST_DIR),)
@@ -54,15 +62,21 @@ $(BUILD)/.dir:
 	mkdir -p $(BUILD)/slirp
 	touch $@
 
-# pristine sources compile directly (no copying); only riscv_machine.c is
-# patched, into $(BUILD), verified after patching.
-$(BUILD)/riscv_machine.c: $(TINYEMU_SRC)/riscv_machine.c $(PATCH) | $(BUILD)/.dir
-	cp $< $@
-	patch -p1 -N -d $(BUILD) < $(PATCH)
-	grep -q "poweroff_requested" $@
+# Patched sources: copy into $(BUILD), apply every patch in order, verify
+# the expected markers landed.
+$(BUILD)/.prepared: $(PATCHES) | $(BUILD)/.dir
+	for f in $(PATCHED_SRCS); do cp $(TINYEMU_SRC)/$$f $(BUILD)/$$f; done
+	for p in $(PATCHES); do patch -p1 -N -d $(BUILD) < $$p; done
+	grep -q "poweroff_requested" $(BUILD)/riscv_machine.c
+	grep -q "floe_ram_oom" $(BUILD)/iomem.c
+	grep -q "static int copy_bios" $(BUILD)/riscv_machine.c
+	touch $@
 
-$(BUILD)/riscv_machine.o: $(BUILD)/riscv_machine.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+$(BUILD)/riscv_machine.o: $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -c -o $@ $(BUILD)/riscv_machine.c
+
+$(BUILD)/iomem.o: $(BUILD)/.prepared
+	$(CC) $(CFLAGS) -c -o $@ $(BUILD)/iomem.c
 
 $(BUILD)/%.o: $(TINYEMU_SRC)/%.c | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -c -o $@ $<

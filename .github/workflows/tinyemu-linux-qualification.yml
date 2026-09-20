@@ -38,7 +38,8 @@ jobs:
         run: |
           cd FloeAgent/Qualification/TinyEMULinux
           make -f ../../ThirdParty/TinyEMU/adapter/Makefile \
-            TINYEMU_DIR= TINYEMU_SRC=../../../work/src/tinyemu-2019-12-21 \
+            TINYEMU_SRC=../../../work/src/tinyemu-2019-12-21 \
+            PATCH_DIR=../../ThirdParty/TinyEMU/patches \
             BUILD=../../../work/build HOST_DIR=. -j"$(nproc)"
           ../../../work/build/floe_vm_host 2>&1 | head -2 || true
 
