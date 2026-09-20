@@ -20,6 +20,67 @@ struct LocalShellValidationTests {
         #expect(!registry.allDescriptors.contains { $0.name == "apt" })
         #expect(!ToolCatalog.allDescriptors.contains { $0.name == "apt" })
         #expect(registry.allDescriptors.contains { $0.name == "exec.shell" })
+        // The per-family entries are advertised instead; without a signed WASM
+        // store the WASM entry stays absent rather than claiming availability.
+        #expect(registry.allDescriptors.contains { $0.name == "python.packages" })
+        #expect(!registry.allDescriptors.contains { $0.name == "wasm.packages" })
+        #expect(registry.runner(named: "wasm.packages") == nil)
+    }
+
+    @Test func retiredAptInstallOnlyReturnsMigrationGuidance() async throws {
+        let backend = RecordingShellBackend(), registry = ToolRunnerRegistry()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalog = CapabilityCatalog(entries: [
+            .init(id: "floe/py-marko", kind: .pythonPackage, tier: .managed, summary: "test", spec: "marko==2.2.0"),
+            .init(id: "floe/lua", kind: .wasmCommand, tier: .wasm, summary: "test wasm")
+        ])
+        let installer = CapabilityInstaller(catalog: catalog, pythonInstaller: nil,
+            http: HTTPRequestService(), packagesRoot: root)
+        registerShellTools(registry: registry,
+            shell: LocalShellService(backend: backend, rootProvider: { root }),
+            sessions: ShellSessionCenter(backend: backend), capabilityInstaller: installer)
+        let apt = try #require(registry.runner(named: "apt"))
+        let context = ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken())
+        let install = try await apt.execute(
+            argumentsJSON: Data(#"{"action":"install","ids":["floe/py-marko","floe/lua"],"purpose":"legacy"}"#.utf8),
+            context: context)
+        #expect(install.exitStatus == 1)
+        #expect(install.summary.contains("status=retired"))
+        #expect(install.summary.contains("no changes were made"))
+        #expect(install.summary.contains("python.packages"))
+        #expect(install.summary.contains("wasm.packages"))
+        // The read-only actions still answer catalog queries.
+        let search = try await apt.execute(
+            argumentsJSON: Data(#"{"action":"search","query":"marko"}"#.utf8), context: context)
+        #expect(search.exitStatus == 0)
+        #expect(search.summary.contains("floe/py-marko"))
+    }
+
+    @Test func pythonPackageToolRejectsOtherFamilies() async throws {
+        let backend = RecordingShellBackend(), registry = ToolRunnerRegistry()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalog = CapabilityCatalog(entries: [
+            .init(id: "floe/lua", kind: .wasmCommand, tier: .wasm, summary: "test wasm"),
+            .init(id: "floe/py-marko", kind: .pythonPackage, tier: .bundled, summary: "test", spec: "marko==2.2.0")
+        ])
+        let installer = CapabilityInstaller(catalog: catalog, pythonInstaller: nil,
+            http: HTTPRequestService(), packagesRoot: root)
+        registerShellTools(registry: registry,
+            shell: LocalShellService(backend: backend, rootProvider: { root }),
+            sessions: ShellSessionCenter(backend: backend), capabilityInstaller: installer)
+        let tool = try #require(registry.runner(named: "python.packages"))
+        let context = ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken())
+        let wrong = try await tool.execute(
+            argumentsJSON: Data(#"{"action":"install","ids":["floe/lua"],"purpose":"test"}"#.utf8),
+            context: context)
+        #expect(wrong.exitStatus == 1)
+        #expect(wrong.summary.contains("wasm.packages"))
+        // list only surfaces the Python family.
+        let list = try await tool.execute(argumentsJSON: Data(#"{"action":"list"}"#.utf8), context: context)
+        #expect(list.summary.contains("floe/py-marko"))
+        #expect(!list.summary.contains("floe/lua"))
     }
 
     @Test func unavailableCommandNamesInsideDataDoNotBlockScripts() {
