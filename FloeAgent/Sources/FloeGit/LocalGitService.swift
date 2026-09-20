@@ -9,16 +9,40 @@ import libgit2
 public actor LocalGitService {
     public init() {}
 
+    /// Walks up from `root` through its ancestors to the nearest directory
+    /// that contains a `.git` entry — a directory for an ordinary repository,
+    /// or a *file* for a linked worktree or submodule. Returns that repository
+    /// root, or nil when no ancestor is a repository.
+    ///
+    /// The previous root-only existence check reported "not a repository" for
+    /// a workspace that lives *inside* a Git repository (or a worktree), which
+    /// hid the source-control tree entirely. Discovery keeps those workspaces
+    /// functional while unchanged repository roots behave exactly as before.
+    public func repositoryRoot(at root: URL) -> URL? {
+        var candidate = root.standardizedFileURL
+        let fileManager = FileManager.default
+        while true {
+            if fileManager.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
+                return candidate
+            }
+            let parent = candidate.deletingLastPathComponent()
+            // `deletingLastPathComponent` of the filesystem root returns the
+            // root itself; that is where the walk stops.
+            if parent == candidate { return nil }
+            candidate = parent
+        }
+    }
+
     public func snapshot(at root: URL, commitLimit: Int = 30) throws -> GitRepositorySnapshot {
-        guard FileManager.default.fileExists(atPath: root.appendingPathComponent(".git").path) else {
+        guard let repositoryRoot = repositoryRoot(at: root) else {
             return GitRepositorySnapshot(isRepository: false)
         }
-        let repository = try Repository.open(at: root)
+        let repository = try Repository.open(at: repositoryRoot)
         let branch: String?
         if let currentBranch = try? repository.branch.current.name {
             branch = currentBranch
         } else {
-            branch = try symbolicHeadBranchName(at: root)
+            branch = try symbolicHeadBranchName(at: repositoryRoot)
         }
         let branches = (try? repository.branch.list(.local).map(\.name).sorted()) ?? []
         let changes = try repository.status().compactMap(Self.change(from:))
@@ -44,7 +68,8 @@ public actor LocalGitService {
             branches: branches,
             remoteURL: repository.remote["origin"]?.url.absoluteString,
             changes: changes,
-            recentCommits: commits
+            recentCommits: commits,
+            repositoryRoot: repositoryRoot
         )
     }
 

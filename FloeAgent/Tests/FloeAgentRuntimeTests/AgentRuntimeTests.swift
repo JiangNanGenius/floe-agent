@@ -1514,18 +1514,89 @@ struct AgentRuntimeTests {
         #expect(trimmed.count == ToolReplayPlanner.defaultMaxPairs)
         #expect(trimmed.map { $0.call.id } == (6...45).map { "trim-\($0)" })
 
-        // Byte budget: 10-byte summaries within 25 bytes keep the newest two.
+        // Byte budget: each pair now counts its full evidence weight —
+        // 16 argument bytes (`{"text":"hello"}`) plus the 10-byte summary —
+        // so 52 bytes keep the newest two complete pairs.
         let byteTrimmed = ToolReplayPlanner.trimToBudget(
             try (1...5).map { try pair($0, summaryBytes: 10) },
             maxPairs: ToolReplayPlanner.defaultMaxPairs,
-            maxResultBytes: 25
+            maxResultBytes: 52
         )
         #expect(byteTrimmed.map { $0.call.id } == ["trim-4", "trim-5"])
+
+        // A budget below one whole 26-byte pair drops it rather than
+        // splitting: argument JSON must stay wire-valid.
+        #expect(ToolReplayPlanner.trimToBudget(
+            try (1...5).map { try pair($0, summaryBytes: 10) },
+            maxPairs: ToolReplayPlanner.defaultMaxPairs,
+            maxResultBytes: 25
+        ).isEmpty)
 
         // A zero byte budget drops everything rather than splitting a pair.
         #expect(ToolReplayPlanner.trimToBudget(pairs, maxResultBytes: 0).isEmpty)
         // Trimming never mutates the source record.
         #expect(pairs.count == 45)
+    }
+
+    @Test("Replay byte budget counts argument JSON without ever truncating it")
+    func toolReplayBudgetCountsArgumentBytes() throws {
+        let hugeArgs = #"{"text":""# + String(repeating: "a", count: 300) + #""}"#
+        let huge = ReplayedToolPair(
+            call: try TestFixtures.toolCall(id: "args-huge", arguments: hugeArgs),
+            result: ToolResult(
+                callID: "args-huge", status: .ok,
+                outputSummary: "short", outputDigest: "d"
+            )
+        )
+        let small = try (1...3).map { index in
+            ReplayedToolPair(
+                call: try TestFixtures.toolCall(id: "args-small-\(index)"),
+                result: ToolResult(
+                    callID: "args-small-\(index)", status: .ok,
+                    outputSummary: "short", outputDigest: "d"
+                )
+            )
+        }
+        // Small pairs weigh 16 + 5 = 21 bytes; the huge pair weighs 316 + 5.
+        // A 337-byte budget drops the two oldest small pairs whole.
+        let trimmed = ToolReplayPlanner.trimToBudget(
+            small + [huge], maxPairs: .max, maxResultBytes: 337
+        )
+        #expect(trimmed.map { $0.call.id } == ["args-small-3", "args-huge"])
+        // Kept pairs are never split: argument JSON stays byte-identical.
+        #expect(trimmed.last?.call.argumentsJSON == huge.call.argumentsJSON)
+
+        // A pair that alone exceeds the budget falls out whole; the source
+        // record and its arguments are never truncated.
+        #expect(ToolReplayPlanner.trimToBudget(
+            [huge], maxPairs: .max, maxResultBytes: 100
+        ).isEmpty)
+        #expect(huge.call.argumentsJSON.count > 100)
+    }
+
+    @Test("Bounded reasoning keeps the wire contract without the whole trace")
+    func boundedReasoningContract() throws {
+        #expect(ToolReplayPlanner.boundedReasoning(nil) == nil)
+        // Empty reasoning is absent reasoning: never emit an empty string.
+        #expect(ToolReplayPlanner.boundedReasoning("") == nil)
+        let short = "concise plan"
+        #expect(ToolReplayPlanner.boundedReasoning(short) == short)
+
+        let long = String(repeating: "r", count: ToolReplayPlanner.defaultMaxReasoningBytes + 2_000)
+        let bounded = try #require(ToolReplayPlanner.boundedReasoning(long))
+        #expect(bounded.hasPrefix("[earlier reasoning omitted]\n"))
+        #expect(bounded.hasSuffix(String(long.suffix(1_000))))
+        #expect(bounded.utf8.count <= ToolReplayPlanner.defaultMaxReasoningBytes + 64)
+
+        // Multibyte content respects the byte budget exactly.
+        let multibyte = String(repeating: "推", count: ToolReplayPlanner.defaultMaxReasoningBytes)
+        let boundedMultibyte = try #require(ToolReplayPlanner.boundedReasoning(multibyte))
+        #expect(boundedMultibyte.utf8.count <= ToolReplayPlanner.defaultMaxReasoningBytes + 64)
+
+        // Idempotent: a checkpointed excerpt re-applied after a restart
+        // reproduces the same bytes, keeping the envelope digest stable.
+        #expect(ToolReplayPlanner.boundedReasoning(bounded) == bounded)
+        #expect(ToolReplayPlanner.boundedReasoning(boundedMultibyte) == boundedMultibyte)
     }
 
     @Test("Replay compaction matches the context-engine truncation contract")
@@ -1618,6 +1689,98 @@ struct AgentRuntimeTests {
         let legacyData = try JSONSerialization.data(withJSONObject: object)
         let legacyDecoded = try AgentCheckpoint.decoded(from: legacyData)
         #expect(legacyDecoded.replayedToolPairs == nil)
+    }
+
+    @Test("A large first tool result crosses the boundary bounded, byte-identical and resumable")
+    func largeFirstToolResultCrossesBoundaryBounded() async throws {
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
+        let call = try TestFixtures.toolCall(id: "bounded-first")
+        let rawOutput = (0..<200).map { "row-\($0)-" + String(repeating: "z", count: 40) }
+            .joined(separator: "\n")
+        let rawReasoning = String(repeating: "r", count: 6_000)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .reasoningSummary(.init(text: rawReasoning)),
+                .toolRequest(call),
+                .completed(.init(stopReason: .toolUse))
+            ],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.results = [ToolResult(
+            callID: call.id, status: .ok,
+            outputSummary: rawOutput, outputDigest: "d"
+        )]
+        let store = MockCheckpointStore()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: model),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            checkpointStore: store
+        )
+
+        try await runtime.start(goal: "bound the first post-tool peak")
+
+        #expect(await runtime.state.name == "completed")
+        #expect(adapter.requests.count == 2)
+
+        // The live continuation request carries exactly one bounded form of
+        // the large result, with the provenance envelope intact at the head.
+        let liveRequest = try #require(adapter.requests.last)
+        let wireOutput = try #require(liveRequest.toolResults.first?.output)
+        #expect(wireOutput.contains("trustedSourceID"))
+        #expect(wireOutput.contains("[middle of tool output compacted]"))
+        #expect(wireOutput.contains("originalBytes="))
+        #expect(wireOutput.utf8.count < rawOutput.utf8.count)
+        // Reasoning rides the same request as a capped, non-empty excerpt.
+        let liveReasoning = try #require(liveRequest.pendingAssistantReasoning)
+        #expect(liveReasoning.hasPrefix("[earlier reasoning omitted]\n"))
+        #expect(liveReasoning.utf8.count <= ToolReplayPlanner.defaultMaxReasoningBytes + 64)
+
+        // Every checkpoint holding the pending pair stores the bounded
+        // projection — the raw output is never encoded twice per turn.
+        let pendingCheckpoints = store.saved.filter { !$0.pendingToolResults.isEmpty }
+        #expect(!pendingCheckpoints.isEmpty)
+        for checkpoint in pendingCheckpoints {
+            let stored = try #require(checkpoint.pendingToolResults.first)
+            #expect(stored.callID == call.id)
+            #expect(stored.status == .ok)
+            #expect(stored.outputSummary.contains("[middle of tool output compacted]"))
+            #expect(stored.outputSummary.utf8.count < rawOutput.utf8.count)
+        }
+
+        // The dispatch snapshot copies the live bounded request exactly; the
+        // envelope digests must be reproducible after a process restart.
+        let dispatchCheckpoint = try #require(store.saved.last { $0.providerDispatchRequest != nil })
+        let snapshot = try #require(dispatchCheckpoint.providerDispatchRequest)
+        #expect(snapshot.toolResults.map(\.output) == liveRequest.toolResults.map(\.output))
+        #expect(snapshot.pendingAssistantReasoning == liveReasoning)
+        #expect(dispatchCheckpoint.pendingAssistantReasoning == liveReasoning)
+
+        // Resume from that exact boundary: the replayed request is
+        // byte-identical and the envelope check does not reject recovery.
+        let replayAdapter = MockAdapter()
+        replayAdapter.script = [[.textDelta(.init(text: "resumed")), .completed(.init(stopReason: .endTurn))]]
+        let replay = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: model),
+            adapter: replayAdapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore()
+        )
+        try await replay.resume(from: dispatchCheckpoint)
+
+        #expect(await replay.state.name == "completed")
+        let resumedRequest = try #require(replayAdapter.requests.first)
+        #expect(resumedRequest.toolResults.map(\.output) == liveRequest.toolResults.map(\.output))
+        #expect(resumedRequest.pendingToolCalls.map(\.id) == liveRequest.pendingToolCalls.map(\.id))
+        #expect(resumedRequest.pendingAssistantReasoning == liveReasoning)
+        // Settled work is replayed, never re-executed.
+        #expect(executor.executedCalls.map(\.id) == [call.id])
     }
 
     // MARK: Helpers

@@ -1,6 +1,49 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (201) — available in Floe QA
+## Current internal delivery: 1.7.0 (204) — available in Floe QA
+
+Immutable tag `v1.7.0-beta.61`, source `1f654c3e59ba18856006ea0c778986bf37072feb`.
+[Run 35478308349](https://github.com/JiangNanGenius/floe-agent/actions/runs/35478308349)
+completed the single accepted-SDK App build (Xcode 26.6 / 17F113), retained the
+unsigned IPA `Floe-Agent-1.7.0-build204-unsigned.ipa` (sha256
+`b093af32d0e34d7ee31350877af2f6e0713cabce1ce83999f1d827cf1e9a7af5`, 811,588,405 B,
+app UUID `20DD1CBB-D91B-3834-8356-5FBE35A28575`) with matching private symbols before
+signing, and TestFlight accepted the upload. `lean-publish` attested the retained
+artifact and published the **normal non-prerelease Latest** GitHub release
+`v1.7.0-beta.61` (unsigned-only asset set, attestation source digest `1f654c3e…`);
+[Feather run 35480212487](https://github.com/JiangNanGenius/floe-agent/actions/runs/35480212487)
+committed `feather.json` with the same sha256 and `sourceCommit 1f654c3e…`. Apple
+build ID `5bbc54a5-a0af-4a16-933f-0be0aa790d74` was verified `VALID`, unexpired,
+exactly one private Floe QA group and `IN_BETA_TESTING` at 2026-09-20 01:32:54 UTC
+([discover 35481554699](https://github.com/JiangNanGenius/floe-agent/actions/runs/35481554699),
+[prepare 35481609531](https://github.com/JiangNanGenius/floe-agent/actions/runs/35481609531),
+[verify 35481660694](https://github.com/JiangNanGenius/floe-agent/actions/runs/35481660694));
+both English and Simplified Chinese test notes were saved and read back. Build 204
+is the replacement attempt after the failed build 203 (frozen below); the only source
+change is the one-line `@escaping` repair of the sole accepted-SDK compile error plus
+the version increment. Simulator/UI qualification was skipped by explicit user
+request, so this is internal device testing, not full acceptance; the CodeBlitz
+error-95 toast still needs your on-device verification. Full evidence:
+[build 204 delivery](qualification/build204-release/build204-delivery.md).
+
+## Failed candidate: 1.7.0 (203)
+
+Immutable tag `v1.7.0-beta.60` at `9e64d2a3cb96b9388994ac163bb0d3cba024d3ac`,
+created by [run 35476640882](https://github.com/JiangNanGenius/floe-agent/actions/runs/35476640882)
+(the single authorized lean dispatch for Build 203, dispatched at the metadata
+commit `f6dfe287` plus the pre-dispatch bilingual notes repair `9e64d2a3`) and
+preserved unmoved. That run failed in the accepted-SDK App build
+([job 105986924093](https://github.com/JiangNanGenius/floe-agent/actions/runs/35476640882/job/105986924093),
+step "Rebuild the exact tag with the accepted App Store SDK", `xcodebuild` exit 65,
+3 frontend failures): `OfficeDocumentEditorView.swift:1153` — the escaping
+`Task { @MainActor in … }` closure captured the implicitly non-escaping
+`timeoutError: @autoclosure () -> NSError` parameter. The complete rebuild log and
+`FloeRebuild.xcresult` are retained in `rebuild-diagnostics-run35476640882`. Nothing
+was retained, signed, uploaded or published; `lean-publish` never ran and no Apple
+build ID exists for build 203. Full evidence:
+[build 203 lean-build failure](qualification/build203-release/build203-lean-build-failure.md).
+
+## Previous internal delivery: 1.7.0 (201) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.58`, source `be06cece8646d5ce53a12c6bf7fcd68ce728c0b3`.
 [Run 35453588806](https://github.com/JiangNanGenius/floe-agent/actions/runs/35453588806)
@@ -37,6 +80,19 @@ App build, so build 201 is the first uploaded build since 198. Simulator/UI
 qualification was skipped by explicit user request, so this is internal device
 testing, not full acceptance. Device acceptance remains with the user, and the build
 191 foreground Qwen GatedDeltaNet abort is still not proven fixed.
+
+## Failed candidate: 1.7.0 (202)
+
+Immutable tag `v1.7.0-beta.59` at `0450b2aeb52ee4a1bad2fce4ef76f1ecd2fcdd49`,
+created by [run 35474286467](https://github.com/JiangNanGenius/floe-agent/actions/runs/35474286467)
+(the single authorized lean dispatch for Build 202) and preserved unmoved. That run
+failed in the accepted-SDK App build ([job 105980757911](https://github.com/JiangNanGenius/floe-agent/actions/runs/35474286467/job/105980757911),
+step "Rebuild the exact tag with the accepted App Store SDK", `xcodebuild` exit 65,
+3 frontend failures): `SourceControlView.swift:293:90` passes the non-optional
+`\.children` keypath where the SDK 26 `OutlineGroup` requires
+`[SourceControlChangeTreeNode]?`. Nothing was retained, signed, uploaded or
+published; `lean-publish` never ran and no Apple build ID exists for build 202. Full
+evidence: [build 202 lean-build failure](qualification/build202-release/build202-lean-build-failure.md).
 
 ## Previous internal delivery: 1.7.0 (198) — available in Floe QA
 

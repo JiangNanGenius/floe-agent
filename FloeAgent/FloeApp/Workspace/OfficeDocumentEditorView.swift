@@ -39,6 +39,50 @@ private final class OfficeCloseAck {
     }
 }
 
+/// One-shot, main-queue save receipt used to bound a native working-copy
+/// save. The first resolver (engine receipt or timeout) wins; later resolutions
+/// are ignored so a completion arriving after a timeout can never resume twice
+/// or report over an already-settled result. A host that neither acknowledges
+/// nor fails therefore surfaces a bounded, recoverable error instead of leaving
+/// the editor on "正在保存…" indefinitely.
+@MainActor
+final class OfficeSaveReceipt {
+    private var continuation: CheckedContinuation<Void, Error>?
+    /// Result settled before any waiter attached; replayed to the first
+    /// `wait()` so either ordering (resolve-first or wait-first) is safe.
+    private var settledResult: Result<Void, Error>?
+    private var settled = false
+
+    func wait() async throws {
+        if settled {
+            let result = settledResult ?? .success(())
+            settledResult = nil
+            switch result {
+            case .success: return
+            case .failure(let error): throw error
+            }
+        }
+        return try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    /// Settles the receipt exactly once; later resolutions are ignored.
+    func resolve(_ result: Result<Void, Error>) {
+        guard !settled else { return }
+        if let continuation {
+            settled = true
+            self.continuation = nil
+            switch result {
+            case .success: continuation.resume()
+            case .failure(let error): continuation.resume(throwing: error)
+            }
+        } else {
+            // No waiter yet: retain the result for the first `wait()`.
+            settled = true
+            settledResult = result
+        }
+    }
+}
+
 @MainActor
 final class OfficeFileSession: ObservableObject {
     enum Phase { case idle, loading, ready, insertingAttachment, readingAttachments, saving, closing, failed }
@@ -254,11 +298,9 @@ final class OfficeFileSession: ObservableObject {
         defer { phase = runtimeFailed || self.controller == nil ? .failed : .ready; finishOperation() }
         #if canImport(FloeOfficeNative)
         if !readOnly, let native = controller as? FloeOfficeNativeViewController {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                native.saveWorkingCopy { error in
-                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-                }
-            }
+            // Bounded; export flushes the working copy first and can be slow on
+            // large documents, so allow a longer window than an ordinary save.
+            try await Self.saveWorkingCopy(native, timeout: 60)
         }
         #endif
         // The shipped host is pinned separately. A selector capability check keeps old hosts
@@ -374,6 +416,17 @@ final class OfficeFileSession: ObservableObject {
         released = false
         requestedURL = url
         await performIntent(.preview)
+    }
+
+    /// Terminal open failure reported by the owning surface when URL
+    /// resolution or the open intent itself failed before any controller
+    /// mounted. Publishes a recoverable `.failed` state (the surface offers
+    /// Retry) instead of leaving the phase on `.idle`, which
+    /// `OfficeDocumentSurface` renders as an endless "opening" spinner and
+    /// which never re-arms the owning loader.
+    func reportOpenFailure(_ error: Error) {
+        self.error = error.localizedDescription
+        phase = .failed
     }
 
     /// Queued edit-intent entry point. While an open/save/attachment operation
@@ -624,9 +677,18 @@ final class OfficeFileSession: ObservableObject {
         // unknown probe with no host report is left mounted (the host callback
         // still settles it) instead of forcing a close that can stall.
         if hostReadOnly == nil {
+            // The engine never confirmed an editable grant. Never leave a
+            // writable claim on an unverified session (a false save/close
+            // state): restore the truthful read-only preview, settle the
+            // surface onto the mounted controller, and stop the open watchdog,
+            // which would otherwise turn this recoverable "unknown" into a
+            // misleading hard failure after its timeout.
+            readOnly = true
             editUnavailableReason = OfficeInkText.t(
                 "编辑器尚未确认可编辑状态；若仍只读，请稍后重试或解除文档限制。",
                 "The editor has not confirmed an editable state yet; retry shortly, or remove the document restriction.")
+            cancelOpenWatchdog()
+            phase = .ready
             return
         }
         if hostReadOnly == true {
@@ -727,11 +789,9 @@ final class OfficeFileSession: ObservableObject {
             guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.fileWriteUnknown) }
             native.view.isUserInteractionEnabled = false
             defer { native.view.isUserInteractionEnabled = true }
-            try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
-                native.saveWorkingCopy { error in
-                    if let error { receipt.resume(throwing: error) } else { receipt.resume() }
-                }
-            }
+            // Bounded: a save that neither acknowledges nor fails in time
+            // surfaces a recoverable error instead of an endless "Saving…".
+            try await Self.saveWorkingCopy(native)
             try await workspace.save(session)
             hasSaveConflict = false
             hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
@@ -873,11 +933,8 @@ final class OfficeFileSession: ObservableObject {
             guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.fileWriteUnknown) }
             native.view.isUserInteractionEnabled = false
             defer { native.view.isUserInteractionEnabled = true }
-            try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
-                native.saveWorkingCopy { error in
-                    if let error { receipt.resume(throwing: error) } else { receipt.resume() }
-                }
-            }
+            // Bounded so a share/save-copy flush can never strand on "Saving…".
+            try await Self.saveWorkingCopy(native)
             let copy = try await workspace.prepareExport(session)
             exportSnapshot = copy
             exportWorkspace = workspace
@@ -911,11 +968,8 @@ final class OfficeFileSession: ObservableObject {
             if !readOnly, let native = controller as? FloeOfficeNativeViewController {
                 native.view.isUserInteractionEnabled = false
                 defer { native.view.isUserInteractionEnabled = true }
-                try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
-                    native.saveWorkingCopy { error in
-                        if let error { receipt.resume(throwing: error) } else { receipt.resume() }
-                    }
-                }
+                // Bounded so a share flush can never strand on "Saving…".
+                try await Self.saveWorkingCopy(native)
             }
             let copy = try await workspace.prepareExport(session)
             exportSnapshot = copy
@@ -964,11 +1018,8 @@ final class OfficeFileSession: ObservableObject {
             if let native = controller as? FloeOfficeNativeViewController, !readOnly, !runtimeFailed {
                 native.view.isUserInteractionEnabled = false
                 defer { native.view.isUserInteractionEnabled = true }
-                try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
-                    native.saveWorkingCopy { error in
-                        if let error { receipt.resume(throwing: error) } else { receipt.resume() }
-                    }
-                }
+                // Bounded so a persist-and-leave can never strand on "Saving…".
+                try await Self.saveWorkingCopy(native)
             }
             #endif
             try await closeController()
@@ -1000,6 +1051,14 @@ final class OfficeFileSession: ObservableObject {
 
     func retryPreview() async {
         guard readOnly else { return }
+        if session == nil, controller == nil, phase == .failed {
+            // The open failed before a working copy ever existed. Drop back to
+            // `.idle` so the owning surface's loader re-arms and retries the
+            // open, rather than requiring a document that was never created.
+            phase = .idle
+            error = nil
+            return
+        }
         await previewCurrent()
     }
 
@@ -1079,6 +1138,75 @@ final class OfficeFileSession: ObservableObject {
         session = nil
         workspace = nil
     }
+    #if canImport(FloeOfficeNative)
+    /// Runs `nativeOperation`, returning when its receipt settles or throwing
+    /// at `timeout` — whichever happens first. Modeled on `closeWorkingCopy`:
+    /// a one-shot receipt is resolved by either the native callback or the
+    /// deadline, so the caller returns at the deadline even when the native
+    /// callback never fires (a task group would keep waiting on it).
+    private static func withNativeDeadline(
+        _ timeout: TimeInterval,
+        timeoutError: @escaping @autoclosure () -> NSError,
+        _ nativeOperation: (@escaping (Result<Void, Error>) -> Void) -> Void
+    ) async throws {
+        let receipt = OfficeSaveReceipt()
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.1, timeout) * 1_000_000_000))
+            receipt.resolve(.failure(timeoutError()))
+        }
+        nativeOperation { result in
+            receipt.resolve(result)
+        }
+        do {
+            try await receipt.wait()
+            timeoutTask.cancel()
+        } catch {
+            timeoutTask.cancel()
+            throw error
+        }
+    }
+
+    /// Bounds the native-runtime readiness wait. The runtime must become ready
+    /// or fail within a limited window. Previously this wait was unbounded and
+    /// the open watchdog was only armed *after* it returned, so a runtime that
+    /// neither readied nor failed left the surface loading indefinitely.
+    private static func prepareNativeRuntime(timeout: TimeInterval = 30) async throws {
+        try await withNativeDeadline(
+            timeout,
+            timeoutError: NSError(domain: "org.floeagent.office.runtime", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: OfficeInkText.t(
+                    "文档引擎未能在限定时间内启动；请重试。",
+                    "The document engine did not start in time. Please retry.")
+            ])
+        ) { completion in
+            FloeOfficeNativeRuntime.shared.prepare { error in
+                completion(error.map { .failure($0) } ?? .success(()))
+            }
+        }
+    }
+
+    /// Bounds a native working-copy save. The pinned host's receipt normally
+    /// settles in seconds; a save that neither acknowledges nor fails within
+    /// the window surfaces a bounded, recoverable error instead of leaving the
+    /// editor on "正在保存…". The original file is untouched on a timeout, the
+    /// working copy is retained, and a later save can retry.
+    private static func saveWorkingCopy(_ native: FloeOfficeNativeViewController,
+                                        timeout: TimeInterval = 30) async throws {
+        try await withNativeDeadline(
+            timeout,
+            timeoutError: NSError(domain: "org.floeagent.office.save", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: OfficeInkText.t(
+                    "文档保存未能在限定时间内完成；编辑副本已保留，请重试。",
+                    "The document did not finish saving in time. Your edits were retained; please retry.")
+            ])
+        ) { completion in
+            native.saveWorkingCopy { error in
+                completion(error.map { .failure($0) } ?? .success(()))
+            }
+        }
+    }
+    #endif
+
     private func activate(readOnly: Bool) async throws {
         guard let session else { throw CocoaError(.fileReadUnknown) }
         self.readOnly = readOnly
@@ -1088,11 +1216,7 @@ final class OfficeFileSession: ObservableObject {
         phase = .loading
         error = nil
         #if canImport(FloeOfficeNative)
-        try await withCheckedThrowingContinuation { (ready: CheckedContinuation<Void, Error>) in
-            FloeOfficeNativeRuntime.shared.prepare { error in
-                if let error { ready.resume(throwing: error) } else { ready.resume() }
-            }
-        }
+        try await Self.prepareNativeRuntime()
         let native = try FloeOfficeNativeViewController(
             workingFileURL: session.workingURL,
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)

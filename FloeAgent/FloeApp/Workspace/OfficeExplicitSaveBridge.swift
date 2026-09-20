@@ -482,7 +482,15 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             const fire = proto.fire;
             let pendingMap = null;
             let savedStatus = null;
+            // Bounded watchdog: if the native handoff is lost (the message is
+            // dropped by the native guard, or the native save never
+            // acknowledges), the engine's save widget must not sit on
+            // "Saving…" forever and swallow every later save. The watchdog
+            // fails the save after a bounded window so the surface recovers
+            // and a later save can run.
+            let saveWatchdog = null;
             window.floeCompleteOriginalSave = (success) => {
+                if (saveWatchdog) { clearTimeout(saveWatchdog); saveWatchdog = null; }
                 const map = pendingMap;
                 if (!map) return;
                 pendingMap = null;
@@ -513,6 +521,10 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                     // Keep Saved hidden until the original-file CAS completes.
                     this.saveState.showSavedStatus = function () {};
                 }
+                // Arm the bounded watchdog before handing off to native.
+                saveWatchdog = setTimeout(() => {
+                    try { window.floeCompleteOriginalSave(false); } catch (_) {}
+                }, 20000);
                 try {
                     window.webkit.messageHandlers.floeCommitDocument.postMessage('save');
                 } catch (_) {

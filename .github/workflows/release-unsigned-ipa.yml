@@ -16,9 +16,14 @@ on:
         default: false
         type: boolean
       lean_release:
-        description: One accepted upload-SDK build with private symbols, internal TestFlight, attested unsigned IPA, GitHub prerelease and Feather continuation from the same artifact; creates the immutable tag at the dispatched commit when absent and never pushes a triggering tag
+        description: One accepted upload-SDK build with private symbols, internal TestFlight, attested unsigned IPA, GitHub release (github_prerelease selects a prerelease or an explicitly authorized normal latest release) and Feather continuation from the same artifact; creates the immutable tag at the dispatched commit when absent and never pushes a triggering tag
         required: false
         default: false
+        type: boolean
+      github_prerelease:
+        description: Lean release route only. Create the GitHub Release as a prerelease that is never marked latest (historical default). Set false only for an explicitly authorized normal latest Release; the TestFlight audience is unchanged either way
+        required: false
+        default: true
         type: boolean
       reuse_direct_run:
         description: Existing lean run ID for the same tag whose retained unsigned IPA and private symbols artifact are reused without an App build (the producing run must still hold its symbols artifact; TestFlight is re-uploaded only when that run has no accepted-upload evidence)
@@ -49,7 +54,7 @@ on:
         default: false
         type: boolean
       publish:
-        description: Publish the draft prerelease after validation
+        description: Publish the validated GitHub release after validation; the lean release route uses github_prerelease for its release mode
         required: true
         default: false
         type: boolean
@@ -1534,7 +1539,9 @@ jobs:
   #
   # One accepted upload-SDK build produces the unsigned IPA and its private
   # dSYM; TestFlight signs a copy, while the exact same unsigned bytes are
-  # attested and published as a GitHub prerelease for Feather. A retry restores
+  # attested and published as a GitHub release for Feather: a prerelease that
+  # is not marked latest by default, or an explicitly authorized normal latest
+  # release when github_prerelease is dispatched as false. A retry restores
   # the retained artifact instead of compiling the App again. The immutable tag
   # is created by the runner's own GITHUB_TOKEN, whose pushes never create a
   # workflow run, so a lean request cannot silently start the default tag-push
@@ -1663,6 +1670,7 @@ jobs:
       ARTIFACT_NAME: ${{ needs.lean-source.outputs.artifact_name }}
       REQUIRED_TOOLCHAIN: Xcode 26.6 (17F113)
       REUSE_RUN: ${{ inputs.reuse_direct_run }}
+      RELEASE_PRERELEASE: ${{ inputs.github_prerelease }}
     steps:
       - name: Check out the dispatched release commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -1779,29 +1787,48 @@ jobs:
               json.dumps({'assets': assets}, indent=2) + '\n')
           PY
           ls -l release-assets
-      - name: Publish the attested unsigned prerelease without clobbering
+      - name: Publish the attested unsigned release without clobbering
         run: |
           set -euo pipefail
           IPA_PATH="${{ steps.fetch.outputs.ipa_path }}"
+          # GitHub release mode. The default keeps the historical prerelease
+          # that is excluded from "latest"; only an explicitly authorized
+          # dispatch may create the normal latest release instead.
+          RELEASE_MODE_ARGS=()
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            RELEASE_MODE_ARGS=(--prerelease --latest=false)
+          else
+            RELEASE_MODE_ARGS=(--latest=true)
+          fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # A published release is never rewritten. The retry only proves the
             # published IPA is the attested byte-for-byte original, that the
-            # published asset set is still unsigned-only, then continues.
+            # published asset set is still unsigned-only, and that the existing
+            # prerelease/draft state already matches this dispatch's requested
+            # mode, then continues.
             PUBLISHED="$RUNNER_TEMP/Published"
             mkdir -p "$PUBLISHED"
-            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-              --jq '.assets[].name' > "$PUBLISHED/assets.txt"
-          python3 - "$PUBLISHED/assets.txt" "$ASSET_NAME" <<'PY'
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets,isPrerelease,isDraft > "$PUBLISHED/release.json"
+          python3 - "$PUBLISHED/release.json" "$ASSET_NAME" "$RELEASE_PRERELEASE" "$RELEASE_TAG" <<'PY'
+          import json
           import sys
           from pathlib import Path
-          names = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
-          assert names.count(sys.argv[2]) == 1, names
-          assert names.count(sys.argv[2] + '.sha256') == 1, names
+          release = json.loads(Path(sys.argv[1]).read_text())
+          asset_name, requested, tag = sys.argv[2], sys.argv[3] == 'true', sys.argv[4]
+          names = [entry['name'] for entry in release['assets']]
+          assert names.count(asset_name) == 1, names
+          assert names.count(asset_name + '.sha256') == 1, names
           forbidden = [name for name in names
                        if name.endswith(('.mobileprovision', '.p12', '.dSYM'))
-                       or (name.endswith('.ipa') and name != sys.argv[2])]
+                       or (name.endswith('.ipa') and name != asset_name)]
           assert not forbidden, f'Published release exposes signing material: {forbidden}'
-          print('Existing release asset set remains unsigned-only:', names)
+          assert release['isDraft'] is False, release
+          assert release['isPrerelease'] is requested, (
+              f'Release {tag} already exists with isPrerelease={release["isPrerelease"]} but this '
+              f'dispatch requests isPrerelease={requested}; refusing to change an existing release '
+              'mode. An explicitly authorized recovery must perform any conversion.')
+          print('Existing release asset set remains unsigned-only and its mode is unchanged:', tag)
           PY
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern "$ASSET_NAME" --dir "$PUBLISHED" --clobber
@@ -1809,7 +1836,7 @@ jobs:
             gh attestation verify "$PUBLISHED/$ASSET_NAME" --repo "$GITHUB_REPOSITORY" \
               --source-digest "$SOURCE_SHA" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-unsigned-ipa.yml"
-            echo "Release $RELEASE_TAG already holds the attested unsigned IPA; assets preserved."
+            echo "Release $RELEASE_TAG already holds the attested unsigned IPA; assets and mode preserved."
           else
             NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
             test -s "$NOTES_PATH"
@@ -1830,7 +1857,7 @@ jobs:
           Assets include test evidence, an SPDX SBOM, third-party licenses, secret-scan reports and build provenance.
           EOF
             gh release create "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
-              --verify-tag --prerelease --latest=false \
+              --verify-tag "${RELEASE_MODE_ARGS[@]}" \
               --title "Floe Agent $VERSION (build $BUILD)" \
               --notes-file release-notes.md
           fi
@@ -1865,6 +1892,7 @@ jobs:
             echo "attestation_source_digest=$SOURCE_SHA"
             echo "attestation_signer_workflow=release-unsigned-ipa.yml"
             echo "release_assets=unsigned_ipa_only"
+            echo "github_release_prerelease=$RELEASE_PRERELEASE"
             echo "private_symbols_artifact=release-symbols-$VERSION-build$BUILD"
             echo "private_symbols_artifact_id=${{ steps.fetch.outputs.symbols_artifact_id }}"
             echo "testflight_evidence_source=${{ steps.fetch.outputs.testflight_evidence_source }}"

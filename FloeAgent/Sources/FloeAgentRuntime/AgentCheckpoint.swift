@@ -185,6 +185,11 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
                 }
             }, reasoningContent: message.reasoningContent)
         }
+        // Copy the live request exactly. The runtime compacts pending tool
+        // results and bounds pending reasoning BEFORE the dispatch envelope
+        // is computed, so the live wire body, this snapshot and the resumed
+        // rebuild stay byte-identical; compacting again here could alter
+        // already-bounded bytes and break exact-boundary recovery.
         toolResults = request.toolResults.map { Result(callID: $0.callID, output: $0.output) }
         pendingToolCalls = request.pendingToolCalls
         replayedToolPairs = request.replayedToolPairs
@@ -275,7 +280,9 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// Reasoning attached to a committed tool batch before its next dispatch.
     public var pendingAssistantReasoning: String?
     /// Run-level settled tool pairs replayed as provider history on later
-    /// turns. Untrimmed; the dispatch boundary applies the replay budget.
+    /// turns. Bounded at settlement (compacted summaries, capped reasoning,
+    /// pair/byte budget) so this channel stays small in every checkpoint; the
+    /// dispatch boundary applies the same budget again to the per-request copy.
     /// Optional so checkpoints written before cross-turn replay decode.
     public var replayedToolPairs: [ReplayedToolPair]?
 
