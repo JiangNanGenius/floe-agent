@@ -59,6 +59,16 @@ private final class TinyEMUVMHandle: @unchecked Sendable {
 /// `stop()` requests the run loop to end, waits for it, then destroys the VM.
 public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked Sendable {
     public static let consoleChunkLimit = 256
+    /// How long `stop()` waits for the run loop to leave its last slice
+    /// before refusing to destroy the VM. Internal so focused lifecycle
+    /// checks can shorten it; production keeps the 10 s bound.
+    var runLoopExitTimeout: TimeInterval = 10
+
+    /// How long `write()` retries a full input ring before failing the write.
+    /// Internal so focused lifecycle checks can shorten it; production keeps
+    /// the 30 s bound.
+    var consoleInputDeadline: TimeInterval = 30
+
     /// Default guest console: hvc0 with the Floe guest runner as init target.
     /// The image manifest may override this; `effectiveCmdline` appends the
     /// runner init when the manifest does not name one, so a verified image
@@ -73,7 +83,6 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     private let sink: TinyEMUConsoleSink
     private let lock = NSLock()
     private var exited = false
-    private var exitWaiters: [CheckedContinuation<Void, Never>] = []
     private var vm: OpaquePointer?
     private var thread: Thread?
     private var stopRequested = false
@@ -168,21 +177,54 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         self.vm = created
         self.thread = thread
         self.stopRequested = false
+        // Reset the whole lifecycle: a restarted machine must never let a
+        // later stop() observe the previous run's exit flag and destroy a VM
+        // whose run thread is still executing.
+        self.exited = false
         self.running = true
         thread.start()
     }
 
+    /// Writes the whole frame or throws. `floe_vm_console_input` queues as
+    /// many bytes as fit in the engine's 64 KiB input ring and returns that
+    /// count ("ring full: drop remainder, caller may retry"), so a partial
+    /// accept must be retried until every byte is queued: accepting a prefix
+    /// and returning would leave a frame's tail to be delivered after other
+    /// writers' bytes, corrupting the guest's line framing. The pointer is
+    /// used while the lock is held, so stop()/destroy cannot free the VM
+    /// between reading the pointer and the C call.
     public func write(_ bytes: [UInt8]) async throws {
         guard !bytes.isEmpty else { return }
-        let (machine, isRunning) = snapshotForConsoleWrite()
-        guard isRunning, let machine else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
-        let queued = bytes.withUnsafeBufferPointer { buffer -> Int32 in
-            floe_vm_console_input(machine, buffer.baseAddress, Int32(buffer.count))
-        }
-        guard queued > 0 else {
-            throw LinuxGuestError.consoleUnavailable("the guest console rejected \(bytes.count) input bytes")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(consoleInputDeadline))
+        var offset = 0
+        while offset < bytes.count {
+            let queued = withRunningMachine { machine -> Int32 in
+                bytes.withUnsafeBufferPointer { buffer in
+                    floe_vm_console_input(
+                        machine,
+                        buffer.baseAddress!.advanced(by: offset),
+                        Int32(bytes.count - offset)
+                    )
+                }
+            }
+            guard let queued else {
+                throw LinuxGuestError.notRunning(environmentID: environmentID)
+            }
+            guard queued >= 0 else {
+                throw LinuxGuestError.consoleUnavailable("the guest console rejected \(bytes.count - offset) input bytes")
+            }
+            if queued > 0 {
+                offset += min(Int(queued), bytes.count - offset)
+                continue
+            }
+            // Ring full: the guest drains it during run slices. Retry with a
+            // finite deadline instead of silently truncating the frame.
+            guard ContinuousClock.now < deadline else {
+                throw LinuxGuestError.consoleUnavailable(
+                    "guest console input queue stayed full for \(Int(consoleInputDeadline))s; refusing to truncate a \(bytes.count) byte frame"
+                )
+            }
+            try await Task.sleep(for: .milliseconds(2))
         }
     }
 
@@ -196,18 +238,24 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     }
 
     /// Stops the run loop and destroys the VM. Safe to call repeatedly.
+    /// Truthful: `isRunning` stays true until the run thread has left its
+    /// last slice; only then is the VM destroyed and the state cleared, so a
+    /// later start() always boots from the (preserved) disk, never from a
+    /// half-stopped machine.
     public func stop() async {
         let thread = beginStop()
 
         if thread != nil {
-            let didExit = await waitForRunLoopExit(timeout: 3)
+            let timeout = runLoopExitTimeout
+            let didExit = await waitForRunLoopExit(timeout: timeout)
             if !didExit {
                 // Destroying a VM while a slice is executing would be a data
-                // race; keeping the (already stopping) VM is the safe choice.
+                // race; keeping the (already stopping) VM is the safe
+                // choice. State is reported honestly: isRunning stays true
+                // and the owner must reset the whole registry session.
                 FloeLogger(category: .tools).error(
-                    "TinyEMU guest \(environmentID) run loop did not exit; VM not destroyed"
+                    "TinyEMU guest \(environmentID) run loop did not exit within \(Int(timeout))s; VM not destroyed (state: still running)"
                 )
-                abandonRunThread()
                 return
             }
         }
@@ -222,10 +270,6 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     /// Registers a host→guest TCP/UDP forward through slirp. The adapter
     /// removes every forward registered by this VM when it is destroyed.
     public func addForward(_ forward: LinuxGuestServiceForward) throws {
-        let (machine, isRunning) = snapshotForConsoleWrite()
-        guard isRunning, let machine else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
         guard descriptor.networkEnabled else {
             throw LinuxGuestError.serviceForwardingUnavailable(
                 "guest \(environmentID) was started without networking; host forwarding needs slirp"
@@ -236,15 +280,21 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
                 "host address must be a dotted IPv4 address, got '\(forward.hostAddress)'"
             )
         }
-        // guest_ipv4 = 0 selects the guest's DHCP address (10.0.2.15).
-        let result = floe_vm_hostfwd_add(
-            machine,
-            forward.isUDP ? 1 : 0,
-            hostIPv4,
-            Int32(forward.hostPort),
-            0,
-            Int32(forward.guestPort)
-        )
+        // guest_ipv4 = 0 selects the guest's DHCP address (10.0.2.15). The
+        // pointer is used under the lock so it cannot be destroyed midway.
+        let result = withRunningMachine { machine -> Int32 in
+            floe_vm_hostfwd_add(
+                machine,
+                forward.isUDP ? 1 : 0,
+                hostIPv4,
+                Int32(forward.hostPort),
+                0,
+                Int32(forward.guestPort)
+            )
+        }
+        guard let result else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
         guard result == 0 else {
             throw LinuxGuestError.serviceForwardingUnavailable(
                 "the engine rejected \(forward.hostAddress):\(forward.hostPort) → guest port \(forward.guestPort)"
@@ -256,14 +306,15 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     }
 
     public func removeForward(_ forward: LinuxGuestServiceForward) throws {
-        let (machine, _) = snapshotForConsoleWrite()
-        guard let machine, let hostIPv4 = Self.hostByteOrderIPv4(forward.hostAddress) else { return }
-        _ = floe_vm_hostfwd_remove(
-            machine,
-            forward.isUDP ? 1 : 0,
-            hostIPv4,
-            Int32(forward.hostPort)
-        )
+        guard let hostIPv4 = Self.hostByteOrderIPv4(forward.hostAddress) else { return }
+        withRunningMachine { machine in
+            _ = floe_vm_hostfwd_remove(
+                machine,
+                forward.isUDP ? 1 : 0,
+                hostIPv4,
+                Int32(forward.hostPort)
+            )
+        }
     }
 
     /// slirp takes IPv4 addresses in host byte order (127.0.0.1 = 0x7F000001).
@@ -278,10 +329,14 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         return value
     }
 
-    private func snapshotForConsoleWrite() -> (OpaquePointer?, Bool) {
+    /// Runs `body` with the live VM pointer while the lock is held, so
+    /// `finishStop()` can never destroy the VM between the pointer read and
+    /// the C call. Returns nil when the machine is not running.
+    private func withRunningMachine<T>(_ body: (OpaquePointer) throws -> T) rethrows -> T? {
         lock.lock()
         defer { lock.unlock() }
-        return (vm, running)
+        guard running, let machine = vm else { return nil }
+        return try body(machine)
     }
 
     private func beginStop() -> Thread? {
@@ -289,13 +344,6 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         defer { lock.unlock() }
         stopRequested = true
         return thread
-    }
-
-    private func abandonRunThread() {
-        lock.lock()
-        defer { lock.unlock() }
-        thread = nil
-        running = false
     }
 
     private func finishStop() -> OpaquePointer? {
@@ -320,39 +368,41 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         lock.lock()
         running = false
         exited = true
-        let waiters = exitWaiters
-        exitWaiters = []
         lock.unlock()
-        for waiter in waiters { waiter.resume() }
     }
 
     /// Waits for the run loop to leave its last slice. The slice budget is
     /// 10 ms, so this resolves quickly; the timeout only guards an engine
     /// hang, in which case the VM is deliberately not destroyed.
+    ///
+    /// Deliberately a bounded poll instead of a continuation race: a task
+    /// group that awaited a checked continuation here could not be cancelled
+    /// by the losing sleep branch (the continuation is only resumed by the
+    /// run loop), so a timeout used to leave the stop path hanging forever.
+    /// Polling the exit flag is cancellation-safe and can never outlive the
+    /// deadline by more than one sleep quantum.
     private func waitForRunLoopExit(timeout: TimeInterval) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await self.exitSignal(); return true }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeout))
-                return false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+        while true {
+            if hasExited() { return true }
+            if ContinuousClock.now >= deadline { return false }
+            do {
+                try await Task.sleep(for: .milliseconds(5))
+            } catch {
+                // Cancelled: return the truthful state immediately instead of
+                // spinning through the remaining deadline (a cancelled
+                // Task.sleep returns instantly, so `try?` would busy-loop).
+                return hasExited()
             }
-            let result = await group.next() ?? false
-            group.cancelAll()
-            return result
         }
     }
 
-    private func exitSignal() async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if exited {
-                lock.unlock()
-                continuation.resume()
-                return
-            }
-            exitWaiters.append(continuation)
-            lock.unlock()
-        }
+    /// Synchronous helper: NSLock must not be taken directly in an async
+    /// context.
+    private func hasExited() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return exited
     }
 
     private static func withOptionalCString<R>(

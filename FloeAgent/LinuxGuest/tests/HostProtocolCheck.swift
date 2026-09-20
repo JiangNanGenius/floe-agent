@@ -115,29 +115,177 @@ final class Runner {
         return Data(buffer[0..<got])
     }
 
-    /// Waits for the END frame of `token` using the app's real parser.
+    /// Waits for the END frame of `token`, honoring an outcome buffered by
+    /// an earlier concurrent await.
     func awaitEnd(token: String, timeout: TimeInterval) throws -> LinuxCommandOutcome {
-        var parser = LinuxGuestFraming.Parser(token: token, maxOutputBytes: 8 * 1024 * 1024)
+        if let buffered = bufferedEnd(token: token) { return buffered }
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            // The demuxer may have completed this token with bytes already
+            // buffered while a previous awaiter was active.
+            if try drainDemux(awaitedToken: token) {
+                pendingParsers[token] = nil
+                guard let outcome = bufferedEnd(token: token) else {
+                    throw CheckFailure.message("demuxer finished \(token) without an outcome")
+                }
+                return outcome
+            }
             guard let chunk = readChunk(timeoutMs: 200) else { continue }
             if chunk.isEmpty {
                 throw CheckFailure.message("runner console closed before END \(token)")
             }
-            switch parser.feed(chunk) {
-            case .needMore:
-                continue
-            case .finished(let code):
-                return LinuxCommandOutcome(
-                    exitCode: code,
-                    stdout: parser.stdoutText,
-                    stderr: parser.stderrText
-                )
-            case .failed(let reason):
-                throw CheckFailure.message("guest framing failed: \(reason)")
+            if try feedDemux(chunk, awaitedToken: token) {
+                pendingParsers[token] = nil
+                guard let outcome = bufferedEnd(token: token) else {
+                    throw CheckFailure.message("demuxer finished \(token) without an outcome")
+                }
+                return outcome
             }
         }
         throw CheckFailure.message("timed out waiting for END \(token)")
+    }
+
+    /// Per-token parsers for frames the current awaiter does not own.
+    private var pendingParsers: [String: LinuxGuestFraming.Parser] = [:]
+    /// Buffered END outcomes for tokens whose END arrived while awaiting
+    /// another token.
+    private var finishedOutcomes: [String: LinuxCommandOutcome] = [:]
+    private var demuxSectionOwner: String?
+    private var demuxBuffer = Data()
+
+    /// Feeds one console chunk through the demuxer. Returns true when the
+    /// awaited token reached END/FAILED; the unprocessed remainder stays in
+    /// demuxBuffer for the next awaitEnd call, so concurrent tokens can be
+    /// awaited in any order without losing frames.
+    private func feedDemux(_ chunk: Data, awaitedToken: String) throws -> Bool {
+        demuxBuffer.append(chunk)
+        return try drainDemux(awaitedToken: awaitedToken)
+    }
+
+    private func drainDemux(awaitedToken: String) throws -> Bool {
+        while true {
+            guard let mark = demuxBuffer.firstIndex(of: 0x1e) else {
+                if try feed(owner: demuxSectionOwner, bytes: demuxBuffer[...], awaitedToken: awaitedToken) {
+                    demuxBuffer.removeAll(keepingCapacity: true)
+                    return true
+                }
+                demuxBuffer.removeAll(keepingCapacity: true)
+                return false
+            }
+            let afterMark = demuxBuffer.index(after: mark)
+            guard afterMark < demuxBuffer.endIndex else {
+                // Lone trailing 0x1e: could start a header. Flush everything
+                // before it to the current owner and wait.
+                if mark > demuxBuffer.startIndex {
+                    if try feed(owner: demuxSectionOwner, bytes: demuxBuffer[..<mark], awaitedToken: awaitedToken) {
+                        demuxBuffer.removeSubrange(demuxBuffer.startIndex..<mark)
+                        return true
+                    }
+                    demuxBuffer.removeSubrange(demuxBuffer.startIndex..<mark)
+                }
+                return false
+            }
+            guard let closing = demuxBuffer[afterMark...].firstIndex(of: 0x1e) else {
+                // No closing 0x1e yet. If the text after the mark cannot be
+                // a FLOE header prefix, the mark is section data; otherwise
+                // flush what precedes it and wait for the rest.
+                let tail = String(decoding: demuxBuffer[afterMark...], as: UTF8.self)
+                let couldBeHeader = "FLOE-".hasPrefix(tail) || tail.hasPrefix("FLOE-")
+                if !couldBeHeader {
+                    let through = demuxBuffer.index(after: mark)
+                    if try feed(owner: demuxSectionOwner, bytes: demuxBuffer[..<through], awaitedToken: awaitedToken) {
+                        demuxBuffer.removeSubrange(demuxBuffer.startIndex..<through)
+                        return true
+                    }
+                    demuxBuffer.removeSubrange(demuxBuffer.startIndex..<through)
+                    continue
+                }
+                if mark > demuxBuffer.startIndex {
+                    if try feed(owner: demuxSectionOwner, bytes: demuxBuffer[..<mark], awaitedToken: awaitedToken) {
+                        demuxBuffer.removeSubrange(demuxBuffer.startIndex..<mark)
+                        return true
+                    }
+                    demuxBuffer.removeSubrange(demuxBuffer.startIndex..<mark)
+                }
+                return false
+            }
+            let headerText = String(decoding: demuxBuffer[afterMark..<closing], as: UTF8.self)
+            var isHeader = false
+            var name = ""
+            var token = ""
+            if headerText.hasPrefix("FLOE-") {
+                let parts = headerText.dropFirst(5).split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+                if parts.count >= 2, !parts[1].isEmpty {
+                    isHeader = true
+                    name = String(parts[0])
+                    token = String(parts[1])
+                }
+            }
+            if !isHeader {
+                // This 0x1e is section payload: flush through it.
+                let through = demuxBuffer.index(after: mark)
+                if try feed(owner: demuxSectionOwner, bytes: demuxBuffer[..<through], awaitedToken: awaitedToken) {
+                    demuxBuffer.removeSubrange(demuxBuffer.startIndex..<through)
+                    return true
+                }
+                demuxBuffer.removeSubrange(demuxBuffer.startIndex..<through)
+                continue
+            }
+            let takesValue = false // END/FAILED carry the value inside the header (parts[2]); the closing 0x1e IS the terminator
+            var valueLimit = demuxBuffer.index(after: closing)
+            if valueLimit < demuxBuffer.endIndex, demuxBuffer[valueLimit] == UInt8(ascii: "\n") {
+                valueLimit = demuxBuffer.index(after: valueLimit)
+            }
+            _ = takesValue
+            // Section bytes before the header belong to the prior owner.
+            if try feed(owner: demuxSectionOwner, bytes: demuxBuffer[..<mark], awaitedToken: awaitedToken) {
+                demuxBuffer.removeSubrange(demuxBuffer.startIndex..<mark)
+                return true
+            }
+            // The header (plus any value) belongs to its own token.
+            if try feed(owner: token, bytes: demuxBuffer[mark..<valueLimit], awaitedToken: awaitedToken) {
+                demuxBuffer.removeSubrange(demuxBuffer.startIndex..<valueLimit)
+                return true
+            }
+            switch name {
+            case "BEGIN", "OUT", "ERR":
+                demuxSectionOwner = token
+            case "END", "FAILED":
+                demuxSectionOwner = nil
+            default:
+                break
+            }
+            demuxBuffer.removeSubrange(demuxBuffer.startIndex..<valueLimit)
+        }
+    }
+
+    /// Feeds bytes to one token's parser. Returns true when that token is
+    /// the awaited one AND it just reached END/FAILED.
+    private func feed(owner: String?, bytes: Data.SubSequence, awaitedToken: String) throws -> Bool {
+        guard !bytes.isEmpty, let owner else { return false }
+        var parser = pendingParsers[owner] ?? LinuxGuestFraming.Parser(token: owner, maxOutputBytes: 8 * 1024 * 1024)
+        pendingParsers[owner] = parser
+        let progress = parser.feed(bytes)
+        pendingParsers[owner] = parser
+        switch progress {
+        case .finished(let code):
+            let outcome = LinuxCommandOutcome(exitCode: code, stdout: parser.stdoutText, stderr: parser.stderrText)
+            finishedOutcomes[owner] = outcome
+            pendingParsers[owner] = nil
+            return owner == awaitedToken
+        case .failed(let reason):
+            throw CheckFailure.message("guest framing failed for \(owner): \(reason)")
+        case .needMore:
+            return false
+        }
+    }
+
+    /// Drains an END already buffered for `token`, if any.
+    func bufferedEnd(token: String) -> LinuxCommandOutcome? {
+        if let outcome = finishedOutcomes.removeValue(forKey: token) {
+            return outcome
+        }
+        return nil
     }
 
     func run(
@@ -160,9 +308,12 @@ final class Runner {
     private var rawBuffer = Data()
 
     /// Reads unframed guest bytes until `predicate` accepts the accumulated
-    /// buffer. Used for the session/service frames that have no BEGIN.
+    /// buffer. Used for the session/service frames that have no BEGIN. The
+    /// bytes also flow through the demuxer (which consumes them from its own
+    /// buffer) so a later `awaitEnd` still sees every frame — reading raw
+    /// bytes off the pipe must never steal a token's BEGIN/END.
     func readRaw(timeout: TimeInterval, until predicate: (Data) -> Bool) throws -> Data {
-        rawBuffer = Data()
+        rawBuffer = demuxBuffer // bytes already read but not yet demuxed
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if predicate(rawBuffer) { return rawBuffer }
@@ -171,6 +322,9 @@ final class Runner {
                 throw CheckFailure.message("runner console closed while waiting for a frame")
             }
             rawBuffer.append(chunk)
+            // No awaited token: feed the demuxer in parallel so framed tokens
+            // are parsed exactly once, in order.
+            _ = try feedDemux(chunk, awaitedToken: "\u{0}no-await")
         }
         throw CheckFailure.message("timed out waiting for a frame")
     }
@@ -722,6 +876,278 @@ enum HostProtocolCheck {
             let outcome = try runner.run(token: UUID().uuidString, argv: ["/bin/echo", "after-service"], timeout: 5)
             Checks.expect(outcome.exitCode == 0, "EXEC after service failed: \(outcome.stderr)")
             Checks.expect(outcome.stdout == "after-service\n", "EXEC after service stdout \(outcome.stdout.debugDescription)")
+        }
+
+        // 13. HELLO/CAPS negotiation: the runner reports its protocol and
+        //     concurrency tables.
+        Checks.check("hello_caps") {
+            let token = UUID().uuidString
+            try runner.writeRaw(Wire.frame("HELLO", token: token))
+            let raw = try runner.readRaw(timeout: 5) { Wire.endCode(in: $0, token: token) != nil }
+            Checks.expect(Wire.endCode(in: raw, token: token) == 0, "HELLO end code")
+            let capsPrefix = Data("\u{1e}FLOE-CAPS \(token) ".utf8)
+            guard let range = raw.range(of: capsPrefix),
+                  let terminator = raw[range.upperBound...].firstIndex(of: 0x1e) else {
+                Checks.expect(false, "no CAPS frame in \(String(decoding: raw, as: UTF8.self))")
+                return
+            }
+            let caps = String(decoding: raw[range.upperBound..<terminator], as: UTF8.self)
+            Checks.expect(caps.contains("protocol=3"), "CAPS protocol: \(caps)")
+            Checks.expect(caps.contains("maxCommands=8"), "CAPS maxCommands: \(caps)")
+            Checks.expect(caps.contains("maxSessions=4"), "CAPS maxSessions: \(caps)")
+            Checks.expect(caps.contains("runner="), "CAPS runner version: \(caps)")
+        }
+
+        // 14. Two commands run genuinely concurrently: a 2s sleeper and an
+        //     echo issued together both complete, and the echo does not wait
+        //     for the sleeper.
+        Checks.check("concurrent_commands") {
+            let slow = UUID().uuidString
+            let fast = UUID().uuidString
+            let started = Date()
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: slow,
+                argv: ["/bin/sh", "-c", "sleep 2; echo slow-done"],
+                workingDirectory: nil,
+                standardInput: nil
+            ))
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: fast,
+                argv: ["/bin/echo", "fast-done"],
+                workingDirectory: nil,
+                standardInput: nil
+            ))
+            let fastOutcome = try runner.awaitEnd(token: fast, timeout: 8)
+            let fastElapsed = Date().timeIntervalSince(started)
+            let slowOutcome = try runner.awaitEnd(token: slow, timeout: 8)
+            Checks.expect(fastOutcome.exitCode == 0, "fast exit \(fastOutcome.exitCode)")
+            Checks.expect(fastOutcome.stdout == "fast-done\n", "fast stdout \(fastOutcome.stdout.debugDescription)")
+            Checks.expect(fastElapsed < 1.8, "fast waited for slow (\(fastElapsed)s) — not concurrent")
+            Checks.expect(slowOutcome.exitCode == 0, "slow exit \(slowOutcome.exitCode)")
+            Checks.expect(slowOutcome.stdout == "slow-done\n", "slow stdout \(slowOutcome.stdout.debugDescription)")
+        }
+
+        // 15. Concurrent outputs stay separated per token: two interleaved
+        //     printers never leak into each other's sections.
+        Checks.check("concurrent_output_isolation") {
+            let a = UUID().uuidString
+            let b = UUID().uuidString
+            let scriptA = "for i in 1 2 3 4 5; do echo A-$i; sleep 0.05; done"
+            let scriptB = "for i in 1 2 3 4 5; do echo B-$i; sleep 0.05; done"
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: a, argv: ["/bin/sh", "-c", scriptA], workingDirectory: nil, standardInput: nil
+            ))
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: b, argv: ["/bin/sh", "-c", scriptB], workingDirectory: nil, standardInput: nil
+            ))
+            let outcomeA = try runner.awaitEnd(token: a, timeout: 10)
+            let outcomeB = try runner.awaitEnd(token: b, timeout: 10)
+            Checks.expect(outcomeA.exitCode == 0 && outcomeB.exitCode == 0, "exits \(outcomeA.exitCode)/\(outcomeB.exitCode)")
+            Checks.expect(!outcomeA.stdout.contains("B-"), "A leaked B output: \(outcomeA.stdout.debugDescription)")
+            Checks.expect(!outcomeB.stdout.contains("A-"), "B leaked A output: \(outcomeB.stdout.debugDescription)")
+            Checks.expect(outcomeA.stdout.contains("A-1") && outcomeA.stdout.contains("A-5"), "A output incomplete: \(outcomeA.stdout.debugDescription)")
+            Checks.expect(outcomeB.stdout.contains("B-1") && outcomeB.stdout.contains("B-5"), "B output incomplete: \(outcomeB.stdout.debugDescription)")
+        }
+
+        // 16. Two independent PTY sessions run at the same time (A/B
+        //     terminals): separate output, separate input, separate exit.
+        Checks.check("concurrent_pty_sessions") {
+            let a = UUID().uuidString
+            let b = UUID().uuidString
+            try runner.writeRaw(Wire.chunked(
+                "OPEN", token: a,
+                payload: Wire.openPayload(cwd: "", cols: 80, rows: 24, argv: ["/bin/sh"])
+            ))
+            try runner.writeRaw(Wire.chunked(
+                "OPEN", token: b,
+                payload: Wire.openPayload(cwd: "", cols: 80, rows: 24, argv: ["/bin/sh"])
+            ))
+            _ = try runner.readRaw(timeout: 5) { data in
+                data.range(of: Data("\u{1e}FLOE-BEGIN \(a)\u{1e}".utf8)) != nil
+            }
+            _ = try runner.readRaw(timeout: 5) { data in
+                data.range(of: Data("\u{1e}FLOE-BEGIN \(b)\u{1e}".utf8)) != nil
+            }
+            try runner.writeRaw(Wire.input(token: a, bytes: Data("echo marker-A\n".utf8)))
+            try runner.writeRaw(Wire.input(token: b, bytes: Data("echo marker-B\n".utf8)))
+            _ = try runner.readRaw(timeout: 6) { data in
+                data.range(of: Data("marker-A".utf8)) != nil && data.range(of: Data("marker-B".utf8)) != nil
+            }
+            try runner.writeRaw(Wire.input(token: a, bytes: Data("exit 3\n".utf8)))
+            try runner.writeRaw(Wire.input(token: b, bytes: Data("exit 5\n".utf8)))
+            let raw = try runner.readRaw(timeout: 8) { data in
+                Wire.endCode(in: data, token: a) != nil && Wire.endCode(in: data, token: b) != nil
+            }
+            Checks.expect(Wire.endCode(in: raw, token: a) == 3, "session A exit \(String(describing: Wire.endCode(in: raw, token: a)))")
+            Checks.expect(Wire.endCode(in: raw, token: b) == 5, "session B exit \(String(describing: Wire.endCode(in: raw, token: b)))")
+        }
+
+        // 17. Targeted cancellation: SIGNAL INT kills only the addressed
+        //     command's process group; a concurrently running command is
+        //     untouched.
+        Checks.check("targeted_signal_cancel") {
+            let victim = UUID().uuidString
+            let survivor = UUID().uuidString
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: victim,
+                argv: ["/bin/sh", "-c", "trap '' TERM INT; sleep 30"],
+                workingDirectory: nil, standardInput: nil
+            ))
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: survivor,
+                argv: ["/bin/sh", "-c", "sleep 1; echo survivor-done"],
+                workingDirectory: nil, standardInput: nil
+            ))
+            Thread.sleep(forTimeInterval: 0.3)
+            try runner.writeRaw(Wire.frame("SIGNAL", token: victim, extra: "INT"))
+            let survivorOutcome = try runner.awaitEnd(token: survivor, timeout: 8)
+            Checks.expect(survivorOutcome.exitCode == 0, "survivor exit \(survivorOutcome.exitCode)")
+            Checks.expect(survivorOutcome.stdout == "survivor-done\n", "survivor stdout \(survivorOutcome.stdout.debugDescription)")
+            let victimOutcome = try runner.awaitEnd(token: victim, timeout: 10)
+            Checks.expect(victimOutcome.exitCode == 130, "victim exit \(victimOutcome.exitCode) (want 130 after TERM->KILL escalation)")
+        }
+
+        // 18. Fragmented frames: markers split across console chunks still
+        //     parse (the real console delivers arbitrary chunking). The
+        //     host-side parser must hold marker-prefix tails; the runner
+        //     must hold partial frames. Drive a chunked EXEC whose frames
+        //     are written byte-by-byte.
+        Checks.check("fragmented_frames") {
+            let token = UUID().uuidString
+            let payload = Wire.execPayload(argv: ["/bin/sh", "-c", "echo fragmented-ok"], stdin: Data())
+            let frames = Wire.chunked("EXEC", token: token, payload: payload, chunkSize: 1500)
+            for byte in frames {
+                try runner.writeRaw(Data([byte]))
+            }
+            let outcome = try runner.awaitEnd(token: token, timeout: 10)
+            Checks.expect(outcome.exitCode == 0, "fragmented exit \(outcome.exitCode)")
+            Checks.expect(outcome.stdout == "fragmented-ok\n", "fragmented stdout \(outcome.stdout.debugDescription)")
+        }
+
+        // 19. Host parser: FAILED split across feeds (including pre-BEGIN)
+        //     resolves to .failed with the reason, never silently dropped.
+        Checks.check("parser_failed_frame_split") {
+            let token = "01234567-89ab-cdef-0123-456789abcdef"
+            let stream = LinuxGuestFraming.failedMarkerPrefix(token) + Data("unreaped\u{1e}".utf8)
+            for chunkSize in [1, 3, 7, 13] {
+                var parser = LinuxGuestFraming.Parser(token: token, maxOutputBytes: 1 << 20)
+                var failed: String?
+                var index = stream.startIndex
+                while index < stream.endIndex {
+                    let end = stream.index(index, offsetBy: chunkSize, limitedBy: stream.endIndex) ?? stream.endIndex
+                    switch parser.feed(Data(stream[index..<end])) {
+                    case .needMore: break
+                    case .finished(let code): failed = "unexpected finish \(code)"
+                    case .failed(let reason): failed = reason
+                    }
+                    index = end
+                }
+                Checks.expect(failed?.contains("unreaped") == true, "chunk \(chunkSize): FAILED reason lost (\(failed ?? "nil"))")
+            }
+        }
+
+        // 20. Host control parser: PID/CAPS/END values split across feeds
+        //     keep their state (regression: prefix consumption before the
+        //     value arrived used to lose it).
+        Checks.check("control_parser_split_values") {
+            let token = "ctl-1"
+            var stream = Data("\u{1e}FLOE-PID \(token) 4321\u{1e}".utf8)
+            stream.append(Data("\u{1e}FLOE-CAPS \(token) runner=2.0.0 protocol=3 maxCommands=8\u{1e}".utf8))
+            stream.append(Data("\u{1e}FLOE-END \(token) 0\u{1e}".utf8))
+            for chunkSize in [1, 2, 5, 11] {
+                var parser = LinuxGuestFraming.ControlParser(token: token)
+                var exit: Int32?
+                var index = stream.startIndex
+                while index < stream.endIndex {
+                    let end = stream.index(index, offsetBy: chunkSize, limitedBy: stream.endIndex) ?? stream.endIndex
+                    switch parser.feed(Data(stream[index..<end])) {
+                    case .needMore: break
+                    case .finished(let code): exit = code
+                    }
+                    index = end
+                }
+                Checks.expect(exit == 0, "chunk \(chunkSize): control exit \(String(describing: exit))")
+                Checks.expect(parser.pid == 4321, "chunk \(chunkSize): pid \(String(describing: parser.pid))")
+                Checks.expect(parser.protocolVersion == 3, "chunk \(chunkSize): protocol \(String(describing: parser.protocolVersion))")
+            }
+        }
+
+        // 21. Host session parser: FAILED-before-BEGIN and split END both
+        //     resolve; no frame is dropped when the terminator's value is
+        //     fragmented.
+        Checks.check("session_parser_split_frames") {
+            let id = "sess-1"
+            for chunkSize in [1, 4, 9] {
+                var parser = LinuxGuestFraming.SessionParser(sessionID: id)
+                var stream = Data("boot-noise".utf8)
+                stream.append(LinuxGuestFraming.failedMarkerPrefix(id))
+                stream.append(Data("unreaped\u{1e}".utf8))
+                var failed: String?
+                var index = stream.startIndex
+                while index < stream.endIndex {
+                    let end = stream.index(index, offsetBy: chunkSize, limitedBy: stream.endIndex) ?? stream.endIndex
+                    switch parser.feed(Data(stream[index..<end])) {
+                    case .needMore, .output: break
+                    case .outputAndFinished(_, let code): failed = "unexpected finish \(code)"
+                    case .finished(let code): failed = "unexpected finish \(code)"
+                    case .failed(let reason): failed = reason
+                    }
+                    index = end
+                }
+                Checks.expect(failed?.contains("unreaped") == true, "chunk \(chunkSize): session FAILED lost (\(failed ?? "nil"))")
+            }
+        }
+
+        // 22. Runner quarantine: a cancelled command whose process cannot
+        //     die promptly never reports END 130 while it is still running —
+        //     the runner escalates and only ENDs after the reap. (A truly
+        //     SIGKILL-proof process needs kernel state we cannot synthesize
+        //     here; this proves the reap-before-END ordering and that the
+        //     channel serves the next command immediately after.)
+        Checks.check("cancel_reap_before_end") {
+            let token = UUID().uuidString
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: token,
+                argv: ["/bin/sh", "-c", "trap '' TERM INT; while :; do :; done"],
+                workingDirectory: nil, standardInput: nil
+            ))
+            Thread.sleep(forTimeInterval: 0.3)
+            try runner.writeRaw(Wire.frame("SIGNAL", token: token, extra: "INT"))
+            let outcome = try runner.awaitEnd(token: token, timeout: 10)
+            Checks.expect(outcome.exitCode == 130, "cancel exit \(outcome.exitCode)")
+            // The reaped group is gone: no matching child remains.
+            let probe = Process()
+            probe.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            probe.arguments = ["-f", "trap '' TERM INT; while :; do :; done"]
+            try? probe.run()
+            probe.waitUntilExit()
+            Checks.expect(probe.terminationStatus != 0, "cancelled process group survived the reported END")
+            let next = try runner.run(token: UUID().uuidString, argv: ["/bin/echo", "channel-alive"], timeout: 5)
+            Checks.expect(next.exitCode == 0, "channel dead after cancel: \(next.stderr)")
+            Checks.expect(next.stdout == "channel-alive\n", "next stdout \(next.stdout.debugDescription)")
+        }
+
+        // 23. Control exchanges stay responsive while commands and a session
+        //     run (prioritized control channel): ALIVE for an unknown pid
+        //     answers promptly between two long-running commands.
+        Checks.check("control_channel_during_commands") {
+            let longA = UUID().uuidString
+            let longB = UUID().uuidString
+            let ctl = UUID().uuidString
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: longA, argv: ["/bin/sleep", "2"], workingDirectory: nil, standardInput: nil
+            ))
+            try runner.writeRaw(LinuxGuestFraming.execEnvelope(
+                token: longB, argv: ["/bin/sleep", "2"], workingDirectory: nil, standardInput: nil
+            ))
+            Thread.sleep(forTimeInterval: 0.2)
+            let started = Date()
+            try runner.writeRaw(Wire.frame("ALIVE", token: ctl, extra: "424242"))
+            let raw = try runner.readRaw(timeout: 5) { Wire.endCode(in: $0, token: ctl) != nil }
+            Checks.expect(Wire.endCode(in: raw, token: ctl) == 3, "ALIVE unknown pid code")
+            Checks.expect(Date().timeIntervalSince(started) < 2, "control blocked behind commands")
+            _ = try runner.awaitEnd(token: longA, timeout: 8)
+            _ = try runner.awaitEnd(token: longB, timeout: 8)
         }
     }
 }
