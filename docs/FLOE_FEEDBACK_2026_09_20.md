@@ -25,10 +25,17 @@ Apple processing and internal-group availability remain required.
   cursor/source identifiers through bounded tool envelopes and compression,
   without skipping unread records. Cursor-true UTF-8 pagination and full stored
   message reachability are integrated, with 40 focused harness assertions passing.
-  Cloud-provider empty completion and local memory work remain in progress.
-- Local-model continuation and memory/compaction recovery: actual process budget,
-  tool-catalog growth and recoverable checkpoint behavior. No current device
-  crash stack is available; the screenshot alone does not establish a cause.
+  Cloud-provider empty completion now gets one bounded continuation after a
+  successful history lookup. Empty budget/no-progress finalization is a
+  recoverable failure, including when tools must stay disabled. App compilation
+  and physical acceptance of these changes remain pending.
+- Local-model recovery is integrated: native tokenizer overflow now reaches
+  one compaction retry; existing low-memory rejection reaches bounded recovery.
+  Prompt shaping accounts for selected tool schemas and mixed-script text with
+  an approximate token estimate; the real tokenizer remains the final guard.
+  The newest receipt keeps identifiers instead of being dropped whole. A 23-case
+  pure Swift budget harness passed. Current process-memory measurement was
+  already present and is preserved. No device crash root cause is claimed.
 - Linux execution: qualify pinned TinyEMU against a usable guest, then connect
   environment-owned Shell, local Python and services. A legacy demo boot is
   insufficient to claim modern Linux/APT support. Existing native/WASM execution
@@ -82,3 +89,8 @@ names reported in the screenshots. This is a package mapping, not execution
 acceptance. For example, Debian trixie riscv64 [7zip file contents](https://packages.debian.org/trixie/riscv64/7zip/filelist)
 include `/usr/bin/7z`; the UI installs the real `7zip` package. Actual guest
 installation/execution remains unverified until a usable Linux image is ready.
+
+A source-only follow-up review caught a test-call argument-order error and an
+empty forced-finalization branch; both are corrected in `01eca877`. The review
+ran no builds, tests or UI. Newly added App and runtime behavior still needs
+the accepted-SDK cloud build and the user's device acceptance.
