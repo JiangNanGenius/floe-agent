@@ -108,6 +108,7 @@
 		44F125A88372998BD75A01C9 /* uuid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 7EB83CE4E7FCE787665DFBBB /* uuid.min.js */; };
 		4602C406C6F7D1047179E992 /* ZLImageEditor in Frameworks */ = {isa = PBXBuildFile; productRef = CBD84D1CEE157C32CAD857DC /* ZLImageEditor */; };
 		4707D8E92893B0ED9C62F8F9 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 33E1861DD057C3FCDE832CE6 /* WhisperKit */; };
+		4838BB3738C24617246E8E50 /* LinuxComponentUpdatePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98C3AC8AABB6B8DA28928707 /* LinuxComponentUpdatePolicy.swift */; };
 		485FA2BD9ACADB87C7D16913 /* ProviderEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */; };
 		49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */; };
 		4A812D9D0082904ECFCB9984 /* RARFixtures.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */; };
@@ -353,6 +354,7 @@
 		FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */; };
 		FC96C3B20BEFAC8E513A2A43 /* NotesWorkspaceImportUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */; };
 		FCC65E363F3009B85F3A5908 /* BrowserURLPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */; };
+		FCD2E354FB678A9A1CB365D9 /* LinuxComponentUpdatePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1369E7F2523EC16D1467AC63 /* LinuxComponentUpdatePolicyTests.swift */; };
 		FD72275932E31EB1A35C2D45 /* OfficeInkPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09F2199DBD6A16038C3468C7 /* OfficeInkPreferences.swift */; };
 /* End PBXBuildFile section */
 
@@ -440,6 +442,7 @@
 		1202B558B5346402D1ABD69D /* VideoProviderAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProviderAdapterTests.swift; sourceTree = "<group>"; };
 		129A22985CBD64DE5DB664FF /* native-host.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "native-host.xcconfig"; sourceTree = "<group>"; };
 		12C1ABF02CBBFDC44F9B0577 /* NoteFileImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteFileImporter.swift; sourceTree = "<group>"; };
+		1369E7F2523EC16D1467AC63 /* LinuxComponentUpdatePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxComponentUpdatePolicyTests.swift; sourceTree = "<group>"; };
 		13C9AD3FD971F1CDA6F5EBF4 /* FileSpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSpeechTranscriber.swift; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
 		15142C2A5CB70D6C7B86AB76 /* TextConflictReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextConflictReviewView.swift; sourceTree = "<group>"; };
@@ -622,6 +625,7 @@
 		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
 		97B9B3602FD264F0C21CE627 /* UsageStatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStatisticsView.swift; sourceTree = "<group>"; };
 		981B8A91A33287F0FDC3129C /* lodash.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = lodash.min.js; sourceTree = "<group>"; };
+		98C3AC8AABB6B8DA28928707 /* LinuxComponentUpdatePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxComponentUpdatePolicy.swift; sourceTree = "<group>"; };
 		98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARArchiveService.swift; sourceTree = "<group>"; };
 		9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		9C41B8992C84C7B27CF73906 /* ComposerReturnField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReturnField.swift; sourceTree = "<group>"; };
@@ -834,6 +838,7 @@
 				A53D1BCB11C304CA5EA031AF /* FloeTLSConfiguration.m */,
 				CC330B4DFDA361217E319768 /* GuestRuntimeAssembly.swift */,
 				27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */,
+				98C3AC8AABB6B8DA28928707 /* LinuxComponentUpdatePolicy.swift */,
 				478A0A4565D3210136338773 /* LinuxGuestBackend.swift */,
 				56FD58BBA3D4A7B8FB00AE0F /* LinuxGuestImageDownloader.swift */,
 				661B0EF976FE62AE65B7537A /* LocalServiceTool.swift */,
@@ -894,6 +899,7 @@
 				6455103EF0B79B9607612F82 /* IDELanguageRunPolicyTests.swift */,
 				E6C9A70E7268FDFF23034963 /* IDERunSourceStagingTests.swift */,
 				2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */,
+				1369E7F2523EC16D1467AC63 /* LinuxComponentUpdatePolicyTests.swift */,
 				020723F1965651F1C7D6CD77 /* LocalShellRuntimeTests.swift */,
 				1C6BC21C486387EBE3A38BF8 /* LuaShellInstallTests.swift */,
 				93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */,
@@ -1981,6 +1987,7 @@
 				4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */,
 				D940A535577FE25640F5F5E5 /* InlinePDFReader.swift in Sources */,
 				355AA35003F049409539C002 /* JobDownloadCoordinator.swift in Sources */,
+				4838BB3738C24617246E8E50 /* LinuxComponentUpdatePolicy.swift in Sources */,
 				DBC1FDCC4AB616469B580A7A /* LinuxGuestBackend.swift in Sources */,
 				6973F414B96F2DD9372BF007 /* LinuxGuestImageDownloader.swift in Sources */,
 				C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */,
@@ -2155,6 +2162,7 @@
 				2FD0136BB54538BD1593B70A /* IDELanguageRunPolicyTests.swift in Sources */,
 				969E2E0B2506BF1A1752EADC /* IDERunSourceStagingTests.swift in Sources */,
 				5783D26BF683BAD283217A43 /* ImportantFileShortcutTests.swift in Sources */,
+				FCD2E354FB678A9A1CB365D9 /* LinuxComponentUpdatePolicyTests.swift in Sources */,
 				413F511639D463F80B8F7E2B /* LocalShellRuntimeTests.swift in Sources */,
 				5BE98E2301E8DA1F45A90A2D /* LuaShellInstallTests.swift in Sources */,
 				B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */,

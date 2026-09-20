@@ -168,7 +168,11 @@ edit them; see `docs/PHASE2_engine.md` in the engine worktree):**
   an **explicit "component update needed"** state when the installed image's
   runner predates the required protocol — execution and settings name the
   update entry; there is no silent retry against an old runner that would
-  answer with busy/125 rejections.
+  answer with busy/125 rejections. Implemented app-side in this branch:
+  `LinuxComponentUpdatePolicy` reads the manifest's optional
+  `runner.protocol`/`runner.version` tolerantly (absent = no claim, so the
+  current pinned image never false-positives) and EnvironmentManagerView
+  shows the bilingual update-needed message with the download entry.
 - Integration requests raised to the engine worker (tracked in §7): runner
   version/capability exposure on the image manifest and/or guest status so the
   update-needed state is computed from data, not guessed. No guest

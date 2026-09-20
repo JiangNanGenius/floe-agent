@@ -443,6 +443,7 @@ targets:
           - LuaShellInstallTests.swift
           - IDEGitHubActionsTests.swift
           - LocalShellRuntimeTests.swift
+          - LinuxComponentUpdatePolicyTests.swift
           - EnvironmentLanguagePackageTests.swift
           - RemoteImageInspectToolTests.swift
           - ImportantFileShortcutTests.swift
@@ -479,6 +480,7 @@ targets:
       - path: Tests/FloeAgentUITests/LuaShellInstallTests.swift
       - path: Tests/FloeAgentUITests/IDEGitHubActionsTests.swift
       - path: Tests/FloeAgentUITests/LocalShellRuntimeTests.swift
+      - path: Tests/FloeAgentUITests/LinuxComponentUpdatePolicyTests.swift
       - path: Tests/FloeAgentUITests/EnvironmentLanguagePackageTests.swift
       - path: Tests/FloeAgentUITests/RemoteImageInspectToolTests.swift
       - path: Tests/FloeAgentUITests/ImportantFileShortcutTests.swift

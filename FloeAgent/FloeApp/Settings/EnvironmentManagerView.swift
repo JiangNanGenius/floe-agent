@@ -240,8 +240,15 @@ private struct EnvironmentDetailView: View {
         }
         if let failure = status.imageVerificationFailure { return failure }
         if status.imageInstalled == false { return String(localized: "environment.backend.image_missing") }
+        // An installed but outdated runner is an explicit update state, never
+        // a silent busy/125 retry loop.
+        if let update = componentUpdateNeeded { return update }
         return status.lastError
     }
+
+    /// Honest runner-update state read from the installed image manifest;
+    /// nil when the component is current or not installed here.
+    @State private var componentUpdateNeeded: String?
 
     var body: some View {
         List {
@@ -597,6 +604,9 @@ private struct EnvironmentDetailView: View {
     @MainActor private func reloadGuestStatus() async {
         imageStorageAvailable = FloePlatformServices.shared.linuxGuestImageStorageAvailable()
         guestStatus = await FloePlatformServices.shared.linuxEnvironmentStatus(id: report.id)
+        componentUpdateNeeded = await FloePlatformServices.shared.linuxComponentUpdateNeeded(
+            id: guestStatus?.imageID
+        )
     }
     /// Applies a backend choice through the same platform service the shell
     /// entry uses; failures (unqualified image, guest start failure) surface

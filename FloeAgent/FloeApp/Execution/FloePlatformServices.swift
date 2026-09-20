@@ -231,6 +231,18 @@ final class FloePlatformServices: @unchecked Sendable {
         lock.withLock { linuxImages != nil }
     }
 
+    /// Explicit runner-update state for the installed component, read from
+    /// the image manifest's optional runner metadata. nil when the component
+    /// is current, not installed, or carries no runner record.
+    func linuxComponentUpdateNeeded(id: String?) async -> String? {
+        guard let id, let images = lock.withLock({ linuxImages }) else { return nil }
+        let manifest = images.imagesDirectory
+            .appendingPathComponent(id, isDirectory: true)
+            .appendingPathComponent("manifest.json")
+        let data = try? Data(contentsOf: manifest)
+        return LinuxComponentUpdatePolicy.updateNeededReason(manifestData: data)
+    }
+
     /// Narrow install entry for the pinned Floe Linux image, reachable from
     /// environment settings. It uses the same verified storage and the same
     /// bounded HTTPS downloader as `floe-env image install`; the id must be a

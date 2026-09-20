@@ -2849,6 +2849,23 @@
         }
       }
     },
+    "environment.backend.update_needed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The installed Linux component is outdated. Update it from the download entry below; execution retries will not fix the old runner."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已安装的 Linux 组件版本过旧。请通过下方下载入口更新；旧运行器不会因重试而恢复。"
+          }
+        }
+      }
+    },
     "environment.backend.image_missing": {
       "extractionState": "manual",
       "localizations": {
