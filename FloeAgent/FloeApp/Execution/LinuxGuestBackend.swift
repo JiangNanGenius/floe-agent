@@ -12,10 +12,10 @@
 // No qualified modern guest image exists yet. The image catalog reads
 // manifests from FloeAgent's app-owned LinuxGuest/images directory; starting a
 // Linux environment without a qualified manifest fails with the recorded
-// reason rather than falling back to the 2018 demo image. The backend is only
-// assembled when the app has a real artifact root: it never falls back to a
-// temporary directory, so a build without durable storage reports the Linux
-// backend as unavailable instead of writing guest data somewhere transient.
+// reason rather than falling back to the 2018 demo image. The backend keeps
+// environment ownership even without a real artifact root; image resolution
+// then reports unavailable. No request falls back to a temporary directory or
+// a native interpreter because Linux image storage is unavailable.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -68,28 +68,28 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
 enum LinuxGuestBackendAssembly {
     /// Manifest id expected under `<artifact root>/LinuxGuest/images/<id>/`.
     /// The manifest must carry a passing modern-guest qualification record.
-    static let defaultImageID = "floe-linux-base"
+    static let defaultImageID = "floe-debian13-riscv64-202609202607"
 
-    /// Returns nil when the app has no durable artifact root. A temporary
-    /// directory would violate the repository's no-silent-temp rule and would
-    /// lose a guest image between launches, so the backend simply stays
-    /// unavailable and native behaviour is unchanged.
-    static func makeService(registry: EnvironmentRegistry, artifactRoot: URL?) -> TinyEMULinuxCommandService? {
-        guard let artifactRoot else {
+    /// Keep environment ownership available even when durable image storage is
+    /// unavailable, so a Linux-selected request cannot fall back to native.
+    static func makeService(registry: EnvironmentRegistry, artifactRoot: URL?) -> TinyEMULinuxCommandService {
+        let images: any LinuxGuestImageResolving
+        if let artifactRoot {
+            images = FileLinuxGuestImageResolver(root: artifactRoot
+                .appendingPathComponent("LinuxGuest", isDirectory: true)
+                .appendingPathComponent("images", isDirectory: true))
+        } else {
             FloeLogger(category: .tools).warning(
-                "Linux guest backend unavailable: no durable artifact root; native environments unchanged"
+                "Linux guest images unavailable: no durable artifact root"
             )
-            return nil
+            images = UnavailableLinuxGuestImageResolver()
         }
-        let imagesRoot = artifactRoot
-            .appendingPathComponent("LinuxGuest", isDirectory: true)
-            .appendingPathComponent("images", isDirectory: true)
         let guestRegistry = TinyEMULinuxGuestRegistry(
             environments: AppLinuxGuestEnvironmentProvider(
                 registry: registry,
                 defaultImageID: defaultImageID
             ),
-            images: FileLinuxGuestImageResolver(root: imagesRoot),
+            images: images,
             limits: .standard,
             factory: TinyEMUGuestSessionFactory()
         )
@@ -98,18 +98,24 @@ enum LinuxGuestBackendAssembly {
 
     /// Verified image storage on the same artifact root as the resolver: it
     /// is what `floe-env image …` and the environment UI read. nil without a
-    /// durable artifact root, exactly like the guest backend itself.
+    /// durable artifact root; guest ownership remains available independently.
     static func makeImageService(artifactRoot: URL?) -> LinuxGuestImageInstallationService? {
         guard let artifactRoot else { return nil }
         return LinuxGuestImageInstallationService(root: artifactRoot, limits: .standard)
     }
 }
 
+private struct UnavailableLinuxGuestImageResolver: LinuxGuestImageResolving {
+    func linuxGuestImage(id: String) async -> LinuxGuestImage? { nil }
+    func linuxGuestImageVerificationFailure(id: String) async -> String? {
+        "Linux guest image storage is unavailable"
+    }
+}
+
 /// Routes one-shot shell runs by the request's environment runtime: Linux
 /// environments execute inside their guest, every other environment keeps the
-/// injected native backend. Interactive sessions only exist natively; a Linux
-/// environment reports the honest "not wired yet" error instead of opening a
-/// native session that would escape the guest.
+/// injected native backend. Interactive sessions retain the backend selected
+/// at open time, including Linux PTY sessions.
 struct RoutingLocalShellBackend: LocalShellBackend {
     let native: any LocalShellBackend
     let guests: any LinuxCommandRunning

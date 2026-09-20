@@ -382,7 +382,7 @@ final class AppEnvironment: ObservableObject {
         let managedPython = localPythonService.map {
             ManagedPythonInstallService(
                 python: $0,
-                linux: linuxGuests.map { LinuxGuestLanguagePackages(runner: $0) },
+                linux: LinuxGuestLanguagePackages(runner: linuxGuests),
                 packagesChanged: { await FloeShellCommands.refreshPythonCommands() }
             )
         }
@@ -486,7 +486,7 @@ final class AppEnvironment: ObservableObject {
             languageManagement: EnvironmentLanguagePackageService(
                 coordinator: environmentExecutions,
                 python: managedPython,
-                linux: linuxGuests.map { LinuxGuestLanguagePackages(runner: $0) }
+                linux: LinuxGuestLanguagePackages(runner: linuxGuests)
             )
         )
 

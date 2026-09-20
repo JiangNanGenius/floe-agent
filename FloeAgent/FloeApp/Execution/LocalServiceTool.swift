@@ -189,6 +189,7 @@ struct LocalServiceTool: AgentTool {
                 controller: controller,
                 args: args,
                 jobID: jobID,
+                conversationID: job.conversationID,
                 environment: environment,
                 entry: entry,
                 cwd: cwd,
@@ -260,6 +261,7 @@ struct LocalServiceTool: AgentTool {
         controller: any LinuxGuestLocalServiceControlling,
         args: Arguments,
         jobID: UUID,
+        conversationID: UUID,
         environment: ToolEnvironment,
         entry: URL,
         cwd: URL,
@@ -331,7 +333,7 @@ struct LocalServiceTool: AgentTool {
                 BrowserURLPolicy.revokeService(owner: jobID)
             } else if snapshot.state == "running", await responds(probe, request: probeRequest) {
                 snapshot.previewURL = endpoint.absoluteString
-                BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: context.conversationID)
+                BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: conversationID)
             } else {
                 snapshot.previewURL = nil; BrowserURLPolicy.revokeService(owner: jobID)
             }
