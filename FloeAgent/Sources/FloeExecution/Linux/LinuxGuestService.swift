@@ -26,12 +26,20 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     case notRunning(environmentID: String)
     case imageNotQualified(environmentID: String, reason: String)
     case guestBusy(environmentID: String)
+    /// The device's bounded guest admission is already used up. Reported
+    /// before a VM is created; no other running guest is ever killed or
+    /// stopped to make room, and nothing waits forever for a slot.
+    case capacityReached(detail: String)
     case startFailed(String)
     case outputLimitExceeded(limit: Int)
     case timedOut(seconds: TimeInterval)
     case serviceForwardingUnavailable(String)
     case consoleUnavailable(String)
     case invalidConfiguration(String)
+    /// The guest image's runner predates protocol 3 (no HELLO/CAPS answer or
+    /// a lower protocol): concurrent tokens would corrupt output, so the
+    /// channel fails closed until the runner component is updated.
+    case runnerUpgradeRequired(required: String, found: String?)
 
     public var errorDescription: String? {
         switch self {
@@ -42,7 +50,9 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
         case .imageNotQualified(_, let reason):
             return "Linux guest image is not qualified: \(reason)"
         case .guestBusy(let id):
-            return "Linux guest \(id) is already running; this build runs one guest at a time"
+            return "Linux guest \(id) is already running or starting; wait for the current start to finish"
+        case .capacityReached(let detail):
+            return "Linux guest capacity reached: \(detail)"
         case .startFailed(let detail):
             return "Linux guest failed to start: \(detail)"
         case .outputLimitExceeded(let limit):
@@ -55,6 +65,9 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
             return "Linux guest console is unavailable: \(detail)"
         case .invalidConfiguration(let detail):
             return "Linux guest configuration is invalid: \(detail)"
+        case .runnerUpgradeRequired(let required, let found):
+            let detail = found.map { " (guest reported: \($0))" } ?? " (guest runner does not answer capability negotiation)"
+            return "The Linux guest runner is too old: this build requires \(required)\(detail). Update the guest image component."
         }
     }
 }
@@ -77,6 +90,26 @@ public struct LinuxGuestLimits: Sendable, Equatable {
     public var interruptGrace: TimeInterval
     /// Host forwarding table limit (engine FLOE_VM_MAX_HOSTFWD).
     public var maxServiceForwards: Int
+    /// Upper bound on simultaneously running guest commands (guest table
+    /// MAX_CONCURRENT_COMMANDS). Each command gets its own token, pipes, cwd
+    /// and process group.
+    public var maxConcurrentCommands: Int
+    /// Upper bound on simultaneously open interactive PTY sessions (guest
+    /// table MAX_CONCURRENT_SESSIONS).
+    public var maxConcurrentSessions: Int
+    /// Upper bound on simultaneously active guests (running VMs plus starts
+    /// in flight). Per-command/session caps do not bound process memory when
+    /// every environment has its own VM, so admission is counted and
+    /// reserved explicitly. At least two guests must fit at `maxRAMMB` each.
+    public var maxActiveGuests: Int
+    /// Total guest RAM budget in MB. A start is refused before any VM is
+    /// created when its reserved RAM would exceed this; running guests are
+    /// never killed to make room.
+    public var maxGuestRAMMB: Int
+    /// How long the start path waits for the booted runner's FLOE-HELLO
+    /// answer before treating it as a legacy (pre-protocol-3) runner. Always
+    /// finite: a silent runner never hangs a start.
+    public var runnerProbeTimeout: TimeInterval
 
     public init(
         defaultRAMMB: Int = 256,
@@ -89,7 +122,12 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         maxCommandTimeout: TimeInterval = 1800,
         commandTimeout: TimeInterval = 300,
         interruptGrace: TimeInterval = 2,
-        maxServiceForwards: Int = 16
+        maxServiceForwards: Int = 16,
+        maxConcurrentCommands: Int = 8,
+        maxConcurrentSessions: Int = 4,
+        maxActiveGuests: Int = 4,
+        maxGuestRAMMB: Int = 1536,
+        runnerProbeTimeout: TimeInterval = 5
     ) {
         self.defaultRAMMB = defaultRAMMB
         self.maxRAMMB = maxRAMMB
@@ -102,6 +140,11 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         self.commandTimeout = commandTimeout
         self.interruptGrace = interruptGrace
         self.maxServiceForwards = maxServiceForwards
+        self.maxConcurrentCommands = max(1, min(32, maxConcurrentCommands))
+        self.maxConcurrentSessions = max(1, min(8, maxConcurrentSessions))
+        self.maxActiveGuests = max(1, min(16, maxActiveGuests))
+        self.maxGuestRAMMB = max(2 * minRAMMB, min(8 * 1024, maxGuestRAMMB))
+        self.runnerProbeTimeout = max(0.2, min(60, runnerProbeTimeout))
     }
 
     public static let standard = LinuxGuestLimits()
@@ -314,6 +357,12 @@ public struct LinuxGuestImageArtifact: Sendable, Equatable, Codable {
         case kernel
         case initrd
         case disk
+        /// The standalone guest runner used to upgrade an existing persistent
+        /// disk in place. Deliberately distinct from `disk`: the runner is a
+        /// small executable with its own size/digest records, and reusing the
+        /// disk role would collide with the base-disk checks and with the
+        /// environment disk it is copied into.
+        case runner
     }
 
     public var role: Role
@@ -355,6 +404,29 @@ public struct LinuxGuestImageProvenance: Sendable, Equatable, Codable {
     }
 }
 
+/// A base disk image this manifest may adopt as an existing environment disk.
+///
+/// An environment disk is a mutable clone of one base disk and its sidecar
+/// records the exact image id, SHA-512 and byte count it was cloned from; a
+/// later catalog image whose disk differs byte-for-byte would otherwise be a
+/// conflict. A runner-only component release ships the same base image with
+/// just `/usr/local/bin/floe-exec` replaced, so it declares the exact
+/// predecessor here: only an origin that matches all three recorded fields is
+/// adopted, the mutable disk and its original `origin.json` stay untouched,
+/// and the runner is replaced in-guest from the verified standalone runner
+/// artifact. Any other origin is still a conflict and is never overwritten.
+public struct LinuxGuestCompatibleDiskOrigin: Sendable, Equatable, Codable {
+    public var imageID: String
+    public var artifactSHA512: String
+    public var artifactBytes: Int64
+
+    public init(imageID: String, artifactSHA512: String, artifactBytes: Int64) {
+        self.imageID = imageID
+        self.artifactSHA512 = artifactSHA512
+        self.artifactBytes = artifactBytes
+    }
+}
+
 public struct LinuxGuestImage: Sendable, Equatable, Codable {
     public var id: String
     public var biosPath: String
@@ -371,6 +443,17 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
     /// SHA-512 bound artifact list. Required for a startable image.
     public var artifacts: [LinuxGuestImageArtifact]?
     public var provenance: LinuxGuestImageProvenance?
+    /// Optional standalone runner binary (`path` relative to the image
+    /// directory, `sha512`, `bytes`) plus the exact CAPS payload it answers
+    /// (e.g. "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4"). When
+    /// present, an environment whose persistent disk still boots an older
+    /// runner is upgraded in-guest from these verified bytes — never by
+    /// wiping the disk.
+    public var runnerArtifact: LinuxGuestImageArtifact?
+    public var runnerCapabilities: String?
+    /// Exact predecessor base images an existing environment disk may have
+    /// been cloned from. Absent in older manifests (nil = no adoption).
+    public var compatibleOrigins: [LinuxGuestCompatibleDiskOrigin]?
 
     public init(
         id: String,
@@ -384,7 +467,10 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
         qualificationEvidence: String? = nil,
         qualificationRun: String? = nil,
         artifacts: [LinuxGuestImageArtifact]? = nil,
-        provenance: LinuxGuestImageProvenance? = nil
+        provenance: LinuxGuestImageProvenance? = nil,
+        runnerArtifact: LinuxGuestImageArtifact? = nil,
+        runnerCapabilities: String? = nil,
+        compatibleOrigins: [LinuxGuestCompatibleDiskOrigin]? = nil
     ) {
         self.id = id
         self.biosPath = biosPath
@@ -398,6 +484,9 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
         self.qualificationRun = qualificationRun
         self.artifacts = artifacts
         self.provenance = provenance
+        self.runnerArtifact = runnerArtifact
+        self.runnerCapabilities = runnerCapabilities
+        self.compatibleOrigins = compatibleOrigins
     }
 
     /// The declared artifact paths with their roles, in manifest order.
@@ -406,6 +495,13 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
         if let kernelPath { result.append((.kernel, kernelPath)) }
         if let initrdPath { result.append((.initrd, initrdPath)) }
         if let diskPath { result.append((.disk, diskPath)) }
+        // The standalone runner is a declared, verified artifact too. When the
+        // manifest already carries an explicit runner digest entry the path is
+        // listed once; otherwise the runnerArtifact record is the digest.
+        if let runnerArtifact,
+           !(artifacts?.contains { $0.role == .runner && $0.path == runnerArtifact.path } ?? false) {
+            result.append((.runner, runnerArtifact.path))
+        }
         return result
     }
 
@@ -420,7 +516,13 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
     }
 
     public func artifactDigest(role: LinuxGuestImageArtifact.Role) -> LinuxGuestImageArtifact? {
-        artifacts?.first { $0.role == role }
+        if let matched = artifacts?.first(where: { $0.role == role }) { return matched }
+        // The standalone runner carries its own digest record. Requiring a
+        // duplicate entry in `artifacts` would create two sources of truth for
+        // the same bytes, so the runnerArtifact record is authoritative when
+        // no explicit runner entry exists.
+        if role == .runner, let runnerArtifact { return runnerArtifact }
+        return nil
     }
 
     /// Structural qualification check: `qualified`, a named qualification run,
@@ -455,6 +557,26 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
                 return "\(declared.role.rawValue) digest records no size"
             }
         }
+        if let imageDirectory {
+            // Containment first: a declared `..` component or an absolute
+            // path outside the image directory is an escape, not merely a
+            // missing file.
+            let root = imageDirectory.resolvingSymlinksInPath().standardizedFileURL
+            for declared in declaredArtifacts {
+                if declared.path.contains("\u{0}") {
+                    return "artifact path contains NUL: \(declared.path)"
+                }
+                if declared.path.split(separator: "/").contains("..") {
+                    return "artifact path escapes the image directory: \(declared.path)"
+                }
+                let resolved = artifactURL(declared.path, imageDirectory: imageDirectory)
+                    .resolvingSymlinksInPath()
+                    .standardizedFileURL
+                if resolved.path != root.path, !resolved.path.hasPrefix(root.path + "/") {
+                    return "artifact path escapes the image directory: \(declared.path)"
+                }
+            }
+        }
         for declared in declaredArtifacts {
             let url: URL
             if let imageDirectory {
@@ -466,6 +588,55 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
             guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
                 return "image artifact is missing: \(url.path)"
             }
+        }
+        if let runnerFailure = runnerUpgradeContractFailure() {
+            return runnerFailure
+        }
+        for origin in compatibleOrigins ?? [] {
+            let originID = origin.imageID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let originDigest = origin.artifactSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if originID.isEmpty || originID.contains("/") || originID.contains("\u{0}") {
+                return "compatible disk origin records an invalid image id '\(origin.imageID)'"
+            }
+            if originDigest.count != 128 || originDigest.contains(where: { !$0.isHexDigit }) {
+                return "compatible disk origin for \(originID) is not a SHA-512 hex string"
+            }
+            if origin.artifactBytes <= 0 {
+                return "compatible disk origin for \(originID) records no size"
+            }
+        }
+        return nil
+    }
+
+    /// Structural contract for the optional standalone runner upgrade
+    /// artifact: a distinct `runner` role (never `disk`), an agreed duplicate
+    /// digest entry if the manifest carries one, and a `runnerCapabilities`
+    /// payload that declares protocol 3 or newer. Absent in older manifests,
+    /// which stay valid.
+    private func runnerUpgradeContractFailure() -> String? {
+        guard let runnerArtifact else { return nil }
+        if runnerArtifact.role != .runner {
+            return "runner upgrade artifact declares role '\(runnerArtifact.role.rawValue)'; it must be the distinct 'runner' role, never 'disk'"
+        }
+        if let duplicate = artifacts?.first(where: { $0.role == .runner }) {
+            let duplicateDigest = duplicate.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let runnerDigest = runnerArtifact.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if duplicate.path != runnerArtifact.path
+                || duplicate.bytes != runnerArtifact.bytes
+                || duplicateDigest != runnerDigest {
+                return "runner upgrade artifact and its runner digest entry disagree"
+            }
+        }
+        let capabilities = runnerCapabilities?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if capabilities.isEmpty {
+            return "manifest declares a runner upgrade artifact but no runnerCapabilities payload; an in-guest upgrade would have nothing to verify"
+        }
+        let declaresProtocol = capabilities.split(separator: " ").contains { field in
+            guard field.hasPrefix("protocol=") else { return false }
+            return (Int(field.dropFirst("protocol=".count)) ?? 0) >= LinuxGuestFraming.requiredProtocol
+        }
+        if !declaresProtocol {
+            return "runnerCapabilities '\(capabilities)' does not declare protocol \(LinuxGuestFraming.requiredProtocol) or newer"
         }
         return nil
     }
@@ -561,7 +732,16 @@ public protocol LinuxGuestControlling: Sendable {
     /// with an honest reason when the guest cannot start.
     func startGuest(environmentID: String, taskID: String?) async throws -> Bool
     /// Stops (and destroys) the guest; safe to call for any environment.
+    /// Waits for the engine run loop to actually exit and reports running
+    /// state truthfully the whole time (isRunning stays true until the VM
+    /// thread left its last slice). A later startGuest works immediately
+    /// after stopGuest returns.
     func stopGuest(environmentID: String) async
+    /// Stops the guest and discards its runtime state while preserving the
+    /// environment's persistent disk and shares. Resetting one environment
+    /// never touches another environment's guest, disks or forwards; the
+    /// next startGuest boots the same image and disk fresh.
+    func resetGuest(environmentID: String) async
     /// Releases guest state before the environment's data is deleted.
     func deleteGuest(environmentID: String) async
     func guestIsRunning(environmentID: String) async -> Bool
@@ -612,6 +792,15 @@ public struct LinuxGuestStatus: Sendable, Equatable {
     public var imageInstalled: Bool?
     public var imageVerificationFailure: String?
     public var imageDistributable: Bool?
+    /// Set by the last resetGuest/stopGuest: describes exactly what the
+    /// operation affected (this environment only; disks preserved on reset).
+    public var lastResetSharedImpact: String?
+    /// Guests currently holding an admission slot (running VMs plus starts in
+    /// flight), and the RAM reserved by them. Reported so the UI can explain
+    /// a capacity refusal without guessing; nil when the service did not
+    /// report capacity.
+    public var activeGuestCount: Int?
+    public var reservedGuestRAMMB: Int?
 
     public init(
         environmentID: String,
@@ -622,7 +811,10 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         lastError: String? = nil,
         imageInstalled: Bool? = nil,
         imageVerificationFailure: String? = nil,
-        imageDistributable: Bool? = nil
+        imageDistributable: Bool? = nil,
+        lastResetSharedImpact: String? = nil,
+        activeGuestCount: Int? = nil,
+        reservedGuestRAMMB: Int? = nil
     ) {
         self.environmentID = environmentID
         self.running = running
@@ -633,6 +825,9 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         self.imageInstalled = imageInstalled
         self.imageVerificationFailure = imageVerificationFailure
         self.imageDistributable = imageDistributable
+        self.lastResetSharedImpact = lastResetSharedImpact
+        self.activeGuestCount = activeGuestCount
+        self.reservedGuestRAMMB = reservedGuestRAMMB
     }
 }
 
