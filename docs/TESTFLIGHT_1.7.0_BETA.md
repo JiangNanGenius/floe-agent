@@ -1,6 +1,38 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (204) — available in Floe QA
+## Current internal delivery: 1.7.0 (207) — available in Floe QA
+
+Immutable tag `v1.7.0-beta.64`, source `41b03ad516c454f6d05bf9f9fa4e31733b4a9340`.
+[Build/upload 35497153478](https://github.com/JiangNanGenius/floe-agent/actions/runs/35497153478)
+passed the accepted-SDK App build (Xcode 26.6 / 17F113), retained the unsigned
+IPA artifact `10601633343` and matching private symbols `10601593620` before
+signing, then validated and uploaded the same source. Signed TestFlight evidence
+is retained as artifact `10601950027`. No public GitHub or Feather release was
+requested for this repair slice.
+
+Apple build `a4a8416b-b8c4-4a64-acae-37434620585a` is `VALID`, unexpired,
+attached to the sole existing private **Floe QA** group and `IN_BETA_TESTING`,
+verified at **2026-09-20 08:51:56 UTC**. Both English and Chinese test notes were
+saved and read back in [prepare 35500625761](https://github.com/JiangNanGenius/floe-agent/actions/runs/35500625761).
+The first verification read reported no group immediately after preparation
+([35500656677](https://github.com/JiangNanGenius/floe-agent/actions/runs/35500656677));
+a later read after propagation confirmed the exact group and installability
+([35500722350](https://github.com/JiangNanGenius/floe-agent/actions/runs/35500722350)).
+No build, upload or group mutation was repeated to fix that stale read.
+
+This slice contains Office lifecycle recovery, native PDF/Office in IDE tabs,
+Git initialization/lifetime fixes, native freely positioned mind maps and Shell
+session/gate repairs. **It does not contain the later local-model, cross-task,
+package-entry or Linux backend increments.** [Test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_207.json)
+and [ongoing repair status](FLOE_FEEDBACK_2026_09_20.md) keep those separate.
+Simulator/UI regression was waived by the user; physical acceptance is theirs.
+
+Build 208 (`v1.7.0-beta.65`, `37fe9864`) was cancelled before upload after a
+Linux Python/Node package-ownership gap was discovered. It produced no device
+artifact or TestFlight upload. That correction is intended for build 209; the
+208 source and run remain immutable evidence.
+
+## Previous internal delivery: 1.7.0 (204) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.61`, source `1f654c3e59ba18856006ea0c778986bf37072feb`.
 [Run 35478308349](https://github.com/JiangNanGenius/floe-agent/actions/runs/35478308349)

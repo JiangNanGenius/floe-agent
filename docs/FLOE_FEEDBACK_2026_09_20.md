@@ -1,7 +1,7 @@
 # September 20 feedback repair and delivery
 
-Status: build 207 compiled and uploaded successfully; Apple processing is still
-pending. Build 208 was cancelled before upload after a Linux package-ownership
+Status: build 207 is available in the existing Floe QA TestFlight group; Apple
+VALID, unexpired and IN_BETA_TESTING were verified at 08:51:56 UTC. Build 208 was cancelled before upload after a Linux package-ownership
 gap was found. That code path is being corrected for build 209. Physical-device
 acceptance remains with the user. Integration starts from `b16cb18e` (the build 204
 delivery record). The prior build remains independently recorded.
@@ -87,7 +87,7 @@ Apple processing and internal-group availability remain required.
   being integrated separately. The accepted-SDK App compile passed; the workflow
   retained unsigned IPA artifact `10601633343` (803812105 bytes) and private symbols
   `10601593620` (134122129 bytes) before signing. Signing, validation and upload succeeded; signed TestFlight evidence is retained as
-  artifact `10601950027`. Apple build processing and group availability are not yet claimed.
+  artifact `10601950027`. Apple processing and Floe QA availability were verified in run35500722350.
 
 The Linux recommendation table includes the packages for all 13 missing command
 names reported in the screenshots. This is a package mapping, not execution
