@@ -216,6 +216,130 @@ struct BackgroundJobTests {
         #expect(try await store.activeJobs().isEmpty)
     }
 
+    @Test("Submit runs the tool's workspace preflight before persisting the job")
+    func submitPreflightRejectsBeforePersist() async throws {
+        let (db, _, run) = try await fixture()
+        let store = BackgroundJobStore(database: db)
+        let registry = ToolRunnerRegistry()
+        var runner = AnyAgentTool(descriptor: .init(name: "exec.localService", toolDescription: "test service",
+            parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true)) { _, _ in
+            ToolExecutionOutput(summary: "never", fullOutputSHA256: "never")
+        }
+        runner.preflightSubmission = { _, workspaceRoot in
+            guard workspaceRoot != nil else { throw FloeError.validationFailed("no workspace") }
+            throw FloeError.validationFailed("entry 'server.py' does not exist under the workspace")
+        }
+        registry.register(runner)
+        let service = BackgroundJobService(store: store, registry: registry)
+        let tool = JobsSubmitTool(service: service)
+        do {
+            _ = try await tool.execute(
+                .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py","port":8080}"#),
+                context: .init(runID: run, toolCallID: "call-preflight", cancellation: CancellationToken())
+            )
+            Issue.record("Expected the preflight failure at submit time")
+        } catch {
+            #expect(String(describing: error).contains("server.py"))
+        }
+        // Nothing may linger after the fast failure.
+        #expect(try await store.activeJobs().isEmpty)
+        // A passing preflight submits normally.
+        runner.preflightSubmission = { _, workspaceRoot in
+            guard workspaceRoot != nil else { throw FloeError.validationFailed("no workspace") }
+        }
+        registry.register(runner)
+        let output = try await tool.execute(
+            .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py","port":8080}"#),
+            context: .init(runID: run, toolCallID: "call-preflight-ok", cancellation: CancellationToken())
+        )
+        #expect(output.summary.contains("jobID"))
+    }
+
+    @Test("Missing exec.localService port fails at submit time with an actionable message")
+    func localServiceMissingPortFailsFast() async throws {
+        let (db, _, run) = try await fixture()
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(descriptor: .init(name: "exec.localService", toolDescription: "test service",
+            parametersJSON: #"{"type":"object","properties":{"port":{"type":"integer","description":"Loopback port 1024..65535"}},"required":["port"]}"#,
+            riskLabels: [], isSideEffecting: true)) { _, _ in
+            ToolExecutionOutput(summary: "never", fullOutputSHA256: "never")
+        })
+        let store = BackgroundJobStore(database: db)
+        let service = BackgroundJobService(store: store, registry: registry)
+        let tool = JobsSubmitTool(service: service)
+        do {
+            _ = try await tool.execute(
+                .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py"}"#),
+                context: .init(runID: run, toolCallID: "call-noport", cancellation: CancellationToken())
+            )
+            Issue.record("Expected a submit-time validation error")
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains("port"))
+            // The schema description is surfaced so the error is actionable.
+            #expect(message.contains("Loopback port 1024..65535"))
+        }
+        #expect(try await store.activeJobs().isEmpty)
+    }
+
+    @Test("Local service preflight rejects missing entry and bad cwd before submit")
+    func localServicePreflightPaths() async throws {
+        let workspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-preflight-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        try Data("console.log(1)".utf8).write(to: workspace.appendingPathComponent("server.js"))
+
+        // Valid submission payload passes.
+        try LocalServiceJobPreflight.validate(
+            payloadJSON: Data(#"{"runtime":"node","entry":"server.js","port":8080}"#.utf8),
+            workspaceRootURL: workspace)
+        try LocalServiceJobPreflight.validate(
+            payloadJSON: Data(#"{"runtime":"python","entry":"./server.js","cwd":".","port":65535}"#.utf8),
+            workspaceRootURL: workspace)
+        // Missing entry is rejected with the path and a fix hint.
+        await #expect(throws: (any Error).self) {
+            try LocalServiceJobPreflight.validate(
+                payloadJSON: Data(#"{"runtime":"node","entry":"missing.js","port":8080}"#.utf8),
+                workspaceRootURL: workspace)
+        }
+        do {
+            try LocalServiceJobPreflight.validate(
+                payloadJSON: Data(#"{"runtime":"node","entry":"missing.js","port":8080}"#.utf8),
+                workspaceRootURL: workspace)
+            Issue.record("Expected missing-entry rejection")
+        } catch {
+            #expect(String(describing: error).contains("missing.js"))
+        }
+        // Entry escaping the workspace is rejected.
+        await #expect(throws: (any Error).self) {
+            try LocalServiceJobPreflight.validate(
+                payloadJSON: Data(#"{"runtime":"node","entry":"../outside.js","port":8080}"#.utf8),
+                workspaceRootURL: workspace)
+        }
+        // Missing cwd directory is rejected.
+        do {
+            try LocalServiceJobPreflight.validate(
+                payloadJSON: Data(#"{"runtime":"node","entry":"server.js","cwd":"no/such/dir","port":8080}"#.utf8),
+                workspaceRootURL: workspace)
+            Issue.record("Expected missing-cwd rejection")
+        } catch {
+            #expect(String(describing: error).contains("no/such/dir"))
+        }
+        // Port outside the managed range is rejected.
+        await #expect(throws: (any Error).self) {
+            try LocalServiceJobPreflight.validate(
+                payloadJSON: Data(#"{"runtime":"node","entry":"server.js","port":80}"#.utf8),
+                workspaceRootURL: workspace)
+        }
+        // A missing workspace root is actionable, not a silent pass.
+        await #expect(throws: (any Error).self) {
+            try LocalServiceJobPreflight.validate(
+                payloadJSON: Data(#"{"runtime":"node","entry":"server.js","port":8080}"#.utf8),
+                workspaceRootURL: nil)
+        }
+    }
+
     @Test("Persistent service cancellation stays running until the executor acknowledges exit")
     func serviceCancellationRetainsRunningState() async throws {
         let (db, _, run) = try await fixture()

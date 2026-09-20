@@ -318,8 +318,8 @@ int main(int argc, const char **argv) {
         // S2: session readiness, claim and descriptor ownership.
         int inFD = -1, outFD = -1;
         NSString *initial = nil;
-        BOOL opened = FloeShellOpenSession(@"banner", root, root, @"session-1", @{}, 80, 24, &inFD, &outFD, &initial);
-        check(opened && inFD >= 0 && outFD >= 0, @"S2 interactive session opens");
+        FloeShellBridgeStatus opened = FloeShellOpenSession(@"banner", root, root, @"session-1", @{}, 80, 24, 2.0, nil, &inFD, &outFD, &initial);
+        check(opened == FloeShellBridgeStatusOK && inFD >= 0 && outFD >= 0, @"S2 interactive session opens");
         check([initial containsString:@"banner"], @"S2 readiness wait drained the banner");
         check(FloeShellSessionAlive(@"session-1"), @"S2 running program reports alive after readiness");
         check(FloeShellClaimSessionDescriptors(@"session-1") == YES, @"S2 descriptor claim succeeds once");
@@ -354,16 +354,16 @@ int main(int argc, const char **argv) {
         // S3: close before claim must not hand descriptors to a later pump.
         int inFD2 = -1, outFD2 = -1;
         NSString *initial2 = nil;
-        BOOL opened2 = FloeShellOpenSession(@"banner", root, root, @"session-2", @{}, 80, 24, &inFD2, &outFD2, &initial2);
-        check(opened2, @"S3 second session opens");
+        FloeShellBridgeStatus opened2 = FloeShellOpenSession(@"banner", root, root, @"session-2", @{}, 80, 24, 2.0, nil, &inFD2, &outFD2, &initial2);
+        check(opened2 == FloeShellBridgeStatusOK, @"S3 second session opens");
         FloeShellCloseSession(@"session-2");
         check(FloeShellClaimSessionDescriptors(@"session-2") == NO, @"S3 claim after close returns NO (descriptors already closed)");
 
         // S4: immediately-exiting command keeps its final output and is not alive.
         int inFD3 = -1, outFD3 = -1;
         NSString *initial3 = nil;
-        BOOL opened3 = FloeShellOpenSession(@"bye", root, root, @"session-3", @{}, 80, 24, &inFD3, &outFD3, &initial3);
-        check(opened3 && [initial3 containsString:@"bye"], @"S4 final output of an immediately-exiting command is drained");
+        FloeShellBridgeStatus opened3 = FloeShellOpenSession(@"bye", root, root, @"session-3", @{}, 80, 24, 2.0, nil, &inFD3, &outFD3, &initial3);
+        check(opened3 == FloeShellBridgeStatusOK && [initial3 containsString:@"bye"], @"S4 final output of an immediately-exiting command is drained");
         check(!FloeShellSessionAlive(@"session-3"), @"S4 exited session is not reported alive");
         if (inFD3 >= 0) { close(inFD3); }
         if (outFD3 >= 0) { close(outFD3); }
@@ -374,6 +374,56 @@ int main(int argc, const char **argv) {
         check([diagnostics containsString:@"gate owner="] && [diagnostics containsString:@"busyReturns="]
               && [diagnostics containsString:@"quarantined="] && [diagnostics containsString:@"waitMsTotal="],
               @"S5 gate diagnostics expose bounded counters");
+
+        // S6: interactive sessions and one-shot commands serialize on the same
+        // process-wide run gate. A live session is an engine user like a run:
+        // one-shots report Busy while it lives, a session open reports Busy
+        // while a one-shot is quarantined, and the gate reopens only after the
+        // session's own teardown (never two concurrent engine users).
+        int inFD4 = -1, outFD4 = -1;
+        NSString *initial4 = nil;
+        FloeShellBridgeStatus opened4 = FloeShellOpenSession(@"banner", root, root, @"session-gate", @{}, 80, 24, 2.0, nil, &inFD4, &outFD4, &initial4);
+        check(opened4 == FloeShellBridgeStatusOK, @"S6 session opens on a clean gate");
+        check([FloeShellRunGateDiagnostics() containsString:@"owner=session-gate"],
+              @"S6 the live session is recorded as the gate owner");
+        NSString *duringOut = nil, *duringErr = nil; int32_t duringCode = 125;
+        FloeShellBridgeStatus during = FloeShellRunCommand(@"ok", root, root, @"one-shot-during-session", @{}, nil,
+            0.5, 0.2, 4096, nil, &duringOut, &duringErr, &duringCode);
+        check(during == FloeShellBridgeStatusBusy, @"S6 one-shot reports Busy while a session owns the gate");
+        check(duringOut.length == 0, @"S6 Busy one-shot carries no fabricated output");
+        // A session open behind the held gate honours cancellation.
+        int inFD5 = -1, outFD5 = -1; NSString *initial5 = nil;
+        FloeShellBridgeStatus cancelledOpen = FloeShellOpenSession(@"banner", root, root, @"session-cancelled", @{}, 80, 24, 2.0,
+            ^BOOL { return YES; }, &inFD5, &outFD5, &initial5);
+        check(cancelledOpen == FloeShellBridgeStatusCancelled, @"S6 session open behind a held gate honours cancellation");
+        // Ending the session (stdin EOF) unwinds its engine call; its own
+        // teardown — not the closing caller — reopens the gate.
+        close(inFD4);
+        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"session-gate"); }, 5.0),
+              @"S6 session worker stops on stdin EOF");
+        check(![FloeShellRunGateDiagnostics() containsString:@"owner=session-gate"],
+              @"S6 gate owner clears after the session teardown");
+        NSString *afterOut = nil, *afterErr = nil; int32_t afterCode = 125;
+        FloeShellBridgeStatus after = FloeShellRunCommand(@"ok", root, root, @"one-shot-after-session", @{}, nil,
+            2.0, 0.5, 4096, nil, &afterOut, &afterErr, &afterCode);
+        check(after == FloeShellBridgeStatusOK && [afterOut containsString:@"ok"],
+              @"S6 one-shot runs again only after the session is proven stopped");
+        close(outFD4);
+        FloeShellEndSession(@"session-gate");
+
+        // S6b: a quarantined one-shot blocks session opens the same way.
+        gReleaseBlocked.store(false, std::memory_order_release);
+        NSString *qOut = nil, *qErr = nil; int32_t qCode = 125;
+        FloeShellBridgeStatus quarantined = FloeShellRunCommand(@"block 5000", root, root, @"one-shot-q", @{}, nil,
+            0.15, 0.15, 4096, nil, &qOut, &qErr, &qCode);
+        check(quarantined == FloeShellBridgeStatusTimedOut, @"S6b non-cooperative one-shot quarantines");
+        int inFD6 = -1, outFD6 = -1; NSString *initial6 = nil;
+        FloeShellBridgeStatus blockedOpen = FloeShellOpenSession(@"banner", root, root, @"session-blocked", @{}, 80, 24, 0.2,
+            nil, &inFD6, &outFD6, &initial6);
+        check(blockedOpen == FloeShellBridgeStatusBusy, @"S6b session open reports Busy behind a quarantined one-shot");
+        gReleaseBlocked.store(true, std::memory_order_release);
+        check(waitFor(^BOOL { return !FloeShellHasActiveWorker(@"one-shot-q"); }, 5.0),
+              @"S6b quarantined one-shot stops once released");
 
         printf("\n%d/%d shell bridge host checks passed\n", checks - failures, checks);
         return failures == 0 ? 0 : 1;

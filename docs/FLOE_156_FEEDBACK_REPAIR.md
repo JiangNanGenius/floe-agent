@@ -1,5 +1,47 @@
 # Build 156 feedback repair — build 172 delivery tracking
 
+## 2026-09-20 — Shell gate/session recovery and background-service preflight (post-build 204)
+
+User feedback after build 204: repeated `exec.shell` exit 75 not-started with the
+same gate owner/quarantine owner; `shell.open` alive but `shell.exchange`
+reporting `bytesWritten=0`/no output; `jobs.submit` → `exec.localService`
+failing with a hard-to-understand missing-`port` error and discovering a
+missing entry script only at run time.
+
+Changes on `codex/feedback-shell-recovery` (no App-environment or UI redesign):
+
+- Interactive sessions now share the process-wide engine run gate.
+  `FloeShellOpenSession` acquires the gate (bounded, cancellation-aware),
+  reports `Busy` instead of entering the engine alongside another worker, and
+  the session thread's own teardown releases the gate exactly once after its
+  engine call returns. A live session and a one-shot command can no longer use
+  the engine concurrently; a session whose program never returns quarantines
+  the gate exactly like a non-cooperative one-shot worker. Exit-75 diagnostics
+  now name a quarantined owner and its consequence explicitly.
+- Terminal input/EOF/cancel coordination: session input writes are serialized
+  with EOF under the pump lock; exactly `\u{0003}` routes to cooperative
+  interruption and exactly `\u{0004}` closes stdin (real EOF on the pipe);
+  the pump wakes promptly on input so exchange counters no longer report
+  `bytesWritten=0` for accepted input; a program that stops reading no longer
+  kills output draining. Per-keystroke `ShellCommandPolicy` screening of
+  exchange input is removed (it broke ordinary typing); the policy boundary
+  stays on the session-opening command and one-shot runs.
+- `jobs.submit` gains an optional per-tool workspace preflight:
+  `exec.localService` rejects a missing/unreadable entry, a missing cwd, a
+  bad runtime or an out-of-range port synchronously at submit time with
+  actionable messages, before the durable job record exists. Decoding errors
+  for missing required arguments now include the argument's schema
+  description.
+
+Local evidence: `FloeAgent/scripts/tests/run_feedback_shell_bridge_host.sh`
+passes 58/58 host checks including the new session/one-shot gate-serialization
+cases; `swift build --target FloeExecution` and
+`swift build --target FloeExecutionTests` compile clean; `swiftc -parse` passes
+on every touched app-target file. The new `BackgroundJobTests` preflight pins
+compile but are deferred to cloud CI with the full test matrix. Device
+verification of the exit-75 recovery, interactive input/EOF behavior and
+submit-time preflight remains with the user's next TestFlight build.
+
 ## 2026-09-16 — Soul and profile changes apply to active runs
 
 The settings path already saves active revisions, but an active Agent kept the

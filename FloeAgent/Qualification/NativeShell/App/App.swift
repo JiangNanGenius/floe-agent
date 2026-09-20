@@ -45,7 +45,8 @@ func runInteractiveSmoke() {
  let id = UUID().uuidString
  var input: Int32 = -1, output: Int32 = -1
  var initial: NSString?
- let opened = FloeShellOpenSession("dash -c 'read line; printf \"received:%s\" \"$line\"'", root.path, root.path, id, [:], 80, 24, &input, &output, &initial)
+ let status = FloeShellOpenSession("dash -c 'read line; printf \"received:%s\" \"$line\"'", root.path, root.path, id, [:], 80, 24, 5, nil, &input, &output, &initial)
+ let opened = status == .OK
  var data = Data()
  if opened {
   let bytes = Data("interactive\n".utf8)

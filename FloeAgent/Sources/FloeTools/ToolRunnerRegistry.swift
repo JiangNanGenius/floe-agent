@@ -17,26 +17,47 @@ public struct AnyAgentTool: Sendable {
     /// Decode + validate without executing. Used by background job submission
     /// so malformed arguments fail fast at the call site, not asynchronously.
     public var validateArguments: @Sendable (Data) throws -> Void
+    /// Optional submit-time workspace check (decodes the same payload with the
+    /// resolved workspace root). Tools with workspace-path arguments implement
+    /// this so jobs.submit rejects a job whose entry file or directory does
+    /// not exist *before* the durable record is created, instead of failing
+    /// asynchronously inside the detached runner.
+    public var preflightSubmission: (@Sendable (Data, URL?) async throws -> Void)?
 
     public init(
         descriptor: ToolCatalog.Descriptor,
         run: @escaping @Sendable (Data, ToolContext) async throws -> ToolExecutionOutput,
-        validateArguments: @escaping @Sendable (Data) throws -> Void = { _ in }
+        validateArguments: @escaping @Sendable (Data) throws -> Void = { _ in },
+        preflightSubmission: (@Sendable (Data, URL?) async throws -> Void)? = nil
     ) {
         self.descriptor = descriptor
         self.run = run
         self.validateArguments = validateArguments
+        self.preflightSubmission = preflightSubmission
     }
 
     /// Renders a decoding failure as an actionable message naming the exact
-    /// argument, instead of the platform's opaque "data is missing" text.
-    static func describeDecodingError(_ error: DecodingError, toolName: String) -> String {
+    /// argument — including the argument's own schema description when the
+    /// tool declares one — instead of the platform's opaque "data is missing".
+    public static func describeDecodingError(_ error: DecodingError, toolName: String, parametersJSON: String = "") -> String {
         func path(_ context: DecodingError.Context) -> String {
             context.codingPath.map(\.stringValue).joined(separator: ".")
         }
+        /// Looks the property up in the tool's JSON schema and returns its
+        /// declared description, so "missing required argument 'port'" also
+        /// says what a port is and how to choose it.
+        func schemaHint(_ key: String) -> String {
+            guard let data = parametersJSON.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let property = object["properties"] as? [String: Any],
+                  let field = property[key] as? [String: Any],
+                  let description = field["description"] as? String, !description.isEmpty
+            else { return "" }
+            return " (\(description))"
+        }
         switch error {
         case .keyNotFound(let key, _):
-            return "missing required argument '\(key.stringValue)' for tool '\(toolName)'"
+            return "missing required argument '\(key.stringValue)'\(schemaHint(key.stringValue)) for tool '\(toolName)'"
         case .typeMismatch(_, let context):
             return "argument '\(path(context))' for tool '\(toolName)' has the wrong type (\(context.debugDescription))"
         case .valueNotFound(_, let context):
@@ -66,7 +87,7 @@ public struct AnyAgentTool: Sendable {
             do {
                 arguments = try JSONDecoder().decode(T.Arguments.self, from: argumentsJSON)
             } catch let error as DecodingError {
-                throw FloeError.validationFailed(AnyAgentTool.describeDecodingError(error, toolName: T.name))
+                throw FloeError.validationFailed(AnyAgentTool.describeDecodingError(error, toolName: T.name, parametersJSON: T.parametersJSON))
             } catch {
                 throw FloeError.validationFailed("Invalid arguments for tool '\(T.name)': \(error.localizedDescription)")
             }
@@ -77,7 +98,7 @@ public struct AnyAgentTool: Sendable {
             do {
                 arguments = try JSONDecoder().decode(T.Arguments.self, from: argumentsJSON)
             } catch let error as DecodingError {
-                throw FloeError.validationFailed(AnyAgentTool.describeDecodingError(error, toolName: T.name))
+                throw FloeError.validationFailed(AnyAgentTool.describeDecodingError(error, toolName: T.name, parametersJSON: T.parametersJSON))
             } catch {
                 throw FloeError.validationFailed("Invalid arguments for tool '\(T.name)': \(error.localizedDescription)")
             }

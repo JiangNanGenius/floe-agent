@@ -38,7 +38,16 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             case .timedOut: return .timedOut(partialStdout: out, partialStderr: err, durationMs: duration)
             case .cancelled: return .cancelled
             case .busy:
-                return .notStarted(reason: "The local shell is still stopping another command; nothing was started (exit 75). Retry after it stops. " + FloeShellRunGateDiagnostics())
+                // Nothing of this command ran. Say exactly why the engine
+                // could not take it: a quarantined worker (one that ignored
+                // cancellation and is still stopping) keeps the gate until it
+                // actually stops, unlike a merely busy one.
+                let diagnostics = FloeShellRunGateDiagnostics()
+                var reason = "The local shell engine is busy; nothing was started (exit 75). " + diagnostics
+                if !diagnostics.contains("quarantineOwner=none") {
+                    reason += " A previous command ignored cancellation and is still stopping; the engine stays locked until it actually stops, then retries succeed. If it never stops, close the app to reset the engine."
+                }
+                return .notStarted(reason: reason)
             default: return .failed(message: "Local shell could not start")
             }
     }
@@ -60,9 +69,21 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             var initial: NSString?
             let escaped = request.command.replacingOccurrences(of: "'", with: "'\\''")
             let body = request.command.isEmpty ? "dash -i" : "dash -c '\(escaped)'"
-            guard FloeShellOpenSession(body, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.columns, request.rows, &inputFD, &outputFD, &initial), inputFD >= 0, outputFD >= 0 else {
+            let status = FloeShellOpenSession(body, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.columns, request.rows, request.gateTimeout, { cancellation?.isCancelled == true }, &inputFD, &outputFD, &initial)
+            guard status == .OK, inputFD >= 0, outputFD >= 0 else {
                 FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID)
-                throw FloeError.internalError("The local shell could not open a session")
+                switch status {
+                case .busy:
+                    // The engine is owned by a running or stopping worker
+                    // (one-shot command or another live session). Nothing was
+                    // started; the interactive caller gets the same honest
+                    // not-started style as exec.shell.
+                    throw FloeError.validationFailed("The local shell engine is busy; the session never started. " + FloeShellRunGateDiagnostics())
+                case .cancelled:
+                    throw FloeError.cancelled
+                default:
+                    throw FloeError.internalError("The local shell could not open a session")
+                }
             }
             if cancellation?.isCancelled == true {
                 FloeShellCloseSession(request.sessionID)
@@ -100,7 +121,13 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
     func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
         guard let io = lock.withLock({ sessions[request.sessionID] }) else { throw FloeError.notFound("Unknown shell session") }
         try cancellation?.throwIfCancelled()
-        if let input = request.input { try io.enqueue(Data(input.utf8)) }
+        if request.input == "\u{4}" {
+            // Ctrl-D over a pipe is a byte, not EOF: close the session's stdin
+            // write end so the program observes a real end-of-file.
+            try io.sendEOF()
+        } else if let input = request.input {
+            try io.enqueue(Data(input.utf8))
+        }
         let deadline = Date().addingTimeInterval(Double(request.waitMs) / 1000)
         while !io.hasOutput && io.alive && Date() < deadline {
             try cancellation?.throwIfCancelled()
@@ -129,14 +156,19 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         let input: Int32
         let output: Int32
         private let lock = NSLock()
+        /// Wakes the pump promptly when input arrives or EOF/close is
+        /// requested, so an exchange never reports bytesWritten=0 for input
+        /// the pump simply has not flushed yet within its old 20 ms poll.
+        private let wake = DispatchSemaphore(value: 0)
         private var buffered = Data()
         private var pendingInput = Data()
         private var finished = false
         private var closing = false
+        private var inputClosed = false
         private var exitCode: Int32?
         private var bytesRead = 0
         private var bytesWritten = 0
-        private var descriptorsClosed = false
+        private var outputClosed = false
         /// Called once the pump has stopped and the descriptors are closed, so
         /// the backend can forget the finished session without a second owner.
         var onFinish: (@Sendable (String) -> Void)?
@@ -149,22 +181,48 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             _ = fcntl(input, F_SETNOSIGPIPE, 1)
         }
         func enqueue(_ data: Data) throws {
-            try lock.withLock {
-                guard !closing && !finished, pendingInput.count + data.count <= 256 * 1024 else {
-                    throw FloeError.validationFailed("Terminal input is closed or its queue is full")
-                }
-                pendingInput.append(data)
+            lock.lock()
+            defer { lock.unlock() }
+            guard !closing && !finished else { throw FloeError.validationFailed("Terminal input is closed") }
+            guard !inputClosed else { throw FloeError.validationFailed("Terminal stdin is closed (EOF was sent); open a new session for more input") }
+            guard pendingInput.count + data.count <= 256 * 1024 else {
+                throw FloeError.validationFailed("Terminal input queue is full")
             }
+            pendingInput.append(data)
+            wake.signal()
+        }
+        /// Closes the session's stdin write end once. The program observes a
+        /// real EOF (read returns 0) instead of a stray Ctrl-D byte, which a
+        /// pipe has no line discipline to translate.
+        func sendEOF() throws {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !closing && !finished else { throw FloeError.validationFailed("Terminal input is closed") }
+            guard !inputClosed else { return }
+            inputClosed = true
+            Darwin.close(input)
+            wake.signal()
         }
         func start() {
             DispatchQueue.global(qos: .utility).async { [self] in
                 while alive {
-                    let inputData = lock.withLock { pendingInput }
-                    if !inputData.isEmpty {
-                        let written = inputData.withUnsafeBytes { Darwin.write(input, $0.baseAddress, $0.count) }
-                        if written > 0 { lock.withLock { pendingInput.removeFirst(written); bytesWritten += written } }
-                        else if written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR { break }
+                    // Writes happen under the lock so EOF/close can never
+                    // close the descriptor concurrently with a write, and so
+                    // an exchange's enqueue is reflected in bytesWritten as
+                    // soon as the pump has run once.
+                    lock.lock()
+                    if !pendingInput.isEmpty && !inputClosed {
+                        let written = pendingInput.withUnsafeBytes { Darwin.write(input, $0.baseAddress, $0.count) }
+                        if written > 0 {
+                            pendingInput.removeFirst(written); bytesWritten += written
+                        } else if written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR {
+                            // The program stopped reading (EPIPE/EBADF): mark
+                            // stdin closed but keep draining its output.
+                            inputClosed = true
+                            pendingInput.removeAll()
+                        }
                     }
+                    lock.unlock()
                     var chunk = [UInt8](repeating: 0, count: 16 * 1024)
                     let count = Darwin.read(output, &chunk, chunk.count)
                     if count > 0 {
@@ -175,7 +233,9 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
                         }
                     } else if count == 0 { break }
                     else if errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR { break }
-                    if count <= 0 { Thread.sleep(forTimeInterval: 0.02) }
+                    if count <= 0 {
+                        _ = wake.wait(timeout: .now() + 0.02)
+                    }
                 }
                 var code: Int32 = 0
                 let hasCode = FloeShellSessionExitCode(id, &code)
@@ -194,10 +254,10 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             }
         }
         private func closeDescriptorsLocked() {
-            guard !descriptorsClosed else { return }
-            descriptorsClosed = true
-            Darwin.close(input)
-            Darwin.close(output)
+            // Per-descriptor flags: sendEOF() may already have closed stdin,
+            // and a recycled descriptor number must never be closed twice.
+            if !inputClosed { inputClosed = true; Darwin.close(input) }
+            if !outputClosed { outputClosed = true; Darwin.close(output) }
         }
         func drain(maxBytes: Int) -> ShellExchangeResult {
             lock.withLock {
@@ -208,6 +268,7 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
         }
         func close() {
             lock.withLock { closing = true }
+            wake.signal()
             // The pump owns descriptor teardown and serializes it with reads/writes.
             FloeShellCommandRegistry.shared.cancelCurrent(sessionID: id)
             FloeShellSignalSession(id, SIGTERM)

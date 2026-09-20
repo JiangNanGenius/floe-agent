@@ -95,11 +95,11 @@ public struct ShellExchangeTool: AgentTool {
 
     public static let name = "shell.exchange"
     public static let toolDescription =
-        "Send input to an open shell session and read new output. `input` is UTF-8 text; send \"\\u0003\" for Ctrl-C. waitMs bounds how long to collect output (default 2000, max 30000). The response reports whether the program is still alive and its exit code once it exits."
+        "Send input to an open shell session and read new output. Input is written to the session's stdin as-is; end a command with a newline (\"\\n\") to execute it. Send exactly \"\\u0003\" for Ctrl-C (cooperative interrupt) and exactly \"\\u0004\" to close stdin (EOF). waitMs bounds how long to collect output (default 2000, max 30000). The response reports whether the program is still alive, its exit code once it exits, and cumulative bytesRead/bytesWritten so 'wrote nothing' stays distinguishable from 'already drained'."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "sessionID":{"type":"string"},
-      "input":{"type":"string","description":"Input bytes; \\u0003 sends Ctrl-C"},
+      "input":{"type":"string","description":"Input bytes written as-is; end with \\n to run a command; exactly \\u0003 = Ctrl-C, exactly \\u0004 = EOF"},
       "waitMs":{"type":"integer","minimum":50,"maximum":30000},
       "maxBytes":{"type":"integer","minimum":1,"maximum":262144}},
      "required":["sessionID"],"additionalProperties":false}

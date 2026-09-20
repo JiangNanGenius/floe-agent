@@ -12,15 +12,22 @@ public actor ShellSessionCenter {
         public var maximumSessions: Int
         public var sessionLifetime: TimeInterval
         public var maximumBufferBytes: Int
+        /// Bounded wait for the engine's process-wide run gate when opening a
+        /// session. Sessions and one-shot commands share one serial engine;
+        /// an open that cannot acquire the gate in this window fails instead
+        /// of running concurrently with another engine user.
+        public var gateWaitTimeout: TimeInterval
 
         public init(
             maximumSessions: Int = 4,
             sessionLifetime: TimeInterval = 30 * 60,
-            maximumBufferBytes: Int = 256 * 1024
+            maximumBufferBytes: Int = 256 * 1024,
+            gateWaitTimeout: TimeInterval = 5
         ) {
             self.maximumSessions = maximumSessions
             self.sessionLifetime = sessionLifetime
             self.maximumBufferBytes = maximumBufferBytes
+            self.gateWaitTimeout = max(0.25, min(gateWaitTimeout, 30))
         }
     }
 
@@ -89,6 +96,7 @@ public actor ShellSessionCenter {
             environment: environment,
             columns: max(20, min(columns, 500)),
             rows: max(5, min(rows, 200)),
+            gateTimeout: configuration.gateWaitTimeout,
             sessionID: sessionID,
             runID: runID,
             toolEnvironment: lease.context.environment
@@ -133,14 +141,25 @@ public actor ShellSessionCenter {
             throw FloeError.notFound("Unknown or expired shell session \(sessionID)")
         }
         try cancellation?.throwIfCancelled()
-        if let input {
+        // Interactive input is user keystrokes on an already-approved session,
+        // not a fresh command: it is never re-run through the command policy
+        // (that would block ordinary typing such as fragments of a longer
+        // line). The policy boundary stays where it belongs — the session's
+        // opening command and one-shot exec.shell are still screened.
+        var routedInput = input
+        if routedInput == "\u{3}" {
+            // Ctrl-C over a pipe is a byte, not a signal: route it to the
+            // backend's cooperative interruption instead of writing it, so
+            // the documented shell.exchange contract works without a PTY.
+            await backend.signalSession(sessionID: sessionID, signal: .interrupt)
+            routedInput = nil
+        }
+        if let input = routedInput {
             try ShellInputValidation.validate(command: "", cwd: ".", environment: [:], stdin: input)
-            let verdict = policy.evaluate(input)
-            guard !verdict.stopped else { throw FloeError.validationFailed(verdict.reason ?? "Input blocked") }
         }
         let request = ShellExchangeRequest(
             sessionID: sessionID,
-            input: input,
+            input: routedInput,
             waitMs: max(50, min(waitMs, 30_000)),
             maxBytes: max(1, min(maxBytes, configuration.maximumBufferBytes))
         )

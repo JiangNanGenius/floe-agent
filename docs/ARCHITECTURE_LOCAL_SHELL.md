@@ -91,17 +91,31 @@ local shell quarantined (busy) until it returns or the app restarts.
 ### 2.2 Interactive sessions
 
 `FloeShellOpenSession` creates two pipes and runs the program on an NSThread
-with thread-local stdio bound to them. `shell.exchange` writes the input pipe
-and drains the output pipe non-blocking; EOF marks the session dead. The
-interactive shell reads its input through the session's thread-local stdin:
-Floe's dash sets the top-level parser fd from `fileno(thread_stdin)`, because
-the App process fd 0 is not the session pipe. `shell.exchange` reports
+with thread-local stdio bound to them. Interactive sessions are engine users
+exactly like one-shot runs: opening a session acquires the same process-wide
+run gate (bounded, cancellation-aware; a `Busy` open is rejected with gate
+diagnostics instead of entering the engine alongside another worker) and the
+gate is released exactly once by the session thread's own teardown after its
+engine call has returned. A live session therefore serializes with one-shot
+commands both ways; a session whose program never returns keeps the gate
+quarantined just like a non-cooperative one-shot worker.
+
+The pipes are not a PTY: there is no line discipline. `shell.exchange` writes
+input bytes as-is (a line-oriented program executes a command only once it
+ends with `\n`); an input of exactly `\u{3}` is routed to cooperative
+interruption (SIGINT semantics) and exactly `\u{4}` closes the session's
+stdin write end so the program observes a real EOF. `shell.exchange` reports
 `alive`, `exitCode` and the cumulative byte counters so "the program wrote
 nothing" stays distinguishable from "output was drained". `shell.signal`
 requests cooperative cancellation for the selected session. Closing a session
-also closes its owned pipes; no process-terminating signal is sent. The session
-registry lives in `ShellSessionCenter` (run-scoped ownership) and expires
-through the shared `SessionExpiryScheduler`.
+also closes its owned pipes; no process-terminating signal is sent. The
+session registry lives in `ShellSessionCenter` (run-scoped ownership) and
+expires through the shared `SessionExpiryScheduler`.
+
+Interactive exchange input is never re-screened by `ShellCommandPolicy`:
+it is user keystrokes on an already-approved session, and per-keystroke
+filtering breaks ordinary typing. The policy boundary stays on the session's
+opening command and on one-shot `exec.shell` runs.
 
 ### 2.3 Replacement commands
 

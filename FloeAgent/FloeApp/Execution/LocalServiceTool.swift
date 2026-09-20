@@ -112,7 +112,7 @@ struct LocalServiceTool: AgentTool {
     private static func release(_ port: Int) { portsLock.withLock { _ = reservedPorts.remove(port) } }
     static let name = "exec.localService"
     static let toolDescription = "Persistent local Node/Python HTTP service. Invoke through jobs.submit with this target; do not call directly. entry is an existing workspace-relative script, cwd defaults to workspace root, port is 1024..65535. Bind only 127.0.0.1; PORT/FLOE_SERVICE_PORT are set to port. Closing a tool turn or browser tab does not stop the server. jobs.status exposes bounded live logs and a previewURL only after HTTP responds; jobs.cancel waits for actual worker exit. App termination interrupts in-process services; explicitly restart if still needed. Native addons must support the runtime's worker/interpreter model."
-    static let parametersJSON = #"{"type":"object","properties":{"runtime":{"type":"string","enum":["node","python"]},"entry":{"type":"string","maxLength":2048},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048},"port":{"type":"integer","minimum":1024,"maximum":65535}},"required":["runtime","entry","port"],"additionalProperties":false}"#
+    static let parametersJSON = #"{"type":"object","properties":{"runtime":{"type":"string","enum":["node","python"]},"entry":{"type":"string","maxLength":2048,"description":"Workspace-relative path to an existing entry script (checked when the job is submitted)"},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048,"description":"Workspace-relative working directory (default: workspace root; must exist)"},"port":{"type":"integer","minimum":1024,"maximum":65535,"description":"Loopback port the service binds (1024..65535); the server reads PORT/FLOE_SERVICE_PORT"}},"required":["runtime","entry","port"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess]
     static let isSideEffecting = true
     let store: BackgroundJobStore
@@ -126,11 +126,20 @@ struct LocalServiceTool: AgentTool {
     }
 
     func validate(_ args: Arguments) throws {
-        guard ["node", "python"].contains(args.runtime), !args.entry.isEmpty, args.entry.utf8.count <= 2048, !args.entry.contains("\0"),
-              args.cwd.map({ !$0.isEmpty && $0.utf8.count <= 2048 && !$0.contains("\0") }) != false,
-              (1024...65535).contains(args.port), (args.arguments?.count ?? 0) <= 32,
-              args.arguments?.allSatisfy({ $0.utf8.count <= 2048 && !$0.contains("\0") }) != false else {
-            throw FloeError.validationFailed("Invalid local service runtime, entry, arguments or port")
+        guard ["node", "python"].contains(args.runtime) else {
+            throw FloeError.validationFailed("exec.localService runtime must be 'node' or 'python', got '\(args.runtime)'")
+        }
+        guard !args.entry.isEmpty, args.entry.utf8.count <= 2048, !args.entry.contains("\0") else {
+            throw FloeError.validationFailed("exec.localService entry must be a non-empty workspace-relative path (max 2048 bytes)")
+        }
+        if let cwd = args.cwd, cwd.isEmpty || cwd.utf8.count > 2048 || cwd.contains("\0") {
+            throw FloeError.validationFailed("exec.localService cwd must be a workspace-relative path (max 2048 bytes)")
+        }
+        guard (1024...65535).contains(args.port) else {
+            throw FloeError.validationFailed("exec.localService port must be in 1024...65535, got \(args.port)")
+        }
+        guard (args.arguments?.count ?? 0) <= 32, args.arguments?.allSatisfy({ $0.utf8.count <= 2048 && !$0.contains("\0") }) != false else {
+            throw FloeError.validationFailed("exec.localService arguments: at most 32 entries, each max 2048 bytes")
         }
     }
 

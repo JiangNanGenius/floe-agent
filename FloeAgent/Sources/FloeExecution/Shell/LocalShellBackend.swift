@@ -92,6 +92,11 @@ public struct ShellOpenRequest: Sendable {
     public var environment: [String: String]
     public var columns: Int
     public var rows: Int
+    /// Bounded wait for the engine's process-wide run gate before the session
+    /// may start. A session and a one-shot command can never use the engine
+    /// concurrently; an open that cannot acquire the gate in this window is
+    /// rejected instead of entering the engine alongside another worker.
+    public var gateTimeout: TimeInterval
     public var sessionID: String
     public var runID: UUID?
     public var toolEnvironment: ToolEnvironment?
@@ -103,6 +108,7 @@ public struct ShellOpenRequest: Sendable {
         environment: [String: String] = [:],
         columns: Int = 80,
         rows: Int = 24,
+        gateTimeout: TimeInterval = 5,
         sessionID: String,
         runID: UUID? = nil,
         toolEnvironment: ToolEnvironment? = nil
@@ -113,6 +119,7 @@ public struct ShellOpenRequest: Sendable {
         self.environment = environment
         self.columns = columns
         self.rows = rows
+        self.gateTimeout = gateTimeout
         self.sessionID = sessionID
         self.runID = runID
         self.toolEnvironment = toolEnvironment
@@ -135,7 +142,11 @@ public struct ShellOpenResult: Sendable, Equatable {
 
 public struct ShellExchangeRequest: Sendable {
     public var sessionID: String
-    /// UTF-8 input. `\u{03}` is Ctrl-C for shells that map it to SIGINT.
+    /// UTF-8 input written to the session's stdin as-is (a pipe, not a PTY):
+    /// line-oriented programs execute a command only once it ends with "\n".
+    /// An input of exactly "\u{03}" is routed to cooperative interruption
+    /// (SIGINT semantics) instead of being written, and exactly "\u{04}"
+    /// closes stdin (real EOF).
     public var input: String?
     public var waitMs: Int
     public var maxBytes: Int

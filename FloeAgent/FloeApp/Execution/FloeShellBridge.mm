@@ -608,7 +608,19 @@ struct FloeSessionThreadContext {
     char *sessionKey;
     __strong NSDictionary<NSString *, NSString *> *environment;
     __strong FloeShellSessionRecord *record;
+    /// The interactive session is an engine user exactly like a one-shot run:
+    /// it holds the process-wide run gate for its whole life and releases it
+    /// exactly once from its own teardown, after ios_system has returned.
+    std::atomic_bool gateReleased{false};
+    bool gateAcquired = false;
 };
+
+static void FloeReleaseSessionGate(FloeSessionThreadContext *context) {
+    if (!context->gateAcquired) { return; }
+    if (context->gateReleased.exchange(true, std::memory_order_acq_rel)) { return; }
+    FloeRecordGateReleased([NSString stringWithUTF8String:context->sessionKey]);
+    dispatch_semaphore_signal(FloeShellRunGate());
+}
 
 void *FloeSessionThreadMain(void *rawContext) {
     FloeSessionThreadContext *context = (FloeSessionThreadContext *)rawContext;
@@ -647,7 +659,7 @@ void *FloeSessionThreadMain(void *rawContext) {
 
 } // namespace
 
-BOOL FloeShellOpenSession(
+FloeShellBridgeStatus FloeShellOpenSession(
     NSString *command,
     NSString *rootPath,
     NSString *workingDirectory,
@@ -655,18 +667,54 @@ BOOL FloeShellOpenSession(
     NSDictionary<NSString *, NSString *> *environment,
     NSInteger columns,
     NSInteger rows,
+    NSTimeInterval gateTimeout,
+    BOOL (^shouldCancel)(void),
     int *outInputFD,
     int *outOutputFD,
     NSString **outInitialOutput
 ) {
-    if (!FloeShellEngineAvailable()) { return NO; }
+    if (!FloeShellEngineAvailable()) { return FloeShellBridgeStatusEngineUnavailable; }
     FloeEnsureEngineInitialized();
+    // Interactive sessions are engine users too: the session thread mutates
+    // the same process-global state (mini root, current directory, engine
+    // environment, session registries) as a one-shot run. It therefore
+    // acquires the same serial run gate and holds it until its own teardown,
+    // so an interactive program and a one-shot command can never run inside
+    // the engine concurrently. Opening while another worker owns the gate
+    // waits at most `gateTimeout` and reports Busy — the interactive caller
+    // never enters the engine alongside someone else.
+    const NSTimeInterval requestedAt = NSProcessInfo.processInfo.systemUptime;
+    const NSTimeInterval gateWindow = MAX(0.05, MIN(gateTimeout, 120.0));
+    {
+        FloeRunGateCounters &counters = FloeRunGateCountersRef();
+        { std::lock_guard<std::mutex> guard(counters.lock); counters.waiters += 1; }
+        while (true) {
+            long waited = dispatch_semaphore_wait(FloeShellRunGate(), dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC));
+            if (waited == 0) { break; }
+            if (shouldCancel && shouldCancel()) {
+                { std::lock_guard<std::mutex> guard(counters.lock); counters.waiters -= 1; }
+                FloeRecordGateBusy();
+                return FloeShellBridgeStatusCancelled;
+            }
+            if (NSProcessInfo.processInfo.systemUptime - requestedAt >= gateWindow) {
+                { std::lock_guard<std::mutex> guard(counters.lock); counters.waiters -= 1; }
+                FloeRecordGateBusy();
+                os_log_error(FloeShellLogGate(), "floeShellSessionGateBusy session=%{public}@ %{public}@",
+                             sessionID, FloeShellRunGateDiagnostics());
+                return FloeShellBridgeStatusBusy;
+            }
+        }
+        { std::lock_guard<std::mutex> guard(counters.lock); counters.waiters -= 1; }
+    }
+    FloeRecordGateWait(NSProcessInfo.processInfo.systemUptime - requestedAt);
+    FloeRecordGateAcquired(sessionID);
     int inputPipe[2] = {-1, -1};
     int outputPipe[2] = {-1, -1};
-    if (pipe(inputPipe) != 0) { return NO; }
+    if (pipe(inputPipe) != 0) { FloeRecordGateReleased(sessionID); dispatch_semaphore_signal(FloeShellRunGate()); return FloeShellBridgeStatusEngineUnavailable; }
     if (pipe(outputPipe) != 0) {
         close(inputPipe[0]); close(inputPipe[1]);
-        return NO;
+        FloeRecordGateReleased(sessionID); dispatch_semaphore_signal(FloeShellRunGate());
+        return FloeShellBridgeStatusEngineUnavailable;
     }
     fcntl(inputPipe[1], F_SETNOSIGPIPE, 1);
     fcntl(outputPipe[1], F_SETNOSIGPIPE, 1);
@@ -679,6 +727,7 @@ BOOL FloeShellOpenSession(
     context->rootPath = workingDirectory.length > 0 ? strdup(workingDirectory.UTF8String) : NULL;
     context->sessionKey = strdup(sessionID.UTF8String);
     context->environment = environment;
+    context->gateAcquired = true;
 
     NSThread *thread = [[NSThread alloc] initWithBlock:^{
         pthread_t pthread = pthread_self();
@@ -689,6 +738,10 @@ BOOL FloeShellOpenSession(
         @synchronized (FloeShellSessions()) {
             context->record.finished = YES;
         }
+        // The engine call has returned and the session's streams are closed:
+        // this teardown — not any caller — releases the run gate exactly once,
+        // after which a queued one-shot command or another session may enter.
+        FloeReleaseSessionGate(context);
         free((void *)context->command);
         if (context->rootPath) { free(context->rootPath); }
         delete context;
@@ -756,7 +809,7 @@ BOOL FloeShellOpenSession(
     }
     if (outInputFD) { *outInputFD = inputPipe[1]; }
     if (outOutputFD) { *outOutputFD = outputPipe[0]; }
-    return YES;
+    return FloeShellBridgeStatusOK;
 }
 
 BOOL FloeShellClaimSessionDescriptors(NSString *sessionID) {

@@ -80,7 +80,16 @@ NSString *FloeShellRunGateDiagnostics(void);
 /// write end of the session's stdin pipe and `outOutputFD` is the read end of
 /// its stdout/stderr pipe; both are owned by the bridge registry and closed
 /// by FloeShellCloseSession.
-BOOL FloeShellOpenSession(
+///
+/// Interactive sessions use the same process-wide engine as one-shot runs, so
+/// opening a session acquires the same serial run gate: it waits at most
+/// `gateTimeout` (cancellation-aware) and reports `Busy` when another engine
+/// worker — a running or quarantined one-shot command, or another live
+/// session — still owns the gate. The gate is held for the session's whole
+/// life and released exactly once by the session thread's own teardown after
+/// its engine call has returned, so an interactive program and a one-shot
+/// command can never use the engine concurrently.
+FloeShellBridgeStatus FloeShellOpenSession(
     NSString *command,
     NSString *rootPath,
     NSString *workingDirectory,
@@ -88,6 +97,8 @@ BOOL FloeShellOpenSession(
     NSDictionary<NSString *, NSString *> *environment,
     NSInteger columns,
     NSInteger rows,
+    NSTimeInterval gateTimeout,
+    BOOL (^ _Nullable shouldCancel)(void),
     int *outInputFD,
     int *outOutputFD,
     NSString * _Nullable * _Nullable outInitialOutput

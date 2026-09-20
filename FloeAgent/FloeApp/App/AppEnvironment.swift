@@ -671,7 +671,13 @@ final class AppEnvironment: ObservableObject {
             _ = await MediaModelCatalogService.shared.catalog()
         }
         ToolCatalog.register(LocalServiceTool.self)
-        ToolRunnerRegistry.shared.register(LocalServiceTool(store: BackgroundJobStore(database: database)))
+        var localServiceRunner = AnyAgentTool(LocalServiceTool(store: BackgroundJobStore(database: database)))
+        // jobs.submit rejects a missing entry script or working directory
+        // synchronously, before the durable job record exists.
+        localServiceRunner.preflightSubmission = { payload, workspaceRoot in
+            try LocalServiceJobPreflight.validate(payloadJSON: payload, workspaceRootURL: workspaceRoot)
+        }
+        ToolRunnerRegistry.shared.register(localServiceRunner)
         // Background jobs (jobs.*): long downloads and Python data work run
         // off the run's critical path. Registered after the execution tools so
         // submit-time availability checks see every supported target runner.

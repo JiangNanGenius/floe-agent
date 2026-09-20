@@ -95,6 +95,13 @@ public actor BackgroundJobService {
         // Fail fast at the call site: a job whose arguments never decode would
         // otherwise fail asynchronously with no caller left to correct them.
         try runner.validateArguments(payloadJSON)
+        // Workspace preflight (optional, per tool): reject a job whose entry
+        // file or working directory does not exist under the resolved
+        // workspace before the durable record is created. The error is
+        // synchronous and actionable; nothing is persisted to clean up.
+        if let preflight = runner.preflightSubmission {
+            try await preflight(payloadJSON, workspaceRootURL)
+        }
         guard let conversationID = try await store.conversationID(runID: runID) else {
             throw FloeError.validationFailed("Run has no owning task")
         }
