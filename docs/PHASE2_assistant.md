@@ -110,8 +110,9 @@ compaction fails. Build211 crash evidence (report `856863bd-…`, received
 (`KVCache.swift:128`) — inside the pinned mlx-swift-lm's Qwen3.5 gated-delta
 **prefill** graph (the conv-state slice at the end of `generalConv`). The
 22:10:31 FOUNDATION termination with ios_system/text/pthread frames is a
-separate event, possibly shell-originated; the documents worker owns its
-symbol fetch. Inspection of the pinned Qwen35 state shapes shows
+separate event. Matching App symbols resolve it to repository discovery,
+snapshot and source-control refresh; see `PHASE2_git.md` for the canonical
+MetricKit address calculation and mitigation. Shell causation is unproven. Inspection of the pinned Qwen35 state shapes shows
 `zeroStates`/`generalConv` keep the conv state at `kernel-1` rows in every
 reachable path, so the remaining consistent mechanism is an uncatchable Metal
 evaluation abort surfacing at that slice's sync point during chunked prefill
