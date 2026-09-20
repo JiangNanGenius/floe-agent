@@ -108,7 +108,7 @@ public actor EnvironmentRegistry {
             migrated.executionBackend = defaultExecutionBackend
             records[record.id] = migrated
         }
-        FloeLogger(category: .general).info(
+        FloeLogger(category: .persistence).info(
             "Migrated \(legacy.count) environment(s) to the Linux execution backend (metadata only; data preserved)"
         )
     }
