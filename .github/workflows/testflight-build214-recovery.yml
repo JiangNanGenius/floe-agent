@@ -1,0 +1,18 @@
+name: Recover Build 214 TestFlight from retained IPA
+on:
+  push:
+    branches: [codex/tinyemu-phase2]
+    paths: [.github/workflows/testflight-build214-recovery.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recover:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/testflight-direct.yml
+    with:
+      tag: v1.7.0-beta.71
+      expected_source_sha: 33759e44fb574be9414012cedfbe7d776f9ce690
+      reuse_artifact_run: '35536077150'
+    secrets: inherit

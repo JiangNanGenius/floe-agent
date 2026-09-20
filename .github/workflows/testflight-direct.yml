@@ -228,6 +228,33 @@ jobs:
           APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           python3 scripts/prepare_app_store_bundle.py --app "$APP_PATH" --report "$RUNNER_TEMP/bundle-normalization.json"
 
+      - name: Remove the verified SDK link stub from the distribution copy
+        if: inputs.reuse_artifact_run == '' || steps.reuse.outputs.upload_required == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_STUB'
+          import hashlib, json, os, pathlib, subprocess
+          payload = pathlib.Path(os.environ['RUNNER_TEMP']) / 'FloeSignedPayload/Payload'
+          apps = list(payload.glob('*.app'))
+          if len(apps) != 1:
+              raise SystemExit('expected one distribution App')
+          stub = apps[0] / 'Frameworks/libc++.tbd'
+          report = pathlib.Path(os.environ['RUNNER_TEMP']) / 'bundle-normalization.json'
+          record = json.loads(report.read_text())
+          removal = []
+          if stub.exists() or stub.is_symlink():
+              sdk = pathlib.Path(subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip())
+              reference = sdk / 'usr/lib/libc++.tbd'
+              if stub.is_symlink() or not stub.is_file() or stub.read_bytes() != reference.read_bytes():
+                  raise SystemExit('refusing to remove an unrecognized SDK stub')
+              removal.append({'path': 'Frameworks/libc++.tbd', 'sha256': hashlib.sha256(stub.read_bytes()).hexdigest(), 'reference': 'iphoneos SDK usr/lib/libc++.tbd'})
+              stub.unlink()
+          record['sdk_link_stub_policy'] = 'exact-sdk-libcxx-stub-v1'
+          record['removed_sdk_link_stubs'] = removal
+          report.write_text(json.dumps(record, indent=2) + '\n')
+          print('verified SDK link stubs removed:', len(removal))
+          PY_STUB
+
       - name: Preserve the unsigned device package before signing
         if: inputs.reuse_artifact_run == ''
         id: package

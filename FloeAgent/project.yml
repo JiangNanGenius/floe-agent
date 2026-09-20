@@ -168,7 +168,7 @@ targets:
         embed: false
       - sdk: libz.tbd
       - sdk: libc++.tbd
-        embed: true
+        embed: false
       - package: FloeAgentPackages
         product: FloeCore
       - package: FloeAgentPackages
