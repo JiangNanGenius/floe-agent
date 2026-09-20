@@ -21,10 +21,11 @@ actor EnvironmentLanguagePackageService {
     }
     private let coordinator: EnvironmentExecutionCoordinator
     private let python: ManagedPythonInstallService?
-    /// Linux guest ownership. Environments whose execution backend is
-    /// `linuxVM` install, remove and list language packages inside their own
-    /// guest (shared Python venv, environment `usr/lib/node_modules`); the
-    /// host-side layer scanner and the iOS Node runtime never apply to them.
+    /// Linux guest ownership. Phase 2: language packages live only inside the
+    /// environment's guest (shared Python venv, environment
+    /// `usr/lib/node_modules`). A native-backend environment keeps its
+    /// preserved installs readable and reports that mutation requires the
+    /// Linux backend; there is no host-side installer anymore.
     private let linux: LinuxGuestLanguagePackages?
     private var busy: Set<String> = []
     init(coordinator: EnvironmentExecutionCoordinator, python: ManagedPythonInstallService?,
@@ -59,7 +60,7 @@ actor EnvironmentLanguagePackageService {
                 await lease.finish()
                 return result.sorted { ($0.writable ? "0" : "1") + $0.name < ($1.writable ? "0" : "1") + $1.name }
             }
-            if language == .node { try nodeInstaller().recover(environment) }
+            if language == .node { try LegacyNodeInstallRecovery.recover(environment) }
             else if let python { try await python.recover(environment: environment) }
             var result: [Package] = []
             for (index, layer) in environment.layerURLs.enumerated() {
@@ -120,6 +121,9 @@ actor EnvironmentLanguagePackageService {
                 let output: String
                 if language == .python {
                     guard let python else { throw FloeError.invalidConfiguration("此构建未提供 Python 运行时") }
+                    if let linux, await linux.owns(environmentID: environmentID) {
+                        try await ensureGuestRunning(environmentID: environmentID)
+                    }
                     let outcome = remove
                         ? await python.uninstall(distribution: specification, environment: environment, cancellation: token)
                         : await python.install(specs: [specification], timeout: 180, cancellation: token, environment: environment)
@@ -133,6 +137,7 @@ actor EnvironmentLanguagePackageService {
                     let preference = try readNodePreference(environment)
                     let manager = try NodePackageManagerPolicy.resolve(preference: preference, workspace: lease.context.workspaceRootURL)
                     if let linux, await linux.owns(environmentID: environmentID) {
+                        try await ensureGuestRunning(environmentID: environmentID)
                         output = try await linux.nodeChange(
                             environment: environment,
                             specifications: [specification],
@@ -141,7 +146,9 @@ actor EnvironmentLanguagePackageService {
                             cancellation: token
                         )
                     } else {
-                        output = try await nodeInstaller().change(environment, specification: specification, remove: remove, manager: manager, cancellation: token)
+                        // No host Node runtime remains; the preserved installs
+                        // stay readable and the layer files are untouched.
+                        throw FloeError.validationFailed(ManagedPythonInstallService.linuxRequiredMessage)
                     }
                 }
                 await lease.finish()
@@ -158,6 +165,7 @@ actor EnvironmentLanguagePackageService {
         busy.insert(environment.id)
         defer { busy.remove(environment.id) }
         if let linux, await linux.owns(environmentID: environment.id) {
+            try await ensureGuestRunning(environmentID: environment.id)
             return try await linux.nodeChange(
                 environment: environment,
                 specifications: change.specifications,
@@ -166,8 +174,13 @@ actor EnvironmentLanguagePackageService {
                 cancellation: cancellation
             )
         }
-        return try await nodeInstaller().change(environment, specifications: change.specifications,
-            remove: change.remove, manager: manager, cancellation: cancellation)
+        throw FloeError.validationFailed(ManagedPythonInstallService.linuxRequiredMessage)
+    }
+
+    /// Lazy activation for package operations: an owned-but-stopped guest is
+    /// started on demand so installs never fail on "not running" alone.
+    private func ensureGuestRunning(environmentID: String) async throws {
+        try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
     }
 
     func pythonFromShell(environment: ToolEnvironment, operation: ManagedPythonPackageSpecParser.ShellOperation,
@@ -176,6 +189,9 @@ actor EnvironmentLanguagePackageService {
         guard let python else { throw FloeError.invalidConfiguration("此构建未提供 Python 运行时") }
         busy.insert(environment.id)
         defer { busy.remove(environment.id) }
+        if let linux, await linux.owns(environmentID: environment.id) {
+            try await ensureGuestRunning(environmentID: environment.id)
+        }
         let outcome: ManagedPythonInstallService.Outcome
         switch operation {
         case .install(let specs): outcome = await python.install(specs: specs, timeout: 180, cancellation: cancellation, environment: environment)
@@ -244,7 +260,10 @@ actor EnvironmentLanguagePackageService {
                                        issue: "Linux 环境未运行；请先启动该环境再安装 Node 依赖")
                     }
                 } else {
-                    result = .init(preference: selected, resolved: resolved)
+                    // Native backend: the manager is resolved for the record,
+                    // but installs run only inside the Linux guest.
+                    result = .init(preference: selected, resolved: resolved,
+                                   issue: "当前环境使用 native 兼容后端；切换到 Linux 后端后才能安装/运行 Node 依赖")
                 }
             } catch { result = .init(preference: selected, issue: error.localizedDescription) }
             await lease.finish()
@@ -272,12 +291,4 @@ actor EnvironmentLanguagePackageService {
         return try Data(contentsOf: url)
     }
 
-    private func nodeInstaller() throws -> ManagedNodeInstallService {
-        guard let npm = FloeNodeBundledToolPath("npm"), IOSSystemNodeRuntime.shared.isAvailable else {
-            throw FloeError.invalidConfiguration("npm 运行时尚未就绪")
-        }
-        return ManagedNodeInstallService(runtime: IOSSystemNodeRuntime.shared, npmEntry: npm, pnpmEntry: FloeNodeBundledToolPath("pnpm")) { environment, directory in
-            IOSSystemNodeRuntime.defaultEnvironment(containerRoot: environment.writableLayerURL, workspaceRoot: directory)
-        }
-    }
 }

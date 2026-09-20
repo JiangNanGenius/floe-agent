@@ -27,10 +27,12 @@ public enum LayerKind: String, Codable, Sendable, CaseIterable {
 }
 
 /// Which backend executes an environment's commands. `native` is the
-/// historical stack (ios_system shell + bundled CPython) and stays the default
-/// for every existing record; `linuxVM` means a TinyEMU RV64 guest owns the
-/// environment's shell and package commands. Optional on disk so older
-/// registries decode unchanged and keep running natively.
+/// historical stack (ios_system shell, no bundled language runtimes since the
+/// Phase 2 TinyEMU migration) and remains selectable as the documented
+/// compatibility backend; `linuxVM` means a TinyEMU RV64 guest owns the
+/// environment's shell, Python/Node and package commands. Optional on disk so
+/// older registries decode unchanged; the registry's prepare() migrates
+/// legacy nil records to `.linuxVM` with a recoverable backup.
 public enum EnvironmentExecutionBackend: String, Codable, Sendable, CaseIterable {
     case native
     case linuxVM
@@ -54,10 +56,11 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
     public var templateID: String?
     public var requiresRebuild: Bool
     public var rebuildReason: String?
-    /// Explicit backend selection. nil/absent = `native` compatibility.
+    /// Explicit backend selection. nil/absent only in pre-migration
+    /// registries (prepare() rewrites those to the default with a backup).
     public var executionBackend: EnvironmentExecutionBackend?
 
-    /// Effective backend with the compatibility default applied.
+    /// Effective backend with the decode-compatibility default applied.
     public var effectiveExecutionBackend: EnvironmentExecutionBackend { executionBackend ?? .native }
 
     public init(

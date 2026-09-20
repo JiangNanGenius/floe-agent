@@ -111,7 +111,7 @@ struct LocalServiceTool: AgentTool {
     private static func reserve(_ port: Int) -> Bool { portsLock.withLock { reservedPorts.insert(port).inserted } }
     private static func release(_ port: Int) { portsLock.withLock { _ = reservedPorts.remove(port) } }
     static let name = "exec.localService"
-    static let toolDescription = "Persistent local Node/Python HTTP service. Invoke through jobs.submit with this target; do not call directly. entry is an existing workspace-relative script, cwd defaults to workspace root, port is 1024..65535. Bind only 127.0.0.1; PORT/FLOE_SERVICE_PORT are set to port. Closing a tool turn or browser tab does not stop the server. jobs.status exposes bounded live logs and a previewURL only after HTTP responds; jobs.cancel waits for actual worker exit. App termination interrupts in-process services; explicitly restart if still needed. Native addons must support the runtime's worker/interpreter model."
+    static let toolDescription = "Persistent local Node/Python HTTP service inside the task environment's Linux guest. Invoke through jobs.submit with this target; do not call directly. entry is an existing workspace-relative script, cwd defaults to workspace root, port is 1024..65535. The guest process binds loopback inside the VM and Floe forwards it to 127.0.0.1; PORT/FLOE_SERVICE_PORT are set to port. Closing a tool turn or browser tab does not stop the server. jobs.status exposes bounded live logs and a previewURL only after HTTP responds; jobs.cancel waits for actual guest process exit. Stopping the environment or the app stops the guest and its services; explicitly restart if still needed."
     static let parametersJSON = #"{"type":"object","properties":{"runtime":{"type":"string","enum":["node","python"]},"entry":{"type":"string","maxLength":2048,"description":"Workspace-relative path to an existing entry script (checked when the job is submitted)"},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048,"description":"Workspace-relative working directory (default: workspace root; must exist)"},"port":{"type":"integer","minimum":1024,"maximum":65535,"description":"Loopback port the service binds (1024..65535); the server reads PORT/FLOE_SERVICE_PORT"}},"required":["runtime","entry","port"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess]
     static let isSideEffecting = true
@@ -159,8 +159,11 @@ struct LocalServiceTool: AgentTool {
               (try cwd.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true else {
             throw FloeError.validationFailed("Service entry and working directory must exist")
         }
-        var variables = IOSSystemNodeRuntime.defaultEnvironment(containerRoot: environment.writableLayerURL, workspaceRoot: cwd)
-            .merging(environment.variables) { _, value in value }
+        // Phase 2: services run inside the environment's Linux guest only —
+        // the in-process NodeMobile/CPython workers are gone. Only the
+        // invocation identity and the loopback port cross into the guest; the
+        // supervisor supplies guest HOME/TMPDIR/PATH/NODE_PATH itself.
+        var variables: [String: String] = [:]
         variables["FLOE_ENVIRONMENT_ID"] = environment.id
         variables["PORT"] = String(args.port); variables["FLOE_SERVICE_PORT"] = String(args.port)
         guard Self.reserve(args.port) else { throw FloeError.validationFailed("Another managed service owns this port") }
@@ -178,79 +181,29 @@ struct LocalServiceTool: AgentTool {
         if await Self.responds(probe, request: request) {
             throw FloeError.validationFailed("The requested service port is already responding; choose another port")
         }
-        // Linux environments run the service inside their guest: the process
-        // is detached there, its log is appended to a file in the
-        // environment layer (readable here through the same 9p share) and its
-        // port is published with slirp host forwarding, so the preview/probe
-        // path below is identical to the native one.
-        if await FloePlatformServices.shared.linuxEnvironmentOwned(id: environment.id),
-           let controller = FloePlatformServices.shared.linuxLocalServiceController() {
-            return try await Self.runGuestService(
-                controller: controller,
-                args: args,
-                jobID: jobID,
-                conversationID: job.conversationID,
-                environment: environment,
-                entry: entry,
-                cwd: cwd,
-                variables: variables,
-                endpoint: endpoint,
-                probe: probe,
-                context: context,
-                store: store
-            )
+        // The service runs inside the environment's guest: the process is
+        // detached there, its log is appended to a file in the environment
+        // layer (readable here through the same 9p share) and its port is
+        // published with slirp host forwarding, so the preview/probe path
+        // below is identical to the retired native one.
+        guard await FloePlatformServices.shared.linuxEnvironmentOwned(id: environment.id),
+              let controller = FloePlatformServices.shared.linuxLocalServiceController() else {
+            throw FloeError.validationFailed(ManagedPythonInstallService.linuxRequiredMessage)
         }
-        var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
-        let nativeID: String
-        if args.runtime == "node" {
-            let result = await IOSSystemNodeRuntime.shared.startService(.init(entryScript: entry.path,
-                arguments: args.arguments ?? [], workingDirectory: cwd, environment: variables, maxOutputBytes: 8_000), environmentID: environment.id)
-            guard let id = result.serviceID else { throw FloeError.validationFailed(result.stderr.isEmpty ? result.state : result.stderr) }
-            nativeID = id
-        } else {
-            let result = await CPythonLocalRuntime.shared.startService(.init(script: "import sys, runpy; runpy.run_path(sys.argv[0], run_name='__main__')",
-                maxOutputBytes: 8_000, pythonContext: .init(environmentID: environment.id, workingDirectory: cwd.path,
-                    environment: variables, arguments: [entry.path] + (args.arguments ?? []))), environmentID: environment.id)
-            guard let id = result.serviceID else { throw FloeError.validationFailed(result.error ?? result.state) }
-            nativeID = id
-        }
-        var stopRequested = false
-        while true {
-            if context.cancellation.isCancelled { stopRequested = true }
-            if args.runtime == "node" {
-                let result = stopRequested
-                    ? await IOSSystemNodeRuntime.shared.stopService(id: nativeID, environmentID: environment.id)
-                    : await IOSSystemNodeRuntime.shared.serviceStatus(id: nativeID, environmentID: environment.id)
-                snapshot.state = result.state; snapshot.stdout = result.stdout; snapshot.stderr = result.stderr; snapshot.truncated = result.truncated
-            } else {
-                let result = stopRequested
-                    ? await CPythonLocalRuntime.shared.stopService(id: nativeID, environmentID: environment.id)
-                    : await CPythonLocalRuntime.shared.serviceStatus(id: nativeID, environmentID: environment.id)
-                snapshot.state = result.state; snapshot.stdout = result.stdout; snapshot.stderr = result.stderr; snapshot.truncated = result.truncated
-                if let error = result.error, !error.isEmpty { snapshot.stderr += "\n" + error }
-            }
-            if ["notFound", "stopped", "completed", "failed", "unavailable"].contains(snapshot.state) { break }
-            if stopRequested {
-                snapshot.state = "stopping"; snapshot.previewURL = nil
-                BrowserURLPolicy.revokeService(owner: jobID)
-            } else if snapshot.state == "running", await Self.responds(probe, request: request) {
-                snapshot.previewURL = endpoint.absoluteString
-                BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: job.conversationID)
-            } else {
-                snapshot.previewURL = nil; BrowserURLPolicy.revokeService(owner: jobID)
-            }
-            snapshot.boundAndRedact()
-            do { try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot)) }
-            catch { stopRequested = true } // Persistence failure must not orphan a worker.
-            // Cancellation belongs to the explicit token. Never throw out of
-            // this ownership loop while a native worker may still be alive.
-            try? await Task.sleep(for: .seconds(2))
-        }
-        snapshot.previewURL = nil
-        snapshot.boundAndRedact()
-        try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot))
-        return ToolExecutionOutput(digesting: String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self),
-            exitStatus: stopRequested || snapshot.state == "completed" ? 0 : 1)
+        return try await Self.runGuestService(
+            controller: controller,
+            args: args,
+            jobID: jobID,
+            conversationID: job.conversationID,
+            environment: environment,
+            entry: entry,
+            cwd: cwd,
+            variables: variables,
+            endpoint: endpoint,
+            probe: probe,
+            context: context,
+            store: store
+        )
     }
 
     /// Linux environment variant of the ownership loop. The guest process is
@@ -276,20 +229,6 @@ struct LocalServiceTool: AgentTool {
         let logDirectory = environment.writableLayerURL.appendingPathComponent("services", isDirectory: true)
         try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
         let logFile = logDirectory.appendingPathComponent(jobID.uuidString + ".log")
-        // Host-side defaults (HOME/TMPDIR/PATH/NODE_PATH/PYTHONPATH,
-        // npm_config_* …) point at macOS paths the guest cannot see. Only the
-        // invocation identity and explicitly environment-owned values cross
-        // into the guest; the supervisor adds the guest directories and the
-        // environment-level module path itself.
-        var guestVariables = variables
-        let hostDefaults = IOSSystemNodeRuntime.defaultEnvironment(containerRoot: environment.writableLayerURL, workspaceRoot: cwd)
-        for (key, value) in hostDefaults where guestVariables[key] == value {
-            guestVariables.removeValue(forKey: key)
-        }
-        let hostOnlyKeys: Set<String> = ["HOME", "TMPDIR", "PATH", "NODE_PATH", "PYTHONPATH", "PNPM_HOME", "PWD"]
-        guestVariables = guestVariables.filter { key, _ in
-            !hostOnlyKeys.contains(key) && !key.hasPrefix("npm_config_") && !key.hasPrefix("FLOE_PYTHON_")
-        }
         let request = LinuxGuestLocalServiceRequest(
             entry: entry.path,
             runtime: args.runtime == "node" ? .node : .python,
@@ -297,11 +236,14 @@ struct LocalServiceTool: AgentTool {
             workingDirectory: cwd.path,
             port: args.port,
             logFile: logFile,
-            environment: guestVariables
+            environment: variables
         )
         var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
         let handle: LinuxGuestLocalServiceHandle
         do {
+            // Lazy activation: start an owned-but-stopped guest on demand so
+            // a service request never dies on "not running" alone.
+            try await FloePlatformServices.shared.activateLinuxGuest(id: environment.id)
             handle = try await controller.startLocalService(
                 environmentID: environment.id,
                 request: request,

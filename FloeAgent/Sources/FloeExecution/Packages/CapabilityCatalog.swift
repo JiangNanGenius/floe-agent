@@ -1,8 +1,8 @@
 // FloeExecution — Capability catalog.
-// A single manifest describes every installable capability: bundled and
-// managed pure-Python packages, skills, fonts, local models, data-only .deb
-// payloads and WASM command packages. `apt`/`pkg` read this catalog; the
-// catalog itself grants nothing.
+// A single manifest describes every installable capability: managed Python
+// packages (installed by the environment's guest pip since Phase 2), skills,
+// fonts, local models, data-only .deb payloads and WASM command packages.
+// `apt`/`pkg` read this catalog; the catalog itself grants nothing.
 
 import Foundation
 import FloeCore
@@ -21,10 +21,13 @@ public struct CapabilityCatalog: Sendable, Decodable {
 
     public enum Tier: String, Codable, Sendable {
         /// Ships with the app; installing means verifying presence.
+        /// (Python packages no longer use this tier: nothing Python is
+        /// bundled since the TinyEMU migration; shell "direct" tools do.)
         case bundled
         /// Reviewed download from the network (pure Python / skills / fonts / models).
         case managed
-        /// Build-time pinned wheel in the wheelhouse.
+        /// Build-time pinned wheel in the retired iOS wheelhouse. No current
+        /// entries; Linux guests install riscv64 wheels through guest pip.
         case wheelhouse
         /// Data-only Debian payload (never native executables).
         case deb

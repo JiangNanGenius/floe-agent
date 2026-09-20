@@ -210,7 +210,8 @@ jobs:
         run: |
           brew install xcodegen automake gitleaks syft cmake
           xcodebuild -downloadComponent MetalToolchain
-          scripts/bootstrap_python_runtime.sh
+          scripts/bootstrap_native_components.sh
+          python3 scripts/audit_native_runtime_free.py --project
 
       # The app links git-ignored dash*.xcframework built from ThirdParty/DashIOS
       # by the bootstrap above (including the interactive-stdin fix in
@@ -397,7 +398,7 @@ jobs:
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/platform" --timeout 1200 -- swift test --package-path Qualification --scratch-path .build --force-resolved-versions --jobs 4 2>&1 | tee platform-qualification.log
           python3 scripts/run_test_with_diagnostics.py --output-dir "$RUNNER_TEMP/SwiftTestDiagnostics/notes" --timeout 1200 -- swift test --package-path Qualification/Notes --scratch-path .build --force-resolved-versions --jobs 4
           grep -E 'Test run with [1-9][0-9]* tests? .*passed' platform-qualification.log
-          node --test scripts/tests/node_host.test.cjs scripts/tests/notes_bridge.test.cjs
+          node --test scripts/tests/ide_filesystem.test.cjs
           # The Notes retry classifier gates the UI legs below; its fixtures
           # must pass before those legs can consume its verdict.
           python3 scripts/tests/test_notes_ui_startup_retry.py
@@ -485,7 +486,6 @@ jobs:
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
-            -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/LocalServiceLifecycleTests \
             -only-testing:FloeAppTests/LuaShellInstallTests \
@@ -718,6 +718,7 @@ jobs:
           APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           python3 scripts/prepare_app_store_bundle.py --app "$APP_PATH" --report release-assets/bundle-normalization.json
+          python3 scripts/audit_native_runtime_free.py --app "$APP_PATH"
           scripts/package_unsigned_ipa.sh "$APP_PATH" release-assets "$ASSET_NAME"
 
       - name: Verify artifact metadata and scan built application
@@ -853,8 +854,9 @@ jobs:
         run: |
           brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
-          scripts/bootstrap_python_runtime.sh
+          scripts/bootstrap_native_components.sh
           scripts/gen_project.sh
+          python3 scripts/audit_native_runtime_free.py --project
           scripts/pin_check.sh
 
       # Same provenance gate as the SDK 27 job: the signed TestFlight build
@@ -1006,7 +1008,6 @@ jobs:
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
-            -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/LocalServiceLifecycleTests \
             -only-testing:FloeAppTests/LuaShellInstallTests \
@@ -1202,6 +1203,7 @@ jobs:
         run: |
           APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           python3 scripts/prepare_app_store_bundle.py --app "$APP_PATH" --report "$RUNNER_TEMP/bundle-normalization.json"
+          python3 scripts/audit_native_runtime_free.py --app "$APP_PATH"
 
       - name: Stage the qualified accepted-SDK application without rebuilding it
         id: stage
@@ -1428,6 +1430,7 @@ jobs:
             ditto -c -k --sequesterRsrc --keepParent Payload "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
           )
           unzip -t "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+          python3 scripts/audit_native_runtime_free.py --ipa "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
           xcrun altool --validate-app \
             --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
             --type ios \

@@ -17,21 +17,14 @@ struct CapabilityInstallerTests {
     }
 
     @Test func missingBundledPythonNeverDownloads() async throws {
-        actor Calls {
-            var installCalls = 0
-            func observe(_ request: ScriptExecutionRequest) { if request.allowsManagedPackageInstaller { installCalls += 1 } }
-        }
-        let calls = Calls()
-        let python = LocalPythonService(version: "test") { request, _ in
-            await calls.observe(request)
-            return .ok(resultJSON: nil, stdout: "", stderr: "", truncated: false, stderrTruncated: false, durationMs: 0)
-        }
+        // A bundled-tier Python entry that is not installed must not silently
+        // download: the catalog is stale, not the runtime. Phase 2 catalogs
+        // carry no bundled Python entries at all (guest pip owns installs).
         let catalog = CapabilityCatalog(entries: [.init(id: "test/python", kind: .pythonPackage, tier: .bundled, summary: "test", spec: "package")])
-        let installer = CapabilityInstaller(catalog: catalog, pythonInstaller: ManagedPythonInstallService(python: python), http: HTTPRequestService(), packagesRoot: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let installer = CapabilityInstaller(catalog: catalog, pythonInstaller: ManagedPythonInstallService(), http: HTTPRequestService(), packagesRoot: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         await #expect(throws: FloeError.self) {
             try await installer.install(id: "test/python", purpose: nil, capabilities: [], cancellation: nil)
         }
-        #expect(await calls.installCalls == 0)
     }
 
     @Test func truncatedArchiveIsRejected() {

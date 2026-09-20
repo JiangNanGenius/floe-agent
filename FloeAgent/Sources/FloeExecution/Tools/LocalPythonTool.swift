@@ -5,9 +5,11 @@ import Crypto
 import FloeCore
 import FloeTools
 
-/// Runs bounded Python inside the app sandbox. This is intentionally marked
-/// side-effecting because CPython shares the app process and container. The
-/// approval policy may allow ordinary sandboxed scripts automatically, while
+/// Runs bounded Python inside the task environment's TinyEMU Linux guest
+/// (shared venv, real python3/pip; riscv64 Linux). The bundled in-process
+/// CPython left the app in Phase 2, so the guest is the only interpreter:
+/// there is no native fallback. The tool stays side-effecting; the approval
+/// policy may allow ordinary workspace-confined scripts automatically, while
 /// managed package requests always pass through the package-review backend.
 public struct LocalPythonTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
@@ -52,7 +54,7 @@ public struct LocalPythonTool: AgentTool {
 
     public static let name = "exec.localPython"
     public static let toolDescription =
-        "Run Python 3.13 privately on this device for scripts, files, JSON, SQLite, XML, archives, dates, async work and data processing. Floe bundles compatible iOS standard-library extensions including asyncio, contextvars, queue, multibyte codecs, cmath, bisect, heapq, pickle, zoneinfo, uuid, statistics, csv, json, sqlite3, mmap, zipfile, tarfile, gzip, bz2, lzma, shutil, hashlib, hmac, secrets, base64, binascii, ctypes, xml.etree.ElementTree and pyexpat. iOS does not provide desktop shell/account modules such as curses, readline, grp, pwd, spwd, syslog or multiprocessing, so do not request them. NumPy, Pillow (import as PIL) and pandas are bundled natively as signed frameworks; the appended runtime probe is authoritative for this build's actual versions and availability. Use working native libraries directly, not WebAssembly. Native pandas supports offline CSV/JSON, filtering, grouping, joins, missing values and timezone processing; check optional format dependencies separately. A task may request an additional pure-Python package with `packages` or a declarative `pipCommand` such as `pip install marko==2.2.0`; include `packagePurpose` and only the capabilities needed for the user's current request. Floe reviews the purpose before downloading and installs only compatible pure-Python packages. Do not invoke pip, ensurepip, subprocess or shell installers inside `script`. For scipy, matplotlib or another binary package reported unavailable by the runtime probe, use the explicitly identified browser-based Pyodide WebAssembly route (workspace HTML, public HTTPS, bounded JSON input/results) or an authorized configured remote host. Never claim a native package was installed when it ran in WebAssembly. PyStata requires a licensed Stata installation and pyreadstat requires native extensions; use exec.compatEvaluator for bounded R/Stata-compatible statistics or an approved configured remote host for the full runtimes. PDF, image, document, batch-processing and data-analysis tasks are expected uses when they remain within the user's request."
+        "Run Python 3 on this device inside the task environment\'s Linux guest (Debian python3 with the environment\'s shared venv; riscv64). Use it for scripts, files, JSON, SQLite, XML, archives, dates, async work and data processing. The full standard library, pip, subprocess and OS access are available inside the guest; the task\'s workspace is /workspace and the environment layer is /floe/env. Packages are NOT bundled: a task may request installs with `packages` or a declarative `pipCommand` such as `pip install marko==2.2.0`; include `packagePurpose` and only the capabilities needed for the user\'s current request. Floe reviews the purpose before downloading and installs through the guest\'s real pip (Linux riscv64 wheels allowed). NumPy, pandas, Pillow, lxml and similar binary packages install from Linux wheels when available; check the appended runtime probe for what is actually importable, and never claim an uninstalled package works. The guest runs only when the environment\'s Linux component is installed and started; an unavailable or stopped guest returns the explicit reason — relay it instead of retrying blindly. PyStata requires a licensed Stata installation; use exec.compatEvaluator for bounded R/Stata-compatible statistics or an approved configured remote host for the full runtimes. PDF, image, document, batch-processing and data-analysis requests should prefer the dedicated document.*, image.* and data tools when they fit, and use Python for the glue between them."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -89,13 +91,14 @@ public struct LocalPythonTool: AgentTool {
     static let maxOutputBytesCap = 256 * 1024
 
     private let service: LocalPythonService
-    /// Shared managed installer (including Linux guest routing). A caller that
-    /// does not inject one keeps the native bundled-runtime behavior.
+    /// Shared managed installer (Linux guest routing). A caller that does not
+    /// inject one gets an installer whose package operations report the
+    /// honest "Linux backend required" failure.
     private let installer: ManagedPythonInstallService
 
     public init(service: LocalPythonService, installer: ManagedPythonInstallService? = nil) {
         self.service = service
-        self.installer = installer ?? ManagedPythonInstallService(python: service)
+        self.installer = installer ?? ManagedPythonInstallService()
     }
 
     public func validate(_ args: Arguments) throws {
@@ -146,16 +149,11 @@ public struct LocalPythonTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        // The pip/subprocess restriction protects the bundled iOS interpreter
-        // (audit hook, bundled frameworks). A Linux environment runs its own
-        // guest Python where these are ordinary language features, so the
-        // check is applied only when the selected environment is not a Linux
-        // guest. The ownership answer is true even while the guest is stopped:
-        // a stopped guest fails later with the honest "start it" error instead
-        // of silently enforcing native policy.
-        if await !installer.isLinuxGuestEnvironment(context.environment) {
-            try Self.validateNativeScriptPolicy(args.script)
-        }
+        // Every execution runs in the environment's Linux guest, where pip,
+        // subprocess and OS access are ordinary language features. Package
+        // authority stays with the reviewed `packages`/`pipCommand` path and
+        // the approval policy's software-install rule — never with the script
+        // text itself.
         var packageOutput = ""
         let packages = try Self.requestedPackages(args)
         if !packages.isEmpty {
@@ -212,22 +210,6 @@ public struct LocalPythonTool: AgentTool {
         packages.append(contentsOf: try ManagedPythonPackageSpecParser.parse(command: args.pipCommand))
         var seen = Set<String>()
         return packages.filter { seen.insert($0.lowercased()).inserted }
-    }
-
-    /// Bundled-interpreter policy, applied only to non-Linux environments.
-    /// The Linux guest's own Python is allowed to use pip, subprocess and the
-    /// operating system, exactly like the native `python3` it replaces.
-    static func validateNativeScriptPolicy(_ script: String) throws {
-        let normalizedScript = script.lowercased()
-        let forbiddenInstallMarkers = [
-            "import pip", "from pip", "ensurepip", "-m pip", "pip._internal",
-            "subprocess", "os.system("
-        ]
-        if forbiddenInstallMarkers.contains(where: normalizedScript.contains) {
-            throw FloeError.validationFailed(
-                "Put a direct `pip install package...` request in `pipCommand` (or use `packages`) so Floe can review it before download; pip, subprocess, and shell installation inside `script` are unavailable"
-            )
-        }
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {

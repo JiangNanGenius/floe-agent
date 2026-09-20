@@ -22,7 +22,7 @@ import FloeCore
 public struct RuntimeInventoryEntry: Sendable, Equatable, Identifiable {
     /// Where the runtime comes from.
     public enum Source: String, Sendable, Codable, CaseIterable {
-        /// Ships inside the app bundle (CPython, Node, JavaScriptCore).
+        /// Ships inside the app bundle (JavaScriptCore).
         case bundled
         /// Installed app-wide by the user from the signed WASI catalog.
         case user
@@ -30,6 +30,9 @@ public struct RuntimeInventoryEntry: Sendable, Equatable, Identifiable {
         case project
         /// Runs on a paired remote host; nothing is installed locally.
         case remote
+        /// Provided by the explicit downloadable Linux guest component
+        /// (Phase 2: local Python/Node run inside the TinyEMU guest).
+        case component
     }
 
     /// Availability derived from a real probe or a verified receipt.

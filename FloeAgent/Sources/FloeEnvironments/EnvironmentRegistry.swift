@@ -22,11 +22,22 @@ public actor EnvironmentRegistry {
     private var quota: EnvironmentQuota = .default
     private var loaded = false
     public private(set) var baseRevision: String
+    /// Backend applied to records created without an explicit choice. Phase 2
+    /// (TinyEMU migration): Linux is the selected main execution path, so the
+    /// default is `.linuxVM`; an explicit `.native` selection is always
+    /// honored as the documented compatibility backend.
+    public let defaultExecutionBackend: EnvironmentExecutionBackend
 
-    public init(roots: EnvironmentRoots = .shared, baseRevision: String, compatibleBaseRevisions: Set<String> = []) {
+    public init(
+        roots: EnvironmentRoots = .shared,
+        baseRevision: String,
+        compatibleBaseRevisions: Set<String> = [],
+        defaultExecutionBackend: EnvironmentExecutionBackend = .linuxVM
+    ) {
         self.roots = roots
         self.baseRevision = baseRevision
         self.compatibleBaseRevisions = compatibleBaseRevisions
+        self.defaultExecutionBackend = defaultExecutionBackend
     }
 
     /// Loads the registry, creating the shared container on first use.
@@ -65,13 +76,41 @@ public actor EnvironmentRegistry {
                 id: Self.sharedContainerID,
                 kind: .shared,
                 name: Self.sharedContainerName,
-                baseRevision: baseRevision
+                baseRevision: baseRevision,
+                executionBackend: defaultExecutionBackend
             )
             records[shared.id] = shared
             try materialize(shared)
         }
+        try migrateLegacyExecutionBackends()
         try persist()
         loaded = true
+    }
+
+    /// Phase 2 (TinyEMU migration): records that never made an explicit
+    /// backend choice (`nil`, the legacy native default) move to the Linux
+    /// guest backend in place. Only the metadata field changes — environment
+    /// IDs, ownership, layers, manifests and packages are untouched. The
+    /// pre-migration registry is preserved next to it so the change is
+    /// recoverable. Records explicitly set to `.native` keep that documented
+    /// compatibility choice.
+    private func migrateLegacyExecutionBackends() throws {
+        let legacy = records.values.filter { $0.executionBackend == nil }
+        guard !legacy.isEmpty else { return }
+        let backup = roots.registryURL.appendingPathExtension("pre-linux-backend-migration")
+        try validateMigrationPath(backup)
+        if !fileManager.fileExists(atPath: backup.path),
+           let data = try? Data(floeContentsOf: roots.registryURL) {
+            try data.write(to: backup, options: .atomic)
+        }
+        for record in legacy {
+            var migrated = record
+            migrated.executionBackend = defaultExecutionBackend
+            records[record.id] = migrated
+        }
+        FloeLogger(category: .general).info(
+            "Migrated \(legacy.count) environment(s) to the Linux execution backend (metadata only; data preserved)"
+        )
     }
 
     /// Only caller-proven ABI aliases may use this path. Preserve recovery copies
@@ -149,9 +188,11 @@ public actor EnvironmentRegistry {
     }
 
     /// Finds or creates the project container for a workspace.
-    /// `executionBackend` explicitly selects `linuxVM` for a guest-backed
-    /// environment; leaving it nil keeps the native default and never rewrites
-    /// an existing record.
+    /// `executionBackend` explicitly selects the backend; leaving it nil gives
+    /// a **new** record the registry's `defaultExecutionBackend` (Linux since
+    /// the Phase 2 migration) and never rewrites an existing record. When a
+    /// template seeds the record, the template's own backend wins over the
+    /// default.
     @discardableResult
     public func ensureProjectContainer(
         workspaceID: String,
@@ -170,13 +211,14 @@ public actor EnvironmentRegistry {
             touch(existing.id)
             return records[existing.id] ?? existing
         }
+        let templateBackend = templateID.flatMap { records[$0]?.executionBackend }
         var record = ContainerRecord(
             kind: .project,
             ownerID: workspaceID,
             name: URL(fileURLWithPath: workspaceRootPath).lastPathComponent,
             baseRevision: baseRevision,
             templateID: templateID,
-            executionBackend: executionBackend
+            executionBackend: executionBackend ?? templateBackend ?? defaultExecutionBackend
         )
         do {
             try materialize(record, seedFrom: templateID)
@@ -224,7 +266,7 @@ public actor EnvironmentRegistry {
             baseRevision: baseRevision,
             parentID: parent?.id,
             templateID: parent?.templateID,
-            executionBackend: executionBackend ?? parent?.executionBackend
+            executionBackend: executionBackend ?? parent?.executionBackend ?? defaultExecutionBackend
         )
         do {
             try materialize(record, seedFrom: parent?.id)
@@ -251,7 +293,7 @@ public actor EnvironmentRegistry {
         guard var manifest = try LayerManifest.loadChecked(from: sourceURL) else {
             throw FloeError.validationFailed("Source layer manifest is missing")
         }
-        var template = ContainerRecord(kind: .template, name: name, baseRevision: source.baseRevision)
+        var template = ContainerRecord(kind: .template, name: name, baseRevision: source.baseRevision, executionBackend: source.executionBackend)
         let destinationURL = roots.layerURL(id: template.id, kind: .template)
         do {
             try cloneOrCopyDirectory(from: sourceURL, to: destinationURL)
@@ -299,10 +341,12 @@ public actor EnvironmentRegistry {
         try saveRecord(record)
     }
 
-    /// Declares (or changes) an environment's execution backend. `native`
-    /// stays the default for records that never set one; switching to
-    /// `linuxVM` only starts a guest whose image is qualified, and the backend
-    /// reports the recorded reason honestly when one cannot start.
+    /// Declares (or changes) an environment's execution backend. Records that
+    /// never made a choice were migrated to `.linuxVM` by `prepare()`, so a
+    /// stored `.native` here is always an intentional compatibility selection.
+    /// Switching to `linuxVM` only starts a guest whose image is qualified,
+    /// and the backend reports the recorded reason honestly when one cannot
+    /// start.
     public func setExecutionBackend(id: String, backend: EnvironmentExecutionBackend?) throws {
         try prepare()
         guard var record = records[id] else { throw FloeError.notFound("Execution environment \(id)") }

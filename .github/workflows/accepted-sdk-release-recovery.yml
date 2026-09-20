@@ -537,8 +537,9 @@ jobs:
           set -euo pipefail
           brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
-          scripts/bootstrap_python_runtime.sh
+          scripts/bootstrap_native_components.sh
           scripts/gen_project.sh
+          python3 scripts/audit_native_runtime_free.py --project
           scripts/pin_check.sh
           xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
             -skipPackagePluginValidation \

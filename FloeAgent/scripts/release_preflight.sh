@@ -28,6 +28,13 @@ if ! python3 scripts/validate_localization_catalog.py FloeApp/Resources/Localiza
     exit 1
 fi
 
+# Phase 2 (TinyEMU migration): no bundled native Python/Node may return to
+# the project manifests; the IPA form of this audit runs after packaging.
+if ! python3 scripts/audit_native_runtime_free.py --project; then
+    echo "error: native Python/Node references returned to the project" >&2
+    exit 1
+fi
+
 # The native Office framework is a separately compiled, pinned dependency.
 # Fail before bootstrapping/building the App if its source changed without a
 # matching rebuilt artifact. This is the same read-only check as bootstrap.

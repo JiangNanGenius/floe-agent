@@ -11,8 +11,8 @@
 | 运行时 / Runtime | 版本来源 / Version source | 来源标注 / Source label |
 |---|---|---|
 | JavaScript (JavaScriptCore) | `JavaScriptCoreProbe`（框架可用性） | 内置 / Bundled |
-| Python (CPython) | `LocalPythonCapabilityProbe`（真实探测，3.13.x） | 内置 / Bundled |
-| Node.js | `IOSSystemNodeRuntime.probe()` → `FloeNodeRuntimeVersion()`（18.20.4；npm/pnpm/yarn 随包内置） | 内置 / Bundled |
+| Python（Linux 客体） | `LocalPythonCapabilityProbe`（组件状态 + 客体实探测） | Linux 组件 / Component |
+| Node.js（Linux 客体） | `LocalNodeCapabilityProbe`（组件状态；客体 apt nodejs/npm 按环境提供） | Linux 组件 / Component |
 | Python (remote host) | `RemotePythonProbe`（配对主机） | 远程主机 / Remote |
 | floe/lua · floe/ruby · floe/php · floe/wasm-text | 已签名 WASI 目录版本 + 已验证激活回执 | 用户安装 / User |
 | 环境层内 `floe-runtime*`/`floe-node*`/`floe-python*`/`floe-lua`/`floe-ruby`/`floe-php`/`floe-wasm-*` 包 | 层清单 `LayerManifest.loadChecked`（只读清单，不遍历文件） | 项目环境 / Project |

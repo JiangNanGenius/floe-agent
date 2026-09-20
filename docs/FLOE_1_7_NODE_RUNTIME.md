@@ -1,5 +1,11 @@
 # Floe 1.7 Node runtime
 
+> **Retired by the Phase 2 TinyEMU migration (2026-09-21).** The NodeMobile
+> runtime below left the IPA; local Node.js runs inside each environment's
+> TinyEMU Linux guest (see docs/PHASE2_migration.md). This page is historical
+> evidence for the archived recipes under
+> `FloeAgent/ThirdParty/NativeRuntimeArchive/`.
+
 The App starts NodeMobile once per process. A permanent host serializes tasks into
 worker threads and only reports completion after the worker exits. Cancellation
 terminates the worker, awaits exit, then releases its environment ownership. If

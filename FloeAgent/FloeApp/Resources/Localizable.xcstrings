@@ -2940,13 +2940,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Native keeps the bundled shell/Python runtime; Linux runs shell, Python and services in one TinyEMU guest."
+            "value": "Native is the compatibility backend with the POSIX shell only (no Python/Node); Linux runs shell, Python, Node and services in one TinyEMU guest."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "原生使用内置 Shell/Python 运行时；Linux 会在同一个 TinyEMU 客户机中运行 Shell、Python 和服务。"
+            "value": "原生为兼容后端，仅提供 POSIX Shell（无 Python/Node）；Linux 会在同一个 TinyEMU 客户机中运行 Shell、Python、Node 和服务。"
           }
         }
       }
@@ -15598,6 +15598,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "可更新到 %@"
+          }
+        }
+      }
+    },
+    "settings.exec.runtime.source.component": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux component"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 组件"
           }
         }
       }

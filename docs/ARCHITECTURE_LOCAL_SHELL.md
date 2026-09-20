@@ -27,10 +27,12 @@ The current native simulator host passes 26 command cases and interactive input,
 | Packages | `apt` tool + `pkg` / `apt-get` / `dpkg -l` in the shell | catalog query in-shell; installs always through the reviewed `apt` tool |
 | Human terminal | SwiftTerm `LocalTerminalView` owner (M3 follow-up) | same session backend as `shell.*` |
 
-The shell is deliberately separate from the three existing substrates:
-bundled CPython (`exec.localPython`), the remote Executor (`ssh.execute`) and
-the remote interactive Terminal (`ssh.shell*`). None of them is a prerequisite
-for another.
+The shell is deliberately separate from the other substrates: guest Python
+(`exec.localPython`, inside the task environment's TinyEMU Linux guest since
+Phase 2), the remote Executor (`ssh.execute`) and the remote interactive
+Terminal (`ssh.shell*`). None of them is a prerequisite for another. In a
+Linux-backend environment the shell itself runs inside the same guest; the
+native ios_system substrate remains as the explicit compatibility backend.
 
 ## 2. Layering
 
@@ -126,7 +128,7 @@ as the agent tools:
 
 | Command | Backend |
 |---|---|
-| `python3` (`-c`, file) | bundled CPython (`LocalPythonService`) |
+| `python3` (`-c`, file) | the task environment's Linux guest Python (`LocalPythonService` guest route) |
 | `sha256sum` | `FloeDigest` |
 | `ping`, `traceroute`, `dig`/`nslookup`/`host`, `nc` | device network tools (`NetworkPingTool`, `NetworkTracerouteTool`, `NetworkDNSLookupTool`, `NetworkTCPProbeTool`) |
 | `apt`/`apt-get`/`pkg`, `dpkg -l` | `CapabilityInstaller` catalog query; installs return a structured hint to the `apt` tool |
@@ -140,14 +142,12 @@ as the agent tools:
 `FloeAgent/Sources/FloeExecution/Resources/CapabilityCatalog.json` is the
 single manifest. Kinds: `pythonPackage`, `skill`, `font`, `model`,
 `debData`, `wasmCommand`. Tiers: `bundled` (ships in the app), `managed`
-(reviewed download), `wheelhouse` (build-time pinned native wheel), `deb`
-(data-only), `wasm` (sandboxed command).
+(reviewed download), `wheelhouse` (retired iOS wheelhouse), `deb`
+(data-only), `wasm` (sandboxed command). Since Phase 2 every Python package
+entry is `managed` and installs through the environment's guest pip; nothing
+Python is bundled in the app.
 
-Preset coverage (T1) ships ~32 small pure-Python packages in the bundled
-site-packages (build script: `scripts/install_python_bundled_packages.py`,
-lock: `scripts/python_bundled_packages.lock.json`) so common data, text,
-document and network-adjacent workflows need no download. Larger pure
-packages and `lxml`-dependent packages install on demand through the
+Larger pure packages and `lxml`-dependent packages install on demand through the
 reviewed managed-pip path.
 
 ### 3.2 Installation rules (capability surface)
@@ -211,10 +211,12 @@ closest prior art; the Floe-specific delta is the stricter review pipeline.
 - `sudo`, native binaries, process control (`ps`/`top`/`kill` namespaces),
   device nodes and `/proc` do not exist. `traceroute`/`ping` are real device
   ICMP (unprivileged datagram sockets), not root-based utilities.
-- `python3 -m pip` inside the shell is blocked by the CPython audit hook;
-  installation goes through `apt`.
+- `python3 -m pip` inside the shell of a Linux environment is the guest's
+  real pip against the environment's configured index; native-backend shells
+  have no Python.
 - `$HOME`, `$TMPDIR` and `PATH` point at Floe-owned directories
-  (`ShellHome`, `ShellTmp`, `Packages/bin`, `Packages/pybin`).
+  (`ShellHome`, `ShellTmp`, `Packages/bin`) in the native backend, and at the
+  guest's environment layer in the Linux backend.
 
 ## 6. Third-party components
 

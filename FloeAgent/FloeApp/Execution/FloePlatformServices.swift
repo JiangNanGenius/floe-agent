@@ -176,9 +176,9 @@ final class FloePlatformServices: @unchecked Sendable {
     /// claims an active Linux environment without a guest behind it.
     func resumeEnvironment(id: String) async throws {
         try await managementService().resumeEnvironment(id: id)
-        guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return }
+        guard currentLinuxCommandService() is any LinuxGuestControlling else { return }
         do {
-            _ = try await guests.startGuest(environmentID: id, taskID: nil)
+            _ = try await startLinuxGuest(id: id, taskID: nil)
         } catch {
             try? await managementService().stopEnvironment(id: id)
             throw error
@@ -352,8 +352,8 @@ final class FloePlatformServices: @unchecked Sendable {
             await LinuxGuestNodeProvisioner.shared.forget(environmentID: id)
         }
         try await registry.setExecutionBackend(id: id, backend: backend)
-        if backend == .linuxVM, let guests {
-            _ = try await guests.startGuest(environmentID: id, taskID: nil)
+        if backend == .linuxVM, guests != nil {
+            _ = try await startLinuxGuest(id: id, taskID: nil)
         }
     }
 
@@ -407,10 +407,54 @@ final class FloePlatformServices: @unchecked Sendable {
         return await service.ownsLinuxEnvironment(environmentID: id)
     }
 
+    /// Host URL of an environment's writable layer (legacy package seeding,
+    /// diagnostics). Nil for unknown environments.
+    func layerURL(for environmentID: String) async -> URL? {
+        guard let registry = lock.withLock({ registry }) else { return nil }
+        return await registry.layerURL(for: environmentID)
+    }
+
+    /// Starts an owned Linux guest on demand (lazy activation) and seeds
+    /// preserved native-era Python packages into the guest venv after a cold
+    /// start. Throws the engine's honest reason when the guest cannot start;
+    /// returns false when the environment is not Linux-owned.
+    @discardableResult
+    func startLinuxGuest(id: String, taskID: String? = nil) async throws -> Bool {
+        guard let service = currentLinuxCommandService() else {
+            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
+        }
+        guard await service.ownsLinuxEnvironment(environmentID: id) else { return false }
+        guard let guests = service as? any LinuxGuestControlling else {
+            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
+        }
+        if await guests.guestIsRunning(environmentID: id) { return true }
+        _ = try await guests.startGuest(environmentID: id, taskID: taskID)
+        await LegacyPythonPackageMigration.seedIfNeeded(environmentID: id, runner: service)
+        return true
+    }
+
+    /// The single lazy-activation entry used by shell routing, guest Python,
+    /// services and package commands: start when owned-but-stopped, seed
+    /// legacy packages after a cold start, surface the honest reason
+    /// otherwise.
+    func activateLinuxGuest(id: String) async throws {
+        guard let service = currentLinuxCommandService() else {
+            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
+        }
+        try await LinuxGuestActivator.ensureRunning(
+            environmentID: id,
+            guests: service,
+            controller: service as? any LinuxGuestControlling,
+            onColdStart: { environmentID in
+                await LegacyPythonPackageMigration.seedIfNeeded(environmentID: environmentID, runner: service)
+            }
+        )
+    }
+
     /// Runs one command inside the environment's Linux guest with exactly the
-    /// argv the caller supplies: no command-name or argument rewriting. The
-    /// caller checks `linuxEnvironmentAvailable` first; this stays the
-    /// race-safe second gate so a stopped guest never receives a command.
+    /// argv the caller supplies: no command-name or argument rewriting. An
+    /// owned-but-stopped guest is started on demand (lazy activation); a
+    /// start failure surfaces the engine's honest reason.
     func runLinuxCommand(
         id: String,
         argv: [String],
@@ -421,8 +465,13 @@ final class FloePlatformServices: @unchecked Sendable {
         guard !argv.isEmpty else {
             throw FloeError.validationFailed(String(localized: "environment.packages.linux.command_missing"))
         }
-        guard let service = currentLinuxCommandService(), await service.supports(environmentID: id) else {
+        guard let service = currentLinuxCommandService() else {
             throw FloeError.validationFailed(String(localized: "environment.packages.linux.guest_not_running"))
+        }
+        do {
+            try await activateLinuxGuest(id: id)
+        } catch {
+            throw FloeError.validationFailed(error.localizedDescription)
         }
         return try await service.run(
             environmentID: id,
@@ -486,6 +535,13 @@ final class FloePlatformServices: @unchecked Sendable {
         for name in LinuxShellCommandRouter.routedCommandNames {
             commandRegistry.register(name) { arguments, stdout, stderr in
                 let invocation = FloeShellCommandRegistry.shared.context
+                // Lazy activation: an owned-but-stopped guest is started on
+                // demand so apt/dpkg never report "not running" when the
+                // component is simply not started yet. A start failure keeps
+                // the engine's honest reason.
+                if await FloePlatformServices.shared.linuxEnvironmentOwned(id: invocation?.environment?.id) {
+                    try? await FloePlatformServices.shared.activateLinuxGuest(id: invocation?.environment?.id ?? "")
+                }
                 let router = LinuxShellCommandRouter(service: FloePlatformServices.shared.currentLinuxCommandService())
                 if let result = await router.runIfSupported(
                     command: name,
@@ -544,8 +600,14 @@ final class FloePlatformServices: @unchecked Sendable {
 
     // MARK: - Node
 
+    /// node/npm/npx/pnpm/pnpx/yarn run inside the task environment's Linux
+    /// guest (Phase 2: the nodejs-mobile runtime left the app). Package
+    /// changes go through the environment's managed guest transaction;
+    /// everything else runs the guest's real CLI with the environment prefix
+    /// on PATH/NODE_PATH and the workspace cwd mapped through the 9p shares.
+    /// A native-backend environment gets the honest "Linux backend required"
+    /// answer — there is no host Node to fall back to.
     private func registerNodeCommands(in commandRegistry: FloeShellCommandRegistry) {
-        let nodeRuntime = IOSSystemNodeRuntime.shared
         let languageManagement = lock.withLock { self.languageManagement }
         for name in ["node", "npm", "npx", "pnpm", "pnpx", "yarn"] {
             commandRegistry.register(name) { arguments, stdout, stderr in
@@ -577,61 +639,108 @@ final class FloePlatformServices: @unchecked Sendable {
                     } catch is CancellationError { return 130 }
                     catch { FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n"); return 1 }
                 }
-                let entry: String?
-                if name == "node" {
-                    // The persistent host parses Node's CLI options. Passing
-                    // -v/-e as entryScript incorrectly resolves them as files.
-                    entry = nil
-                } else {
-                    guard let toolPath = FloeNodeBundledToolPath(name) else {
-                        FloeShellWrite(stderr, "\(name): the bundled \(name) entry point is missing from this build\n")
+                guard let environment = context.environment else {
+                    FloeShellWrite(stderr, "\(name): no environment is attached\n")
+                    return 2
+                }
+                guard let service = currentLinuxCommandService(),
+                      await service.ownsLinuxEnvironment(environmentID: environment.id) else {
+                    FloeShellWrite(stderr, "\(name): Node.js runs inside this environment's Linux guest; select the Linux backend for this environment (Settings → Execution) and install the Linux component\n")
+                    return 127
+                }
+                do {
+                    try await activateLinuxGuest(id: environment.id)
+                } catch {
+                    FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n")
+                    return 127
+                }
+                let node: LinuxGuestNodeEnvironment
+                do {
+                    node = try await LinuxGuestNodeProvisioner.shared.ensure(
+                        environmentID: environment.id,
+                        runner: service,
+                        cancellation: context.cancellation
+                    )
+                } catch is CancellationError {
+                    return 130
+                } catch {
+                    FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n")
+                    return 127
+                }
+                if name == "yarn" {
+                    // yarn is not part of the guest's base distribution.
+                    FloeShellWrite(stderr, "yarn: not bundled with the guest; install yarn in this environment (npm i -g yarn) or use npm/pnpm\n")
+                    return 127
+                }
+                // pnpm is an optional guest manager; say so honestly when the
+                // guest does not expose it.
+                let executable: String
+                switch name {
+                case "node": executable = node.nodePath
+                case "npm": executable = node.npmPath
+                case "npx":
+                    executable = node.npmPath.replacingOccurrences(of: "/npm$", with: "/npx")
+                case "pnpm", "pnpx":
+                    guard let pnpm = node.pnpmPath else {
+                        FloeShellWrite(stderr, "\(name): pnpm is not installed in this Linux environment; install it with apt/npm or use npm\n")
                         return 127
                     }
-                    entry = toolPath
+                    executable = name == "pnpx" ? pnpm.replacingOccurrences(of: "/pnpm$", with: "/pnpx") : pnpm
+                default:
+                    executable = node.nodePath
                 }
-                let environment = IOSSystemNodeRuntime.defaultEnvironment(
-                    containerRoot: context.environment?.writableLayerURL ?? context.rootURL,
-                    workspaceRoot: context.rootURL
-                )
-                var variables = environment.merging(context.environment?.variables ?? [:]) { _, resolved in resolved }
-                    .merging(context.shellVariables) { _, shell in shell }
-                // Ownership metadata is supplied by the resolver, never by an export.
-                if let id = context.environment?.id { variables["FLOE_ENVIRONMENT_ID"] = id }
-                let liveInput: Int32?
-                // Do not drain stdin before starting Node. A script may never
-                // read it, or may produce output before its producer sends EOF.
-                // The native pump retains its own descriptor and stops when
-                // the Worker exits, including cancellation and timeout.
-                if let stream = FloeShellCommandRegistry.input?.stream {
-                    liveInput = fileno(stream)
-                } else { liveInput = nil }
-                let request = NodeRunRequest(
-                    entryScript: entry,
-                    arguments: userArguments,
-                    workingDirectory: context.workingDirectory,
-                    environment: variables,
-                    stdin: nil,
-                    stdinFileDescriptor: liveInput,
-                    timeout: 300,
-                    maxOutputBytes: 256 * 1024
-                )
-                let outcome = await nodeRuntime.run(request, cancellation: context.cancellation)
-                switch outcome {
-                case .exited(let code, let out, let err, _, let truncated):
-                    if !out.isEmpty { FloeShellWrite(stdout, out.hasSuffix("\n") ? out : out + "\n") }
-                    if !err.isEmpty { FloeShellWrite(stderr, err.hasSuffix("\n") ? err : err + "\n") }
-                    if truncated { FloeShellWrite(stderr, "[Node output truncated]\n") }
-                    return code
-                case .timedOut(let out, let err, _):
-                    if !out.isEmpty { FloeShellWrite(stdout, out) }
-                    if !err.isEmpty { FloeShellWrite(stderr, err) }
-                    FloeShellWrite(stderr, "\(name): timed out\n")
-                    return 124
-                case .cancelled:
-                    return 130
-                case .failed(let message):
-                    FloeShellWrite(stderr, "\(name): \(message)\n")
+                let variables: [String: String] = [
+                    "PATH": ([node.pathDirectory, LinuxGuestNodeEnvironment.guestBin]
+                        + [LinuxGuestPythonEnvironment.guestVenvPath + "/bin", LinuxGuestNodeEnvironment.defaultGuestPath]).joined(separator: ":"),
+                    "NODE_PATH": LinuxGuestNodeEnvironment.guestNodeModules,
+                    "HOME": LinuxGuestMountPoint.environment + "/home",
+                    "TMPDIR": LinuxGuestMountPoint.environment + "/tmp",
+                    "npm_config_cache": LinuxGuestMountPoint.environment + "/var/npm",
+                    "CI": "1",
+                    "FLOE_ENVIRONMENT_ID": environment.id
+                ]
+                if name == "yarn" {
+                    FloeShellWrite(stderr, "yarn: not bundled with the guest; install yarn in this environment (npm i -g yarn) or use npm/pnpm\n")
                     return 127
+                }
+                var argv: [String] = ["env"]
+                argv.append(contentsOf: LinuxGuestEnvironmentEncoding.argv(variables) ?? [])
+                argv.append(executable)
+                argv.append(contentsOf: userArguments)
+                let workingDirectory = await (service as? any LinuxGuestPathMapping)?
+                    .linuxGuestPathMap(environmentID: environment.id)
+                    .flatMap { $0.guestPath(forHostPath: context.workingDirectory.path) }
+                if context.workingDirectory.path != context.rootURL.path, workingDirectory == nil {
+                    FloeShellWrite(stderr, "\(name): the working directory is outside this environment's shared folders\n")
+                    return 2
+                }
+                var standardInput: String?
+                if let input = FloeShellCommandRegistry.input, !input.isTerminal {
+                    guard let value = await input.readAsync(cancellation: context.cancellation) else {
+                        if context.cancellation.isCancelled { return 130 }
+                        FloeShellWrite(stderr, "\(name): stdin exceeds 256 KiB or could not be read\n")
+                        return 2
+                    }
+                    standardInput = value
+                }
+                do {
+                    let result = try await service.run(
+                        environmentID: environment.id,
+                        argv: argv,
+                        workingDirectory: workingDirectory,
+                        standardInput: standardInput,
+                        timeout: 300,
+                        maxOutputBytes: 256 * 1024,
+                        cancellation: context.cancellation
+                    )
+                    if !result.stdout.isEmpty { FloeShellWrite(stdout, result.stdout.hasSuffix("\n") ? result.stdout : result.stdout + "\n") }
+                    if !result.stderr.isEmpty { FloeShellWrite(stderr, result.stderr.hasSuffix("\n") ? result.stderr : result.stderr + "\n") }
+                    return result.exitCode
+                } catch FloeError.cancelled {
+                    return 130
+                } catch {
+                    FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n")
+                    return 1
                 }
             }
         }

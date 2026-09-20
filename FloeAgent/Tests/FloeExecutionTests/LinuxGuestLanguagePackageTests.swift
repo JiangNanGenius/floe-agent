@@ -162,15 +162,10 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
     func testOwnedButStoppedPythonChangeNeverFallsBackToHost() async throws {
         let (environmentID, layer) = try makeLayer()
         defer { try? FileManager.default.removeItem(at: layer) }
-        let hostCalls = HostCallCounter()
-        let python = LocalPythonService(version: "host") { _, _ in
-            hostCalls.increment()
-            return .ok(resultJSON: nil, stdout: "host-install", stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
-        }
         let runner = ScriptedLinuxCommandRunner()
         runner.owns = true
         runner.supports = false
-        let service = ManagedPythonInstallService(python: python, linux: LinuxGuestLanguagePackages(runner: runner))
+        let service = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: runner))
         let environment = makeEnvironment(environmentID, layer: layer)
         let outcome = await service.install(specs: ["demo==1.0"], cancellation: nil, environment: environment)
 
@@ -178,20 +173,16 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
             return XCTFail("A stopped Linux guest must fail the install")
         }
         XCTAssertTrue(message.contains("not running"), message)
-        XCTAssertEqual(hostCalls.value, 0)
         XCTAssertTrue(runner.calls.isEmpty)
     }
 
     func testInstallServiceAnswersLinuxOwnershipEvenWhileStopped() async throws {
         let (environmentID, layer) = try makeLayer()
         defer { try? FileManager.default.removeItem(at: layer) }
-        let python = LocalPythonService(version: "host") { _, _ in
-            .ok(resultJSON: nil, stdout: "", stderr: "", truncated: false, stderrTruncated: false, durationMs: 0)
-        }
         let runner = ScriptedLinuxCommandRunner()
         runner.owns = true
         runner.supports = false
-        let service = ManagedPythonInstallService(python: python, linux: LinuxGuestLanguagePackages(runner: runner))
+        let service = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: runner))
         let environment = makeEnvironment(environmentID, layer: layer)
         // Ownership answers without touching the guest, so exec.localPython
         // can skip native script policy before the guest is started.
@@ -200,31 +191,35 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         XCTAssertTrue(runner.calls.isEmpty)
         let nativeRunner = ScriptedLinuxCommandRunner()
         nativeRunner.owns = false
-        let nativeService = ManagedPythonInstallService(python: python, linux: LinuxGuestLanguagePackages(runner: nativeRunner))
+        let nativeService = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: nativeRunner))
         let native = await nativeService.isLinuxGuestEnvironment(makeEnvironment("native-\(UUID().uuidString)", layer: layer))
         XCTAssertFalse(native)
         XCTAssertTrue(nativeRunner.calls.isEmpty)
     }
 
-    func testNativeEnvironmentStillUsesTheBundledPythonPath() async throws {        let (environmentID, layer) = try makeLayer()
+    func testNativeEnvironmentFailsHonestlyWithoutHostFallback() async throws {
+        // Phase 2: the bundled interpreter is gone. A native-backend
+        // environment gets the honest Linux-required failure; nothing runs
+        // on the host and nothing touches the guest runner.
+        let (environmentID, layer) = try makeLayer()
         defer { try? FileManager.default.removeItem(at: layer) }
-        let hostCalls = HostCallCounter()
-        let python = LocalPythonService(version: "host") { _, _ in
-            hostCalls.increment()
-            return .ok(resultJSON: nil, stdout: "host-install", stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
-        }
         let runner = ScriptedLinuxCommandRunner()
         runner.owns = false
-        let service = ManagedPythonInstallService(python: python, linux: LinuxGuestLanguagePackages(runner: runner))
+        let service = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: runner))
         let environment = makeEnvironment(environmentID, layer: layer)
         let outcome = await service.install(specs: ["demo==1.0"], cancellation: nil, environment: environment)
 
-        guard case .ok(let output) = outcome else {
-            return XCTFail("The native path must stay unchanged")
+        guard case .failed(let message) = outcome else {
+            return XCTFail("A native environment must not install packages")
         }
-        XCTAssertTrue(output.contains("host-install"), output)
-        XCTAssertGreaterThan(hostCalls.value, 0)
+        XCTAssertTrue(message.contains("Linux"), message)
         XCTAssertTrue(runner.calls.isEmpty)
+        let removed = await service.uninstall(distribution: "demo", environment: environment, cancellation: nil)
+        guard case .failed = removed else {
+            return XCTFail("A native environment must not uninstall packages")
+        }
+        XCTAssertTrue(runner.calls.isEmpty)
+        XCTAssertEqual(await service.installedDistributions(environment: environment), [])
     }
 
     // MARK: Node
@@ -392,12 +387,6 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
 
     // MARK: exec.localPython gate
 
-    func testNativeScriptPolicyStillRejectsPipAndSubprocessMarkers() {
-        XCTAssertThrowsError(try LocalPythonTool.validateNativeScriptPolicy("import subprocess"))
-        XCTAssertThrowsError(try LocalPythonTool.validateNativeScriptPolicy("import pip"))
-        XCTAssertNoThrow(try LocalPythonTool.validateNativeScriptPolicy("print('plain')"))
-    }
-
     func testValidateNoLongerAppliesNativePolicyBeforeBackendIsKnown() throws {
         let python = LocalPythonService(version: "host") { _, _ in return .cancelled }
         let tool = LocalPythonTool(service: python)
@@ -419,13 +408,6 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         let afterForget = await provisioner.environment(for: environmentID)
         XCTAssertNil(afterForget)
     }
-}
-
-private final class HostCallCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    func increment() { lock.withLock { count += 1 } }
-    var value: Int { lock.withLock { count } }
 }
 
 private final class ManagerCallRecorder: @unchecked Sendable {

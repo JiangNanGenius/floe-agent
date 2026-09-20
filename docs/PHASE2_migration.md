@@ -175,7 +175,8 @@ edit them; see `docs/PHASE2_engine.md` in the engine worktree):**
   `PYTHONPATH` change is requested: legacy Python reinstalls go through guest
   pip from the layer manifest instead (§3.2).
 
-**Provided to the app/Notes workers:**
+**Provided to the app/Notes workers (see `docs/PHASE2_assistant.md` in the
+assistant worktree):**
 
 - `LocalPythonService` keeps its name and `ScriptExecutionService` surface;
   its runner is always the guest router (no environment → honest
@@ -188,6 +189,16 @@ edit them; see `docs/PHASE2_engine.md` in the engine worktree):**
   a Linux-owned environment.
 - `exec.localPython`, `exec.localService`, `exec.shell`, `pip`, `node`, `npm`
   names and schemas are unchanged for skills and saved content.
+- **Lazy activation**: every app-side entry point (shell routing,
+  `exec.localPython`, `exec.localService`, package UI, apt/dpkg commands)
+  funnels through one activator that starts an owned-but-stopped guest on
+  demand and otherwise returns the engine's honest reason (component not
+  installed, image not qualified, busy). A Notes run that prepared its
+  session environment as `.linuxVM` therefore either executes confined or
+  fails with the explicit component/backend reason the assistant contract
+  §6.2 relies on — never a silent native fallback.
+- Legacy package seeding after a cold start (§3.2) is bounded, marked, and
+  never deletes preserved data.
 
 ## 6. IPA audit (anti-regression)
 

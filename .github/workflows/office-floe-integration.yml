@@ -23,14 +23,14 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v5
-      - name: Prepare pinned native runtimes
+      - name: Prepare pinned native components
         run: |
           brew install xcodegen automake cmake
           xcodebuild -downloadComponent MetalToolchain
           python3 scripts/test_office_host_bootstrap.py
           python3 scripts/test_office_app_load_chain.py
-          python3 scripts/test_python_wheel_download.py
-          scripts/bootstrap_python_runtime.sh
+          scripts/bootstrap_native_components.sh
+          python3 scripts/audit_native_runtime_free.py --project
           scripts/gen_project.sh
       - name: Build Floe with shared native Office preview and fullscreen editing
         id: build_app

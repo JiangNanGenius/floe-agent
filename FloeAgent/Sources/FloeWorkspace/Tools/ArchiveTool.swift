@@ -12,8 +12,9 @@ import FloeCore
 import FloeTools
 
 /// One compressed-format archive request handled by the app-supplied bridge
-/// (the bundled CPython's tarfile/gzip/bz2/lzma), keeping workspace.archive
-/// the single entry point for every common format.
+/// (the task environment's Linux guest Python: tarfile/gzip/bz2/lzma),
+/// keeping workspace.archive the single entry point for every common format.
+/// `environmentID` routes the bridge to the task's own environment.
 public struct ArchiveCompressedRequest: Sendable {
     public var action: String
     /// tgz, tbz2, txz, gz, bz2 or xz.
@@ -22,14 +23,18 @@ public struct ArchiveCompressedRequest: Sendable {
     public var destination: String?
     public var workspaceRoot: URL
     public var cancellation: CancellationToken
+    /// Task environment that owns the guest the bridge runs in; nil only in
+    /// tests without an environment.
+    public var environmentID: String?
 
-    public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL, cancellation: CancellationToken = CancellationToken()) {
+    public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL, cancellation: CancellationToken = CancellationToken(), environmentID: String? = nil) {
         self.action = action
         self.format = format
         self.source = source
         self.destination = destination
         self.workspaceRoot = workspaceRoot
         self.cancellation = cancellation
+        self.environmentID = environmentID
     }
 }
 
@@ -62,7 +67,7 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public static let name = "workspace.archive"
     public static let toolDescription =
-        "Archive operations inside the workspace. create writes a new archive to destinationFile. extract writes zip/tar/7z/rar/tar.* entries into a new destinationDir, or decompresses gz/bz2/xz into destinationFile. Pass exactly the matching field; list accepts neither. ZIP/TAR/7z are native; RAR/RAR5 list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Compressed TAR and single-file compression use CPython. Entry/size limits apply, existing outputs are never overwritten. Old destination calls must be replanned, not replayed."
+        "Archive operations inside the workspace. create writes a new archive to destinationFile. extract writes zip/tar/7z/rar/tar.* entries into a new destinationDir, or decompresses gz/bz2/xz into destinationFile. Pass exactly the matching field; list accepts neither. ZIP/TAR/7z are native; RAR/RAR5 list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Compressed TAR and single-file compression run in the task environment's Linux guest Python. Entry/size limits apply, existing outputs are never overwritten. Old destination calls must be replanned, not replayed."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -186,7 +191,8 @@ public struct WorkspaceArchiveTool: AgentTool {
         if resolvedFormat == "rar" {
             guard let compressedHandler else { throw WorkspaceToolError.invalidArguments("RAR requires the app's signed native archive decoder") }
             let summary = try await compressedHandler(ArchiveCompressedRequest(action: args.action, format: "rar",
-                source: args.source, destination: args.destination, workspaceRoot: guarder.rootURL, cancellation: context.cancellation))
+                source: args.source, destination: args.destination, workspaceRoot: guarder.rootURL, cancellation: context.cancellation,
+                environmentID: context.environment?.id))
             return WorkspaceToolSupport.output(summary)
         }
         if ["tgz", "tbz2", "txz", "gz", "bz2", "xz"].contains(resolvedFormat) {
@@ -206,7 +212,8 @@ public struct WorkspaceArchiveTool: AgentTool {
                 source: args.source,
                 destination: destination,
                 workspaceRoot: guarder.rootURL,
-                cancellation: context.cancellation
+                cancellation: context.cancellation,
+                environmentID: context.environment?.id
             ))
             return WorkspaceToolSupport.output(summary)
         }

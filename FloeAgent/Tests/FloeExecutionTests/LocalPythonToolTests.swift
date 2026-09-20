@@ -21,7 +21,7 @@ struct LocalPythonToolTests {
         }
     }
 
-    @Test("descriptor is on-device, bounded, and always approval-sensitive")
+    @Test("descriptor is on-device, bounded, Linux-backed and always approval-sensitive")
     func descriptorContract() {
         #expect(LocalPythonTool.name == "exec.localPython")
         #expect(LocalPythonTool.isSideEffecting)
@@ -32,16 +32,17 @@ struct LocalPythonToolTests {
         #expect(LocalPythonTool.parametersJSON.contains("pipCommand"))
         #expect(LocalPythonTool.toolDescription.contains("packagePurpose"))
         #expect(LocalPythonTool.parametersJSON.contains("packageCapabilities"))
-        #expect(LocalPythonTool.toolDescription.contains("Pyodide"))
-        #expect(LocalPythonTool.toolDescription.contains("WebAssembly"))
-        #expect(LocalPythonTool.toolDescription.contains("mmap"))
-        #expect(LocalPythonTool.toolDescription.contains("pyexpat"))
-        #expect(LocalPythonTool.toolDescription.contains("multiprocessing"))
+        // Phase 2: the description discloses the Linux guest backend and the
+        // absence of bundled packages instead of advertising a native
+        // interpreter.
+        #expect(LocalPythonTool.toolDescription.contains("Linux guest"))
+        #expect(LocalPythonTool.toolDescription.contains("Packages are NOT bundled"))
+        #expect(!LocalPythonTool.toolDescription.contains("bundles compatible iOS"))
     }
 
     @Test("declarative pip commands use the reviewed package path")
     func declarativePipValidation() async {
-        let service = LocalPythonService(version: "CPython 3.13") { _, _ in .cancelled }
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { _, _ in .cancelled }
         let tool = LocalPythonTool(service: service)
         #expect(throws: Never.self) {
             try tool.validate(.init(
@@ -61,7 +62,33 @@ struct LocalPythonToolTests {
         }
     }
 
-    @Test("declarative pip command is installed only through the managed phase")
+    /// Scripted guest runner: provisions the shared venv and answers pip.
+    private static func guestRunner(
+        pipExitCode: Int32 = 0,
+        pipOutput: String = "Successfully installed marko-2.2.0\n"
+    ) -> ScriptedLinuxCommandRunner {
+        ScriptedLinuxCommandRunner { argv, _, _ in
+            let joined = argv.joined(separator: " ")
+            if joined.contains("sysconfig.get_paths") {
+                return LinuxCommandResult(stdout: "/floe/env/python/venv/lib/python3.13/site-packages\n", stderr: "", exitCode: 0)
+            }
+            if joined.contains("bin/pip") && !joined.contains("install") {
+                return LinuxCommandResult(stdout: "pip-ok\n", stderr: "", exitCode: 0)
+            }
+            if argv.contains("--version") {
+                return LinuxCommandResult(stdout: "Python 3.13.5\n", stderr: "", exitCode: 0)
+            }
+            if joined.contains("floePythonInventory") {
+                return LinuxCommandResult(stdout: "floePythonInventory=[]\n", stderr: "", exitCode: 0)
+            }
+            if joined.contains("install") {
+                return LinuxCommandResult(stdout: pipOutput, stderr: "", exitCode: pipExitCode)
+            }
+            return LinuxCommandResult(stdout: "", stderr: "", exitCode: 0)
+        }
+    }
+
+    @Test("declarative pip command installs through the guest venv before the script runs")
     func declarativePipExecution() async throws {
         actor Recorder {
             var requests: [ScriptExecutionRequest] = []
@@ -69,18 +96,15 @@ struct LocalPythonToolTests {
             func snapshot() -> [ScriptExecutionRequest] { requests }
         }
         let recorder = Recorder()
-        let service = LocalPythonService(version: "CPython 3.13") { request, _ in
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { request, _ in
             await recorder.append(request)
-            return .ok(
-                resultJSON: nil,
-                stdout: request.allowsManagedPackageInstaller ? "managedPackages=marko==2.2.0" : "rendered",
-                stderr: "",
-                truncated: false,
-                stderrTruncated: false,
-                durationMs: 1
-            )
+            return .ok(resultJSON: nil, stdout: "rendered", stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
         }
-        let tool = LocalPythonTool(service: service)
+        let environmentID = "env-tool-\(UUID().uuidString)"
+        let runner = Self.guestRunner()
+        let installer = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: runner))
+        defer { Task { await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID) } }
+        let tool = LocalPythonTool(service: service, installer: installer)
         let userScript = "import marko; print(marko.convert('# Title'))"
         let output = try await tool.execute(
             .init(
@@ -89,54 +113,89 @@ struct LocalPythonToolTests {
                 packagePurpose: "Render the Markdown requested by the user",
                 packageCapabilities: ["document.render"]
             ),
-            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+            context: ToolContext(
+                runID: UUID(),
+                cancellation: CancellationToken(),
+                environment: ToolEnvironment(
+                    id: environmentID,
+                    writableLayerURL: FileManager.default.temporaryDirectory,
+                    layerURLs: [FileManager.default.temporaryDirectory],
+                    variables: [:]
+                )
+            )
         )
-        let requests = await recorder.snapshot()
-        #expect(requests.count == 2)
-        #expect(requests.first?.allowsManagedPackageInstaller == true)
-        #expect(requests.first?.script.contains("marko==2.2.0") == true)
-        // Verify the privilege boundary, not private implementation lines in
-        // the ownership-aware installer (its filesystem behavior has payload tests).
-        #expect(requests.first?.script.contains(userScript) == false)
-        #expect(requests.last?.script == userScript)
-        #expect(requests.last?.allowsManagedPackageInstaller == false)
+        // The install ran through the guest's real pip (not an in-process
+        // installer phase) and the user script ran afterwards.
+        #expect(runner.calls.contains { $0.argv.contains("install") && $0.argv.contains("marko==2.2.0") })
+        #expect(await recorder.snapshot().last?.script == userScript)
         #expect(output.exitStatus == 0)
     }
 
-    @Test("failed managed installation never starts the user script")
+    @Test("failed guest installation never starts the user script")
     func failedInstallPreventsExecution() async throws {
         actor Recorder {
-            var requests: [ScriptExecutionRequest] = []
-            func append(_ request: ScriptExecutionRequest) { requests.append(request) }
-            func snapshot() -> [ScriptExecutionRequest] { requests }
+            var count = 0
+            func increment() { count += 1 }
+            func snapshot() -> Int { count }
         }
         let recorder = Recorder()
-        let service = LocalPythonService(version: "CPython 3.13") { request, _ in
-            await recorder.append(request)
-            return .jsException(message: "Package ownership conflict", stdout: "")
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { _, _ in
+            await recorder.increment()
+            return .ok(resultJSON: nil, stdout: "", stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
         }
-        let output = try await LocalPythonTool(service: service).execute(
+        let environmentID = "env-tool-\(UUID().uuidString)"
+        let runner = Self.guestRunner(pipExitCode: 1, pipOutput: "ERROR: ownership conflict\n")
+        let installer = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: runner))
+        defer { Task { await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID) } }
+        let output = try await LocalPythonTool(service: service, installer: installer).execute(
             .init(script: "print('must not execute')", packages: ["marko==2.2.0"],
+                  packagePurpose: "Render the user's document", packageCapabilities: ["document.render"]),
+            context: ToolContext(
+                runID: UUID(),
+                cancellation: CancellationToken(),
+                environment: ToolEnvironment(
+                    id: environmentID,
+                    writableLayerURL: FileManager.default.temporaryDirectory,
+                    layerURLs: [FileManager.default.temporaryDirectory],
+                    variables: [:]
+                )
+            )
+        )
+        #expect(output.exitStatus != 0)
+        #expect(await recorder.snapshot() == 0)
+    }
+
+    @Test("non-Linux environments fail honestly without touching any interpreter")
+    func nonLinuxEnvironmentFailsHonestly() async throws {
+        actor Recorder {
+            var count = 0
+            func increment() { count += 1 }
+            func snapshot() -> Int { count }
+        }
+        let recorder = Recorder()
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { _, _ in
+            await recorder.increment()
+            return .ok(resultJSON: nil, stdout: "", stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
+        }
+        let runner = ScriptedLinuxCommandRunner()
+        runner.owns = false
+        let installer = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: runner))
+        let output = try await LocalPythonTool(service: service, installer: installer).execute(
+            .init(script: "print('x')", packages: ["marko==2.2.0"],
                   packagePurpose: "Render the user's document", packageCapabilities: ["document.render"]),
             context: ToolContext(runID: UUID(), cancellation: CancellationToken())
         )
-        let requests = await recorder.snapshot()
-        #expect(requests.count == 1)
-        #expect(requests.first?.allowsManagedPackageInstaller == true)
-        #expect(requests.first?.script.contains("must not execute") == false)
         #expect(output.exitStatus != 0)
-        #expect(output.summary.contains("Package ownership conflict"))
+        #expect(output.summary.contains("Linux"))
+        #expect(await recorder.snapshot() == 0)
     }
 
-    @Test("managed package specs reject direct URLs and script-level pip")
+    @Test("managed package specs reject direct URLs")
     func managedPackageValidation() async {
-        let service = LocalPythonService(version: "CPython 3.13") { _, _ in .cancelled }
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { _, _ in .cancelled }
         let tool = LocalPythonTool(service: service)
         #expect(throws: FloeError.self) {
             try tool.validate(.init(script: "pass", packages: ["https://example.com/a.whl"]))
-        }
-        #expect(throws: FloeError.self) {
-            try tool.validate(.init(script: "import pip"))
         }
         #expect(throws: Never.self) {
             try tool.validate(.init(script: "import requests", packages: ["requests==2.32.4"], packagePurpose: "Fetch the user-requested public dataset", packageCapabilities: ["data.fetch"]))
@@ -145,7 +204,7 @@ struct LocalPythonToolTests {
 
     @Test("service result is mapped to a tool result")
     func executionMapping() async throws {
-        let service = LocalPythonService(version: "CPython 3.13") { request, _ in
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { request, _ in
             .ok(
                 resultJSON: nil,
                 stdout: "received=\(request.inputJSON ?? "null")",
@@ -168,33 +227,50 @@ struct LocalPythonToolTests {
 
     @Test("invalid input JSON is rejected before runtime")
     func validation() async {
-        let service = LocalPythonService(version: "CPython 3.13") { _, _ in .cancelled }
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { _, _ in .cancelled }
         let tool = LocalPythonTool(service: service)
         #expect(throws: FloeError.self) {
             try tool.validate(.init(script: "pass", inputJSON: "not-json"))
         }
     }
 
-    @Test("capability probe reports the injected runtime")
+    @Test("capability probe reports the Linux backend honestly")
     func probe() async {
-        let service = LocalPythonService(version: "CPython 3.13") { _, _ in .cancelled }
-        #expect(await LocalPythonCapabilityProbe(service: service).probe()
-            == .available(version: "CPython 3.13"))
+        let service = LocalPythonService(version: "Python 3 (Linux guest)") { _, _ in .cancelled }
+        #expect(await LocalPythonCapabilityProbe(
+            service: service,
+            backendStatus: { .init(backendPresent: true, componentInstalled: true) }
+        ).probe() == .available(version: "Python 3 (Linux guest)"))
+        let missing = await LocalPythonCapabilityProbe(
+            service: service,
+            backendStatus: { .init(backendPresent: true, componentInstalled: false) }
+        ).probe()
+        guard case .unavailable(let reason) = missing, reason.contains("Linux component") else {
+            Issue.record("Missing component must be the honest unavailable reason: \(missing)")
+            return
+        }
         #expect(await LocalPythonCapabilityProbe(service: nil).probe()
-            == .unavailable(reason: "Bundled CPython runtime is not installed in this build"))
+            == .unavailable(reason: "Local Python runs in the Linux guest component, which is not part of this build"))
     }
 
-    @Test("runtime library manifest comes from an actual bounded import probe")
+    @Test("runtime manifest is a live guest probe or an honest static statement")
     func runtimeLibraryManifest() async {
-        let service = LocalPythonService(version: "bundled") { request, _ in
+        let service = LocalPythonService(version: "guest") { request, _ in
             #expect(request.script.contains("importlib.import_module"))
-            #expect(request.timeout == 10)
-            return .ok(resultJSON: nil, stdout: #"{"python":"3.13.7","libraries":{"numpy":{"available":true,"version":"2.5.2"},"PIL":{"available":false}}}"#,
+            return .ok(resultJSON: nil, stdout: #"{"python":"3.13.5","backend":"linux-guest","libraries":{"numpy":{"available":true,"version":"2.5.2"}}}"#,
                 stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
         }
-        let manifest = await LocalPythonCapabilityProbe(service: service).runtimeManifest()
-        #expect(manifest.contains("3.13.7"))
-        #expect(manifest.contains("\"available\":false"))
+        // No running guest: static statement, no fabricated library list.
+        let staticManifest = await LocalPythonCapabilityProbe(service: service).runtimeManifest()
+        #expect(staticManifest.contains("Linux environment"))
+        // A running environment yields the live probe result.
+        let live = await LocalPythonCapabilityProbe(
+            service: service,
+            backendStatus: { .init(backendPresent: true, componentInstalled: true) },
+            liveProbeEnvironment: { "env-live" }
+        ).runtimeManifest()
+        #expect(live.contains("3.13.5"))
+        #expect(live.contains("linux-guest"))
         #expect(await LocalPythonCapabilityProbe(service: nil).runtimeManifest().contains("unavailable"))
     }
 }

@@ -34,10 +34,17 @@ Prefer focused local tests and cloud App builds for the 1.7 integration. From th
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
 swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 2
-bash FloeAgent/scripts/pin_node_tools.sh
-bash FloeAgent/scripts/pin_node_tools.sh --check
-node --test FloeAgent/scripts/tests/node_host.test.cjs
+bash FloeAgent/scripts/bootstrap_native_components.sh
+python3 FloeAgent/scripts/audit_native_runtime_free.py --project
 ```
+
+Since the Phase 2 TinyEMU migration there is no bundled CPython/NodeMobile
+build input: local Python/Node execute inside each environment's TinyEMU
+Linux guest, and `audit_native_runtime_free.py` fails the build if a native
+Python/Node marker returns to the project or the packaged app. The retired
+recipes (pinned runtime bootstrap, ios-wheelhouse builders, Node tools) are
+archived, not wired into the build, under
+`FloeAgent/ThirdParty/NativeRuntimeArchive/`.
 
 Check mode does not install resources or modify locks. Qualification covers environment, package, media, persistence and signed catalog paths; it does not replace App or device tests. Run commands sharing the SwiftPM scratch directory sequentially.
 

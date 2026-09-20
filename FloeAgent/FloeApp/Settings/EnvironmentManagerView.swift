@@ -259,8 +259,10 @@ private struct EnvironmentDetailView: View {
                 }.font(.caption)
             }
             if busy { ProgressView("正在处理…") }
-            // Execution backend: native stays the default; Linux runs the
-            // shell/Python/services inside this environment's TinyEMU guest.
+            // Execution backend: Linux is the default since the Phase 2
+            // migration (shell/Python/Node/services run inside this
+            // environment's TinyEMU guest); native is the explicit
+            // compatibility backend (POSIX shell subset, no Python/Node).
             // The status text below is the real guest/image state, including
             // the exact reason a guest cannot start.
             Section("environment.backend.title") {

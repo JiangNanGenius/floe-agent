@@ -241,9 +241,11 @@ Floe 会向快捷指令公开**立即运行 Floe 任务**和**安排 Floe 任务
 
 ## 12. 本机 Python、受管包和代码编辑
 
-Floe 内置 Python 3.13。修复候选版中的 `pip install`、`pip3` 和 `python3 -m pip` 与设置页面共用当前环境的安装服务：先解析兼容依赖，再校验、暂存和提交；失败保留原来的安装。Build 192 修复候选让环境自己的可写依赖路径优先于受管基线，并在用户代码前逐出已退役的受管 root 模块，因此导入结果与当前激活环境一致。已有原生库可满足依赖，但不支持下载任意原生扩展或启动普通 Linux 系统程序。调用工具所要求的任务权限和软件包审核仍然适用。
+自 Phase 2（TinyEMU 迁移）起，本机 Python 与 Node.js 在每个任务环境的 TinyEMU Linux 客体中运行（riscv64 的真实 Debian 用户态），不再使用随包内置的 iOS 解释器。新建及未显式配置的环境默认使用 Linux 后端；显式选择**原生**的环境只保留 POSIX Shell 兼容子集（无 Python/Node）。尚未安装 Linux 组件时，所有 Python/Node 入口都会如实报告该状态，可在 设置 → 执行 中下载（固定目录、SHA-512 校验）。
 
-NumPy、Pillow、pandas 及已验收的 wheelhouse 包以当前运行时检查为准。下一修复版新增锁定的 lxml 6.1.3、python-docx 1.2.0 和 python-pptx 1.0.2；iOS 测试床已完成 Office 保存重读，完整 App 集成仍在验证。SciPy、scikit-learn、Matplotlib 尚未通过当前内置原生产线验收，只能使用另行验证的浏览器或可信远端路径；这属于当前构建限制，不代表 iOS 原生编译永久不可行。
+Shell、`exec.localPython`、受管安装服务和依赖页面共用每个环境唯一的解释器：客体 Debian python3 加该环境共享的 venv。`pip install`、`pip3` 与 `python3 -m pip` 直接运行客体真实 pip，并使用环境配置的索引——兼容的 Linux riscv64 wheel（含 NumPy、pandas、Pillow、lxml 等已发布版本）可正常安装。Node 使用客体 apt 的 `nodejs`/`npm` 与环境级前缀；客体自带 pnpm 时才提供 pnpm。失败或取消的变更保留上一代依赖；迁移前的旧安装保留在磁盘上（Python 包会在客体首次启动后按层清单重装到 venv；旧目录不会加入 PYTHONPATH）。调用工具所要求的任务权限和软件包审核仍然适用。
+
+包索引与系统包来自客体自身配置的软件源：Linux 环境内的 `apt` 即标准 Debian 安装器；原生环境仍保留经审核的纯数据 `dpkg-deb` 操作。
 
 耗时 Python 工作（批量下载、数据清洗）不应阻塞对话：`jobs.submit` 可把 `exec.localPython`、`network.download`、`network.http`、`web.fetch` 提交为持久后台任务并立即返回 jobID，Python 协作时限放宽到 600 秒。用 `jobs.status` 查进度、`jobs.result` 取结果、`jobs.cancel` 取消；完成后结果自动回注对话并发送本地通知。后台下载在 App 挂起后继续，网络中断后透明续传（上限 2 GB）。
 

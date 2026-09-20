@@ -5,20 +5,27 @@ import FloeTools
 @testable import FloeExecution
 
 struct LanguagePackageSourcesTests {
-    @Test func selectedNodeRegistryReachesBothManagersAndFailurePreservesGeneration() async throws {
+    @Test func legacyNodeTransactionRecoveryRestoresThePreviousGeneration() throws {
+        // Phase 2: installs run the guest npm/pnpm (registry forwarding is
+        // covered by LinuxGuestLanguagePackageTests); the host keeps only the
+        // pure file recovery for native-era interrupted transactions.
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        try LanguagePackageSources(nodeRegistry: "https://packages.example.org/npm/").save(in: root)
-        let runtime = RegistryRecordingRuntime()
-        let installer = ManagedNodeInstallService(runtime: runtime, npmEntry: "/npm.js", pnpmEntry: "/pnpm.cjs")
+        let transaction = root.appendingPathComponent("var/floe-node-transaction")
+        let backup = transaction.appendingPathComponent("backup")
+        let staged = root.appendingPathComponent("usr/lib/node_modules")
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        try Data("original".utf8).write(to: backup.appendingPathComponent("marker.txt"))
+        try Data("staged".utf8).write(to: staged.appendingPathComponent("marker.txt"))
+        try Data(#"{"phase":"committing","hadOriginal":true}"#.utf8)
+            .write(to: transaction.appendingPathComponent("journal.json"))
         let environment = ToolEnvironment(id: "sources", writableLayerURL: root, layerURLs: [root], variables: [:])
-        for manager in NodePackageManager.allCases {
-            await #expect(throws: Error.self) {
-                try await installer.change(environment, specification: "is-number@7.0.0", remove: false, manager: manager, cancellation: CancellationToken())
-            }
-            #expect(await runtime.arguments.contains("--registry=https://packages.example.org/npm/"))
-            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("var/floe-node-transaction").path))
-        }
+        try LegacyNodeInstallRecovery.recover(environment)
+        #expect(!FileManager.default.fileExists(atPath: transaction.path))
+        #expect(String(decoding: try Data(contentsOf: staged.appendingPathComponent("marker.txt")), as: UTF8.self) == "original")
+        // No transaction: recovery is a no-op.
+        try LegacyNodeInstallRecovery.recover(environment)
     }
     @Test func sourcesPersistOnlyInSelectedEnvironmentAndRejectCredentials() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -47,13 +54,5 @@ struct LanguagePackageSourcesTests {
         try FileManager.default.removeItem(at: layer.appendingPathComponent("var"))
         try FileManager.default.moveItem(at: outside, to: layer.appendingPathComponent("var"))
         #expect(throws: Error.self) { try LanguagePackageSources.load(in: layer) }
-    }
-}
-
-private actor RegistryRecordingRuntime: NodeRuntime {
-    var arguments: [String] = []
-    func run(_ request: NodeRunRequest, cancellation: CancellationToken?) async -> NodeRunOutcome {
-        arguments = request.arguments
-        return .failed(message: "Registry unavailable for recovery qualification")
     }
 }

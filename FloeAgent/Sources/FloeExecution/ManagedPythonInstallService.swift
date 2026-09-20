@@ -1,13 +1,25 @@
-// FloeExecution — Shared managed Python package installer.
-// Previously inlined in exec.localPython; extracted so the shell tool and the
-// apt capability layer install pure-Python packages through exactly the same
-// reviewed, staged, atomic path (py3-none-any wheels only, native rejected).
+// FloeExecution — Shared managed Python package installer (Linux guest).
+//
+// Phase 2 (TinyEMU migration): the bundled in-process CPython and its
+// iOS-wheelhouse installer left the app. Every managed Python operation runs
+// the environment's guest pip inside the shared venv through
+// `LinuxGuestLanguagePackages`, so shell `pip`, `exec.localPython`,
+// `python.packages` and the package UI all read the same site-packages, and
+// riscv64 Linux wheels install through the guest's normal pip.
+//
+// An environment not owned by the Linux backend fails with the honest
+// "switch to the Linux backend" error; there is no silent host fallback and
+// no in-process interpreter anymore. Legacy native installs are preserved
+// on disk untouched (see docs/PHASE2_migration.md §3.2).
 
 import Foundation
 import FloeCore
 import FloeTools
 
 public struct ManagedPythonInstallService: Sendable {
+    /// Honest refusal for every non-Linux environment: there is no host
+    /// interpreter left to fall back to.
+    public static let linuxRequiredMessage = "Python/Node run inside this environment's Linux guest. Select the Linux backend for this environment (or install and start the Linux component) and try again."
     public enum Outcome: Sendable {
         case ok(output: String)
         case failed(message: String)
@@ -15,19 +27,14 @@ public struct ManagedPythonInstallService: Sendable {
         case cancelled
     }
 
-    private let python: LocalPythonService
-    /// Linux guest package ownership. When the selected environment is owned
-    /// by the Linux backend, the guest's own venv pip performs the install and
-    /// the iOS wheelhouse/staging path is never used.
+    /// Linux guest package ownership. All operations run inside the guest.
     private let linux: LinuxGuestLanguagePackages?
     private let packagesChanged: @Sendable () async -> Void
 
     public init(
-        python: LocalPythonService,
         linux: LinuxGuestLanguagePackages? = nil,
         packagesChanged: @escaping @Sendable () async -> Void = {}
     ) {
-        self.python = python
         self.linux = linux
         self.packagesChanged = packagesChanged
     }
@@ -38,14 +45,15 @@ public struct ManagedPythonInstallService: Sendable {
     }
 
     /// True when the selected environment is owned by the Linux backend (its
-    /// guest may still be stopped). `exec.localPython` uses this to keep the
-    /// bundled-interpreter restrictions — no pip/subprocess/OS installs —
-    /// away from scripts that actually run in the guest, where those are
-    /// normal Python behavior.
+    /// guest may still be stopped). `exec.localPython` uses this to keep
+    /// honest environment wording before the guest is started.
     public func isLinuxGuestEnvironment(_ environment: ToolEnvironment?) async -> Bool {
         await linuxOwns(environment)
     }
 
+    /// Legacy native-layout context values. The guest router rewrites every
+    /// host path through the environment's 9p map before anything reaches the
+    /// guest, so these stay useful for callers that still build a context.
     public static func executionContext(_ environment: ToolEnvironment?) -> PythonExecutionContext? {
         guard let environment else { return nil }
         var variables = environment.variables
@@ -54,45 +62,27 @@ public struct ManagedPythonInstallService: Sendable {
         return .init(environmentID: environment.id, environment: variables)
     }
 
-    /// Builds the installer program that runs inside the managed CPython
-    /// process. The private installer phase flag permits pip only for this
-    /// exact program; agent scripts remain blocked by the audit hook.
-    private static func installerScript(packageJSON: String?, recoverOnly: Bool = false) -> String? {
-        guard let url = Bundle.module.url(forResource: "managed_package_install", withExtension: "py"),
-              let source = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return source + "\n" + """
-        import sys
-        _target = os.environ.get('FLOE_PYTHON_PACKAGE_TARGET') or next((p for p in sys.path if p.endswith('PythonPackages')), None)
-        if not _target:
-            raise RuntimeError('Managed package directory is unavailable')
-        _layer = os.environ.get('FLOE_PYTHON_WRITABLE_LAYER')
-        if _layer and os.path.commonpath([os.path.realpath(_target), os.path.realpath(_layer)]) != os.path.realpath(_layer):
-            raise RuntimeError('Managed package directory escapes its environment')
-        """ + "\n" + (recoverOnly ? "recover(Path(_target))" : "install(json.loads(\(String(reflecting: packageJSON ?? "[]"))), Path(_target))")
+    /// The guest's real pip is not a staged host transaction: nothing
+    /// host-side needs recovery. A Linux-owned environment whose guest is
+    /// stopped reports the honest not-running error.
+    public func recover(environment: ToolEnvironment) async throws {
+        guard await linuxOwns(environment) else { return }
+        guard let linux, await linux.isRunning(environmentID: environment.id) else {
+            throw FloeError.validationFailed(LinuxGuestError.notRunning(environmentID: environment.id).localizedDescription)
+        }
     }
 
-    /// Called before inventory or removal so a process interruption cannot hide the previous generation.
-    public func recover(environment: ToolEnvironment) async throws {
-        if await linuxOwns(environment) {
-            // The guest's real pip is not the native staged transaction, so
-            // there is nothing host-side to recover; the guest must still be
-            // running or the operation reports the honest "start it" error.
-            guard let linux, await linux.isRunning(environmentID: environment.id) else {
-                throw FloeError.validationFailed(LinuxGuestError.notRunning(environmentID: environment.id).localizedDescription)
-            }
-            return
+    private func requiresLinux(_ environment: ToolEnvironment?) async -> Outcome? {
+        guard let environment else {
+            return .failed(message: Self.linuxRequiredMessage)
         }
-        guard let script = Self.installerScript(packageJSON: nil, recoverOnly: true) else {
-            throw FloeError.invalidConfiguration("Python recovery resource is unavailable")
+        guard await linuxOwns(environment), let linux else {
+            return .failed(message: Self.linuxRequiredMessage)
         }
-        let result = await python.run(.init(script: script, timeout: 30, maxOutputBytes: 4096,
-            allowsManagedPackageInstaller: true, pythonContext: Self.executionContext(environment)), cancellation: nil)
-        switch result {
-        case .ok: return
-        case .jsException(let message, _): throw FloeError.validationFailed(message)
-        case .timedOut: throw FloeError.validationFailed("Python recovery has not completed; files were retained")
-        case .cancelled: throw CancellationError()
+        guard await linux.isRunning(environmentID: environment.id) else {
+            return .failed(message: LinuxGuestError.notRunning(environmentID: environment.id).localizedDescription)
         }
+        return nil
     }
 
     public func install(
@@ -112,255 +102,76 @@ public struct ManagedPythonInstallService: Sendable {
                 return .failed(message: "Invalid package spec \(spec): \(error.localizedDescription)")
             }
         }
-        if let environment, let linux, await linux.owns(environmentID: environment.id) {
-            do {
-                let output = try await linux.pythonInstall(
-                    specs: uniqueSpecs,
-                    environment: environment,
-                    timeout: timeout,
-                    cancellation: cancellation
-                )
-                let verification = await linux.pythonVerification(specs: uniqueSpecs, environment: environment)
-                await packagesChanged()
-                let base = output.isEmpty ? "pip install \(uniqueSpecs.joined(separator: " "))" : output
-                return .ok(output: base + "\n" + verification)
-            } catch is CancellationError {
-                return .cancelled
-            } catch {
-                return .failed(message: error.localizedDescription)
-            }
+        if let unavailable = await requiresLinux(environment) { return unavailable }
+        guard let environment, let linux else {
+            return .failed(message: Self.linuxRequiredMessage)
         }
-        let encoded = (try? JSONEncoder().encode(uniqueSpecs)).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
-        guard let script = Self.installerScript(packageJSON: encoded) else {
-            return .failed(message: "Managed Python installer resource is unavailable")
-        }
-        var pythonContext = Self.executionContext(environment)
         do {
-            let sources = try environment.map { try LanguagePackageSources.load(in: $0.writableLayerURL) } ?? LanguagePackageSources()
-            if pythonContext == nil { pythonContext = .init() }
-            pythonContext?.environment["FLOE_PYTHON_INDEX_URL"] = sources.pythonIndex
-            pythonContext?.environment["PIP_CONFIG_FILE"] = "/dev/null"
-            pythonContext?.environment["PIP_EXTRA_INDEX_URL"] = ""
-            pythonContext?.environment["PIP_TRUSTED_HOST"] = ""
-        } catch { return .failed(message: error.localizedDescription) }
-        let request = ScriptExecutionRequest(
-            script: script,
-            inputJSON: nil,
-            timeout: timeout,
-            maxOutputBytes: maxOutputBytes,
-            allowsManagedPackageInstaller: true,
-            pythonContext: pythonContext
-        )
-        let outcome = await python.run(request, cancellation: cancellation)
-        switch outcome {
-        case .ok(_, let stdout, let stderr, _, _, _):
-            let verification = await verifyInstalled(specs: uniqueSpecs, environment: environment, cancellation: cancellation)
+            let output = try await linux.pythonInstall(
+                specs: uniqueSpecs,
+                environment: environment,
+                timeout: timeout,
+                cancellation: cancellation
+            )
+            let verification = await linux.pythonVerification(specs: uniqueSpecs, environment: environment)
             await packagesChanged()
-            let base = stderr.isEmpty ? stdout : stdout + "\n" + stderr
-            return .ok(output: verification.isEmpty ? base : base + "\n" + verification)
-        case .jsException(let message, let stdout):
-            return .failed(message: message + (stdout.isEmpty ? "" : "\n" + stdout))
-        case .timedOut(_, let partialStdout):
-            return .timedOut(partialOutput: partialStdout)
-        case .cancelled:
+            let base = output.isEmpty ? "pip install \(uniqueSpecs.joined(separator: " "))" : output
+            return .ok(output: base + "\n" + verification)
+        } catch is CancellationError {
             return .cancelled
+        } catch {
+            return .failed(message: error.localizedDescription)
         }
     }
 
-    /// States which copy actually resolved after an install. A persistent
-    /// interpreter with several site-packages roots can otherwise satisfy an
-    /// import from a read-only bundled copy while pip reports success for the
-    /// writable layer; the line names the exact `__file__` location.
-    private func verifyInstalled(specs: [String], environment: ToolEnvironment?, cancellation: CancellationToken?) async -> String {
-        struct Payload: Encodable { let names: [String] }
-        let names = specs.map { spec -> String in
-            spec.split(separator: "=", maxSplits: 1).first.map(String.init) ?? spec
-        }
-        guard let data = try? JSONEncoder().encode(Payload(names: names)),
-              let json = String(data: data, encoding: .utf8) else { return "installVerify=unavailable" }
-        let source = """
-        import importlib.metadata as _metadata, json as _json, os as _os, re as _re
-        _target = _os.environ.get('FLOE_PYTHON_PACKAGE_TARGET') or ''
-        _rows = []
-        for _name in input['names']:
-            _key = _re.sub(r'[-_.]+', '-', _name).lower()
-            _match = None
-            for _distribution in _metadata.distributions():
-                _candidate = _distribution.metadata.get('Name')
-                if _candidate and _re.sub(r'[-_.]+', '-', _candidate).lower() == _key:
-                    _match = _distribution
-                    break
-            if _match is None:
-                _rows.append({'name': _name, 'version': None, 'location': None, 'writable': False})
-                continue
-            _location = str(_match.locate_file(''))
-            _writable = bool(_target) and _os.path.commonpath([_os.path.realpath(_location), _os.path.realpath(_target)]) == _os.path.realpath(_target)
-            _rows.append({'name': _match.metadata['Name'], 'version': _match.version, 'location': _location, 'writable': _writable})
-        print('installVerify=' + _json.dumps(_rows, ensure_ascii=False))
-        """
-        let result = await python.run(.init(script: source, inputJSON: json, timeout: 15, maxOutputBytes: 16 * 1024,
-            pythonContext: Self.executionContext(environment)), cancellation: cancellation)
-        switch result {
-        case .ok(_, let stdout, let stderr, _, _, _):
-            if let line = stdout.split(separator: "\n").first(where: { $0.hasPrefix("installVerify=") }) {
-                return String(line)
-            }
-            return "installVerify=unavailable" + (stderr.isEmpty ? "" : " " + String(stderr.prefix(200)))
-        case .timedOut:
-            return "installVerify=timedOut"
-        case .cancelled:
-            return "installVerify=cancelled"
-        case .jsException(let message, _):
-            return "installVerify=unavailable " + String(message.prefix(200))
-        }
-    }
-
-    /// Package inspection executes fixed source, never a user-supplied pip
-    /// module/script. Effective versions follow the resolved Python path order.
+    /// Fixed inspection commands forwarded to the guest venv's own pip. The
+    /// shell parser already restricts the accepted commands and arguments.
     public func inspect(command: String, arguments: [String], environment: ToolEnvironment,
                         cancellation: CancellationToken?) async -> Outcome {
-        if await linuxOwns(environment), let linux {
-            do {
-                let output = try await linux.pythonInspect(
-                    command: command,
-                    arguments: arguments,
-                    environment: environment,
-                    cancellation: cancellation
-                )
-                return .ok(output: output)
-            } catch is CancellationError {
-                return .cancelled
-            } catch {
-                return .failed(message: error.localizedDescription)
-            }
+        if let unavailable = await requiresLinux(environment) { return unavailable }
+        guard let linux else {
+            return .failed(message: Self.linuxRequiredMessage)
         }
-        let source = """
-        import importlib.metadata as _metadata, json as _json, re as _re, sys as _sys
-        _command, _arguments = input['command'], input['arguments']
-        def _name(value): return _re.sub(r'[-_.]+', '-', value).lower()
-        _installed = {}
-        for _distribution in _metadata.distributions():
-            _distribution_name = _distribution.metadata.get('Name')
-            if _distribution_name:
-                _installed.setdefault(_name(_distribution_name), _distribution)
-        if _command in ('help', '--help', '-h'):
-            print('pip install NAME[==VERSION] | uninstall NAME | list [--format=json] | show NAME | freeze | check | --version')
-            print('Installations use the current environment. Native extensions require compatible bundled builds.')
-        elif _command in ('--version', '-V'):
-            print('pip ' + _metadata.version('pip') + ' (Floe managed, Python ' + _sys.version.split()[0] + ')')
-        elif _command == 'freeze':
-            for _key, _distribution in sorted(_installed.items()):
-                print(_distribution.metadata['Name'] + '==' + _distribution.version)
-        elif _command == 'list':
-            _rows = [{'name': d.metadata['Name'], 'version': d.version} for _, d in sorted(_installed.items())]
-            if _arguments == ['--format=json']: print(_json.dumps(_rows))
-            else:
-                for _row in _rows: print(_row['name'] + ' ' + _row['version'])
-        elif _command == 'show':
-            for _requested in _arguments:
-                _distribution = _installed.get(_name(_requested))
-                if not _distribution: raise ValueError('Package is not installed: ' + _requested)
-                print('Name: ' + _distribution.metadata['Name'])
-                print('Version: ' + _distribution.version)
-                print('Location: ' + str(_distribution.locate_file('')))
-                print('Requires: ' + ', '.join(_distribution.requires or []))
-        elif _command == 'check':
-            from packaging.requirements import Requirement as _Requirement
-            _errors = []
-            for _distribution in _installed.values():
-                for _text in _distribution.requires or []:
-                    _requirement = _Requirement(_text)
-                    if _requirement.marker and not _requirement.marker.evaluate({'extra': ''}): continue
-                    _dependency = _installed.get(_name(_requirement.name))
-                    if not _dependency or (_requirement.specifier and not _requirement.specifier.contains(_dependency.version, prereleases=True)):
-                        _errors.append(_distribution.metadata['Name'] + ' requires ' + str(_requirement))
-            if _errors: raise ValueError('Dependency conflicts: ' + '; '.join(_errors))
-            print('No broken requirements found.')
-        else: raise ValueError('Unsupported package inspection')
-        """
-        struct Payload: Encodable { let command: String; let arguments: [String] }
-        let payload = try? JSONEncoder().encode(Payload(command: command, arguments: arguments))
-        guard let payload else { return .failed(message: "Invalid inspection arguments") }
-        let result = await python.run(.init(script: source, inputJSON: String(decoding: payload, as: UTF8.self),
-            timeout: 30, maxOutputBytes: 65_536, pythonContext: Self.executionContext(environment)), cancellation: cancellation)
-        switch result {
-        case .ok(_, let stdout, let stderr, _, _, _): return .ok(output: stdout + (stderr.isEmpty ? "" : "\n" + stderr))
-        case .jsException(let message, _): return .failed(message: message)
-        case .timedOut(_, let partial): return .timedOut(partialOutput: partial)
-        case .cancelled: return .cancelled
-        }
-    }
-
-    /// Removes an installed distribution by deleting exactly the files its
-    /// RECORD lists, then the dist-info directory. Bundled (read-only)
-    /// distributions cannot be removed and report a clear failure.
-    public func uninstall(distribution: String, environment: ToolEnvironment? = nil, cancellation: CancellationToken? = nil) async -> Outcome {
-        if let environment, let linux, await linux.owns(environmentID: environment.id) {
-            do { try await recover(environment: environment) }
-            catch { return .failed(message: error.localizedDescription) }
-            do {
-                let output = try await linux.pythonUninstall(
-                    distribution: distribution,
-                    environment: environment,
-                    cancellation: cancellation
-                )
-                await packagesChanged()
-                return .ok(output: output)
-            } catch is CancellationError {
-                return .cancelled
-            } catch {
-                return .failed(message: error.localizedDescription)
-            }
-        }
-        if let environment {
-            do { try await recover(environment: environment) }
-            catch { return .failed(message: error.localizedDescription) }
-        }
-        guard let url = Bundle.module.url(forResource: "managed_package_remove", withExtension: "py"),
-              let script = try? String(contentsOf: url, encoding: .utf8),
-              let data = try? JSONEncoder().encode(["distribution": distribution]) else {
-            return .failed(message: "Managed package removal resource is unavailable")
-        }
-        let request = ScriptExecutionRequest(
-            script: script,
-            inputJSON: String(decoding: data, as: UTF8.self),
-            timeout: 30,
-            maxOutputBytes: 64 * 1024,
-            allowsManagedPackageInstaller: true,
-            pythonContext: Self.executionContext(environment)
-        )
-        let outcome = await python.run(request, cancellation: cancellation)
-        switch outcome {
-        case .ok(_, let stdout, let stderr, _, _, _):
-            await packagesChanged()
-            return .ok(output: stderr.isEmpty ? stdout : stdout + "\n" + stderr)
-        case .jsException(let message, let stdout):
-            return .failed(message: message + (stdout.isEmpty ? "" : "\n" + stdout))
-        case .timedOut(_, let partialStdout):
-            return .timedOut(partialOutput: partialStdout)
-        case .cancelled:
+        do {
+            let output = try await linux.pythonInspect(
+                command: command,
+                arguments: arguments,
+                environment: environment,
+                cancellation: cancellation
+            )
+            return .ok(output: output)
+        } catch is CancellationError {
             return .cancelled
+        } catch {
+            return .failed(message: error.localizedDescription)
         }
     }
 
-    /// Distributions visible to the interpreter: bundled site-packages and
-    /// the managed mutable root. Bundled entries cannot be uninstalled.
-    /// A Linux environment reads the guest's shared venv instead; a stopped
-    /// guest reports the honest not-running error from the install/uninstall
-    /// paths and never a host-side catalog here.
-    public func installedDistributions(environment: ToolEnvironment? = nil) async -> [String] {
-        if let environment, let linux, await linux.owns(environmentID: environment.id) {
-            return await linux.pythonDistributionNames(environment: environment)
+    public func uninstall(distribution: String, environment: ToolEnvironment? = nil, cancellation: CancellationToken? = nil) async -> Outcome {
+        if let unavailable = await requiresLinux(environment) { return unavailable }
+        guard let environment, let linux else {
+            return .failed(message: Self.linuxRequiredMessage)
         }
-        let script = """
-        import sys, importlib.metadata, re
-        _roots = [p for p in sys.path if p.endswith('site-packages') or p.endswith('PythonPackages')]
-        _names = {re.sub(r'[-_.]+', '-', d.metadata['Name']).lower()
-                  for d in importlib.metadata.distributions(path=_roots) if d.metadata['Name']}
-        print('\\n'.join(sorted(_names)))
-        """
-        let request = ScriptExecutionRequest(script: script, timeout: 10, maxOutputBytes: 64 * 1024, pythonContext: Self.executionContext(environment))
-        guard case .ok(_, let stdout, _, _, _, _) = await python.run(request, cancellation: nil) else { return [] }
-        return stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        do {
+            let output = try await linux.pythonUninstall(
+                distribution: distribution,
+                environment: environment,
+                cancellation: cancellation
+            )
+            await packagesChanged()
+            return .ok(output: output)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(message: error.localizedDescription)
+        }
+    }
+
+    /// Distributions the environment's shared guest venv sees. A stopped or
+    /// non-Linux environment has no host-side catalog to scan: it reports an
+    /// empty list instead of pretending packages exist.
+    public func installedDistributions(environment: ToolEnvironment? = nil) async -> [String] {
+        guard let environment, let linux, await linux.owns(environmentID: environment.id) else { return [] }
+        return await linux.pythonDistributionNames(environment: environment)
     }
 }

@@ -9,17 +9,19 @@ import FloeTools
 import FloePersistence
 
 /// Registers the compiled execution tools. Local JavaScript remains opt-in;
-/// local Python is registered only when the app has supplied the bundled
-/// CPython service. Remote Python is intentionally absent — `ssh.execute`
-/// covers it (run `python3 -c "..."` or pipe a script via stdin).
+/// local Python is registered only when the app has supplied the guest-routed
+/// Python service (TinyEMU Linux). Remote Python is intentionally absent —
+/// `ssh.execute` covers it (run `python3 -c "..."` or pipe a script via
+/// stdin).
 ///
 /// - Parameters:
 ///   - registry: Runner registry to register into (defaults to the shared
 ///     process-wide registry used by `CatalogToolExecutor`).
 ///   - service: The JS execution backend (defaults to the real
 ///     JavaScriptCore service; tests inject fakes).
-///   - localPythonService: Bundled on-device CPython. Nil leaves
-///     `exec.localPython` honestly absent from the catalog.
+///   - localPythonService: On-device Python routed into the task
+///     environment's Linux guest. Nil leaves `exec.localPython` honestly
+///     absent from the catalog.
 ///   - sshCommandService: SSH command execution backend. Nil leaves
 ///     `ssh.execute` unregistered.
 ///   - includeStandaloneWasmTool: Internal/testing escape hatch for the raw

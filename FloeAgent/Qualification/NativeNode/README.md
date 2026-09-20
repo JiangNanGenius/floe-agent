@@ -1,4 +1,13 @@
-# Native Node qualification
+# Retired qualification host (pre-Phase-2)
+
+This host qualified the bundled nodejs-mobile runtime, which left the app in
+the Phase 2 TinyEMU migration (local Node.js now runs inside each
+environment's TinyEMU Linux guest). The recipe pins are archived under
+`FloeAgent/ThirdParty/NativeRuntimeArchive/`; there is no current CI leg for
+this host. Current guest qualification lives in `Qualification/TinyEMULinux`.
+
+---
+
 
 This small iOS App links the actual pinned NodeMobile XCFramework and production
 bridge/host and Swift IOSSystemNodeRuntime adapter. The minimal FloeExecution target

@@ -17,16 +17,18 @@ defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
 echo "Pinned Swift macro fingerprint prompt disabled for this CI worker"
 
 # These reproducible build inputs are intentionally not committed because the
-# expanded frameworks are large. Bootstrap verifies the pinned CPython archive
-# digest before populating Vendor/ and the bundled standard library.
+# expanded frameworks are large. Bootstrap installs the pinned native
+# components (PDFium, LibArchive, Office host, dash). Since the Phase 2
+# TinyEMU migration there is no bundled CPython/Node input anymore; local
+# Python/Node run inside each environment's Linux guest.
 if xcodebuild -showComponent MetalToolchain -json 2>/dev/null \
   | grep -q '"status" : "installed"'; then
   echo "Pinned Metal Toolchain is already installed"
 else
   xcodebuild -downloadComponent MetalToolchain
 fi
-"$app_root/scripts/bootstrap_python_runtime.sh"
-echo "Pinned Metal and CPython build inputs installed"
+"$app_root/scripts/bootstrap_native_components.sh"
+echo "Pinned Metal and native component build inputs installed"
 echo "Logical CPUs: $(sysctl -n hw.logicalcpu 2>/dev/null || echo unknown)"
 
 memory_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)

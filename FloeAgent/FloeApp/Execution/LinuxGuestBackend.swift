@@ -133,6 +133,11 @@ struct RoutingLocalShellBackend: LocalShellBackend {
               await guests.ownsLinuxEnvironment(environmentID: environmentID) else {
             return await native.run(request, cancellation: cancellation)
         }
+        do {
+            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+        } catch {
+            return .failed(message: error.localizedDescription)
+        }
         return await guestBackend.run(request, cancellation: cancellation)
     }
 
@@ -141,6 +146,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
               await guests.ownsLinuxEnvironment(environmentID: environmentID) else {
             return try await native.openSession(request, cancellation: cancellation)
         }
+        try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
         let result = try await guestBackend.openSession(request, cancellation: cancellation)
         guestSessions.insert(request.sessionID)
         return result

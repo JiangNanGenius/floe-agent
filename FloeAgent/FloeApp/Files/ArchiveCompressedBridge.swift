@@ -6,9 +6,12 @@ import FloeTools
 import FloeWorkspace
 
 /// Bridges workspace.archive's compressed formats (tar.gz/tar.bz2/tar.xz and
-/// single-file gz/bz2/xz) onto the bundled CPython, so the archive tool is
-/// the single entry point. The fixed script below enforces the same limits
-/// as the native paths: entry/byte caps, name sanitization, no overwrite.
+/// single-file gz/bz2/xz) onto the task environment's Linux guest Python, so
+/// the archive tool is the single entry point. The fixed script below
+/// enforces the same limits as the native paths: entry/byte caps, name
+/// sanitization, no overwrite. The workspace root crosses as an environment
+/// value so the guest router maps it to the 9p share instead of embedding a
+/// host path in the script.
 enum ArchiveCompressedBridge {
     static func makeHandler(service: LocalPythonService) -> ArchiveCompressedHandler {
         { request in
@@ -17,13 +20,21 @@ enum ArchiveCompressedBridge {
                 "action": request.action,
                 "format": request.format,
                 "source": request.source,
-                "destination": request.destination as Any,
-                "root": request.workspaceRoot.path
+                "destination": request.destination as Any
             ]
             let argsJSON = String(decoding: try JSONSerialization.data(withJSONObject: args), as: UTF8.self)
             let script = Self.script.replacingOccurrences(of: "__ARGS_JSON__", with: argsJSON)
             let outcome = await service.run(
-                ScriptExecutionRequest(script: script, timeout: 30, maxOutputBytes: 64 * 1024),
+                ScriptExecutionRequest(
+                    script: script,
+                    timeout: 30,
+                    maxOutputBytes: 64 * 1024,
+                    pythonContext: .init(
+                        environmentID: request.environmentID,
+                        workingDirectory: request.workspaceRoot.path,
+                        environment: ["FLOE_ARCHIVE_ROOT": request.workspaceRoot.path]
+                    )
+                ),
                 cancellation: request.cancellation
             )
             switch outcome {
@@ -49,7 +60,10 @@ import json, os, tarfile, gzip, bz2, lzma, shutil
 
 args = json.loads(r'''__ARGS_JSON__''')
 action, fmt, source = args['action'], args['format'], args['source']
-destination, root = args['destination'], args['root']
+destination = args['destination']
+# The guest router maps FLOE_ARCHIVE_ROOT into the 9p workspace share; a
+# direct host path is only a test fallback.
+root = os.environ.get('FLOE_ARCHIVE_ROOT') or os.getcwd()
 MAX_ENTRIES, MAX_BYTES = 5000, 256 * 1024 * 1024
 TAR_MODES = {'tgz': ('r:gz', 'w:gz', '.tar.gz'), 'tbz2': ('r:bz2', 'w:bz2', '.tar.bz2'), 'txz': ('r:xz', 'w:xz', '.tar.xz')}
 SINGLE = {'gz': gzip, 'bz2': bz2, 'xz': lzma}

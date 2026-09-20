@@ -85,9 +85,12 @@ final class AppEnvironment: ObservableObject {
     let cloudWorkspaceService: CloudWorkspaceService
     let cloudWorkspaceCleanupQueue: CloudWorkspaceCleanupQueue
     let bluetoothSerialService: CoreBluetoothSerialService
-    /// Bundled CPython capability. Unavailable only when the reproducible
-    /// runtime bootstrap was intentionally omitted from the build.
+    /// Local Python capability (Linux guest backend since Phase 2).
+    /// Unavailable with the honest reason when the Linux component is not
+    /// installed in this build/on this device.
     let localPythonProbe: FloeExecution.LocalPythonCapabilityProbe
+    /// Local Node.js capability (same Linux guest backend and component).
+    let localNodeProbe: FloeExecution.LocalNodeCapabilityProbe
     /// Real remote-Python capability probe (FloeExecution), surfaced to
     /// SettingsCenter so the UI reads live state instead of a placeholder.
     let remotePythonProbe: FloeExecution.RemotePythonProbe
@@ -378,20 +381,36 @@ final class AppEnvironment: ObservableObject {
         )
         FloePlatformServices.shared.setLinuxImageService(linuxImageService)
 
-        // Bundled CPython stays the native path; its runner now routes by
-        // environment, so `exec.localPython` and the managed pip installs for
-        // a Linux environment execute inside that environment's guest.
-        let localPythonService = CPythonServiceFactory.make(linuxGuests: linuxGuests)
-        self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
-            service: localPythonService
-        )
-        let managedPython = localPythonService.map {
-            ManagedPythonInstallService(
-                python: $0,
-                linux: LinuxGuestLanguagePackages(runner: linuxGuests),
-                packagesChanged: { await FloeShellCommands.refreshPythonCommands() }
-            )
+        // Phase 2 (TinyEMU migration): local Python runs only inside the task
+        // environment's Linux guest (shared venv, real pip). The bundled
+        // in-process CPython and its managed installer left the app; a
+        // non-Linux environment gets the honest "Linux backend required"
+        // answer instead of a native fallback.
+        let linuxBackendStatus: @Sendable () async -> FloeExecution.LocalPythonCapabilityProbe.BackendStatus = {
+            if let status = await FloePlatformServices.shared.linuxImageStatus(id: LinuxGuestBackendAssembly.defaultImageID) {
+                return .init(
+                    backendPresent: true,
+                    componentInstalled: status.installed && status.verificationFailure == nil,
+                    detail: status.verificationFailure
+                )
+            }
+            return .init(backendPresent: true, componentInstalled: false)
         }
+        let localPythonService = LocalPythonServiceFactory.make(linuxGuests: linuxGuests)
+        self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
+            service: localPythonService,
+            backendStatus: linuxBackendStatus,
+            liveProbeEnvironment: {
+                for record in await environmentRegistry.all() where record.effectiveExecutionBackend == .linuxVM {
+                    if await linuxGuests.guestIsRunning(environmentID: record.id) { return record.id }
+                }
+                return nil
+            }
+        )
+        self.localNodeProbe = FloeExecution.LocalNodeCapabilityProbe(backendStatus: linuxBackendStatus)
+        let managedPython = ManagedPythonInstallService(
+            linux: LinuxGuestLanguagePackages(runner: linuxGuests)
+        )
         self.managedPythonInstaller = managedPython
 
         // exec.shell routes per request: Linux environments run in their
@@ -421,10 +440,11 @@ final class AppEnvironment: ObservableObject {
                     await self.shellSessionCenter.closeAll(environmentID: id)
                 },
                 cancelJobs: { [linuxGuests] id in
+                    // stopGuest also stops every guest localService and drops
+                    // the shared interpreter caches; the retired native
+                    // CPython/Node workers no longer exist to stop.
                     await linuxGuests.stopGuest(environmentID: id)
                     await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
-                    try await IOSSystemNodeRuntime.shared.stopServices(environmentID: id)
-                    try await CPythonLocalRuntime.shared.stopServices(environmentID: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                 },
                 terminateWorkers: { [linuxGuests] id in
@@ -433,12 +453,6 @@ final class AppEnvironment: ObservableObject {
                     try await FloeShellCommandRegistry.shared.waitForWorkers(environmentID: id)
                     guard !(await linuxGuests.guestIsRunning(environmentID: id)) else {
                         throw FloeError.validationFailed("Linux guest has not stopped; environment data was retained")
-                    }
-                    guard !CPythonLocalRuntime.hasActiveWork(environmentID: id) else {
-                        throw FloeError.validationFailed("Python worker has not stopped; environment data was retained")
-                    }
-                    guard !FloeNodeHasActiveTask(id) else {
-                        throw FloeError.validationFailed("Node worker has not stopped; environment data was retained")
                     }
                 }
             )
@@ -706,7 +720,6 @@ final class AppEnvironment: ObservableObject {
             wasm: wasmCapabilities
         )
         FloeShellCommands.install()
-        Task { await FloeShellCommands.refreshPythonCommands() }
         // Media surface: capabilities, inspection, editing, export,
         // interpolation/super resolution and signed-catalog model management.
         let mediaModelRoot = ((try? FloeArtifactStore.root()) ?? FileManager.default.temporaryDirectory)

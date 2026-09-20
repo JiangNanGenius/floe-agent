@@ -404,8 +404,15 @@ final class IDELanguageRunController: ObservableObject {
     func refreshCapabilities() async {
         var interpreters: Set<IDELanguageLocalInterpreter> = [.shell]
         let registry = FloeShellCommandRegistry.shared
-        if registry.python != nil { interpreters.insert(.python3) }
-        if IOSSystemNodeRuntime.shared.isAvailable { interpreters.insert(.node) }
+        // Python/Node run inside the task environment's Linux guest (Phase 2).
+        // They are advertised when the guest backend exists and the Linux
+        // component is installed — a run still surfaces the honest guest
+        // state when the environment is stopped or the image is missing.
+        let componentInstalled = await FloePlatformServices.shared
+            .linuxImageStatus(id: LinuxGuestBackendAssembly.defaultImageID)
+            .map { $0.installed && $0.verificationFailure == nil } ?? false
+        if registry.python != nil, componentInstalled { interpreters.insert(.python3) }
+        if componentInstalled { interpreters.insert(.node) }
         if let store = registry.wasm {
             // The catalog carries the canonical `floe-*` command; the bare
             // `lua` name is only the shell alias. Resolve the catalog identity

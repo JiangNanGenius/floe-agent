@@ -21,7 +21,7 @@ name: CI
 # so a targeted IDE rerun cannot cancel or be cancelled by a full run of
 # the same ref; the default group string is unchanged when ide_only is off.
 concurrency:
-  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.native_wheels_package != '' && format('-wheels-{0}', inputs.native_wheels_package) || '' }}${{ inputs.ide_only && '-ide' || '' }}
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.ide_only && '-ide' || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 on:
@@ -59,10 +59,6 @@ on:
         description: 'Sign and commit official Skill Hub artifacts on the selected trusted branch'
         type: boolean
         default: false
-      native_wheels_package:
-        description: "Build native CPython 3.13 iOS wheel candidates: a package name from ios-wheelhouse/manifest.json, 'pandas', or 'all'"
-        type: string
-        default: ''
       build_test_only:
         description: 'Rerun only the build-test leg (skip SDK-compatibility and Linux jobs) after the rest of the matrix is green; rerun evidence, not release acceptance'
         type: boolean
@@ -99,40 +95,6 @@ jobs:
     with:
       palette_only: ${{ inputs.palette_only }}
       palette_unit_only: ${{ inputs.palette_unit_only }}
-  build-native-wheels:
-    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.native_wheels_package != '' }}
-    # CPython's upstream testbed still uses UIApplicationDelegate rather than
-    # UIScene. Build/test this dependency with the compatible stable SDK;
-    # the shipping Floe app and its native smoke tests still use Xcode 27.
-    runs-on: macos-26
-    timeout-minutes: 120
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - run: python -m pip install cibuildwheel==4.2.1
-      - run: brew install ninja cmake
-      - name: Build wheel candidates
-        run: |
-          if [ "${{ inputs.native_wheels_package }}" = "pandas" ]; then
-            bash FloeAgent/scripts/build_pandas_ios.sh
-            mkdir -p ios-wheelhouse/out/pandas
-            cp pandas-wheelhouse/*.whl ios-wheelhouse/out/pandas/
-          elif [ "${{ inputs.native_wheels_package }}" = "all" ]; then
-            for pkg in $(python3 -c "import json; print(' '.join(json.load(open('ios-wheelhouse/manifest.json')['packages'])))"); do
-              bash FloeAgent/scripts/build_ios_wheel.sh "$pkg"
-            done
-          else
-            bash FloeAgent/scripts/build_ios_wheel.sh "${{ inputs.native_wheels_package }}"
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-wheels-ios-${{ inputs.native_wheels_package }}
-          path: ios-wheelhouse/out/
-          if-no-files-found: error
   publish-skill-hub:
     if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub }}
     runs-on: macos-26
@@ -188,7 +150,7 @@ jobs:
     # ide_only is allowed through even together with another selector so the
     # validation step below can fail the ambiguous combination explicitly
     # instead of silently ignoring ide_only.
-    if: ${{ (!inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '') || inputs.ide_only }}
+    if: ${{ (!inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub) || inputs.ide_only }}
     # Foundation Models is guarded by Swift 6.4. Building on the generic
     # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
     runs-on: xcode-27
@@ -204,10 +166,10 @@ jobs:
       # This step runs before checkout, so it cannot rely on the job-level
       # working-directory (FloeAgent does not exist yet).
       - name: Reject ambiguous ide_only combinations
-        if: ${{ inputs.ide_only && (inputs.live_agent_demo || inputs.local_inference || inputs.feedback_ui || inputs.publish_skill_hub || inputs.native_wheels_package != '' || inputs.build_test_only) }}
+        if: ${{ inputs.ide_only && (inputs.live_agent_demo || inputs.local_inference || inputs.feedback_ui || inputs.publish_skill_hub || inputs.build_test_only) }}
         working-directory: .
         run: |
-          echo "ide_only must be dispatched alone: it cannot combine with live_agent_demo, local_inference, feedback_ui, publish_skill_hub, native_wheels_package or build_test_only." >&2
+          echo "ide_only must be dispatched alone: it cannot combine with live_agent_demo, local_inference, feedback_ui, publish_skill_hub or build_test_only." >&2
           exit 1
 
       - uses: actions/checkout@v5
@@ -264,24 +226,22 @@ jobs:
           python3 scripts/validate_localization_catalog.py FloeApp/Resources/Localizable.xcstrings
           python3 -m unittest discover -s scripts/tests -p test_localization_catalog.py
           python3 -m unittest discover -s scripts/tests -p test_release_preflight_versions.py
+          python3 -m unittest discover -s scripts/tests -p test_native_runtime_free_audit.py
 
       - name: Generate Xcode project
         run: |
           brew install xcodegen automake cmake
-          scripts/bootstrap_python_runtime.sh
+          scripts/bootstrap_native_components.sh
           scripts/gen_project.sh
+          python3 scripts/audit_native_runtime_free.py --project
 
-      - name: Verify persistent Node host and pinned tools
+      - name: Verify bundled assets and pinned tools
         run: |
           python3 scripts/check_ide_assets.py
           python3 scripts/check_engineering_viewer_assets.py
-          node --test scripts/tests/node_host.test.cjs scripts/tests/pnpm_unicode.test.cjs scripts/tests/notes_bridge.test.cjs scripts/tests/ide_filesystem.test.cjs
-          python3 scripts/tests/test_python_package_inspection.py
-          python3 -m unittest discover -s scripts/tests -p test_cpython_output.py
+          node --test scripts/tests/ide_filesystem.test.cjs
           python3 -m unittest discover -s scripts/tests -p test_pdfium_linkage.py
           python3 scripts/test_http_workflow.py
-          python3 scripts/test_local_package_payloads.py
-          bash scripts/pin_node_tools.sh --check
 
       - name: Resolve and pin-check dependencies
         run: |
@@ -338,7 +298,6 @@ jobs:
             -only-testing:FloeAppTests/HomeTaskCreationTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
-            -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
             -only-testing:FloeAppTests/LocalServiceLifecycleTests \
             -only-testing:FloeAppTests/LuaShellInstallTests \
@@ -411,8 +370,7 @@ jobs:
               -only-testing:FloeAppTests/HomeTaskCreationTests \
               -only-testing:FloeAppTests/MailConnectorTests \
               -only-testing:FloeAppTests/SkillLifecycleTests \
-              -only-testing:FloeAppTests/LocalPythonRuntimeTests \
-              -only-testing:FloeAppTests/LocalShellRuntimeTests \
+                -only-testing:FloeAppTests/LocalShellRuntimeTests \
               -only-testing:FloeAppTests/LocalServiceLifecycleTests \
               -only-testing:FloeAppTests/LuaShellInstallTests \
               -only-testing:FloeAppTests/IDEGitHubActionsTests \
@@ -725,7 +683,7 @@ jobs:
     # gates push/PR runs (inputs are empty there, so this condition is true).
     # The ide_only rerun also skips this job; it re-verifies the IDE UI legs
     # only and never substitutes for release qualification.
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only && !inputs.ide_only }}
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && !inputs.build_test_only && !inputs.ide_only }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
     # the explicit unsupported-Foundation-Models path and the rest of Floe's
@@ -746,8 +704,9 @@ jobs:
       - name: Generate project and resolve dependencies
         run: |
           brew install xcodegen automake cmake
-          scripts/bootstrap_python_runtime.sh
+          scripts/bootstrap_native_components.sh
           scripts/gen_project.sh
+          python3 scripts/audit_native_runtime_free.py --project
           swift package resolve
           scripts/pin_check.sh
 
@@ -786,7 +745,7 @@ jobs:
     # that input only reruns the failed build-test leg and never gates
     # push/PR runs (inputs are empty there, so this condition is true).
     # Also skipped by the ide_only rerun.
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && inputs.native_wheels_package == '' && !inputs.build_test_only && !inputs.ide_only }}
+    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && !inputs.build_test_only && !inputs.ide_only }}
     runs-on: ubuntu-latest
     # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
     # below do not link MLX. Resolution must therefore use a 6.3 toolchain.

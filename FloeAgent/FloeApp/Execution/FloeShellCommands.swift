@@ -28,7 +28,6 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var handlers: [String: Handler] = [:]
-    private var pythonCommandNames = Set<String>()
     @TaskLocal static var invocation: ShellCommandContext?
     @TaskLocal static var input: CommandInput?
     final class CommandInput: @unchecked Sendable {
@@ -129,32 +128,6 @@ final class FloeShellCommandRegistry: @unchecked Sendable {
         handlers[name] = handler
         lock.unlock()
         FloeShellRegisterCommand(name)
-    }
-
-    private static let nativeCommandNames: Set<String> = {
-        guard let url = Bundle.main.url(forResource: "commandDictionary", withExtension: "plist"),
-              let data = try? Data(contentsOf: url),
-              let dictionary = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return [] }
-        return Set(dictionary.keys)
-    }()
-
-    func replacePythonCommands(_ entries: [PythonEntryPointShims.Shim]) {
-        lock.withLock {
-            for name in pythonCommandNames { handlers.removeValue(forKey: name) }
-            pythonCommandNames.removeAll()
-            for entry in entries where handlers[entry.name] == nil && !Self.nativeCommandNames.contains(entry.name) {
-                guard entry.name.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]*$", options: .regularExpression) != nil,
-                      entry.module.range(of: "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$", options: .regularExpression) != nil,
-                      entry.callable.range(of: "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$", options: .regularExpression) != nil else { continue }
-                handlers[entry.name] = { [weak self] arguments, stdout, stderr in
-                    guard let python = self?.handler(for: "python3") else { return 127 }
-                    let script = "import importlib,sys; _entry=importlib.import_module('\(entry.module)'); " + entry.callable.split(separator: ".").map { "_entry=getattr(_entry,'\($0)')" }.joined(separator: "; ") + "; sys.exit(_entry())"
-                    return await python(["python3", "-c", script] + Array(arguments.dropFirst()), stdout, stderr)
-                }
-                pythonCommandNames.insert(entry.name)
-                FloeShellRegisterCommand(entry.name)
-            }
-        }
     }
 
     func handler(for name: String) -> Handler? {
@@ -285,12 +258,6 @@ enum FloeShellCommands {
         FloePlatformServices.shared.registerCommands(in: registry)
     }
 
-    static func refreshPythonCommands() async {
-        guard let python = FloeShellCommandRegistry.shared.python else { return }
-        let entries = await PythonEntryPointShims(python: python).entryPoints()
-        FloeShellCommandRegistry.shared.replacePythonCommands(entries)
-    }
-
     /// Bare-shell aliases for real signed catalog commands. An alias is only
     /// registered when the signed catalog carries its canonical `floe-*`
     /// entry, and it dispatches through the same store, context, task and
@@ -362,15 +329,35 @@ enum FloeShellCommands {
     private static func registerPython(_ registry: FloeShellCommandRegistry) {
         registry.register("python3") { arguments, stdout, stderr in
             guard let python = registry.python else {
-                FloeShellWrite(stderr, "python3: the bundled CPython runtime is unavailable\n")
+                FloeShellWrite(stderr, "python3: local Python runs inside the environment's Linux guest, which is unavailable in this build\n")
                 return 127
-            }
-            if arguments.dropFirst().first == "--version" || arguments.dropFirst().first == "-V" {
-                FloeShellWrite(stdout, "Python 3.13 (Floe bundled)\n")
-                return 0
             }
             guard let context = registry.context else {
                 FloeShellWrite(stderr, "python3: no workspace is attached\n"); return 2
+            }
+            if arguments.dropFirst().first == "--version" || arguments.dropFirst().first == "-V" {
+                // Real probe of the guest interpreter for this shell's
+                // environment — never a hardcoded bundled version.
+                let request = ScriptExecutionRequest(
+                    script: "import sys; print('Python ' + sys.version.split()[0] + ' (Linux guest)')",
+                    timeout: 30,
+                    maxOutputBytes: 4096,
+                    pythonContext: .init(environmentID: context.environment?.id, workingDirectory: context.workingDirectory.path, environment: context.environment?.variables ?? [:])
+                )
+                let outcome = await python.run(request, cancellation: context.cancellation)
+                switch outcome {
+                case .ok(_, let out, _, _, _, _):
+                    FloeShellWrite(stdout, out.hasSuffix("\n") ? out : out + "\n")
+                    return 0
+                case .jsException(let message, _):
+                    FloeShellWrite(stderr, "python3: \(message)\n")
+                    return 1
+                case .timedOut:
+                    FloeShellWrite(stderr, "python3: timed out\n")
+                    return 124
+                case .cancelled:
+                    return 130
+                }
             }
             if arguments.count >= 3, arguments[1] == "-m", ["pip", "pip.__main__"].contains(arguments[2]) {
                 guard let handler = registry.handler(for: "pip") else { FloeShellWrite(stderr, "pip: package manager unavailable\n"); return 127 }

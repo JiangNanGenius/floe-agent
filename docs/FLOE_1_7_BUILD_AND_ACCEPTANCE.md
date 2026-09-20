@@ -8,20 +8,19 @@
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
-bash FloeAgent/scripts/pin_node_tools.sh
-bash FloeAgent/scripts/pin_node_tools.sh --check
-node --test FloeAgent/scripts/tests/node_host.test.cjs
+bash FloeAgent/scripts/bootstrap_native_components.sh
+python3 FloeAgent/scripts/audit_native_runtime_free.py --project
 swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 2
 swift build --package-path FloeAgent --target FloeExecution --force-resolved-versions --jobs 2
 ```
 
-首次 pin 命令下载并校验锁定资源；`--check` 只读校验，缺失资源应失败，不重写锁文件。Qualification 为环境、软件包、媒体和后台任务迁移提供独立测试入口，避免完整 App/MLX 构建。共享 `.build` 的 SwiftPM 命令串行执行。
+Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输入：本地 Python/Node 在每个环境的 TinyEMU Linux 客体中运行，`audit_native_runtime_free.py` 会阻止原生 Python/Node 标记重新回到工程或安装包。退役的构建配方（锁定运行时引导、ios-wheelhouse、Node 工具）归档在 `FloeAgent/ThirdParty/NativeRuntimeArchive/`，不接入构建。Qualification 为环境、软件包、媒体和后台任务迁移提供独立测试入口，避免完整 App/MLX 构建。共享 `.build` 的 SwiftPM 命令串行执行。
 
-原生 Node 最小 App 见 [NativeNode](../FloeAgent/Qualification/NativeNode/README.md)。宿主 Node 测试通过不代表 iOS 原生桥接或真机通过。
+原生 Node 最小 App（[NativeNode](../FloeAgent/Qualification/NativeNode/README.md)）属于已退役运行时历史资格宿主，仅随归档配方保留，不再接入当前构建。
 
 ## 工程与云端构建
 
-`FloeAgent/project.yml` 是工程源；运行 `bash FloeAgent/scripts/gen_project.sh` 并提交匹配的 Xcode 工程。完整依赖准备由 `bootstrap_python_runtime.sh` 负责，包括 Python、shell 和锁定 Node 框架。不要把 Node/npm/pnpm/yarn 的生成目录手工展开为 Xcode 源文件条目。
+`FloeAgent/project.yml` 是工程源；运行 `bash FloeAgent/scripts/gen_project.sh` 并提交匹配的 Xcode 工程。完整依赖准备由 `bootstrap_native_components.sh` 负责（PDFium、LibArchive、Office 宿主与 dash shell 框架）。Python/Node 不再有嵌入式构建输入；不要把 Node/npm/pnpm/yarn 的生成目录手工展开为 Xcode 源文件条目。
 
 推送固定提交后检查 CI 的 Linux、开发 SDK 和发布 SDK 作业。每项记录提交 SHA、Xcode/SDK、测试结果、失败日志和产物。重跑使用同一提交；代码变化后结果属于新提交。构建产物上传、签名归档、App Store Connect 处理、TestFlight 可安装分别记录。
 

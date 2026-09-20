@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// See docs/ARCHITECTURE_SETTINGS.md §5 row 5: JS probe (real), local and
-// remote Python (honest unavailable until P3), remote terminal counts,
-// and the persisted execution preferences (target / timeout / max output /
-// save artifacts). Unavailable capabilities are greyed out, never faked.
+// See docs/ARCHITECTURE_SETTINGS.md §5 row 5: JS probe (real), local
+// Python/Node (Linux guest component with honest install state), remote
+// Python, remote terminal counts, and the persisted execution preferences.
+// Unavailable capabilities are greyed out, never faked.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -151,6 +151,7 @@ struct ExecutionEnvironmentView: View {
         case .user: return String(localized: "settings.exec.runtime.source.user")
         case .project: return String(localized: "settings.exec.runtime.source.project")
         case .remote: return String(localized: "settings.exec.runtime.source.remote")
+        case .component: return String(localized: "settings.exec.runtime.source.component")
         }
     }
 }

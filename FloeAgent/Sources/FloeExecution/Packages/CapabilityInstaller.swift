@@ -1,8 +1,9 @@
 // FloeExecution — Capability installer.
 // Routes apt/pkg requests to the reviewed primitive that owns each kind.
-// Python packages use the managed pip path; skills/fonts/models reuse the
-// app's existing stores through injected protocols. Every install is
-// recorded in a small JSON ledger for honest `apt list --installed`.
+// Python packages use the managed guest-pip path (TinyEMU Linux); skills,
+// fonts and models reuse the app's existing stores through injected
+// protocols. Every install is recorded in a small JSON ledger for honest
+// `apt list --installed`.
 
 import Foundation
 import FloeCore
@@ -140,7 +141,7 @@ public actor CapabilityInstaller {
         switch entry.kind {
         case .pythonPackage:
             guard let pythonInstaller else {
-                throw FloeError.invalidConfiguration("The bundled Python runtime is unavailable in this build")
+                throw FloeError.invalidConfiguration("Python packages install inside the environment’s Linux guest; this build has no Python backend")
             }
             guard let spec = entry.spec else {
                 throw FloeError.invalidConfiguration("catalog entry \(entry.id) has no exact package spec")
@@ -149,11 +150,11 @@ public actor CapabilityInstaller {
             let installed = Set((await pythonInstaller.installedDistributions(environment: environment)).map(Self.normalizedDistribution))
             if entry.tier == .bundled, installed.contains(distribution) {
                 receipt = Receipt(id: entry.id, kind: entry.kind, tier: entry.tier,
-                                  detail: "already installed (bundled)", installedAt: Date())
+                                  detail: "already installed", installedAt: Date())
                 break
             }
             guard entry.tier != .bundled else {
-                throw FloeError.invalidConfiguration("Bundled package is missing; repair the app runtime instead of downloading it silently")
+                throw FloeError.invalidConfiguration("Bundled-tier Python packages no longer ship with the app; refresh the capability catalog")
             }
             switch await pythonInstaller.install(specs: [spec], cancellation: cancellation, environment: environment) {
             case .ok(let output):
@@ -241,10 +242,10 @@ public actor CapabilityInstaller {
         switch entry.kind {
         case .pythonPackage:
             guard let pythonInstaller else {
-                throw FloeError.invalidConfiguration("The bundled Python runtime is unavailable in this build")
+                throw FloeError.invalidConfiguration("Python packages install inside the environment’s Linux guest; this build has no Python backend")
             }
             guard entry.tier != .bundled else {
-                throw FloeError.validationFailed("\(entry.id) ships with the app and cannot be removed")
+                throw FloeError.validationFailed("\(entry.id) is a base capability and cannot be removed")
             }
             guard let distribution = entry.distributionName else {
                 throw FloeError.invalidConfiguration("catalog entry \(entry.id) has no distribution name")

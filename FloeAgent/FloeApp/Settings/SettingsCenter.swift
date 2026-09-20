@@ -193,7 +193,7 @@ final class SettingsCenter: ObservableObject {
         async let memory = approvalGrants.allGrants
         async let js = JavaScriptCoreProbe().probe()
         async let localPython = environment.localPythonProbe.probe()
-        async let node = IOSSystemNodeRuntime.shared.probe()
+        async let node = environment.localNodeProbe.probe()
         // Real remote-Python probe from FloeExecution (wired in
         // AppEnvironment); replaces the always-unavailable placeholder.
         async let remotePython = environment.remotePythonProbe.probe()
@@ -299,10 +299,10 @@ final class SettingsCenter: ObservableObject {
         let probes: [RuntimeInventoryProbe] = [
             .init(id: "javascript", displayName: "JavaScript (JavaScriptCore)", source: .bundled, capability: js,
                   detail: "JavaScriptCore framework"),
-            .init(id: "python", displayName: "Python (CPython)", source: .bundled, capability: localPython,
-                  detail: "Floe bundled CPython"),
-            .init(id: "node", displayName: "Node.js", source: .bundled, capability: node,
-                  detail: "nodejs-mobile runtime (npm/pnpm/yarn bundled)"),
+            .init(id: "python", displayName: "Python 3", source: .component, capability: localPython,
+                  detail: "Linux guest (Debian python3, shared venv per environment)"),
+            .init(id: "node", displayName: "Node.js", source: .component, capability: node,
+                  detail: "Linux guest (apt nodejs/npm per environment)"),
             .init(id: "python-remote", displayName: "Python (remote host)", source: .remote, capability: remotePython,
                   detail: "paired SSH host"),
         ]
