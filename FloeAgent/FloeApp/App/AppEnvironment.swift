@@ -97,9 +97,12 @@ final class AppEnvironment: ObservableObject {
     /// environment's guest instead of the native substrate.
     let localShellService: LocalShellService
     let shellSessionCenter: ShellSessionCenter
-    /// One TinyEMU guest service for the whole app: the same guest interpreter
-    /// serves exec.shell, apt/dpkg, localPython and localService for a Linux
-    /// environment. nil only where the engine is not built in.
+    /// One TinyEMU guest service for the whole app: the registry owns exactly
+    /// one guest per `runtime == .linux` environment and is the single place
+    /// exec.shell and the apt/dpkg entry reach it today; guest localService
+    /// daemons use the same session/forward API when their consumer lands.
+    /// Explicit native tools (exec.localPython, …) are never rerouted. nil
+    /// only where the engine is not built in.
     let linuxGuestService: TinyEMULinuxCommandService?
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
     /// Managed pure-Python installer shared by exec.localPython, exec.shell

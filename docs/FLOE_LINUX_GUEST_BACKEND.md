@@ -20,8 +20,9 @@ qualified guest image remain. Without a qualified image, Linux start fails hones
 | 生命周期 | `FloePlatformServices.resumeEnvironment/stopEnvironment` + `ContainerLifecycle.Hooks` | 启动环境 → 启动 guest（失败回滚为 stopped 并抛出真实原因）；停止/删除 → 停止 guest；`terminateWorkers` 校验 guest 已退出 |
 | apt/dpkg 入口 | 包 UI worker 的 `LinuxCommandService.swift`（协议，未改） | `registerLinuxPackageCommands` 经 `LinuxShellCommandRouter` 把 argv 原样送入本后端；owned 未运行时禁止宿主层回写 |
 
-共享解释器 / Shared interpreter：同一环境的 shell、apt/dpkg、localPython、localService 走同一个
-`TinyEMULinuxGuestRegistry` 会话（一个 guest），命令在通道内串行。`exec.localPython` 等显式原生工具
+共享 guest / Shared guest: `TinyEMULinuxGuestRegistry` 是每个 `runtime == .linux` 环境 guest 的唯一所有者
+（一个环境一个 guest，命令在通道内串行）。当前已接消费方：`exec.shell` 与 apt/dpkg/包 UI；guest 内
+localService 守护进程将复用同一会话与 hostfwd（其消费方尚未接线）。`exec.localPython` 等显式原生工具
 **按设计不静默重路由**；Linux shell 内的 `python3`/`node` 是 guest 程序。
 
 9p 共享 / 9p shares：环境写层挂 `floe-env`，工作区挂 `workspace`（最多 4 个，engine `FLOE_VM_MAX_SHARES`）。
