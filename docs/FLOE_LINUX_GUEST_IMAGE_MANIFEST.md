@@ -88,34 +88,47 @@ recording the actual status. Until that corrected output exists, the probe is
 neither claimed as passing nor as failing — the APT/NumPy/Node/HTTPS
 capability stands on its own independent evidence.
 
-## Concrete follow-up artifacts (planned, none published yet)
+## Produced as component artifacts (nothing published yet)
 
-| Artifact | How to produce it | Why |
-| --- | --- | --- |
-| `image-manifest.json` | by the image build/qualification job: image digest, kernel/bbl revisions + patch hashes, rootfs size, `dpkg-query -W` hash, runner sha256, toolchain versions | one reviewable record per released image |
-| `guest-package-manifest.txt` + `guest-copyrights.tar` | in the guest: `dpkg-query -W -f='${Package} ${Version} ${Architecture}\n'` plus `/usr/share/doc/*/copyright` | per-package license/source mapping for the installed set |
-| `source/` mirror | fetch riscv-linux @ `a3b1e7a…` and riscv-pk @ `ac2c910b…` plus the two diffs and the kernel config (already in `FloeAgent/ThirdParty/TinyEMU/guest-image/`) and host them next to the image | GPL-2.0/BSD-3 corresponding source without depending on upstream availability |
-| `glibc/` record | glibc version of the cross toolchain plus its source or relinkable objects for the static runner | LGPL-2.1 §6 for the statically linked runner |
-| notices bundle | host engine MIT/BSD texts (`MIT-LICENSE.txt`, `licenses/SLIRP-COPYRIGHT.txt`, inline Regents BSD) + guest notices | app open-source acknowledgements path |
+[`component-image-ci`](../../.github/workflows/component-image-ci.yml)
+produces all of these for the candidate; they are reviewable GitHub component
+artifacts with recorded digests, **not** a public release and **not** a
+published source offer. The exact ids/sizes and the boot-verification results
+are in the [qualification record](qualification/linux-guest-image/2026-09-20-component-ci-35501535251.md).
+
+| Artifact | Status |
+| --- | --- |
+| `image-manifest.json` + `SHA512SUMS` | produced (bios/kernel/disk sha512+bytes, qualificationRun, provenance; `distributionAllowed: false`; provenance URLs repaired in a metadata-only rerun) |
+| guest package inventory + `guest-copyrights.tar.gz` + common licenses | produced in the evidence artifact (657 packages; host and guest `dpkg-query` agree) |
+| `upstream/` kernel+bbl source mirror | produced: exact revisions, demo diffs applied, `config_linux_riscv64`, licence texts, SHA-512 digests, `SOURCE-MANIFEST.md` (rebuild not run: `compile_verified: false`) |
+| Debian binary→source mapping + `.dsc`/orig/debian downloads | produced: 3 135 rows, 2 334 verified files, **0 unmapped packages** |
+| glibc + cross-toolchain source and runner relink material | produced: exact `glibc 2.39-0ubuntu8`, `cross-toolchain-base 68ubuntu5`, `gcc-13-cross`, `binutils`, plus `runner-relink/` with the compiled object, link command and `RELINK.md` |
+| notices bundle into the app acknowledgements path | **not done** — app-side change, outside this component lane |
 
 ## Distribution checklist (required before any bundled image ships)
 
-1. Package the corresponding source for the kernel and boot loader from the
-   exact revisions above together with `FloeAgent/ThirdParty/TinyEMU/guest-image/riscv-linux.diff`,
+The italic state below is where the component lane stands today; the remaining
+work is publication and the app-side notices path, not source collection.
+
+1. *Collected in CI* — package the corresponding source for the kernel and
+   boot loader from the exact revisions above together with
+   `FloeAgent/ThirdParty/TinyEMU/guest-image/riscv-linux.diff`,
    `.../riscv-pk.diff` and `.../config_linux_riscv64`, plus the
    applicable license texts (GPL-2.0 `COPYING`, riscv-pk BSD-3 `LICENSE`) —
-   or provide a valid written offer. Mirroring is required if the upstream
-   repositories are not guaranteed to remain reachable.
-2. Pin the Debian image by digest instead of the rotating daily build, and
-   generate a per-package copyright/source manifest for the installed set
-   (`dpkg-query` + `/usr/share/doc/*/copyright`, sources.debian.org), or
-   keep distribution download-on-demand from Debian.
-3. Feed the notices into the app's open-source acknowledgements path
-   (host engine MIT/BSD/PD + restored slirp COPYRIGHT + any guest notices
-   actually shipped).
-4. Include the statically linked glibc from the guest runner (LGPL-2.1):
-   glibc license text plus corresponding source or relinkable object files
-   and the exact cross-toolchain record.
+   or provide a valid written offer. **Still open: publish/mirror it at a
+   stable URL.**
+2. *Collected in CI* — the Debian image is pinned by dated URL + SHA-512 and
+   the per-package copyright/source manifest for the installed set exists
+   (657 packages → 3 135 source-file rows, 0 gaps) with verified
+   `.dsc`/orig/debian downloads. **Still open: publish the offer instead of
+   pointing at an expiring CI artifact.**
+3. **Open (app-side)** — feed the notices into the app's open-source
+   acknowledgements path (host engine MIT/BSD/PD + restored slirp COPYRIGHT +
+   the guest notices actually shipped).
+4. *Collected in CI* — the statically linked glibc from the guest runner
+   (LGPL-2.1): exact glibc source (`2.39-0ubuntu8`, the cross libc's build),
+   cross-toolchain source packages and relinkable object files with the exact
+   toolchain record. **Still open: publish alongside the image.**
 5. Re-verify this manifest against the exact artifact that ships; a
    download list entry does not by itself satisfy license obligations, and
    neither does pointing at Debian once Floe hosts or modifies the image.
