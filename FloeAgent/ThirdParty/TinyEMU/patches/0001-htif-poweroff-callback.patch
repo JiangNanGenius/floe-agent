@@ -1,0 +1,39 @@
+--- a/riscv_machine.c
++++ b/riscv_machine.c
+@@ -56,6 +56,9 @@
+     /* HTIF */
+     uint64_t htif_tohost, htif_fromhost;
+ 
++    /* FLOE-EMBED: set instead of exit(0) on guest poweroff */
++    BOOL poweroff_requested;
++
+     VIRTIODevice *keyboard_dev;
+     VIRTIODevice *mouse_dev;
+ 
+@@ -133,9 +136,9 @@
+     device = s->htif_tohost >> 56;
+     cmd = (s->htif_tohost >> 48) & 0xff;
+     if (s->htif_tohost == 1) {
+-        /* shuthost */
+-        printf("\nPower off.\n");
+-        exit(0);
++        /* shuthost -- FLOE-EMBED: a library must not exit(0) the host
++           process; record the request, the embedder ends the VM. */
++        s->poweroff_requested = TRUE;
+     } else if (device == 1 && cmd == 1) {
+         uint8_t buf[1];
+         buf[0] = s->htif_tohost & 0xff;
+@@ -977,6 +980,13 @@
+     return (VirtMachine *)s;
+ }
+ 
++/* FLOE-EMBED: public accessor for the embeddable adapter (floe_vm.c). */
++int riscv_machine_poweroff_requested(VirtMachine *s1)
++{
++    RISCVMachine *s = (RISCVMachine *)s1;
++    return s->poweroff_requested;
++}
++
+ static void riscv_machine_end(VirtMachine *s1)
+ {
+     RISCVMachine *s = (RISCVMachine *)s1;

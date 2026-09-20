@@ -1,0 +1,40 @@
+{
+  "engine": {
+    "name": "TinyEMU",
+    "version": "2019-12-21",
+    "upstream_url": "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
+    "sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
+    "size_bytes": 250826,
+    "first_fetched_utc": "2026-09-20",
+    "license_summary": "MIT core; slirp/ 2-clause BSD; sha256.c public domain (LibTomCrypt); aes.c public domain (Rijndael reference). No GPL/LGPL content. See LICENSE-INVENTORY.md.",
+    "patches": [
+      {
+        "file": "patches/0001-htif-poweroff-callback.patch",
+        "purpose": "Convert guest-poweroff exit(0) in riscv_machine.c into an observable poweroff_requested flag (library must not terminate the host process). MIT-compatible modification.",
+        "applies_to": "riscv_machine.c of the pinned tarball"
+      }
+    ],
+    "trimmed_out": [
+      "sdl.c (SDL display; CONFIG_SDL off)",
+      "x86_cpu.c/x86_machine.c/ide.c/ps2.c/vmmouse.c/pckbd.c/vga.c (x86 emulator; CONFIG_X86EMU off)",
+      "riscv_cpu.c as RV128 (CONFIG_INT128 off; RV64+RV32 only)",
+      "fs_net.c/fs_wget.c/fs_utils.c/block_net.c (HTTP network filesystem; CONFIG_FS_NET off) -> drops libcurl+OpenSSL",
+      "aes.c/sha256.c (only referenced by the HTTP filesystem path)",
+      "KVM: not present on the RISC-V path upstream (x86-only)"
+    ]
+  },
+  "smoke_demo_image": {
+    "name": "TinyEMU RISC-V demo disk (buildroot, qualification smoke only - NOT the target userland)",
+    "upstream_url": "https://bellard.org/tinyemu/diskimage-linux-riscv-2018-09-23.tar.gz",
+    "sha256": "808ecc1b32efdd76103172129b77b46002a616dff2270664207c291e4fde9e14",
+    "size_bytes": 7969810,
+    "contains": ["bbl64.bin (BIOS)", "kernel-riscv64.bin (Linux 4.15)", "root-riscv64.bin (4MB ext2 buildroot rootfs)"],
+    "license_note": "Demo guest contains GPL-licensed software (Linux kernel, busybox). It is qualification tooling, never shipped in the app. Guest-side GPL obligations are tracked separately from the MIT engine; see LICENSE-INVENTORY.md."
+  },
+  "target_userland": {
+    "name": "Debian 13 (trixie) riscv64 nocloud cloud image (daily)",
+    "upstream_url_pattern": "https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/debian-13-nocloud-riscv64-daily.qcow2",
+    "pinning": "daily image - resolved + SHA512 recorded by the qualification workflow at run time (see .github/workflows/tinyemu-linux-qualification.yml); not bit-pinned here because Debian rotates daily builds",
+    "license_note": "Guest packages are a mix of licenses including GPL. They are installed inside the emulated guest and are governed by their own licenses + source-availability obligations; the host app ships none of them."
+  }
+}

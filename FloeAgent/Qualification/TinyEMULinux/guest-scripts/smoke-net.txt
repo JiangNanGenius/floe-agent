@@ -1,0 +1,4 @@
+@6 ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up
+@8 route add default gw 10.0.2.2
+@10 wget -T 15 -O- http://34.223.124.45/ 2>&1 | head -4
+@26 echo FLOE_NET_DONE
