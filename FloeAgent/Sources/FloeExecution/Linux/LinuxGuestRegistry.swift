@@ -1,10 +1,15 @@
 // FloeExecution — Linux guest registry and command service.
 //
-// One registry owns at most one running guest process-wide (the engine links
-// a single slirp instance) and exactly one guest per environment, so the
-// shell, localPython and localService paths for an environment share the same
+// One registry owns one guest per environment and any number of environments,
+// bounded by an explicit admission budget (guest count and reserved guest
+// RAM, because every environment's interpreter VM costs memory). The shell,
+// localPython and localService paths for an environment share the same
 // interpreter and the same 9p views. Sessions are keyed by environment id and
-// record the task that started them for ownership teardown.
+// record the task that started them for ownership teardown. An existing
+// environment disk is a mutable clone of a verified base image: a catalog
+// image update never rewrites it, and the runner inside it is upgraded in
+// place (in-guest, from verified standalone bytes) instead of resetting the
+// disk.
 
 import Foundation
 import FloeCore
@@ -68,7 +73,19 @@ public actor TinyEMULinuxGuestRegistry {
     private let factory: any LinuxGuestSessionCreating
     private var sessions: [String: Session] = [:]
     private var lastErrors: [String: String] = [:]
+    private var lastImpacts: [String: String] = [:]
     private var terminalSessions: [String: TerminalSession] = [:]
+    /// Environments whose start is in flight. The actor is reentrant across
+    /// awaits, so without this a concurrent start of the same environment
+    /// would prepare a second disk copy and create a second VM.
+    private var startingEnvironments: Set<String> = []
+    /// Environments asked to stop while their start was in flight; the start
+    /// tears its own handle down instead of registering a session.
+    private var pendingStops: Set<String> = []
+    /// Admission reservations: environment id → reserved guest RAM (MB).
+    /// Covers starts in flight and running sessions alike, so concurrent
+    /// starts cannot oversubscribe the device's guest budget.
+    private var guestReservations: [String: Int] = [:]
 
     /// One interactive guest terminal plus its buffered output.
     private struct TerminalSession {
@@ -114,6 +131,8 @@ public actor TinyEMULinuxGuestRegistry {
             imageFailure = await images.linuxGuestImageVerificationFailure(id: imageID)
             distributable = LinuxGuestImageDistributionCatalog.entry(id: imageID) != nil
         }
+        let admitted = guestReservations.count
+        let reservedRAM = reservedGuestRAMMB
         if let session = sessions[environmentID] {
             return LinuxGuestStatus(
                 environmentID: environmentID,
@@ -124,7 +143,10 @@ public actor TinyEMULinuxGuestRegistry {
                 lastError: lastErrors[environmentID],
                 imageInstalled: imageInstalled,
                 imageVerificationFailure: imageFailure,
-                imageDistributable: distributable
+                imageDistributable: distributable,
+                lastResetSharedImpact: lastImpacts[environmentID],
+                activeGuestCount: admitted,
+                reservedGuestRAMMB: reservedRAM
             )
         }
         return LinuxGuestStatus(
@@ -135,8 +157,38 @@ public actor TinyEMULinuxGuestRegistry {
             lastError: lastErrors[environmentID],
             imageInstalled: imageInstalled,
             imageVerificationFailure: imageFailure,
-            imageDistributable: distributable
+            imageDistributable: distributable,
+            lastResetSharedImpact: lastImpacts[environmentID],
+            activeGuestCount: admitted,
+            reservedGuestRAMMB: reservedRAM
         )
+    }
+
+    /// Guests currently holding an admission slot. Running sessions and starts
+    /// in flight both count.
+    public var activeGuestCount: Int { guestReservations.count }
+
+    /// Guest RAM (MB) reserved by the guests above.
+    public var reservedGuestRAMMB: Int { guestReservations.values.reduce(0, +) }
+
+    /// Bounded admission: refuses a new guest (before any VM or disk copy is
+    /// created) when the per-device guest count or RAM budget is used up.
+    /// Running guests are never killed to make room and this never waits for
+    /// a slot to free up; the caller gets an actionable error instead.
+    private func reserveGuestCapacity(environmentID: String, ramMB: Int) throws {
+        if guestReservations[environmentID] != nil { return }
+        if guestReservations.count >= limits.maxActiveGuests {
+            throw LinuxGuestError.capacityReached(
+                detail: "this device already runs \(guestReservations.count) Linux guests (limit \(limits.maxActiveGuests), \(reservedGuestRAMMB) MB of \(limits.maxGuestRAMMB) MB reserved); stop a guest before starting another"
+            )
+        }
+        let total = reservedGuestRAMMB + ramMB
+        guard total <= limits.maxGuestRAMMB else {
+            throw LinuxGuestError.capacityReached(
+                detail: "starting a \(ramMB) MB guest would reserve \(total) MB of the \(limits.maxGuestRAMMB) MB device guest RAM budget; \(reservedGuestRAMMB) MB is already reserved by \(guestReservations.count) guest(s). Stop a guest or lower the requested RAM"
+            )
+        }
+        guestReservations[environmentID] = ramMB
     }
 
     /// Starts the environment's guest. Returns false when the environment is
@@ -149,13 +201,30 @@ public actor TinyEMULinuxGuestRegistry {
         if let existing = sessions[environmentID], await existing.handle.isRunning() {
             return true
         }
-        // The engine has one process-wide slirp instance and is not
-        // reentrant: only one guest may run at a time on this device.
-        for (otherID, session) in sessions where otherID != environmentID {
-            if await session.handle.isRunning() {
-                throw LinuxGuestError.guestBusy(environmentID: otherID)
-            }
+        if sessions[environmentID] != nil {
+            // A dead handle from an earlier run: release its channel and
+            // admission slot before this start replaces it, so a stale VM is
+            // never double-counted.
+            await teardown(environmentID: environmentID, action: "restart")
         }
+        guard startingEnvironments.insert(environmentID).inserted else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        pendingStops.remove(environmentID)
+        var sessionRegistered = false
+        defer {
+            startingEnvironments.remove(environmentID)
+            pendingStops.remove(environmentID)
+            if !sessionRegistered { guestReservations[environmentID] = nil }
+        }
+
+        // Bound the device's guest budget here, before the image is verified
+        // and before the (expensive) disk copy: a refusal must not touch the
+        // environment's persistent disk.
+        try reserveGuestCapacity(
+            environmentID: environmentID,
+            ramMB: limits.clampedRAMMB(descriptor.ramMB)
+        )
 
         guard let image = await images.linuxGuestImage(id: descriptor.imageID) else {
             let reason = "no guest image manifest for id '\(descriptor.imageID)'"
@@ -207,11 +276,46 @@ public actor TinyEMULinuxGuestRegistry {
             throw error
         }
 
+        let channel = LinuxGuestCommandChannel(transport: handle.transport, limits: limits)
+        // The channel the session will use. A runner upgrade reboots the guest
+        // and returns a fresh channel over the renewed console stream; without
+        // an upgrade the probed channel itself is the live one.
+        var sessionChannel = channel
+        if descriptor.writableDirectory != nil {
+            do {
+                // Persistent-disk runner upgrade: the disk is a mutable clone,
+                // so a new catalog image does not change the runner inside it.
+                // Probe the booted runner; when it predates protocol 3 and the
+                // image ships a verified runner artifact, replace
+                // /usr/local/bin/floe-exec in the guest from those bytes
+                // (preserving every installed package and file) and reboot
+                // into the new runner. Without an artifact the start fails with
+                // an actionable upgrade error — a stale runner is never used
+                // silently.
+                sessionChannel = try await ensureGuestRunnerCurrent(
+                    descriptor: descriptor,
+                    image: image,
+                    imageDirectory: images.imageRoot?.appendingPathComponent(descriptor.imageID, isDirectory: true),
+                    handle: handle,
+                    channel: channel
+                )
+            } catch {
+                lastErrors[environmentID] = error.localizedDescription
+                await handle.close()
+                throw error
+            }
+        }
+        if pendingStops.remove(environmentID) != nil {
+            lastErrors[environmentID] = "the start was stopped before the guest was registered"
+            await handle.close()
+            throw LinuxGuestError.startFailed("the guest start was stopped before it completed")
+        }
+
         var session = Session(
             descriptor: descriptor,
             image: runtimeImage,
             handle: handle,
-            channel: LinuxGuestCommandChannel(transport: handle.transport, limits: limits),
+            channel: sessionChannel,
             startedAt: Date(),
             taskID: taskID,
             forwards: []
@@ -234,11 +338,414 @@ public actor TinyEMULinuxGuestRegistry {
             throw error
         }
         sessions[environmentID] = session
+        sessionRegistered = true
         lastErrors[environmentID] = nil
         FloeLogger(category: .tools).info(
-            "Linux guest started environment=\(environmentID) image=\(image.id) ramMB=\(limits.clampedRAMMB(descriptor.ramMB))"
+            "Linux guest started environment=\(environmentID) image=\(image.id) ramMB=\(limits.clampedRAMMB(descriptor.ramMB)) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB)"
         )
         return true
+    }
+
+    // MARK: persistent-disk runner upgrade
+
+    /// Ensures the runner booted inside this environment's persistent disk
+    /// matches the protocol this build speaks, and returns the channel the
+    /// session must use. The disk is a mutable clone of the verified base, so
+    /// a catalog image update alone never changes the runner inside it; this
+    /// path upgrades the runner in-guest from the image's verified standalone
+    /// runner artifact, preserving every installed package and file, or fails
+    /// with an actionable error.
+    ///
+    /// Console ownership: a TinyEMU VM has exactly ONE immutable console
+    /// stream and the channel has exactly one router reading it. Cancelling
+    /// that reader finishes the stream for good (a replacement iterator then
+    /// sees nil), so the upgrade runs on the very channel the session will
+    /// use — never a second reader, never a released-then-reused stream:
+    ///
+    ///  1. Probe the *live* runner with FLOE-HELLO on the production channel.
+    ///     The runner-upgrade ledger is a record, never a substitute for this
+    ///     probe: a disk upgraded elsewhere still has to answer.
+    ///  2. A protocol-3 answer means the disk is current; the session keeps
+    ///     this channel.
+    ///  3. Otherwise (legacy runner): require the image's verified
+    ///     `runnerArtifact` + `runnerCapabilities`, switch the one channel
+    ///     into legacy serial mode (`enterLegacySerialMode`: no HELLO, one
+    ///     exchange at a time, same reader) and run the upgrade. Every step
+    ///     is awaited one at a time and no other caller can reach the channel
+    ///     while the start is in flight.
+    ///  4. Stage the runner bytes in-guest (through the environment's real 9p
+    ///     share when it is mapped, chunked console upload otherwise), verify
+    ///     the digest inside the guest, replace /usr/local/bin/floe-exec with
+    ///     a same-directory rename, then reboot with a host-side stop + start.
+    ///     `stop()` does not finish the console stream and the single router
+    ///     keeps reading, so the rebooted output reaches the same reader.
+    ///  5. At the reboot boundary `resetRouterState()` drops the old boot's
+    ///     routing state and `leaveLegacySerialMode()` restores negotiation;
+    ///     only after the rebooted runner answers CAPS equal to the manifest's
+    ///     expectation is the channel handed to the session. Any failure
+    ///     leaves the persistent disk in place with an honest error and the
+    ///     caller closes the VM.
+    private func ensureGuestRunnerCurrent(
+        descriptor: LinuxGuestEnvironmentDescriptor,
+        image: LinuxGuestImage,
+        imageDirectory: URL?,
+        handle: LinuxGuestSessionHandle,
+        channel: LinuxGuestCommandChannel
+    ) async throws -> LinuxGuestCommandChannel {
+        let environmentID = descriptor.id
+        let expected = image.runnerCapabilities?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 1. Live probe. A legacy runner never answers, so the probe is
+        // bounded and returns nil rather than hanging.
+        if let capabilities = try await channel.probeCapabilities(
+            timeout: limits.runnerProbeTimeout, requireCurrentProtocol: false
+        ), isCurrentProtocol(capabilities) {
+            try await channel.acceptExternalNegotiation(capabilities: capabilities)
+            // Keep the ledger truthful for diagnostics, but it is written
+            // only because the live runner answered; it is never read as
+            // proof that the runner is current.
+            if let expected, expected == capabilities {
+                recordRunnerLedger(
+                    capabilities,
+                    descriptor: descriptor
+                )
+            }
+            return channel
+        }
+
+        // 2. Legacy runner. Without a verified artifact there is no safe
+        // upgrade; fail with an actionable error rather than booting a runner
+        // that cannot route concurrent tokens.
+        guard let artifact = image.runnerArtifact else {
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: "protocol 3 runner (image '\(image.id)' ships no verified runner upgrade artifact)",
+                found: "legacy pre-protocol-3 runner inside the environment disk"
+            )
+        }
+        guard artifact.role == .runner else {
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: "protocol 3 runner (image '\(image.id)' declares its runner artifact with the 'runner' role, not '\(artifact.role.rawValue)')",
+                found: "legacy pre-protocol-3 runner inside the environment disk"
+            )
+        }
+        guard let expected, !expected.isEmpty else {
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: "protocol 3 runner (image '\(image.id)' records no runnerCapabilities payload)",
+                found: "legacy pre-protocol-3 runner inside the environment disk"
+            )
+        }
+        guard let imageDirectory else {
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: "protocol 3 runner",
+                found: "legacy runner, and this resolver cannot verify the upgrade artifact bytes"
+            )
+        }
+        // Same containment/symlink/size/digest checks as the boot artifacts;
+        // nothing is loaded from an unverified path.
+        let runnerData = try LinuxGuestRuntimeImagePreparer.loadVerifiedArtifact(
+            artifact,
+            imageDirectory: imageDirectory,
+            role: "runner upgrade artifact"
+        )
+
+        // 3. Switch the one channel into legacy serial mode (no HELLO, one
+        // exchange at a time) while keeping its console reader: cancelling a
+        // for-await reader would finish the transport's AsyncStream for good,
+        // so this is a policy change, not a reader handoff.
+        do {
+            try await channel.enterLegacySerialMode()
+        } catch {
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: expected,
+                found: "the guest channel is not idle for the runner upgrade"
+            )
+        }
+        try await installRunnerInGuest(
+            channel: channel,
+            descriptor: descriptor,
+            runnerData: runnerData,
+            digest: artifact.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
+
+        // 4. Reboot on the same stream: the host stops and starts the VM, and
+        // because stop() does not finish the console stream the single router
+        // keeps reading the new boot. Router protocol state from the old boot
+        // (buffered partial frames, section owner, dead token streams) is
+        // dropped at the boundary before the new runner may answer.
+        await handle.stop()
+        try await handle.start()
+        await channel.resetRouterState()
+        await channel.leaveLegacySerialMode()
+
+        // 5. The rebooted runner must answer on the same reader with exactly
+        // the contract the manifest declared.
+        let rebootProbeTimeout = max(15, limits.runnerProbeTimeout)
+        guard let capabilities = try await channel.probeCapabilities(
+            timeout: rebootProbeTimeout, requireCurrentProtocol: false
+        ), isCurrentProtocol(capabilities) else {
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: expected,
+                found: "the guest rebooted but the runner still does not answer protocol 3"
+            )
+        }
+        guard capabilities == expected else {
+            throw LinuxGuestError.startFailed(
+                "runner upgraded but reports '\(capabilities)', manifest expects '\(expected)'"
+            )
+        }
+        try await channel.acceptExternalNegotiation(capabilities: capabilities)
+        recordRunnerLedger(capabilities, descriptor: descriptor, required: true)
+        FloeLogger(category: .tools).info(
+            "Linux guest runner upgraded in place environment=\(environmentID) caps=\(capabilities)"
+        )
+        return channel
+    }
+
+    private func recordRunnerLedger(
+        _ capabilities: String,
+        descriptor: LinuxGuestEnvironmentDescriptor,
+        required: Bool = false
+    ) {
+        guard let writable = descriptor.writableDirectory else { return }
+        do {
+            guard LinuxGuestRuntimeImagePreparer.recordedRunnerCapabilities(
+                writableDirectory: writable, environmentID: descriptor.id
+            ) != capabilities else { return }
+            try LinuxGuestRuntimeImagePreparer.recordRunnerCapabilities(
+                capabilities,
+                writableDirectory: writable,
+                environmentID: descriptor.id
+            )
+        } catch {
+            if required {
+                FloeLogger(category: .tools).error(
+                    "Linux guest runner upgraded but the ledger could not be written environment=\(descriptor.id): \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    /// Uploads/installs the verified runner inside the guest and returns only
+    /// after the guest confirmed the replacement. Bounded by one overall
+    /// deadline; the staging bytes are removed from the host share on every
+    /// path.
+    private func installRunnerInGuest(
+        channel: LinuxGuestCommandChannel,
+        descriptor: LinuxGuestEnvironmentDescriptor,
+        runnerData: Data,
+        digest: String
+    ) async throws {
+        // A guest runner is a small static executable; anything larger is a
+        // manifest mistake, not a runner. The bound also caps the number of
+        // console round trips the upgrade can make.
+        let byteLimit = 8 * 1024 * 1024
+        guard runnerData.count <= byteLimit else {
+            throw LinuxGuestError.startFailed(
+                "runner upgrade artifact is \(runnerData.count) bytes; refusing an upgrade larger than \(byteLimit) bytes"
+            )
+        }
+        let deadline = Date().addingTimeInterval(300)
+        let stagingDirectory = "/tmp/.floe-runner-upgrade"
+        let stagedBinary = stagingDirectory + "/floe-exec.bin"
+
+        _ = try await serialStep(
+            channel,
+            argv: ["/bin/sh", "-c", "rm -rf \(stagingDirectory) && mkdir -m 0700 -p \(stagingDirectory)"],
+            deadline: deadline,
+            stepTimeout: 30
+        )
+
+        var hostStaging: URL?
+        var staged = false
+        var shareFailure: String?
+        if let writeRoot = descriptor.writableDirectory,
+           let guestPath = stagedSharePath(writableDirectory: writeRoot, descriptor: descriptor) {
+            do {
+                let file = try stageRunnerOnShare(runnerData, writableDirectory: writeRoot)
+                hostStaging = file
+                let copy = try await serialStep(
+                    channel,
+                    argv: ["/bin/sh", "-c", "cp \(guestPath) \(stagedBinary) && chmod 0600 \(stagedBinary)"],
+                    deadline: deadline,
+                    stepTimeout: 60
+                )
+                staged = copy.exitCode == 0
+                if !staged {
+                    shareFailure = boundedDetail(copy.stderr)
+                }
+            } catch {
+                staged = false
+                shareFailure = error.localizedDescription
+            }
+            if let hostStaging {
+                // The guest copy is complete (or failed): never leave the
+                // staged bytes in the user's environment share.
+                try? FileManager.default.removeItem(at: hostStaging)
+                try? FileManager.default.removeItem(at: hostStaging.deletingLastPathComponent())
+            }
+        }
+        if !staged {
+            // Fallback: the environment share may not be mounted in this
+            // guest (or there is no share at all). Upload the bytes through
+            // the console in bounded chunks, then decode in the guest.
+            let base64 = runnerData.base64EncodedString()
+            let encodedPath = stagingDirectory + "/floe-exec.b64"
+            _ = try await serialStep(
+                channel,
+                argv: ["/bin/sh", "-c", "rm -f \(encodedPath) && : > \(encodedPath)"],
+                deadline: deadline,
+                stepTimeout: 30
+            )
+            var offset = base64.startIndex
+            var chunkIndex = 0
+            while offset < base64.endIndex {
+                let end = base64.index(offset, offsetBy: 30000, limitedBy: base64.endIndex) ?? base64.endIndex
+                let chunk = String(base64[offset..<end])
+                offset = end
+                chunkIndex += 1
+                let result = try await serialStep(
+                    channel,
+                    argv: ["/bin/sh", "-c", "printf '%s' '\(chunk)' >> \(encodedPath)"],
+                    deadline: deadline,
+                    stepTimeout: 60
+                )
+                guard result.exitCode == 0 else {
+                    throw LinuxGuestError.startFailed(
+                        "runner upload failed in guest at chunk \(chunkIndex): \(boundedDetail(result.stderr))"
+                    )
+                }
+            }
+            let decoded = try await serialStep(
+                channel,
+                argv: ["/bin/sh", "-c", "base64 -d \(encodedPath) > \(stagedBinary) && rm -f \(encodedPath) && chmod 0600 \(stagedBinary)"],
+                deadline: deadline,
+                stepTimeout: 60
+            )
+            guard decoded.exitCode == 0 else {
+                throw LinuxGuestError.startFailed(
+                    "runner upload could not be decoded inside the guest: \(boundedDetail(decoded.stderr))"
+                )
+            }
+            staged = true
+        }
+        guard staged else {
+            let shareDetail = shareFailure.map { " (share copy failed: \($0))" } ?? ""
+            throw LinuxGuestError.startFailed("the runner artifact could not be staged inside the guest\(shareDetail)")
+        }
+
+        // Verify the staged bytes against the manifest digest *inside* the
+        // guest, keep the replaced runner for recovery, and promote the new
+        // binary with a same-directory rename so a crash can never leave a
+        // half-written init binary at the live path.
+        let install = """
+        set -e
+        actual=$(sha512sum \(stagedBinary) | cut -d' ' -f1)
+        [ "$actual" = "\(digest)" ]
+        chmod 0755 \(stagedBinary)
+        cp -f \(LinuxGuestImage.runnerGuestPath) \(LinuxGuestImage.runnerGuestPath).prev
+        sync
+        cp -f \(stagedBinary) \(LinuxGuestImage.runnerGuestPath).new
+        chmod 0755 \(LinuxGuestImage.runnerGuestPath).new
+        sync
+        mv -f \(LinuxGuestImage.runnerGuestPath).new \(LinuxGuestImage.runnerGuestPath)
+        sync
+        rm -rf \(stagingDirectory)
+        echo floe-runner-installed
+        """
+        let result = try await serialStep(
+            channel,
+            argv: ["/bin/sh", "-c", install],
+            deadline: deadline,
+            stepTimeout: 120
+        )
+        guard result.exitCode == 0 else {
+            throw LinuxGuestError.startFailed(
+                "in-guest runner replacement failed (exit \(result.exitCode)): \(boundedDetail(result.stderr))"
+            )
+        }
+    }
+
+    /// Runs one bounded exchange on the channel's single reader, refusing to
+    /// start work after the
+    /// upgrade deadline. `stepTimeout` is additionally clamped to the time
+    /// left, so the whole sequence finishes inside one finite budget.
+    private func serialStep(
+        _ channel: LinuxGuestCommandChannel,
+        argv: [String],
+        deadline: Date,
+        stepTimeout: TimeInterval
+    ) async throws -> LinuxCommandResult {
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 1 else {
+            throw LinuxGuestError.startFailed("the runner upgrade did not finish inside its 300 second budget; the persistent disk is unchanged")
+        }
+        do {
+            return try await channel.run(
+                argv: argv,
+                timeout: min(stepTimeout, remaining),
+                cancellation: nil
+            )
+        } catch let error as LinuxGuestError {
+            if case .timedOut = error {
+                throw LinuxGuestError.startFailed("a runner upgrade step timed out; the persistent disk is unchanged")
+            }
+            throw error
+        }
+    }
+
+    private func boundedDetail(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        return trimmed.count > 300 ? String(trimmed.prefix(300)) + "…" : trimmed
+    }
+
+    /// Host-side staging next to the environment's persistent layer: the
+    /// layer is the guest's `floe-env` share (`/floe/env`), so the guest can
+    /// copy the bytes directly instead of receiving them over the console.
+    /// Returns the host URL to remove afterwards, or nil when the descriptor
+    /// has no share that maps this directory.
+    private func stageRunnerOnShare(
+        _ runnerData: Data,
+        writableDirectory: URL
+    ) throws -> URL {
+        let directory = writableDirectory
+            .appendingPathComponent(".floe-runner-upgrade", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("floe-exec-riscv64")
+        try runnerData.write(to: file, options: .atomic)
+        // The guest's 9p mount must be able to read it; the host file mode is
+        // irrelevant to the guest root, but the digest is re-checked in-guest
+        // anyway.
+        return file
+    }
+
+    /// Guest path of the staged runner when the environment's writable
+    /// directory is exported as a 9p share, nil otherwise. Only a path inside
+    /// the share maps (the path map rejects escapes), and only characters
+    /// that cannot break the shell script are accepted.
+    private func stagedSharePath(
+        writableDirectory: URL,
+        descriptor: LinuxGuestEnvironmentDescriptor
+    ) -> String? {
+        guard let guestRoot = LinuxGuestPathMap(shares: descriptor.shares).environmentGuestRoot else { return nil }
+        let hostPath = writableDirectory
+            .appendingPathComponent(".floe-runner-upgrade", isDirectory: true)
+            .appendingPathComponent("floe-exec-riscv64")
+            .path
+        guard let guestPath = LinuxGuestPathMap(shares: descriptor.shares).guestPath(forHostPath: hostPath),
+              guestPath.hasPrefix(guestRoot + "/") else { return nil }
+        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._-")
+        guard guestPath.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return guestPath
+    }
+
+    private func isCurrentProtocol(_ capabilities: String) -> Bool {
+        for field in capabilities.split(separator: " ") where field.hasPrefix("protocol=") {
+            if let value = Int(field.dropFirst("protocol=".count)) {
+                return value >= 3
+            }
+        }
+        return false
     }
 
     public func run(
@@ -275,14 +782,46 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func stop(environmentID: String) async {
+        await teardown(environmentID: environmentID, action: "stop")
+    }
+
+    /// Stops the guest and discards only runtime state. The environment's
+    /// persistent disk image, 9p shares and image manifest are preserved, so
+    /// the next start boots the same disk fresh. Other environments — guests,
+    /// disks, forwards — are never touched by one environment's reset.
+    public func reset(environmentID: String) async {
+        await teardown(environmentID: environmentID, action: "reset")
+    }
+
+    private func teardown(environmentID: String, action: String) async {
+        // A stop request that lands while this environment's start is in
+        // flight cannot tear down a session that does not exist yet: the
+        // start observes the flag and destroys its own handle instead of
+        // registering a guest the caller already asked to stop.
+        if startingEnvironments.contains(environmentID) {
+            pendingStops.insert(environmentID)
+        }
         for (sessionID, terminal) in terminalSessions where terminal.environmentID == environmentID {
             terminalSessions.removeValue(forKey: sessionID)
             await terminal.handle.close()
         }
-        guard let session = sessions.removeValue(forKey: environmentID) else { return }
+        guard let session = sessions.removeValue(forKey: environmentID) else {
+            // No session: still release a reservation left by an in-flight
+            // start that will not register one.
+            if !startingEnvironments.contains(environmentID) {
+                guestReservations[environmentID] = nil
+            }
+            return
+        }
         await session.channel.close()
         await session.handle.close()
-        FloeLogger(category: .tools).info("Linux guest stopped environment=\(environmentID)")
+        guestReservations[environmentID] = nil
+        // The disk and shares are untouched; only runtime state was dropped.
+        lastImpacts[environmentID] =
+            "\(action): guest runtime for \(environmentID) destroyed; persistent disk and shares preserved; other environments untouched"
+        FloeLogger(category: .tools).info(
+            "Linux guest \(action) environment=\(environmentID) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB)"
+        )
     }
 
     /// Stops guests started by this task id (task ownership teardown).
@@ -545,6 +1084,17 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
         // instead of trusting paths resolved before the layer was remounted.
         await localServices.stopLocalServices(environmentID: environmentID)
         await registry.stop(environmentID: environmentID)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+        await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
+    }
+
+    public func resetGuest(environmentID: String) async {
+        // Same teardown as stopGuest (services first, then the guest), but
+        // explicitly scoped: the persistent disk image and shares survive;
+        // other environments are untouched. The impact text is surfaced
+        // through guestStatus.lastResetSharedImpact.
+        await localServices.stopLocalServices(environmentID: environmentID)
+        await registry.reset(environmentID: environmentID)
         await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
         await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
     }
