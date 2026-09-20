@@ -1,7 +1,8 @@
 # September 20 feedback repair and delivery
 
-Status: implementation in progress. This document does not claim a new upload or
-physical-device acceptance. Integration starts from `b16cb18e` (the build 204
+Status: implementation in progress. Build 207 passed accepted-SDK App compilation
+and its device artifact is retained; signing/upload is in progress. This does not
+claim Apple availability or physical-device acceptance. Integration starts from `b16cb18e` (the build 204
 delivery record). The prior build remains independently recorded.
 
 The user requested code-first delivery, focused checks and an expedited
@@ -13,7 +14,7 @@ Apple processing and internal-group availability remain required.
 
 | Feedback | Change | Evidence and remaining limit |
 | --- | --- | --- |
-| Office close/load timeouts | Queue close until an in-flight native open settles, avoiding an early discarded close message. Failed opens settle their waiting close. Keep recovery copies on errors. | Code review; accepted-SDK App compilation and device use pending. A genuinely failed LibreOffice process still requires an App restart; a timeout is not proof the engine has stopped. |
+| Office close/load timeouts | Queue close until an in-flight native open settles, avoiding an early discarded close message. Failed opens settle their waiting close. Keep recovery copies on errors. | Code review and build 207 accepted-SDK App compilation passed; device use pending. A genuinely failed LibreOffice process still requires an App restart; a timeout is not proof the engine has stopped. |
 | PDF/Office opened outside IDE or error 95 | Register native-document components in CodeBlitz internal editor tabs; overlay existing protected PDF and Office surfaces in the component rectangle. Maintain sessions across tab activation and close only when the editor is actually closed. | JavaScript parsing and 22 focused routing/visibility invariants passed. Parent IDE controls now observe Office session changes. Device interaction pending. |
 | Git initialization | Local initialization no longer requires GitHub login. Preserve existing repository HEAD and configured identity; extend repository lifetime while consuming SwiftGitX borrowed collections. | Focused source checks; current device crash stack unavailable, so the exact physical crash cause is not established. |
 | Mind-map controls and movement | Replace MindElixir with a native editor using shared Canvas geometry. Use icon controls; persist independent node positions, explicit relayout/reparent actions, undo, styles, links, images and export. | Nine focused model/layout cases and a FloeNotes object build passed. Existing data without positions remains readable. Visual/device acceptance pending. |
@@ -82,7 +83,10 @@ Apple processing and internal-group availability remain required.
   `41b03ad5` in [run35497153478](https://github.com/JiangNanGenius/floe-agent/actions/runs/35497153478).
   It is a first device candidate for Office, internal IDE documents, Git, native
   mind maps and Shell repairs. Runtime and new Linux/package changes are still
-  being integrated separately. Dispatch is not an upload or installability claim.
+  being integrated separately. The accepted-SDK App compile passed; the workflow
+  retained unsigned IPA artifact `10601633343` (803812105 bytes) and private symbols
+  `10601593620` (134122129 bytes) before signing. Signing/upload remains in progress;
+  Apple acceptance and group availability are not yet claimed.
 
 The Linux recommendation table includes the packages for all 13 missing command
 names reported in the screenshots. This is a package mapping, not execution
@@ -94,3 +98,12 @@ A source-only follow-up review caught a test-call argument-order error and an
 empty forced-finalization branch; both are corrected in `01eca877`. The review
 ran no builds, tests or UI. Newly added App and runtime behavior still needs
 the accepted-SDK cloud build and the user's device acceptance.
+
+The pinned TinyEMU engine and App backend base are now integrated. The real cloud
+probe [35497742193](https://github.com/JiangNanGenius/floe-agent/actions/runs/35497742193)
+passed Shell, fork/wait, pipes, signals, PTY and persistence checks, but APT HTTPS
+failed with SIGILL; package installation, NumPy and Node did not pass. Its summary
+JSON also failed serialization. Neither a successful probe process nor fixing
+the summary is Linux package acceptance. Guest image distribution still requires
+accurate corresponding-source and license records. Native execution remains the
+default while those conditions are unresolved.
