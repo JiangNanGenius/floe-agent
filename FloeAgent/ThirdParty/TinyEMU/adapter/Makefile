@@ -74,7 +74,7 @@ $(BUILD)/.prepared: $(PATCHES) | $(BUILD)/.dir
 	grep -q "poweroff_requested" $(BUILD)/riscv_machine.c
 	grep -q "floe_ram_oom" $(BUILD)/iomem.c
 	grep -q "static int copy_bios" $(BUILD)/riscv_machine.c
-	grep -q "FLOE-EMBED: FENCE/FENCE.TSO" $(BUILD)/riscv_cpu_template.h
+	grep -q "FLOE-EMBED: accept FENCE, FENCE.TSO" $(BUILD)/riscv_cpu_template.h
 	touch $@
 
 $(BUILD)/riscv_machine.o: $(BUILD)/.prepared

@@ -1,19 +1,22 @@
 --- a/riscv_cpu_template.h
 +++ b/riscv_cpu_template.h
-@@ -1352,11 +1352,19 @@
+@@ -1352,11 +1352,22 @@
              funct3 = (insn >> 12) & 7;
              switch(funct3) {
              case 0: /* fence */
 -                if (insn & 0xf00fff80)
 -                    goto illegal_insn;
-+                /* FLOE-EMBED: FENCE/FENCE.TSO and every reserved fm encoding
-+                   are ordering hints that must be ignored rather than
-+                   trapped (the base ISA defines FENCE.TSO next to FENCE and
-+                   requires ignoring the unused fm/rs1/rd/pred/succ fields);
-+                   this single-hart interpreter has nothing to order.
-+                   Upstream TinyEMU trapped FENCE.TSO (0x8330000f), which is
++                /* FLOE-EMBED: accept FENCE, FENCE.TSO (0x8330000f) and the
++                   reserved fm encodings as a plain fence. A plain fence is
++                   a strictly stronger ordering guarantee than FENCE.TSO,
++                   and this single-hart interpreter already completes
++                   loads, stores and device accesses in program order, so
++                   the implementation stays correct and no ordering is
++                   lost. The unused rs1/rd fields are ignored instead of
++                   trapped. Upstream TinyEMU trapped FENCE.TSO, which is
 +                   what Debian 13's libapt-pkg executes -- apt's http and
-+                   https methods died with SIGILL inside libapt-pkg. */
++                   https methods died with SIGILL inside libapt-pkg before
++                   any network work. */
                  break;
              case 1: /* fence.i */
 -                if (insn != 0x0000100f)
