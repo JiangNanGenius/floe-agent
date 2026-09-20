@@ -34,11 +34,14 @@ import FloeWorkspace
         case office
     }
 
-    /// Opens a workspace-relative PDF/Office path as an internal CodeBlitz
-    /// editor tab. Text routing is untouched; other kinds stay refused here
-    /// so their native surfaces keep their existing routing.
+    /// Opens (or re-activates) a workspace-relative PDF/Office path as an
+    /// internal CodeBlitz editor tab. `editor.open` focuses the existing tab
+    /// when the document is already open, so native routing can always call
+    /// this — backgrounded documents come forward instead of staying hidden.
+    /// Text routing is untouched; other kinds stay refused here so their
+    /// native surfaces keep their existing routing.
     func openNativeDocument(_ path: String) async {
-        guard ready, let web, !nativeDocuments.keys.contains(path) else { return }
+        guard ready, let web else { return }
         _ = try? await web.callAsyncJavaScript(
             "return await window.floeIDE.openDocument(path)",
             arguments: ["path": "/" + path], in: nil, contentWorld: .page)
@@ -57,7 +60,9 @@ import FloeWorkspace
               let rawKind = body["kind"] as? String, let kind = IDENativeDocumentKind(rawValue: rawKind)
         else { return }
         let rect = CGRect(x: x, y: y, width: width, height: height)
-        let visible = rect.width > 1 && rect.height > 1
+        // The web reports real visibility (intersection + size). Falling back
+        // to the rectangle alone is only for older bridge payloads.
+        let visible = (body["visible"] as? Bool) ?? (rect.width > 1 && rect.height > 1)
         nativeDocuments[relative] = IDENativeDocumentRequest(path: relative, kind: kind, rect: rect, visible: visible)
     }
 

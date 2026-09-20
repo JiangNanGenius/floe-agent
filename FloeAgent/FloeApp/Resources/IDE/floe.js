@@ -90,6 +90,27 @@
     const React = Alex.requireModule('react');
     const { URI } = Alex.requireModule('@opensumi/ide-core-common');
     const FLOE_NATIVE_DOCUMENT_COMPONENT = 'floe-native-document';
+    // Real close detection: a component unmount is NOT a tab close (pane
+    // rebuilds and workbench teardown unmount too). The truth is the set
+    // difference of the workbench's open resources, observed through
+    // onDidEditorGroupsChanged (grid descendant state changes include
+    // in-group tab closes) and getAllOpenedUris.
+    const trackedNativeDocs = new Map();
+    const syncNativeDocuments = () => {
+      const open = new Set();
+      for (const uri of editor.getAllOpenedUris()) {
+        if (uri.scheme !== 'file') continue;
+        const rel = pathKey(uri.path.toString());
+        if (trackedNativeDocs.has(rel)) open.add(rel);
+      }
+      for (const [rel, kind] of Array.from(trackedNativeDocs)) {
+        if (!open.has(rel)) {
+          trackedNativeDocs.delete(rel);
+          notify('nativeDocument', { path: rel, kind, phase: 'unmount' });
+        }
+      }
+    };
+    editor.onDidEditorGroupsChanged(() => syncNativeDocuments());
     const FloeNativeDocument = (props) => {
       const ref = React.useRef(null);
       const resourcePath = props.resource?.uri?.path?.toString() || '';
@@ -97,22 +118,24 @@
       const kind = policy && policy.kindForPath(relative) === 'pdf' ? 'pdf' : 'office';
       React.useEffect(() => {
         const node = ref.current;
+        trackedNativeDocs.set(relative, kind);
+        let visible = true;
         const report = () => {
           if (!node) return;
           const rect = node.getBoundingClientRect();
           notify('nativeDocument', {
             path: relative, kind,
-            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            visible: visible && rect.width > 1 && rect.height > 1
           });
         };
         report();
         if (!node) return undefined;
         const resize = new ResizeObserver(report);
         resize.observe(node);
-        // Tab switches hide the previous editor (zero-size box): both the
-        // size and the intersection observation keep the native overlay in
-        // sync with which internal tab is actually visible.
-        let visible = true;
+        // Tab switches keep the previous editor mounted but hidden: the
+        // intersection observation carries the real visibility so the native
+        // overlay hides even if the hidden node keeps a nonzero box.
         const intersection = new IntersectionObserver((entries) => {
           const nowVisible = entries.some(entry => entry.isIntersecting) && !!node.offsetWidth && !!node.offsetHeight;
           if (nowVisible === visible) return;
@@ -125,7 +148,8 @@
           resize.disconnect();
           intersection.disconnect();
           window.removeEventListener('resize', report);
-          notify('nativeDocument', { path: relative, kind, phase: 'unmount' });
+          // No unmount notify here: a rebuild unmount is not a tab close.
+          // syncNativeDocuments reports the real close.
         };
       }, [relative]);
       // The placeholder is transparent: the native overlay supplies the real
