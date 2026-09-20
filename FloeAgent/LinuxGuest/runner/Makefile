@@ -37,8 +37,7 @@ riscv64: $(RISCV_BIN)
 $(RISCV_BIN): floe_exec.c floe_clock.h
 	$(CROSS_CC) $(CFLAGS) -static -o $@ $<
 
-# Real stdio protocol check (host framing + runner child processes). This is
-# the full suite; the boot-clock change must not rerun it.
+# Full stdio protocol check (host framing + runner child processes).
 check: host
 	bash ../tests/host_protocol_check.sh
 

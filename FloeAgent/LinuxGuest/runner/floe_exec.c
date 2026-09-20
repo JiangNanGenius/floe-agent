@@ -1129,6 +1129,10 @@ static void guest_apply_boot_epoch(void) {
              strerror(errno));
         return;
     }
+    if (truncated) {
+        diag("floe-exec: clock NOT set: cmdline truncated\n");
+        return;
+    }
     int64_t epoch = 0;
     floe_epoch_status status = floe_epoch_parse(cmdline, len, &epoch);
     if (status != FLOE_EPOCH_OK) {

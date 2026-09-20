@@ -181,7 +181,13 @@ static inline int floe_cmdline_read_bounded(const char *path, char *buf, size_t 
                 truncated = 1;
                 break;
             }
-            if (n < 0 && errno == EINTR) continue;
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                int saved = errno;
+                close(fd);
+                errno = saved;
+                return -1;
+            }
             break;
         }
         ssize_t n = read(fd, buf + len, cap - 1 - len);
