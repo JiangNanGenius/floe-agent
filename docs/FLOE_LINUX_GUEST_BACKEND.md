@@ -9,18 +9,19 @@ qualified guest image remain. Without a qualified image, Linux start fails hones
 
 | 层 / Layer | 位置 / Location | 说明 / Notes |
 |---|---|---|
-| 环境运行类型 | `FloeEnvironments/ContainerRecord.swift` | `runtime: posix(默认) \| linux`，可选字段；旧记录缺省即 native，编码不再写回 `runtime` |
-| 环境注册表 | `FloeEnvironments/EnvironmentRegistry.swift` | `setRuntime(id:runtime:)`；`ensureProjectContainer/ensureSessionContainer` 可显式传 runtime，会话继承项目 |
+| 环境执行后端 | `FloeEnvironments/ContainerRecord.swift` | `executionBackend: native(默认) \| linuxVM`，可选字段；旧记录缺省即 native，编码不再写回该键 |
+| 环境注册表 | `FloeEnvironments/EnvironmentRegistry.swift` | `setExecutionBackend(id:backend:)`；`ensureProjectContainer/ensureSessionContainer` 可显式传 backend，会话继承项目 |
 | 后端协议 | `FloeExecution/Linux/LinuxGuestService.swift` | 描述符、镜像清单、限制、错误、`ownsLinuxEnvironment` 语义（停止中仍为 true） |
 | 控制台通道 | `FloeExecution/Linux/LinuxGuestCommandChannel.swift` | 分帧协议、逐段限流、超时/取消 → Ctrl-C + 毒化并停止 guest |
 | guest 运行时 | `FloeExecution/Linux/TinyEMUGuestRuntime.swift` | 单线程 `floe_vm_run_slice`、9p shares、`floe_vm_hostfwd_add/remove`、可恢复创建失败 |
 | 注册表/服务 | `FloeExecution/Linux/LinuxGuestRegistry.swift` | 每环境一个 guest、全进程同时只运行一个 guest（slirp 单例）、start/stop/delete、task 所有权、转发上限 16 |
-| shell 路由 | `FloeExecution/Linux/LinuxGuestShellBackend.swift` + `FloeApp/Execution/LinuxGuestBackend.swift` | `exec.shell` 在 Linux 环境交 guest `/bin/sh -c` 原样执行；其它环境保持 ios_system；交互式 guest 终端未接线（诚实报错） |
-| 注入 | `FloeApp/App/AppEnvironment.swift` | 构建唯一 `TinyEMULinuxCommandService`，经现有 `FloePlatformServices.setLinuxCommandService` 注入；无 `runtime .linux` 时零行为变化 |
+| shell 路由 | `FloeExecution/Linux/LinuxGuestShellBackend.swift` + `FloeApp/Execution/LinuxGuestBackend.swift` | `exec.shell` 在 Linux 环境交 guest `/bin/sh -c` 原样执行；其它环境保持 ios_system；`shell.*` 交互会话走 guest PTY（`FLOE-OPEN/IN/SIGNAL/CLOSE`） |
+| localPython 路由 | `FloeApp/Execution/CPythonLocalRuntime.swift`（runner 按环境分派） | Linux 环境里 `exec.localPython` 与托管 pip 安装脚本都执行该 guest 的 `python3`（同一解释器/site-packages，只下载一次）；非 Linux 环境仍走内置 CPython，`ArchiveCompressedBridge` 等 host 内部调用不变 |
+| 注入 | `FloeApp/App/AppEnvironment.swift` | 构建唯一 `TinyEMULinuxCommandService`，经现有 `FloePlatformServices.setLinuxCommandService` 注入；无 `executionBackend .linuxVM` 时零行为变化 |
 | 生命周期 | `FloePlatformServices.resumeEnvironment/stopEnvironment` + `ContainerLifecycle.Hooks` | 启动环境 → 启动 guest（失败回滚为 stopped 并抛出真实原因）；停止/删除 → 停止 guest；`terminateWorkers` 校验 guest 已退出 |
 | apt/dpkg 入口 | 包 UI worker 的 `LinuxCommandService.swift`（协议，未改） | `registerLinuxPackageCommands` 经 `LinuxShellCommandRouter` 把 argv 原样送入本后端；owned 未运行时禁止宿主层回写 |
 
-共享 guest / Shared guest: `TinyEMULinuxGuestRegistry` 是每个 `runtime == .linux` 环境 guest 的唯一所有者
+共享 guest / Shared guest: `TinyEMULinuxGuestRegistry` 是每个 `executionBackend == .linuxVM` 环境 guest 的唯一所有者
 （一个环境一个 guest，命令在通道内串行）。当前已接消费方：`exec.shell` 与 apt/dpkg/包 UI；guest 内
 localService 守护进程将复用同一会话与 hostfwd（其消费方尚未接线）。`exec.localPython` 等显式原生工具
 **按设计不静默重路由**；Linux shell 内的 `python3`/`node` 是 guest 程序。
@@ -37,15 +38,25 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
 - 现有证据（核心 job 整理，2026-09-20）：Debian 13（kernel 6.12）配 2018 bbl **无控制台输出**；
   4.15 回退内核 + Debian13 userland 因 2018 demo 内核无 EFI/GPT 解析而 panic（GPT 盘只被
   protective MBR 看到，`root=/dev/vda1` VFS 失败）；整盘 ext4（无分区表，`root=/dev/vda`）重跑尚未出结果。
-- 因此：Linux 后端只在环境显式选择 `runtime == .linux` 后启用，**默认不启用**；工具发现与界面
+- 因此：Linux 后端只在环境显式选择 `executionBackend == .linuxVM` 后启用，**默认不启用**；工具发现与界面
   不得宣称 Linux/apt 可用；有硬阻塞时报告 unavailable。
 
 ## 3. 未接线 / Not yet wired
 
-- 交互式 guest 终端（`shell.*` 会话）：串口无 PTY/resize，当前诚实报
-  `consoleUnavailable`；`exec.shell` 一次性命令可用。
-- guest 内 Floe runner（分帧协议另一端）与镜像内的 9p 挂载属于镜像资格范围，见下节契约。
+- guest 端 Floe runner 源码/启动注入由 guest runner worker（job-97a6a27d868f44cc，
+  `FloeAgent/LinuxGuest/`）实现；host 侧已按双方确认的帧名实现并等待其 commit 后做最小真实闭环。
+- `exec.localService`/后台服务（`FLOE-SPAWN/PID/KILL/ALIVE`，日志写 9p 文件 + hostfwd）协议已定，
+  host 侧消费尚未接线，是本任务剩余项。
 - 完整 App 编译与真机/模拟器验收由云端与主代理执行；本文件不声称设备结果。
+
+## 3b. 可达入口 / Reachable selection
+
+- 用户/Agent 入口：`floe-env backend <id|owner-id> native|linux`（shell 内，走
+  `FloePlatformServices.setEnvironmentExecutionBackend`）。切到 linux 会尝试启动 guest，
+  失败时返回真实原因（exit 3，环境保持 linuxVM 选择，apt/dpkg 不会回写宿主层）。
+- 设置 UI 可调用 `FloePlatformServices.setEnvironmentExecutionBackend(id:backend:)` 与
+  `linuxEnvironmentStatus(id:)`（`LinuxGuestStatus.lastError` 显示未合格镜像原因）。
+- 无持久 artifact 根时后端整体不可用（不回落临时目录），日志给出原因。
 
 ## 4. Guest 镜像契约 / Guest image contract
 
@@ -67,12 +78,21 @@ guest 地址 0 = DHCP 10.0.2.15，表上限 16，仅 `networkEnabled` 的 guest 
 
 guest 控制台 runner 协议（行 = `\x1eFLOE-…\x1e` 分帧，串口上 `E` 为回显需关闭或由解析器丢弃）：
 
-1. 读入 `\x1eFLOE-EXEC <token> <base64>\n`；payload = u32 字段数，随后每字段 u32 长度 + 原始字节，
+1. 命令载荷分块（tty 行缓冲 4096 字节上限）：
+   `\x1eFLOE-EXEC <token> <payloadBytes> <chunkCount>\x1e\n` + `\x1eFLOE-CHUNK <token> <index> <b64>\x1e\n` ×N +
+   `\x1eFLOE-RUN <token>\x1e\n`；payload = u32 字段数，随后每字段 u32 长度 + 原始字节，
    顺序为 `[cwd, stdin, argv0, argv1, …]`。
 2. 输出 `\x1eFLOE-BEGIN <token>\x1e`，用 `\x1eFLOE-OUT <token>\x1e` / `\x1eFLOE-ERR <token>\x1e`
    分段 stdout/stderr（argv 必须原样 exec，不经 shell 重解析）。
-3. 以 `\x1eFLOE-END <token> <exit>\x1e` 结束；收到 Ctrl-C（0x03）时结束当前命令并返回 130。
-4. runner 必须先把 9p 挂载点准备好，并在启动后即进入读循环；命令之间不得输出未分帧文本。
+3. 以 `\x1eFLOE-END <token> <exit>\x1e` 结束；收到 Ctrl-C（0x03）时只杀当前命令进程组并返回 130。
+4. 交互会话：`\x1eFLOE-OPEN <token> <bytes> <chunks>\x1e`（payload 首字段 `pty`，随后 cwd/cols/rows/argv…）
+   + CHUNKs + RUN；host 输入 `\x1eFLOE-IN <token> <b64>\x1e`，信号
+   `\x1eFLOE-SIGNAL <token> INT|TERM|WINCH [rows] [cols]\x1e`，关闭 `\x1eFLOE-CLOSE <token>\x1e`；
+   guest 用 `\x1eFLOE-OUT <token>\x1e` 原始流输出并以 `\x1eFLOE-END <token> <exit>\x1e` 收尾。
+5. 后台服务（协议已定，host 消费待接线）：`\x1eFLOE-SPAWN <token> <bytes> <chunks>\x1e`
+   （payload `[cwd, logPath, argv…]`）→ `\x1eFLOE-PID <token> <pid>\x1e` + END；
+   `\x1eFLOE-KILL <token> <pid>\x1e`、`\x1eFLOE-ALIVE <token> <pid>\x1e`；日志写 9p 文件，端口转发用 hostfwd。
+6. runner 必须先把 9p 挂载点准备好，并在启动后即进入读循环；命令之间不得输出未分帧文本。
 
 ## 5. 验证 / Verification
 

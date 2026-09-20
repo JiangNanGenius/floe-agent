@@ -210,6 +210,73 @@ final class FloePlatformServices: @unchecked Sendable {
         return await service.supports(environmentID: id)
     }
 
+    /// Real guest state for honest UI: nil when no Linux runner is injected.
+    /// `lastError` carries the recorded reason a guest cannot start (for
+    /// example an unqualified image).
+    func linuxEnvironmentStatus(id: String?) async -> LinuxGuestStatus? {
+        guard let id, let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return nil }
+        return await guests.guestStatus(environmentID: id)
+    }
+
+    /// User-reachable backend selection for one environment. Switching away
+    /// from `linuxVM` stops the guest first; switching to `linuxVM` records
+    /// the choice and tries to start the guest, throwing the real reason when
+    /// it cannot (the record keeps the selection so apt/dpkg never fall back
+    /// to host-layer writes for a Linux environment).
+    func setEnvironmentExecutionBackend(id: String, backend: EnvironmentExecutionBackend?) async throws {
+        guard let registry else {
+            throw FloeError.invalidConfiguration("container support is not configured in this build")
+        }
+        let guests = currentLinuxCommandService() as? any LinuxGuestControlling
+        if backend != .linuxVM {
+            await guests?.stopGuest(environmentID: id)
+        }
+        try await registry.setExecutionBackend(id: id, backend: backend)
+        if backend == .linuxVM, let guests {
+            _ = try await guests.startGuest(environmentID: id, taskID: nil)
+        }
+    }
+
+    /// `floe-env backend <id> native|linux` — the reachable selection entry
+    /// (also usable by the settings UI through setEnvironmentExecutionBackend).
+    func runBackendCommand(arguments: [String]) async -> (output: String, exitCode: Int32) {
+        guard arguments.count >= 3 else {
+            return ("usage: floe-env backend <id|owner-id> native|linux", 2)
+        }
+        let selector = arguments[1]
+        let raw = arguments[2].lowercased()
+        let backend: EnvironmentExecutionBackend?
+        switch raw {
+        case "native", "posix": backend = .native
+        case "linux", "linuxvm", "linux-vm": backend = .linuxVM
+        default:
+            return ("floe-env backend: expected native or linux, got '\(arguments[2])'", 2)
+        }
+        do {
+            let id = try await resolveEnvironmentID(selector: selector)
+            try await setEnvironmentExecutionBackend(id: id, backend: backend)
+            if backend == .linuxVM, let status = await linuxEnvironmentStatus(id: id) {
+                if status.running {
+                    return ("environment \(id) executionBackend=linuxVM; guest running", 0)
+                }
+                let reason = status.lastError ?? "guest is not running"
+                return ("environment \(id) executionBackend=linuxVM; guest not started: \(reason)", 3)
+            }
+            return ("environment \(id) executionBackend=\(backend?.rawValue ?? "native")", 0)
+        } catch {
+            return ("floe-env backend: \(error.localizedDescription)", 100)
+        }
+    }
+
+    private func resolveEnvironmentID(selector: String) async throws -> String {
+        guard let registry else {
+            throw FloeError.invalidConfiguration("container support is not configured in this build")
+        }
+        if await registry.record(id: selector) != nil { return selector }
+        if let record = await registry.containersOwned(by: selector).first { return record.id }
+        throw FloeError.notFound("environment \(selector)")
+    }
+
     /// True when the injected runner owns the environment as a Linux guest,
     /// even if the guest is not running yet. The shell uses this to keep
     /// host-side data-only dpkg operations out of Linux environments, and the
@@ -256,6 +323,11 @@ final class FloePlatformServices: @unchecked Sendable {
         lock.unlock()
 
         commandRegistry.register("floe-env") { arguments, stdout, stderr in
+            if arguments.first == "backend" {
+                let result = await FloePlatformServices.shared.runBackendCommand(arguments: arguments)
+                FloeShellWrite(result.exitCode == 0 ? stdout : stderr, result.output + "\n")
+                return result.exitCode
+            }
             guard let envCommand else {
                 FloeShellWrite(stderr, "floe-env: container support is not configured in this build\n")
                 return 1

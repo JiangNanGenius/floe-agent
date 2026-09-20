@@ -68,6 +68,13 @@ public actor TinyEMULinuxGuestRegistry {
     private let factory: any LinuxGuestSessionCreating
     private var sessions: [String: Session] = [:]
     private var lastErrors: [String: String] = [:]
+    private var terminalSessions: [String: TerminalSession] = [:]
+
+    /// One interactive guest terminal plus its buffered output.
+    private struct TerminalSession {
+        var environmentID: String
+        var handle: LinuxGuestInteractiveSession
+    }
 
     public init(
         environments: any LinuxGuestEnvironmentProviding,
@@ -223,6 +230,10 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func stop(environmentID: String) async {
+        for (sessionID, terminal) in terminalSessions where terminal.environmentID == environmentID {
+            terminalSessions.removeValue(forKey: sessionID)
+            await terminal.handle.close()
+        }
         guard let session = sessions.removeValue(forKey: environmentID) else { return }
         await session.channel.close()
         await session.handle.close()
@@ -241,6 +252,97 @@ public actor TinyEMULinuxGuestRegistry {
         for id in Array(sessions.keys) {
             await stop(environmentID: id)
         }
+    }
+
+    // MARK: interactive sessions
+
+    public func openSession(
+        environmentID: String,
+        sessionID: String,
+        argv: [String],
+        workingDirectory: String?,
+        columns: Int,
+        rows: Int
+    ) async throws {
+        guard let session = sessions[environmentID], await session.handle.isRunning() else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        guard terminalSessions[sessionID] == nil else {
+            throw LinuxGuestError.invalidConfiguration("session \(sessionID) already exists")
+        }
+        let handle = try await session.channel.openSession(
+            sessionID: sessionID,
+            argv: argv,
+            workingDirectory: workingDirectory,
+            columns: columns,
+            rows: rows
+        )
+        terminalSessions[sessionID] = TerminalSession(environmentID: environmentID, handle: handle)
+    }
+
+    /// Reads buffered terminal output. Returns nil when the session is
+    /// unknown; the tuple's info carries aliveness/exit state.
+    public func readSession(
+        sessionID: String,
+        maxBytes: Int,
+        waitMs: Int
+    ) async -> (output: Data, info: LinuxGuestSessionInfo)? {
+        guard let terminal = terminalSessions[sessionID] else { return nil }
+        var collected = Data()
+        let deadline = Date().addingTimeInterval(Double(max(0, waitMs)) / 1000)
+        var sawData = false
+        while collected.count < maxBytes {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 || !sawData else { break }
+            let wait = sawData ? min(20, max(0, Int(remaining * 1000))) : max(0, Int(remaining * 1000))
+            guard let chunk = await terminal.handle.nextOutput(timeoutMs: wait) else {
+                if await terminal.handle.isFinished { break }
+                if sawData { break }
+                break
+            }
+            sawData = true
+            collected.append(chunk)
+        }
+        let info = LinuxGuestSessionInfo(
+            sessionID: sessionID,
+            alive: await !terminal.handle.isFinished,
+            exitCode: await terminal.handle.terminalExitCode
+        )
+        if await terminal.handle.isFinished {
+            terminalSessions[sessionID] = nil
+        }
+        return (collected, info)
+    }
+
+    public func writeSession(sessionID: String, text: String) async throws {
+        guard let terminal = terminalSessions[sessionID] else {
+            throw LinuxGuestError.notRunning(environmentID: "session \(sessionID)")
+        }
+        try await terminal.handle.write(text)
+    }
+
+    public func signalSession(sessionID: String, signal: LinuxGuestSessionSignal) async {
+        guard let terminal = terminalSessions[sessionID] else { return }
+        await terminal.handle.signal(signal)
+    }
+
+    public func resizeSession(sessionID: String, columns: Int, rows: Int) async {
+        guard let terminal = terminalSessions[sessionID] else { return }
+        await terminal.handle.signal(.window, rows: rows, columns: columns)
+    }
+
+    public func closeSession(sessionID: String) async {
+        guard let terminal = terminalSessions.removeValue(forKey: sessionID) else { return }
+        await terminal.handle.close()
+    }
+
+    public func sessionInfo(sessionID: String) async -> LinuxGuestSessionInfo? {
+        guard let terminal = terminalSessions[sessionID] else { return nil }
+        return LinuxGuestSessionInfo(
+            sessionID: sessionID,
+            alive: await !terminal.handle.isFinished,
+            exitCode: await terminal.handle.terminalExitCode
+        )
     }
 
     public func addForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
@@ -322,6 +424,10 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
         await registry.status(environmentID: environmentID).running
     }
 
+    public func guestStatus(environmentID: String) async -> LinuxGuestStatus {
+        await registry.status(environmentID: environmentID)
+    }
+
     public func stopGuests(taskID: String) async {
         await registry.stop(taskID: taskID)
     }
@@ -332,6 +438,54 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
 
     public func removeServiceForward(environmentID: String, forward: LinuxGuestServiceForward) async {
         await registry.removeForward(environmentID: environmentID, forward: forward)
+    }
+
+    // MARK: interactive sessions
+
+    public func openSession(
+        environmentID: String,
+        sessionID: String,
+        argv: [String],
+        workingDirectory: String?,
+        columns: Int,
+        rows: Int
+    ) async throws {
+        try await registry.openSession(
+            environmentID: environmentID,
+            sessionID: sessionID,
+            argv: argv,
+            workingDirectory: workingDirectory,
+            columns: columns,
+            rows: rows
+        )
+    }
+
+    public func readSession(
+        sessionID: String,
+        maxBytes: Int,
+        waitMs: Int
+    ) async -> (output: Data, info: LinuxGuestSessionInfo)? {
+        await registry.readSession(sessionID: sessionID, maxBytes: maxBytes, waitMs: waitMs)
+    }
+
+    public func writeSession(sessionID: String, text: String) async throws {
+        try await registry.writeSession(sessionID: sessionID, text: text)
+    }
+
+    public func signalSession(sessionID: String, signal: LinuxGuestSessionSignal) async {
+        await registry.signalSession(sessionID: sessionID, signal: signal)
+    }
+
+    public func resizeSession(sessionID: String, columns: Int, rows: Int) async {
+        await registry.resizeSession(sessionID: sessionID, columns: columns, rows: rows)
+    }
+
+    public func closeSession(sessionID: String) async {
+        await registry.closeSession(sessionID: sessionID)
+    }
+
+    public func sessionInfo(sessionID: String) async -> LinuxGuestSessionInfo? {
+        await registry.sessionInfo(sessionID: sessionID)
     }
 
     public func shutdown() async {

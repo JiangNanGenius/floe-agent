@@ -204,11 +204,99 @@ actor CPythonLocalRuntime {
 }
 
 enum CPythonServiceFactory {
-    static func make() -> LocalPythonService? {
+    /// Routes each request by its environment: `executionBackend == .linuxVM`
+    /// environments run `python3` inside that environment's guest (so the
+    /// shell's `python3`, `exec.localPython` and the managed pip installs all
+    /// share one interpreter and site-packages), everything else keeps the
+    /// bundled native CPython path untouched.
+    static func make(linuxGuests: TinyEMULinuxCommandService? = nil) -> LocalPythonService? {
         guard let version = try? FloeCPythonBridge.runtimeVersion() else { return nil }
         return LocalPythonService(version: "CPython \(version.split(separator: " ").first ?? "3.13")") {
             request, cancellation in
-            await CPythonLocalRuntime.shared.run(request, cancellation: cancellation)
+            if let environmentID = request.pythonContext?.environmentID, let linuxGuests,
+               await linuxGuests.ownsLinuxEnvironment(environmentID: environmentID) {
+                return await CPythonLocalRuntime.shared.runInLinuxGuest(
+                    request,
+                    environmentID: environmentID,
+                    guests: linuxGuests,
+                    cancellation: cancellation
+                )
+            }
+            return await CPythonLocalRuntime.shared.run(request, cancellation: cancellation)
         }
+    }
+}
+
+extension CPythonLocalRuntime {
+    /// One `exec.localPython` request (including the managed pip installer
+    /// script) inside the environment's Linux guest. The native runtime's
+    /// compression helpers and package-phase gate stay untouched: this path
+    /// only executes the guest's real python3 with the same script.
+    func runInLinuxGuest(
+        _ request: ScriptExecutionRequest,
+        environmentID: String,
+        guests: any LinuxCommandRunning,
+        cancellation: CancellationToken?
+    ) async -> ScriptExecutionOutcome {
+        guard await guests.supports(environmentID: environmentID) else {
+            return .jsException(
+                message: LinuxGuestError.notRunning(environmentID: environmentID).localizedDescription,
+                stdout: ""
+            )
+        }
+        var script = request.script
+        if let inputJSON = request.inputJSON {
+            script = "import json as _floe_json\ninput = _floe_json.loads(" + pyLiteral(inputJSON) + ")\n" + script
+        }
+        let timeout = max(0.05, min(request.timeout, 600))
+        var argv = ["python3", "-c", script]
+        argv.append(contentsOf: request.pythonContext?.arguments ?? [])
+        let started = Date()
+        do {
+            let result = try await guests.run(
+                environmentID: environmentID,
+                argv: argv,
+                workingDirectory: nil,
+                standardInput: request.pythonContext?.standardInput,
+                timeout: timeout,
+                maxOutputBytes: request.maxOutputBytes,
+                cancellation: cancellation
+            )
+            let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+            if result.exitCode == 0 {
+                return .ok(
+                    resultJSON: nil,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    truncated: false,
+                    stderrTruncated: false,
+                    durationMs: durationMs
+                )
+            }
+            return .jsException(
+                message: result.stderr.isEmpty ? "python3 exited with \(result.exitCode)" : result.stderr,
+                stdout: result.stdout
+            )
+        } catch FloeError.cancelled {
+            return .cancelled
+        } catch let error as LinuxGuestError {
+            if case .timedOut = error {
+                return .timedOut(afterMs: Int(timeout * 1000), partialStdout: "")
+            }
+            return .jsException(message: error.localizedDescription, stdout: "")
+        } catch {
+            return .jsException(message: error.localizedDescription, stdout: "")
+        }
+    }
+
+    /// A Python string literal for a JSON document (the native bridge binds
+    /// the same `input` name, so guest scripts keep the documented contract).
+    private func pyLiteral(_ json: String) -> String {
+        var escaped = json
+        escaped = escaped.replacingOccurrences(of: "\\", with: "\\\\")
+        escaped = escaped.replacingOccurrences(of: "'''", with: "\\'\\'\\'")
+        escaped = escaped.replacingOccurrences(of: "\r", with: "\\r")
+        escaped = escaped.replacingOccurrences(of: "\n", with: "\\n")
+        return "'''" + escaped + "'''"
     }
 }

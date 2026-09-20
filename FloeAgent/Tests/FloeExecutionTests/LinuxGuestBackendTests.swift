@@ -173,35 +173,33 @@ private func reply(_ token: String, stdout: String = "hi", stderr: String = "oop
 // MARK: - Framing
 
 final class LinuxGuestFramingTests: XCTestCase {
-    func testExecEnvelopeCarriesTokenAndFields() throws {
-        let envelope = LinuxGuestFraming.execEnvelope(
-            token: "T1",
-            argv: ["apt-get", "update"],
+    func testExecFramesCarryChunkedPayload() throws {
+        let payload = LinuxGuestFraming.payload(
+            of: ["apt-get", "update"],
             workingDirectory: "/root",
             standardInput: "stdin"
         )
-        let text = String(decoding: envelope, as: UTF8.self)
-        XCTAssertTrue(text.hasPrefix("\u{1e}FLOE-EXEC T1 "))
-        XCTAssertTrue(text.hasSuffix("\n"))
-        let base64 = text.dropFirst("\u{1e}FLOE-EXEC T1 ".count)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let payload = try XCTUnwrap(Data(base64Encoded: base64))
+        XCTAssertGreaterThan(payload.count, 0)
+        let frames = LinuxGuestFraming.payloadHeader("EXEC", token: "T1", payload: payload)
+        let text = frames.map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertTrue(text.first?.hasPrefix("\u{1e}FLOE-EXEC T1 ") == true)
+        XCTAssertTrue(text.last?.contains("FLOE-RUN T1") == true)
+        let chunks = text.dropFirst().dropLast().compactMap { line -> String? in
+            guard let range = line.range(of: "FLOE-CHUNK T1 ") else { return nil }
+            let body = line[range.upperBound...].replacingOccurrences(of: "\u{1e}", with: "")
+            return body.split(separator: " ").dropFirst().first.map(String.init)
+        }
+        XCTAssertEqual(Data(base64Encoded: chunks.joined(), options: .ignoreUnknownCharacters), payload)
+    }
 
-        func readUInt32(at index: inout Data.Index) -> UInt32 {
-            let value = payload[index..<payload.index(index, offsetBy: 4)].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
-            index += 4
-            return value
+    func testSessionParserStreamsRawOutputAndExit() {
+        var parser = LinuxGuestFraming.SessionParser(sessionID: "S1")
+        let frames = Data("\u{1e}FLOE-OUT S1\u{1e}hello \u{1e}FLOE-END S1 3\u{1e}".utf8)
+        guard case .outputAndFinished(let data, let exit) = parser.feed(frames) else {
+            return XCTFail("session parser did not finish")
         }
-        var index = payload.startIndex
-        XCTAssertEqual(readUInt32(at: &index), 4)
-        var fields: [String] = []
-        for _ in 0..<4 {
-            let length = Int(readUInt32(at: &index))
-            let end = payload.index(index, offsetBy: length)
-            fields.append(String(decoding: payload[index..<end], as: UTF8.self))
-            index = end
-        }
-        XCTAssertEqual(fields, ["/root", "stdin", "apt-get", "update"])
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "hello ")
+        XCTAssertEqual(exit, 3)
     }
 
     func testParserHandlesSplitMarkersAndSections() {
@@ -449,7 +447,7 @@ final class LinuxGuestShellBackendTests: XCTestCase {
         XCTAssertTrue(message.contains("not running"), message)
     }
 
-    func testUnavailableInteractiveSessionsAreReported() async {
+    func testStoppedGuestSessionsAreReported() async {
         let service = TinyEMULinuxCommandService(registry: TinyEMULinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [:]),
             images: FakeImageResolver(images: [:]),
@@ -471,9 +469,9 @@ final class LinuxGuestShellBackendTests: XCTestCase {
                 ),
                 cancellation: nil
             )
-            XCTFail("interactive guest sessions are not wired yet")
+            XCTFail("a stopped guest must not open an interactive session")
         } catch let error as LinuxGuestError {
-            guard case .consoleUnavailable = error else { return XCTFail("unexpected error \(error)") }
+            guard case .notRunning = error else { return XCTFail("unexpected error \(error)") }
         } catch {
             XCTFail("unexpected error \(error)")
         }

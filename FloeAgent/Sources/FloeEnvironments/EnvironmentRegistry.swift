@@ -148,21 +148,22 @@ public actor EnvironmentRegistry {
         records.values.filter { $0.ownerID == ownerID }
     }
 
-    /// Finds or creates the project container for a workspace. `runtime`
-    /// explicitly selects `linux` for a guest-backed environment; leaving it
-    /// nil keeps the native default and never rewrites an existing record.
+    /// Finds or creates the project container for a workspace.
+    /// `executionBackend` explicitly selects `linuxVM` for a guest-backed
+    /// environment; leaving it nil keeps the native default and never rewrites
+    /// an existing record.
     @discardableResult
     public func ensureProjectContainer(
         workspaceID: String,
         workspaceRootPath: String,
         templateID: String? = nil,
-        runtime: ContainerRuntime? = nil
+        executionBackend: EnvironmentExecutionBackend? = nil
     ) throws -> ContainerRecord {
         try prepare()
         if let existing = records.values.first(where: { $0.kind == .project && $0.ownerID == workspaceID }) {
-            if let runtime, existing.runtime != runtime {
+            if let executionBackend, existing.executionBackend != executionBackend {
                 var updated = existing
-                updated.runtime = runtime
+                updated.executionBackend = executionBackend
                 try saveRecord(updated)
                 return updated
             }
@@ -175,7 +176,7 @@ public actor EnvironmentRegistry {
             name: URL(fileURLWithPath: workspaceRootPath).lastPathComponent,
             baseRevision: baseRevision,
             templateID: templateID,
-            runtime: runtime
+            executionBackend: executionBackend
         )
         do {
             try materialize(record, seedFrom: templateID)
@@ -196,7 +197,7 @@ public actor EnvironmentRegistry {
         workspaceID: String?,
         workspaceRootPath: String?,
         inheritFromProject: Bool = true,
-        runtime: ContainerRuntime? = nil
+        executionBackend: EnvironmentExecutionBackend? = nil
     ) throws -> ContainerRecord {
         try prepare()
         var parent: ContainerRecord?
@@ -223,7 +224,7 @@ public actor EnvironmentRegistry {
             baseRevision: baseRevision,
             parentID: parent?.id,
             templateID: parent?.templateID,
-            runtime: runtime ?? parent?.runtime
+            executionBackend: executionBackend ?? parent?.executionBackend
         )
         do {
             try materialize(record, seedFrom: parent?.id)
@@ -298,14 +299,14 @@ public actor EnvironmentRegistry {
         try saveRecord(record)
     }
 
-    /// Declares (or changes) an environment's runtime. Native stays the
-    /// default for records that never set one; switching to `linux` only
-    /// takes effect for environments whose guest image is qualified, and the
-    /// backend reports that honestly when a guest is asked to start.
-    public func setRuntime(id: String, runtime: ContainerRuntime?) throws {
+    /// Declares (or changes) an environment's execution backend. `native`
+    /// stays the default for records that never set one; switching to
+    /// `linuxVM` only starts a guest whose image is qualified, and the backend
+    /// reports the recorded reason honestly when one cannot start.
+    public func setExecutionBackend(id: String, backend: EnvironmentExecutionBackend?) throws {
         try prepare()
         guard var record = records[id] else { throw FloeError.notFound("Execution environment \(id)") }
-        record.runtime = runtime
+        record.executionBackend = backend
         try saveRecord(record)
     }
 

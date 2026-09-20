@@ -6,9 +6,12 @@
 // /bin/sh unchanged (no host re-parsing, no native callback interception);
 // the host only frames argv for the console channel.
 //
-// Interactive terminal sessions over the serial console are not wired yet,
-// so openSession fails honestly instead of opening a native session that
-// would silently escape the guest.
+// Interactive terminal sessions run in the guest over the console's PTY
+// session frames (protocol v2): openSession starts /bin/sh (or the requested
+// command) inside the guest, exchangeSession streams raw terminal bytes,
+// signal maps to guest SIGINT/TERM/KILL and close tears the PTY down. Resize
+// is best-effort: the console has no window-size channel yet, so the guest
+// keeps its initial geometry and resize is a documented no-op.
 
 import Foundation
 import FloeCore
@@ -16,10 +19,16 @@ import FloeTools
 
 public struct LinuxGuestShellBackend: LocalShellBackend {
     private let runner: any LinuxCommandRunning
+    private let sessions: (any LinuxGuestControlling)?
     private let limits: LinuxGuestLimits
 
-    public init(runner: any LinuxCommandRunning, limits: LinuxGuestLimits = .standard) {
+    public init(
+        runner: any LinuxCommandRunning,
+        sessions: (any LinuxGuestControlling)? = nil,
+        limits: LinuxGuestLimits = .standard
+    ) {
         self.runner = runner
+        self.sessions = sessions ?? (runner as? any LinuxGuestControlling)
         self.limits = limits
     }
 
@@ -69,16 +78,80 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
     }
 
     public func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
-        throw LinuxGuestError.consoleUnavailable(
-            "interactive shell sessions inside the Linux guest are not wired yet; use exec.shell one-shot commands"
+        guard let environmentID = request.toolEnvironment?.id else {
+            throw LinuxGuestError.notOwned(environmentID: "shell session")
+        }
+        guard let sessions else {
+            throw LinuxGuestError.consoleUnavailable("this Linux backend has no session support")
+        }
+        guard await runner.supports(environmentID: environmentID) else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let argv = command.isEmpty ? ["/bin/sh", "-i"] : ["/bin/sh", "-c", command]
+        let workingDirectory = request.cwd.isEmpty ? nil : request.cwd
+        try await sessions.openSession(
+            environmentID: environmentID,
+            sessionID: request.sessionID,
+            argv: argv,
+            workingDirectory: workingDirectory,
+            columns: request.columns,
+            rows: request.rows
+        )
+        // Give the shell a moment to draw its first prompt.
+        let first = await sessions.readSession(sessionID: request.sessionID, maxBytes: 16 * 1024, waitMs: 400)
+        let output = first?.output ?? Data()
+        let alive = first?.info.alive ?? true
+        return ShellOpenResult(
+            sessionID: request.sessionID,
+            initialOutput: String(decoding: output, as: UTF8.self),
+            alive: alive,
+            terminalOutput: output
         )
     }
 
     public func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
-        throw LinuxGuestError.consoleUnavailable("no interactive Linux guest session exists")
+        guard let sessions else {
+            throw LinuxGuestError.consoleUnavailable("this Linux backend has no session support")
+        }
+        if let input = request.input, !input.isEmpty {
+            try await sessions.writeSession(sessionID: request.sessionID, text: input)
+        }
+        guard let read = await sessions.readSession(
+            sessionID: request.sessionID,
+            maxBytes: max(1, request.maxBytes),
+            waitMs: max(0, request.waitMs)
+        ) else {
+            throw LinuxGuestError.notRunning(environmentID: "session \(request.sessionID)")
+        }
+        return ShellExchangeResult(
+            output: String(decoding: read.output, as: UTF8.self),
+            alive: read.info.alive,
+            exitCode: read.info.alive ? nil : read.info.exitCode,
+            terminalOutput: read.output,
+            bytesRead: read.output.count,
+            bytesWritten: request.input?.utf8.count ?? 0
+        )
     }
 
-    public func closeSession(sessionID: String) async {}
-    public func signalSession(sessionID: String, signal: ShellSignal) async {}
-    public func resizeSession(sessionID: String, columns: Int, rows: Int) async {}
+    public func closeSession(sessionID: String) async {
+        await sessions?.closeSession(sessionID: sessionID)
+    }
+
+    public func signalSession(sessionID: String, signal: ShellSignal) async {
+        let mapped: LinuxGuestSessionSignal
+        switch signal {
+        case .interrupt: mapped = .interrupt
+        case .terminate: mapped = .terminate
+        case .kill: mapped = .kill
+        }
+        await sessions?.signalSession(sessionID: sessionID, signal: mapped)
+    }
+
+    /// Resize rides the agreed FLOE-SIGNAL WINCH frame with the new
+    /// geometry, so a guest PTY does resize instead of silently keeping the
+    /// openSession size.
+    public func resizeSession(sessionID: String, columns: Int, rows: Int) async {
+        await sessions?.resizeSession(sessionID: sessionID, columns: columns, rows: rows)
+    }
 }

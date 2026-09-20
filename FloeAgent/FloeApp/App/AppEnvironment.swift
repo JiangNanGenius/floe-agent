@@ -324,11 +324,7 @@ final class AppEnvironment: ObservableObject {
         self.cloudWorkspaceService = cloudWorkspaceService
         self.cloudWorkspaceCleanupQueue = CloudWorkspaceCleanupQueue(service: cloudWorkspaceService)
         self.bluetoothSerialService = CoreBluetoothSerialService()
-        let localPythonService = CPythonServiceFactory.make()
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
-        self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
-            service: localPythonService
-        )
 
         // Local shell substrate. The backend is the ios_system command bus;
         // Floe replacement commands (python3, ping, traceroute, dig, nc,
@@ -338,8 +334,6 @@ final class AppEnvironment: ObservableObject {
             gate: try? CatastrophicActionGate.withBundledPatterns()
         )
         let nativeShellBackend = IOSSystemShellBackend()
-        let managedPython = localPythonService.map { ManagedPythonInstallService(python: $0, packagesChanged: { await FloeShellCommands.refreshPythonCommands() }) }
-        self.managedPythonInstaller = managedPython
         let capabilityRoot = ((try? FloeArtifactStore.root()) ?? URL(fileURLWithPath: NSTemporaryDirectory()))
             .appendingPathComponent("Packages", isDirectory: true)
         self.capabilityRoot = capabilityRoot
@@ -360,16 +354,28 @@ final class AppEnvironment: ObservableObject {
         ToolEnvironmentRouting.shared.configure { context in try await environmentExecutions.acquire(context) }
 
         // Linux guest backend: one TinyEMU-backed service for the whole app,
-        // injected into the platform services seam so the apt/dpkg shell
-        // entries and the package UI reach the same guest that exec.shell and
-        // localPython will use per environment. Native environments never
-        // touch it (`ownsLinuxEnvironment` is false without `runtime .linux`).
+        // injected into the platform services seam so apt/dpkg, exec.shell and
+        // exec.localPython share the same guest interpreter per Linux
+        // environment. Native environments never touch it
+        // (`ownsLinuxEnvironment` is false without `executionBackend .linuxVM`).
         let linuxGuests = LinuxGuestBackendAssembly.makeService(
             registry: environmentRegistry,
             artifactRoot: try? FloeArtifactStore.root()
         )
         self.linuxGuestService = linuxGuests
         FloePlatformServices.shared.setLinuxCommandService(linuxGuests)
+
+        // Bundled CPython stays the native path; its runner now routes by
+        // environment, so `exec.localPython` and the managed pip installs for
+        // a Linux environment execute inside that environment's guest.
+        let localPythonService = CPythonServiceFactory.make(linuxGuests: linuxGuests)
+        self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
+            service: localPythonService
+        )
+        let managedPython = localPythonService.map {
+            ManagedPythonInstallService(python: $0, packagesChanged: { await FloeShellCommands.refreshPythonCommands() })
+        }
+        self.managedPythonInstaller = managedPython
 
         // exec.shell routes per request: Linux environments run in their
         // guest, every other environment keeps the ios_system substrate.

@@ -282,6 +282,19 @@ public struct FileLinuxGuestImageResolver: LinuxGuestImageResolving {
     }
 }
 
+/// One interactive guest session's state as seen by the host.
+public struct LinuxGuestSessionInfo: Sendable, Equatable {
+    public var sessionID: String
+    public var alive: Bool
+    public var exitCode: Int32?
+
+    public init(sessionID: String, alive: Bool, exitCode: Int32? = nil) {
+        self.sessionID = sessionID
+        self.alive = alive
+        self.exitCode = exitCode
+    }
+}
+
 /// Lifecycle surface layered on top of `LinuxCommandRunning`. The package UI
 /// and shell consume the command protocol; the app uses this to start, stop
 /// and delete the guest that owns an environment.
@@ -295,11 +308,38 @@ public protocol LinuxGuestControlling: Sendable {
     /// Releases guest state before the environment's data is deleted.
     func deleteGuest(environmentID: String) async
     func guestIsRunning(environmentID: String) async -> Bool
+    /// Image/last-error state for honest UI and shell output.
+    func guestStatus(environmentID: String) async -> LinuxGuestStatus
     /// Stops guests started by this task id (task ownership teardown).
     func stopGuests(taskID: String) async
     /// Host→guest port forwarding for a running guest.
     func forwardService(environmentID: String, forward: LinuxGuestServiceForward) async throws
     func removeServiceForward(environmentID: String, forward: LinuxGuestServiceForward) async
+
+    // MARK: interactive sessions (shell.*)
+
+    /// Opens an interactive PTY session inside the guest. `sessionID` is the
+    /// shell session identity used by exchange/close/signal.
+    func openSession(
+        environmentID: String,
+        sessionID: String,
+        argv: [String],
+        workingDirectory: String?,
+        columns: Int,
+        rows: Int
+    ) async throws
+    /// Reads buffered terminal output; returns nil output when nothing
+    /// arrived before `waitMs` and the session is still alive.
+    func readSession(
+        sessionID: String,
+        maxBytes: Int,
+        waitMs: Int
+    ) async -> (output: Data, info: LinuxGuestSessionInfo)?
+    func writeSession(sessionID: String, text: String) async throws
+    func signalSession(sessionID: String, signal: LinuxGuestSessionSignal) async
+    func resizeSession(sessionID: String, columns: Int, rows: Int) async
+    func closeSession(sessionID: String) async
+    func sessionInfo(sessionID: String) async -> LinuxGuestSessionInfo?
 }
 
 /// Runtime status for diagnostics and honest UI states.
