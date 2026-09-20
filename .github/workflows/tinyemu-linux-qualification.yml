@@ -336,7 +336,6 @@ jobs:
                   status = "FAIL_%d" % r.returncode
               print("FLOE_INSN_%s=%s" % (name, status))
           PY
-          sed -i 's/^ *//' work/share9p/qualify-insns.py
           cat > work/share9p/qualify-apt.sh <<'SH'
           mount -t proc proc /proc 2>/dev/null
           mount -t sysfs sys /sys 2>/dev/null
@@ -358,7 +357,6 @@ jobs:
           sync
           printf 'FLOE_APTPROBE_%s\n' DONE
           SH
-          sed -i 's/^ *//' work/share9p/qualify-apt.sh
           cat > work/aptprobe.txt <<'EOF'
           @20 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null; mkdir -p /floe; mount -t 9p -o trans=virtio,version=9p2000.L floe /floe
           @24 sh /floe/qualify-apt.sh
@@ -381,7 +379,7 @@ jobs:
           done
           # A green workflow must not be readable as "Linux works": fail the
           # step unless the real capability markers landed.
-          for m in FLOE_APTPROBE_DONE FLOE_APT_UPDATE_RC_0 FLOE_APT_INSTALL_RC_0 FLOE_NUMPY_OK FLOE_NODE_OK; do
+          for m in FLOE_APTPROBE_DONE FLOE_APT_UPDATE_RC_0 FLOE_APT_INSTALL_RC_0 FLOE_NUMPY_OK FLOE_NODE_OK FLOE_INSN_fence_tso=OK; do
             grep -qa "$m" work/stageD-transcript.txt || { echo "targeted probe failed: $m missing"; exit 1; }
           done
 
