@@ -41,6 +41,11 @@ enum LinuxGuestFraming {
     /// Base64 characters per console line; the guest tty canonical buffer is
     /// 4096 bytes, so this stays well below it.
     static let maxChunkCharacters = 3000
+    /// One-shot payloads whose whole EXEC line fits here are sent inline (the
+    /// form the guest runner's parser handles without reassembly); anything
+    /// larger uses CHUNK frames so no single console line exceeds the tty
+    /// buffer.
+    static let inlineLineLimit = 3800
 
     static func marker(_ name: String, token: String) -> Data {
         Data("\u{1e}FLOE-\(name) \(token)\u{1e}".utf8)
@@ -65,6 +70,48 @@ enum LinuxGuestFraming {
             payload.append(bytes)
         }
         return payload
+    }
+
+    /// Payload for a background service: `[cwd, logPath, argv...]`. The
+    /// runner appends stdout/stderr to `logPath` (a guest path inside the
+    /// environment share) and never waits for the process.
+    static func servicePayload(of argv: [String], workingDirectory: String?, logPath: String) -> Data {
+        var payload = Data()
+        let fields: [String] = [workingDirectory ?? "", logPath] + argv
+        appendUInt32(UInt32(fields.count), to: &payload)
+        for field in fields {
+            let bytes = Data(field.utf8)
+            appendUInt32(UInt32(bytes.count), to: &payload)
+            payload.append(bytes)
+        }
+        return payload
+    }
+
+    /// Inline EXEC envelope: `\x1eFLOE-EXEC <token> <base64 payload>\n`.
+    /// Dedicated helper so the guest runner's native protocol check can drive
+    /// the exact host bytes.
+    static func execEnvelope(
+        token: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?
+    ) -> Data {
+        inlineEnvelope(name: "EXEC", token: token, payload: payload(of: argv, workingDirectory: workingDirectory, standardInput: standardInput))
+    }
+
+    static func inlineEnvelope(name: String, token: String, payload: Data) -> Data {
+        Data("\u{1e}FLOE-\(name) \(token) \(payload.base64EncodedString())\n".utf8)
+    }
+
+    /// Frames for one payload transfer. EXEC accepts the inline fast path
+    /// (the guest runner decodes both forms); OPEN and SPAWN are chunked only
+    /// because the runner's session/service assemblers expect the header form.
+    static func payloadFrames(name: String, token: String, payload: Data, allowInline: Bool = true) -> [Data] {
+        if allowInline {
+            let inline = inlineEnvelope(name: name, token: token, payload: payload)
+            if inline.count <= inlineLineLimit { return [inline] }
+        }
+        return payloadHeader(name, token: token, payload: payload)
     }
 
     /// Frames for one payload transfer: header, base64 chunks, RUN.
@@ -152,6 +199,9 @@ enum LinuxGuestFraming {
         private(set) var truncated = false
         private var pending = Data()
         private var sawBegin = false
+        /// The END prefix was consumed; the pending bytes are the exit code
+        /// digits and must not be flushed as command output.
+        private var awaitingExitCode = false
         private var section: Section = .stdout
 
         init(token: String, maxOutputBytes: Int) {
@@ -182,6 +232,19 @@ enum LinuxGuestFraming {
                     continue
                 }
 
+                if awaitingExitCode {
+                    guard let terminator = pending.firstIndex(of: LinuxGuestFraming.markerByte) else {
+                        if pending.count > 32 {
+                            return .failed("guest exit marker is malformed")
+                        }
+                        return .needMore
+                    }
+                    let digits = String(decoding: pending[pending.startIndex..<terminator], as: UTF8.self)
+                        .trimmingCharacters(in: .whitespaces)
+                    pending.removeSubrange(pending.startIndex...terminator)
+                    return .finished(Int32(digits) ?? -1)
+                }
+
                 var earliest: (range: Range<Data.Index>, kind: UInt8)?
                 for (kind, marker) in [(UInt8(0), out), (UInt8(1), err), (UInt8(2), end)] {
                     if let range = pending.range(of: marker) {
@@ -196,7 +259,11 @@ enum LinuxGuestFraming {
                 }
 
                 guard let hit = earliest else {
-                    keepTail(longestMarker - 1)
+                    // No marker yet: everything except a suffix that could
+                    // still be the start of a split marker belongs to the
+                    // current section. (Dropping it here would silently
+                    // truncate output that spans more than one console chunk.)
+                    flushPendingPrefix(markers: [begin, out, err, end])
                     return .needMore
                 }
 
@@ -208,16 +275,8 @@ enum LinuxGuestFraming {
                 case 1:
                     section = .stderr
                 default:
-                    guard let terminator = pending.firstIndex(of: LinuxGuestFraming.markerByte) else {
-                        if pending.count > 32 {
-                            return .failed("guest exit marker is malformed")
-                        }
-                        return .needMore
-                    }
-                    let digits = String(decoding: pending[pending.startIndex..<terminator], as: UTF8.self)
-                        .trimmingCharacters(in: .whitespaces)
-                    pending.removeSubrange(pending.startIndex...terminator)
-                    return .finished(Int32(digits) ?? -1)
+                    awaitingExitCode = true
+                    continue
                 }
             }
         }
@@ -237,6 +296,24 @@ enum LinuxGuestFraming {
                 target.append(contentsOf: bytes)
             }
             if section == .stdout { stdout = target } else { stderr = target }
+        }
+
+        /// Appends the parseable prefix of `pending` to the current section
+        /// and retains only the longest suffix that is still a proper prefix
+        /// of one of `markers` (a marker split across console chunks). Used
+        /// once BEGIN has been seen; the prelude before BEGIN is still
+        /// discarded by `keepTail`.
+        private mutating func flushPendingPrefix(markers: [Data]) {
+            let maxTail = max(0, (markers.map(\.count).max() ?? 1) - 1)
+            var retain = min(maxTail, pending.count)
+            while retain > 0 {
+                let tail = pending.suffix(retain)
+                if markers.contains(where: { $0.starts(with: tail) }) { break }
+                retain -= 1
+            }
+            let flushEnd = pending.index(pending.endIndex, offsetBy: -retain)
+            append(pending[pending.startIndex..<flushEnd])
+            pending.removeSubrange(pending.startIndex..<flushEnd)
         }
 
         private mutating func keepTail(_ count: Int) {
@@ -300,6 +377,97 @@ enum LinuxGuestFraming {
         }
 
         private mutating func trimToTail(_ count: Int) {
+            guard count > 0, pending.count > count else { return }
+            pending.removeFirst(pending.count - count)
+        }
+    }
+
+    /// Parser for control responses (SPAWN → PID + END, KILL/ALIVE → END).
+    /// Unlike the command parser it tolerates a missing BEGIN and keeps only
+    /// bounded text (guest diagnostics), because control commands have no
+    /// output sections.
+    struct ControlParser {
+        let token: String
+        let maxTextBytes = 64 * 1024
+        private(set) var pid: Int32?
+        private(set) var text = Data()
+        private var pending = Data()
+        private var section: Section = .stdout
+
+        init(token: String) {
+            self.token = token
+        }
+
+        var textString: String { String(decoding: text, as: UTF8.self) }
+
+        enum Progress: Equatable {
+            case needMore
+            case finished(exit: Int32)
+        }
+
+        mutating func feed(_ data: Data) -> Progress {
+            pending.append(data)
+            // PID is `\x1eFLOE-PID <token> <pid>\x1e`: the value follows the
+            // token, so only the token plus a space is the marker prefix (a
+            // closed marker would never match a real PID frame).
+            let pidPrefix = Data("\u{1e}FLOE-PID \(token) ".utf8)
+            let begin = marker("BEGIN", token: token)
+            let out = marker("OUT", token: token)
+            let err = marker("ERR", token: token)
+            let end = endMarkerPrefix(token)
+            let longest = max(pidPrefix.count, begin.count, out.count, err.count, end.count)
+            while true {
+                var earliest: (range: Range<Data.Index>, kind: UInt8)?
+                for (kind, candidate) in [(UInt8(0), pidPrefix), (UInt8(1), begin), (UInt8(2), out), (UInt8(3), err), (UInt8(4), end)] {
+                    if let range = pending.range(of: candidate) {
+                        if let current = earliest {
+                            if range.lowerBound < current.range.lowerBound { earliest = (range, kind) }
+                        } else {
+                            earliest = (range, kind)
+                        }
+                    }
+                }
+                guard let hit = earliest else {
+                    keepTail(longest - 1)
+                    return .needMore
+                }
+                appendText(pending[pending.startIndex..<hit.range.lowerBound])
+                pending.removeSubrange(pending.startIndex..<hit.range.upperBound)
+                switch hit.kind {
+                case 0:
+                    guard let terminator = pending.firstIndex(of: LinuxGuestFraming.markerByte) else {
+                        if pending.count > 32 { return .finished(exit: -1) }
+                        return .needMore
+                    }
+                    let digits = String(decoding: pending[pending.startIndex..<terminator], as: UTF8.self)
+                        .trimmingCharacters(in: .whitespaces)
+                    pending.removeSubrange(pending.startIndex...terminator)
+                    pid = Int32(digits)
+                case 1:
+                    continue
+                case 2:
+                    section = .stdout
+                case 3:
+                    section = .stderr
+                default:
+                    guard let terminator = pending.firstIndex(of: LinuxGuestFraming.markerByte) else {
+                        if pending.count > 32 { return .finished(exit: -1) }
+                        return .needMore
+                    }
+                    let digits = String(decoding: pending[pending.startIndex..<terminator], as: UTF8.self)
+                        .trimmingCharacters(in: .whitespaces)
+                    pending.removeSubrange(pending.startIndex...terminator)
+                    return .finished(exit: Int32(digits) ?? -1)
+                }
+            }
+        }
+
+        private mutating func appendText(_ bytes: Data.SubSequence) {
+            guard !bytes.isEmpty, text.count < maxTextBytes else { return }
+            text.append(contentsOf: bytes.prefix(maxTextBytes - text.count))
+        }
+
+        private mutating func keepTail(_ count: Int) {
             guard count > 0, pending.count > count else { return }
             pending.removeFirst(pending.count - count)
         }
@@ -486,6 +654,12 @@ public actor LinuxGuestCommandChannel {
     private let transport: any LinuxGuestConsoleTransport
     private let limits: LinuxGuestLimits
     private var stream: AsyncStream<Data>?
+    /// One long-lived console reader for the channel's lifetime. Cancelling a
+    /// per-command reader would terminate the AsyncStream, so a guest could
+    /// serve exactly one command; the reader keeps pumping chunks and each
+    /// command (or session) consumes them from this buffer in turn.
+    private var consoleBuffer: LinuxGuestChunkBuffer?
+    private var consoleReader: Task<Void, Never>?
     private var activeToken: String?
     private var activeSession: LinuxGuestInteractiveSession?
     private var poisoned = false
@@ -535,15 +709,7 @@ public actor LinuxGuestCommandChannel {
             throw LinuxGuestError.invalidConfiguration("command exceeds the \(limits.maxCommandBytes) byte guest limit")
         }
 
-        let buffer = LinuxGuestChunkBuffer()
-        let consoleStream = await ensureStream()
-        let reader = Task {
-            for await chunk in consoleStream {
-                await buffer.push(chunk)
-            }
-            await buffer.finish()
-        }
-        defer { reader.cancel() }
+        let buffer = await ensureConsoleBuffer()
 
         let timeoutTask = Task {
             try? await Task.sleep(for: .seconds(effectiveTimeout))
@@ -571,7 +737,7 @@ public actor LinuxGuestCommandChannel {
         }
         defer { cancellationTask.cancel() }
 
-        for frame in LinuxGuestFraming.payloadHeader("EXEC", token: token, payload: payload) {
+        for frame in LinuxGuestFraming.payloadFrames(name: "EXEC", token: token, payload: payload) {
             try await transport.write(Array(frame))
         }
 
@@ -595,6 +761,169 @@ public actor LinuxGuestCommandChannel {
             case .failed(let reason):
                 poisoned = true
                 throw LinuxGuestError.consoleUnavailable(reason)
+            }
+        }
+    }
+
+    // MARK: background services (exec.localService)
+
+    private struct ControlOutcome {
+        var pid: Int32?
+        var exit: Int32
+        var text: String
+    }
+
+    /// Starts one detached guest service (`FLOE-SPAWN`): the runner forks a
+    /// process group, appends its stdout/stderr to `logPath` (a guest path in
+    /// the environment share) and reports the pid without waiting for it. The
+    /// channel is free for the next command as soon as the pid arrives.
+    public func spawnService(
+        argv: [String],
+        workingDirectory: String? = nil,
+        logPath: String,
+        timeout: TimeInterval? = nil,
+        cancellation: CancellationToken? = nil
+    ) async throws -> Int32 {
+        guard !argv.isEmpty else {
+            throw LinuxGuestError.invalidConfiguration("service argv must not be empty")
+        }
+        guard argv.allSatisfy({ !$0.contains("\u{0}") }), !logPath.contains("\u{0}") else {
+            throw LinuxGuestError.invalidConfiguration("service argv and log path must not contain NUL bytes")
+        }
+        let payload = LinuxGuestFraming.servicePayload(of: argv, workingDirectory: workingDirectory, logPath: logPath)
+        guard payload.count <= limits.maxCommandBytes else {
+            throw LinuxGuestError.invalidConfiguration("service command exceeds the \(limits.maxCommandBytes) byte guest limit")
+        }
+        let outcome = try await performControl(
+            name: "SPAWN",
+            payload: payload,
+            timeout: limits.clampedTimeout(timeout ?? limits.defaultCommandTimeout),
+            cancellation: cancellation
+        )
+        guard outcome.exit == 0, let pid = outcome.pid, pid > 0 else {
+            let detail = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw LinuxGuestError.startFailed(
+                detail.isEmpty ? "the guest did not report a service pid (exit \(outcome.exit))" : detail
+            )
+        }
+        return pid
+    }
+
+    /// Kills one pid the guest runner itself spawned. Returns false when the
+    /// guest reports that pid unknown (it already exited).
+    public func killService(
+        pid: Int32,
+        timeout: TimeInterval? = nil,
+        cancellation: CancellationToken? = nil
+    ) async throws -> Bool {
+        guard pid > 0 else {
+            throw LinuxGuestError.invalidConfiguration("service pid must be positive")
+        }
+        let outcome = try await performControl(
+            name: "KILL",
+            arguments: [String(pid)],
+            timeout: limits.clampedTimeout(timeout ?? 10),
+            cancellation: cancellation
+        )
+        switch outcome.exit {
+        case 0: return true
+        case 3: return false
+        default:
+            let detail = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw LinuxGuestError.startFailed(detail.isEmpty ? "guest rejected KILL \(pid) (exit \(outcome.exit))" : detail)
+        }
+    }
+
+    /// True while the pid is alive in the guest. The runner only answers for
+    /// pids it spawned, so a recycled host pid can never be mistaken for a
+    /// Floe service.
+    public func serviceAlive(
+        pid: Int32,
+        timeout: TimeInterval? = nil,
+        cancellation: CancellationToken? = nil
+    ) async throws -> Bool {
+        guard pid > 0 else {
+            throw LinuxGuestError.invalidConfiguration("service pid must be positive")
+        }
+        let outcome = try await performControl(
+            name: "ALIVE",
+            arguments: [String(pid)],
+            timeout: limits.clampedTimeout(timeout ?? 10),
+            cancellation: cancellation
+        )
+        switch outcome.exit {
+        case 0: return true
+        case 3: return false
+        default:
+            let detail = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw LinuxGuestError.startFailed(detail.isEmpty ? "guest rejected ALIVE \(pid) (exit \(outcome.exit))" : detail)
+        }
+    }
+
+    /// Serializes one control exchange (`SPAWN`/`KILL`/`ALIVE`) through the
+    /// same single-consumer console path as commands and sessions.
+    private func performControl(
+        name: String,
+        arguments: [String] = [],
+        payload: Data? = nil,
+        timeout: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> ControlOutcome {
+        guard activeToken == nil, activeSession == nil else {
+            throw LinuxGuestError.invalidConfiguration("another guest command or session is still running")
+        }
+        guard !poisoned else {
+            throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier interrupted command")
+        }
+        let token = UUID().uuidString
+        activeToken = token
+        defer { activeToken = nil }
+
+        let frames = payload.map {
+            LinuxGuestFraming.payloadFrames(name: name, token: token, payload: $0, allowInline: false)
+        } ?? [LinuxGuestFraming.controlLine(name, token: token, arguments: arguments)]
+
+        let buffer = await ensureConsoleBuffer()
+
+        let timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled else { return }
+            await self.failRun(
+                token: token,
+                buffer: buffer,
+                error: LinuxGuestError.timedOut(seconds: timeout)
+            )
+        }
+        defer { timeoutTask.cancel() }
+
+        let cancellationTask = Task {
+            while !Task.isCancelled {
+                if cancellation?.isCancelled == true {
+                    await self.failRun(token: token, buffer: buffer, error: FloeError.cancelled)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        defer { cancellationTask.cancel() }
+
+        for frame in frames {
+            try await transport.write(Array(frame))
+        }
+
+        var parser = LinuxGuestFraming.ControlParser(token: token)
+        while true {
+            guard let chunk = await buffer.next() else {
+                if let failure = await buffer.takeFailure() {
+                    throw failure
+                }
+                throw LinuxGuestError.consoleUnavailable("guest console closed before the \(name) exchange completed")
+            }
+            switch parser.feed(chunk) {
+            case .needMore:
+                continue
+            case .finished(let exit):
+                return ControlOutcome(pid: parser.pid, exit: exit, text: parser.textString)
             }
         }
     }
@@ -630,13 +959,20 @@ public actor LinuxGuestCommandChannel {
         return session
     }
 
-    /// Reads the console stream until the session ends. Runs as a detached
-    /// task so `openSession` can return the live handle immediately.
+    /// Reads console chunks until the session ends. Runs as a detached task so
+    /// `openSession` can return the live handle immediately; it consumes the
+    /// channel's shared console buffer, like commands do.
     private func pumpSession(_ session: LinuxGuestInteractiveSession) async {
-        let consoleStream = await ensureStream()
+        let buffer = await ensureConsoleBuffer()
         while !Task.isCancelled {
             var parser = LinuxGuestFraming.SessionParser(sessionID: session.id)
-            for await chunk in consoleStream {
+            while true {
+                guard let chunk = await buffer.next() else {
+                    // Guest stopped: finish the session instead of hanging.
+                    await session.finish(exit: -1)
+                    if activeSession === session { activeSession = nil }
+                    return
+                }
                 switch parser.feed(chunk) {
                 case .needMore:
                     continue
@@ -653,10 +989,6 @@ public actor LinuxGuestCommandChannel {
                     return
                 }
             }
-            // Stream ended (guest stopped): finish the session.
-            await session.finish(exit: -1)
-            if activeSession === session { activeSession = nil }
-            return
         }
     }
 
@@ -668,6 +1000,12 @@ public actor LinuxGuestCommandChannel {
     }
 
     public func close() async {
+        consoleReader?.cancel()
+        consoleReader = nil
+        if let buffer = consoleBuffer {
+            await buffer.finish()
+        }
+        consoleBuffer = nil
         stream = nil
         let session = activeSession
         activeSession = nil
@@ -682,6 +1020,23 @@ public actor LinuxGuestCommandChannel {
         let stream = await transport.output()
         self.stream = stream
         return stream
+    }
+
+    /// The channel's single console buffer, with one reader task that lives
+    /// until `close()`. Sequential commands each consume from the same buffer,
+    /// so a guest keeps serving after the first command.
+    private func ensureConsoleBuffer() async -> LinuxGuestChunkBuffer {
+        if let consoleBuffer { return consoleBuffer }
+        let buffer = LinuxGuestChunkBuffer()
+        consoleBuffer = buffer
+        let stream = await ensureStream()
+        consoleReader = Task {
+            for await chunk in stream {
+                await buffer.push(chunk)
+            }
+            await buffer.finish()
+        }
+        return buffer
     }
 
     private func failRun(

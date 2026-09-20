@@ -106,6 +106,14 @@ public actor TinyEMULinuxGuestRegistry {
 
     public func status(environmentID: String) async -> LinuxGuestStatus {
         let descriptor = await environments.linuxGuestEnvironment(id: environmentID)
+        var imageInstalled: Bool?
+        var imageFailure: String?
+        var distributable: Bool?
+        if let imageID = descriptor?.imageID {
+            imageInstalled = await images.linuxGuestImage(id: imageID) != nil
+            imageFailure = await images.linuxGuestImageVerificationFailure(id: imageID)
+            distributable = LinuxGuestImageDistributionCatalog.entry(id: imageID) != nil
+        }
         if let session = sessions[environmentID] {
             return LinuxGuestStatus(
                 environmentID: environmentID,
@@ -113,7 +121,10 @@ public actor TinyEMULinuxGuestRegistry {
                 imageID: session.image.id,
                 ramMB: limits.clampedRAMMB(session.descriptor.ramMB),
                 startedAt: session.startedAt,
-                lastError: lastErrors[environmentID]
+                lastError: lastErrors[environmentID],
+                imageInstalled: imageInstalled,
+                imageVerificationFailure: imageFailure,
+                imageDistributable: distributable
             )
         }
         return LinuxGuestStatus(
@@ -121,7 +132,10 @@ public actor TinyEMULinuxGuestRegistry {
             running: false,
             imageID: descriptor?.imageID,
             ramMB: descriptor?.ramMB,
-            lastError: lastErrors[environmentID]
+            lastError: lastErrors[environmentID],
+            imageInstalled: imageInstalled,
+            imageVerificationFailure: imageFailure,
+            imageDistributable: distributable
         )
     }
 
@@ -148,7 +162,14 @@ public actor TinyEMULinuxGuestRegistry {
             lastErrors[environmentID] = reason
             throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: reason)
         }
-        if let failure = image.qualificationFailure() {
+        // Digest verification is the gate that makes a manifest's `qualified`
+        // flag meaningful: a hand-written flag with no matching artifact bytes
+        // is rejected here, before any VM is created.
+        if let failure = await images.linuxGuestImageVerificationFailure(id: descriptor.imageID) {
+            lastErrors[environmentID] = failure
+            throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: failure)
+        }
+        if let failure = image.qualificationFailure(imageDirectory: images.imageRoot?.appendingPathComponent(descriptor.imageID, isDirectory: true)) {
             lastErrors[environmentID] = failure
             throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: failure)
         }
@@ -246,6 +267,11 @@ public actor TinyEMULinuxGuestRegistry {
         for id in owned {
             await stop(environmentID: id)
         }
+    }
+
+    /// Environment ids whose guest was started by this task.
+    public func environments(taskID: String) async -> [String] {
+        sessions.filter { $0.value.taskID == taskID }.map(\.key)
     }
 
     public func stopAll() async {
@@ -365,15 +391,90 @@ public actor TinyEMULinuxGuestRegistry {
         session.forwards.removeAll { $0 == forward }
         sessions[environmentID] = session
     }
+
+    // MARK: background services (exec.localService)
+
+    /// Guest-side operations for the local-service supervisor. These keep the
+    /// same single-session rule as commands and sessions: a SPAWN/KILL/ALIVE
+    /// exchange owns the console only while it is in flight.
+    public func guestDescriptor(environmentID: String) async -> LinuxGuestEnvironmentDescriptor? {
+        await environments.linuxGuestEnvironment(id: environmentID)
+    }
+
+    /// Host↔guest path mapping for this environment's 9p shares.
+    public func linuxGuestPathMap(environmentID: String) async -> LinuxGuestPathMap? {
+        guard let descriptor = await environments.linuxGuestEnvironment(id: environmentID) else { return nil }
+        return LinuxGuestPathMap(shares: descriptor.shares)
+    }
+
+    public func guestSpawn(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        logPath: String,
+        timeout: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> Int32 {
+        guard let session = sessions[environmentID], await session.handle.isRunning() else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        do {
+            return try await session.channel.spawnService(
+                argv: argv,
+                workingDirectory: workingDirectory,
+                logPath: logPath,
+                timeout: timeout,
+                cancellation: cancellation
+            )
+        } catch {
+            lastErrors[environmentID] = error.localizedDescription
+            if await session.channel.isPoisoned {
+                await stop(environmentID: environmentID)
+            }
+            throw error
+        }
+    }
+
+    public func guestServiceAlive(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
+        guard let session = sessions[environmentID], await session.handle.isRunning() else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        return try await session.channel.serviceAlive(pid: pid, timeout: timeout)
+    }
+
+    public func guestKillService(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
+        guard let session = sessions[environmentID], await session.handle.isRunning() else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        return try await session.channel.killService(pid: pid, timeout: timeout)
+    }
+
+    public func guestEnsureForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
+        try await addForward(environmentID: environmentID, forward: forward)
+    }
+
+    public func guestRemoveForward(environmentID: String, forward: LinuxGuestServiceForward) async {
+        await removeForward(environmentID: environmentID, forward: forward)
+    }
+}
+
+extension TinyEMULinuxGuestRegistry: LinuxGuestLocalServiceHosting {}
+
+extension TinyEMULinuxCommandService: LinuxGuestPathMapping {
+    public func linuxGuestPathMap(environmentID: String) async -> LinuxGuestPathMap? {
+        await registry.linuxGuestPathMap(environmentID: environmentID)
+    }
 }
 
 /// The injected `LinuxCommandRunning` implementation: one service per app,
 /// one guest per environment, shared by shell, localPython and localService.
-public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControlling {
+public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControlling, LinuxGuestLocalServiceControlling {
     private let registry: TinyEMULinuxGuestRegistry
+    private let localServices: LinuxGuestLocalServiceSupervisor
 
-    public init(registry: TinyEMULinuxGuestRegistry) {
+    public init(registry: TinyEMULinuxGuestRegistry, limits: LinuxGuestLimits = .standard) {
         self.registry = registry
+        self.localServices = LinuxGuestLocalServiceSupervisor(host: registry, limits: limits)
     }
 
     // MARK: LinuxCommandRunning
@@ -413,11 +514,20 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     public func stopGuest(environmentID: String) async {
+        // Services die with their guest: kill them explicitly first so the
+        // host forwarding table and the job log are closed out, not just
+        // discarded with the VM. The shared-Python cache is dropped as well;
+        // a restart re-probes the (persistent) venv instead of trusting a
+        // path resolved before the layer was remounted.
+        await localServices.stopLocalServices(environmentID: environmentID)
         await registry.stop(environmentID: environmentID)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
     }
 
     public func deleteGuest(environmentID: String) async {
+        await localServices.stopLocalServices(environmentID: environmentID)
         await registry.stop(environmentID: environmentID)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
     }
 
     public func guestIsRunning(environmentID: String) async -> Bool {
@@ -429,6 +539,9 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     public func stopGuests(taskID: String) async {
+        for environmentID in await registry.environments(taskID: taskID) {
+            await localServices.stopLocalServices(environmentID: environmentID)
+        }
         await registry.stop(taskID: taskID)
     }
 
@@ -489,6 +602,33 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     public func shutdown() async {
+        await localServices.stopAllLocalServices()
         await registry.stopAll()
+    }
+
+    // MARK: LinuxGuestLocalServiceControlling
+
+    public func startLocalService(
+        environmentID: String,
+        request: LinuxGuestLocalServiceRequest,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestLocalServiceHandle {
+        try await localServices.startLocalService(
+            environmentID: environmentID,
+            request: request,
+            cancellation: cancellation
+        )
+    }
+
+    public func localServiceSnapshot(_ handle: LinuxGuestLocalServiceHandle) async -> LinuxGuestLocalServiceSnapshot {
+        await localServices.localServiceSnapshot(handle)
+    }
+
+    public func stopLocalService(_ handle: LinuxGuestLocalServiceHandle) async {
+        await localServices.stopLocalService(handle)
+    }
+
+    public func stopLocalServices(environmentID: String) async {
+        await localServices.stopLocalServices(environmentID: environmentID)
     }
 }

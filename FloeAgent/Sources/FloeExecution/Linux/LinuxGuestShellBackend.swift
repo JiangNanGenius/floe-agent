@@ -47,9 +47,15 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         let timeout = limits.clampedTimeout(request.timeout)
         let maxOutput = limits.clampedOutputBytes(request.maxOutputBytes)
         do {
+            // The environment's shared Python venv comes first on PATH when it
+            // exists, so `python3`/`pip` in a shell command are the same
+            // interpreter and site-packages as exec.localPython and the
+            // managed installer. The preamble is a guarded no-op before the
+            // first Python use and never renames the commands.
+            let command = LinuxGuestPythonEnvironment.activationPreamble() + request.command
             let result = try await runner.run(
                 environmentID: environmentID,
-                argv: ["/bin/sh", "-c", request.command],
+                argv: ["/bin/sh", "-c", command],
                 workingDirectory: request.cwd,
                 standardInput: request.stdin,
                 timeout: timeout,
@@ -88,7 +94,13 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
         let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines)
-        let argv = command.isEmpty ? ["/bin/sh", "-i"] : ["/bin/sh", "-c", command]
+        // Interactive shells enter the environment's shared Python venv as
+        // well (guarded no-op when it does not exist yet), so a terminal
+        // `python3`/`pip` matches exec.localPython.
+        let preamble = LinuxGuestPythonEnvironment.activationPreamble()
+        let argv = command.isEmpty
+            ? ["/bin/sh", "-c", preamble + "exec /bin/sh -i"]
+            : ["/bin/sh", "-c", preamble + command]
         let workingDirectory = request.cwd.isEmpty ? nil : request.cwd
         try await sessions.openSession(
             environmentID: environmentID,

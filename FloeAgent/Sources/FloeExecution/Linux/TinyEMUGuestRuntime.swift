@@ -60,8 +60,10 @@ private final class TinyEMUVMHandle: @unchecked Sendable {
 public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked Sendable {
     public static let consoleChunkLimit = 256
     /// Default guest console: hvc0 with the Floe guest runner as init target.
-    /// The image manifest may override this.
-    public static let defaultCmdline = "console=hvc0 root=/dev/vda rw loglevel=4"
+    /// The image manifest may override this; `effectiveCmdline` appends the
+    /// runner init when the manifest does not name one, so a verified image
+    /// always enters the FLOE-EXEC channel.
+    public static let defaultCmdline = "console=hvc0 root=/dev/vda rw loglevel=4 init=" + LinuxGuestImage.runnerGuestPath
 
     public let environmentID: String
     private let image: LinuxGuestImage
@@ -136,7 +138,7 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
             Self.withOptionalCString(image.kernelPath) { kernel in
                 Self.withOptionalCString(image.initrdPath) { initrd in
                     Self.withOptionalCString(image.diskPath) { disk in
-                        Self.withOptionalCString(image.cmdline ?? Self.defaultCmdline) { cmdline in
+                        Self.withOptionalCString(image.effectiveCmdline) { cmdline in
                             var local = config
                             local.bios_path = bios
                             local.kernel_path = kernel

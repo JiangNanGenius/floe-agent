@@ -26,4 +26,23 @@ public enum FloeDigest {
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
+
+    public static func sha512Hex(_ data: Data) -> String {
+        SHA512.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Streaming SHA-512 for guest image artifacts (BIOS/kernel/initrd/disk).
+    /// The image manifest binds artifact digests, so verification must hash the
+    /// actual bytes and never trust a size or a user-written `qualified` flag.
+    public static func sha512Hex(ofFileAt url: URL, chunkSize: Int = 1 << 20) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA512()
+        while true {
+            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }

@@ -137,6 +137,102 @@ public struct LinuxGuestShare: Sendable, Hashable {
     }
 }
 
+/// Guest mount points for the two Floe shares. These are part of the contract
+/// with the guest runner (`FloeAgent/LinuxGuest/runner/floe_exec.c`), which
+/// mounts `floe-env` at `/floe/env` and `workspace` at `/workspace` before it
+/// reads commands; changing them requires changing both sides together.
+public enum LinuxGuestMountPoint {
+    public static let environment = "/floe/env"
+    public static let workspace = "/workspace"
+}
+
+/// Maps host paths to guest paths using the environment's 9p shares. Every
+/// host path handed to the guest (cwd, entry script, log file, Python target)
+/// goes through this type, so the guest never receives a host path and the
+/// host never accepts a guest path outside a declared share.
+public struct LinuxGuestPathMap: Sendable {
+    private let entries: [(host: String, guest: String)]
+
+    public init(shares: [LinuxGuestShare]) {
+        var entries: [(host: String, guest: String)] = []
+        for share in shares {
+            let host = share.hostDirectory.resolvingSymlinksInPath().standardizedFileURL.path
+            let guest: String
+            switch share.tag {
+            case LinuxGuestShare.environmentTag: guest = LinuxGuestMountPoint.environment
+            case LinuxGuestShare.workspaceTag: guest = LinuxGuestMountPoint.workspace
+            default: guest = "/floe/" + share.tag
+            }
+            entries.append((host, guest))
+        }
+        // Longest host prefix wins so a share nested under another one still
+        // maps to its own mount point.
+        self.entries = entries.sorted { $0.host.count > $1.host.count }
+    }
+
+    /// Guest path for a host path inside one of the shares, nil otherwise.
+    /// `..` components are rejected instead of normalized into an escape.
+    public func guestPath(forHostPath path: String?) -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        guard !path.split(separator: "/").contains("..") else { return nil }
+        let host = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        for entry in entries {
+            if host == entry.host { return entry.guest }
+            if host.hasPrefix(entry.host + "/") {
+                return entry.guest + String(host.dropFirst(entry.host.count))
+            }
+        }
+        return nil
+    }
+
+    /// Host URL for a guest path under one of the mount points, nil otherwise.
+    public func hostPath(forGuestPath path: String) -> URL? {
+        guard !path.split(separator: "/").contains("..") else { return nil }
+        for entry in entries {
+            if path == entry.guest { return URL(fileURLWithPath: entry.host, isDirectory: true) }
+            if path.hasPrefix(entry.guest + "/") {
+                let relative = String(path.dropFirst(entry.guest.count + 1))
+                return URL(fileURLWithPath: entry.host, isDirectory: true).appendingPathComponent(relative)
+            }
+        }
+        return nil
+    }
+
+    public var isEmpty: Bool { entries.isEmpty }
+
+    /// Guest root of the environment write layer, when the descriptor shares it.
+    public var environmentGuestRoot: String? {
+        entries.first { $0.guest == LinuxGuestMountPoint.environment }?.guest
+    }
+
+    /// Guest root of the workspace, when the descriptor shares it.
+    public var workspaceGuestRoot: String? {
+        entries.first { $0.guest == LinuxGuestMountPoint.workspace }?.guest
+    }
+}
+
+/// Encodes environment variables as a raw `env KEY=VALUE …` prefix. Keys and
+/// values are validated so an environment dictionary can never smuggle NULs
+/// or framing bytes into a guest command line.
+public enum LinuxGuestEnvironmentEncoding {
+    public static func argv(_ variables: [String: String]) -> [String]? {
+        let allowed = variables.filter { key, value in
+            guard !value.contains("\u{0}") else { return false }
+            guard let first = key.first, first.isLetter || first == "_" else { return false }
+            return key.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+        }
+        guard !allowed.isEmpty else { return nil }
+        return allowed.keys.sorted().map { "\($0)=\(allowed[$0]!)" }
+    }
+}
+
+/// Optional capability for services that can map host paths to their guest
+/// shares. `exec.localPython` and the shell use it to hand the guest a cwd and
+/// Python target instead of a macOS path the guest cannot see.
+public protocol LinuxGuestPathMapping: Sendable {
+    func linuxGuestPathMap(environmentID: String) async -> LinuxGuestPathMap?
+}
+
 /// One host→guest TCP/UDP service forward through slirp. A guest service
 /// (localService) becomes reachable on the host loopback address.
 public struct LinuxGuestServiceForward: Sendable, Hashable {
@@ -207,9 +303,58 @@ public protocol LinuxGuestEnvironmentProviding: Sendable {
     func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor?
 }
 
-/// A guest image manifest. `qualified` records whether a modern-guest
-/// qualification run actually produced a working Linux userland for this
-/// manifest; unqualified images are reported, never started.
+/// A guest image manifest. `qualified` alone is never trusted: a startable
+/// image must also carry a qualification record (`qualificationRun` plus a
+/// SHA-512 digest for every artifact), and the resolver hashes the actual
+/// bytes before the registry starts the guest. A user-edited `qualified: true`
+/// without matching digests is reported as unqualified.
+public struct LinuxGuestImageArtifact: Sendable, Equatable, Codable {
+    public enum Role: String, Codable, Sendable {
+        case bios
+        case kernel
+        case initrd
+        case disk
+    }
+
+    public var role: Role
+    public var path: String
+    public var sha512: String
+    public var bytes: Int64
+
+    public init(role: Role, path: String, sha512: String, bytes: Int64) {
+        self.role = role
+        self.path = path
+        self.sha512 = sha512
+        self.bytes = bytes
+    }
+}
+
+/// Provenance of a guest image. Distributing an image is a separate decision
+/// from running one locally: a GPL-derived guest userland needs its source and
+/// build configuration to be published, so the official download entry only
+/// accepts an image whose manifest carries this record *and* whose archive
+/// digest is pinned by this build.
+public struct LinuxGuestImageProvenance: Sendable, Equatable, Codable {
+    public var sourceURL: String?
+    public var buildConfigurationURL: String?
+    public var license: String?
+    /// False unless the corresponding source and license obligations are
+    /// published for exactly this image.
+    public var distributionAllowed: Bool
+
+    public init(
+        sourceURL: String? = nil,
+        buildConfigurationURL: String? = nil,
+        license: String? = nil,
+        distributionAllowed: Bool = false
+    ) {
+        self.sourceURL = sourceURL
+        self.buildConfigurationURL = buildConfigurationURL
+        self.license = license
+        self.distributionAllowed = distributionAllowed
+    }
+}
+
 public struct LinuxGuestImage: Sendable, Equatable, Codable {
     public var id: String
     public var biosPath: String
@@ -220,6 +365,12 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
     public var cmdline: String?
     public var qualified: Bool
     public var qualificationEvidence: String?
+    /// Identifier of the qualification run that produced the digests below
+    /// (workflow run URL or id). Required for a startable image.
+    public var qualificationRun: String?
+    /// SHA-512 bound artifact list. Required for a startable image.
+    public var artifacts: [LinuxGuestImageArtifact]?
+    public var provenance: LinuxGuestImageProvenance?
 
     public init(
         id: String,
@@ -230,7 +381,10 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
         diskReadWrite: Bool = true,
         cmdline: String? = nil,
         qualified: Bool = false,
-        qualificationEvidence: String? = nil
+        qualificationEvidence: String? = nil,
+        qualificationRun: String? = nil,
+        artifacts: [LinuxGuestImageArtifact]? = nil,
+        provenance: LinuxGuestImageProvenance? = nil
     ) {
         self.id = id
         self.biosPath = biosPath
@@ -241,44 +395,145 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
         self.cmdline = cmdline
         self.qualified = qualified
         self.qualificationEvidence = qualificationEvidence
+        self.qualificationRun = qualificationRun
+        self.artifacts = artifacts
+        self.provenance = provenance
     }
 
-    /// Reason string for `LinuxGuestError.imageNotQualified`; nil when the
-    /// image may start. Every artifact path must also exist on disk.
-    public func qualificationFailure(fileManager: FileManager = .default) -> String? {
+    /// The declared artifact paths with their roles, in manifest order.
+    public var declaredArtifacts: [(role: LinuxGuestImageArtifact.Role, path: String)] {
+        var result: [(LinuxGuestImageArtifact.Role, String)] = [(.bios, biosPath)]
+        if let kernelPath { result.append((.kernel, kernelPath)) }
+        if let initrdPath { result.append((.initrd, initrdPath)) }
+        if let diskPath { result.append((.disk, diskPath)) }
+        return result
+    }
+
+    /// Artifact URL for a declared path. Relative paths resolve inside the
+    /// image directory (the portable, distributable form); absolute paths are
+    /// kept for locally built images and must still verify inside the
+    /// directory. Nothing is normalized out of the image directory silently:
+    /// the verifier rejects escapes.
+    public func artifactURL(_ path: String, imageDirectory: URL) -> URL {
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
+        return imageDirectory.appendingPathComponent(path)
+    }
+
+    public func artifactDigest(role: LinuxGuestImageArtifact.Role) -> LinuxGuestImageArtifact? {
+        artifacts?.first { $0.role == role }
+    }
+
+    /// Structural qualification check: `qualified`, a named qualification run,
+    /// a digest for every declared artifact, and existing regular files. The
+    /// digest bytes themselves are verified by `LinuxGuestImageVerifier`,
+    /// which knows the image root; this function must not be used alone as
+    /// proof that an image is startable.
+    public func qualificationFailure(imageDirectory: URL? = nil, fileManager: FileManager = .default) -> String? {
         if !qualified {
             let evidence = qualificationEvidence?.trimmingCharacters(in: .whitespacesAndNewlines)
             return "no modern Linux qualification run has passed (\(evidence?.isEmpty == false ? evidence! : "no evidence recorded"))"
         }
-        for path in [biosPath, kernelPath, initrdPath, diskPath].compactMap({ $0 }) {
-            if !fileManager.fileExists(atPath: path) {
-                return "image artifact is missing: \(path)"
+        let run = qualificationRun?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if run?.isEmpty != false {
+            return "manifest claims qualified but records no qualification run id"
+        }
+        guard let artifacts, !artifacts.isEmpty else {
+            return "manifest claims qualified but carries no artifact digests; import the image through a verified archive"
+        }
+        for declared in declaredArtifacts {
+            guard let digest = artifactDigest(role: declared.role) else {
+                return "manifest has no \(declared.role.rawValue) digest; a partial image cannot start"
+            }
+            if digest.path != declared.path {
+                return "\(declared.role.rawValue) digest path does not match the manifest path"
+            }
+            let normalized = digest.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized.count != 128 || normalized.contains(where: { !$0.isHexDigit }) {
+                return "\(declared.role.rawValue) digest is not a SHA-512 hex string"
+            }
+            if digest.bytes <= 0 {
+                return "\(declared.role.rawValue) digest records no size"
+            }
+        }
+        for declared in declaredArtifacts {
+            let url: URL
+            if let imageDirectory {
+                url = artifactURL(declared.path, imageDirectory: imageDirectory)
+            } else {
+                url = URL(fileURLWithPath: declared.path)
+            }
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                return "image artifact is missing: \(url.path)"
             }
         }
         return nil
     }
+
+    /// The cmdline the guest must boot with. The Floe runner is injected as
+    /// the guest init; a manifest that only configures console/root gets it
+    /// appended so a qualified image always enters the command channel. If the
+    /// manifest already names an init, it is left untouched (verified images
+    /// must point at the runner).
+    public var effectiveCmdline: String {
+        let base = cmdline ?? "console=hvc0 root=/dev/vda rw loglevel=4"
+        guard !base.contains("init=") else { return base }
+        return base + " init=" + LinuxGuestImage.runnerGuestPath
+    }
+
+    /// Absolute guest path of the injected Floe runner.
+    public static let runnerGuestPath = "/usr/local/bin/floe-exec"
 }
 
 /// Resolves guest image ids to manifests. The app supplies a file-backed
 /// implementation; tests supply in-memory images.
 public protocol LinuxGuestImageResolving: Sendable {
     func linuxGuestImage(id: String) async -> LinuxGuestImage?
+    /// Root the manifest paths are relative to / contained in. nil means the
+    /// resolver cannot verify digests (in-memory test images).
+    var imageRoot: URL? { get }
+    /// nil when the resolver cannot verify digests; otherwise the reason the
+    /// image must not start (missing artifact, digest mismatch, path escape).
+    func linuxGuestImageVerificationFailure(id: String) async -> String?
 }
 
-/// File-backed image catalog: `<root>/<id>/manifest.json`. The root is an
-/// app-owned directory; nothing is bundled by default because no qualified
-/// modern guest image exists yet.
-public struct FileLinuxGuestImageResolver: LinuxGuestImageResolving {
-    public var root: URL
+public extension LinuxGuestImageResolving {
+    var imageRoot: URL? { nil }
+    func linuxGuestImageVerificationFailure(id: String) async -> String? { nil }
+}
 
-    public init(root: URL) {
+/// File-backed image catalog: `<root>/<id>/manifest.json`. The resolver is an
+/// actor because verification hashes the artifacts once per changed file and
+/// caches the result; nothing is bundled by default because no qualified
+/// modern guest image exists yet.
+public actor FileLinuxGuestImageResolver: LinuxGuestImageResolving {
+    public nonisolated let root: URL
+    private let verifier: LinuxGuestImageVerifier
+
+    public init(root: URL, verifier: LinuxGuestImageVerifier = LinuxGuestImageVerifier()) {
         self.root = root
+        self.verifier = verifier
     }
+
+    public nonisolated var imageRoot: URL? { root }
 
     public func linuxGuestImage(id: String) async -> LinuxGuestImage? {
         let manifest = root.appendingPathComponent(id, isDirectory: true).appendingPathComponent("manifest.json")
         guard let data = try? Data(contentsOf: manifest) else { return nil }
         return try? JSONDecoder().decode(LinuxGuestImage.self, from: data)
+    }
+
+    public func linuxGuestImageVerificationFailure(id: String) async -> String? {
+        guard let image = await linuxGuestImage(id: id) else {
+            return "no guest image manifest for id '\(id)'"
+        }
+        let directory = root.appendingPathComponent(id, isDirectory: true)
+        return await verifier.verificationFailure(image: image, imageDirectory: directory)
+    }
+
+    /// Drops cached digest verification for one image (after import/removal).
+    public func invalidate(id: String) async {
+        await verifier.invalidate(id: id)
     }
 }
 
@@ -350,6 +605,11 @@ public struct LinuxGuestStatus: Sendable, Equatable {
     public var ramMB: Int?
     public var startedAt: Date?
     public var lastError: String?
+    /// Image state independent of any start attempt, so the UI can explain an
+    /// unqualified/missing image before the user tries to start the guest.
+    public var imageInstalled: Bool?
+    public var imageVerificationFailure: String?
+    public var imageDistributable: Bool?
 
     public init(
         environmentID: String,
@@ -357,7 +617,10 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         imageID: String? = nil,
         ramMB: Int? = nil,
         startedAt: Date? = nil,
-        lastError: String? = nil
+        lastError: String? = nil,
+        imageInstalled: Bool? = nil,
+        imageVerificationFailure: String? = nil,
+        imageDistributable: Bool? = nil
     ) {
         self.environmentID = environmentID
         self.running = running
@@ -365,6 +628,9 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         self.ramMB = ramMB
         self.startedAt = startedAt
         self.lastError = lastError
+        self.imageInstalled = imageInstalled
+        self.imageVerificationFailure = imageVerificationFailure
+        self.imageDistributable = imageDistributable
     }
 }
 
