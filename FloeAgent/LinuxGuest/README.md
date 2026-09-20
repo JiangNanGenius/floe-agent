@@ -57,14 +57,34 @@ The script loop-mounts the **whole-disk ext4** image (no partition table: the
 installed artifacts, and unmounts. `--dry-run` prints the plan and hashes
 without touching the image.
 
+## Image build (component CI)
+
+`FloeAgent/LinuxGuest/image/build-guest-image.sh` builds, boot-verifies and
+packages the Debian 13 candidate from the pinned inputs
+(`FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json`), and
+`collect-corresponding-sources.sh` assembles the kernel/bbl/runner/glibc and
+per-package Debian corresponding sources. The
+[`component-image-ci`](../../.github/workflows/component-image-ci.yml)
+workflow runs both on `ubuntu-latest` and uploads the zip, `manifest.json`
+(the `LinuxGuestImage` schema) and evidence artifacts; nothing is published.
+Details, gates and honest limits: [build guide](../../../docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md).
+
 ## Boot
 
 Preferred: the runner is the init process and mounts everything itself
-(`init=` cannot take arguments; the runner detects PID 1):
+(`init=` cannot take arguments; the runner detects PID 1). The fallback
+kernel has no RTC, so the host must also pass the boot clock; the app derives
+this on every start (`LinuxGuestImage.effectiveCmdline`):
 
 ```
-console=hvc0 root=/dev/vda rw init=/usr/local/bin/floe-exec
+console=hvc0 root=/dev/vda rw init=/usr/local/bin/floe-exec floe.epoch=<unix seconds>
 ```
+
+As PID 1 the runner parses that one bounded parameter (no shell, no other
+keys) and sets `CLOCK_REALTIME` before accepting the first command frame; a
+missing or malformed value leaves the clock unset and is reported on the
+console instead of pretending to be synchronized. Non-PID-1 runs (developer
+host checks) never touch the host clock.
 
 Alternative: the explicit startup script does the mounts and execs the runner:
 
