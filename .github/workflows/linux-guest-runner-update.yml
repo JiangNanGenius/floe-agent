@@ -208,7 +208,7 @@ jobs:
           echo "$BASE_TOOLCHAIN_SOURCE_SHA256  $RUNNER_TEMP/base-toolchain-source.tar" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/base-relink" "$RUNNER_TEMP/base-toolchain-source"
           tar -xf "$RUNNER_TEMP/base-relink.tar" -C "$RUNNER_TEMP/base-relink"
-          test -f "$RUNNER_TEMP/base-relink/toolchain.txt"
+          test -f "$RUNNER_TEMP/base-relink/runner-relink/toolchain.txt"
           if ! tar -xf "$RUNNER_TEMP/base-toolchain-source.tar" -C "$RUNNER_TEMP/base-toolchain-source" \
             --wildcards '*toolchain-versions.txt'; then
             echo "::error::the base toolchain-source asset carries no toolchain-versions.txt"
@@ -219,7 +219,7 @@ jobs:
           base_versions="$(find "$RUNNER_TEMP/base-toolchain-source" -name toolchain-versions.txt | head -1)"
           test -n "$base_versions"
           cp "$base_versions" "$RUNNER_TEMP/base-toolchain.txt"
-          cat "$RUNNER_TEMP/base-relink/toolchain.txt" >> "$RUNNER_TEMP/base-toolchain.txt"
+          cat "$RUNNER_TEMP/base-relink/runner-relink/toolchain.txt" >> "$RUNNER_TEMP/base-toolchain.txt"
           # Pinned install spec: every owning package the base record names,
           # plus the metapackages the base relink record names.
           python3 - "$RUNNER_TEMP/base-toolchain.txt" > "$RUNNER_TEMP/base-toolchain-pins.txt" <<'PIN_PY'
