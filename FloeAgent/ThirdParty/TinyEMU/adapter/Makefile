@@ -36,12 +36,12 @@ endif
 
 SLIRP_OBJS := bootp ip_icmp mbuf slirp tcp_output cksum ip_input misc \
               socket tcp_subr udp if ip_output sbuf tcp_input tcp_timer
-CORE_OBJS := virtio pci fs cutils iomem simplefb json machine fs_disk \
-             riscv_machine softfp
+CORE_OBJS := virtio pci fs cutils iomem simplefb json machine fs_disk softfp
 
 OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(CORE_OBJS))) \
         $(addprefix $(BUILD)/slirp/,$(addsuffix .o,$(SLIRP_OBJS))) \
-        $(BUILD)/riscv_cpu32.o $(BUILD)/riscv_cpu64.o
+        $(BUILD)/riscv_cpu32.o $(BUILD)/riscv_cpu64.o \
+        $(BUILD)/riscv_machine.o
 
 TARGETS := $(BUILD)/libfloevm.a
 ifneq ($(HOST_DIR),)
@@ -50,34 +50,39 @@ endif
 
 all: $(TARGETS)
 
-# patched build copy of the pristine source (patch applied once, verified)
-$(BUILD)/.prepared:
+$(BUILD)/.dir:
 	mkdir -p $(BUILD)/slirp
-	cp $(TINYEMU_SRC)/*.c $(TINYEMU_SRC)/*.h $(BUILD)/ 2>/dev/null || true
-	cp $(TINYEMU_SRC)/slirp/*.c $(TINYEMU_SRC)/slirp/*.h $(BUILD)/slirp/
-	patch -p1 -N -d $(BUILD) < $(PATCH)
-	grep -q "poweroff_requested" $(BUILD)/riscv_machine.c
 	touch $@
 
-$(BUILD)/%.o: $(BUILD)/%.c $(BUILD)/.prepared
+# pristine sources compile directly (no copying); only riscv_machine.c is
+# patched, into $(BUILD), verified after patching.
+$(BUILD)/riscv_machine.c: $(TINYEMU_SRC)/riscv_machine.c $(PATCH) | $(BUILD)/.dir
+	cp $< $@
+	patch -p1 -N -d $(BUILD) < $(PATCH)
+	grep -q "poweroff_requested" $@
+
+$(BUILD)/riscv_machine.o: $(BUILD)/riscv_machine.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/slirp/%.o: $(BUILD)/slirp/%.c $(BUILD)/.prepared
+$(BUILD)/%.o: $(TINYEMU_SRC)/%.c | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/riscv_cpu64.o: $(BUILD)/riscv_cpu.c $(BUILD)/.prepared
+$(BUILD)/slirp/%.o: $(TINYEMU_SRC)/slirp/%.c | $(BUILD)/.dir
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/riscv_cpu64.o: $(TINYEMU_SRC)/riscv_cpu.c | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -DMAX_XLEN=64 -c -o $@ $<
 
-$(BUILD)/riscv_cpu32.o: $(BUILD)/riscv_cpu.c $(BUILD)/.prepared
+$(BUILD)/riscv_cpu32.o: $(TINYEMU_SRC)/riscv_cpu.c | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -DMAX_XLEN=32 -c -o $@ $<
 
-$(BUILD)/floe_vm.o: $(ADAPTER)floe_vm.c $(ADAPTER)floe_vm.h $(BUILD)/.prepared
+$(BUILD)/floe_vm.o: $(ADAPTER)floe_vm.c $(ADAPTER)floe_vm.h | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/libfloevm.a: $(OBJS) $(BUILD)/floe_vm.o
 	ar rcs $@ $^
 
-$(BUILD)/floe_vm_host.o: $(HOST_DIR)/floe_vm_host.c $(ADAPTER)floe_vm.h $(BUILD)/.prepared
+$(BUILD)/floe_vm_host.o: $(HOST_DIR)/floe_vm_host.c $(ADAPTER)floe_vm.h | $(BUILD)/.dir
 	$(CC) $(CFLAGS) -I$(ADAPTER) -c -o $@ $<
 
 $(BUILD)/floe_vm_host: $(BUILD)/floe_vm_host.o $(BUILD)/libfloevm.a
