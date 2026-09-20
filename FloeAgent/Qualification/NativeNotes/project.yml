@@ -48,6 +48,8 @@ targets:
       - ../../FloeApp/Notes/NotesDocumentThumbnail.swift
       - ../../FloeApp/Notes/NotesEngineeringCoverRenderer.swift
       - ../../FloeApp/Notes/NotesEngineeringView.swift
+      - ../../FloeApp/Canvas/CanvasGeometry.swift
+      - ../../FloeApp/Notes/MindMapEdgesLayer.swift
       - ../../FloeApp/Workspace/EngineeringFilePreview.swift
       - ../../FloeApp/Workspace/OfficeExplicitSaveBridge.swift
       - ../../FloeApp/Workspace/OfficeInkPreferences.swift
@@ -60,9 +62,6 @@ targets:
       - ../../FloeApp/Voice
       - ../../FloeApp/Media/AudioTranscribeTool.swift
       - path: ../../FloeApp/Resources/Whisper
-        type: folder
-        buildPhase: resources
-      - path: ../../FloeApp/Resources/MindElixir
         type: folder
         buildPhase: resources
       - path: ../../FloeApp/Resources/EngineeringViewers

@@ -88,9 +88,6 @@ targets:
       - path: FloeApp/Resources/IDE
         type: folder
         buildPhase: resources
-      - path: FloeApp/Resources/MindElixir
-        type: folder
-        buildPhase: resources
       - path: ThirdParty/RoyalVNCKit/LICENSE
         buildPhase: resources
     info:

@@ -35,6 +35,7 @@
 		0B542FBEB75A0C668D526C71 /* FloeShellEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 923643E245C0A12DF9647622 /* FloeShellEngine */; };
 		0C29254C1162DC79D7A0659E /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = B251CF833FCCC7B1B7EEAEE7 /* FloeCore */; };
 		0C3B75DEC2F5E1676ADB7CAD /* FloeImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3C3CC090EE8725611E64C35 /* FloeImageEditorView.swift */; };
+		0C3DAB95BE318C1C79637AE7 /* MindMapEdgesLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A082083860EE4285F25B90BA /* MindMapEdgesLayer.swift */; };
 		0D61B284A930FFB5055E0D1E /* OfficeDocumentEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */; };
 		0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */; };
 		0E2A83735F5A1A9DC7059292 /* pandas__libs_byteswap.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */; };
@@ -61,6 +62,7 @@
 		158A4F0C9123183E73090756 /* CanvasAgentToolContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE65485FC8E0E948FC57BB93 /* CanvasAgentToolContractTests.swift */; };
 		167D1795878ECD2E4910C4B8 /* lxml_builder.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 00B70DCD3A3E65360BFB96E2 /* lxml_builder.xcframework */; };
 		16803A444C43C3B228DB9373 /* EnvironmentManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */; };
+		1757E635A68CC4F02FEE012B /* CanvasGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 615A8177FD0D62C875B5688B /* CanvasGeometry.swift */; };
 		17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1D2F99E9E151908419336F /* MailSettingsView.swift */; };
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
 		17FD962AF3A10BB975AEC422 /* _multiarray_umath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 67584DFEB3C8240E56927B4E /* _multiarray_umath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -340,7 +342,6 @@
 		8A5FBFFF464A8A9E1D02A598 /* pandas__libs_tslibs_dtypes.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		8A7DE1C18E6F48F78C0B3B79 /* NotesEngineeringCoverRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53DB8A733C897C4BC87129A9 /* NotesEngineeringCoverRenderer.swift */; };
 		8BDBF9D426DD621EA4ECB830 /* FloeExecution in Frameworks */ = {isa = PBXBuildFile; productRef = 59DBBD5C35D97EBB383798F6 /* FloeExecution */; };
-		8CE9D6FF1EB083C488EEF11D /* MindElixir in Resources */ = {isa = PBXBuildFile; fileRef = A3D07EF6A8893791766DF3EF /* MindElixir */; };
 		8D61411A5B776C8E0AA26D73 /* pandas__libs_writers.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */; };
 		8D7C4CF1B8FC0F1CCEF94B1D /* pyexpat.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; };
 		8E0BC24E5E805CDA91CD7360 /* _simd.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 57DF4046AFC20EF6F331D170 /* _simd.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -1010,6 +1011,7 @@
 		5F3B002E69704278C46E0A12 /* resource.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = resource.xcframework; path = Vendor/PythonExtensions/resource.xcframework; sourceTree = "<group>"; };
 		5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesLinkedMindMaps.swift; sourceTree = "<group>"; };
 		605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSessionOwner.swift; sourceTree = "<group>"; };
+		615A8177FD0D62C875B5688B /* CanvasGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasGeometry.swift; sourceTree = "<group>"; };
 		620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _blake2.xcframework; path = Vendor/PythonExtensions/_blake2.xcframework; sourceTree = "<group>"; };
 		630C1894EB108ABA12D07047 /* NotePencilView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePencilView.swift; sourceTree = "<group>"; };
 		6388FC90DDE87F9FF1B56161 /* _queue.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _queue.xcframework; path = Vendor/PythonExtensions/_queue.xcframework; sourceTree = "<group>"; };
@@ -1128,12 +1130,12 @@
 		9F8CF8AEDC1F7EF6F6413D1D /* WorkspaceIDEUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceIDEUITests.swift; sourceTree = "<group>"; };
 		A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FloeCPythonBridge.m; sourceTree = "<group>"; };
 		A042C89A9C3804838987595F /* zstandard_backend_c.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = zstandard_backend_c.xcframework; path = Vendor/PythonExtensions/zstandard_backend_c.xcframework; sourceTree = "<group>"; };
+		A082083860EE4285F25B90BA /* MindMapEdgesLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MindMapEdgesLayer.swift; sourceTree = "<group>"; };
 		A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySecurityView.swift; sourceTree = "<group>"; };
 		A1F564E49046005F6AEEB1EF /* NotesEngineeringView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesEngineeringView.swift; sourceTree = "<group>"; };
 		A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadView.swift; sourceTree = "<group>"; };
 		A3378D2005DD1D0F55D2457D /* pandas__libs_properties.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_properties.xcframework; path = Vendor/PythonExtensions/pandas__libs_properties.xcframework; sourceTree = "<group>"; };
 		A3C3CC090EE8725611E64C35 /* FloeImageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeImageEditorView.swift; sourceTree = "<group>"; };
-		A3D07EF6A8893791766DF3EF /* MindElixir */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MindElixir; path = FloeApp/Resources/MindElixir; sourceTree = SOURCE_ROOT; };
 		A421102C6F73CB0DCC678535 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		A43266DA115E8EF12805D945 /* _umath_linalg.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _umath_linalg.xcframework; path = Vendor/PythonExtensions/_umath_linalg.xcframework; sourceTree = "<group>"; };
 		A4896739DCF1CC3D7F68DFA4 /* NotesDocumentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesDocumentEditor.swift; sourceTree = "<group>"; };
@@ -1733,6 +1735,14 @@
 			path = Skills;
 			sourceTree = "<group>";
 		};
+		47C56DF6589A7ADCAA4AC551 /* Canvas */ = {
+			isa = PBXGroup;
+			children = (
+				615A8177FD0D62C875B5688B /* CanvasGeometry.swift */,
+			);
+			path = Canvas;
+			sourceTree = "<group>";
+		};
 		5727792A466E304D18FA4B94 /* Workbench */ = {
 			isa = PBXGroup;
 			children = (
@@ -2124,6 +2134,7 @@
 		A375B99644CCF9CEA924D972 /* Notes */ = {
 			isa = PBXGroup;
 			children = (
+				A082083860EE4285F25B90BA /* MindMapEdgesLayer.swift */,
 				2A0156F84BD5669B8A565170 /* MindMapTopicInspector.swift */,
 				84A9CCB047EB72AD2922ED38 /* NoteElementInspector.swift */,
 				12C1ABF02CBBFDC44F9B0577 /* NoteFileImporter.swift */,
@@ -2246,6 +2257,7 @@
 				5A4895F660C5D22041A0F155 /* App */,
 				61D2AC861F3BDD2E410CE6A1 /* Apple */,
 				64CFBB0DD062596163E818C8 /* Browser */,
+				47C56DF6589A7ADCAA4AC551 /* Canvas */,
 				7F4A40D52ACD505A41DB4A41 /* Chat */,
 				77A523D5B564142E84DF6477 /* Conversations */,
 				E231240F5BD781568EEABB6C /* Design */,
@@ -2299,7 +2311,6 @@
 				2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */,
 				213BDC1E4C8F7172D210CA91 /* LibArchiveLicenses */,
 				A6797B7DAA890D6378153058 /* Localizable.xcstrings */,
-				A3D07EF6A8893791766DF3EF /* MindElixir */,
 				9CDF7C34B3636489EEB0BC07 /* NodeTools */,
 				A837399A8DE937C9827D4EFA /* PDFiumLicenses */,
 				926B95CD92D851FFE3BB0DFE /* python */,
@@ -2605,7 +2616,6 @@
 				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
 				8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
-				8CE9D6FF1EB083C488EEF11D /* MindElixir in Resources */,
 				5EEDF12D0F1E55466D74580A /* NodeTools in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
 				656773A8C04E96F291F2254B /* PythonServiceBootstrap.py in Resources */,
@@ -2700,6 +2710,7 @@
 				6FC89A1BACBA33278669A2C9 /* CameraPickerView.swift in Sources */,
 				2B89EFA4B10C970A94C681FC /* Canvas3DDirectorView.swift in Sources */,
 				5F7840F49827B094F2E4E771 /* CanvasAgentTools.swift in Sources */,
+				1757E635A68CC4F02FEE012B /* CanvasGeometry.swift in Sources */,
 				51013E3CE31A8318EDF57DA7 /* CanvasSavedImageBatchCommitPlanner.swift in Sources */,
 				7C2EF25195E6C5C8949A7A2A /* CapabilityStoreAdapters.swift in Sources */,
 				E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */,
@@ -2797,6 +2808,7 @@
 				70480066DC808EE0970F5AFB /* MediaPlayerView.swift in Sources */,
 				075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */,
 				1BDE99A924FBC27B74F7940A /* MemoryView.swift in Sources */,
+				0C3DAB95BE318C1C79637AE7 /* MindMapEdgesLayer.swift in Sources */,
 				F104E60D7F5F901DAF62D0D4 /* MindMapTopicInspector.swift in Sources */,
 				BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */,
 				89B023C074580181D49D192A /* ModelPickerView.swift in Sources */,

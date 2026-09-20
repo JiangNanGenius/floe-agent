@@ -14769,6 +14769,391 @@
         }
       }
     }
+,
+    "notes.mindmap.addChild": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Child Topic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增子节点"
+          }
+        }
+      }
+    },
+    "notes.mindmap.addChild.help": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a child topic under the selection and start naming it"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在选中主题下新增子节点并直接命名"
+          }
+        }
+      }
+    },
+    "notes.mindmap.addSibling": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Sibling Topic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增同级节点"
+          }
+        }
+      }
+    },
+    "notes.mindmap.addSibling.help": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a sibling topic after the selection and start naming it"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在选中主题之后新增同级节点并直接命名"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.connection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag onto a target topic to connect; tap empty space to cancel."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拖到目标主题上松手完成连接；点按空白取消。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.invalidReparent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A topic cannot move into its own branch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不能把主题移动到它自己的分支里。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.noSelectionChild": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a topic first, then add a child topic."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先选择主题，再新增子节点。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.noSelectionSibling": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a reference topic first, then add a sibling topic."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先选择参考主题，再新增同级节点。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.reparent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap a target topic to change its parent; tap empty space to cancel."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点按目标主题完成改父级；点按空白取消。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.rootSibling": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The central topic has no siblings; pick a branch topic."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中心主题没有同级节点，请选择分支主题。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.saving": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saving is in progress; try again shortly."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保存，请稍候再新增。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.hint.subtreeDrag": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtree move is on: dragging this topic moves the whole branch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已开启子树移动：拖动该主题将带动整个分支。"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.addChild": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Child Topic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增子节点"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.addSibling": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Sibling Topic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增同级节点"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.autoLayout": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tidy Layout"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整理布局"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.collapse": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapse"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "折叠"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.connect": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect Topics"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接主题"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.delete": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Branch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除分支"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.editTopic": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Topic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑主题"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.expand": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expand"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.moveSubtree": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move Subtree"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移动子树"
+          }
+        }
+      }
+    },
+    "notes.mindmap.menu.reparent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change Parent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "改父级"
+          }
+        }
+      }
+    },
+    "notes.mindmap.newTopic": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Topic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新主题"
+          }
+        }
+      }
+    },
+    "notes.mindmap.untitled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untitled Topic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未命名主题"
+          }
+        }
+      }
+    }
   },
   "version": "1.0"
 }

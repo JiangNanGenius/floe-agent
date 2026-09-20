@@ -141,6 +141,19 @@ public struct NoteMindMapLink: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// World-space placement of a topic on the native map surface. Optional so
+/// archives and documents written before free positioning still decode:
+/// a nil position means the tree layout decides, and positions are written
+/// only after the user first moves or places a topic.
+public struct MindMapPoint: Codable, Hashable, Sendable {
+    public var x: Double
+    public var y: Double
+    public init(x: Double, y: Double) { self.x = x; self.y = y }
+    public var isValid: Bool {
+        x.isFinite && y.isFinite && abs(x) <= 100_000 && abs(y) <= 100_000
+    }
+}
+
 public struct MindMapNode: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var parentID: UUID?
@@ -159,11 +172,14 @@ public struct MindMapNode: Codable, Hashable, Identifiable, Sendable {
     public var hyperLink: String?
     public var isAIGenerated: Bool?
     public var source: NoteSourceReference?
+    /// Manual world-space center. Nil joins the automatic tree layout.
+    public var position: MindMapPoint?
     public init(id: UUID = UUID(), parentID: UUID? = nil, title: String, note: String = "", order: Int = 0,
                 isCollapsed: Bool = false, color: String? = nil, imageResourceID: UUID? = nil,
-                source: NoteSourceReference? = nil) {
+                source: NoteSourceReference? = nil, position: MindMapPoint? = nil) {
         self.id = id; self.parentID = parentID; self.title = title; self.note = note; self.order = order
         self.isCollapsed = isCollapsed; self.color = color; self.imageResourceID = imageResourceID; self.source = source
+        self.position = position
     }
 }
 
@@ -353,6 +369,9 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                       node.direction == nil || node.direction == 0 || node.direction == 1,
                       (node.tags ?? []).count <= 100, (node.icons ?? []).count <= 100 else {
                     throw NoteError.invalidDocument("导图样式无效。")
+                }
+                if let position = node.position, !position.isValid {
+                    throw NoteError.invalidDocument("导图主题位置无效。")
                 }
                 if let link = node.hyperLink, !link.isEmpty {
                     guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {

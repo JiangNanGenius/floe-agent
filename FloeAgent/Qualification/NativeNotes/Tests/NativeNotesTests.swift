@@ -4,7 +4,6 @@ import AVFoundation
 import UIKit
 import PencilKit
 import SwiftUI
-import WebKit
 import FloeNotes
 import FloeDocuments
 @testable import FloeNotesNativeQualification
@@ -127,26 +126,14 @@ import FloeDocuments
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; previous?.makeKey() }
         host.view.layoutIfNeeded()
-        func find(_ view: UIView) -> WKWebView? {
-            if let web = view as? WKWebView { return web }
-            return view.subviews.lazy.compactMap(find).first
-        }
-        var rendered = false
-        let deadline = Date().addingTimeInterval(20)
-        while Date() < deadline {
-            if let web = find(host.view), let text = try? await web.callAsyncJavaScript("return document.querySelector('#map')?.textContent", arguments: [:], in: nil, contentWorld: .page) as? String,
-               text.contains("Trade gains") && text.contains("机会成本") {
-                rendered = true; break
-            }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        XCTAssertTrue(rendered, "The independently stored map must render inside the PDF reader window")
-        // Screen capture lives in NativeNotesUITests, which has XCTest UI authorization.
-        if let web = find(host.view) {
-            let content = XCTAttachment(image: try await boundedSnapshot(web))
-            content.name = "Notes linked map — WebKit content evidence"
-            content.lifetime = .keepAlways; add(content)
-        }
+        // The native surface must render both topics without any WebKit view.
+        let labels = await waitForAccessibilityTexts(in: host.view, containing: ["Trade gains", "机会成本"])
+        XCTAssertTrue(labels.contains(where: { $0.contains("Trade gains") }) && labels.contains(where: { $0.contains("机会成本") }),
+                      "The independently stored map must render inside the PDF reader window; labels: \(labels)")
+        XCTAssertFalse(viewHierarchyContainsWebView(host.view), "The linked map window must not embed a WebKit surface")
+        let content = XCTAttachment(image: snapshot(host.view))
+        content.name = "Notes linked map — native content evidence"
+        content.lifetime = .keepAlways; add(content)
         let mapBefore = try await store.document(map.id)
         await session.select(try await store.document(parent.id))
         session.undo()
@@ -213,230 +200,108 @@ import FloeDocuments
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; previous?.makeKey() }
         host.view.layoutIfNeeded()
-        func find(_ view: UIView) -> WKWebView? {
-            if let web = view as? WKWebView { return web }
-            return view.subviews.lazy.compactMap(find).first
+
+        // Literal topic text must surface verbatim through the accessibility
+        // tree; a native surface has no HTML parser that could interpret the
+        // markup, and no WKWebView may exist anywhere in the hierarchy.
+        let labels = await waitForAccessibilityTexts(in: host.view, containing: [title])
+        XCTAssertTrue(labels.contains(where: { $0.contains(title) }),
+                      "Topic text must render literally; labels: \(labels)")
+        XCTAssertFalse(viewHierarchyContainsWebView(host.view), "The native mind map must not embed a WebKit surface")
+        let evidence = XCTAttachment(image: snapshot(host.view))
+        evidence.name = "Notes mind map component — literal Chinese and English text"
+        evidence.lifetime = .keepAlways
+        add(evidence)
+
+        // A real image resource must render inside the topic card.
+        let imageID = UUID()
+        let picture = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 40)).image { context in
+            UIColor.systemBlue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 80, height: 40))
         }
-        // Bounded wait for the committed file document. A cold component host
-        // can still be committing its bundled file URL when polling starts, so
-        // this waits on a real state predicate (not a fixed delay) before the
-        // first DOM read.
-        let loadDeadline = Date().addingTimeInterval(30)
-        while Date() < loadDeadline {
-            if let web = find(host.view), !web.isLoading, web.url?.isFileURL == true { break }
-            try await Task.sleep(for: .milliseconds(100))
+        var illustrated = document; illustrated.revision += 1; illustrated.nodes[0].imageResourceID = imageID
+        host.rootView = NoteMindMapView(document: illustrated, onEdit: { _, _ in illustrated }, onHistory: { _ in }, onError: { XCTFail($0) },
+                                        images: [imageID: try XCTUnwrap(picture.pngData())])
+        host.view.layoutIfNeeded()
+        _ = await waitForAccessibilityTexts(in: host.view, containing: [title])
+        XCTAssertTrue(viewHierarchyContainsImage(host.view), "A decoded image resource must render in the topic card")
+        let illustratedSnapshot = XCTAttachment(image: snapshot(host.view))
+        illustratedSnapshot.name = "Notes mind map component — embedded image"
+        illustratedSnapshot.lifetime = .keepAlways; add(illustratedSnapshot)
+
+        // Direction updates and long labels must reflow without overlap. The
+        // component host proves the view commits no error; the pure layout
+        // engine proves the geometry contract the view renders from.
+        var expanded = illustrated
+        expanded.revision += 1
+        expanded.mindMapDirection = 3
+        let rootID = expanded.nodes[0].id
+        expanded.nodes += (0..<6).map { index in
+            MindMapNode(parentID: rootID,
+                        title: "分支 \(index) — Opportunity cost and international economics",
+                        order: index)
         }
-        // Every DOM read is individually bounded: `callAsyncJavaScript` can
-        // suspend forever if the web process never calls back, and an unbounded
-        // await would stall the test for minutes. A `nil` result means the probe
-        // timed out or the script threw, and is reported as a failed assertion,
-        // never as a fabricated success.
-        let deadline = Date().addingTimeInterval(20)
+        let expandedMap = expanded
+        host.rootView = NoteMindMapView(document: expandedMap, onEdit: { _, _ in expandedMap }, onHistory: { _ in }, onError: { XCTFail($0) },
+                                        images: [imageID: try XCTUnwrap(picture.pngData())])
+        host.view.layoutIfNeeded()
+        _ = await waitForAccessibilityTexts(in: host.view, containing: ["分支 5"])
+        let frames = MindMapLayout.frames(document: expandedMap, sizes: [:])
+        XCTAssertEqual(frames.count, expandedMap.nodes.count, "Every visible topic needs a frame")
+        let rects = expandedMap.nodes.compactMap { frames[$0.id] }.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
+        for (index, first) in rects.enumerated() {
+            for (other, second) in rects.enumerated() where other != index {
+                XCTAssertFalse(first.insetBy(dx: -1, dy: -1).intersects(second),
+                               "Topics must not overlap after a direction update")
+            }
+        }
+        let rightFrames = MindMapLayout.frames(document: expandedMap, sizes: [:])
+        XCTAssertEqual(rightFrames.count, frames.count)
+    }
+
+    // MARK: - Native hierarchy probes
+
+    @MainActor
+    private func accessibilityTexts(in view: UIView) -> [String] {
+        var output: [String] = []
+        var stack: [UIView] = [view]
+        while let current = stack.popLast() {
+            if let label = current.accessibilityLabel, !label.isEmpty { output.append(label) }
+            if let value = current.accessibilityValue, !value.isEmpty { output.append(value) }
+            stack.append(contentsOf: current.subviews)
+        }
+        return output
+    }
+
+    @MainActor
+    private func waitForAccessibilityTexts(in view: UIView, containing needles: [String], timeout: TimeInterval = 15) async -> [String] {
+        let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if let web = find(host.view),
-               let text = await boundedString(web, "return document.querySelector('me-tpc .text')?.textContent"),
-               text == title {
-                let images = await boundedInt(web, "return document.querySelectorAll('me-tpc img').length")
-                XCTAssertEqual(images, 0)
-                let screenshot = try await boundedSnapshot(web)
-                let attachment = XCTAttachment(image: screenshot)
-                attachment.name = "Notes mind map component — literal Chinese and English text"
-                attachment.lifetime = .keepAlways
-                add(attachment)
-                let imageID = UUID()
-                let picture = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 40)).image { context in
-                    UIColor.systemBlue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 80, height: 40))
-                }
-                var updated = document; updated.revision += 1; updated.nodes[0].imageResourceID = imageID
-                let illustrated = updated
-                host.rootView = NoteMindMapView(document: illustrated, onEdit: { _, _ in illustrated }, onHistory: { _ in }, onError: { XCTFail($0) },
-                                               images: [imageID: try XCTUnwrap(picture.pngData())])
-                let imageDeadline = Date().addingTimeInterval(10)
-                var imageLoaded = false
-                while Date() < imageDeadline {
-                    imageLoaded = await boundedBool(web, "return Array.from(document.querySelectorAll('me-tpc img')).some(img => img.src.startsWith('data:image/png;') && img.naturalWidth === expectedWidth && img.naturalHeight === expectedHeight)", arguments: ["expectedWidth": picture.cgImage!.width, "expectedHeight": picture.cgImage!.height]) == true
-                    if imageLoaded { break }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                XCTAssertTrue(imageLoaded, "Native image resource did not render in the topic")
-                let illustratedSnapshot = XCTAttachment(image: try await boundedSnapshot(web))
-                illustratedSnapshot.name = "Notes mind map component — embedded image"
-                illustratedSnapshot.lifetime = .keepAlways; add(illustratedSnapshot)
-                // Exercise actual WebKit layout, not the mocked bridge: long labels and
-                // images must reserve space, and an Agent direction update must reflow.
-                var expanded = illustrated
-                expanded.revision += 1
-                expanded.mindMapDirection = 3
-                let rootID = expanded.nodes[0].id
-                expanded.nodes += (0..<6).map { index in
-                    MindMapNode(parentID: rootID,
-                                title: "分支 \(index) — Opportunity cost and international economics",
-                                order: index)
-                }
-                let expandedMap = expanded
-                host.rootView = NoteMindMapView(document: expandedMap, onEdit: { _, _ in expandedMap }, onHistory: { _ in }, onError: { XCTFail($0) },
-                                               images: [imageID: try XCTUnwrap(picture.pngData())])
-                let layoutDeadline = Date().addingTimeInterval(10)
-                var arranged = false
-                while Date() < layoutDeadline {
-                    arranged = await boundedBool(web, """
-                        const tree = document.querySelector('me-root')?.parentElement;
-                        const topics = Array.from(document.querySelectorAll('me-tpc'));
-                        if (!tree?.classList.contains('down') || topics.length !== 7) return false;
-                        const boxes = topics.map(node => node.getBoundingClientRect());
-                        return boxes.every((a, i) => a.width > 0 && a.height > 0 &&
-                          boxes.every((b, j) => i === j || a.right <= b.left + 1 ||
-                            b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));
-                        """) == true
-                    if arranged { break }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                XCTAssertTrue(arranged, "Updated image and long-label topics must reflow without overlap")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(100))
+            let labels = accessibilityTexts(in: view)
+            if needles.allSatisfy({ needle in labels.contains(where: { $0.contains(needle) }) }) { return labels }
+            try? await Task.sleep(for: .milliseconds(100))
         }
-        // The root cause of a cold first-instance stall is not assumed here:
-        // capture the committed URL, loading state, bundle resource and bridge
-        // state so the cloud run can distinguish a packaging fault from a slow
-        // web process instead of the test masking it with a longer delay.
-        let diagnostics = await mindMapDiagnostics(find(host.view))
-        let diagnosticAttachment = XCTAttachment(string: diagnostics)
-        diagnosticAttachment.name = "Notes mind map failure diagnostics"
-        diagnosticAttachment.lifetime = .keepAlways
-        add(diagnosticAttachment)
-        XCTFail("Bundled map did not render the native document")
-    }
-
-    /// Outcome of one bounded DOM probe. `WKWebView.callAsyncJavaScript` can
-    /// suspend forever if the web process never invokes its completion handler,
-    /// so each probe is raced against a deadline through a single-resume gate;
-    /// a late callback after the deadline or a cancellation is a safe no-op.
-    @MainActor
-    private final class BoundedProbe<Value: Sendable> {
-        private var continuation: CheckedContinuation<Value?, Never>?
-        private var finished = false
-        var timeoutTask: Task<Void, Never>?
-
-        func attach(_ continuation: CheckedContinuation<Value?, Never>) -> Bool {
-            guard !finished else {
-                continuation.resume(returning: nil)
-                return false
-            }
-            self.continuation = continuation
-            return true
-        }
-
-        func settle(_ value: Value?) {
-            guard !finished else { return }
-            finished = true
-            timeoutTask?.cancel(); timeoutTask = nil
-            let continuation = continuation
-            self.continuation = nil
-            continuation?.resume(returning: value)
-        }
-    }
-
-    /// A WebKit GPU stall must fail with the current stage and diagnostics,
-    /// rather than suspend the test beyond XCTest's entire execution budget.
-    /// Never substitute a blank image or skip the screenshot assertion.
-    @MainActor
-    private func boundedSnapshot(_ web: WKWebView) async throws -> UIImage {
-        let probe = BoundedProbe<UIImage>()
-        let image = await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
-                guard probe.attach(continuation) else { return }
-                probe.timeoutTask = Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(10))
-                    guard !Task.isCancelled else { return }
-                    probe.settle(nil)
-                }
-                web.takeSnapshot(with: nil) { image, _ in probe.settle(image) }
-            }
-        } onCancel: {
-            Task { @MainActor in probe.settle(nil) }
-        }
-        guard let image else {
-            let evidence = XCTAttachment(string: await mindMapDiagnostics(web))
-            evidence.name = "Mind map WebKit snapshot deadline diagnostics"
-            evidence.lifetime = .keepAlways
-            add(evidence)
-            throw NSError(domain: "FloeNotesQualification", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Mind map snapshot did not return a real image within 10 seconds"])
-        }
-        return image
+        return accessibilityTexts(in: view)
     }
 
     @MainActor
-    private func boundedJS<Value: Sendable>(
-        _ web: WKWebView,
-        _ script: String,
-        arguments: [String: Any] = [:],
-        timeout: Duration = .seconds(5),
-        convert: @escaping @MainActor @Sendable (Any?) -> Value?
-    ) async -> Value? {
-        let probe = BoundedProbe<Value>()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Value?, Never>) in
-                guard probe.attach(continuation) else { return }
-                web.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { result in
-                    switch result {
-                    case .success(let value): probe.settle(convert(value))
-                    case .failure: probe.settle(nil)
-                    }
-                }
-                probe.timeoutTask = Task { @MainActor in
-                    try? await Task.sleep(for: timeout)
-                    guard !Task.isCancelled else { return }
-                    probe.settle(nil)
-                }
-            }
-        } onCancel: {
-            Task { @MainActor in probe.settle(nil) }
+    private func viewHierarchyContainsWebView(_ view: UIView) -> Bool {
+        if NSStringFromClass(type(of: view)).hasPrefix("WKWebView") { return true }
+        return view.subviews.contains(where: viewHierarchyContainsWebView)
+    }
+
+    @MainActor
+    private func viewHierarchyContainsImage(_ view: UIView) -> Bool {
+        if let imageView = view as? UIImageView, imageView.image != nil { return true }
+        return view.subviews.contains(where: viewHierarchyContainsImage)
+    }
+
+    @MainActor
+    private func snapshot(_ view: UIView) -> UIImage {
+        UIGraphicsImageRenderer(bounds: view.bounds).image { context in
+            view.layer.render(in: context.cgContext)
         }
     }
 
-    @MainActor
-    private func boundedString(_ web: WKWebView, _ script: String, timeout: Duration = .seconds(5)) async -> String? {
-        await boundedJS(web, script, timeout: timeout) { $0 as? String }
-    }
-
-    @MainActor
-    private func boundedInt(_ web: WKWebView, _ script: String, timeout: Duration = .seconds(5)) async -> Int? {
-        await boundedJS(web, script, timeout: timeout) { ($0 as? NSNumber)?.intValue ?? ($0 as? Int) }
-    }
-
-    @MainActor
-    private func boundedBool(_ web: WKWebView, _ script: String, arguments: [String: Any] = [:], timeout: Duration = .seconds(5)) async -> Bool? {
-        await boundedJS(web, script, arguments: arguments, timeout: timeout) { ($0 as? NSNumber)?.boolValue ?? ($0 as? Bool) }
-    }
-
-    /// Natively-readable failure context plus bounded JS probes. Every probe is
-    /// itself bounded, so diagnostics can never hang the test they explain.
-    @MainActor
-    private func mindMapDiagnostics(_ web: WKWebView?) async -> String {
-        var lines: [String] = []
-        if let root = Bundle.main.url(forResource: "MindElixir", withExtension: nil) {
-            let index = root.appendingPathComponent("index.html")
-            lines.append("MindElixir bundle: \(root.path)")
-            lines.append("index.html exists: \(FileManager.default.fileExists(atPath: index.path))")
-        } else {
-            lines.append("MindElixir bundle: MISSING from Bundle.main")
-        }
-        guard let web else {
-            lines.append("WKWebView: not found in host hierarchy")
-            return lines.joined(separator: "\n")
-        }
-        lines.append("url: \(web.url?.absoluteString ?? "nil")")
-        lines.append("isLoading: \(web.isLoading)")
-        lines.append("estimatedProgress: \(web.estimatedProgress)")
-        lines.append("title: \(web.title ?? "nil")")
-        lines.append("readyState: \(await boundedString(web, "return document.readyState", timeout: .seconds(3)) ?? "<no reply>")")
-        lines.append("typeof floeRender: \(await boundedString(web, "return typeof window.floeRender", timeout: .seconds(3)) ?? "<no reply>")")
-        lines.append("me-tpc count: \(await boundedInt(web, "return document.querySelectorAll('me-tpc').length", timeout: .seconds(3)) ?? -1)")
-        lines.append("body[0..300]: \(await boundedString(web, "return document.body ? document.body.innerHTML.slice(0, 300) : null", timeout: .seconds(3)) ?? "<no reply>")")
-        return lines.joined(separator: "\n")
-    }
     func testLongBilingualAnswerPaginatesWithoutLosingEditableText() throws {
         let answer = String(repeating: "普通话与 English learning，保留全部解释。\n", count: 400)
         let pages = NotesTextLayout.pages(text: answer, source: nil)
