@@ -1,8 +1,8 @@
 # September 20 feedback repair and delivery
 
-Status: implementation in progress. Build 207 passed accepted-SDK App compilation
-and its device artifact is retained; signing/upload is in progress. This does not
-claim Apple availability or physical-device acceptance. Integration starts from `b16cb18e` (the build 204
+Status: all host repair code is integrated. Build 207 compiled and uploaded
+successfully; build 208 is now compiling the full integrated repair set. Apple
+availability and physical-device acceptance are recorded separately. Integration starts from `b16cb18e` (the build 204
 delivery record). The prior build remains independently recorded.
 
 The user requested code-first delivery, focused checks and an expedited
@@ -20,7 +20,7 @@ Apple processing and internal-group availability remain required.
 | Mind-map controls and movement | Replace MindElixir with a native editor using shared Canvas geometry. Use icon controls; persist independent node positions, explicit relayout/reparent actions, undo, styles, links, images and export. | Nine focused model/layout cases and a FloeNotes object build passed. Existing data without positions remains readable. Visual/device acceptance pending. |
 | Shell busy/no output and service errors | Serialize interactive and one-shot sessions on the actual native engine gate; retain ownership until the worker exits. Flush queued input before EOF, close failed input descriptors once, honor pre-cancelled opens. Validate service entry/cwd/runtime/port before persisting a job. | 71 native bridge host checks and 18 extracted SessionIO host checks passed. Their new defect cases fail against the earlier source. These are host harnesses, not iOS runtime proof. An uncooperative native command cannot safely be force-unlocked. |
 
-## Work still being integrated
+## Runtime and package changes integrated in build 208
 
 - Cross-task search/read pagination and final-response continuation: preserve
   cursor/source identifiers through bounded tool envelopes and compression,
@@ -46,8 +46,8 @@ Apple processing and internal-group availability remain required.
   are integrated. Tool schemas and 34 new bilingual strings were checked.
   The Linux UI reads the real guest package database when a runner is available;
   a stopped Linux environment must not fall back to host package storage.
-  The recommended Linux download list is integrated; actual backend integration remains pending. Shell and local Python in one Linux environment must
-  use the same interpreter/package installation. Linux ELF extensions are not
+  The recommended Linux download list is integrated; backend integration is included in build 208. Shell and local Python in one Linux environment
+  share a persistent venv and can use its distro site-packages. Linux ELF extensions are not
   directly loadable by iOS CPython.
 
 ## Validation and delivery record
@@ -85,8 +85,8 @@ Apple processing and internal-group availability remain required.
   mind maps and Shell repairs. Runtime and new Linux/package changes are still
   being integrated separately. The accepted-SDK App compile passed; the workflow
   retained unsigned IPA artifact `10601633343` (803812105 bytes) and private symbols
-  `10601593620` (134122129 bytes) before signing. Signing/upload remains in progress;
-  Apple acceptance and group availability are not yet claimed.
+  `10601593620` (134122129 bytes) before signing. Signing, validation and upload succeeded; signed TestFlight evidence is retained as
+  artifact `10601950027`. Apple build processing and group availability are not yet claimed.
 
 The Linux recommendation table includes the packages for all 13 missing command
 names reported in the screenshots. This is a package mapping, not execution
@@ -107,3 +107,20 @@ JSON also failed serialization. Neither a successful probe process nor fixing
 the summary is Linux package acceptance. Guest image distribution still requires
 accurate corresponding-source and license records. Native execution remains the
 default while those conditions are unresolved.
+
+## Full integrated candidate: build 208
+
+[Run 35499610010](https://github.com/JiangNanGenius/floe-agent/actions/runs/35499610010)
+is building immutable `v1.7.0-beta.65` at source
+`37fe9864e16999bcbd55f93ad9bd36bb306a4b49`. This includes the original repair slice,
+local-model and cross-task recovery, package entry split, actual guest runner,
+App Linux services/PTY/shared Python routing and verified image import code.
+The four target build numbers and generated project match; 1121 bilingual
+localization entries passed validation. Full TinyEMU MIT/BSD notices are bundled
+and readable in Settings. No extra UI regression was run.
+
+Linux host-consumer checks passed 34 cases, with real native process exchanges;
+the guest protocol harness passed 66 assertions. These do not qualify the
+current Linux image. The catalog remains empty and native execution stays the
+default while APT compatibility and the exact image source record are unresolved.
+See [build 208 test notes](RELEASE_NOTES_1.7.0_BUILD_208.md).
