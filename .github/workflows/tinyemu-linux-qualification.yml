@@ -38,6 +38,10 @@ on:
         description: 'Cross-build FloeAgent/LinuxGuest, inject it into the rootfs image and boot it as PID1'
         type: boolean
         default: false
+      apt_probe:
+        description: 'Targeted path: prepare the rootfs, set the guest clock, then run one real sequential guest script (APT https update/install, numpy/node, Python HTTPS, fence hint probe). Skips A/B/C/E.'
+        type: boolean
+        default: false
   push:
     branches: [codex/feedback-linux]
     paths:
@@ -113,7 +117,7 @@ jobs:
           grep -a FLOE_STAGEA_PING_OK work/stageA-transcript.txt
 
       - name: Fetch Debian 13 riscv64 nocloud image (record resolved SHA512)
-        if: ${{ inputs.run_debian }}
+        if: ${{ inputs.run_debian || inputs.apt_probe }}
         run: |
           cd work
           curl -fsSL --retry 3 -o SHA512SUMS https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/SHA512SUMS
@@ -125,7 +129,7 @@ jobs:
           sha256sum debian13-riscv64.qcow2 | tee debian-sha256.txt
 
       - name: Convert + extract Debian kernel/initrd/rootfs
-        if: ${{ inputs.run_debian }}
+        if: ${{ inputs.run_debian || inputs.apt_probe }}
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq qemu-utils parted >/dev/null
           qemu-img convert -O raw work/debian13-riscv64.qcow2 work/debian13-riscv64.raw
@@ -299,40 +303,87 @@ jobs:
           grep -a FLOE_RUNNER_OK work/stageR-transcript.txt
           grep -a "FLOE-END runnerexec 0" work/stageR-transcript.txt
 
-      - name: Stage D — APT + python3-numpy + nodejs (network-permitting)
-        if: ${{ inputs.run_debian && env.C_OK == 'true' }}
+      - name: Targeted guest probe — real sequential APT/HTTPS/numpy/node + fence hint check
+        if: ${{ inputs.run_debian || inputs.apt_probe }}
         run: |
-          cat > work/stageD.txt <<'EOF'
-          @20 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
-          @23 mkdir -p /floe; mount -t 9p -o trans=virtio,version=9p2000.L floe /floe && A=/floe || A=/tmp
-          @26 ip link set eth0 up; ip addr add 10.0.2.15/24 dev eth0; ip route add default via 10.0.2.2
-          @28 rm -f /etc/resolv.conf; printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf; cat /etc/resolv.conf
-          @32 ping -c1 -W3 10.0.2.2 && printf 'FLOE_STAGED_PING_%s\n' OK
-          @35 cat /proc/cpuinfo | head -6 > $A/cpuinfo.txt; dmesg | tail -5 > $A/dmesg-pre.txt
-          @38 python3 -c 'import urllib.request as u; r=u.urlopen("https://deb.debian.org/debian/dists/trixie/Release", timeout=30); print("FLOE_PY_HTTPS_" + str(r.status))' 2>&1 | tail -2
-          @44 printf 'deb https://deb.debian.org/debian trixie main\n' > /tmp/https.list; apt-get update -o Dir::Etc::sourcelist=/tmp/https.list -o Dir::Etc::sourceparts=/dev/null > $A/apt-https-probe.log 2>&1; printf 'FLOE_APT_HTTPS_RC=%d\n' $?; tail -4 $A/apt-https-probe.log
-          @47 dmesg | tail -25 > $A/dmesg-post-https.txt; cp /usr/lib/apt/methods/https $A/apt-https-method 2>/dev/null; ldd /usr/lib/apt/methods/https > $A/apt-https-method-ldd.txt 2>&1; ls -la /usr/lib/apt/methods/ > $A/apt-methods-ls.txt 2>&1; cat $A/dmesg-post-https.txt
-          @50 rm -f /etc/apt/sources.list.d/*.sources; printf 'deb http://deb.debian.org/debian trixie main\ndeb http://deb.debian.org/debian trixie-updates main\ndeb http://deb.debian.org/debian-security trixie-security main\n' > /etc/apt/sources.list; cat /etc/apt/sources.list > $A/apt-sources.txt
-          @56 apt-get update > $A/apt-update.log 2>&1; printf 'FLOE_APT_UPDATE_RC=%d\n' $?; tail -3 $A/apt-update.log
-          @270 apt-get install -y --no-install-recommends python3-numpy nodejs > $A/apt-install.log 2>&1; printf 'FLOE_APT_INSTALL_RC=%d\n' $?; tail -3 $A/apt-install.log; sync
-          @640 python3 -c 'import numpy; print("FLOE_NUMPY_" + "OK", numpy.__version__)' 2>&1 | tail -1
-          @690 node -e 'console.log("FLOE_NODE_" + "OK", process.version)' 2>&1 | tail -1
-          @710 python3 -c 'import scipy' 2>&1 | tail -1; printf 'FLOE_SCIPY_PROBE_%s\n' DONE
-          @720 dpkg -l > $A/dpkg-listing.txt 2>/dev/null; sync; printf 'FLOE_STAGED_%s\n' DONE
+          # The whole sequence runs as ONE guest shell script kept in the 9p
+          # share, so the host sends exactly two console lines and real
+          # commands follow each other instead of racing fixed @delays. Only
+          # the script path is echoed by the console, so nothing in the
+          # script's own output can be faked by an echo.
+          date +%s > work/share9p/host-epoch.txt
+          cat > work/share9p/qualify-insns.py <<'PY'
+          import subprocess, sys
+          WORDS = [("fence_tso", 0x8330000f), ("fence_tso_rs1_3", 0x8333000f),
+                   ("fence_rw_rw", 0x0ff0000f), ("pause", 0x0100000f),
+                   ("fence_plain", 0x0000000f), ("fence_i", 0x0000100f)]
+          PROBE = """
+          import ctypes, mmap, sys
+          w = int(sys.argv[1], 16)
+          insn = bytes([w & 0xff, (w >> 8) & 0xff, (w >> 16) & 0xff, (w >> 24) & 0xff])
+          m = mmap.mmap(-1, 4096, prot=mmap.PROT_READ | mmap.PROT_WRITE | mmap.PROT_EXEC)
+          m.write(insn + b"\\x67\\x80\\x00\\x00")
+          fn = ctypes.CFUNCTYPE(None)(ctypes.addressof(ctypes.c_char.from_buffer(m)))
+          fn()
+          """
+          for name, w in WORDS:
+              r = subprocess.run([sys.executable, "-c", PROBE, hex(w)], capture_output=True)
+              if r.returncode == 0:
+                  status = "OK"
+              elif r.returncode < 0:
+                  status = "SIG%d" % (-r.returncode)
+              else:
+                  status = "FAIL_%d" % r.returncode
+              print("FLOE_INSN_%s=%s" % (name, status))
+          PY
+          sed -i 's/^ *//' work/share9p/qualify-insns.py
+          cat > work/share9p/qualify-apt.sh <<'SH'
+          mount -t proc proc /proc 2>/dev/null
+          mount -t sysfs sys /sys 2>/dev/null
+          mount -t devtmpfs dev /dev 2>/dev/null
+          ip link set eth0 up 2>/dev/null; ip addr add 10.0.2.15/24 dev eth0 2>/dev/null; ip route add default via 10.0.2.2 2>/dev/null
+          rm -f /etc/resolv.conf; printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf
+          date -s "@$(cat /floe/host-epoch.txt)" >/dev/null 2>&1
+          echo "FLOE_APTPROBE_TIME_$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ping -c1 -W3 10.0.2.2 >/dev/null 2>&1 && echo FLOE_APTPROBE_PING_OK
+          python3 /floe/qualify-insns.py
+          apt-get update > /floe/apt-update.log 2>&1; echo "FLOE_APT_UPDATE_RC_$?"
+          tail -3 /floe/apt-update.log
+          apt-get install -y --no-install-recommends python3-numpy nodejs > /floe/apt-install.log 2>&1; echo "FLOE_APT_INSTALL_RC_$?"
+          tail -3 /floe/apt-install.log
+          python3 -c 'import numpy; print("FLOE_NUMPY_OK", numpy.__version__)' 2>&1 | tail -1
+          node -e 'console.log("FLOE_NODE_OK", process.version)' 2>&1 | tail -1
+          python3 -c 'import urllib.request as u; print("FLOE_PY_HTTPS_" + str(u.urlopen("https://deb.debian.org/debian/dists/trixie/Release", timeout=30).status))' 2>&1 | tail -2
+          dpkg -l > /floe/dpkg-listing.txt 2>/dev/null
+          sync
+          printf 'FLOE_APTPROBE_%s\n' DONE
+          SH
+          sed -i 's/^ *//' work/share9p/qualify-apt.sh
+          cat > work/aptprobe.txt <<'EOF'
+          @20 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null; mkdir -p /floe; mount -t 9p -o trans=virtio,version=9p2000.L floe /floe
+          @24 sh /floe/qualify-apt.sh
           EOF
-          sed -i 's/^ *//' work/stageD.txt
+          sed -i 's/^ *//' work/aptprobe.txt
           set +e
-          timeout 3300 work/build/floe_vm_host \
+          timeout 2700 work/build/floe_vm_host \
             --bios work/src/diskimage-linux-riscv-2018-09-23/bbl64.bin \
             --kernel work/src/diskimage-linux-riscv-2018-09-23/kernel-riscv64.bin \
             --disk work/debian13-rootfs.img --rw \
             --ram 768 --cmdline "console=hvc0 root=/dev/vda rw init=/bin/bash" \
             --net --share floe=work/share9p \
-            --script work/stageD.txt \
-            --transcript work/stageD-transcript.txt \
-            --until FLOE_STAGED_DONE --max-s 3200 > work/stageD-stdout.txt 2>&1
+            --script work/aptprobe.txt --transcript work/stageD-transcript.txt \
+            --until FLOE_APTPROBE_DONE --max-s 2600 > work/stageD-stdout.txt 2>&1
           echo "stageD_rc=$?" | tee work/stageD-rc.txt
           set -e
+          echo "--- guest probe markers ---"
+          for m in FLOE_APTPROBE_DONE FLOE_APT_UPDATE_RC_0 FLOE_APT_INSTALL_RC_0 FLOE_NUMPY_OK FLOE_NODE_OK FLOE_PY_HTTPS_200 FLOE_INSN_fence_tso=OK; do
+            if grep -qa "$m" work/stageD-transcript.txt; then echo "seen: $m"; else echo "MISSING: $m"; fi
+          done
+          # A green workflow must not be readable as "Linux works": fail the
+          # step unless the real capability markers landed.
+          for m in FLOE_APTPROBE_DONE FLOE_APT_UPDATE_RC_0 FLOE_APT_INSTALL_RC_0 FLOE_NUMPY_OK FLOE_NODE_OK; do
+            grep -qa "$m" work/stageD-transcript.txt || { echo "targeted probe failed: $m missing"; exit 1; }
+          done
 
       - name: Stage E — file persistence across reboot (write-through disk)
         if: ${{ inputs.run_debian && env.C_OK == 'true' }}
@@ -394,9 +445,11 @@ jobs:
           markers = ["FLOE_STAGEA_OK_42", "FLOE_STAGEA_9P_OK", "FLOE_STAGEA_PING_OK",
                      "FLOE_STAGEC_ALIVE_42", "FLOE_FORK_WAIT_OK", "FLOE_PIPE_OK",
                      "FLOE_SIGNAL_OK", "FLOE_PTY_OK", "FLOE_NO_PYTHON3", "FLOE_NO_NODE",
-                     "FLOE_STAGED_PING_OK", "FLOE_APT_HTTPS_RC=0", "FLOE_APT_UPDATE_RC=0",
-                     "FLOE_APT_INSTALL_RC=0", "FLOE_PY_HTTPS_200", "FLOE_NUMPY_OK",
-                     "FLOE_NODE_OK", "FLOE_PERSIST_OK"]
+                     "FLOE_STAGED_PING_OK", "FLOE_APT_HTTPS_RC=0", "FLOE_APT_UPDATE_RC_0",
+                     "FLOE_APT_INSTALL_RC_0", "FLOE_PY_HTTPS_200", "FLOE_NUMPY_OK",
+                     "FLOE_NODE_OK", "FLOE_PERSIST_OK", "FLOE_APTPROBE_DONE",
+                     "FLOE_INSN_fence_tso=OK", "FLOE_INSN_fence_tso_rs1_3=OK",
+                     "FLOE_INSN_fence_rw_rw=OK", "FLOE_INSN_pause=OK"]
           share = sorted(os.path.basename(p) for p in
                          (os.path.join("work/share9p", f) for f in os.listdir("work/share9p"))
                          if os.path.isfile(p)) if os.path.isdir("work/share9p") else []

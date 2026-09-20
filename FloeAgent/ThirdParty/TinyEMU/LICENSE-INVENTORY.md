@@ -64,13 +64,17 @@ engine build.
 | --- | --- | --- |
 | `patches/0001-htif-poweroff-callback.patch` | `riscv_machine.c` | guest poweroff becomes an observable flag instead of `exit(0)` |
 | `patches/0002-embeddable-error-propagation.patch` | `riscv_machine.c` (after 0001), `iomem.c` | recoverable create failures: RAM OOM returns NULL, `copy_bios` returns 0/-1 with bounds checks before `memcpy` |
+| `patches/0005-fence-hints.patch` | `riscv_cpu_template.h` | treat FENCE/FENCE.TSO and reserved fm encodings as the no-op hints the base ISA defines, and ignore fence.i's unused fields (Zifencei). Upstream trapped FENCE.TSO, which Debian 13's libapt-pkg executes — apt's http/https methods died with SIGILL |
 
 The integrated app vendor tree (`FloeAgent/ThirdParty/TinyEMU/Sources/`,
 SwiftPM target `FloeTinyEMU`) additionally carries `0003` (Darwin
 `stat`-timestamp shim for `fs_disk.c`) and `0004` (slirp `bootp` debug typo);
 those are tracked there and must be listed in that tree's provenance when it
 lands. `0002` must be applied after `0001` to the same `riscv_machine.c`
-copy; the vendoring script has to keep that order.
+copy; the vendoring script has to keep that order. `0005` patches
+`riscv_cpu_template.h`, so any tree that compiles `riscv_cpu.c` must compile
+it where the patched header is visible (the qualification Makefile copies
+`riscv_cpu.c` plus the header into `$(BUILD)` for that reason).
 
 ## Guest image licensing
 

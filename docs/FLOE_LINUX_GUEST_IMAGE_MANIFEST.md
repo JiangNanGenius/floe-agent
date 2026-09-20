@@ -57,11 +57,14 @@ checklist below is complete.
 
 Runtime facts that bound this candidate: the modern Debian 13 kernel (6.12)
 does not boot under the 2018 bbl (no console output at all), so this
-candidate runs the Debian userland on the pinned 2018 4.15 kernel; package
-installation over **HTTPS** currently dies inside apt's https method with
-SIGILL (signal 4) and is under investigation (evidence in the qualification
-run artifacts). Do not advertise the candidate as a complete, fully working
-Linux.
+candidate runs the Debian userland on the pinned 2018 4.15 kernel.
+Package installation died inside apt's http/https methods with SIGILL
+(signal 4) because the engine trapped `FENCE.TSO` (0x8330000f) as illegal;
+`libapt-pkg.so.7.0.0` executes it at exactly the faulting offset, and
+`patches/0005-fence-hints.patch` now treats the FENCE family as the no-op
+hint the base ISA defines. Fixtures 207/208 predate that patch, so their
+Linux backend stays unqualified until a build carries it. Do not advertise
+the candidate as a complete, fully working Linux.
 
 ## Distribution checklist (required before any bundled image ships)
 
