@@ -1,5 +1,11 @@
 # Floe 1.7.0 build 209 — device-test candidate
 
+> Status after release: this candidate failed the accepted-SDK cloud App compile
+> in [run 35501871606](https://github.com/JiangNanGenius/floe-agent/actions/runs/35501871606)
+> and was never uploaded; see
+> [build 209 compile failure](qualification/build209-release/build209-compile-failure.md).
+> Build 210 carries this scope.
+
 This candidate includes build 207's Office lifecycle, IDE document tabs, Git
 initialization, native mind map and Shell recovery changes. It adds cross-task
 history pagination and final-answer recovery, bounded local-model compression

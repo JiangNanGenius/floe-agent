@@ -1,10 +1,17 @@
 # September 20 feedback repair and delivery
 
-Status: build 207 is available in the existing Floe QA TestFlight group; Apple
-VALID, unexpired and IN_BETA_TESTING were verified at 08:51:56 UTC. Build 208 was cancelled before upload after a Linux package-ownership
-gap was found. That code path is now corrected for build 209, whose cloud App build is next. Physical-device
-acceptance remains with the user. Integration starts from `b16cb18e` (the build 204
-delivery record). The prior build remains independently recorded.
+Status: build 207 remains the installable deliverable in the existing Floe QA
+TestFlight group; Apple VALID, unexpired and IN_BETA_TESTING were verified at
+08:51:56 UTC. Build 208 was cancelled before upload after a Linux
+package-ownership gap was found. Build 209 (`v1.7.0-beta.66`, source `43a10a0a`)
+passed release preflight but failed the accepted-SDK cloud App compile in
+[run 35501871606](https://github.com/JiangNanGenius/floe-agent/actions/runs/35501871606)
+with five optional-unwrap errors, before IPA retention, signing or upload; no
+Apple build ID exists for build 209. Those errors are corrected at `33a72da9`,
+and build 210 is prepared from that source with a new metadata commit; its cloud
+build has not been dispatched yet. Physical-device acceptance remains with the
+user. Integration starts from `b16cb18e` (the build 204 delivery record). The
+prior build remains independently recorded.
 
 The user requested code-first delivery, focused checks and an expedited
 TestFlight build. Simulator/UI regression is waived for this delivery; the user
@@ -21,7 +28,7 @@ Apple processing and internal-group availability remain required.
 | Mind-map controls and movement | Replace MindElixir with a native editor using shared Canvas geometry. Use icon controls; persist independent node positions, explicit relayout/reparent actions, undo, styles, links, images and export. | Nine focused model/layout cases and a FloeNotes object build passed. Existing data without positions remains readable. Visual/device acceptance pending. |
 | Shell busy/no output and service errors | Serialize interactive and one-shot sessions on the actual native engine gate; retain ownership until the worker exits. Flush queued input before EOF, close failed input descriptors once, honor pre-cancelled opens. Validate service entry/cwd/runtime/port before persisting a job. | 71 native bridge host checks and 18 extracted SessionIO host checks passed. Their new defect cases fail against the earlier source. These are host harnesses, not iOS runtime proof. An uncooperative native command cannot safely be force-unlocked. |
 
-## Runtime and package changes for build 209 (208 was cancelled)
+## Runtime and package changes prepared for build 209, carried into build 210
 
 - Cross-task search/read pagination and final-response continuation: preserve
   cursor/source identifiers through bounded tool envelopes and compression,
@@ -88,6 +95,20 @@ Apple processing and internal-group availability remain required.
   retained unsigned IPA artifact `10601633343` (803812105 bytes) and private symbols
   `10601593620` (134122129 bytes) before signing. Signing, validation and upload succeeded; signed TestFlight evidence is retained as
   artifact `10601950027`. Apple processing and Floe QA availability were verified in run35500722350.
+- Build 209 / beta.66 was created at `43a10a0a` by
+  [run35501871606](https://github.com/JiangNanGenius/floe-agent/actions/runs/35501871606)
+  and passed release preflight, but the accepted-SDK App compile failed with
+  `xcodebuild` exit 65 on five optional-unwrap errors (four
+  `TinyEMULinuxCommandService?` uses in `AppEnvironment.swift`, one `UUID?` use
+  in `LocalServiceTool.swift`). No unsigned IPA, symbols, signing, upload or
+  Apple build ID exists for build 209; the run's only artifact is the failure
+  diagnostics set `10603081167`. Full record:
+  [build 209 compile failure](qualification/build209-release/build209-compile-failure.md).
+- Build 210 metadata was prepared on top of `33a72da9`, which makes the guest
+  service non-optional with an explicit unavailable-image resolver and passes
+  the job's `conversationID`. This preparation ran xcodegen consistency,
+  localization and version checks only; no cloud run, App build or upload was
+  dispatched, and `33a72da9` has not yet passed an accepted-SDK App compile.
 
 The Linux recommendation table includes the packages for all 13 missing command
 names reported in the screenshots. This is a package mapping, not execution
@@ -150,7 +171,7 @@ ownership fixes are being finished independently. This is not yet a qualified
 downloadable image.
 
 
-### Build 209 package ownership correction
+### Package ownership correction carried into build 210
 
 Guest Python install/remove/inspection now use the shared venv and configured
 index. Guest Node install/remove/inventory and command links use the same
