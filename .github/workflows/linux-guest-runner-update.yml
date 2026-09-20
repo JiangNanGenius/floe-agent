@@ -424,6 +424,12 @@ jobs:
               return json.loads(result.stdout)
 
           def find_release():
+              # gh resolves drafts through GraphQL even before a tag exists;
+              # the REST tag endpoint can return 404 for a newly made draft.
+              view = gh("release", "view", TAG, "--repo", REPO, "--json", "databaseId", allow_failure=True)
+              if view.returncode == 0:
+                  release_id = json.loads(view.stdout)["databaseId"]
+                  return api("repos/%s/releases/%s" % (REPO, release_id))
               release = api("repos/%s/releases/tags/%s" % (REPO, TAG), allow_missing=True)
               if release is not None:
                   return release
