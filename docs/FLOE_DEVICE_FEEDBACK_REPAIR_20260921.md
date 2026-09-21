@@ -83,8 +83,8 @@ recorded artifact matches the current host sources (exit 0).
 2. The artifact was downloaded and its `native-host.json` verified:
    `sourceCommit 27b21dc1…`, `overlaySHA256 4ac3cc3b…`, the four
    `hostSourceSHA256` values equal to the lock, `hostCompilePassed`,
-   `hostLinkPassed` and `swiftModuleImportPassed` all true, `resourceFiles
-   4780`, `resourceDirectories 174`.
+   `hostLinkPassed` and `swiftModuleImportPassed` all true, 4,780 resource
+   files and 174 resource directories.
 3. The pin was recorded with
    `python3 FloeAgent/scripts/pin_office_host_artifact.py --artifact-zip … --artifact-id 10638824111 --apply`:
    archive `sha256:68489795bcafcb96aceeb147f55fff83d066c7aec84e0131b08b030611c0559a`,
