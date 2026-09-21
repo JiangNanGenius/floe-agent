@@ -5,7 +5,7 @@ Accepted scope: integrate environments, package management, Node, media processi
 workbench. Prepare a TestFlight-ready build; do not publish a production release.
 Environments provide dependency/data layering, not process security isolation.
 
-Release source: `v1.7.0-beta.29` / `fb86fef`. Build 172 is available in internal Floe QA TestFlight (VALID / IN_BETA_TESTING). Actual upload uses Xcode 26.6 / SDK 26.5; SDK 27 is separately source-qualified. See [delivery evidence](evidence/floe-1.7/release-172/TESTFLIGHT_AVAILABLE.json). The checkpoints below retain their original scopes; full package/model delivery and physical-device acceptance remain incomplete.
+Current internal release source: `v1.7.0-beta.72` / `a2f9ea50` (build 215). Build 215 is available in the existing private internal Floe QA TestFlight group — Apple VALID, unexpired, no public link and IN_BETA_TESTING verified 2026-09-21T01:24:50Z (ASC build `38cd289e-c4f7-4f6f-95c0-efc4e5f38648`; discover 35550702469, prepare 35550757711, verify 35550801711; en-US/zh-Hans notes read back). Actual upload uses Xcode 26.6 (17F113); the attested unsigned prerelease is v1.7.0-beta.72 (IPA sha256 `23dd61af…cd49b`, 745,579,391 B) and Feather feed commit `c6cd89fc` records the same digest/source. Build 214 (`v1.7.0-beta.71` / `33759e44`) is the previous internal delivery. See [delivery record](TESTFLIGHT_1.7.0_BETA.md). Simulator/UI qualification was waived by user request; physical-device acceptance remains with the user. The checkpoints below retain their original scopes; full package/model delivery and physical-device acceptance remain incomplete.
 
 ## Checkpoints
 

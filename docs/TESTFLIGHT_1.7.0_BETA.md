@@ -1,6 +1,63 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (214) — available in Floe QA
+## Current internal delivery: 1.7.0 (215) — available in Floe QA
+
+Apple **VALID**, unexpired, exactly one private internal **Floe QA** group
+(`internal=true`, feedback enabled, no public link) and `IN_BETA_TESTING` were
+verified at **2026-09-21T01:24:50Z** by
+[verify 35550801711](https://github.com/JiangNanGenius/floe-agent/actions/runs/35550801711).
+ASC build ID `38cd289e-c4f7-4f6f-95c0-efc4e5f38648` (uploaded 2026-09-21T01:13:54Z,
+audience `APP_STORE_ELIGIBLE`).
+[Discover 35550702469](https://github.com/JiangNanGenius/floe-agent/actions/runs/35550702469)
+listed build 215 as the latest `VALID` upload;
+[prepare 35550757711](https://github.com/JiangNanGenius/floe-agent/actions/runs/35550757711)
+saved and read back both beta-note locales — readback
+`{"buildID":"38cd289e-c4f7-4f6f-95c0-efc4e5f38648","version":"1.7.0","build":"215","processing":"VALID","group":"Floe QA","betaNotesVerified":["en-US","zh-Hans"]}`.
+
+Immutable tag `v1.7.0-beta.72`, source
+[`a2f9ea50cd8bbafceac23ff49fe46c9607811271`](https://github.com/JiangNanGenius/floe-agent/commit/a2f9ea50cd8bbafceac23ff49fe46c9607811271).
+[Release run 35548088168](https://github.com/JiangNanGenius/floe-agent/actions/runs/35548088168)
+("TestFlight and Unsigned IPA Release") built once with the accepted upload SDK
+(Xcode 26.6 / 17F113), retained the unsigned IPA
+`Floe-Agent-1.7.0-build215-unsigned.ipa` (sha256
+`23dd61af1e8eed67631ba5b831f237f450ac05a759fc98260cea174a8c1cd49b`,
+745,579,391 B, app UUID `7E1F9712-AFA0-3C06-9180-F2893E2E3C39`) and matching
+private symbols `release-symbols-1.7.0-build215` before signing, then signed,
+validated and uploaded the same source and attested the unsigned-only asset set
+(attestation subject `…build215-unsigned.ipa@sha256:23dd61af…`). The attested
+unsigned GitHub prerelease
+[v1.7.0-beta.72](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.72)
+("Floe Agent 1.7.0 (build 215)", prerelease, published 2026-09-21T01:13:11Z)
+carries that IPA plus provenance, checksum and validation metadata; no signed
+IPA is published. [Feather run 35550183999](https://github.com/JiangNanGenius/floe-agent/actions/runs/35550183999)
+verified the published checksum/provenance and committed `feather.json` at
+[`c6cd89fc`](https://github.com/JiangNanGenius/floe-agent/commit/c6cd89fc43042117bf722051abe07407e7d6c542)
+with the same sha256, size 745,579,391 and `sourceCommit a2f9ea50…`, dated
+2026-09-21T01:13:11Z.
+
+Build 215 is the stability follow-up to the first TinyEMU delivery (build 214):
+local-model tool calls through a second continuation with reduced GatedDeltaNet
+prefill batching, cross-task history lookup continuing through to a final answer,
+per-task concurrent terminals with cancellation/recovery of stuck commands, a
+fixed libgit2 runtime path for Git initialization, PDF/Office pinned to IDE tabs
+and following task switches, Command-S saving and a save prompt before closing a
+changed document, bundled Chinese font metadata, and compact mind-map add icons
+with corrected free-position dragging. Native Python, Node, Ruby and other
+language payloads remain outside the app and run in the Linux guest.
+[Release notes](RELEASE_NOTES_1.7.0_BUILD_215.md) and
+[bilingual test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_215.json) describe the slice.
+
+This is a user-requested expedited internal TestFlight: simulator/UI
+qualification was skipped by explicit user request
+(`simulator_tests=skipped_by_user_request`); only focused checks plus the cloud
+accepted-SDK App build, signing and Apple validation were performed. There is no
+public TestFlight link and no App Store production release; the unsigned GitHub
+prerelease and Feather are separate developer-package routes that require your
+own signing identity. **Physical-device installation, Linux guest performance,
+real SSH/SCP transfers and foreground-model crash resolution remain user
+acceptance; no device installation is claimed by this record.**
+
+## Previous internal delivery: 1.7.0 (214) — available in Floe QA
 
 Apple VALID, unexpired, the existing private Floe QA group and IN_BETA_TESTING
 verified at 2026-09-20T21:32:34Z. English and Simplified Chinese beta notes

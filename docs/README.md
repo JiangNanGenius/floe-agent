@@ -4,9 +4,9 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前内部 TestFlight：1.7.0（214）**。9 月 20 日 21:32 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。TinyEMU/Linux 成为主要本地环境，原生 Python/Node 不再打包；包含本轮全部反馈修复。只做定向轻量检查与云端 App 构建，真机验收由用户完成。[交付证据](qualification/build214-release/README.md)。
+**当前内部 TestFlight：1.7.0（215）**。2026-09-21T01:24:50Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；中英文测试说明已保存并读回，真机安装仍由用户验收。固定标签 `v1.7.0-beta.72`，源码 `a2f9ea50`，[发布作业 35548088168](https://github.com/JiangNanGenius/floe-agent/actions/runs/35548088168)（Xcode 26.6/17F113）；未签名 IPA 已随 [v1.7.0-beta.72 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.72) 证明发布，[Feather 作业 35550183999](https://github.com/JiangNanGenius/floe-agent/actions/runs/35550183999) 提交 `feather.json`（`c6cd89fc`，sha256/size/sourceCommit 一致）。按用户要求跳过模拟器/界面验收，只做定向检查与云端 App 构建。详见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [候选说明](RELEASE_NOTES_1.7.0_BUILD_215.md)。
 
-**Build 215 是本轮待上传候选**：根据 Build 214 真机日志继续修复本地模型第二轮工具续写、跨任务闭环、并行终端与取消、Git 初始化、IDE 内 Office/PDF、中文字体、保存流程和思维导图拖动。[候选说明](RELEASE_NOTES_1.7.0_BUILD_215.md)只描述当前源码；在云端构建、上传与 Apple 状态核实完成前，不视为可安装交付。
+**Build 214 已成为上一版内部交付**（`v1.7.0-beta.71`，`33759e44`，9 月 20 日 21:32 UTC 核实 VALID/未过期/Floe QA/IN_BETA_TESTING）：首个 TinyEMU/Linux 主环境版本，原生 Python/Node 不再打包；[交付证据](qualification/build214-release/README.md)保持原记录。Build 215 在其真机日志基础上修复本地模型第二轮工具续写、跨任务闭环、并行终端与取消、Git 初始化、IDE 内 Office/PDF、中文字体、保存流程和思维导图拖动。
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
@@ -22,7 +22,7 @@
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 215 候选说明](RELEASE_NOTES_1.7.0_BUILD_215.md) | 本轮稳定性修复、轻量验证边界与待真机验收项；发布状态需另行核实 |
+| [Build 215 候选说明](RELEASE_NOTES_1.7.0_BUILD_215.md) | 当前内部交付：稳定性修复、轻量验证边界与待真机验收项；TestFlight 已核实可安装 |
 | [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
 | [本地模型/视频/工具上下文修复（2026-09-19）](FLOE_LOCAL_VIDEO_TOOLCHAIN_REPAIR_2026-09-19.md) | 本地聊天取消竞态、公开视频候选选择、工具证据回灌的根因、改动与待真机项 |
 | [Build 201 发布说明](RELEASE_NOTES_1.7.0_BUILD_201.md) | 当前交付（1.7.0/201，`v1.7.0-beta.58`）：构建与上传接受、从保留工件恢复发布、Floe QA 核验与复用步骤修复 |
@@ -71,7 +71,7 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_215.md](RELEASE_NOTES_1.7.0_BUILD_215.md) — 待上传候选：稳定性修复、验证边界与真机测试重点
+- [RELEASE_NOTES_1.7.0_BUILD_215.md](RELEASE_NOTES_1.7.0_BUILD_215.md) — 当前内部交付（1.7.0/215，`v1.7.0-beta.72`；已核实 Floe QA 可安装，真机验收由用户完成）：稳定性修复、验证边界与真机测试重点
 - [RELEASE_NOTES_1.7.0_BUILD_201.md](RELEASE_NOTES_1.7.0_BUILD_201.md) — 当前交付（1.7.0/201，`v1.7.0-beta.58`；构建/上传接受、发布从保留工件恢复、Floe QA 核验与复用步骤修复）
 - [RELEASE_NOTES_1.7.0_BUILD_198.md](RELEASE_NOTES_1.7.0_BUILD_198.md) — 已交付内部 Floe QA（1.7.0/198，`v1.7.0-beta.55`；修复 197 的两处编译错误）
 - [RELEASE_NOTES_1.7.0_BUILD_197.md](RELEASE_NOTES_1.7.0_BUILD_197.md) — 编译失败记录（1.7.0/197，`v1.7.0-beta.54` 固定于 `f05b02ac`，run 35426497884 报 2 个编译错误；从未上传；标签不动）
