@@ -39,6 +39,10 @@ public enum LinuxGuestImageInstallError: Error, LocalizedError, Sendable, Equata
     case verificationFailed(String)
     case destinationExists(String)
     case notFound(String)
+    /// Not enough free space on the destination volume.
+    case insufficientSpace(required: Int64, available: Int64)
+    /// Download or import was cancelled before completion.
+    case cancelled
 
     public var errorDescription: String? {
         switch self {
@@ -64,6 +68,10 @@ public enum LinuxGuestImageInstallError: Error, LocalizedError, Sendable, Equata
             return "image '\(id)' is already installed; remove it before importing again"
         case .notFound(let id):
             return "image '\(id)' is not installed"
+        case .insufficientSpace(let required, let available):
+            return "not enough free space for the Linux image (\(required) bytes required, \(available) available)"
+        case .cancelled:
+            return "Linux image download was cancelled"
         }
     }
 }
@@ -86,6 +94,44 @@ public struct LinuxGuestImageImportLimits: Sendable, Equatable {
     }
 
     public static let standard = LinuxGuestImageImportLimits()
+}
+
+/// Reads real free-space capacity and enforces it before writing, so a
+/// download or extraction never fills the device and then reports a generic
+/// I/O error.
+enum LinuxGuestVolumeSpace {
+    static func availableImportantBytes(for url: URL) -> Int64 {
+        if let capacity = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let value = capacity.volumeAvailableCapacityForImportantUsage, value > 0 {
+            return value
+        }
+        if let capacity = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+           let value = capacity.volumeAvailableCapacity {
+            return Int64(value)
+        }
+        return -1
+    }
+
+    static func requireAvailable(at url: URL, required: Int64) throws {
+        let available = availableImportantBytes(for: url)
+        guard available >= 0 else { return }
+        if available < required {
+            throw LinuxGuestImageInstallError.insufficientSpace(required: required, available: available)
+        }
+    }
+
+    /// Maps a Foundation/Cocoa out-of-space error. Used to wrap extraction
+    /// and promotion errors when the pre-check could not predict the need.
+    static func outOfSpaceError(_ error: Error, required: Int64) -> LinuxGuestImageInstallError? {
+        let ns = error as NSError
+        guard ns.domain == NSCocoaErrorDomain, ns.code == 640 /* NSFileWriteOutOfSpaceErrorCode */ else {
+            return nil
+        }
+        let available = availableImportantBytes(
+            for: (ns.userInfo[NSFilePathErrorKey] as? String).map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: NSHomeDirectory())
+        )
+        return .insufficientSpace(required: required, available: max(0, available))
+    }
 }
 
 /// Digest verification for one image directory. Hashing is the expensive part,
@@ -238,7 +284,14 @@ public enum LinuxGuestImageDistributionCatalog {
 /// URLSession; the package only needs this narrow seam so verification and
 /// import stay testable without a network.
 public protocol LinuxGuestImageDownloading: Sendable {
-    func download(_ url: URL, to destination: URL, maxBytes: Int64) async throws
+    /// Downloads one bounded archive. `onProgress` reports received bytes and
+    /// the expected total (-1 when the server sends no Content-Length).
+    func download(
+        _ url: URL,
+        to destination: URL,
+        maxBytes: Int64,
+        onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void
+    ) async throws
 }
 
 /// Install/remove/status for images under one artifact root.
@@ -319,18 +372,30 @@ public actor LinuxGuestImageInstallationService {
             throw LinuxGuestImageInstallError.archiveDigestMismatch(expected: expected, actual: actual)
         }
         try fileManager.createDirectory(at: imagesRoot, withIntermediateDirectories: true)
+        // Estimated extraction working size for a compressed binary image.
+        let requiredForExtraction = archiveBytes * 2 + 32 * 1024 * 1024
+        try LinuxGuestVolumeSpace.requireAvailable(at: imagesRoot, required: requiredForExtraction)
         let staging = imagesRoot.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: staging) }
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
-        switch archiveURL.pathExtension.lowercased() {
-        case "zip":
-            try extractZip(archiveURL, to: staging, fileManager: fileManager)
-        default:
-            throw LinuxGuestImageInstallError.unsupportedArchive(
-                "\(archiveURL.lastPathComponent): import a zip archive or an extracted image directory"
-            )
+        do {
+            switch archiveURL.pathExtension.lowercased() {
+            case "zip":
+                try extractZip(archiveURL, to: staging, fileManager: fileManager)
+            default:
+                throw LinuxGuestImageInstallError.unsupportedArchive(
+                    "\(archiveURL.lastPathComponent): import a zip archive or an extracted image directory"
+                )
+            }
+            return try await promote(from: staging, fileManager: fileManager)
+        } catch let installError as LinuxGuestImageInstallError {
+            throw installError
+        } catch {
+            if let spaceError = LinuxGuestVolumeSpace.outOfSpaceError(error, required: requiredForExtraction) {
+                throw spaceError
+            }
+            throw error
         }
-        return try await promote(from: staging, fileManager: fileManager)
     }
 
     /// Imports an already-extracted directory that contains `manifest.json`
@@ -359,6 +424,7 @@ public actor LinuxGuestImageInstallationService {
     public func installTrustedImage(
         id: String,
         downloader: any LinuxGuestImageDownloading,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in },
         fileManager: FileManager = .default
     ) async throws -> LinuxGuestImage {
         guard let trusted = LinuxGuestImageDistributionCatalog.entry(id: id) else {
@@ -381,7 +447,14 @@ public actor LinuxGuestImageInstallationService {
         let stagingArchive = imagesRoot.appendingPathComponent(".download-\(UUID().uuidString).zip")
         defer { try? fileManager.removeItem(at: stagingArchive) }
         do {
-            try await downloader.download(trusted.archiveURL, to: stagingArchive, maxBytes: limits.maxArchiveBytes)
+            try await downloader.download(
+                trusted.archiveURL,
+                to: stagingArchive,
+                maxBytes: limits.maxArchiveBytes,
+                onProgress: onProgress
+            )
+        } catch let installError as LinuxGuestImageInstallError {
+            throw installError
         } catch {
             throw LinuxGuestImageInstallError.downloadFailed(error.localizedDescription)
         }

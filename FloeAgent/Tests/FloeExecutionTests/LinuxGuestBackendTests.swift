@@ -1046,7 +1046,12 @@ final class LinuxGuestImageStoreTests: XCTestCase {
 }
 
 private struct NoopImageDownloader: LinuxGuestImageDownloading {
-    func download(_ url: URL, to destination: URL, maxBytes: Int64) async throws {
+    func download(
+        _ url: URL,
+        to destination: URL,
+        maxBytes: Int64,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws {
         throw LinuxGuestImageInstallError.downloadFailed("not used")
     }
 }

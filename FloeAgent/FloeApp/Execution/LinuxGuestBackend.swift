@@ -119,12 +119,38 @@ struct RoutingLocalShellBackend: LocalShellBackend {
     let native: any LocalShellBackend
     let guests: any LinuxCommandRunning
     let guestBackend: LinuxGuestShellBackend
+    /// Optional explicit environment preparation. When the image is not
+    /// qualified, the backend prepares Linux once, then resumes.
+    let prepareLinux: LinuxPreparationHandler?
     private let guestSessions = GuestSessionIDSet()
 
-    init(native: any LocalShellBackend, guests: any LinuxCommandRunning, limits: LinuxGuestLimits = .standard) {
+    init(native: any LocalShellBackend,
+         guests: any LinuxCommandRunning,
+         limits: LinuxGuestLimits = .standard,
+         prepareLinux: LinuxPreparationHandler? = nil) {
         self.native = native
         self.guests = guests
         self.guestBackend = LinuxGuestShellBackend(runner: guests, limits: limits)
+        self.prepareLinux = prepareLinux
+    }
+
+    /// Activates the guest; when the failure is an unqualified image and a
+    /// preparation handler exists, prepares Linux once and retries.
+    private func activateWithPreparation(
+        environmentID: String,
+        cancellation: CancellationToken?
+    ) async throws {
+        do {
+            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+        } catch let error as LinuxGuestError {
+            guard case .imageNotQualified = error else { throw error }
+            guard let prepareLinux else { throw error }
+            let token = cancellation ?? CancellationToken()
+            _ = try await prepareLinux(
+                LinuxPreparationRequest(environmentID: environmentID, cancellation: token)
+            )
+            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+        }
     }
 
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
@@ -133,7 +159,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
             return await native.run(request, cancellation: cancellation)
         }
         do {
-            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+            try await activateWithPreparation(environmentID: environmentID, cancellation: cancellation)
         } catch {
             return .failed(message: error.localizedDescription)
         }
@@ -145,7 +171,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
               await guests.ownsLinuxEnvironment(environmentID: environmentID) else {
             return try await native.openSession(request, cancellation: cancellation)
         }
-        try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+        try await activateWithPreparation(environmentID: environmentID, cancellation: cancellation)
         let result = try await guestBackend.openSession(request, cancellation: cancellation)
         guestSessions.insert(request.sessionID)
         return result

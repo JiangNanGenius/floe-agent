@@ -14,25 +14,46 @@ import FloeTools
     @Published private(set) var messages: [String: String] = [:]
     @Published private(set) var failures: Set<String> = []
     @Published private(set) var revision = 0
+    /// Download fraction (0...1) per job id, when the operation reports it.
+    @Published private(set) var fractions: [String: Double] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
 
     func start(id: String, title: String, action: FloePlatformServices.PackageAction) {
         start(id: id, title: title) { try await FloePlatformServices.shared.managePackage(id: id, action: action) }
     }
 
-    func start(id: String, title: String, operation: @escaping @Sendable () async throws -> String) {
+    func start(
+        id: String,
+        title: String,
+        progress: (@Sendable @escaping (Double) -> Void)? = nil,
+        operation: @escaping @Sendable () async throws -> String
+    ) {
         guard !running.contains(id) else { return }
         running.insert(id)
         messages[id] = title
         failures.remove(id)
+        fractions[id] = nil
+        if let progress {
+            progressHandlerBindings[id] = progress
+        }
         tasks[id] = Task {
             do { messages[id] = try await operation() }
             catch is CancellationError { messages[id] = "任务已取消；重新读取依赖以确认当前状态" }
             catch { messages[id] = error.localizedDescription; failures.insert(id) }
             running.remove(id)
             tasks[id] = nil
+            progressHandlerBindings[id] = nil
             revision += 1
         }
+    }
+
+    private var progressHandlerBindings: [String: @Sendable (Double) -> Void] = [:]
+
+    /// Called by operations that stream byte-level progress.
+    func reportProgress(id: String, fraction: Double) {
+        let bounded = min(1, max(0, fraction))
+        fractions[id] = bounded
+        progressHandlerBindings[id]?(bounded)
     }
     func cancel(id: String) {
         guard let task = tasks[id] else { return }

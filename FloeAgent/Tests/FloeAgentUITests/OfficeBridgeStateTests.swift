@@ -110,6 +110,30 @@ struct OfficeRoutingTests {
         #expect(WorkspaceFileRouter.destination(for: "main.swift") == .codeEditor)
         #expect(WorkspaceFileRouter.destination(for: "spec.pdf") == .documentViewer)
     }
+
+    @Test("Archives route to the tree browser and never to the code workbench")
+    func archivesRouteToBrowser() {
+        for path in ["bundle.zip", "src.tar", "data.7z", "nested/inner.ZIP"] {
+            #expect(WorkspaceFileRouter.destination(for: path) == .archiveBrowser, Comment(rawValue: path))
+            #expect(!WorkspaceFileRouter.allowsCodeEditor(path), Comment(rawValue: path))
+        }
+        // Formats the browser cannot read still reach it, so it can report the
+        // concrete reason instead of opening an opaque binary preview.
+        for path in ["photo.tgz", "legacy.rar", "raw.gz"] {
+            #expect(WorkspaceFileRouter.destination(for: path) == .archiveBrowser, Comment(rawValue: path))
+        }
+        #expect(WorkspaceFileRouter.destination(for: "image.png") == .imageViewer)
+    }
+
+    @Test("An archive opens one IDE document tab, never an Office or code tab")
+    @MainActor
+    func archiveOpensDocumentTab() {
+        let store = IDEWorkspaceTabStore(initialRelativePath: "bundle.zip")
+        let tab = store.open(relativePath: "bundle.zip")
+        #expect(tab?.kind == .document)
+        #expect(tab?.officeSession == nil)
+        #expect(store.tabs.filter { $0.id == "bundle.zip" }.count == 1)
+    }
 }
 
 @Suite("FloeApp.OfficeIDETabs")

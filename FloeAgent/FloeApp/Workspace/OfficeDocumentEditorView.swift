@@ -1491,6 +1491,33 @@ struct OfficeDocumentSurface: View {
     }
 }
 
+/// Standalone full-screen Office editor host for the workspace preview's
+/// "Edit in Office" expansion. The preview releases its own session before
+/// presenting; this host opens a fresh one against the already-resolved
+/// document URL, and dismisses itself through the shared editor's own save /
+/// unsaved-exit flow. Exactly one live working copy exists per document.
+struct OfficeStandaloneEditorHost: View {
+    let relativePath: String
+    let documentURL: URL
+    @ObservedObject var session: OfficeFileSession
+
+    var body: some View {
+        NavigationStack {
+            OfficeDocumentEditorView(
+                relativePath: relativePath,
+                session: session,
+                onSaved: nil,
+                onClose: nil
+            )
+        }
+        .task {
+            // Opening while the editor's queued edit intent is pending is the
+            // designed path: the intent replays once the working copy exists.
+            await session.open(documentURL)
+        }
+    }
+}
+
 struct OfficeDocumentEditorView: View {
     let relativePath: String
     @ObservedObject var session: OfficeFileSession

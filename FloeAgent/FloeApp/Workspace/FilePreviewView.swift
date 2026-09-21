@@ -37,9 +37,16 @@ struct FilePreviewView: View {
     @State private var binaryPreviewURL: URL?
     @State private var loadError: String?
     @State private var isIDEPresented = false
+    /// Standalone Office editor expansion ("Edit in Office"). The preview
+    /// session is released before it presents and a fresh session is released
+    /// again on dismiss, so one document never has two live working copies.
+    @State private var isOfficeEditorPresented = false
+    @State private var editorSession: OfficeFileSession?
     @State private var quickLookURL: URL?
     @State private var previewError: String?
     @State private var mediaEditorSource: URL?
+    /// Archive tree browser for this preview's archive (bounded extraction).
+    @State private var isArchiveBrowserPresented = false
     @State private var imageEditRequest: WorkspaceImageEditRequest?
     @State private var engineeringPackage: EngineeringPreviewPackage?
     @State private var isEngineeringFullScreen = false
@@ -68,11 +75,12 @@ struct FilePreviewView: View {
                     engineeringView(engineeringPackage)
                 }
             } else if nativeOfficeURL != nil {
-                if isIDEPresented {
-                    // The IDE's internal Office tab owns the document now;
-                    // the embedded preview session was released before it
-                    // opened, so exactly one live session exists per file.
-                    ContentUnavailableView("正在编辑器中打开", systemImage: "doc.richtext")
+                if isIDEPresented || isOfficeEditorPresented {
+                    // The standalone Office editor (or the IDE's internal tab
+                    // for non-Office routing) owns the document now; the
+                    // embedded preview session was released before it opened,
+                    // so exactly one live session exists per file.
+                    ContentUnavailableView("office.editor.openedElsewhere", systemImage: "doc.richtext")
                 } else {
                     VStack(spacing: 0) {
                         if officeSession.isRemoteSnapshot {
@@ -143,6 +151,30 @@ struct FilePreviewView: View {
                 Task { await load() }
             }
         }
+        .fullScreenCover(isPresented: $isArchiveBrowserPresented) {
+            NavigationStack {
+                ArchiveBrowserView(relativePath: relativePath, center: center)
+            }
+        }
+        .fullScreenCover(isPresented: $isOfficeEditorPresented, onDismiss: {
+            // The standalone editor owns its own save/exit flow; releasing the
+            // session here frees the working copy and the reload restores the
+            // embedded preview against the committed bytes.
+            let finished = editorSession
+            editorSession = nil
+            Task {
+                await finished?.release()
+                await load()
+            }
+        }) {
+            if let editorSession, let nativeOfficeURL {
+                OfficeStandaloneEditorHost(
+                    relativePath: relativePath,
+                    documentURL: nativeOfficeURL,
+                    session: editorSession
+                )
+            }
+        }
         .fullScreenCover(isPresented: $isEngineeringFullScreen, onDismiss: { Task { await load() } }) {
             if let engineeringPackage {
                 NavigationStack {
@@ -193,7 +225,7 @@ struct FilePreviewView: View {
                 .ignoresSafeArea()
         }
         .onDisappear {
-            if !isIDEPresented { Task { await officeSession.release() } }
+            if !isIDEPresented, !isOfficeEditorPresented { Task { await officeSession.release() } }
         }
         .alert("无法预览文件", isPresented: Binding(
             get: { previewError != nil },
@@ -256,16 +288,17 @@ struct FilePreviewView: View {
             && center.fileService != nil
     }
 
-    /// Opens the document in the IDE's internal Office tab. The embedded
+    /// Opens the document in the standalone Office editor. The embedded
     /// preview session is released first so the same original file never has
     /// two live document sessions (two working copies that would conflict on
-    /// save); dismissing the IDE reloads the preview against the committed
+    /// save); dismissing the editor reloads the preview against the committed
     /// bytes.
     private func presentOfficeEditor() {
-        guard !isIDEPresented else { return }
+        guard !isOfficeEditorPresented, !isIDEPresented else { return }
         Task {
             await officeSession.release()
-            isIDEPresented = true
+            editorSession = OfficeFileSession()
+            isOfficeEditorPresented = true
         }
     }
 
@@ -519,6 +552,14 @@ struct FilePreviewView: View {
         center.currentRootURL != nil
     }
 
+    /// The archive browser needs a pinned workspace root and an archive
+    /// extension the browser can route (other formats still open there to
+    /// report their own truthful unsupported reason).
+    private var isArchiveBrowsable: Bool {
+        WorkspaceFileType.isArchive(relativePath)
+            && (center.fileService?.guardResolver.rootURL ?? center.currentRootURL) != nil
+    }
+
     /// Placeholder for non-text files (Office documents, PDFs, images, …):
     /// never decode their bytes as text — offer system Quick Look instead.
     private var binaryPlaceholder: some View {
@@ -527,12 +568,21 @@ struct FilePreviewView: View {
         } description: {
             Text("inspector.preview.binary")
         } actions: {
+            if WorkspaceFileType.isArchive(relativePath), isArchiveBrowsable {
+                Button {
+                    isArchiveBrowserPresented = true
+                } label: {
+                    Label("archive.browse", systemImage: "doc.zipper")
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("file.preview.archive.browse")
+            }
             Button {
                 presentQuickLook()
             } label: {
                 Label("inspector.preview.quicklook", systemImage: "eye")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(isArchiveBrowsable ? .bordered : .borderedProminent)
             .disabled(!quickLookAvailable)
             if officeEditingAvailable {
                 Button {

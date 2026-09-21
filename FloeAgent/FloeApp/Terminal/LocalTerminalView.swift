@@ -29,6 +29,9 @@ final class LocalTerminalOwner: Identifiable {
     private(set) var status = String(localized: "terminal.status.not_started")
     private(set) var alive = false
     private(set) var opening = false
+    /// Set when the Linux image is missing or fails qualification; drives the
+    /// Download and Start Linux card.
+    private(set) var missingImageID: String?
     private var token = CancellationToken()
     private var columns = 80
     private var rows = 24
@@ -42,6 +45,7 @@ final class LocalTerminalOwner: Identifiable {
         token = CancellationToken()
         sessionID = nil
         output = Data()
+        missingImageID = nil
         status = String(localized: "terminal.status.starting")
         do {
             let result = try await sessions.open(command: "", cwd: ".", environment: [:], columns: columns, rows: rows, runID: id, rootURL: root, cancellation: token, forTerminal: true)
@@ -49,6 +53,13 @@ final class LocalTerminalOwner: Identifiable {
             alive = result.alive
             status = alive ? String(localized: "terminal.status.running") : String(localized: "terminal.status.exited")
             append(result.terminalOutput ?? Data(result.initialOutput.utf8))
+        } catch let error as LinuxGuestError {
+            if case .imageNotQualified = error {
+                missingImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+                status = String(localized: "environment.backend.image_missing")
+            } else {
+                status = String(describing: error)
+            }
         } catch {
             status = String(describing: error)
         }
@@ -114,6 +125,14 @@ final class LocalTerminalOwner: Identifiable {
             } else {
                 status = String(localized: "terminal.status.running")
             }
+        } catch let error as LinuxGuestError {
+            alive = false
+            if case .imageNotQualified = error {
+                missingImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+                status = String(localized: "environment.backend.image_missing")
+            } else {
+                status = String(describing: error)
+            }
         } catch {
             alive = false
             status = String(describing: error)
@@ -135,6 +154,7 @@ struct LocalTerminalView: View {
     /// stops the shell.
     var embedded: Bool = false
     @Environment(\.dismiss) private var dismiss
+    @State private var installModel: LinuxImageInstallModel?
 
     var body: some View {
         if embedded {
@@ -194,11 +214,23 @@ struct LocalTerminalView: View {
             SSHEmulatorView(output: owner.output, isInteractive: owner.alive,
                 onSend: { data in Task { await owner.send(data) } },
                 onResize: { columns, rows in Task { await owner.resize(columns: columns, rows: rows) } })
-            if !owner.alive {
+            if let missingID = owner.missingImageID,
+               let model = installModel, model.imageID == missingID {
+                LinuxImageInstallCard(
+                    model: model,
+                    onInstalled: { await owner.open() }
+                )
+                .padding()
+            } else if owner.missingImageID == nil, !owner.alive {
                 Button(owner.opening ? String(localized: "terminal.starting") : String(localized: "terminal.start")) { Task { await owner.open() } }
                     .buttonStyle(.borderedProminent)
                     .disabled(owner.opening)
                     .padding()
+            }
+        }
+        .task(id: owner.missingImageID) {
+            if let missingID = owner.missingImageID, installModel?.imageID != missingID {
+                installModel = LinuxImageInstallModel(imageID: missingID)
             }
         }
         .task {

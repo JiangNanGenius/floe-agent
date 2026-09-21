@@ -96,11 +96,11 @@ struct SourceControlView: View {
                 // checked the workspace and its parents, so this is a truthful
                 // "no repository here" (not a hidden or failed tree).
                 ContentUnavailableView {
-                    Label("不是 Git 仓库", systemImage: "arrow.triangle.branch")
+                    Label(IDELanguageRunText.t("不是 Git 仓库", "Not a Git Repository"), systemImage: "arrow.triangle.branch")
                 } description: {
-                    Text("当前工作区及上层目录中都没有 Git 仓库。可以在工作区初始化一个本地仓库；文件仍保留在原位置。")
+                    Text(IDELanguageRunText.t("当前工作区及上层目录中都没有 Git 仓库。可以在工作区初始化一个本地仓库；文件仍保留在原位置。", "No Git repository exists in this workspace or its parent folders. You can initialize a local repository here; files stay where they are."))
                 } actions: {
-                    Button("初始化仓库") { run { try await center.initializeRepository() } }
+                    Button(IDELanguageRunText.t("初始化仓库", "Initialize Repository")) { run { try await center.initializeRepository() } }
                         .buttonStyle(.borderedProminent)
                         .disabled(center.isBusy)
                 }
@@ -111,32 +111,32 @@ struct SourceControlView: View {
         }
         .task { await center.refreshRepository() }
         .refreshable { await center.refreshRepository() }
-        .alert("源码管理错误", isPresented: Binding(
+        .alert(IDELanguageRunText.t("源码管理错误", "Source Control Error"), isPresented: Binding(
             get: { center.errorMessage != nil },
             set: { if !$0 { center.errorMessage = nil } }
         )) {
-            Button("好", role: .cancel) { center.errorMessage = nil }
+            Button(IDELanguageRunText.t("好", "OK"), role: .cancel) { center.errorMessage = nil }
         } message: {
             Text(center.errorMessage ?? "")
         }
-        .alert("合并", isPresented: Binding(
+        .alert(IDELanguageRunText.t("合并", "Merge"), isPresented: Binding(
             get: { mergeNotice != nil },
             set: { if !$0 { mergeNotice = nil } }
         )) {
-            Button("好", role: .cancel) { mergeNotice = nil }
+            Button(IDELanguageRunText.t("好", "OK"), role: .cancel) { mergeNotice = nil }
         } message: {
             Text(mergeNotice ?? "")
         }
-        .alert("已保留恢复副本", isPresented: Binding(
+        .alert(IDELanguageRunText.t("已保留恢复副本", "Recovery Copy Kept"), isPresented: Binding(
             get: { discardRecovery != nil },
             set: { if !$0 { discardRecovery = nil } }
         )) {
-            Button("好", role: .cancel) { discardRecovery = nil }
+            Button(IDELanguageRunText.t("好", "OK"), role: .cancel) { discardRecovery = nil }
         } message: {
             Text(discardRecovery ?? "")
         }
         .confirmationDialog(
-            "放弃该文件的修改？未提交内容会先复制到 .git/floe-recovery。",
+            IDELanguageRunText.t("放弃该文件的修改？未提交内容会先复制到 .git/floe-recovery。", "Discard changes to this file? Uncommitted content is copied to .git/floe-recovery first."),
             isPresented: Binding(
                 get: { discardRequest != nil },
                 set: { if !$0 { discardRequest = nil } }
@@ -144,7 +144,7 @@ struct SourceControlView: View {
             titleVisibility: .visible
         ) {
             if let change = discardRequest {
-                Button("放弃修改", role: .destructive) {
+                Button(IDELanguageRunText.t("放弃修改", "Discard Changes"), role: .destructive) {
                     let path = change.path
                     // A staged row reverts the path to HEAD (index + working
                     // tree); an unstaged row only restores the working tree.
@@ -156,19 +156,19 @@ struct SourceControlView: View {
                     }
                 }
             }
-            Button("取消", role: .cancel) { discardRequest = nil }
+            Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { discardRequest = nil }
         }
         .sheet(isPresented: $showBranches) { branchSheet }
         .sheet(item: $diffRequest) { request in
             NavigationStack {
                 Group {
-                    if diffText.isEmpty { ContentUnavailableView("没有可显示的差异", systemImage: "doc.text.magnifyingglass") }
+                    if diffText.isEmpty { ContentUnavailableView(IDELanguageRunText.t("没有可显示的差异", "No Differences to Show"), systemImage: "doc.text.magnifyingglass") }
                     else { DiffView(diffText: diffText) }
                 }
                 .navigationTitle(request.path)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("完成") { diffRequest = nil; diffText = "" }
+                        Button(IDELanguageRunText.t("完成", "Done")) { diffRequest = nil; diffText = "" }
                     }
                 }
             }
@@ -193,16 +193,16 @@ struct SourceControlView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("取消") { conflictFile = nil; conflictNotice = nil }
+                        Button(IDELanguageRunText.t("取消", "Cancel")) { conflictFile = nil; conflictNotice = nil }
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("标记已解决") {
+                        Button(IDELanguageRunText.t("标记已解决", "Mark Resolved")) {
                             let path = file.path
                             let content = conflictText
                             run {
                                 let outcome = try await center.resolveConflict(path: path, content: content)
                                 if outcome.isConflict {
-                                    conflictNotice = "仍有冲突：" + outcome.conflictedPaths.joined(separator: ", ")
+                                    conflictNotice = String(format: IDELanguageRunText.t("仍有冲突：%@", "Still conflicting: %@"), outcome.conflictedPaths.joined(separator: ", "))
                                 } else {
                                     conflictFile = nil
                                     conflictNotice = nil
@@ -223,47 +223,47 @@ struct SourceControlView: View {
                 // the workspace (a nested checkout or a linked worktree), so
                 // the tree is truthful about which repository it inspects.
                 if center.isNestedRepository, let root = center.repositoryRoot {
-                    LabeledContent("仓库") {
+                    LabeledContent(IDELanguageRunText.t("仓库", "Repository")) {
                         Label(root.path, systemImage: "folder")
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
                 }
                 Button { showBranches = true } label: {
-                    LabeledContent("分支") {
-                        Label(center.snapshot.branch ?? "游离 HEAD", systemImage: "arrow.triangle.branch")
+                    LabeledContent(IDELanguageRunText.t("分支", "Branch")) {
+                        Label(center.snapshot.branch ?? IDELanguageRunText.t("游离 HEAD", "detached HEAD"), systemImage: "arrow.triangle.branch")
                     }
                 }
                 .buttonStyle(.plain)
                 if let remote = center.snapshot.remoteURL {
-                    LabeledContent("远程") { Text(remote).lineLimit(1).truncationMode(.middle) }
+                    LabeledContent(IDELanguageRunText.t("远程", "Remote")) { Text(remote).lineLimit(1).truncationMode(.middle) }
                 } else {
-                    LabeledContent("远程") { Text("未绑定").foregroundStyle(.secondary) }
+                    LabeledContent(IDELanguageRunText.t("远程", "Remote")) { Text(IDELanguageRunText.t("未绑定", "Not configured")).foregroundStyle(.secondary) }
                 }
             }
 
-            Section("同步") {
+            Section(IDELanguageRunText.t("同步", "Sync")) {
                 HStack {
-                    sourceButton("抓取", icon: "arrow.down.circle") { try await center.fetch() }
-                    sourceButton("拉取", icon: "arrow.down.to.line") { try await center.pull() }
-                    sourceButton("推送", icon: "arrow.up.to.line") { try await center.push() }
+                    sourceButton(IDELanguageRunText.t("抓取", "Fetch"), icon: "arrow.down.circle") { try await center.fetch() }
+                    sourceButton(IDELanguageRunText.t("拉取", "Pull"), icon: "arrow.down.to.line") { try await center.pull() }
+                    sourceButton(IDELanguageRunText.t("推送", "Push"), icon: "arrow.up.to.line") { try await center.push() }
                 }
                 .buttonStyle(.bordered)
                 Button {
                     run {
                         let outcome = try await center.pullMerge()
                         mergeNotice = outcome.isConflict
-                            ? "拉取产生冲突：" + outcome.conflictedPaths.joined(separator: ", ")
+                            ? String(format: IDELanguageRunText.t("拉取产生冲突：%@", "Pull produced conflicts: %@"), outcome.conflictedPaths.joined(separator: ", "))
                             : outcome.message
                     }
                 } label: {
-                    Label("拉取并合并", systemImage: "arrow.triangle.merge")
+                    Label(IDELanguageRunText.t("拉取并合并", "Pull and Merge"), systemImage: "arrow.triangle.merge")
                 }
                 .disabled(center.isBusy)
             }
 
             if !conflictedChanges.isEmpty {
-                Section("冲突（\(conflictedChanges.count)）") {
+                Section(String(format: IDELanguageRunText.t("冲突（%lld）", "Conflicts (%lld)"), Int64(conflictedChanges.count))) {
                     ForEach(conflictedChanges) { change in
                         Button {
                             openConflict(change.path)
@@ -273,18 +273,18 @@ struct SourceControlView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    Button("中止合并", role: .destructive) { run { try await center.abortMerge() } }
+                    Button(IDELanguageRunText.t("中止合并", "Abort Merge"), role: .destructive) { run { try await center.abortMerge() } }
                         .disabled(center.isBusy)
                 }
             }
 
-            Section("提交") {
-                TextField("说明这次修改", text: $commitMessage, axis: .vertical)
+            Section(IDELanguageRunText.t("提交", "Commit")) {
+                TextField(IDELanguageRunText.t("说明这次修改", "Describe this change"), text: $commitMessage, axis: .vertical)
                     .lineLimit(2...5)
                 HStack {
-                    Button("暂存全部") { run { try await center.stageAll() } }
+                    Button(IDELanguageRunText.t("暂存全部", "Stage All")) { run { try await center.stageAll() } }
                     Spacer()
-                    Button("提交") {
+                    Button(IDELanguageRunText.t("提交", "Commit")) {
                         let message = commitMessage
                         run {
                             try await center.commit(message: message)
@@ -297,16 +297,16 @@ struct SourceControlView: View {
             }
 
             if !stagedChanges.isEmpty {
-                Section("已暂存（\(stagedChanges.count)）") {
+                Section(String(format: IDELanguageRunText.t("已暂存（%lld）", "Staged (%lld)"), Int64(stagedChanges.count))) {
                     OutlineGroup(SourceControlChangeTree.build(stagedChanges), children: \.outlineChildren) { node in
                         changeNodeRow(node, staged: true)
                     }
                 }
             }
 
-            Section("更改（\(unstagedChanges.count)）") {
+            Section(String(format: IDELanguageRunText.t("更改（%lld）", "Changes (%lld)"), Int64(unstagedChanges.count))) {
                 if unstagedChanges.isEmpty {
-                    Text("工作区干净").foregroundStyle(.secondary)
+                    Text(IDELanguageRunText.t("工作区干净", "Working tree clean")).foregroundStyle(.secondary)
                 } else {
                     OutlineGroup(SourceControlChangeTree.build(unstagedChanges), children: \.outlineChildren) { node in
                         changeNodeRow(node, staged: false)
@@ -315,7 +315,7 @@ struct SourceControlView: View {
             }
 
             if !center.snapshot.recentCommits.isEmpty {
-                Section("最近提交") {
+                Section(IDELanguageRunText.t("最近提交", "Recent Commits")) {
                     ForEach(center.snapshot.recentCommits.prefix(20)) { commit in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(commit.message).lineLimit(2)
@@ -371,13 +371,13 @@ struct SourceControlView: View {
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing) {
             if staged {
-                Button("取消暂存") { run { try await center.unstage(paths: [change.path]) } }
+                Button(IDELanguageRunText.t("取消暂存", "Unstage")) { run { try await center.unstage(paths: [change.path]) } }
                     .tint(.orange)
             } else {
-                Button("暂存") { run { try await center.stage(paths: [change.path]) } }
+                Button(IDELanguageRunText.t("暂存", "Stage")) { run { try await center.stage(paths: [change.path]) } }
                     .tint(.green)
             }
-            Button("放弃修改", role: .destructive) { discardRequest = change }
+            Button(IDELanguageRunText.t("放弃修改", "Discard Changes"), role: .destructive) { discardRequest = change }
         }
     }
 
@@ -396,7 +396,7 @@ struct SourceControlView: View {
     private var branchSheet: some View {
         NavigationStack {
             List {
-                Section("切换分支") {
+                Section(IDELanguageRunText.t("切换分支", "Switch Branch")) {
                     ForEach(center.snapshot.branches, id: \.self) { branch in
                         Button {
                             showBranches = false
@@ -411,26 +411,26 @@ struct SourceControlView: View {
                         .disabled(branch == center.snapshot.branch)
                     }
                 }
-                Section("合并到当前分支") {
+                Section(IDELanguageRunText.t("合并到当前分支", "Merge into Current Branch")) {
                     ForEach(center.snapshot.branches.filter { $0 != center.snapshot.branch }, id: \.self) { branch in
                         Button {
                             showBranches = false
                             run {
                                 let outcome = try await center.merge(branch: branch)
                                 mergeNotice = outcome.isConflict
-                                    ? "合并产生冲突：" + outcome.conflictedPaths.joined(separator: ", ")
+                                    ? String(format: IDELanguageRunText.t("合并产生冲突：%@", "Merge produced conflicts: %@"), outcome.conflictedPaths.joined(separator: ", "))
                                     : outcome.message
                             }
                         } label: {
-                            Label("合并 \(branch)", systemImage: "arrow.triangle.merge")
+                            Label(String(format: IDELanguageRunText.t("合并 %@", "Merge %@"), branch), systemImage: "arrow.triangle.merge")
                         }
                     }
                 }
-                Section("新分支") {
-                    TextField("分支名称", text: $branchName)
+                Section(IDELanguageRunText.t("新分支", "New Branch")) {
+                    TextField(IDELanguageRunText.t("分支名称", "Branch Name"), text: $branchName)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Button("创建并切换") {
+                    Button(IDELanguageRunText.t("创建并切换", "Create and Switch")) {
                         let name = branchName
                         showBranches = false
                         run { try await center.createBranch(name: name); branchName = "" }
@@ -438,9 +438,9 @@ struct SourceControlView: View {
                     .disabled(branchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .navigationTitle("分支")
+            .navigationTitle(IDELanguageRunText.t("分支", "Branches"))
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("取消") { showBranches = false } }
+                ToolbarItem(placement: .topBarLeading) { Button(IDELanguageRunText.t("取消", "Cancel")) { showBranches = false } }
             }
         }
     }

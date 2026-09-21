@@ -15281,8 +15281,15 @@
     "office.editor.open": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Edit in full screen" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全屏编辑" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Edit in Office" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在 Office 中编辑" } }
+      }
+    },
+    "office.editor.openedElsewhere": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Opened in Office" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已在 Office 中打开" } }
       }
     },
     "office.editor.save": {
@@ -15516,6 +15523,77 @@
             "value": "启动本地终端"
           }
         }
+      }
+    },
+    "terminal.linux.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux isn't installed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未安装 Linux"
+          }
+        }
+      }
+    },
+    "terminal.linux.download_start": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download and Start Linux"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载并启动 Linux"
+          }
+        }
+      }
+    },
+    "terminal.linux.retry": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Download"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试下载"
+          }
+        }
+      }
+    },
+    "terminal.linux.size_checking": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking size…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查大小…"
+          }
+        }
+      }
+    },
+    "archive.browse": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Browse Archive" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "浏览压缩包" } }
       }
     },
     "terminal.status.exited_code": {

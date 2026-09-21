@@ -41,7 +41,12 @@ private final class LinuxImageDownloadRedirectGuard: NSObject, URLSessionTaskDel
 }
 
 struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
-    func download(_ url: URL, to destination: URL, maxBytes: Int64) async throws {
+    func download(
+        _ url: URL,
+        to destination: URL,
+        maxBytes: Int64,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws {
         guard url.scheme?.lowercased() == "https" else {
             throw LinuxGuestImageInstallError.downloadFailed("image downloads require HTTPS")
         }
@@ -54,34 +59,75 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw LinuxGuestImageInstallError.downloadFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
         }
+        let expected = http.expectedContentLength
+        // Verify free space against the real archive size before writing.
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if expected > 0 {
+            let required = expected + 64 * 1024 * 1024
+            let available = LinuxGuestVolumeSpace.availableImportantBytes(for: destination.deletingLastPathComponent())
+            if available >= 0, available < required {
+                throw LinuxGuestImageInstallError.insufficientSpace(required: required, available: available)
+            }
+        }
         fileManager.createFile(atPath: destination.path, contents: nil)
         let handle = try FileHandle(forWritingTo: destination)
         defer { try? handle.close() }
         var written: Int64 = 0
         var buffer = Data()
         buffer.reserveCapacity(64 * 1024)
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 64 * 1024 {
+        do {
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= 64 * 1024 {
+                    written += Int64(buffer.count)
+                    guard written <= maxBytes else {
+                        throw LinuxGuestImageInstallError.archiveTooLarge(limit: maxBytes)
+                    }
+                    try handle.write(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                    onProgress(written, expected)
+                    // Cancellation from the shared job task.
+                    try Task.checkCancellation()
+                }
+            }
+            if !buffer.isEmpty {
                 written += Int64(buffer.count)
                 guard written <= maxBytes else {
                     throw LinuxGuestImageInstallError.archiveTooLarge(limit: maxBytes)
                 }
                 try handle.write(contentsOf: buffer)
-                buffer.removeAll(keepingCapacity: true)
+                onProgress(written, expected)
             }
-        }
-        if !buffer.isEmpty {
-            written += Int64(buffer.count)
-            guard written <= maxBytes else {
-                throw LinuxGuestImageInstallError.archiveTooLarge(limit: maxBytes)
-            }
-            try handle.write(contentsOf: buffer)
+        } catch is CancellationError {
+            throw LinuxGuestImageInstallError.cancelled
         }
         guard written > 0 else {
             throw LinuxGuestImageInstallError.downloadFailed("the archive response was empty")
+        }
+    }
+
+    /// Real archive size in bytes for the pinned image, following the same
+    /// bounded HTTPS redirect policy. Returns nil when the server does not
+    /// expose a length, so callers never display a guessed size.
+    static func probePinnedArchiveBytes() async -> Int64? {
+        guard let url = LinuxGuestImageDistributionCatalog.bundled.first?.archiveURL else { return nil }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.urlCache = nil
+        let session = URLSession(configuration: configuration,
+                                 delegate: LinuxImageDownloadRedirectGuard(),
+                                 delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  http.expectedContentLength > 0 else { return nil }
+            return http.expectedContentLength
+        } catch {
+            return nil
         }
     }
 }

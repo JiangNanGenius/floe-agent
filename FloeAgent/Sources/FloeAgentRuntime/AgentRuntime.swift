@@ -448,6 +448,7 @@ public actor FloeAgentRuntime {
     /// action boundary once; a hard cap keeps weak models from turning the
     /// harness correction itself into a loop.
     private var deferredActionRepairCount = 0
+    private var actionClaimRepairCount = 0
     /// A provider turn that ends with neither visible text nor a tool call
     /// earns exactly one bounded continuation asking for the final answer;
     /// a second empty turn fails recoverably instead of looping or closing
@@ -1306,13 +1307,34 @@ public actor FloeAgentRuntime {
             discoveredToolNames.formUnion(initial.map(\.name))
             discoveryPriority = initial.map(\.name)
         }
+        // On-device runs receive a stable, budgeted base set without any
+        // tools.list round-trip. Union the names present in this run's
+        // capability ceiling; cloud runs keep dynamic discovery untouched.
+        let isLocalProvider = configuration.provider.kind == .local
+        if isLocalProvider {
+            let baseNames = LocalModelToolPolicy.alwaysLoadedToolNames
+            discoveredToolNames.formUnion(
+                catalogDescriptors.map(\.name).filter { baseNames.contains($0) }
+            )
+        }
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
             ToolDiscovery.coreNames.contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
-        let pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
+        var pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
+        // Keep the stable local base schemas on the wire even under the
+        // 23-tool/23-KB presentation budget; the adapter still applies its
+        // per-window token/character budget, so this never overruns the
+        // model context.
+        if isLocalProvider {
+            pinned.formUnion(
+                catalogDescriptors.map(\.name).filter {
+                    LocalModelToolPolicy.alwaysLoadedToolNames.contains($0)
+                }
+            )
+        }
         let schemasLoadedBeforeBudget = discoveredToolNames
         catalogDescriptors = ToolDiscovery.bounded(catalogDescriptors, priority: discoveryPriority, pinned: pinned)
         let retainedAfterBudget = Set(catalogDescriptors.map(\.name))
@@ -2036,6 +2058,21 @@ public actor FloeAgentRuntime {
                 await beginDeferredActionRepair()
                 return
             }
+            if let directive = actionClaimDirective(stopReason: stopReason) {
+                switch directive {
+                case .requestCorrection:
+                    await beginActionClaimRepair()
+                    return
+                case .failRun:
+                    await failRun(
+                        message: "The model reported an action as completed without a successful tool result after one corrective attempt. The run state is saved; resume or retry the task.",
+                        recoverable: true
+                    )
+                    return
+                case .allow:
+                    break
+                }
+            }
             if stopReason == .endTurn,
                configuration.verifyFinalAnswer,
                !didVerifyFinalAnswer,
@@ -2125,6 +2162,45 @@ public actor FloeAgentRuntime {
         messages.append(ConversationMessage(
             role: "system",
             content: "Harness control: your previous response promised an immediate action but emitted no structured tool call. If that action is still required, issue the actual tool call now. If no suitable tool is available or the action is blocked, give a final answer with the exact reason. Do not merely promise another future action."
+        ))
+        modelTurnContinuationRequested = true
+    }
+
+    /// Evaluates whether the current prose claims a successful file action
+    /// while the run holds no successful tool receipt at all.
+    private func actionClaimDirective(stopReason: AgentEvent.StopReason) -> ActionClaimGate.Directive? {
+        // Only a terminal text turn can carry a false completion claim; a
+        // tool-use boundary is never re-interpreted here.
+        guard stopReason == .endTurn,
+              configuration.toolsEnabled,
+              configuration.model.capabilities.contains(.tools),
+              !isFinalizingWithoutTools,
+              !didVerifyFinalAnswer,
+              !executor.allDescriptors.isEmpty,
+              !streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        let receipts = executionLedger.entries.map {
+            ActionClaimGate.Receipt(toolName: $0.toolName, status: $0.status)
+        }
+        return ActionClaimGate().evaluate(
+            claim: streamText,
+            receipts: receipts,
+            correctiveRetries: actionClaimRepairCount
+        )
+    }
+
+    /// One bounded corrective turn after an unsubstantiated success claim:
+    /// the model must either execute the required tool or state plainly that
+    /// the action did not complete.
+    private func beginActionClaimRepair() async {
+        actionClaimRepairCount += 1
+        messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
+        await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
+        await transition(to: .verifying)
+        messages.append(ConversationMessage(
+            role: "system",
+            content: "Harness control: your previous response reported an action (creating, writing or saving a file) as successful, but no successful tool result for that action exists in this run. Execute the required tool call now, or give a final answer that honestly states the action was not completed and why. Do not repeat a success claim without a matching successful tool result."
         ))
         modelTurnContinuationRequested = true
     }

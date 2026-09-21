@@ -35,6 +35,7 @@ public enum GuestPythonRuntime {
         guests: any LinuxCommandRunning,
         controller: (any LinuxGuestControlling)?,
         onColdStart: (@Sendable (String) async -> Void)? = nil,
+        prepareLinux: LinuxPreparationHandler? = nil,
         cancellation: CancellationToken?
     ) async -> ScriptExecutionOutcome {
         if cancellation?.isCancelled == true { return .cancelled }
@@ -51,7 +52,27 @@ public enum GuestPythonRuntime {
                 // get Python back instead of leaking registry jargon.
                 return .jsException(message: ManagedPythonInstallService.linuxRequiredMessage, stdout: "")
             }
-            return .jsException(message: error.localizedDescription, stdout: "")
+            if case .imageNotQualified = error, let prepareLinux {
+                // Explicit preparation, then one bounded retry of activation.
+                let token = cancellation ?? CancellationToken()
+                do {
+                    _ = try await prepareLinux(
+                        LinuxPreparationRequest(environmentID: environmentID, cancellation: token)
+                    )
+                    try await LinuxGuestActivator.ensureRunning(
+                        environmentID: environmentID,
+                        guests: guests,
+                        controller: controller,
+                        onColdStart: onColdStart
+                    )
+                } catch is CancellationError {
+                    return .cancelled
+                } catch {
+                    return .jsException(message: error.localizedDescription, stdout: "")
+                }
+            } else {
+                return .jsException(message: error.localizedDescription, stdout: "")
+            }
         } catch {
             return .jsException(message: error.localizedDescription, stdout: "")
         }

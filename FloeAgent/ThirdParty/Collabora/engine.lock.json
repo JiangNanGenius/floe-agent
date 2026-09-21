@@ -12,7 +12,7 @@
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "995ec8f685700a8c79281d2e41dc4feee8ae1f01da1c03dc8c96affcf6769cba",
-      "FloeOfficeNative.mm": "d809d811d61e7007b88e9ad10c0ccac8afc99dbdca185901a10820822997909e",
+      "FloeOfficeNative.mm": "52a9553b6d2a4615e341ae820575e3f7be71d2cecf1d2264f68640065f26ab6b",
       "FloeOfficeAttachment.cpp": "281c55eb6ccb6ae85092ade38a7debe30cd2d010e76e0cbbcd3d88bcc42bfde8",
       "FloeOfficeAttachment.hxx": "0fe8268cd8bb8355593d662b1cd19e707a8ea5a03068d359c0ef1edfb67b8a76"
     },
@@ -31,7 +31,7 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Rebuilt in run 35495484711 from f2d3ae37 for the Office close-behind-open lifecycle repair after build205 rejected the stale host pin. Native host compile/link and Swift import passed. Engine source and filter patches unchanged. This is framework evidence; App build, TestFlight and physical-device acceptance are separate.",
+    "note": "Rebuilt in run 35495484711 from f2d3ae37 for the Office close-behind-open lifecycle repair. SOURCE AHEAD OF ARTIFACT: FloeOfficeNative.mm now adds the staged-font catalog fingerprint (profile identity re-runs engine font discovery when the CJK font set changes) and Pencil-only annotation input gating (finger stays navigation). The pinned framework artifact was produced before this source change, so the bootstrap check fails closed until CI rebuilds and re-qualifies the native host; device CJK rendering and physical Pencil behaviour remain unverified.",
     "filterOverlay": {
       "patchSHA256": "4d426890632f0fc72996917f3af268af9c81bb211ff85937999d951c5e341989",
       "sourceFiles": {

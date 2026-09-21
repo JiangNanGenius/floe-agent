@@ -15,7 +15,10 @@ enum LocalPythonServiceFactory {
     /// the task environment's TinyEMU Linux guest. Returns nil only when no
     /// Linux backend exists in this build, leaving `exec.localPython`
     /// honestly absent from the catalog.
-    static func make(linuxGuests: TinyEMULinuxCommandService?) -> LocalPythonService? {
+    static func make(
+        linuxGuests: TinyEMULinuxCommandService?,
+        prepareLinux: LinuxPreparationHandler? = nil
+    ) -> LocalPythonService? {
         guard let linuxGuests else { return nil }
         return LocalPythonService(version: "Python 3 (Linux guest)") { request, cancellation in
             guard let environmentID = request.pythonContext?.environmentID,
@@ -33,6 +36,7 @@ enum LocalPythonServiceFactory {
                 onColdStart: { id in
                     await LegacyPythonPackageMigration.seedIfNeeded(environmentID: id, runner: linuxGuests)
                 },
+                prepareLinux: prepareLinux,
                 cancellation: cancellation
             )
         }

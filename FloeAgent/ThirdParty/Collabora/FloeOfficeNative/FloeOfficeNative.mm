@@ -147,6 +147,82 @@ static NSString *FloeNativeDrainScript() {
 }
 // FLOE_NATIVE_DRAIN_SCRIPT_END
 
+// FLOE_FONT_CATALOG_BEGIN
+// The embedded engine discovers fonts once and caches that discovery inside
+// its versioned profile. A stale cache from a build that predates the staged
+// CJK families (or a post-install font copy that changed) makes every Chinese
+// glyph render as a tofu box even though the font files are present. The
+// profile identity therefore includes a fingerprint of the staged font
+// catalog: when the catalog changes, a fresh profile re-runs discovery, while
+// previous profiles are retained for recovery.
+static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSMutableArray<NSString *> *entries = [NSMutableArray array];
+    // Both staged locations the engine scans: the app-level Fonts directory
+    // (bundled CJK families) and the engine's own share/fonts resources.
+    for (NSString *relative in @[@"Fonts", @"share/fonts"]) {
+        NSURL *root = [bundle.resourcePath URLByAppendingPathComponent:relative isDirectory:YES];
+        NSDirectoryEnumerator<NSURL *> *enumerator = [fileManager enumeratorAtURL:root
+                                                      includingPropertiesForKeys:@[NSURLFileSizeKey]
+                                                                         options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                                    errorHandler:nil];
+        for (NSURL *url in enumerator) {
+            NSNumber *size = nil;
+            [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+            [entries addObject:[NSString stringWithFormat:@"%@:%@", url.lastPathComponent, size ?: @0]];
+        }
+    }
+    if (entries.count == 0) { return @"no-fonts"; }
+    [entries sortUsingSelector:@selector(compare:)];
+    // FNV-1a over the sorted catalog: stable across launches, cheap, and only
+    // identifies the catalog (never file contents or user data).
+    uint64_t hash = 1469598103934665603ULL;
+    for (NSString *entry in entries) {
+        const char *bytes = entry.UTF8String;
+        for (const char *cursor = bytes; cursor && *cursor; cursor++) {
+            hash ^= (uint8_t)*cursor;
+            hash *= 1099511628211ULL;
+        }
+    }
+    return [NSString stringWithFormat:@"%llu-%08llx",
+            (unsigned long long)entries.count, (unsigned long long)hash];
+}
+// FLOE_FONT_CATALOG_END
+
+// FLOE_INK_GATING_SCRIPT_BEGIN
+// Pencil-only annotation input: while annotation mode is on, only Apple
+// Pencil pointer events ('pen') reach the document's freehand tool; finger
+// pointer events are stopped so a finger keeps navigating the document.
+// WKWebView's own gesture recognizers are untouched, so pinching/scrolling
+// stays native.
+static NSString *FloeInkInputGatingScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    const install = () => {
+        if (window.__floeInkGatingInstalled) return;
+        window.__floeInkGatingInstalled = true;
+        window.__floePencilOnly = false;
+        const isDrawing = () => window.__floePencilOnly === true;
+        const blockFinger = (event) => {
+            if (!isDrawing()) return;
+            const pointerType = event.pointerType || '';
+            if (pointerType === 'pen' || pointerType === 'mouse') return;
+            if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+            if (typeof event.stopPropagation === 'function') event.stopPropagation();
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+        };
+        for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+            window.addEventListener(type, blockFinger, { capture: true, passive: false });
+        }
+    };
+    if (document.readyState === 'loading')
+        document.addEventListener('DOMContentLoaded', install, { once: true });
+    else install();
+})();
+)FLOE_JS"];
+}
+// FLOE_INK_GATING_SCRIPT_END
+
 // FLOE_READONLY_SCRIPT_BEGIN
 static NSString *FloeReadOnlyScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
@@ -413,8 +489,15 @@ static void ServerReady() {
     NSURL *root = [support URLByAppendingPathComponent:@"FloeAgent/OfficeRuntime" isDirectory:YES];
     // Separate versioned engine profile and cache, never the user's Documents
     // or the process temporary directory. Retain older profiles for recovery.
-    NSURL *profile = [root URLByAppendingPathComponent:@"27b21dc1/profile" isDirectory:YES];
-    NSURL *cache = [root URLByAppendingPathComponent:@"27b21dc1/cache" isDirectory:YES];
+    // The profile identity also carries the staged font catalog fingerprint so
+    // a font set change (app update, newly staged CJK families) starts from a
+    // fresh font discovery instead of a stale cached catalog.
+    NSString *fontFingerprint = FloeBundledFontCatalogFingerprint(bundle);
+    NSString *profileIdentity = [NSString stringWithFormat:@"27b21dc1-fonts-%@", fontFingerprint];
+    LOG_INF_NOFILE("FloeOffice font catalog fingerprint=" << fontFingerprint.UTF8String
+                   << " profile=" << profileIdentity.UTF8String);
+    NSURL *profile = [root URLByAppendingPathComponent:[profileIdentity stringByAppendingPathComponent:@"profile"] isDirectory:YES];
+    NSURL *cache = [root URLByAppendingPathComponent:[profileIdentity stringByAppendingPathComponent:@"cache"] isDirectory:YES];
     for (NSURL *directory in @[profile, cache]) {
         if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&error]) {
             [self fail:error]; return;
@@ -586,6 +669,9 @@ static void ServerReady() {
 @property (nonatomic) BOOL closing;
 @property (nonatomic) BOOL closed;
 @property (nonatomic) BOOL insertingAttachment;
+/// Annotation mode is on: only Apple Pencil pointer events may start a stroke,
+/// finger input stays navigation. Mirrored into the gating script.
+@property (nonatomic) BOOL drawingModeEnabled;
 /// The host's view was mounted, so its document open was (or is being)
 /// requested. `loadViewIfNeeded` alone never sets this: a controller that was
 /// created and discarded before mounting has no kit client that could ever
@@ -807,8 +893,12 @@ static void ServerReady() {
     NSString *command = enabled.boolValue ? @".uno:Freeline_Unfilled" : @".uno:SelectObject";
     NSData *encoded = [NSJSONSerialization dataWithJSONObject:@[command] options:0 error:nil];
     NSString *argument = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
-    NSString *script = [NSString stringWithFormat:@"(() => { const map = window.app && window.app.map; if (!map || !map.isEditMode() || typeof map.sendUnoCommand !== 'function') return false; map.sendUnoCommand((%@)[0]); return true; })()", argument];
+    // Pencil-only input: the gating script is armed with the same switch, so
+    // a finger keeps navigating while annotation mode is on.
+    NSString *script = [NSString stringWithFormat:@"(() => { const map = window.app && window.app.map; if (!map || !map.isEditMode() || typeof map.sendUnoCommand !== 'function') return false; map.sendUnoCommand((%@)[0]); window.__floePencilOnly = %@; return true; })()", argument, enabled.boolValue ? @"true" : @"false"];
+    __weak FloeOfficeNativeViewController *weakSelf = self;
     [self.editor.webView evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
+        if (!error && [value isKindOfClass:NSNumber.class] && [value boolValue]) weakSelf.drawingModeEnabled = enabled.boolValue;
         completion(error ?: ([value isKindOfClass:NSNumber.class] && [value boolValue] ? nil : OfficeError(36, @"The drawing tool is not ready.")));
     }];
 }
@@ -1138,6 +1228,13 @@ static void ServerReady() {
     WKUserScript *drainScript = [[WKUserScript alloc] initWithSource:FloeNativeDrainScript()
         injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES];
     [self.editor.webView.configuration.userContentController addUserScript:drainScript];
+    // An editable document may enter annotation mode; install the Pencil-only
+    // input gate so finger input stays navigation there.
+    if (!self.readOnly) {
+        [contentController addUserScript:[[WKUserScript alloc]
+            initWithSource:FloeInkInputGatingScript()
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
+    }
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:content];
     [NSLayoutConstraint activateConstraints:@[

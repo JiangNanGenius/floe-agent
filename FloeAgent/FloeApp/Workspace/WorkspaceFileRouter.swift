@@ -26,7 +26,9 @@ enum WorkspaceFileDestination: Equatable {
     case imageViewer
     /// Video/audio workbench.
     case mediaEditor
-    /// Safe fallback for archives and unknown binary documents.
+    /// Archive tree browser with bounded, on-demand extraction.
+    case archiveBrowser
+    /// Safe fallback for unknown binary documents.
     case quickLook
 
     var isNativeSurface: Bool { self != .codeEditor }
@@ -49,7 +51,12 @@ enum WorkspaceFileRouter {
             .imageViewer
         case .media:
             .mediaEditor
-        case .archive, .binary:
+        case .archive:
+            // Archives browse as a tree and extract on demand; unknown
+            // formats still reach the browser so they report why truthfully
+            // instead of opening an opaque binary in Quick Look.
+            .archiveBrowser
+        case .binary:
             .quickLook
         }
     }
@@ -73,6 +80,7 @@ enum WorkspaceFileRouter {
         case .cadViewer: return OfficeInkText.t("图纸查看器", "drawing viewer")
         case .imageViewer: return OfficeInkText.t("图片查看器", "image viewer")
         case .mediaEditor: return OfficeInkText.t("媒体工作台", "media workbench")
+        case .archiveBrowser: return OfficeInkText.t("压缩包浏览器", "archive browser")
         case .quickLook: return OfficeInkText.t("快速查看", "Quick Look")
         }
     }

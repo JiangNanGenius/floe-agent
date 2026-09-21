@@ -380,6 +380,17 @@ final class AppEnvironment: ObservableObject {
             artifactRoot: try? FloeArtifactStore.root()
         )
         FloePlatformServices.shared.setLinuxImageService(linuxImageService)
+        // One explicit preparation handler reused by exec.shell,
+        // exec.localPython and the environment.prepareLinux tool. It never
+        // takes an image URL or install script.
+        let linuxPreparation: LinuxPreparationHandler? =
+            FloePlatformServices.shared.linuxGuestImageStorageAvailable()
+            ? { request in
+                try await FloePlatformServices.shared.prepareLinuxEnvironment(
+                    cancellation: request.cancellation
+                )
+            }
+            : nil
 
         // Phase 2 (TinyEMU migration): local Python runs only inside the task
         // environment's Linux guest (shared venv, real pip). The bundled
@@ -396,7 +407,10 @@ final class AppEnvironment: ObservableObject {
             }
             return .init(backendPresent: true, componentInstalled: false)
         }
-        let localPythonService = LocalPythonServiceFactory.make(linuxGuests: linuxGuests)
+        let localPythonService = LocalPythonServiceFactory.make(
+            linuxGuests: linuxGuests,
+            prepareLinux: linuxPreparation
+        )
         self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
             service: localPythonService,
             backendStatus: linuxBackendStatus,
@@ -417,7 +431,8 @@ final class AppEnvironment: ObservableObject {
         // guest, every other environment keeps the ios_system substrate.
         let shellBackend = RoutingLocalShellBackend(
             native: nativeShellBackend,
-            guests: linuxGuests
+            guests: linuxGuests,
+            prepareLinux: linuxPreparation
         )
         self.localShellService = LocalShellService(
             backend: shellBackend,
@@ -526,7 +541,8 @@ final class AppEnvironment: ObservableObject {
             localPythonService: localPythonService,
             localPythonInstaller: managedPython,
             sshCommandService: sshCommandService,
-            cloudWorkspaceService: cloudWorkspaceService
+            cloudWorkspaceService: cloudWorkspaceService,
+            linuxPreparation: linuxPreparation
         )
         FloeShortcutsRuntime.shared.install(environment: self)
     }
@@ -591,7 +607,8 @@ final class AppEnvironment: ObservableObject {
         localPythonService: LocalPythonService?,
         localPythonInstaller: ManagedPythonInstallService?,
         sshCommandService: SSHCommandService?,
-        cloudWorkspaceService: CloudWorkspaceService?
+        cloudWorkspaceService: CloudWorkspaceService?,
+        linuxPreparation: LinuxPreparationHandler?
     ) {
         let credentialVault = self.credentialVault
         // Workspace file tools (T04/T05).
@@ -703,6 +720,7 @@ final class AppEnvironment: ObservableObject {
             bluetoothSerialService: bluetoothSerialService,
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             webSearchAvailability: WebSearchSettingsCenter.toolIsAvailable,
+            linuxPreparation: linuxPreparation,
             includeOnDeviceJavaScript: true
         )
         // Local shell surface: exec.shell, interactive shell.* and the

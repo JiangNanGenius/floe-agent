@@ -51,6 +51,10 @@ enum WorkspaceFileType {
         kind(for: relativePath) == .media
     }
 
+    static func isArchive(_ relativePath: String) -> Bool {
+        kind(for: relativePath) == .archive
+    }
+
     /// The code workbench is the only editor allowed to read and write the
     /// bytes of this file as text.
     static func allowsCodeEditing(_ relativePath: String) -> Bool {

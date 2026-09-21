@@ -1734,6 +1734,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
             "exec.localPython", "exec.javascript", "exec.compatEvaluator",
             "memory.recall", "git.status", "git.diff", "git.log",
             "conversation.search", "conversation.read", "conversation.list",
+            // Explicit Linux preparation; never an arbitrary image URL or
+            // install script.
+            LocalModelToolPolicy.prepareLinuxToolName,
             // Bounded document-assistant handlers: read/search are read-only,
             // edit stays behind the Notes approval policy like anywhere else.
             // Heavier surfaces (attachFile/stageAttachment) stay cloud-side.
@@ -1803,24 +1806,42 @@ public struct LocalProviderAdapter: ProviderAdapter {
         }
 
         let budgets = promptBudgets(contextTokens: contextTokens)
+        let maximumCount = inventoryRequested ? budgets.inventoryToolCount : budgets.actionToolCount
+        let maximumCharacters = inventoryRequested
+            ? budgets.inventorySchemaCharacters : budgets.actionSchemaCharacters
+        func schemaCost(_ tool: ToolSchemaDescriptor) -> Int {
+            tool.name.count + min(tool.description.count, 120) + tool.parametersJSON.count + 16
+        }
         var selected: [ToolSchemaDescriptor] = []
         var schemaCharacters = 0
         var omittedForBudget = 0
-        for (tool, _) in scored {
-            let cost = tool.name.count + min(tool.description.count, 120) + tool.parametersJSON.count + 16
-            let maximumCount = inventoryRequested ? budgets.inventoryToolCount : budgets.actionToolCount
-            let maximumCharacters = inventoryRequested ? budgets.inventorySchemaCharacters : budgets.actionSchemaCharacters
-            guard selected.count < maximumCount else { break }
-            guard schemaCharacters + cost <= maximumCharacters else {
+        func admit(_ tool: ToolSchemaDescriptor) -> Bool {
+            guard selected.count < maximumCount else { return false }
+            guard schemaCharacters + schemaCost(tool) <= maximumCharacters else {
                 // One oversized schema must not consume a slot silently; the
                 // count feeds localPromptPrepared so an over-budget tools
                 // list is visible in diagnostics instead of looking like an
                 // intent-matching miss.
                 omittedForBudget += 1
-                continue
+                return false
             }
             selected.append(tool)
-            schemaCharacters += cost
+            schemaCharacters += schemaCost(tool)
+            return true
+        }
+        // Stable, budgeted base set: complete file-tool schemas and the
+        // explicit Linux preparation capability are admitted on every run
+        // without a tools.list discovery call. Admission follows the policy's
+        // priority order so a small window keeps the create/read/write chain.
+        // Intent-scored tools fill the remaining slots afterwards.
+        let byName = Dictionary(tools.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        for name in LocalModelToolPolicy.admissionOrder {
+            guard let tool = byName[name] else { continue }
+            _ = admit(tool)
+        }
+        let admittedNames = Set(selected.map(\.name))
+        for (tool, _) in scored where !admittedNames.contains(tool.name) {
+            if !admit(tool), selected.count >= maximumCount { break }
         }
         if omittedForBudget > 0 {
             FloeLogger(category: .providers).warning(

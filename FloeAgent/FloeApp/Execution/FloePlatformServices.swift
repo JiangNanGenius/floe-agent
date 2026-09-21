@@ -249,12 +249,47 @@ final class FloePlatformServices: @unchecked Sendable {
     /// pinned catalog entry (installTrustedImage refuses anything else), and
     /// nothing is written into an environment layer — the image belongs to the
     /// App and is shared by every Linux environment.
-    func installLinuxGuestImage(id: String) async throws -> String {
+    func installLinuxGuestImage(
+        id: String,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
+    ) async throws -> String {
         guard let images = lock.withLock({ linuxImages }) else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
-        let image = try await images.installTrustedImage(id: id, downloader: LinuxGuestImageHTTPDownloader())
+        let image = try await images.installTrustedImage(
+            id: id,
+            downloader: LinuxGuestImageHTTPDownloader(),
+            onProgress: onProgress
+        )
         return image.id
+    }
+
+    /// Explicit environment preparation: downloads, verifies and installs
+    /// the pinned App-shared Linux image. Used by the `environment.prepareLinux`
+    /// tool and by Linux-routed execution before it resumes the original
+    /// command. No arbitrary image URL or install script is accepted.
+    func prepareLinuxEnvironment(
+        cancellation: CancellationToken,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
+    ) async throws -> String {
+        let imageID = LinuxGuestImageDistributionCatalog.defaultImageID
+        guard let images = lock.withLock({ linuxImages }) else {
+            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
+        }
+        let current = await images.status(id: imageID)
+        if current.installed && current.verificationFailure == nil {
+            return "Linux image \(imageID) is already installed"
+        }
+        return try await withTaskCancellationHandler {
+            let image = try await images.installTrustedImage(
+                id: imageID,
+                downloader: LinuxGuestImageHTTPDownloader(),
+                onProgress: onProgress
+            )
+            return "Linux image \(image.id) installed and verified"
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     /// `floe-env image status|import|install|remove` — the reachable image

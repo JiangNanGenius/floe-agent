@@ -45,6 +45,7 @@ public func registerExecutionTools(
     httpRequestService: HTTPRequestService = HTTPRequestService(),
     webSearchService: WebSearchService = WebSearchService(),
     webSearchAvailability: @escaping @Sendable (String) -> Bool = { _ in false },
+    linuxPreparation: LinuxPreparationHandler? = nil,
     includeOnDeviceJavaScript: Bool = false,
     includeStandaloneWasmTool: Bool = false
 ) -> any ScriptExecutionService {
@@ -212,5 +213,9 @@ public func registerExecutionTools(
     registry.register(BarcodeScanTool())
     registry.register(LocalNumericalCompatibilityTool())
     registry.register(PresentationArtifactTool())
+    if let linuxPreparation {
+        ToolCatalog.register(PrepareLinuxEnvironmentTool.self)
+        registry.register(PrepareLinuxEnvironmentTool(prepare: linuxPreparation))
+    }
     return service
 }

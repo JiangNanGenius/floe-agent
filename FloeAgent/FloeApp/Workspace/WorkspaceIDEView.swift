@@ -35,7 +35,8 @@ struct WorkspaceIDEView: View {
     @State private var pendingRunTerminal = false
     @State private var officeCloseRequest: OfficeCloseRequest?
     @State private var routingNotice: String?
-    @State private var showsSourceControl = false
+    /// Integrated left sidebar (source control), replacing the modal sheet.
+    @State private var sidebar: IDESidebarMode?
     /// Office session backing an internal CodeBlitz tab overlay, keyed by
     /// workspace-relative path. One session per open document, created on
     /// demand and released when its internal tab unmounts.
@@ -79,15 +80,43 @@ struct WorkspaceIDEView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 if root != nil {
-                    tabStrip
-                    Divider()
-                    content
-                    if showsTerminal, let terminalOwner {
-                        Divider()
-                        LocalTerminalView(owner: terminalOwner, embedded: true)
-                            .frame(height: 280)
-                            .background(FloeTheme.readingSurface)
-                            .accessibilityIdentifier("workspace.ide.terminalPanel")
+                    HStack(spacing: 0) {
+                        if let sidebar, sizeClass != .compact {
+                            IDESidebar(
+                                mode: sidebar,
+                                center: center,
+                                workspaceID: workspaceID,
+                                workspaceName: workspaceName,
+                                onClose: { self.sidebar = nil }
+                            )
+                            .frame(width: 320)
+                            Divider()
+                        }
+                        VStack(spacing: 0) {
+                            tabStrip
+                            Divider()
+                            content
+                            if showsTerminal, let terminalOwner {
+                                Divider()
+                                LocalTerminalView(owner: terminalOwner, embedded: true)
+                                    .frame(height: 280)
+                                    .background(FloeTheme.readingSurface)
+                                    .accessibilityIdentifier("workspace.ide.terminalPanel")
+                            }
+                        }
+                    }
+                    .overlay(alignment: .leading) {
+                        if let sidebar, sizeClass == .compact {
+                            IDESidebarDrawer(onDismiss: { self.sidebar = nil }) {
+                                IDESidebar(
+                                    mode: sidebar,
+                                    center: center,
+                                    workspaceID: workspaceID,
+                                    workspaceName: workspaceName,
+                                    onClose: { self.sidebar = nil }
+                                )
+                            }
+                        }
                     }
                 } else { ContentUnavailableView("ide.workspace.unavailable", systemImage: "folder.badge.questionmark") }
             }
@@ -128,9 +157,9 @@ struct WorkspaceIDEView: View {
                     // Common source-control entries (status, diff, stage,
                     // commit, branch) for the IDE's pinned workspace.
                     Button {
-                        showsSourceControl = true
+                        sidebar = sidebar == .sourceControl ? nil : .sourceControl
                     } label: { Label(IDELanguageRunText.t("源码管理", "Source control"), systemImage: "arrow.triangle.branch") }
-                    .disabled(root == nil || workspaceID == nil || center.currentWorkspace?.id != workspaceID)
+                    .disabled(root == nil || workspaceID == nil)
                     .accessibilityIdentifier("workspace.ide.sourceControl")
                     Button {
                         toggleTerminal()
@@ -157,18 +186,7 @@ struct WorkspaceIDEView: View {
                 if state.conflict == nil && !state.dirty { onSaved() }
             }, onCancel: { state.conflict = nil }).id(review.id)
         }
-        .sheet(isPresented: $showsSourceControl) {
-            NavigationStack {
-                SourceControlView(center: center.environment.sourceControlCenter)
-                    .navigationTitle(IDELanguageRunText.t("源码管理", "Source control"))
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button(IDELanguageRunText.t("完成", "Done")) { showsSourceControl = false }
-                        }
-                    }
-            }
-        }
+
         .sheet(item: $officeShareSnapshot, onDismiss: {
             // Only the session that produced this snapshot holds it; the
             // others no-op on their own export store.
@@ -392,8 +410,15 @@ struct WorkspaceIDEView: View {
                 case .office:
                     officeSurface(tab)
                 case .document:
-                    FilePreviewView(relativePath: tab.relativePath, center: center, allowsIDEExpansion: false)
-                        .id(tab.id)
+                    if WorkspaceFileType.isArchive(tab.relativePath) {
+                        // Archives browse as a tree with bounded on-demand
+                        // extraction; they never enter the text workbench.
+                        ArchiveBrowserView(relativePath: tab.relativePath, center: center, showsClose: false)
+                            .id(tab.id)
+                    } else {
+                        FilePreviewView(relativePath: tab.relativePath, center: center, allowsIDEExpansion: false)
+                            .id(tab.id)
+                    }
                 }
             }
         }

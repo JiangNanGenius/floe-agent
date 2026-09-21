@@ -135,7 +135,7 @@ final class IDEWorkspaceTabStore: ObservableObject {
             return tabs.first { $0.id == Self.codeTabID }
         case .officeEditor:
             kind = .office
-        case .documentViewer, .cadViewer, .imageViewer, .mediaEditor, .quickLook:
+        case .documentViewer, .cadViewer, .imageViewer, .mediaEditor, .archiveBrowser, .quickLook:
             kind = .document
         }
         if let existing = tabs.first(where: { $0.id == relativePath }) {
