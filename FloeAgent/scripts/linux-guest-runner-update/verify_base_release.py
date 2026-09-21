@@ -113,6 +113,12 @@ def check_workflow_contract():
     require(not clobber_lines, "workflow never passes --clobber to a release command")
     require("runnerArtifact" in contract or "package_component.py" in contract,
             "workflow invokes the packaging step that writes the runner artifact fields")
+    # The boot gate requires a guest that reports net=up; that is only
+    # reachable when the host is given the network switch. Fail the read-only
+    # preflight (before the 572 MB download) if the boot command lost it.
+    require(pipeline_contract.workflow_enables_guest_network(contract),
+            "workflow boots floe_vm_host with --net (the App's network switch); "
+            "without it the guest has no virtio-net device and answers net=down")
 
 
 def check_tag_policy(repo, event, tag, image_id, marker, base_tag):
@@ -213,7 +219,13 @@ def check_target_commit(repo, base_commit, target):
         if constants:
             ok("runner constants at target: %s" % json.dumps(constants, sort_keys=True))
             facts["runnerConstants"] = constants
-            facts["runnerCaps"] = pipeline_contract.expected_caps(constants)
+            # The boot gate in the update job requires the guest to answer
+            # net=up, so the target runner source must actually emit the
+            # first-boot network field; otherwise the check would compare a
+            # payload shape the runner can never produce.
+            require(pipeline_contract.caps_net_field(source),
+                    "runner at target emits the first-boot net= capability field")
+            facts["runnerCaps"] = pipeline_contract.expected_caps(constants, net_status="up")
             require(constants["protocol"] == 3, "runner protocol constant is 3")
             require(constants["max_commands"] >= 4,
                     "runner allows >=4 concurrent commands (focused 4-way overlap)")

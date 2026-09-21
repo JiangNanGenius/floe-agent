@@ -56,16 +56,37 @@ static int count_occurrences(const char *text, const char *needle) {
 int main(void) {
     char buf[FLOE_NET_CONFIG_MAX];
 
-    // Resolver file: fixed public servers, never slirp's unusable 10.0.2.3,
-    // each on its own nameserver line, in the documented order.
+    // Resolver file: slirp's own alias first (the engine rewrites it to the
+    // host resolver), then the fixed public fallbacks, each on its own
+    // nameserver line, in the documented order.
     render_or_fail("resolv.conf", floe_net_render_resolv_conf, buf, sizeof buf);
-    CHECK(count_occurrences(buf, "nameserver ") == 4);
+    CHECK(count_occurrences(buf, "nameserver ") == 5);
+    CHECK(strstr(buf, "nameserver " FLOE_NET_RESOLVER_SLIRP "\n") != NULL);
     CHECK(strstr(buf, "nameserver " FLOE_NET_RESOLVER_1 "\n") != NULL);
     CHECK(strstr(buf, "nameserver " FLOE_NET_RESOLVER_2 "\n") != NULL);
     CHECK(strstr(buf, "nameserver " FLOE_NET_RESOLVER_3 "\n") != NULL);
     CHECK(strstr(buf, "nameserver " FLOE_NET_RESOLVER_4 "\n") != NULL);
-    CHECK(strstr(buf, "10.0.2.3") == NULL);
     CHECK(strstr(buf, "defoptions") == NULL);
+    // The alias must be the first nameserver: glibc queries in file order, so
+    // a host DNS path behind a dead public resolver would stall every lookup.
+    const char *slirp_line = strstr(buf, "nameserver " FLOE_NET_RESOLVER_SLIRP "\n");
+    for (size_t i = 1; i < FLOE_NET_RESOLVER_COUNT; i++) {
+        const char *other = floe_net_resolver_at(i);
+        CHECK(other != NULL);
+        if (other == NULL || slirp_line == NULL) continue;
+        const char *other_line = strstr(buf, other);
+        CHECK(other_line != NULL && other_line > slirp_line);
+    }
+
+    // Ordered probe plan: the accessor walks the same fixed sequence, with a
+    // bounded per-attempt timeout and no more attempts than resolvers.
+    CHECK(floe_net_resolver_at(0) != NULL
+          && strcmp(floe_net_resolver_at(0), FLOE_NET_RESOLVER_SLIRP) == 0);
+    CHECK(floe_net_resolver_at(FLOE_NET_RESOLVER_COUNT - 1) != NULL);
+    CHECK(floe_net_resolver_at(FLOE_NET_RESOLVER_COUNT) == NULL);
+    CHECK(FLOE_NET_PROBE_TIMEOUT_SECONDS >= 1);
+    CHECK(FLOE_NET_PROBE_MAX_ATTEMPTS >= 1
+          && FLOE_NET_PROBE_MAX_ATTEMPTS <= FLOE_NET_RESOLVER_COUNT);
 
     // Interfaces file: the slirp defaults, so ifupdown and the runner agree.
     render_or_fail("interfaces", floe_net_render_interfaces, buf, sizeof buf);

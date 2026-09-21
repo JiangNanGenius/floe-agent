@@ -6,7 +6,8 @@ packager all need:
 
   * the runner's own constants (`floe_exec.c`: FLOE_RUNNER_VERSION,
     FLOE_PROTOCOL_VERSION, MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_SESSIONS)
-    and the exact CAPS payload they produce;
+    and the exact CAPS payload they produce, including the first-boot
+    `net=up|partial|down` field the runner appends when its source emits it;
   * the engine's guest-image artifact contract
     (`LinuxGuestService.swift`: `runnerArtifact` + `runnerCapabilities`, and the
     `LinuxGuestImageArtifact.Role` enum that constrains the JSON `role` field;
@@ -22,7 +23,23 @@ import re
 
 CAPS_PATTERN = re.compile(
     r"^runner=(?P<runner>\S+) protocol=(?P<protocol>\d+) "
-    r"maxCommands=(?P<maxCommands>\d+) maxSessions=(?P<maxSessions>\d+)$")
+    r"maxCommands=(?P<maxCommands>\d+) maxSessions=(?P<maxSessions>\d+)"
+    r"(?: net=(?P<net>up|partial|down))?$")
+
+# The first-boot network vocabulary the runner answers (floe_net.h). The
+# field is optional in the pattern so a pre-network runner still parses, but
+# the pipeline requires it whenever the runner source emits it, and requires
+# `up` for the boot contract (see guest_protocol_check and package_component).
+CAPS_NET_STATUSES = ("up", "partial", "down")
+
+# The runner's FLOE-CAPS emission carries a `net=%s` slot when it reports the
+# first-boot network state. Read from the source instead of assuming the
+# field, so a runner that stopped reporting it cannot pass the boot gate with
+# a payload shape the pipeline never verified. The match requires the string
+# conversion slot (`%s`) that follows `net=`, so a comment or prose mentioning
+# "net=" on the same source line is not mistaken for the emission.
+CAPS_NET_FIELD_PATTERN = re.compile(
+    r"FLOE-CAPS[^\n\"]*maxSessions=(?:%d|[0-9]+)[^\n\"]*net=%s")
 
 ROLE_ENUM_PATTERN = re.compile(
     r"enum\s+Role\s*:\s*String\s*,\s*Codable\s*,\s*Sendable\s*\{(?P<body>[^}]*)\}",
@@ -68,6 +85,74 @@ def runner_source_set(floe_exec_text):
     return ("floe_exec.c",) + tuple(local_includes(floe_exec_text)) + ("Makefile",)
 
 
+# A `--net` shell flag token rather than prose: it must be followed only by
+# an optional line-continuation backslash/end-of-line, or by whitespace and
+# another `-`/`--` option. "floe_vm_host --net appears in docs" does not
+# match. This is the CLI form of the App's
+# LinuxGuestEnvironmentDescriptor.networkEnabled -> FloeVMConfig.net_enable
+# wiring; without the flag the adapter creates no slirp backend and TinyEMU
+# registers no virtio-net device, so the guest boots without eth0 (run
+# 35645930554).
+NET_FLAG_TOKEN_PATTERN = re.compile(
+    r"(?<![\w-])--net(?:\s*\\?\s*$|\s+(?=-))", re.M)
+
+
+def _shell_statements(text):
+    """Active (non-comment) shell text joined on backslash continuations.
+
+    A boot invocation is split across continuation lines in the workflow, so
+    the flag can sit on a line that does not itself name floe_vm_host.
+    """
+    active = []
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        active.append(line)
+    joined = "\n".join(active)
+    return re.split(r"(?<!\\)\n", joined)
+
+
+def workflow_enables_guest_network(workflow_text):
+    """True when the workflow boots floe_vm_host with the --net switch.
+
+    Comments are ignored, continuation lines are joined to the invocation,
+    and the flag must be a real shell token (its own continuation line or
+    inline before another option), so a documentation sentence naming
+    `floe_vm_host --net` is not enough.
+    """
+    for statement in _shell_statements(workflow_text):
+        collapsed = statement.replace("\\\n", " ")
+        if "floe_vm_host" in collapsed and NET_FLAG_TOKEN_PATTERN.search(collapsed):
+            return True
+    return False
+
+
+# The per-VM MAC the adapter assigns the virtio-net device
+# (ThirdParty/TinyEMU/adapter/floe_vm.c: net->mac_addr[0..5]). The boot gate
+# reads the guest kernel's view of eth0 and compares it to this, so it is
+# derived from the adapter source instead of being trusted as a constant.
+ADAPTER_MAC_PATTERN = re.compile(
+    r"mac_addr\[0\]\s*=\s*0x([0-9A-Fa-f]{2})\s*;\s*"
+    r"(?:[A-Za-z_][\w>.-]*\s*)?mac_addr\[1\]\s*=\s*0x([0-9A-Fa-f]{2})\s*;\s*"
+    r"(?:[A-Za-z_][\w>.-]*\s*)?mac_addr\[2\]\s*=\s*0x([0-9A-Fa-f]{2})\s*;\s*"
+    r"(?:[A-Za-z_][\w>.-]*\s*)?mac_addr\[3\]\s*=\s*0x([0-9A-Fa-f]{2})\s*;\s*"
+    r"(?:[A-Za-z_][\w>.-]*\s*)?mac_addr\[4\]\s*=\s*0x([0-9A-Fa-f]{2})\s*;\s*"
+    r"(?:[A-Za-z_][\w>.-]*\s*)?mac_addr\[5\]\s*=\s*0x([0-9A-Fa-f]{2})\s*;")
+
+
+def adapter_guest_mac(adapter_source):
+    """The adapter's per-VM guest MAC as colon-separated lowercase hex, or None.
+
+    Parsed out of the six `net->mac_addr[i] = 0x..;` assignments in
+    adapter/floe_vm.c, so a changed adapter MAC fails the boot-gate coupling
+    instead of the guest's real eth0 being compared against a stale string.
+    """
+    match = ADAPTER_MAC_PATTERN.search(adapter_source or "")
+    if match is None:
+        return None
+    return ":".join(group.lower() for group in match.groups())
+
+
 def parse_source_sha256_record(text):
     """{basename: sha256} from a sha256sum-style runner-source-sha256 record.
 
@@ -109,15 +194,36 @@ def parse_runner_constants(text):
     return parsed
 
 
-def expected_caps(constants):
-    """The exact CAPS payload the runner answers for these constants."""
-    return "runner=%s protocol=%d maxCommands=%d maxSessions=%d" % (
+def expected_caps(constants, net_status=None):
+    """The exact CAPS payload the runner answers for these constants.
+
+    `net_status` is the first-boot network state the runner reports at
+    runtime (`up`/`partial`/`down`); None renders a pre-network payload so a
+    legacy runner can still be compared against its own source.
+    """
+    if net_status is not None and net_status not in CAPS_NET_STATUSES:
+        raise ValueError("unknown net status %r (expected one of %s)"
+                         % (net_status, ", ".join(CAPS_NET_STATUSES)))
+    payload = "runner=%s protocol=%d maxCommands=%d maxSessions=%d" % (
         constants["runner_version"], constants["protocol"],
         constants["max_commands"], constants["max_sessions"])
+    if net_status is not None:
+        payload += " net=%s" % net_status
+    return payload
+
+
+def caps_net_field(runner_source):
+    """True when the runner source emits the `net=` capability field."""
+    return CAPS_NET_FIELD_PATTERN.search(runner_source or "") is not None
 
 
 def parse_caps(payload):
-    """Parse a verbatim CAPS payload, or None when it is not one."""
+    """Parse a verbatim CAPS payload, or None when it is not one.
+
+    The `net=` field is optional so payloads from a pre-network runner still
+    parse; callers that require the field (the boot gate) check `caps["net"]`
+    and use `caps_net_field(source)` to know whether the source emits it.
+    """
     if payload is None:
         return None
     match = CAPS_PATTERN.match(payload.strip())
@@ -125,7 +231,8 @@ def parse_caps(payload):
         return None
     return {"runner": match.group("runner"), "protocol": int(match.group("protocol")),
             "maxCommands": int(match.group("maxCommands")),
-            "maxSessions": int(match.group("maxSessions")), "payload": payload.strip()}
+            "maxSessions": int(match.group("maxSessions")),
+            "net": match.group("net"), "payload": payload.strip()}
 
 
 def artifact_roles(swift_source):

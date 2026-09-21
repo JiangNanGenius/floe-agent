@@ -21,7 +21,7 @@
 // Capability negotiation (protocol 3): the host sends
 //   \x1eFLOE-HELLO <token>\x1e
 // and the runner answers
-//   \x1eFLOE-CAPS <token> runner=<version> protocol=3 maxCommands=N maxSessions=M\x1e
+//   \x1eFLOE-CAPS <token> runner=<version> protocol=3 maxCommands=N maxSessions=M[ net=<state>]\x1e
 //   \x1eFLOE-END <token> 0\x1e
 // The channel refuses guests whose runner predates protocol 3 with
 // LinuxGuestError.runnerUpgradeRequired — concurrent tokens are only safe

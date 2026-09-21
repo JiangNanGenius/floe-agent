@@ -1,9 +1,19 @@
 # TinyEMU phase 2 — Linux guest runner component update pipeline
 
-Status: **implemented, not dispatched**. No workflow run, no release, no cloud
-artifact exists for this pipeline yet; the section "Verified locally" lists
-exactly what was executed and what was only inspected. The primary agent owns
-the dispatch decision and publication.
+Status: **implemented; one cloud dispatch attempted and failed at the boot
+gate, repaired, re-dispatch pending.** Run
+[35645930554](https://github.com/JiangNanGenius/floe-agent/actions/runs/35645930554)
+got through preflight, the pinned cross toolchain, the static runner build,
+the base-image injection, the GPL gate and the TinyEMU host build, then failed
+the focused protocol check because its boot command never passed `--net`: the
+guest had no `eth0`, the runner answered `net=down`, and the CAPS parser
+rejected the new `net=` field. The fix (boot flag + parser + guest-side
+network proof + slirp resolver order) is recorded in
+[FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md](FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md).
+No release, no published component and no cloud artifact exists for this
+pipeline yet; the section "Verified locally" lists exactly what was executed
+and what was only inspected. The primary agent owns the dispatch decision and
+publication.
 
 Scope of this document: the runner-only Linux guest component update
 (`.github/workflows/linux-guest-runner-update.yml` and
@@ -74,7 +84,7 @@ artifact digests:
   "sha512": "<128 hex of the exact bytes in the archive>",
   "bytes": 123456
 },
-"runnerCapabilities": "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4",
+"runnerCapabilities": "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=up",
 "compatibleOrigins": [
   {"imageID": "floe-debian13-riscv64-202609202607",
    "sha512": "31553063…e7", "bytes": 3085959168}
@@ -83,7 +93,13 @@ artifact digests:
 
 * `runnerCapabilities` is the **verbatim** CAPS payload the guest answered
   during this run, and the packager refuses to write it unless it equals the
-  CAPS string implied by the runner source constants of the same commit.
+  CAPS string implied by the runner source constants of the same commit. The
+  payload's trailing `net=` field is the runner's first-boot network state
+  (`floe_net.h`); the source must actually emit the field, and only
+  `net=up` — the runner's bounded DNS probe answered — is packagable. A
+  missing field, `partial` or `down` fails the package: the component exists
+  to give the App a working `apt`/`pip`/`npm` network, so a silently degraded
+  image is never shipped.
 * `runnerArtifact.role` must stay inside the engine's
   `LinuxGuestImageArtifact.Role` enum or the manifest would not decode. The
   engine owns a **distinct `runner` case** (the upgrade manifest/lifecycle
@@ -120,6 +136,12 @@ artifact digests:
 
 Protocol check (one boot, ~2 minutes, focused on the runner contract — not the
 package/SMP/UI matrix): framed `FLOE-HELLO` → `FLOE-CAPS` answer and END;
+the first-boot network contract (the runner's `net eth0=… status=up` line,
+the kernel's own `/sys/class/net/eth0` address equals the adapter's per-VM
+MAC, a userland `getent hosts` answer, and `net=up` in CAPS — `net=down`,
+`net=partial`, a missing device and a failed probe are forbidden and fail the
+check, which is how the missing `--net` in run 35645930554 becomes visible
+instead of hidden);
 4-way concurrent EXEC behind a real 9p-file barrier — the success marker is
 printed only after all four start-files were re-checked, and the bounded wait
 expiring prints `FLOE_CC<n>_NO_OVERLAP` plus exit 7, so a serialized runner
@@ -137,6 +159,14 @@ stream, so waiting for `FLOE_P3_DONE` could end the boot before the final END
 frame is transcribed, while the assert still requires both. `qualified: true`
 in the manifest is written only from this real boot verdict (`failures == 0`);
 a dry run cannot produce it.
+
+The boot step passes `--net` — the CLI form of the App's
+`LinuxGuestEnvironmentDescriptor.networkEnabled` →
+`FloeVMConfig.net_enable` wiring and the only way the adapter creates the
+per-VM slirp backend and the virtio-net device the guest sees as `eth0`.
+Both the read-only preflight and the offline self-check fail if the boot
+command loses `--net` (`pipeline_contract.workflow_enables_guest_network`), so
+a run without a network device cannot pass as a green component.
 
 ## Licenses and corresponding source
 
@@ -176,6 +206,33 @@ a dry run cannot produce it.
 4. Dispatch `linux-guest-runner-update` from the source branch with those
    inputs. The job creates a **draft prerelease**; publishing, catalog pinning
    and TestFlight/App work remain with the primary agent.
+
+## Verified locally (2026-09-22, network-boot repair)
+
+* `make -C FloeAgent/LinuxGuest/runner check-net` — 45 checks passed (ordered
+  resolver plan, slirp alias first, probe bounds, status vocabulary).
+* `bash FloeAgent/LinuxGuest/tests/host_protocol_check.sh` — 18 protocol
+  checks + 5 runtime-lifecycle checks passed (host build unaffected).
+* `python3 FloeAgent/scripts/linux-guest-runner-update/selfcheck.py --repo .
+  --out <dir>` — PASSED, including the new checks: CAPS net= parsing with and
+  without the field, `expected_caps(..., net_status="up")`,
+  `caps_net_field(source)` (string-slot match, comments excluded), the
+  workflow `--net` guard (continuation/inline accepted, comment and prose
+  mentions rejected, with a negative on the real workflow), the guest eth0
+  MAC re-derived from `adapter/floe_vm.c`, synthetic `net=up` transcript with
+  device/DNS markers, `net=down` and `net=partial` transcripts failing closed,
+  a failed guest probe failing closed, and packaging refusing net=down /
+  net=partial / a missing field / a source without the `net=` slot.
+* `python3 -m unittest discover -s
+  FloeAgent/scripts/linux-guest-runner-update -p 'test_*.py'` — 17 tests OK
+  (CAPS net= contract, source-slot discovery, workflow `--net` guard including
+  comments/prose negatives, adapter MAC coupling, runner source set).
+* `make -C FloeAgent/LinuxGuest/runner host` + `check-clock` — runner host
+  build clean; 87 clock checks and 45 network checks passed.
+* The qualification host source (`floe_vm_host.c`) and the engine/adapter are
+  unchanged by this repair; the boot fix is the `--net` argument the workflow
+  now passes, so the qualification host binary is the same one the failed run
+  built.
 
 ## Verified locally (2026-09-21)
 
