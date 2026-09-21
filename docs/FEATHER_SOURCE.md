@@ -9,6 +9,13 @@ The stable source URL is:
 
 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
 
+The one-tap quick add lives on the official download page
+(`https://www.floe-agent.com/#download`), whose Feather and AltStore buttons
+issue the `feather://source/<url>` and `altstore://source?url=<encoded url>`
+deep links. GitHub renders README links only for `http`, `https` and `mailto`;
+it removes the custom-scheme `href`, which is why the README points at the
+download page instead of embedding those deep links directly.
+
 In Feather, open **Sources**, add this URL and choose **Floe Agent**. Feather
 downloads the unsigned developer IPA; use your own certificate and provisioning
 profile to sign and install it. The source does not distribute certificates.

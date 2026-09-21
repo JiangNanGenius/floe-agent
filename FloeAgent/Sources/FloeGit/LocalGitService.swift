@@ -7,6 +7,23 @@ import libgit2
 /// directly for authenticated network operations so credentials are supplied
 /// through callbacks and never persisted in `.git/config` or a remote URL.
 public actor LocalGitService {
+    /// Posted after every successful local mutation (init, stage, unstage,
+    /// discard, commit, branch switch/create, merge, pull, abort, clone) with
+    /// `GitRepositoryChange.rootKey` set to the URL the operation ran at.
+    ///
+    /// Source-control surfaces subscribe instead of polling, so a repository
+    /// created or changed by an agent tool, a guest shell or another surface
+    /// becomes visible immediately. The notification says "something in this
+    /// tree changed"; it never claims which files, and readers still take a
+    /// fresh snapshot.
+    private func postRepositoryDidChange(at root: URL) {
+        NotificationCenter.default.post(
+            name: .floeGitRepositoryDidChange,
+            object: nil,
+            userInfo: [GitRepositoryChange.rootKey: root.standardizedFileURL]
+        )
+    }
+
     public init() {}
 
     /// Walks up from `root` through its ancestors to the nearest directory
@@ -69,13 +86,17 @@ public actor LocalGitService {
             // directory above it is outside every supported workspace.
             if boundaryPaths.contains(path) { return nil }
 
-            let parent = candidate.deletingLastPathComponent()
-            // `deletingLastPathComponent` of the filesystem root returns the
-            // root itself; that is where the walk stops for any root that is
-            // not under the ownership boundary (for example a security-scoped
-            // folder on an external or cloud volume).
-            if parent == candidate { return nil }
-            candidate = parent
+            // `deletingLastPathComponent` of the filesystem root returns
+            // `/..` on Darwin (never the root itself), and comparing URLs
+            // alone therefore never stops: a workspace outside the ownership
+            // boundary — a security-scoped external/cloud folder, or a
+            // developer-host temp directory in tests — walked `/..`,
+            // `/../..`, … forever instead of reporting "no repository".
+            // Compare standardized paths and stop when the parent no longer
+            // shrinks, which covers the real root and the Darwin `..` form.
+            let parentPath = candidate.deletingLastPathComponent().standardizedFileURL.path
+            if parentPath.isEmpty || parentPath == path { return nil }
+            candidate = URL(fileURLWithPath: parentPath, isDirectory: true)
         }
     }
 
@@ -194,6 +215,7 @@ public actor LocalGitService {
                 operation: "set initial branch"
             )
         }
+        postRepositoryDidChange(at: root)
         return try snapshot(at: root)
     }
 
@@ -211,6 +233,7 @@ public actor LocalGitService {
             try Self.check(git_index_update_all(index, &pathspec, nil, nil), operation: "stage deletions")
             try Self.check(git_index_write(index), operation: "write index")
         }
+        postRepositoryDidChange(at: root)
     }
 
     public func stage(paths: [String], at root: URL) throws {
@@ -230,6 +253,7 @@ public actor LocalGitService {
             }
             try Self.check(git_index_write(index), operation: "write index")
         }
+        postRepositoryDidChange(at: root)
     }
 
     /// Removes paths from the index without touching the working tree
@@ -241,6 +265,7 @@ public actor LocalGitService {
         let repository = try Repository.open(at: root)
         if let head = try Self.headCommit(repository) {
             try repository.reset(from: head, paths: safe)
+            postRepositoryDidChange(at: root)
             return
         }
         // Unborn HEAD: the index has no baseline, so drop the entries.
@@ -254,6 +279,7 @@ public actor LocalGitService {
             }
             try Self.check(git_index_write(index), operation: "write index")
         }
+        postRepositoryDidChange(at: root)
     }
 
     /// Discards changes for `paths`. The working tree is always restored from
@@ -307,6 +333,7 @@ public actor LocalGitService {
             }
             try? FileManager.default.removeItem(at: url)
         }
+        postRepositoryDidChange(at: root)
         return GitDiscardOutcome(discardedPaths: safe, recoveryPath: recovered ? recoveryFolder.path : nil)
     }
 
@@ -324,6 +351,7 @@ public actor LocalGitService {
         let repository = try Repository.open(at: root)
         try configureIfMissing(repository, authorName: authorName, authorEmail: authorEmail)
         let commit = try repository.commit(message: value)
+        postRepositoryDidChange(at: root)
         return GitCommitSummary(
             oid: commit.id.hex,
             shortOID: commit.id.abbreviated,
@@ -377,6 +405,7 @@ public actor LocalGitService {
         let branchName = try Self.validBranch(name)
         let branch = try repository.branch.get(named: branchName, type: .local)
         try repository.switch(to: branch)
+        postRepositoryDidChange(at: root)
     }
 
     public func createBranch(at root: URL, name: String, switchToBranch: Bool = true) throws {
@@ -393,6 +422,7 @@ public actor LocalGitService {
         }
         let branch = try repository.branch.create(named: Self.validBranch(name), target: head)
         if switchToBranch { try repository.switch(to: branch) }
+        postRepositoryDidChange(at: root)
     }
 
     public func clone(from remoteURL: URL, to destination: URL, token: String?) throws {
@@ -416,6 +446,7 @@ public actor LocalGitService {
                 try Self.check(result, operation: "clone repository")
             }
         }
+        postRepositoryDidChange(at: destination)
     }
 
     public func fetch(at root: URL, token: String?) throws {
@@ -425,6 +456,7 @@ public actor LocalGitService {
             options.callbacks = callbacks
             try Self.check(git_remote_fetch(remote, nil, &options, nil), operation: "fetch")
         }
+        postRepositoryDidChange(at: root)
     }
 
     public func push(at root: URL, token: String?) throws {
@@ -451,6 +483,7 @@ public actor LocalGitService {
                 }
             }
         }
+        postRepositoryDidChange(at: root)
     }
 
     /// Fetches then performs a fast-forward-only update. Dirty workspaces and
@@ -474,6 +507,7 @@ public actor LocalGitService {
             throw FloeError.validationFailed("Pull requires a merge; Floe only performs safe fast-forward pulls")
         }
         try repository.reset(to: upstreamCommit, mode: .hard)
+        postRepositoryDidChange(at: root)
     }
 
     // MARK: - Merge and conflict resolution
@@ -485,7 +519,7 @@ public actor LocalGitService {
     @discardableResult
     public func mergeRef(at root: URL, refName: String, authorName: String, authorEmail: String) throws -> GitMergeOutcome {
         try configureIfMissing(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
-        return try withRawRepository(at: root) { repository in
+        let outcome = try withRawRepository(at: root) { repository in
             var reference: OpaquePointer?
             try Self.check(git_reference_lookup(&reference, repository, refName), operation: "resolve merge target")
             guard let reference else { throw FloeError.validationFailed("Merge target was not found") }
@@ -563,6 +597,8 @@ public actor LocalGitService {
             try Self.createMergeCommit(raw: repository, message: (try? Self.mergeMessage(at: root)) ?? "Merge")
             return GitMergeOutcome(result: .merged, message: "合并完成")
         }
+        postRepositoryDidChange(at: root)
+        return outcome
     }
 
     /// Fetches and merges the current branch's configured upstream. This is
@@ -620,6 +656,7 @@ public actor LocalGitService {
             )
             return GitMergeOutcome(result: .merged, message: "冲突已解决，合并完成")
         }
+        postRepositoryDidChange(at: root)
     }
 
     /// Returns the repository to its pre-merge state. Local commits are kept
@@ -635,6 +672,7 @@ public actor LocalGitService {
             defer { git_object_free(object) }
             try Self.check(git_reset(repository, object, GIT_RESET_HARD, nil), operation: "abort merge")
         }
+        postRepositoryDidChange(at: root)
     }
 
     private static func createMergeCommit(raw repository: OpaquePointer, message: String) throws {

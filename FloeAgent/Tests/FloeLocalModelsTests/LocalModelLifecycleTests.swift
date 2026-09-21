@@ -350,7 +350,7 @@ struct LocalModelLifecycleTests {
             )
             Issue.record("Expected insufficientMemory to be thrown")
         } catch let error as LocalInferenceError {
-            guard case .insufficientMemory(let required, let physical) = error else {
+            guard case .insufficientMemory(let required, let physical, _) = error else {
                 Issue.record("Expected insufficientMemory, got \(error)")
                 return
             }
@@ -443,7 +443,10 @@ struct LocalModelLifecycleTests {
     @Test("Switching resident models never keeps two containers alive")
     @available(macOS 15.4, iOS 26.0, *)
     func modelSwitchKeepsSingleContainer() async throws {
-        let otherID = "gemma4-e4b-mlx4"
+        // A second *selectable* MLX entry: Gemma 4 E4B moved to the retired
+        // list (its snapshot cannot be admitted on an M4-class allowance), and
+        // retired entries are intentionally not routable.
+        let otherID = "qwen3.8-4b-heretic-mlx4"
         let harness = Harness(memorySamples: [8_000_000_000])
         let factory = harness.factory
         let runtime = LocalModelRuntime(
@@ -491,7 +494,7 @@ struct LocalModelLifecycleTests {
         #expect(overflowError.providerMessage.contains("not replayed"))
 
         let memory = LocalProviderAdapter.recoverableBoundaryEvent(
-            for: LocalInferenceError.insufficientMemory(required: 3_000_000_000, physical: 1_200_000_000)
+            for: LocalInferenceError.insufficientMemory(required: 3_000_000_000, physical: 1_200_000_000, reserved: 0)
         )
         guard case .error(let memoryError)? = memory else {
             Issue.record("Expected a retryable memory provider event, got \(String(describing: memory))")

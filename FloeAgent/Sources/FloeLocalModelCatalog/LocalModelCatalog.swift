@@ -164,6 +164,20 @@ public enum CuratedLocalModelCatalog {
             supportsToolCalling: true,
             license: "Apache-2.0"
         ),
+    ]
+
+    /// Entries removed from the selectable catalog remain known long enough
+    /// for an existing installation to be discovered and deleted. They are
+    /// never offered for download, model discovery, or task routing.
+    ///
+    /// Gemma 4 E4B moved here in the next repair slice: its 5.15 GB safetensors
+    /// snapshot is the largest default entry and cannot be admitted on an
+    /// M4-class iPad allowance (~4.7-4.9 GiB) once Floe's own footprint and a
+    /// running TinyEMU Linux guest are accounted for, so offering it as a
+    /// default/recommended download was a guaranteed failed start. Keeping the
+    /// entry (and its profile id) means an existing user download is still
+    /// discovered and can be deleted explicitly — nothing is removed silently.
+    public static let retiredEntries: [LocalModelCatalogEntry] = [
         .init(
             id: "gemma4-e4b-mlx4",
             profileID: UUID(uuidString: "A1480001-0000-4000-8000-000000000005")!,
@@ -187,13 +201,7 @@ public enum CuratedLocalModelCatalog {
             supportsReasoning: true,
             supportsToolCalling: true,
             license: "Gemma"
-        )
-    ]
-
-    /// Entries removed from the selectable catalog remain known long enough
-    /// for an existing installation to be discovered and deleted. They are
-    /// never offered for download, model discovery, or task routing.
-    public static let retiredEntries: [LocalModelCatalogEntry] = [
+        ),
         .init(
             id: "qwen3.5-9b-q4km", profileID: UUID(uuidString: "A1480001-0000-4000-8000-000000000002")!, displayName: "Qwen3.5 9B Q4_K_M",
             repository: "unsloth/Qwen3.5-9B-GGUF", revision: "main", runtimeFormat: .gguf,
@@ -432,19 +440,8 @@ public actor LocalModelStore {
     }
 
     static func validateSafetensors(_ url: URL) throws {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        guard let prefix = try handle.read(upToCount: 8), prefix.count == 8 else {
-            throw StoreError.invalidMLXSnapshot("truncated safetensors header")
-        }
-        let headerLength = prefix.enumerated().reduce(UInt64(0)) { partial, item in
-            partial | (UInt64(item.element) << UInt64(item.offset * 8))
-        }
-        let size = UInt64(max(0, (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0))
-        guard headerLength > 1, headerLength <= 256 * 1024 * 1024, headerLength + 8 <= size,
-              let header = try handle.read(upToCount: Int(headerLength)),
-              (try? JSONSerialization.jsonObject(with: header)) != nil else {
-            throw StoreError.invalidMLXSnapshot("invalid safetensors metadata")
+        if let problem = LocalModelSnapshotIntegrity.safetensorsProblem(url) {
+            throw StoreError.invalidMLXSnapshot(problem.summary)
         }
     }
 
@@ -477,6 +474,19 @@ public actor LocalModelStore {
         let revision: String
         let format: LocalModelRuntimeFormat
         let artifacts: [LocalModelArtifact]
+    }
+
+    /// Floe's install manifest. Only a directory that carries it was written
+    /// by `LocalModelStore`; a directory without one is not assumed to be a
+    /// complete install (unit-test seams, a hand-copied folder) and integrity
+    /// auditing stays out of that path.
+    public static let installManifestName = ".floe-model.json"
+
+    /// True when `directory` carries Floe's install manifest.
+    public static func hasInstallManifest(in directory: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(installManifestName).path
+        )
     }
 
     private static func writeManifest(to directory: URL, entry: LocalModelCatalogEntry) throws {

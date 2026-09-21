@@ -241,9 +241,15 @@ struct LocalServiceTool: AgentTool {
         var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
         let handle: LinuxGuestLocalServiceHandle
         do {
-            // Lazy activation: start an owned-but-stopped guest on demand so
-            // a service request never dies on "not running" alone.
-            try await FloePlatformServices.shared.activateLinuxGuest(id: environment.id)
+            // Lazy activation plus first-use preparation: start an owned
+            // guest on demand and, when the image is missing/unverified, run
+            // the same shared, cancellable download-and-install flow the
+            // model tool uses. A service request never depends on the model
+            // having reasoned about environment.prepareLinux first.
+            try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(
+                id: environment.id,
+                cancellation: context.cancellation
+            )
             handle = try await controller.startLocalService(
                 environmentID: environment.id,
                 request: request,

@@ -180,7 +180,7 @@ actor EnvironmentLanguagePackageService {
     /// Lazy activation for package operations: an owned-but-stopped guest is
     /// started on demand so installs never fail on "not running" alone.
     private func ensureGuestRunning(environmentID: String) async throws {
-        try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+        try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(id: environmentID)
     }
 
     func pythonFromShell(environment: ToolEnvironment, operation: ManagedPythonPackageSpecParser.ShellOperation,

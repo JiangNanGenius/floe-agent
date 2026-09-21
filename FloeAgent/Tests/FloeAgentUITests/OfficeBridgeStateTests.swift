@@ -125,6 +125,18 @@ struct OfficeRoutingTests {
         #expect(WorkspaceFileRouter.destination(for: "image.png") == .imageViewer)
     }
 
+    @Test("A workspace preview routes Office to the standalone editor; only PDF keeps the IDE entry")
+    func previewHeaderRoutingKeepsOfficeStandalone() {
+        // Office documents opened from a workspace preview keep the standalone
+        // full-screen editor; the IDE embedded tab is reserved for opens that
+        // start in the IDE file tree.
+        for path in ["deck.pptx", "report.docx", "book.xlsx", "dir/子表.XLSX"] {
+            #expect(!FileInspectorView.previewHeaderShowsIDEEntry(for: path), Comment(rawValue: path))
+        }
+        // PDF keeps its IDE viewer expansion.
+        #expect(FileInspectorView.previewHeaderShowsIDEEntry(for: "spec.pdf"))
+    }
+
     @Test("An archive opens one IDE document tab, never an Office or code tab")
     @MainActor
     func archiveOpensDocumentTab() {

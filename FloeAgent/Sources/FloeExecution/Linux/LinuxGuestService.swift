@@ -790,6 +790,45 @@ public protocol LinuxGuestControlling: Sendable {
     func sessionInfo(sessionID: String) async -> LinuxGuestSessionInfo?
 }
 
+/// First-boot network state the runner reports in its capability answer
+/// (`net=up|partial|down`, see LinuxGuest/runner/floe_net.h). `up` means the
+/// interface, default route and resolver file were applied and the first
+/// resolver answered a bounded query; `partial` means the interface is
+/// configured but DNS did not answer; `down` means the interface could not be
+/// configured. A runner that predates the field reports nothing and is
+/// reported as `nil` (unknown), never as ready.
+public enum LinuxGuestNetworkStatus: String, Sendable, Equatable, CaseIterable {
+    case up
+    case partial
+    case down
+
+    /// Parses the `net=` field out of a FLOE-CAPS payload. Unknown or missing
+    /// values return nil so a legacy runner is never mistaken for a working
+    /// network.
+    public static func from(capabilities: String?) -> LinuxGuestNetworkStatus? {
+        guard let capabilities else { return nil }
+        for field in capabilities.split(separator: " ") where field.hasPrefix("net=") {
+            return LinuxGuestNetworkStatus(rawValue: String(field.dropFirst("net=".count)))
+        }
+        return nil
+    }
+
+    /// Only `up` is a working network. `partial` is deliberately not ready:
+    /// package managers will fail with name-resolution errors.
+    public var isReady: Bool { self == .up }
+
+    /// Honest, non-alarming diagnostic. Localized UI text is separate.
+    public var diagnostic: String? {
+        switch self {
+        case .up: return nil
+        case .partial:
+            return "the guest interface and route are up but DNS did not answer; apt/pip/npm will fail with name-resolution errors"
+        case .down:
+            return "the guest network interface could not be configured; apt/pip/npm and guest git fetches will not work"
+        }
+    }
+}
+
 /// Runtime status for diagnostics and honest UI states.
 public struct LinuxGuestStatus: Sendable, Equatable {
     public var environmentID: String
@@ -812,6 +851,10 @@ public struct LinuxGuestStatus: Sendable, Equatable {
     /// report capacity.
     public var activeGuestCount: Int?
     public var reservedGuestRAMMB: Int?
+    /// First-boot network state reported by the running runner. nil means the
+    /// runner did not report one (older runner) — an unknown state, not a
+    /// working one.
+    public var networkStatus: LinuxGuestNetworkStatus?
 
     public init(
         environmentID: String,
@@ -825,7 +868,8 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         imageDistributable: Bool? = nil,
         lastResetSharedImpact: String? = nil,
         activeGuestCount: Int? = nil,
-        reservedGuestRAMMB: Int? = nil
+        reservedGuestRAMMB: Int? = nil,
+        networkStatus: LinuxGuestNetworkStatus? = nil
     ) {
         self.environmentID = environmentID
         self.running = running
@@ -839,6 +883,7 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         self.lastResetSharedImpact = lastResetSharedImpact
         self.activeGuestCount = activeGuestCount
         self.reservedGuestRAMMB = reservedGuestRAMMB
+        self.networkStatus = networkStatus
     }
 }
 

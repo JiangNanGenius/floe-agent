@@ -7,6 +7,25 @@ Environments provide dependency/data layering, not process security isolation.
 
 Current internal release source: `v1.7.0-beta.75` / `83eb91a8` (build 218). Build 218 is available in the existing private internal Floe QA TestFlight group — Apple VALID, unexpired, no public link and IN_BETA_TESTING verified 2026-09-21T15:08:27Z (ASC build `8d636b00-d114-42d6-bc0c-4081317fb38e`; discover 35616665807, prepare 35616732222, verify 35616870748; en-US/zh-Hans notes read back). The successful release workflow is 35612529418; the attested unsigned prerelease is v1.7.0-beta.75 (IPA sha256 `ddc0568b…b04cc`, 745,755,983 B) and Feather feed commit `bd7dbd61` records the same digest/source. Build 216 (`v1.7.0-beta.73` / `c2f20f6e`) is the previous internal delivery; build 217 failed App compilation and was never uploaded. See [delivery record](TESTFLIGHT_1.7.0_BETA.md). Simulator/UI qualification was waived by user request; physical-device acceptance remains with the user. The checkpoints below retain their original scopes; full package/model delivery and physical-device acceptance remain incomplete.
 
+## Post-218 repair slice (in review, not released)
+
+A source-only repair slice addresses the build-218 device findings recorded in the
+TinyEMU Linux task log: first-use Linux preparation now runs automatically from
+every Linux-required entry point (shell, Python, Node/npm, apt, local services)
+through the shared cancellable download; Settings → Execution Environments has an
+explicit component download/update/start entry; the guest configures its own
+interface, default route, resolvers and git `safe.directory` before answering
+capability negotiation (`net=up|partial|down`); the 9p server answers `xattrwalk`
+so `ls -l` no longer reports "Unknown error 524"; MLX load failures distinguish a
+damaged snapshot from insufficient memory, the preflight subtracts a running Linux
+guest's reservation, and Gemma 4 E4B is retired from the selectable catalog;
+agent Git mutations refresh an open source-control pane immediately; workspace
+Office previews keep the standalone full-screen editor, the edit intent can no
+longer be dropped, and the standalone close path offers save/discard/cancel.
+No version, tag, upload or TestFlight state was changed. Evidence, commands and
+the remaining physical-device checks are in
+[the repair slice record](FLOE_1_7_REPAIR_LIFECYCLE_MLX_IDE_OFFICE.md).
+
 ## Checkpoints
 
 - `fb3480f`: original new-module source checkpoint (not build-qualified).

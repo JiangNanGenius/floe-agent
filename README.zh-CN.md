@@ -21,9 +21,9 @@
 ![Floe Agent 在 iPad 上的新建任务界面](docs/images/floe-agent-new-task-ipad.webp)
 
 <p align="center">
-  <a href="feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json"><strong>添加到 Feather</strong></a>
+  <a href="https://www.floe-agent.com/#download"><strong>添加到 Feather</strong></a>
   ·
-  <a href="altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json"><strong>添加到 AltStore</strong></a>
+  <a href="https://www.floe-agent.com/#download"><strong>添加到 AltStore</strong></a>
   ·
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>下载发布版本</strong></a>
 </p>
@@ -216,4 +216,4 @@ Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方�
 
 ### Feather 安装源
 
-使用自行签名安装的用户可一键[添加到 Feather](feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json)或[添加到 AltStore](altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json)。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。
+使用自行签名安装的用户请打开[下载页面](https://www.floe-agent.com/#download)，选择「添加到 Feather」或「添加到 AltStore」，也可以把源地址粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此官网是当前可用的快速添加入口。稳定源地址为 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`；手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。

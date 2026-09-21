@@ -22,8 +22,9 @@ CFLAGS ?= -std=gnu11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE
 HOST_BIN := floe-exec
 RISCV_BIN := floe-exec-riscv64
 CLOCK_CHECK_BIN := clock-arg-check
+NET_CHECK_BIN := net-plan-check
 
-.PHONY: all host riscv64 check check-clock clean
+.PHONY: all host riscv64 check check-clock check-net clean
 
 all: host
 
@@ -47,8 +48,18 @@ check: host
 check-clock: $(CLOCK_CHECK_BIN)
 	./$(CLOCK_CHECK_BIN)
 
+# Pure-function/native check for the first-boot network plan (resolver,
+# interfaces and git safe.directory files plus the net= status vocabulary).
+# No network call, no file write and no root: the ioctl/probe side is
+# compiled out of the native build and needs a booted guest.
+check-net: $(NET_CHECK_BIN)
+	./$(NET_CHECK_BIN)
+
+$(NET_CHECK_BIN): floe_net.h ../tests/net_plan_check.c
+	$(CC) $(CFLAGS) -I. -o $@ ../tests/net_plan_check.c
+
 $(CLOCK_CHECK_BIN): floe_clock.h ../tests/clock_arg_check.c
 	$(CC) $(CFLAGS) -I. -o $@ ../tests/clock_arg_check.c
 
 clean:
-	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN)
+	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN) $(NET_CHECK_BIN)

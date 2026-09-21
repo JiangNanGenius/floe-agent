@@ -1613,3 +1613,78 @@ final class LinuxGuestLocalServiceSupervisorTests: XCTestCase {
         }
     }
 }
+
+// MARK: - First-boot network readiness
+
+/// The runner reports its first-boot network state in the capability answer
+/// (`net=up|partial|down`). The host must surface that honestly: only `up` is
+/// ready, a missing field is unknown (never ready), and a degraded network is
+/// recorded without preventing local shell/file work.
+final class LinuxGuestNetworkReadinessTests: XCTestCase {
+    private func makeRegistry(
+        capsLine: String,
+        environmentID: String = "env-net"
+    ) -> TinyEMULinuxGuestRegistry {
+        let ledger = FakeSessionLedger()
+        let factory = FakeSessionFactory(ledger: ledger) { _, token in
+            guard token.hasPrefix("hello-") else { return reply(token) }
+            return [Data("\u{1e}FLOE-CAPS \(token) \(capsLine)\u{1e}\u{1e}FLOE-END \(token) 0\u{1e}".utf8)]
+        }
+        // A writable directory is what makes the start path probe the live
+        // runner's capability answer (and therefore parse `net=`); without it
+        // the session would never negotiate in tests.
+        let writable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-net-test-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: writable, withIntermediateDirectories: true)
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID,
+            ownerID: "owner",
+            writableDirectory: writable,
+            imageID: "test-image"
+        )
+        return TinyEMULinuxGuestRegistry(
+            environments: FakeEnvironmentProvider(descriptors: [environmentID: descriptor]),
+            images: FakeImageResolver(images: ["test-image": makeImage()]),
+            limits: .standard,
+            factory: factory
+        )
+    }
+
+    func testUpNetworkIsReportedReady() async throws {
+        let registry = makeRegistry(capsLine: "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=up")
+        _ = try await registry.start(environmentID: "env-net", taskID: nil)
+        let status = await registry.status(environmentID: "env-net")
+        XCTAssertEqual(status.networkStatus, .up)
+        XCTAssertTrue(status.networkStatus?.isReady == true)
+        XCTAssertNil(status.lastError, "a healthy network must not be recorded as an error")
+        await registry.stop(environmentID: "env-net")
+    }
+
+    func testPartialNetworkIsSurfacedAndNotReady() async throws {
+        let registry = makeRegistry(capsLine: "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=partial")
+        _ = try await registry.start(environmentID: "env-net", taskID: nil)
+        let status = await registry.status(environmentID: "env-net")
+        XCTAssertEqual(status.networkStatus, .partial)
+        XCTAssertFalse(status.networkStatus?.isReady == true)
+        let lastError = try XCTUnwrap(status.lastError)
+        XCTAssertTrue(lastError.contains("partial"), "the degraded state must be recorded verbatim: \(lastError)")
+        await registry.stop(environmentID: "env-net")
+    }
+
+    func testMissingNetworkFieldIsUnknownNotReady() async throws {
+        let registry = makeRegistry(capsLine: "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4")
+        _ = try await registry.start(environmentID: "env-net", taskID: nil)
+        let status = await registry.status(environmentID: "env-net")
+        XCTAssertNil(status.networkStatus, "a legacy runner's missing field is unknown, not ready")
+        await registry.stop(environmentID: "env-net")
+    }
+
+    func testCapabilityParser() {
+        XCTAssertEqual(LinuxGuestNetworkStatus.from(capabilities: "protocol=3 net=up"), .up)
+        XCTAssertEqual(LinuxGuestNetworkStatus.from(capabilities: "protocol=3 net=partial"), .partial)
+        XCTAssertEqual(LinuxGuestNetworkStatus.from(capabilities: "protocol=3 net=down"), .down)
+        XCTAssertNil(LinuxGuestNetworkStatus.from(capabilities: "protocol=3"))
+        XCTAssertNil(LinuxGuestNetworkStatus.from(capabilities: "net=unknown"))
+        XCTAssertNil(LinuxGuestNetworkStatus.from(capabilities: nil))
+    }
+}
