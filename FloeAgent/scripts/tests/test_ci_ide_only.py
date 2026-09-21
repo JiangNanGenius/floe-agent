@@ -88,7 +88,7 @@ python3() {
         validate = self.build_test.split('- name: Reject ambiguous ide_only combinations', 1)[1] \
             .split('- uses: actions/checkout@v5', 1)[0]
         for other in ('live_agent_demo', 'local_inference', 'feedback_ui',
-                      'publish_skill_hub', 'native_wheels_package', 'build_test_only'):
+                      'publish_skill_hub', 'build_test_only'):
             self.assertIn(other, validate)
         self.assertIn('exit 1', validate)
         # Runs before checkout, outside the job-level FloeAgent working
@@ -101,13 +101,19 @@ python3() {
         # An ambiguous dispatch must surface only as the build-test
         # validation failure — never as a paid demo, a signed skill-hub
         # publish, or any other business leg running concurrently.
+        # The native CPython wheel job was sealed out with Build 215's
+        # removal of bundled native runtimes, so no such leg exists anymore.
         preamble = self.source.split('\n  build-test:', 1)[0]
         lines = preamble.splitlines()
         for job in ('live-agent-demo:', 'local-inference:', 'feedback-ui:',
-                    'build-native-wheels:', 'publish-skill-hub:'):
+                    'publish-skill-hub:'):
             start = lines.index(f'  {job}')
             body = '\n'.join(lines[start:start + 8])
             self.assertIn('!inputs.ide_only', body, job)
+        # Build 215 sealed bundled native Python/Node runtimes out: the
+        # native wheel job and its dispatch input must never return.
+        self.assertNotIn('build-native-wheels', self.source)
+        self.assertNotIn('native_wheels_package', self.source)
 
     def test_ide_only_has_its_own_concurrency_group(self):
         group = self.source.split('group: floe-ci-', 1)[1].split('\n', 1)[0]
@@ -130,7 +136,7 @@ python3() {
         # skippable: the IDE rerun still needs them.
         for core in ('Install pinned catalog verification dependency',
                      'Prepare the pinned Lua WASI fixture',
-                     'Verify persistent Node host and pinned tools',
+                     'Verify bundled assets and pinned tools',
                      'Resolve and pin-check dependencies',
                      'Fetch and verify bundled fonts',
                      'Build App regression host once'):
