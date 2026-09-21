@@ -118,5 +118,25 @@ class OfficeHostPinPath(unittest.TestCase):
         self.assertIn("invalid artifact path", completed.stderr)
 
 
+class OfficeHostRunIdentity(unittest.TestCase):
+    """The manifest must name the CI run that produced the artifact.
+
+    bootstrap_office_host.py re-downloads Vendor/Office/<runID>/OfficeNativeHost
+    from the pin, so a manifest without run identity would leave the pin (and
+    the App build) pointing at an older artifact.
+    """
+
+    def test_build_script_stamps_the_github_run(self) -> None:
+        sys.path.insert(0, str(REPO_ROOT / "FloeAgent/scripts"))
+        import build_office_native_host
+        self.assertEqual(
+            {"runID": "123456", "workflowCommit": "a" * 40},
+            build_office_native_host.run_identity(
+                {"GITHUB_RUN_ID": "123456", "GITHUB_SHA": "a" * 40}),
+        )
+        # A local qualification run keeps the manifest free of run identity.
+        self.assertEqual({}, build_office_native_host.run_identity({}))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

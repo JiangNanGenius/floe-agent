@@ -3,6 +3,7 @@
 import argparse
 import copy
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -17,6 +18,24 @@ NAME = "FloeOfficeNative"
 EXCLUDED_SOURCES = {"main.m", "AppDelegate.mm", "SceneDelegate.mm",
     "DocumentBrowserViewController.mm", "TemplateCollectionViewController.mm", "TemplateSectionHeaderView.m"}
 SYSTEM_FRAMEWORKS = ('UIKit', 'Foundation', 'CoreFoundation', 'CoreGraphics', 'CoreText', 'Security')
+
+
+def run_identity(environment=None):
+    """The CI run that produced this manifest.
+
+    The pin records runID/workflowCommit from the artifact manifest and
+    bootstrap_office_host.py re-downloads Vendor/Office/<runID>/OfficeNativeHost,
+    so a manifest without run identity would leave the pin pointing at an older
+    artifact. Absent values stay absent, so local qualification runs are
+    unchanged.
+    """
+    environment = os.environ if environment is None else environment
+    identity = {}
+    if environment.get('GITHUB_RUN_ID'):
+        identity['runID'] = environment['GITHUB_RUN_ID']
+    if environment.get('GITHUB_SHA'):
+        identity['workflowCommit'] = environment['GITHUB_SHA']
+    return identity
 
 
 def framework_project(project, host_directory):
@@ -86,6 +105,7 @@ def build_host(root, output, *, build=True, filter_overlay=None):
               'stage': 'prepare-host', 'hostCompilePassed': False,
               'hostLinkPassed': False, 'swiftModuleImportPassed': False,
               'originalFileWritebackPassed': False}
+    report.update(run_identity())
     receipt = output / 'native-host.json'
 
     def save():
