@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Exercise the actual Swift HTTP service against a local API, without WebKit.
 macOS targeted check; iOS transport/UI qualification remains a separate gate.
+
+The harness is compiled through the real SwiftPM module graph as an ephemeral
+executable target that depends on the FloeExecution product, so
+HTTPRequestService is built together with its actual FloeCore/FlooTools
+dependencies instead of being fed to a bare single-file swiftc invocation.
+The shared package scratch path (FloeAgent/.build) lets this reuse the modules
+already compiled by the Qualification swift test step in CI.
 """
 import http.server
 import json
@@ -9,6 +16,9 @@ import subprocess
 import tempfile
 import threading
 import sys
+
+
+PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class Endpoint(http.server.BaseHTTPRequestHandler):
@@ -45,11 +55,12 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-source = pathlib.Path(__file__).resolve().parents[1] / 'Sources/FloeExecution/HTTPRequestService.swift'
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Endpoint)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 harness = r'''
 import Foundation
+import FloeExecution
+
 @main struct Check {
     static func main() async throws {
         let service = HTTPRequestService(allowsPrivateNetwork: true)
@@ -88,12 +99,54 @@ import Foundation
     }
 }
 '''
+# Ephemeral SwiftPM package whose executable target links the real
+# FloeExecution product. A path dependency keeps the module graph identical to
+# production: FloeExecution plus its FloeCore/FlooTools (and remaining)
+# dependencies are compiled by SwiftPM rather than bypassed with single-file
+# swiftc flags.
+package_manifest = r'''
+// swift-tools-version:6.0
+import PackageDescription
+
+let package = Package(
+    name: "FloeHTTPWorkflowCheck",
+    platforms: [.macOS(.v15)],
+    dependencies: [
+        .package(path: %s)
+    ],
+    targets: [
+        .executableTarget(
+            name: "HTTPWorkflowCheck",
+            dependencies: [
+                .product(name: "FloeExecution", package: "FloeAgent")
+            ],
+            path: "Sources/HTTPWorkflowCheck",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        )
+    ]
+)
+''' % json.dumps(str(PACKAGE_ROOT))
 try:
     with tempfile.TemporaryDirectory(prefix='floe-http-check-') as root:
         root = pathlib.Path(root)
-        (root / 'Check.swift').write_text(harness)
-        subprocess.run(['xcrun', 'swiftc', '-swift-version', '6', '-parse-as-library', str(source), str(root / 'Check.swift'), '-o', str(root / 'check')], check=True, timeout=90)
-        subprocess.run([str(root / 'check'), f'http://127.0.0.1:{server.server_port}'] + (['--https'] if '--https' in sys.argv else []), check=True, timeout=45)
+        source_dir = root / 'Sources' / 'HTTPWorkflowCheck'
+        source_dir.mkdir(parents=True)
+        (source_dir / 'Check.swift').write_text(harness)
+        (root / 'Package.swift').write_text(package_manifest)
+        # Build against the package's normal scratch directory so the modules
+        # compiled by the earlier Qualification swift test step are reused;
+        # it is gitignored and shared by every SwiftPM invocation in CI.
+        scratch = PACKAGE_ROOT / '.build'
+        swift = ['xcrun', 'swift']
+        common = ['--package-path', str(root), '--scratch-path', str(scratch), '--jobs', '4']
+        subprocess.run(swift + ['build'] + common + ['--product', 'HTTPWorkflowCheck'], check=True, timeout=2400)
+        bin_path = subprocess.run(
+            swift + ['build', '--show-bin-path'] + common,
+            check=True, capture_output=True, text=True, timeout=120
+        ).stdout.strip()
+        binary = pathlib.Path(bin_path) / 'HTTPWorkflowCheck'
+        subprocess.run([str(binary), f'http://127.0.0.1:{server.server_port}']
+                       + (['--https'] if '--https' in sys.argv else []), check=True, timeout=45)
 finally:
     server.shutdown()
     server.server_close()
