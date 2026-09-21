@@ -22,16 +22,19 @@ struct LocalShellRuntimeTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         // All package aliases now use the same environment-bound service.
-        // Even `pkg` must fail without an owner instead of inventing a root.
+        // Even `pkg` must fail without a Linux environment instead of
+        // inventing a root or pretending packages can install here.
         let result = await IOSSystemShellBackend().run(.init(command: "pkg update", cwd: ".", rootURL: root,
             timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
         guard case .exited(let code, _, let errors, _, _, _) = result else {
             Issue.record("Unsupported package command did not terminate: \(result)"); return
         }
         #expect(code == 100)
-        #expect(errors.contains("no active container"))
+        #expect(errors.contains("Debian packages are managed only inside a Floe Linux environment"))
+        #expect(errors.contains("no Linux environment is available for this shell yet"))
         // The full apt implementation must also fail when this bare shell
-        // request has no resolved environment. It must not invent a container.
+        // request has no resolved environment. It must name the missing Linux
+        // environment instead of inventing a container.
         let unbound = await IOSSystemShellBackend().run(.init(command: "apt update", cwd: ".", rootURL: root,
             timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
         guard case .exited(let unboundCode, let output, let unboundErrors, _, _, _) = unbound else {
@@ -39,7 +42,8 @@ struct LocalShellRuntimeTests {
         }
         #expect(unboundCode == 100)
         #expect(output.isEmpty)
-        #expect(unboundErrors.contains("no active container"))
+        #expect(unboundErrors.contains("Debian packages are managed only inside a Floe Linux environment"))
+        #expect(unboundErrors.contains("no Linux environment is available for this shell yet"))
     }
 
     @Test(.timeLimit(.minutes(1))) func pipelineTimeoutDrainsAndNextCommandRuns() async throws {
