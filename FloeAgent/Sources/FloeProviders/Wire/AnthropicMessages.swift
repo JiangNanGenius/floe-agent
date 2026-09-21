@@ -325,8 +325,12 @@ enum JSONTree: Codable {
             for item in items { try container.encode(item) }
         case .object(let pairs):
             var container = encoder.container(keyedBy: DynamicKey.self)
-            for (key, value) in pairs {
-                try container.encode(value, forKey: DynamicKey(stringValue: key))
+            // Swift dictionary iteration order is nondeterministic. Sorting
+            // keeps arbitrary-JSON segments (tool schema `parameters`, tool
+            // inputs) byte-stable across identical requests, which provider
+            // prompt-prefix caches (e.g. DeepSeek) require to hit.
+            for key in pairs.keys.sorted() {
+                try container.encode(pairs[key], forKey: DynamicKey(stringValue: key))
             }
         default:
             var container = encoder.singleValueContainer()

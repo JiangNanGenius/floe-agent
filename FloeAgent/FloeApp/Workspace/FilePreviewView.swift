@@ -37,7 +37,6 @@ struct FilePreviewView: View {
     @State private var binaryPreviewURL: URL?
     @State private var loadError: String?
     @State private var isIDEPresented = false
-    @State private var isOfficeEditorPresented = false
     @State private var quickLookURL: URL?
     @State private var previewError: String?
     @State private var mediaEditorSource: URL?
@@ -69,11 +68,11 @@ struct FilePreviewView: View {
                     engineeringView(engineeringPackage)
                 }
             } else if nativeOfficeURL != nil {
-                if isOfficeEditorPresented {
-                    // The dedicated fullscreen editor owns the document now;
+                if isIDEPresented {
+                    // The IDE's internal Office tab owns the document now;
                     // the embedded preview session was released before it
                     // opened, so exactly one live session exists per file.
-                    ContentUnavailableView("正在全屏编辑", systemImage: "doc.richtext")
+                    ContentUnavailableView("正在编辑器中打开", systemImage: "doc.richtext")
                 } else {
                     VStack(spacing: 0) {
                         if officeSession.isRemoteSnapshot {
@@ -130,7 +129,13 @@ struct FilePreviewView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .task(id: relativePath) { await load() }
-        .fullScreenCover(isPresented: $isIDEPresented) {
+        .fullScreenCover(isPresented: $isIDEPresented, onDismiss: {
+            // The IDE can be swipe-dismissed on a clean session without
+            // invoking onSaved. The Office preview session was released
+            // before the IDE opened, so reload here to restore the embedded
+            // preview instead of leaving the "opening in editor" placeholder.
+            Task { await load() }
+        }) {
             WorkspaceIDEView(
                 initialRelativePath: relativePath,
                 center: center
@@ -187,17 +192,8 @@ struct FilePreviewView: View {
             PreviewShareSheet(items: [url])
                 .ignoresSafeArea()
         }
-        .fullScreenCover(isPresented: $isOfficeEditorPresented, onDismiss: {
-            Task { await load() }
-        }) {
-            // The file manager's one dedicated fullscreen Office editor; the
-            // preview's Edit action and the inspector's expand action both
-            // land here, so a document never has two live sessions or two
-            // different editor chromes.
-            OfficeFullscreenEditorView(relativePath: relativePath, center: center)
-        }
         .onDisappear {
-            if !isOfficeEditorPresented { Task { await officeSession.release() } }
+            if !isIDEPresented { Task { await officeSession.release() } }
         }
         .alert("无法预览文件", isPresented: Binding(
             get: { previewError != nil },
@@ -260,15 +256,16 @@ struct FilePreviewView: View {
             && center.fileService != nil
     }
 
-    /// Opens the dedicated fullscreen Office editor. The embedded preview
-    /// session is released first so the same original file never has two live
-    /// document sessions (two working copies that would conflict on save);
-    /// dismissing the editor reloads the preview against the committed bytes.
+    /// Opens the document in the IDE's internal Office tab. The embedded
+    /// preview session is released first so the same original file never has
+    /// two live document sessions (two working copies that would conflict on
+    /// save); dismissing the IDE reloads the preview against the committed
+    /// bytes.
     private func presentOfficeEditor() {
-        guard !isOfficeEditorPresented else { return }
+        guard !isIDEPresented else { return }
         Task {
             await officeSession.release()
-            isOfficeEditorPresented = true
+            isIDEPresented = true
         }
     }
 
@@ -463,6 +460,21 @@ struct FilePreviewView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("在编辑器中打开")
                 .accessibilityIdentifier("file.preview.openIDE")
+            }
+            // A PDF expands into the IDE's internal document tab (native
+            // overlay inside the workbench), never an outer task page.
+            if allowsIDEExpansion,
+               isPDF,
+               pdfURL != nil,
+               center.fileService != nil {
+                Button {
+                    isIDEPresented = true
+                } label: {
+                    Label("在编辑器中打开", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("在编辑器中打开")
+                .accessibilityIdentifier("file.preview.pdf.openIDE")
             }
             if officeEditingAvailable {
                 Button {

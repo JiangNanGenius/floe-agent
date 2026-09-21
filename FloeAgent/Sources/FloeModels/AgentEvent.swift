@@ -36,6 +36,12 @@ public enum AgentEvent: Sendable, Codable, Hashable {
         /// Nil means the provider did not report this dimension. It must not
         /// be rendered as zero or included in a cache-hit denominator.
         public var cacheReadTokens: Int?
+        /// Provider-reported prefix-cache misses (e.g. DeepSeek
+        /// `prompt_cache_miss_tokens`). Separate from `cacheWriteTokens`:
+        /// OpenAI-style providers only report the cached subset, while
+        /// DeepSeek reports the hit/miss split of the whole prompt. Nil means
+        /// the provider did not report a miss dimension.
+        public var cacheMissTokens: Int?
         public var cacheWriteTokens: Int?
         public var reasoningTokens: Int?
         /// End-to-end request latency measured by the client runtime.
@@ -49,6 +55,7 @@ public enum AgentEvent: Sendable, Codable, Hashable {
             inputTokens: Int,
             outputTokens: Int,
             cacheReadTokens: Int? = nil,
+            cacheMissTokens: Int? = nil,
             cacheWriteTokens: Int? = nil,
             reasoningTokens: Int? = nil,
             totalDurationMs: Int? = nil,
@@ -59,6 +66,7 @@ public enum AgentEvent: Sendable, Codable, Hashable {
             self.inputTokens = inputTokens
             self.outputTokens = outputTokens
             self.cacheReadTokens = cacheReadTokens
+            self.cacheMissTokens = cacheMissTokens
             self.cacheWriteTokens = cacheWriteTokens
             self.reasoningTokens = reasoningTokens
             self.totalDurationMs = totalDurationMs

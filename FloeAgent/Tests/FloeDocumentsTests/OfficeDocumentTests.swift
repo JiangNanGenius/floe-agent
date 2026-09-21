@@ -61,6 +61,14 @@ struct OfficeDocumentTests {
         #expect(deck.fields.map(\.text).contains("Opening"))
         #expect(deck.fields.map(\.text).contains("One"))
         #expect(deck.fields.map(\.text).contains("[Sources] https://example.com"))
+
+        // The presentation theme resolves eastAsia glyphs through its
+        // major/minor fonts; naming a family that is not installed on iOS
+        // (the previous "Source Han Sans SC") renders Chinese as squares.
+        let deckPackage = try Archive(url: pptx, accessMode: .read)
+        let deckTheme = String(decoding: try read(deckPackage, path: "ppt/theme/theme1.xml"), as: UTF8.self)
+        #expect(deckTheme.contains("<a:ea typeface=\"PingFang SC\"/>"))
+        #expect(!deckTheme.contains("Source Han Sans SC"))
     }
 
     @Test("exact update preserves unedited package members")

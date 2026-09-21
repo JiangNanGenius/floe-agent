@@ -18,7 +18,15 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-![Floe Agent new-task workspace on iPad](docs/images/floe-agent-new-task-ipad.webp)
+![Floe Agent task picker on iPad](docs/images/workflow-upgrade/task-selection-ipad.png)
+
+<p align="center">
+  <a href="feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json"><strong>Add to Feather</strong></a>
+  ·
+  <a href="altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json"><strong>Add to AltStore</strong></a>
+  ·
+  <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>Download releases</strong></a>
+</p>
 
 ![Floe Agent continuous task workflow](docs/images/floe-agent-workflow.svg)
 
@@ -26,28 +34,11 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Floe 1.7 internal beta
 
-**Current internal TestFlight: 1.7.0 (214).** Apple VALID, unexpired and IN_BETA_TESTING in the existing private Floe QA group, verified September 20 at 21:32 UTC. TinyEMU/Linux is the main local environment; native Python/Node payloads are excluded. This includes the complete feedback repair batch. Only focused checks and the cloud App build were performed; device acceptance belongs to the user. [Delivery evidence](docs/qualification/build214-release/README.md).
+**Current internal TestFlight: 1.7.0 (214).** Apple VALID, unexpired and IN_BETA_TESTING in the existing private Floe QA group, verified September 20 at 21:32 UTC. TinyEMU/Linux is the main local environment; native Python/Node payloads are excluded. Only focused checks and the cloud App build were performed; device acceptance belongs to the user. [Delivery evidence](docs/qualification/build214-release/README.md).
 
-Floe 1.7 upgrades the iPad-first Notes workspace, Office, dynamic maps, unified speech, image/video workbenches and project/session environments. **Build 201 (`v1.7.0-beta.58`, source `be06cece`) was an internal Floe QA TestFlight release**: Apple `buildID` `ea0f0b12-6fad-4a55-b1f2-ac2033328c74` was verified `VALID`, unexpired, exactly one private Floe QA group and `IN_BETA_TESTING` at 2026-09-19 17:44 UTC, with both test-note languages saved and read back ([build 201 notes](docs/RELEASE_NOTES_1.7.0_BUILD_201.md), [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md)). Its release publish job stopped on a missing release-notes file in the frozen tag checkout, so the attested unsigned GitHub prerelease `v1.7.0-beta.58` and its Feather source were recovered from the same retained artifact without a rebuild or a second upload. **Build 196 (`v1.7.0-beta.53`, source `0771aee5`) remains available in the group**: Apple `buildID` `27355e88-2f37-4c60-8b6e-713db546773b` was verified `VALID`, unexpired, exactly one private Floe QA group and `IN_BETA_TESTING` at 2026-09-19 02:24 UTC, with both test-note languages saved ([Build 196 notes](docs/RELEASE_NOTES_1.7.0_BUILD_196.md), [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md)). It was built once with the accepted upload SDK from the frozen commit, with the unsigned device IPA (`bd080ba7…80c4`) and matching private symbols retained before signing; the attested unsigned GitHub prerelease and Feather source were published from that same artifact. Builds 194 (`v1.7.0-beta.51`) and 195 (`v1.7.0-beta.52`) were accepted by Apple (`VALID`) but never published, and builds 192 (`v1.7.0-beta.49`) and 193 (`v1.7.0-beta.50`) never compiled; all four tags remain as evidence. Simulator/UI qualification was skipped by explicit user request, so this is internal device testing, not full acceptance. Production release remains separate. See the [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md).
+**Build 215 is the current upload candidate.** It follows device logs with fixes for local-model tool continuations, cross-task completion, concurrent/cancellable terminals, Git initialization, IDE-owned PDF/Office tabs, Chinese fonts, save-on-close and mind-map dragging. This line describes source status only; it is not installable until the cloud build, upload, Apple processing and Floe QA availability are verified. [Candidate notes](docs/RELEASE_NOTES_1.7.0_BUILD_215.md).
 
-The [Build 156 feedback repair release](docs/FLOE_156_FEEDBACK_REPAIR.md) adds background-only browser operations with explicit human handoff, direct HTTP/API workflows, shared HTTPS certificate configuration, configured-only search discovery, and shell/Python/Node reliability repairs. Build 172 was delivered to internal TestFlight; the SDK 27 source passed 1,270 Swift test executions and 159 full-App regressions. Physical-device acceptance remains with the tester.
-
-Notes also adds **＋ → From Floe Workspace**: select a document generated in a conversation or project and import an independent copy into Notes. The cover library opens documents in a full-screen editor and searches indexed document contents. See the [import and search guide](docs/USER_GUIDE.md#current-repair-candidate-content-search-and-workspace-imports); the SDK 27 full-App Notes UI case passed on both iPad and iPhone; physical-device acceptance remains with the tester.
-
-The [build 172 feedback repair is delivered as build 178](docs/FLOE_172_REPAIR_EXECUTION.md): dedicated Notes assistants gain a full-height iPad column, conversation restart and automatic refresh after committed edits, Soul/profile changes apply at the next model request, and the full-screen IDE adds conflict-aware saving with DXF/DWG editing and AI review. Build 178 passed 178/178 focused regressions and iPad/iPhone Notes UI on both SDKs before signed upload.
-
-**Build191 (`v1.7.0-beta.48`, source `715cbc42`) is available in internal TestFlight (Floe QA).** [The successful recovery upload](https://github.com/JiangNanGenius/floe-agent/actions/runs/35347141494) reused the exact-source device artifact without rebuilding. Apple VALID, unexpired status, the private Floe QA group and IN_BETA_TESTING were verified at2026-09-18 13:43UTC; both English and Chinese test notes are saved. Both SDK App regression suites passed204/204 and NativeNotes passed101/101 on each simulator family. Three UI failures were explicitly waived for internal device testing and remain recorded; this is not full acceptance. [Current evidence](docs/qualification/build191-release/README.md), [retained cover screenshot](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png). Office covers can be labelled content summaries, not exact native page renders. Physical local-model and Office/Pencil acceptance remains with the tester.
-
-**Build 196 delivers the build 191 feedback repair to internal TestFlight** (192/193 never compiled; 194 and 195 were uploaded but never published; their tags remain as evidence and the App source is identical across 194-196). [The Build 196 notes](docs/RELEASE_NOTES_1.7.0_BUILD_196.md) separate implemented behavior from host-level validation and open device acceptance. The repair includes truthful Office editability (an unknown permission is never editable, and an imported advanced workbook may fail a strict save instead of being silently rewritten), file-type-routed IDE tabs with one Office working copy, file-preview sharing, Git fast-forward/conflict/staged-discard recovery, interactive-terminal lifetime fixes, explicit npm/pnpm authority, automatic model fallback, durable video-from-chat jobs with one reference image, and real GIF frame handling. The signed capability catalog bundled by this build adds `floe/ruby` 3.4.1 and `floe/php` 8.2.33 alongside `floe/lua` 5.4.8 (signing run 35399070312 at revision `96be231e`), so those runtimes can be installed from Shell; interpreter startup may need a longer `timeout` or a background job, and device runtime acceptance belongs to the tester. The build 191 local-model crash is not proven fixed. The accepted-SDK App compile and signed upload are performed once by the release workflow for this exact source; this is internal-testing documentation, not full acceptance or a production claim.
-
-The signed upload uses Xcode 26.6 / SDK 26.5, with compatibility entry points for some version 27-specific interfaces. SDK 27 source is separately qualified in the cloud.
-
-Environment ownership and persistence, signed repository fixtures, bounded media exports and native shell/Node smoke cases have focused verification. Environment migration, complete package installation flows, model inference, the workbench and device acceptance remain open. The 15 package entries and 33 model entries are candidates, not an available download catalog.
-
-See [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [upgrade and recovery](docs/FLOE_1_7_MIGRATION.md), and [build and acceptance](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Existing version notes remain in the [documentation index](docs/README.md).
-
-This upgrade also integrates a pinned MIT ZLImageEditor with a Floe-native image workbench: crop, drawing, text, mosaic, filters and color adjustments. Canvas video nodes reuse the existing video editor. See the [image editor integration and acceptance boundaries](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md).
-
+Floe 1.7 upgrades the iPad-first Notes workspace, Office editing, mind maps, speech, image/video workbenches and task-owned environments. TinyEMU provides the main local Linux path; guest package managers own Linux language/tool installation, while WASM remains a separate compatibility route. See the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [migration guide](docs/FLOE_1_7_MIGRATION.md), [build boundaries](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [version archive](docs/README.md).
 
 ### Notes, Office and local speech
 
@@ -119,7 +110,7 @@ GitHub prereleases include an unsigned IPA for advanced testers and downstream p
 
 ### Feather source
 
-The current feedback release adds a [Feather source](docs/FEATHER_SOURCE.md). The stable feed and its independently verified publishing process are described there.
+Add the stable Floe feed directly to [Feather](feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json) or [AltStore](altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json). Its independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md).
 
 ### Build from source
 

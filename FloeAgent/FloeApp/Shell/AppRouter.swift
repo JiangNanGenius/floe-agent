@@ -360,7 +360,7 @@ final class AppRouter: ObservableObject {
     /// separate navigation behavior.
     func openConversation(_ conversationID: UUID, runID: UUID? = nil) {
         hasExplicitLaunchTarget = true
-        if inspectorRoute?.conversationID != conversationID { hideInspector() }
+        syncInspectorOnConversationSwitch(conversationID)
         workbenchSelection = .conversation(conversationID)
         workbenchPath = [conversationID]
         selectedRunID = runID
@@ -371,11 +371,27 @@ final class AppRouter: ObservableObject {
     /// point. Home and history still project the same canonical workbench
     /// selection, so switching tabs cannot resurrect an older thread.
     func openThreadFromHome(_ conversationID: UUID, runID: UUID? = nil) {
-        if inspectorRoute?.conversationID != conversationID { hideInspector() }
+        syncInspectorOnConversationSwitch(conversationID)
         workbenchSelection = .conversation(conversationID)
         workbenchPath = [conversationID]
         selectedRunID = runID
         navigate(to: .home)
+    }
+
+    /// Switching conversations keeps the right-side workspace in sync: a
+    /// workspace-bound pane (files / changes) retargets to the newly selected
+    /// task so its own workspace mounts and restores its persisted state,
+    /// instead of vanishing or, worse, showing the previous task's files.
+    /// Conversation-agnostic tools (browser, terminal, progress) keep the
+    /// previous hide-on-switch behaviour.
+    private func syncInspectorOnConversationSwitch(_ conversationID: UUID) {
+        guard let route = inspectorRoute, route.conversationID != conversationID else { return }
+        switch route.content {
+        case .workspaceFiles, .changes:
+            inspectorRoute = InspectorRoute(content: route.content, conversationID: conversationID)
+        case .browser, .terminal, .progress, .childAgents, .permissions:
+            hideInspector()
+        }
     }
 
     func showOverview() {

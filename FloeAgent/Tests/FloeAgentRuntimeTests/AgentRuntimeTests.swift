@@ -520,8 +520,8 @@ struct AgentRuntimeTests {
         }
     }
 
-    @Test("A failed history lookup does not arm the cloud continuation")
-    func failedHistoryLookupDoesNotArmContinuation() async throws {
+    @Test("A failed history lookup still owes the user a visible closure")
+    func failedHistoryLookupArmsContinuation() async throws {
         let adapter = MockAdapter()
         let search = try TestFixtures.toolCall(
             id: "history-search",
@@ -530,7 +530,9 @@ struct AgentRuntimeTests {
         )
         adapter.script = [
             [.toolRequest(search), .completed(.init(stopReason: .toolUse))],
-            [.completed(.init(stopReason: .endTurn))]
+            [.completed(.init(stopReason: .endTurn))],
+            [.textDelta(.init(text: "没能读到那条历史记录：目标任务不可用。")),
+             .completed(.init(stopReason: .endTurn))]
         ]
         let executor = MockExecutor()
         executor.descriptors["conversation.search"] = ToolCatalog.Descriptor(
@@ -548,9 +550,58 @@ struct AgentRuntimeTests {
 
         try await runtime.start(goal: "查一下不存在的记录")
 
-        #expect(adapter.requests.count == 2)
+        // Failure is also a settled cross-task route: the model gets one
+        // bounded continuation to state the failure plainly instead of
+        // completing silently.
+        #expect(adapter.requests.count == 3)
+        #expect(adapter.requests[2].messages.contains {
+            $0.role == "system"
+                && $0.content.contains("produced neither a user-visible answer nor a tool call")
+        })
         guard case .completed = await runtime.state else {
-            Issue.record("A failed lookup leaves ordinary cloud completion semantics intact")
+            Issue.record("Expected the failed-lookup run to close with a visible answer")
+            return
+        }
+    }
+
+    @Test("An empty history search still owes the user a visible no-results answer")
+    func emptyHistorySearchArmsContinuation() async throws {
+        let adapter = MockAdapter()
+        let search = try TestFixtures.toolCall(
+            id: "history-search",
+            toolName: "conversation.search",
+            arguments: #"{"query":"没有匹配"}"#
+        )
+        adapter.script = [
+            [.toolRequest(search), .completed(.init(stopReason: .toolUse))],
+            [.completed(.init(stopReason: .endTurn))],
+            [.textDelta(.init(text: "其他任务里没有匹配的记录。")),
+             .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["conversation.search"] = ToolCatalog.Descriptor(
+            name: "conversation.search",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        // Empty results settle with status .ok and zero hits.
+        executor.results = [ToolResult(
+            callID: "history-search",
+            status: .ok,
+            outputSummary: #"{"status":"noResults","count":0,"ids":[]}"#,
+            outputDigest: "history-digest"
+        )]
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "查一下没有匹配的记录")
+
+        #expect(adapter.requests.count == 3)
+        #expect(adapter.requests[2].messages.contains {
+            $0.role == "system"
+                && $0.content.contains("produced neither a user-visible answer nor a tool call")
+        })
+        guard case .completed = await runtime.state else {
+            Issue.record("Expected the no-results run to close with a visible answer")
             return
         }
     }
@@ -1622,6 +1673,32 @@ struct AgentRuntimeTests {
         #expect(sink.transitions.contains("compacting"))
         let state = await runtime.state
         #expect(state.name == "completed")
+    }
+
+    @Test("A failed compaction keeps the original context for the retry instead of replacing it")
+    func failedCompactionPreservesOriginalContext() async throws {
+        // With no context engine the overflow-recovery compaction is an
+        // honest no-op (previously it silently degraded to system +
+        // suffix(8), discarding almost all history). The retry must go out
+        // on the full original context.
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.error(AgentEvent.NormalizedError(kind: .contextOverflow, providerMessage: "too long"))],
+            [.textDelta(.init(text: "重试成功")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let runtime = makeRuntime(adapter: adapter)
+        try await runtime.start(goal: "总结这段历史")
+
+        #expect(adapter.requests.count == 2)
+        let firstCount = adapter.requests[0].messages.count
+        let retryCount = adapter.requests[1].messages.count
+        // No tail truncation: the retry carries at least every message the
+        // overflowing request carried (volatile system lines may append).
+        #expect(retryCount >= firstCount)
+        #expect(adapter.requests[1].messages.contains {
+            $0.role == "user" && $0.content == "总结这段历史"
+        })
+        #expect(await runtime.state.name == "completed")
     }
 
     // MARK: Cross-turn tool-pair replay

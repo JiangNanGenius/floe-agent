@@ -163,13 +163,46 @@ struct OfficeIDETabTests {
         #expect(store.activeTab?.kind == .code)
     }
 
-    @Test("An Office initial path opens embedded in its own tab, never a second surface")
+    @Test("An Office initial path stays an internal CodeBlitz tab, never a native outer tab")
     @MainActor
     func initialOfficePathOpensEmbedded() {
         let store = IDEWorkspaceTabStore(initialRelativePath: "docs/deck.pptx")
-        #expect(store.activeTab?.kind == .office)
-        #expect(store.activeTab?.id == "docs/deck.pptx")
-        #expect(store.tabs.count == 2) // code tab + the one office tab
+        // The native strip keeps only its code container; the IDE view
+        // forwards the Office path to the workbench's internal document tab
+        // (native overlay) once the engine is ready.
+        #expect(store.activeTab?.kind == .code)
+        #expect(store.tabs.count == 1)
+        #expect(store.tabs.allSatisfy { $0.kind != .office })
+    }
+
+    @Test("A PDF initial path also stays an internal CodeBlitz tab")
+    @MainActor
+    func initialPDFPathOpensEmbedded() {
+        let store = IDEWorkspaceTabStore(initialRelativePath: "docs/spec.pdf")
+        #expect(store.activeTab?.kind == .code)
+        #expect(store.tabs.count == 1)
+    }
+
+    @Test("Closing a clean read-only Office tab needs no user decision")
+    func closeDecisionCleanPreviewClosesImmediately() {
+        #expect(IDEOfficeCloseDecision.decide(readOnly: true, hasUncommittedChanges: false, isReady: true)
+            == .closeImmediately)
+        #expect(IDEOfficeCloseDecision.decide(readOnly: true, hasUncommittedChanges: false, isReady: false)
+            == .closeImmediately)
+    }
+
+    @Test("Closing an Office tab with edits at stake always asks the user")
+    func closeDecisionDirtyAsksUser() {
+        // Uncommitted edits, even on a preview that regained read-only.
+        #expect(IDEOfficeCloseDecision.decide(readOnly: true, hasUncommittedChanges: true, isReady: false)
+            == .askUser)
+        // An editable session, settled or still settling.
+        #expect(IDEOfficeCloseDecision.decide(readOnly: false, hasUncommittedChanges: false, isReady: true)
+            == .askUser)
+        #expect(IDEOfficeCloseDecision.decide(readOnly: false, hasUncommittedChanges: false, isReady: false)
+            == .askUser)
+        #expect(IDEOfficeCloseDecision.decide(readOnly: false, hasUncommittedChanges: true, isReady: true)
+            == .askUser)
     }
 }
 

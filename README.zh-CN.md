@@ -18,7 +18,15 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-![Floe Agent 在 iPad 上的新建任务界面](docs/images/floe-agent-new-task-ipad.webp)
+![Floe Agent 在 iPad 上的任务选择界面](docs/images/workflow-upgrade/task-selection-ipad.png)
+
+<p align="center">
+  <a href="feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json"><strong>添加到 Feather</strong></a>
+  ·
+  <a href="altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json"><strong>添加到 AltStore</strong></a>
+  ·
+  <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>下载发布版本</strong></a>
+</p>
 
 ![Floe Agent 持续任务工作流](docs/images/floe-agent-workflow.svg)
 
@@ -26,25 +34,11 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（214）**。9 月 20 日 21:32 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。TinyEMU/Linux 成为主要本地环境，原生 Python/Node 不再打包；包含本轮全部反馈修复。只做定向轻量检查与云端 App 构建，真机验收由用户完成。[交付证据](docs/qualification/build214-release/README.md)。
+**当前内部 TestFlight：1.7.0（214）**。9 月 20 日 21:32 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。TinyEMU/Linux 是主要本地环境，原生 Python/Node 不再打包。只做定向轻量检查与云端 App 构建，真机验收由用户完成。[交付证据](docs/qualification/build214-release/README.md)。
 
-Floe 1.7 面向 iPad 优先升级手记、Office、动态导图、统一语音、图像与视频工作台，以及项目/会话运行环境。**Build 201（`v1.7.0-beta.58`，源码 `be06cece`）是此前的内部 Floe QA TestFlight 交付版本**：Apple `buildID` `ea0f0b12-6fad-4a55-b1f2-ac2033328c74` 于 2026-09-19 17:44 UTC 核实 `VALID`、未过期、唯一私有 Floe QA 组和 `IN_BETA_TESTING`，中英文测试说明均已保存并读回（[Build 201 说明](docs/RELEASE_NOTES_1.7.0_BUILD_201.md)、[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)）。该构建的发布作业因冻结标签检出中缺少发布说明文件而停止，带来源证明的未签名 GitHub prerelease `v1.7.0-beta.58` 与 Feather 源均由同一保留工件恢复，未重新构建、未二次上传。**Build196（`v1.7.0-beta.53`，源码 `0771aee5`）仍在内部 Floe QA TestFlight 组可安装**：Apple `buildID` `27355e88-2f37-4c60-8b6e-713db546773b` 于 2026-09-19 02:24 UTC 核实 `VALID`、未过期、唯一私有 Floe QA 组和 `IN_BETA_TESTING`，中英文测试说明均已保存（[Build 196 说明](docs/RELEASE_NOTES_1.7.0_BUILD_196.md)、[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)）。该构建对冻结提交只用验收上传 SDK 编译一次，未签名设备 IPA（`bd080ba7…80c4`）与匹配私有符号在签名前留存；带来源证明的未签名 GitHub prerelease 与 Feather 源均由同一工件发布。Build194（`v1.7.0-beta.51`）与 Build195（`v1.7.0-beta.52`）已被 Apple 接受（`VALID`）但从未发布；Build192（`v1.7.0-beta.49`）与 Build193（`v1.7.0-beta.50`）编译失败。四个标签均作为证据保留。按用户要求跳过模拟器/界面验收，本次属内部真机测试，不代表完整验收。正式发布另行安排。分发状态见[TestFlight 记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+**Build 215 是当前待上传候选。** 它根据真机日志继续修复本地模型工具续写、跨任务闭环、并行且可取消的终端、Git 初始化、IDE 内 PDF/Office 标签、中文字体、关闭前保存和思维导图拖动。这里只说明源码状态；云端构建、上传、Apple 处理及 Floe QA 可用性核实完成前，不视为可安装。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_215.md)。
 
-当前签名包使用 Xcode 26.6 / SDK 26.5，部分 27 专属接口使用兼容入口；SDK 27 源码另经云端验证。
-
-[反馈修复版](docs/FLOE_156_FEEDBACK_REPAIR.md)的手记新增 **“＋”→“从 Floe 工作区导入”**，可以选择会话或项目中生成的文档，复制到手记独立保存。封面资料列表支持打开文档进入全屏编辑，并搜索已经索引的正文。详见[搜索与导入说明](docs/USER_GUIDE.zh-CN.md#本轮修复候选搜索与工作区导入)；SDK 27 完整 App 的手记 UI 用例已在 iPad/iPhone 通过；build 172 曾交付 Floe QA TestFlight；固定源码还通过 1,270 次 Swift 测试执行和 159 项 SDK 27 完整 App 回归，真机验收仍由用户执行。
-
-[Build 178](docs/FLOE_172_REPAIR_EXECUTION.md)已交付手记专属助手、重新开始会话、修改后自动刷新，以及 IDE 冲突处理和图纸审阅等功能。历史失败和回归记录保留在对应交付文档中。
-
-**Build191（`v1.7.0-beta.48`，源码 `715cbc42`）已在内部 TestFlight（Floe QA）可安装。** [成功的恢复上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/35347141494)复用固定源码工件，没有重编译。2026-09-18 13:43UTC 已核实 Apple VALID、未过期、Floe QA 私有内部组和 IN_BETA_TESTING；中英文测试说明均已保存。两个 SDK 的应用回归各通过 204/204，iPad、iPhone 手记组件各通过 101/101。三项界面失败均经用户明确同意先行内部真机测试，原失败证据保留，不代表完整验收通过。[当前证据](docs/qualification/build191-release/README.md)、[已留存封面截图](docs/qualification/build190-release/accepted-ipad-covers-after-relaunch.png)。Office 封面可能是带标识的内容摘要，并非原始页面排版；本地模型与原生 Office/Pencil 的真机验收仍由测试者完成。
-
-**Build196 已把 191 反馈修复交付到内部 TestFlight**（192、193 编译失败；194、195 上传成功但从未发布；四个标签均保留为证据，194–196 的 App 源码相同）。修复包含 Office 真实编辑权限与 IDE 文件路由、Git 操作、终端及包管理、首页模型回退和普通对话视频工具；[双语候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_196.md)区分已实现行为、宿主级验证与待真机验收项。本构建内置的签名能力目录在 `floe/lua` 5.4.8 之外新增 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），可在 Shell 中安装；解释器启动可能需要更长 `timeout` 或后台任务，真机运行验收由测试者完成。Build191 本地模型闪退尚未证实修复。验收上传 SDK 的 App 编译与签名上传由发布工作流对这份固定源码执行一次；本文档属于内部测试记录，不代表完整验收或正式发布。
-
-环境归属与持久化、签名仓库样本、有界媒体导出以及原生 shell/Node 的定向测试已有验证。环境迁移、完整包安装链路、模型推理、工作台和真机验收仍在推进。15 个软件包条目和 33 个模型条目是候选清单，不能视为可下载能力。
-
-参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[升级与恢复](docs/FLOE_1_7_MIGRATION.md)、[构建与验收](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)。历次版本记录保留在[文档索引](docs/README.md)。
-
-本轮还接入了固定版本的 MIT ZLImageEditor，并重做为 Floe 原生图像工作台，提供裁剪、涂鸦、文字、马赛克、滤镜和调色。画布视频节点复用现有视频编辑器。参见[图像编辑集成与验收边界](docs/FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md)。
+Floe 1.7 面向 iPad 优先升级手记、Office 编辑、思维导图、语音、图像与视频工作台，以及任务归属的运行环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
 ### 手记、Office 与本地语音
 
@@ -230,4 +224,4 @@ Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方�
 
 ### Feather 安装源
 
-使用自行签名安装的用户可添加 [Floe Feather 源](docs/FEATHER_SOURCE.md)，当前版本为191。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。
+使用自行签名安装的用户可一键[添加到 Feather](feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json)或[添加到 AltStore](altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json)。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。

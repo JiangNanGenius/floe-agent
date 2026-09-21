@@ -915,6 +915,7 @@ public actor ConversationRunService {
                 inputTokens: report.inputTokens,
                 outputTokens: report.outputTokens,
                 cacheReadTokens: report.cacheReadTokens,
+                cacheMissTokens: report.cacheMissTokens,
                 cacheWriteTokens: report.cacheWriteTokens,
                 reasoningTokens: report.reasoningTokens,
                 totalDurationMs: report.totalDurationMs,
@@ -985,6 +986,26 @@ public actor ConversationRunService {
             if let lastUsage = usageRecords.last {
                 let totalTokens = lastUsage.inputTokens + lastUsage.outputTokens
                 logger.info("runTokens run=\(runID.uuidString) input=\(lastUsage.inputTokens) output=\(lastUsage.outputTokens) total=\(totalTokens)")
+            }
+            // Provider prefix-cache telemetry (DeepSeek hit/miss, OpenAI
+            // cached_tokens, Anthropic cache read/creation). Counts only —
+            // never prompt content — so the log stays privacy-safe while a
+            // falling hit rate can be correlated with prompt-assembly churn.
+            for record in usageRecords where !record.isEstimated {
+                let read = record.cacheReadTokens ?? 0
+                guard read > 0 || record.cacheMissTokens != nil || record.cacheWriteTokens != nil else { continue }
+                var line = "promptCache run=\(runID.uuidString) cacheRead=\(read)"
+                if let miss = record.cacheMissTokens {
+                    line += " cacheMiss=\(miss)"
+                    let denominator = read + miss
+                    if denominator > 0 {
+                        line += " hitRate=\(String(format: "%.3f", Double(read) / Double(denominator)))"
+                    }
+                }
+                if let write = record.cacheWriteTokens {
+                    line += " cacheWrite=\(write)"
+                }
+                logger.info(line)
             }
             // Ordering rule: the final assistant reply must be durable
             // BEFORE the terminal marker. The unified thread timeline reads

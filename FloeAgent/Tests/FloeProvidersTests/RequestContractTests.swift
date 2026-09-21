@@ -120,6 +120,40 @@ struct RequestContractTests {
         #expect((parameters["additionalProperties"] as? NSNumber)?.boolValue == false)
     }
 
+    @Test("Tool schema encoding is byte-stable so provider prefix caches can hit")
+    func toolSchemaEncodingIsByteStable() throws {
+        // DeepSeek's prompt cache matches on the exact token prefix. Swift
+        // dictionary iteration order is nondeterministic, so arbitrary-JSON
+        // segments (tool `parameters`) previously re-encoded with a different
+        // key order on every request and destroyed the prefix match.
+        let unorderedSchema = #"{"type":"object","required":["query"],"properties":{"zeta":{"type":"integer"},"query":{"type":"string"},"alpha":{"type":"boolean"}},"additionalProperties":false}"#
+        let body = ChatRequest(
+            model: "deepseek-chat",
+            messages: [],
+            tools: [.init(name: "conversation_search", description: "Search tasks", parameters: unorderedSchema)]
+        )
+
+        var encodings = Set<String>()
+        for _ in 0..<64 {
+            encodings.insert(String(decoding: try JSONEncoder().encode(body), as: UTF8.self))
+        }
+        #expect(encodings.count == 1)
+        let encoded = try #require(encodings.first)
+        #expect(encoded.contains(#""properties":{"alpha"#))
+        #expect(encoded.contains(#""query":{"type":"string"},"zeta"#))
+
+        // Anthropic's input_schema shares the same RawJSONValue/JSONTree path.
+        let anthropic = AnthropicRequest(
+            model: "model", maxTokens: 128, messages: [],
+            tools: [.init(name: "conversation_search", description: "Search tasks", inputSchema: unorderedSchema)]
+        )
+        var anthropicEncodings = Set<String>()
+        for _ in 0..<64 {
+            anthropicEncodings.insert(String(decoding: try JSONEncoder().encode(anthropic), as: UTF8.self))
+        }
+        #expect(anthropicEncodings.count == 1)
+    }
+
     @Test("Chat tools are omitted when tool calling is disabled")
     func chatOmitsUnusedTools() throws {
         let body = ChatRequest(

@@ -12,9 +12,20 @@ import FloeExecution
 /// use `-r` and only reads stdin as an HTTP request body, so the stdin check
 /// is skipped and the SAPI difference is recorded instead of hidden.
 ///
+/// Product status (Build 214/215): the retired per-language WASI runtime
+/// packs are sealed and not packaged in the App; PHP execution lives in the
+/// TinyEMU Linux guest via the native php package. These tests SKIP when
+/// FLOE_PHP_WASI is absent; a set-but-missing path stays an error.
+///
 /// Integrated 2026-09-19 from Local/Private/build191-feedback/languages/tests/.
 @Suite("PHP interpreter through the WASI command runtime")
 struct PhpInterpreterTests {
+    /// Static so the condition trait can read it before any instance exists.
+    private static var archivedPhpAvailable: Bool {
+        guard let path = ProcessInfo.processInfo.environment["FLOE_PHP_WASI"] else { return false }
+        return !path.isEmpty
+    }
+
     private var isCGI: Bool {
         ProcessInfo.processInfo.environment["FLOE_PHP_SAPI"]?.lowercased() == "cgi"
     }
@@ -43,7 +54,8 @@ struct PhpInterpreterTests {
             moduleMaxBytes: 32 * 1024 * 1024, memoryMaxBytes: 256 * 1024 * 1024)
     }
 
-    @Test func versionAndScriptInJail() async throws {
+    @Test(.enabled(if: Self.archivedPhpAvailable, "sealed per-language WASI runtime is not packaged; set FLOE_PHP_WASI to qualify an archived artifact"))
+    func versionAndScriptInJail() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         guard case .exited(let versionCode, let versionOut, _, _, _, _) = try await run(["--version"], root: root) else {
@@ -69,7 +81,8 @@ struct PhpInterpreterTests {
         #expect(try String(contentsOf: root.appendingPathComponent("php-out.txt"), encoding: .utf8) == "sum=42\n")
     }
 
-    @Test func phpErrorsAreRecovered() async throws {
+    @Test(.enabled(if: Self.archivedPhpAvailable, "sealed per-language WASI runtime is not packaged; set FLOE_PHP_WASI to qualify an archived artifact"))
+    func phpErrorsAreRecovered() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("<?php throw new RuntimeException('boom');".utf8).write(to: root.appendingPathComponent("boom.php"))
@@ -83,7 +96,8 @@ struct PhpInterpreterTests {
         #expect(stdout.contains("boom") || stderr.contains("boom"))
     }
 
-    @Test func stdinOnlyForTheCLISAPI() async throws {
+    @Test(.enabled(if: Self.archivedPhpAvailable, "sealed per-language WASI runtime is not packaged; set FLOE_PHP_WASI to qualify an archived artifact"))
+    func stdinOnlyForTheCLISAPI() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         guard !isCGI else {
@@ -102,7 +116,8 @@ struct PhpInterpreterTests {
         #expect(stdout.contains("echo:来自 stdin"))
     }
 
-    @Test func timeoutAndCancellationStopPurePHPLoops() async throws {
+    @Test(.enabled(if: Self.archivedPhpAvailable, "sealed per-language WASI runtime is not packaged; set FLOE_PHP_WASI to qualify an archived artifact"))
+    func timeoutAndCancellationStopPurePHPLoops() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         let script = "<?php while (true) {}"

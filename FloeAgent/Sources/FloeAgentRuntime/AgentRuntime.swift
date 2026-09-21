@@ -462,6 +462,13 @@ public actor FloeAgentRuntime {
     /// get. Ordinary cloud empty turns stay unchanged. Settled pairs replay as
     /// evidence only; the execution ledger still refuses to re-run them.
     private var historyLookupSucceededInRun = false
+    /// True once this run settled ANY conversation-history lookup result —
+    /// success, empty result (status ok with zero hits) or failure. Every
+    /// settled cross-task route owes the user a visible closure: the answer,
+    /// the explicit no-results statement or the concrete failure. Without
+    /// this, a failed or empty search on a cloud provider could end the run
+    /// with no user-visible reply at all.
+    private var historyLookupAttemptedInRun = false
     private var malformedToolRepairCount = 0
     private var malformedToolRepairRequested = false
     /// Set by tool/compaction handling to request another provider turn.
@@ -899,6 +906,13 @@ public actor FloeAgentRuntime {
         } || pendingToolResults.contains { result in
             guard result.status == .ok else { return false }
             return pendingToolCalls.contains {
+                $0.id == result.callID && Self.isConversationHistoryTool($0.toolName)
+            }
+        }
+        historyLookupAttemptedInRun = replayableToolHistory.contains { pair in
+            Self.isConversationHistoryTool(pair.call.toolName)
+        } || pendingToolResults.contains { result in
+            pendingToolCalls.contains {
                 $0.id == result.callID && Self.isConversationHistoryTool($0.toolName)
             }
         }
@@ -1998,11 +2012,11 @@ public actor FloeAgentRuntime {
                // Weak on-device models are the observed source of turns that
                // end with neither visible text nor a tool call (for example
                // reasoning-only output after a search/read chain). Cloud runs
-               // join that rule only after a successful cross-task history
-               // lookup in this run: "search succeeded, then nothing" was
-               // reproduced on cloud models too, while ordinary cloud empty
-               // turns keep their existing completion semantics.
-               configuration.provider.kind == .local || historyLookupSucceededInRun {
+               // join that rule after any settled cross-task history lookup
+               // in this run — success, empty result or failure all owe the
+               // user a visible closure, while ordinary cloud empty turns
+               // keep their existing completion semantics.
+               configuration.provider.kind == .local || historyLookupAttemptedInRun {
                 // The search→read→answer chain (and every other route) only
                 // closes when something visible reached the user. One bounded
                 // continuation converts a silent empty turn into the final
@@ -2040,7 +2054,7 @@ public actor FloeAgentRuntime {
             // of reporting an empty turn as successful completion.
             if streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !didVerifyFinalAnswer,
-               configuration.provider.kind == .local || historyLookupSucceededInRun {
+               configuration.provider.kind == .local || historyLookupAttemptedInRun {
                 await failRun(
                     message: "The model returned no visible answer before the run stopped. The run state is saved; resume or retry the task.",
                     recoverable: true
@@ -2130,7 +2144,7 @@ public actor FloeAgentRuntime {
         )
         messages.append(ConversationMessage(
             role: "system",
-            content: "Harness control: your previous turn produced neither a user-visible answer nor a tool call. Answer the user's latest request now in visible text, using evidence already gathered (including any search or read results), or issue the one tool call that is still required, or state the concrete blocker plainly. Do not repeat completed tool work and do not end without a visible answer."
+            content: "Harness control: your previous turn produced neither a user-visible answer nor a tool call. Answer the user's latest request now in visible text, using evidence already gathered (including any search or read results), or issue the one tool call that is still required, or state the concrete blocker plainly. If a cross-task search returned no matches or a read failed, say that explicitly and answer from the current context instead of retrying the identical lookup. Do not repeat completed tool work and do not end without a visible answer."
         ))
         modelTurnContinuationRequested = true
     }
@@ -2756,6 +2770,9 @@ public actor FloeAgentRuntime {
             )
             if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
                 historyLookupSucceededInRun = true
+            }
+            if Self.isConversationHistoryTool(call.toolName) {
+                historyLookupAttemptedInRun = true
             }
             setToolLifecycle(call: call, phase: .resultCommitted)
             orderedResults.append((call, result))
@@ -3406,37 +3423,63 @@ public actor FloeAgentRuntime {
 
     // MARK: Compaction
 
-    /// Uses the injected hybrid context engine when available and falls back
-    /// to a bounded recent tail if summarization is unavailable.
+    /// Compaction is transactional. The rewritten context is installed only
+    /// after its durable record committed (same contract as the
+    /// `prepareContext` path above), and a failed or oversized compaction
+    /// leaves `messages` untouched — the run retries the turn on the original
+    /// context instead of silently degrading to a truncated tail.
     private func compactHistory(force: Bool = false) async {
-        if let contextEngine {
-            let latestUserID = messages.last(where: { $0.role == "user" })?.id
-            let request = CompactionRequest(
-                context: ContextRequest(
-                    messages: messages,
-                    budget: Self.contextCompressionPolicy(
-                        configuration: configuration,
-                        messages: messages
-                    ).budget,
-                    protection: ContextProtection(
-                        messageIDs: latestUserID.map { [$0] } ?? []
-                    )
-                ),
-                force: force
-            )
-            do {
-                let result = try await contextEngine.compact(request)
-                messages = result.messages
-                return
-            } catch {
+        guard let contextEngine else { return }
+        let latestUserID = messages.last(where: { $0.role == "user" })?.id
+        let request = CompactionRequest(
+            context: ContextRequest(
+                messages: messages,
+                budget: Self.contextCompressionPolicy(
+                    configuration: configuration,
+                    messages: messages
+                ).budget,
+                protection: ContextProtection(
+                    messageIDs: latestUserID.map { [$0] } ?? []
+                )
+            ),
+            force: force
+        )
+        do {
+            let result = try await contextEngine.compact(request)
+            guard !result.record.sourceMessageIDs.isEmpty else {
+                // Honest no-op (nothing to compact or already fits): keep the
+                // original context; the retry may still overflow once more
+                // and then fail recoverably with the state intact.
                 logger.warning(
-                    "contextHistoryFallback run=\(runID.uuidString) forced=\(force) error=\(error.localizedDescription)"
+                    "contextCompactionNoop run=\(runID.uuidString) forced=\(force)"
+                )
+                return
+            }
+            let summary = result.messages.first(where: {
+                $0.role == "system" && $0.content.contains("Historical summary:")
+            })?.content ?? result.messages.first(where: {
+                $0.role == "system" && $0.content.hasPrefix("[Context compaction notice]")
+            })?.content ?? ""
+            if let intelligenceStore {
+                try await intelligenceStore.saveCompaction(
+                    runID: runID,
+                    record: result.record,
+                    summary: summary
                 )
             }
+            messages = result.messages
+            latestContextCompaction = result.record
+            logger.info(
+                "contextCompacted run=\(runID.uuidString) path=overflowRecovery forced=\(force) before=\(result.record.beforeEstimatedTokens) after=\(result.record.afterEstimatedTokens) sources=\(result.record.sourceMessageIDs.count)"
+            )
+            await sink?.agentRuntime(self, didCompact: result.record)
+        } catch {
+            // The in-memory context was not modified; the original messages
+            // remain the retry basis.
+            logger.warning(
+                "contextHistoryFallback run=\(runID.uuidString) forced=\(force) error=\(error.localizedDescription)"
+            )
         }
-        let system = messages.filter { $0.role == "system" }
-        let rest = messages.filter { $0.role != "system" }
-        messages = system + rest.suffix(8)
     }
 
     // MARK: Checkpoint persistence
@@ -3858,9 +3901,14 @@ public actor FloeAgentRuntime {
         }
         let toolSchemaTokens: Int
         if configuration.toolsEnabled && configuration.model.capabilities.contains(.tools) {
-            // LocalProviderAdapter performs intent routing and offers at most
-            // a small bounded tool subset on each turn.
-            toolSchemaTokens = 1_000
+            // Keep this estimate aligned with LocalProviderAdapter's actual
+            // schema budget (native schemas rendered by the chat template
+            // plus the bounded text directory). The largest tier admits at
+            // most ~4 800 characters of inventory schemas (~1 600 heuristic
+            // tokens) and a ~1 600-character directory; underestimating here
+            // overstates the usable window and strands small local models in
+            // a compact → overflow loop.
+            toolSchemaTokens = 2_000
         } else {
             toolSchemaTokens = 0
         }

@@ -30,6 +30,31 @@ enum IDEWorkspaceTabKind: String, Equatable {
     }
 }
 
+/// Pure decision for closing an Office tab (native strip tab or an internal
+/// CodeBlitz document tab): a clean read-only preview closes immediately;
+/// anything holding user changes hands the save/discard/cancel decision to
+/// the user. Keeping this pure lets focused tests pin the close policy
+/// without an engine or a simulator.
+enum IDEOfficeCloseDecision: Equatable {
+    /// No changes at stake — close (release the session) right away.
+    case closeImmediately
+    /// Unsaved changes exist — the user chooses save / discard / cancel.
+    case askUser
+
+    /// - Parameters:
+    ///   - readOnly: whether the session is still a read-only preview.
+    ///   - hasUncommittedChanges: edits not yet written back to the original.
+    ///   - isReady: whether an editable engine session is live right now.
+    static func decide(readOnly: Bool, hasUncommittedChanges: Bool, isReady: Bool) -> IDEOfficeCloseDecision {
+        if hasUncommittedChanges { return .askUser }
+        // An editable session (settled or still settling) may hold
+        // engine-side edits that have not been reported yet; closing must
+        // never silently drop them.
+        if !readOnly { return .askUser }
+        return .closeImmediately
+    }
+}
+
 @MainActor
 final class IDEWorkspaceTab: ObservableObject, @MainActor Identifiable {
     let relativePath: String
@@ -51,7 +76,11 @@ final class IDEWorkspaceTab: ObservableObject, @MainActor Identifiable {
     /// True while this tab owns changes that a close would lose.
     var hasUnsavedChanges: Bool {
         guard let officeSession else { return false }
-        return officeSession.hasUncommittedChanges || (!officeSession.readOnly && officeSession.phase == .ready)
+        return IDEOfficeCloseDecision.decide(
+            readOnly: officeSession.readOnly,
+            hasUncommittedChanges: officeSession.hasUncommittedChanges,
+            isReady: officeSession.phase == .ready
+        ) == .askUser
     }
 
     func release() async {

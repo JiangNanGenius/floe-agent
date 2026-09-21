@@ -153,25 +153,44 @@ public actor LocalGitService {
         authorEmail: String? = nil,
         initialBranch: String = "main"
     ) throws -> GitRepositorySnapshot {
+        // An invalid target must fail as an ordinary validation error, never
+        // as a libgit2 trap: a non-file URL (or a pathless one) fed into the
+        // repository walk/init is the Build-211 crash family.
+        guard root.isFileURL, !root.standardizedFileURL.path.isEmpty else {
+            throw FloeError.validationFailed("Git repository root must be a local file URL")
+        }
+        var rootInfo = stat()
+        guard stat(root.path, &rootInfo) == 0,
+              (rootInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+            throw FloeError.validationFailed("Git repository root must be an existing directory")
+        }
         if repositoryRoot(at: root) == root.standardizedFileURL {
             return try snapshot(at: root)
         }
         let branchName = try Self.validBranch(initialBranch)
-        let repository = try Repository(at: root)
-        // Same borrowed-owner discipline as `snapshot`: config access
-        // borrows the raw repository pointer, so the owner's lifetime is
-        // pinned across every borrowed use, not just each expression.
-        try withExtendedLifetime(repository) {
-            if let authorName, let authorEmail {
-                try configure(repository, authorName: authorName, authorEmail: authorEmail)
-            }
-            try repository.config.set("init.defaultBranch", to: branchName)
-        }
-        // `init.defaultBranch` only influences future initializations. Point
-        // this repository's unborn HEAD at the requested branch immediately.
-        try withRawRepository(at: root) { rawRepository in
+        try withRuntime {
+            var repository: OpaquePointer?
             try Self.check(
-                git_repository_set_head(rawRepository, "refs/heads/\(branchName)"),
+                git_repository_init(&repository, root.path, 0),
+                operation: "initialize repository"
+            )
+            guard let repository else {
+                throw FloeError.internalError("Git repository pointer is unavailable")
+            }
+            defer { git_repository_free(repository) }
+
+            var config: OpaquePointer?
+            try Self.check(git_repository_config(&config, repository), operation: "open repository config")
+            guard let config else { throw FloeError.internalError("Git repository config is unavailable") }
+            defer { git_config_free(config) }
+            if let authorName, let authorEmail {
+                let identity = try Self.validIdentity(name: authorName, email: authorEmail)
+                try Self.check(git_config_set_string(config, "user.name", identity.name), operation: "set git author name")
+                try Self.check(git_config_set_string(config, "user.email", identity.email), operation: "set git author email")
+            }
+            try Self.check(git_config_set_string(config, "init.defaultBranch", branchName), operation: "set default branch")
+            try Self.check(
+                git_repository_set_head(repository, "refs/heads/\(branchName)"),
                 operation: "set initial branch"
             )
         }
@@ -791,14 +810,19 @@ public actor LocalGitService {
     }
 
     private func configure(_ repository: Repository, authorName: String, authorEmail: String) throws {
+        let identity = try Self.validIdentity(name: authorName, email: authorEmail)
+        try repository.config.set("user.name", to: identity.name)
+        try repository.config.set("user.email", to: identity.email)
+    }
+
+    private static func validIdentity(name authorName: String, email authorEmail: String) throws -> (name: String, email: String) {
         let name = authorName.trimmingCharacters(in: .whitespacesAndNewlines)
         let email = authorEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 200,
               email.range(of: #"^[^@\s]+@[^@\s]+\.[^@\s]+$"#, options: .regularExpression) != nil else {
             throw FloeError.validationFailed("Git author name or email is invalid")
         }
-        try repository.config.set("user.name", to: name)
-        try repository.config.set("user.email", to: email)
+        return (name, email)
     }
 
     private func authenticatedRemoteOperation(

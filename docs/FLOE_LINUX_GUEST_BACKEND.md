@@ -1,9 +1,9 @@
 # Floe Linux 环境后端（TinyEMU RV64）/ Floe Linux Environment Backend
 
-日期 / Dated: 2026-09-20 · 状态 / Status: host 消费侧已接线并通过轻量真链路检查（见 §5）；
-最终 guest 镜像已完成云端组件验证；210 App 编译与镜像分发正在准备。
-/Source wired and lightly verified (§5). The final guest image passed cloud component qualification;
-build 210 App compilation and image distribution are being prepared. Device acceptance remains with the user.
+日期 / Dated: 2026-09-20（Build 215 复核 2026-09-21）· 状态 / Status: host 消费侧已接线并通过轻量真链路检查（见 §5）；
+最终 guest 镜像已完成云端组件验证并公开分发（组件 `floe-linux-guest-20260920.1`）；Build 214 已交付 TestFlight 内部组。
+/Source wired and lightly verified (§5). The final guest image passed cloud component qualification and is publicly
+distributed (component `floe-linux-guest-20260920.1`); build 214 shipped to internal TestFlight. Device acceptance remains with the user.
 
 ## 1. 接线范围 / What is wired
 
@@ -15,7 +15,7 @@ build 210 App compilation and image distribution are being prepared. Device acce
 | 控制台通道 | `FloeExecution/Linux/LinuxGuestCommandChannel.swift` | EXEC 小载荷 inline / 大载荷分块、逐段限流、超时/取消 → Ctrl-C + 毒化；单一长驻 console reader（连续命令共用，见 §5 修复） |
 | 后台服务协议 | 同上 | `SPAWN` 分块 envelope → `PID`+END，`KILL`/`ALIVE` 仅认 guest 自建 pid；`ControlParser` 解析 `FLOE-PID <token> <pid>` |
 | guest 运行时 | `FloeExecution/Linux/TinyEMUGuestRuntime.swift` | 单线程 `floe_vm_run_slice`、9p shares、`floe_vm_hostfwd_add/remove`、可恢复创建失败；cmdline 缺省补 `init=/usr/local/bin/floe-exec` |
-| 注册表/服务 | `FloeExecution/Linux/LinuxGuestRegistry.swift` | 每环境一个 guest、全进程同时一个 guest（slirp 单例）、start/stop/delete、task 所有权、转发上限 16、`LinuxGuestLocalServiceHosting` |
+| 注册表/服务 | `FloeExecution/Linux/LinuxGuestRegistry.swift` | 每环境一个 guest；**无全局执行锁**——引擎补丁 0006 起 slirp 为每 VM 实例，不同环境的 guest 可并行运行，各自可停止/超时/取消/回收，卡死只隔离自身（`quarantinedEnvironments`）；准入由 `guestReservations` 限量（默认 ≤4 guest、≤1536 MB）、start/stop/delete、task 所有权、转发上限 16、`LinuxGuestLocalServiceHosting` |
 | localService | `FloeExecution/Linux/LinuxGuestLocalService.swift` | `exec.localService` 在 guest 内 detach 运行：`env PORT=… <venv python|node> entry`、日志写环境层 `services/<job>.log`（9p 同文件读取，有界 tail + 脱敏）、hostfwd 发布端口、snapshot/stop |
 | shell 路由 | `FloeExecution/Linux/LinuxGuestShellBackend.swift` + `FloeApp/Execution/LinuxGuestBackend.swift` | `exec.shell` 在 Linux 环境交 guest `/bin/sh -c` 原样执行；`shell.*` 交互会话走 guest PTY（`FLOE-OPEN/IN/SIGNAL/CLOSE`）；命令前缀仅做受保护的 venv 激活 |
 | localPython 路由 | `FloeApp/Execution/CPythonLocalRuntime.swift` | Linux 环境里 `exec.localPython`、pip 命令、托管安装器与包 UI 都执行该 guest 的**同一个 venv**（`/floe/env/python/venv`，`--system-site-packages`），host 路径经 9p 映射；非 Linux 环境仍走内置 CPython，`ArchiveCompressedBridge` 等 host 内部调用不变 |
@@ -29,8 +29,8 @@ build 210 App compilation and image distribution are being prepared. Device acce
 | 注入 | `FloeApp/App/AppEnvironment.swift` | 构建唯一 `TinyEMULinuxCommandService` 与 `LinuxGuestImageInstallationService`，经 `setLinuxCommandService` / `setLinuxImageService` 注入；非 `executionBackend == .linuxVM` 时零行为变化 |
 
 共享 guest / Shared guest: `TinyEMULinuxGuestRegistry` 是每个 `executionBackend == .linuxVM` 环境 guest 的唯一所有者
-（一个环境一个 guest，命令在通道内串行）。同一 guest 同时服务 `exec.shell`、apt/dpkg 与包 UI、`exec.localPython`（共享
-venv）、`exec.localService` 与 `shell.*` PTY 会话。
+（一个环境一个 guest，命令在通道内串行；不同环境的 guest 互不阻塞、可并行）。同一 guest 同时服务 `exec.shell`、
+apt/dpkg 与包 UI、`exec.localPython`（共享 venv）、`exec.localService` 与 `shell.*` PTY 会话。
 
 9p 共享 / 9p shares：环境写层挂 `floe-env` → `/floe/env`，工作区挂 `workspace` → `/workspace`（最多 4 个）。
 guest runner（`FloeAgent/LinuxGuest/`）在启动时挂载这些 tag；host 的 cwd/entry/log/Python target 全部经
@@ -153,7 +153,8 @@ guest 控制台 runner 协议（行首 `\x1e`，末尾接受 `\n` 或闭合 `\x1
 
 ## 5. 验证 / Verification
 
-- `bash FloeAgent/ThirdParty/TinyEMU/vendor_swift_sources.sh [pristine]` + `--check`：pristine + 0001–0004 补丁一致。
+- `bash FloeAgent/ThirdParty/TinyEMU/vendor_swift_sources.sh [pristine]` + `--check`：pristine + 0001–0008 补丁一致
+  （0005 FENCE.TSO、0006 每 VM slirp 实例、0007 9p 出口根 fd 隔离、0008 可恢复 guest 故障路径）。
 - `swift build --target FloeTinyEMU` 通过；`nm` 确认 `floe_vm_hostfwd_add/remove`。
 - guest runner（`FloeAgent/LinuxGuest/`，commit a9396dc0）：`tests/host_protocol_check.sh` 13 项/66 断言全过
   （inline/分块 EXEC、PTY 输入/信号/关闭、SPAWN/PID/ALIVE/KILL），驱动字节取自本文件的 `LinuxGuestFraming`。

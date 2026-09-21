@@ -68,12 +68,14 @@ struct NoteMindMapView: View {
     private var renderedFrames: [UUID: NoteRect] {
         guard let drag else { return frames }
         var output = frames
-        let scale = viewport.scale > 0 ? viewport.scale : 1
-        let delta = CGSize(width: drag.translation.width / scale, height: drag.translation.height / scale)
         for id in drag.movingIDs {
             guard var frame = output[id] else { continue }
-            frame.x += Double(delta.width)
-            frame.y += Double(delta.height)
+            // worldDelta is already accumulated in world points from
+            // window-space increments; do not divide again by zoom (the old
+            // total-translation/scale pass double-applied the viewport
+            // transform and made the card drift away from the finger).
+            frame.x += Double(drag.worldDelta.width)
+            frame.y += Double(drag.worldDelta.height)
             output[id] = frame
         }
         return output
@@ -263,8 +265,12 @@ struct NoteMindMapView: View {
             toggleCollapse: { toggleCollapse(node) },
             hasChildren: !MindMapLayout.orderedChildren(of: node.id, in: document).isEmpty,
             reportSize: { size in
-                let scale = max(viewport.scale, 0.0001)
-                let world = MindMapSize(width: Double(size.width) / scale, height: Double(size.height) / scale)
+                // scaleEffect is a render transform and never changes layout:
+                // the card measures in world points at every zoom. Dividing by
+                // the viewport scale let pinch zoom rewrite the cached world
+                // size, invalidating the layout and jittering the whole map.
+                guard size.width > 0, size.height > 0 else { return }
+                let world = MindMapSize(width: Double(size.width), height: Double(size.height))
                 if sizes[node.id] != world { sizes[node.id] = world }
             }
         )
@@ -318,7 +324,12 @@ struct NoteMindMapView: View {
     // MARK: - Gestures
 
     private func nodeDragGesture(_ node: MindMapNode) -> some Gesture {
-        DragGesture(minimumDistance: 3)
+        // .global: translation is measured in window points, outside the
+        // canvas container's scaleEffect. SwiftUI's default .local space
+        // lives inside the zoom transform, so the reported translation was
+        // already divided by scale; rendering then divided by scale a second
+        // time and the card lagged/overshot the finger at any zoom != 1.
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
                 guard CanvasNodeGesturePolicy.allowsNodeDrag(
                     isSelectMode: true,
@@ -336,13 +347,19 @@ struct NoteMindMapView: View {
                     }
                     let fullFrames = frameCache.frames(document: document, sizes: sizes, includeCollapsed: true)
                     drag = NodeDrag(nodeID: node.id, mode: mode, movingIDs: moving,
-                                    pinFrames: fullFrames, translation: .zero)
+                                    pinFrames: fullFrames,
+                                    startScale: viewport.scale > 0 ? viewport.scale : 1,
+                                    lastGlobal: value.startLocation,
+                                    worldDelta: .zero)
                 }
-                drag?.translation = value.translation
+                // Consume only this update's window-space increment, pinned
+                // to the scale at gesture start, so each frame moves the card
+                // by exactly the finger delta and nothing else.
+                drag?.advance(to: value.location)
             }
             .onEnded { value in
                 guard var active = drag else { return }
-                active.translation = value.translation
+                active.advance(to: value.location)
                 drag = nil
                 commitDrag(active)
             }
@@ -364,15 +381,14 @@ struct NoteMindMapView: View {
     }
 
     private func commitDrag(_ drag: NodeDrag) {
-        let scale = viewport.scale > 0 ? viewport.scale : 1
-        let dx = drag.translation.width / scale
-        let dy = drag.translation.height / scale
+        let dx = Double(drag.worldDelta.width)
+        let dy = Double(drag.worldDelta.height)
         guard abs(dx) > 1 || abs(dy) > 1 else { return }
         var overrides: [UUID: MindMapPoint] = [:]
         for id in drag.movingIDs {
             guard let start = drag.pinFrames[id] else { continue }
-            overrides[id] = MindMapPoint(x: start.x + start.width / 2 + Double(dx),
-                                         y: start.y + start.height / 2 + Double(dy))
+            overrides[id] = MindMapPoint(x: start.x + start.width / 2 + dx,
+                                         y: start.y + start.height / 2 + dy)
         }
         commitMaterializing(edits: [], pinFrames: drag.pinFrames, pinOverrides: overrides)
     }
@@ -638,7 +654,24 @@ struct NoteMindMapView: View {
         let movingIDs: Set<UUID>
         /// Full layout (including collapsed subtrees) captured at drag start.
         let pinFrames: [UUID: NoteRect]
-        var translation: CGSize
+        /// Zoom pinned at gesture start; a second finger cancels the drag, so
+        /// the scale never changes while the node is being moved.
+        let startScale: CGFloat
+        /// Last consumed window-space (global) location, for per-frame deltas.
+        var lastGlobal: CGPoint
+        /// Accumulated movement in world points.
+        var worldDelta: CGSize
+
+        /// Fold one gesture update into the world-space delta, consuming only
+        /// the increment since the previous frame.
+        mutating func advance(to global: CGPoint) {
+            let incrementX = global.x - lastGlobal.x
+            let incrementY = global.y - lastGlobal.y
+            lastGlobal = global
+            guard startScale.isFinite, startScale > 0 else { return }
+            worldDelta.width += incrementX / startScale
+            worldDelta.height += incrementY / startScale
+        }
     }
 
     private struct ConnectionDrag {

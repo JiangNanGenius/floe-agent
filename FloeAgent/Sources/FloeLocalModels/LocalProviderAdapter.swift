@@ -816,17 +816,18 @@ public actor LocalModelRuntime {
     /// from Floe's single-batch, fresh-cache, one-prefill-per-generation
     /// usage, so the abort is consistent with — not proof of — a Metal
     /// evaluation failure whose transient graph scales with the chunk size.
-    /// The constrained tier already ships 32 as the validated chunk for this
-    /// abort class (see the Gemma comment in LocalInferenceResourcePolicy);
-    /// larger tiers get the same ceiling for the GDN family only, trading
-    /// prefill latency for a smaller, already-validated per-eval graph.
+    /// Build 214 device diagnostics then showed a 4B Qwen tool continuation
+    /// being terminated during its second prefill even though the prompt was
+    /// only 2,803 / 8,192 tokens. The 32-token graph was therefore still too
+    /// large after unload/reload. Keep the GDN family at 8 for every tier;
+    /// this trades prefill latency for substantially lower transient memory.
     /// Model IDs are the curated catalog IDs (`qwen3.5-4b-mlx4`,
     /// `qwen3.8-4b-heretic-mlx4`, …); every other family keeps its profile.
     static func adjustedProfile(
         for modelID: String,
         profile: LocalInferenceResourceProfile
     ) -> LocalInferenceResourceProfile {
-        let gdnPrefillChunkCeiling: UInt32 = 32
+        let gdnPrefillChunkCeiling: UInt32 = 8
         let gdnPrefixes = ["qwen3.5", "qwen3.8", "qwen3-next", "qwen3next"]
         let lower = modelID.lowercased()
         guard gdnPrefixes.contains(where: { lower.hasPrefix($0) }),
@@ -1804,14 +1805,27 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let budgets = promptBudgets(contextTokens: contextTokens)
         var selected: [ToolSchemaDescriptor] = []
         var schemaCharacters = 0
+        var omittedForBudget = 0
         for (tool, _) in scored {
             let cost = tool.name.count + min(tool.description.count, 120) + tool.parametersJSON.count + 16
             let maximumCount = inventoryRequested ? budgets.inventoryToolCount : budgets.actionToolCount
             let maximumCharacters = inventoryRequested ? budgets.inventorySchemaCharacters : budgets.actionSchemaCharacters
             guard selected.count < maximumCount else { break }
-            guard schemaCharacters + cost <= maximumCharacters else { continue }
+            guard schemaCharacters + cost <= maximumCharacters else {
+                // One oversized schema must not consume a slot silently; the
+                // count feeds localPromptPrepared so an over-budget tools
+                // list is visible in diagnostics instead of looking like an
+                // intent-matching miss.
+                omittedForBudget += 1
+                continue
+            }
             selected.append(tool)
             schemaCharacters += cost
+        }
+        if omittedForBudget > 0 {
+            FloeLogger(category: .providers).warning(
+                "localToolSchemasOverBudget omitted=\(omittedForBudget) selected=\(selected.count) schemaCharacters=\(schemaCharacters)"
+            )
         }
         // Preserve score-based admission under the schema budget, then expose
         // a stable order so chat templates and tests do not churn between

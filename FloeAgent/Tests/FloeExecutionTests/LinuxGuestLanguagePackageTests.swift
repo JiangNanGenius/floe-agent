@@ -219,7 +219,8 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
             return XCTFail("A native environment must not uninstall packages")
         }
         XCTAssertTrue(runner.calls.isEmpty)
-        XCTAssertEqual(await service.installedDistributions(environment: environment), [])
+        let distributions = await service.installedDistributions(environment: environment)
+        XCTAssertEqual(distributions, [])
     }
 
     // MARK: Node

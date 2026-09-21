@@ -16,8 +16,20 @@ import FloeExecution
 /// Local/Private/build191-feedback/language-delivery/fixtures/.
 ///
 /// Integrated 2026-09-19 from Local/Private/build191-feedback/languages/tests/.
+///
+/// Product status (Build 214/215): the cloud-compiled WASI language delivery
+/// pipeline is retired; per-language wasm artifacts are not part of the
+/// current product qualification set. These tests SKIP when FLOE_CLOUD_WASI
+/// is absent; a set-but-missing path stays an error (a claimed artifact that
+/// is not there is a real defect, not a retired runtime).
 @Suite("Cloud-compiled WASI artifact through the command runtime")
 struct CloudCompiledArtifactTests {
+    /// Static so the condition trait can read it before any instance exists.
+    private static var archivedCloudArtifactAvailable: Bool {
+        guard let path = ProcessInfo.processInfo.environment["FLOE_CLOUD_WASI"] else { return false }
+        return !path.isEmpty
+    }
+
     private func root() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -46,7 +58,8 @@ struct CloudCompiledArtifactTests {
             moduleMaxBytes: 64 * 1024 * 1024, memoryMaxBytes: 256 * 1024 * 1024)
     }
 
-    @Test func helloFileIOAndArgumentsInTheWorkspaceJail() async throws {
+    @Test(.enabled(if: Self.archivedCloudArtifactAvailable, "cloud-compiled WASI language delivery is retired; set FLOE_CLOUD_WASI to qualify an archived artifact"))
+    func helloFileIOAndArgumentsInTheWorkspaceJail() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         let arguments = (ProcessInfo.processInfo.environment["FLOE_CLOUD_ARGS"] ?? "alpha beta")
@@ -62,7 +75,8 @@ struct CloudCompiledArtifactTests {
         #expect(written == "sum=42 args=" + arguments.joined(separator: ",") + "\n")
     }
 
-    @Test func errorPathExitsWithItsOwnCode() async throws {
+    @Test(.enabled(if: Self.archivedCloudArtifactAvailable, "cloud-compiled WASI language delivery is retired; set FLOE_CLOUD_WASI to qualify an archived artifact"))
+    func errorPathExitsWithItsOwnCode() async throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }
         guard case .exited(let code, let stdout, let stderr, _, _, _) = try await run(arguments: ["fail"], root: root) else {

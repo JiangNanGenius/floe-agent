@@ -219,6 +219,9 @@ struct WireTranslatorTests {
         }
         #expect(responseUsage.cacheReadTokens == 80)
         #expect(responseUsage.inputTokens == 40)
+        // Responses has no explicit miss field; the uncached remainder of
+        // cached input is the miss side.
+        #expect(responseUsage.cacheMissTokens == 40)
         #expect(responseUsage.cacheWriteTokens == nil)
         #expect(responseUsage.reasoningTokens == 12)
 
@@ -242,6 +245,9 @@ struct WireTranslatorTests {
         }
         #expect(deepSeekUsage.inputTokens == 30)
         #expect(deepSeekUsage.cacheReadTokens == 60)
+        // The miss side must survive translation so run-level telemetry can
+        // compute a real hit rate (60 / (60 + 30)) instead of only hits.
+        #expect(deepSeekUsage.cacheMissTokens == 30)
         #expect(deepSeekUsage.reasoningTokens == 7)
 
         let anthropicData = Data(#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":70,"output_tokens":15,"cache_creation_input_tokens":9,"cache_read_input_tokens":40}}"#.utf8)

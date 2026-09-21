@@ -99,6 +99,52 @@ struct HomeChatSeparationTests {
         #expect(router.workbenchPath.isEmpty)
         #expect(!router.inspectorVisible)
     }
+
+    @Test("Switching conversations retargets the workspace inspector instead of dropping it")
+    @MainActor
+    func conversationSwitchRetargetsWorkspaceInspector() {
+        let router = AppRouter()
+        let first = UUID()
+        let second = UUID()
+        router.openConversation(first)
+        router.showInspector(.workspaceFiles)
+        #expect(router.inspectorRoute?.conversationID == first)
+
+        // The right-side workspace follows the left-side session: the pane
+        // stays open and re-mounts on the newly selected task's workspace.
+        router.openConversation(second)
+        #expect(router.inspectorRoute?.content == .workspaceFiles)
+        #expect(router.inspectorRoute?.conversationID == second)
+
+        // The same holds for the changes pane and for the Home entry point.
+        router.showInspector(.changes)
+        router.openThreadFromHome(first)
+        #expect(router.inspectorRoute?.content == .changes)
+        #expect(router.inspectorRoute?.conversationID == first)
+    }
+
+    @Test("Switching conversations keeps hiding conversation-agnostic tools")
+    @MainActor
+    func conversationSwitchHidesNonWorkspaceInspector() {
+        let router = AppRouter()
+        let first = UUID()
+        router.openConversation(first)
+        router.showInspector(.browser)
+        router.openConversation(UUID())
+        #expect(router.inspectorRoute == nil)
+    }
+
+    @Test("Re-selecting the same conversation leaves the inspector untouched")
+    @MainActor
+    func sameConversationKeepsInspector() {
+        let router = AppRouter()
+        let conversation = UUID()
+        router.openConversation(conversation)
+        router.showInspector(.workspaceFiles)
+        router.openConversation(conversation)
+        #expect(router.inspectorRoute?.conversationID == conversation)
+        #expect(router.inspectorRoute?.content == .workspaceFiles)
+    }
 }
 
 @Suite("FloeApp.HomeTaskCreation")

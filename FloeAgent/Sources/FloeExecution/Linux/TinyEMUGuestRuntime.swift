@@ -3,9 +3,11 @@
 // Bridges the FloeTinyEMU C target (pinned TinyEMU 2019-12-21, interpreted
 // RISC-V) into the Linux guest contract. The machine runs its slices on one
 // dedicated thread; console input is queued through the adapter, console
-// output arrives on a bounded AsyncStream. The engine links one process-wide
-// slirp instance, so only one guest exists at a time (the registry enforces
-// this) and no two VMs share the adapter thread pool.
+// output arrives on a bounded AsyncStream. Engine patch 0006 made slirp
+// per-instance state explicit: each guest gets its own slirp instance, so
+// multiple guests run concurrently (bounded by the registry's admission
+// reservations) and one stuck guest never blocks another's stop, timeout
+// or cancellation.
 //
 // 9p shares are passed straight to FloeVMConfig.shares; the guest mounts them
 // by tag. Host→guest forwarding uses the adapter's slirp hostfwd API

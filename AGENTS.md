@@ -5,8 +5,9 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 ## Start with the actual checkout
 
 - Inspect `git status`, the current branch, relevant diffs and active worktrees before editing. Preserve unrelated changes, untracked files, unmerged commits and reproduction evidence. Use `codex/` for new task branches; do not assume an old integration branch still exists.
+- For private operations, read `Local/Private/README.md` first. It is the local authority for server topology, credentials, active evidence and archived qualification material; none of that private content may enter tracked documentation, prompts, logs or public releases.
 - Trace the actual UI → service → runtime/storage path before fixing symptoms. Read only the relevant modules and documentation. Prefer `rg` and small, focused reads.
-- Within this project, the user’s request to “open a new thread” means an OpenCode subtask by default. Use Codex tasks only for unrelated independent work; keep architecture, UI judgment and operational acceptance with the primary agent.
+- Within this project, the user’s request to “open a new thread” means an OpenCode subtask by default. Read the current `delegate-opencode` skill before delegating, assign a complete bounded outcome, and keep architecture, UI judgment and operational acceptance with the primary agent. Use Codex tasks only for unrelated independent work.
 - Continue authorized reversible work without repeated confirmation. Never infer approval to publish production releases, grant account access or remove independent work.
 - Give concise Chinese progress updates unless the user requests another language. Distinguish implemented, compiled, tested, uploaded and installable; do not promise a completion time from an unmeasured build stage.
 
@@ -22,6 +23,7 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 | `FloeAgent/scripts/`, `.github/workflows/` | Dependency setup, project generation, CI, packaging and distribution |
 | `skill-hub/`, `ios-wheelhouse/`, `capability-hub/` | Skills, compatible package builds and capability catalogs |
 | `docs/` | Current guides, architecture, migration notes and dated qualification evidence |
+| `Local/` | Git-ignored private operations, credentials, active evidence, artifacts, worktrees and scratch; start at `Local/Private/README.md` |
 
 ## Product and architecture invariants
 
@@ -37,6 +39,7 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 ## Build and verification
 
 - Heavy App builds, archives and release qualification belong in cloud CI. This Mac has limited space: use the smallest relevant local checks and low job counts. Check installed Xcode and free space first; set `DEVELOPER_DIR` per command rather than changing global `xcode-select`.
+- Keep local verification focused on changed code and contracts. Prefer cloud App compilation and packaging, then hand device behavior and UI acceptance to the user when requested; do not spend release time on repeated manual UI runs.
 - `FloeAgent/project.yml` is the source of truth. After changing targets, resources, schemes, build settings or versions, regenerate with `bash FloeAgent/scripts/gen_project.sh` and commit the matching Xcode project. Verify all app/extension build numbers before starting an expensive release run.
 - Preserve pinned revisions and hashes. `--check` commands must be read-only; do not rewrite a lock to make verification pass. Run SwiftPM commands sharing a scratch directory sequentially.
 - Select checks from [the engineering guide](FloeAgent/README.md), [build and acceptance](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md), or the relevant qualification host README. Do not run the entire test matrix for a documentation change. Do not silently weaken a failing assertion or treat an unchanged retry as proof the original failure was harmless.
@@ -55,6 +58,7 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 ## Safe cleanup
 
 - Keep new task-owned local files inside this repository: `Local/Private`, `Local/Artifacts`, `Local/Worktrees` and `Local/Scratch` are Git-ignored. Do not create sibling project/output directories on the external disk. After delivery, consolidate existing Floe-owned directories with a relocation record; move Git worktrees with Git and preserve unrelated projects. Public, redacted evidence belongs in `docs/`.
+- The private website checkout lives at `Local/Private/official-service`; its origin/proxy mapping and credential reference live only in `Local/Private/operations/official-service.md`. Never copy those values into tracked repository files.
 - Inspect active processes, Git boundaries and exact paths first. Remove confirmed regenerable scratch/staging/cache and superseded build copies. Preserve source, credentials, virtual environments, user data and meaningful failure/acceptance evidence; do not keep every historical build indefinitely.
 - Inventory `.app`, IPA, archive and runtime copies by bundle ID, version, build and purpose after qualification/delivery. Keep the current deliverable and the necessary rollback version; prune obsolete duplicates once their regeneration or verified recovery path is recorded. Generated `.app` bundles are distinct from installed apps and their data. Check runtime dependents before removing an unused runtime. Record exact targets, retained versions and measured space reclaimed.
 - Do not broadly delete DerivedData, `.build`, Archives or CoreSimulator. Simulators containing user/test apps are protected even when shut down. Prefer a specific finished build directory; report measured space reclaimed.

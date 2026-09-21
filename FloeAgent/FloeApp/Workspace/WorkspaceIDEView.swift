@@ -527,7 +527,12 @@ struct WorkspaceIDEView: View {
     /// the user (the tab itself cannot be vetoed after the fact).
     private func settleInternalOfficeClose(_ path: String) {
         guard let session = nativeDocs.existing(path) else { return }
-        if session.hasUncommittedChanges || (!session.readOnly && session.phase == .ready) {
+        let decision = IDEOfficeCloseDecision.decide(
+            readOnly: session.readOnly,
+            hasUncommittedChanges: session.hasUncommittedChanges,
+            isReady: session.phase == .ready
+        )
+        if decision == .askUser {
             internalOfficeClose = path
         } else {
             Task { await nativeDocs.release(path) }
@@ -549,9 +554,11 @@ struct WorkspaceIDEView: View {
     }
 
     @ViewBuilder private func officeActionBar(session: OfficeFileSession) -> some View {
-        // The tab owns every Office action; opening never spawns another
-        // window. On compact widths the row switches to icon-only buttons so
-        // Save/Discard/Share keep their 36pt targets without overflowing.
+        // Saving belongs to the Office engine's own toolbar (bridged through
+        // OfficeExplicitSaveBridge to the verified original-file commit) and
+        // to the IDE's Command-S save-all; closing a dirty tab offers the
+        // save/discard/cancel decision. No parallel bottom-left save cluster
+        // competes with the engine chrome while editing.
         let bar = HStack(spacing: 10) {
             if session.readOnly {
                 if session.isRemoteSnapshot {
@@ -577,28 +584,6 @@ struct WorkspaceIDEView: View {
                     .disabled(!session.canAct)
                     .accessibilityIdentifier("workspace.ide.office.edit")
                 }
-            } else {
-                Button {
-                    // A verified commit already fired `session.onCommitted`,
-                    // which refreshes every sibling entry; calling onSaved()
-                    // here as well would refresh everything twice.
-                    Task { _ = await session.saveAndReturn() }
-                } label: {
-                    Label(IDELanguageRunText.t("保存", "Save"), systemImage: "checkmark")
-                        .frame(minWidth: 44, minHeight: 36)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!session.canAct)
-                .accessibilityIdentifier("workspace.ide.office.save")
-                Button {
-                    Task { _ = await session.discardAndReturn() }
-                } label: {
-                    Label(IDELanguageRunText.t("放弃修改", "Discard"), systemImage: "arrow.uturn.backward")
-                        .frame(minWidth: 44, minHeight: 36)
-                }
-                .buttonStyle(.bordered)
-                .disabled(!session.canAct)
-                .accessibilityIdentifier("workspace.ide.office.discard")
             }
             Spacer(minLength: 0)
             // Explicit share of this document without leaving the tab: a
@@ -685,7 +670,12 @@ struct WorkspaceIDEView: View {
             Task { await tabs.close(tab.id) }
             return
         }
-        if !session.readOnly || session.hasUncommittedChanges {
+        let decision = IDEOfficeCloseDecision.decide(
+            readOnly: session.readOnly,
+            hasUncommittedChanges: session.hasUncommittedChanges,
+            isReady: session.phase == .ready
+        )
+        if decision == .askUser {
             officeCloseRequest = OfficeCloseRequest(id: tab.id, tab: tab)
         } else {
             Task { await tabs.close(tab.id) }

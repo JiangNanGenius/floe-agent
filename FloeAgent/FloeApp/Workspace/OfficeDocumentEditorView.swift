@@ -1525,6 +1525,19 @@ struct OfficeDocumentEditorView: View {
         OfficeDocumentSurface(session: session)
             .navigationTitle((relativePath as NSString).lastPathComponent)
             .navigationBarTitleDisplayMode(.inline)
+            .background {
+                // Command-S saves in place against the original workspace
+                // file (same verified commit as the engine's own toolbar
+                // save) without dismissing the editor. Hidden from the UI;
+                // only the keyboard shortcut is exposed.
+                Button {
+                    Task { _ = await session.saveInPlace() }
+                } label: { EmptyView() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(session.readOnly || !session.canAct)
+                .accessibilityIdentifier("office.editor.saveInPlace")
+                .hidden()
+            }
             .toolbar {
                 if inlineHeader == nil {
                     ToolbarItem(placement: .cancellationAction) { backButton }

@@ -415,12 +415,9 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
         // Bytes that look like frames but are not (unknown name, no token,
         // split markers) and leading newlines must reach the caller exactly.
         let console = TestLinuxGuestConsole()
-        var payloadBytes: [UInt8] = [0x0a, 0x1e, 0x1e]
-        payloadBytes.append(contentsOf: Array("mid".utf8))
-        payloadBytes.append(0x1e)
-        payloadBytes.append(contentsOf: Array("FLOE-X".utf8))
-        payloadBytes.append(contentsOf: [0x1e, 0x0a, 0x1e])
+        let payloadBytes: [UInt8] = [0x0a, 0x1e, 0x1e] + Array("mid".utf8) + [0x1e] + Array("FLOE-X".utf8) + [0x1e, 0x0a, 0x1e]
         let payload = Data(payloadBytes)
+        let sendBytewise = !payloadBytes.isEmpty
         console.setHandler { token in
             if token.hasPrefix("hello-") { return caps(token) }
             var stream = Data()
@@ -428,7 +425,7 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
             stream.append(Data("\u{1e}FLOE-OUT \(token)\u{1e}".utf8))
             stream.append(payload)
             stream.append(Data("\u{1e}FLOE-END \(token) 0\u{1e}".utf8))
-            return payloadBytes.isEmpty ? [stream] : stream.map { Data([$0]) } // bytewise: split frames
+            return sendBytewise ? stream.map { Data([$0]) } : [stream] // bytewise: split frames
         }
         let channel = LinuxGuestCommandChannel(transport: console)
         let result = try await channel.run(argv: ["/bin/cat"], timeout: 5)
@@ -770,6 +767,100 @@ final class LinuxGuestRegistryTests: XCTestCase {
         XCTAssertTrue(secondRunning)
         await registry.stop(environmentID: "env-1")
         await registry.stop(environmentID: "env-2")
+    }
+
+    /// There is no process-wide execution lock: one environment's stop and
+    /// commands never block or touch another environment's guest, and a guest
+    /// stuck mid-start on one environment neither prevents nor is killed by
+    /// another environment's lifecycle. (Engine-level proof of per-VM slirp
+    /// isolation is the native `two_vm_test`; this covers the Swift owner.)
+    func testIndependentSessionsStopAndRunWithoutBlockingEachOther() async throws {
+        let ledger = FakeSessionLedger()
+        let factory = FakeSessionFactory(ledger: ledger) { env, token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            return reply(token, stdout: "out-\(env)", stderr: "", exit: 0)
+        }
+        let registry = makeRegistry(
+            descriptors: [
+                "env-1": makeDescriptor(id: "env-1"),
+                "env-2": makeDescriptor(id: "env-2"),
+                "env-3": makeDescriptor(id: "env-3"),
+            ],
+            images: ["test-image": makeImage()],
+            factory: factory
+        )
+        // Start two sessions truly in parallel; both must succeed without
+        // either waiting on a global lock.
+        async let startOne: Bool = registry.start(environmentID: "env-1", taskID: "task-1")
+        async let startTwo: Bool = registry.start(environmentID: "env-2", taskID: "task-2")
+        let (startedOne, startedTwo) = try await (startOne, startTwo)
+        XCTAssertTrue(startedOne)
+        XCTAssertTrue(startedTwo)
+        let admitted = await registry.activeGuestCount
+        XCTAssertEqual(admitted, 2)
+
+        // Commands on the two guests are independent and keep their own
+        // output; neither is serialized behind the other environment.
+        async let runOne = registry.run(
+            environmentID: "env-1", argv: ["sh", "-c", "id"], workingDirectory: nil,
+            standardInput: nil, timeout: 5, maxOutputBytes: 4096, cancellation: nil
+        )
+        async let runTwo = registry.run(
+            environmentID: "env-2", argv: ["apt-get", "update"], workingDirectory: nil,
+            standardInput: nil, timeout: 5, maxOutputBytes: 4096, cancellation: nil
+        )
+        let (resultOne, resultTwo) = try await (runOne, runTwo)
+        XCTAssertEqual(resultOne.stdout, "out-env-1")
+        XCTAssertEqual(resultTwo.stdout, "out-env-2")
+
+        // A timed-out command on env-1 (guest never answers → poisoned
+        // channel → that guest is stopped) must leave env-2 fully usable:
+        // its session survives and its commands still run.
+        let silentLedger = FakeSessionLedger()
+        let silentFactory = FakeSessionFactory(ledger: silentLedger) { env, token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            return env == "env-3" ? reply(token, stdout: "still-here", stderr: "", exit: 0) : []
+        }
+        let registryWithStuck = makeRegistry(
+            descriptors: [
+                "env-1": makeDescriptor(id: "env-1"),
+                "env-3": makeDescriptor(id: "env-3"),
+            ],
+            images: ["test-image": makeImage()],
+            factory: silentFactory
+        )
+        _ = try await registryWithStuck.start(environmentID: "env-1", taskID: nil)
+        _ = try await registryWithStuck.start(environmentID: "env-3", taskID: nil)
+        do {
+            _ = try await registryWithStuck.run(
+                environmentID: "env-1", argv: ["sleep", "999"], workingDirectory: nil,
+                standardInput: nil, timeout: 0.2, maxOutputBytes: 4096, cancellation: nil
+            )
+            XCTFail("a guest that never answers must time out")
+        } catch {
+            // expected: timeout poisoned env-1's channel and stopped its guest
+        }
+        let stuckRunning = await registryWithStuck.status(environmentID: "env-1").running
+        XCTAssertFalse(stuckRunning, "the timed-out guest is stopped, nothing else")
+        let unaffected = try await registryWithStuck.run(
+            environmentID: "env-3", argv: ["echo", "ok"], workingDirectory: nil,
+            standardInput: nil, timeout: 5, maxOutputBytes: 4096, cancellation: nil
+        )
+        XCTAssertEqual(unaffected.stdout, "still-here")
+
+        // Stopping one running session never disturbs the other guest.
+        await registry.stop(environmentID: "env-1")
+        let oneRunning = await registry.status(environmentID: "env-1").running
+        let twoRunning = await registry.status(environmentID: "env-2").running
+        XCTAssertFalse(oneRunning)
+        XCTAssertTrue(twoRunning)
+        let afterStop = try await registry.run(
+            environmentID: "env-2", argv: ["sh", "-c", "id"], workingDirectory: nil,
+            standardInput: nil, timeout: 5, maxOutputBytes: 4096, cancellation: nil
+        )
+        XCTAssertEqual(afterStop.stdout, "out-env-2")
+        await registry.stop(environmentID: "env-2")
+        await registryWithStuck.stop(environmentID: "env-3")
     }
 
     func testRunBeforeStartReportsNotRunning() async {

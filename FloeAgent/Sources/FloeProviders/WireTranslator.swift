@@ -94,6 +94,9 @@ public enum WireTranslator {
                     inputTokens: max(0, usage.inputTokens - (cacheRead ?? 0)),
                     outputTokens: usage.outputTokens,
                     cacheReadTokens: cacheRead,
+                    // The Responses wire has no explicit miss dimension; the
+                    // uncached input remainder above is the miss side.
+                    cacheMissTokens: cacheRead.map { max(0, usage.inputTokens - $0) },
                     reasoningTokens: usage.outputTokenDetails?.reasoningTokens
                 )))
             }
@@ -164,6 +167,10 @@ public enum WireTranslator {
                 inputTokens: max(0, usage.promptTokens - (cacheRead ?? 0)),
                 outputTokens: usage.completionTokens,
                 cacheReadTokens: cacheRead,
+                // DeepSeek reports the hit/miss split of the whole prompt;
+                // forward the miss side so prefix-cache telemetry can compute
+                // a real hit rate instead of only counting hits.
+                cacheMissTokens: usage.promptCacheMissTokens,
                 reasoningTokens: usage.completionTokenDetails?.reasoningTokens
             )))
         }

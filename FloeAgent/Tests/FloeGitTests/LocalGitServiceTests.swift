@@ -134,6 +134,42 @@ struct LocalGitServiceTests {
         #expect(again.changes.isEmpty)
     }
 
+    @Test("initialize rejects invalid targets as ordinary errors, never a crash")
+    func initializeRejectsInvalidPaths() async throws {
+        let git = LocalGitService()
+
+        // A non-file URL (the Build-211 crash family) is a validation error.
+        if let remote = URL(string: "https://example.invalid/repo") {
+            await #expect(throws: (any Error).self) {
+                try await git.initialize(at: remote)
+            }
+            // Snapshot on the same invalid URL stays non-crashing too.
+            #expect(await git.repositoryRoot(at: remote) == nil)
+        }
+
+        // A root that is a regular file, not a directory, must throw and
+        // must not create a `.git` entry anywhere beside it.
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let file = base.appendingPathComponent("not-a-directory.txt")
+        try Data("plain file\n".utf8).write(to: file)
+        await #expect(throws: (any Error).self) {
+            try await git.initialize(at: file)
+        }
+        #expect(!FileManager.default.fileExists(atPath: file.appendingPathComponent(".git").path))
+        #expect(!FileManager.default.fileExists(atPath: base.appendingPathComponent(".git").path))
+
+        // An empty directory initialises cleanly (the already-covered happy
+        // path, re-pinned next to its invalid siblings).
+        let empty = base.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        let initialized = try await git.initialize(at: empty)
+        #expect(initialized.isRepository)
+        #expect(initialized.branch == "main")
+    }
+
     @Test("commit keeps a repository identity that already exists")
     func commitPreservesExistingIdentity() async throws {
         let root = FileManager.default.temporaryDirectory

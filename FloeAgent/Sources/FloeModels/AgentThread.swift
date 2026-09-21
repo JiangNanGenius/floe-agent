@@ -161,6 +161,10 @@ public struct RunUsageRecord: Sendable, Codable, Hashable, Identifiable {
     public var inputTokens: Int
     public var outputTokens: Int
     public var cacheReadTokens: Int?
+    /// Provider-reported prefix-cache misses (DeepSeek `prompt_cache_miss_tokens`,
+    /// or the uncached remainder of cached input on OpenAI-style wires).
+    /// Persisted with the usage record and surfaced through run-level cache telemetry.
+    public var cacheMissTokens: Int?
     public var cacheWriteTokens: Int?
     public var reasoningTokens: Int?
     public var totalDurationMs: Int?
@@ -177,6 +181,7 @@ public struct RunUsageRecord: Sendable, Codable, Hashable, Identifiable {
         inputTokens: Int,
         outputTokens: Int,
         cacheReadTokens: Int? = nil,
+        cacheMissTokens: Int? = nil,
         cacheWriteTokens: Int? = nil,
         reasoningTokens: Int? = nil,
         totalDurationMs: Int? = nil,
@@ -191,6 +196,7 @@ public struct RunUsageRecord: Sendable, Codable, Hashable, Identifiable {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cacheReadTokens = cacheReadTokens
+        self.cacheMissTokens = cacheMissTokens
         self.cacheWriteTokens = cacheWriteTokens
         self.reasoningTokens = reasoningTokens
         self.totalDurationMs = totalDurationMs

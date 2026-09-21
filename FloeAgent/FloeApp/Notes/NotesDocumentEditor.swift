@@ -137,9 +137,18 @@ struct NotesDocumentEditor: View {
             if document.kind == .mindMap {
                 HStack {
                     headerVisibilityButton
+                    Button("notes.mindmap.addChild", systemImage: "arrow.turn.down.right") { mapTopicActions?.addChild() }
+                        .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                        .disabled(mapTopicActions?.isEnabled != true)
+                        .accessibilityIdentifier("notes.mindmap.addChild")
+                    Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { mapTopicActions?.addSibling() }
+                        .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                        .disabled(mapTopicActions?.isEnabled != true || mapTopicActions?.canAddSibling != true)
+                        .accessibilityIdentifier("notes.mindmap.addSibling")
                     if headerCollapsed { NotesDocumentTabs(session: session) }
                     Spacer(minLength: 0)
                 }.padding(.horizontal, 8).background(.bar)
+                    .buttonStyle(NotesToolbarButtonStyle())
             }
             if document.kind == .office {
                 NotesOfficeView(session: session, document: document,

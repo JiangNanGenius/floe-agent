@@ -205,6 +205,12 @@ struct NotesMindMapWindow: View {
     private func panel(condensed: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
+                Button("notes.mindmap.addChild", systemImage: "arrow.turn.down.right") { topicActions?.addChild() }
+                    .disabled(topicActions?.isEnabled != true)
+                    .accessibilityIdentifier("notes.mindmap.addChild")
+                Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { topicActions?.addSibling() }
+                    .disabled(topicActions?.isEnabled != true || topicActions?.canAddSibling != true)
+                    .accessibilityIdentifier("notes.mindmap.addSibling")
                 Text(session.document?.title ?? "导图").font(.headline).lineLimit(1)
                 Spacer()
                 if condensed {
