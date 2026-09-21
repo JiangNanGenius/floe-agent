@@ -99,6 +99,16 @@ class PortablePreflightFixtureTests(unittest.TestCase):
             target = app / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / 'FloeAgent' / name, target)
+        # This fixture isolates the portable plist/version checks. The real
+        # native-runtime and Office pin gates have their own focused tests and
+        # require a much larger source tree, so keep explicit passing stubs
+        # rather than letting newly added preflight dependencies fail first.
+        (app / 'scripts/audit_native_runtime_free.py').write_text(
+            'print("native-runtime-free fixture passed")\n', encoding='utf-8')
+        (app / 'scripts/bootstrap_office_host.py').write_text(
+            'LOCK = None\n'
+            'def checked_lock(_):\n'
+            '    return {}, {}\n', encoding='utf-8')
         plist_path = app / 'FloeScreenShare/Info.plist'
         plist_path.write_text(transform(plist_path.read_text()))
         git_env = dict(os.environ, GIT_AUTHOR_NAME='Floe Review', GIT_COMMITTER_NAME='Floe Review',

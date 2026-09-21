@@ -34,9 +34,9 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Floe 1.7 internal beta
 
-**Current internal TestFlight: 1.7.0 (214).** Apple VALID, unexpired and IN_BETA_TESTING in the existing private Floe QA group, verified September 20 at 21:32 UTC. TinyEMU/Linux is the main local environment; native Python/Node payloads are excluded. Only focused checks and the cloud App build were performed; device acceptance belongs to the user. [Delivery evidence](docs/qualification/build214-release/README.md).
+**Current internal TestFlight: 1.7.0 (215).** Apple VALID, unexpired and IN_BETA_TESTING in the existing private Floe QA group, verified September 21 at 01:24 UTC. TinyEMU/Linux is the main local environment; native Python/Node payloads are excluded. Device acceptance belongs to the user. [Delivery record](docs/TESTFLIGHT_1.7.0_BETA.md).
 
-**Build 215 is the current upload candidate.** It follows device logs with fixes for local-model tool continuations, cross-task completion, concurrent/cancellable terminals, Git initialization, IDE-owned PDF/Office tabs, Chinese fonts, save-on-close and mind-map dragging. This line describes source status only; it is not installable until the cloud build, upload, Apple processing and Floe QA availability are verified. [Candidate notes](docs/RELEASE_NOTES_1.7.0_BUILD_215.md).
+**Build 216 is the current upload candidate.** It retains the Build 215 feedback repairs and adds release-path compatibility fixes for Office, HTTP qualification and the TinyEMU-era App regression gate. This line describes source status only; it is not installable until the cloud build, upload, Apple processing and Floe QA availability are verified. [Candidate notes](docs/RELEASE_NOTES_1.7.0_BUILD_216.md).
 
 Floe 1.7 upgrades the iPad-first Notes workspace, Office editing, mind maps, speech, image/video workbenches and task-owned environments. TinyEMU provides the main local Linux path; guest package managers own Linux language/tool installation, while WASM remains a separate compatibility route. See the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [migration guide](docs/FLOE_1_7_MIGRATION.md), [build boundaries](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [version archive](docs/README.md).
 

@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 216 keeps all Build 215 feedback repairs and stabilizes the release path. Please retest local-model tool calls through a second continuation, cross-task lookup through a final answer, Git initialization, concurrent terminal commands and cancellation, IDE-owned PDF/Office tabs, Chinese text and save-on-close, plus mind-map dragging. TinyEMU remains the primary Linux environment; native Python, Node and Ruby payloads are not bundled. Device behavior and performance remain for your acceptance.",
+  "zh-Hans": "Build 216 保留 Build 215 的全部反馈修复，并稳定发布链路。请重点复测：本地模型调用工具后的第二轮续写、跨任务检索直到最终答复、Git 初始化、多个任务并行运行及取消终端命令、IDE 内 PDF/Office 标签、中文显示与关闭前保存，以及思维导图拖动。TinyEMU 仍是主要 Linux 环境，原生 Python、Node、Ruby 不打进应用。真机行为和性能由你验收。"
+}
