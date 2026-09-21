@@ -95,17 +95,17 @@ struct OfficeRoutingTests {
         for path in ["报告.docx", "book.docm", "doc.doc", "table.xlsx", "x.xlsm", "x.xls",
                      "deck.pptx", "d.pptm", "d.ppt", "note.odt", "s.ods", "p.odp",
                      "letter.rtf", "dir/子表.XLSX"] {
-            #expect(WorkspaceFileRouter.destination(for: path) == .officeEditor, path)
-            #expect(!WorkspaceFileRouter.allowsCodeEditor(path), path)
+            #expect(WorkspaceFileRouter.destination(for: path) == .officeEditor, Comment(rawValue: path))
+            #expect(!WorkspaceFileRouter.allowsCodeEditor(path), Comment(rawValue: path))
         }
     }
 
     @Test("Office bytes can never reach the code workbench or the document viewer")
     func officeNeverRoutesToCodeOrViewer() {
         for path in ["a.docx", "b.xlsx", "c.pptx"] {
-            #expect(WorkspaceFileRouter.destination(for: path) != .codeEditor, path)
-            #expect(WorkspaceFileRouter.destination(for: path) != .documentViewer, path)
-            #expect(WorkspaceFileRouter.destination(for: path) != .quickLook, path)
+            #expect(WorkspaceFileRouter.destination(for: path) != .codeEditor, Comment(rawValue: path))
+            #expect(WorkspaceFileRouter.destination(for: path) != .documentViewer, Comment(rawValue: path))
+            #expect(WorkspaceFileRouter.destination(for: path) != .quickLook, Comment(rawValue: path))
         }
         #expect(WorkspaceFileRouter.destination(for: "main.swift") == .codeEditor)
         #expect(WorkspaceFileRouter.destination(for: "spec.pdf") == .documentViewer)
