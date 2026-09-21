@@ -13,7 +13,8 @@ and [`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../../docs/FLOE_LINUX_GU
 | --- | --- |
 | `runner/floe_exec.c` | The guest runner: FLOE-EXEC framing, chunked envelopes, PTY sessions, background services, cancellation |
 | `runner/floe_clock.h` | Bounded `/proc/cmdline` reader + strict `floe.epoch=` parser (pure; no clock side effects) |
-| `runner/Makefile` | Host build (`host`), static riscv64 cross build (`riscv64`) and the pure clock check (`check-clock`) |
+| `runner/floe_net.h` | First-boot network plan: resolver/interfaces/git-safe-directory renderers and the `net=` status vocabulary (included into the static runner; pure native check via `check-net`, the ioctl/probe side is compiled out) |
+| `runner/Makefile` | Host build (`host`), static riscv64 cross build (`riscv64`) and the pure clock/network checks (`check-clock`, `check-net`) |
 | `image/floe-guest-init` | POSIX sh startup/mount script (pseudo-fs + 9p) |
 | `image/install-into-image.sh` | Loop-mount injector for the whole-disk ext4 guest image (CI helper) |
 | `tests/host_protocol_check.sh` + `tests/HostProtocolCheck.swift` | Real-stdio protocol check: compiles the repo's real `LinuxGuestFraming` and drives the runner through real child processes |

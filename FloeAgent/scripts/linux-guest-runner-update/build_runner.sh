@@ -10,7 +10,9 @@
 #   floe-exec-riscv64        static riscv64 runner (installed into the image)
 #   floe-exec-riscv64.o      relocatable object (relink material)
 #   runner-sha256.txt        sha256 of the shipped binary
-#   runner-source-sha256.txt sha256 of floe_exec.c / floe_clock.h / Makefile
+#   runner-source-sha256.txt sha256 of every runner source in the static build:
+#                            floe_exec.c, each runner-owned header it quotes
+#                            (floe_clock.h, floe_net.h, ...) and Makefile
 #   runner-constants.txt     protocol/version/limit constants as JSON
 #   toolchain.txt            compiler, exact cross packages, link command, hashes
 #   toolchain-versions.txt   owning packages + source versions for the actual
@@ -118,8 +120,36 @@ grep -q '^binary ' "$out/toolchain-versions.txt" \
     || die "toolchain-versions.txt resolved no owning packages"
 
 sha256sum "$out/floe-exec-riscv64" | tee "$out/runner-sha256.txt"
-sha256sum "$runner_dir/floe_exec.c" "$runner_dir/floe_clock.h" "$runner_dir/Makefile" \
-    >"$out/runner-source-sha256.txt"
+# Hash the COMPLETE runner source set for the exact-source digest: the
+# translation unit, every runner-owned header it quotes-includes (these enter
+# the static build through -I"$runner_dir", so they are corresponding source),
+# and the Makefile. The list is derived from floe_exec.c's own includes rather
+# than hand-maintained, so a new header (e.g. floe_net.h) can never silently
+# leave the digest/relink contract. Missing files fail the build here.
+mapfile_compat() {
+    # Portable stand-in for bash-4 mapfile (macOS still ships bash 3.2).
+    local __out="$1" __line
+    eval "$__out=()"
+    while IFS= read -r __line; do
+        [ -n "$__line" ] && eval "$__out+=(\"\$__line\")"
+    done
+}
+mapfile_compat runner_sources < <(
+python3 - "$runner_dir/floe_exec.c" "$script_dir" <<'SOURCESET_PY'
+import sys
+sys.path.insert(0, sys.argv[2])
+import pipeline_contract
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    print("\n".join(pipeline_contract.runner_source_set(handle.read())))
+SOURCESET_PY
+)
+[ "${#runner_sources[@]}" -ge 3 ] || die "runner source set resolved to fewer than floe_exec.c+headers+Makefile"
+missing=0
+for member in "${runner_sources[@]}"; do
+    [ -f "$runner_dir/$member" ] || { printf 'build_runner: ERROR: missing runner source %s\n' "$member" >&2; missing=1; }
+done
+[ "$missing" -eq 0 ] || die "runner source set names a file that is not present"
+( cd "$runner_dir" && sha256sum "${runner_sources[@]}" ) >"$out/runner-source-sha256.txt"
 
 {
     printf 'source_commit=%s\n' "$(git -C "$repo" rev-parse HEAD)"

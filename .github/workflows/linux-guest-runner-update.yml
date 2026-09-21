@@ -6,8 +6,9 @@
 #   1. preflight (read-only, also the only thing a registration push does)
 #   2. pipeline self-check (synthetic, no network)
 #   3. cross-build the static riscv64 protocol-3 runner from the exact
-#      dispatch target commit (+ LGPL-2.1 §6 relink object), pinning the cross
-#      toolchain to the exact versions the base component used
+#      dispatch target commit (complete source set floe_exec.c + every quoted
+#      runner header such as floe_net.h, + LGPL-2.1 §6 relink object), pinning
+#      the cross toolchain to the exact versions the base component used
 #   4. fetch + verify the base image archive, replace ONLY floe-exec in the
 #      whole-disk ext4 via the repo's install-into-image.sh
 #   5. boot the updated image once under the real TinyEMU host and run the

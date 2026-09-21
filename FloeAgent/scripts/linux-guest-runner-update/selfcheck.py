@@ -45,6 +45,8 @@ _MANIFEST_WRITER = None
 
 RUNNER_SOURCE = """\
 /* synthetic runner source for the pipeline self-check */
+#include "floe_clock.h"
+#include "floe_net.h"
 #define FLOE_MARK 0x1e
 #define FLOE_CANCEL 0x03
 #define FLOE_PROTOCOL_VERSION 3
@@ -52,6 +54,7 @@ RUNNER_SOURCE = """\
 #define MAX_CONCURRENT_COMMANDS 8
 #define MAX_CONCURRENT_SESSIONS 4
 """
+RUNNER_NET_HEADER = "/* synthetic first-boot networking header for the pipeline self-check */\n"
 ENGINE_SOURCE = """\
 public enum LinuxGuestImageArtifact {
     public enum Role: String, Codable, Sendable {
@@ -234,6 +237,24 @@ def check_contract(out):
     expect(guest_protocol_check.CAPS_FRAME.search(b"echo FLOE-CAPS t runner=1.0 protocol=3") is None,
            "guest check ignores an unframed echo")
 
+    # The runner source set is derived from floe_exec.c's own quoted includes,
+    # so a new participating header (floe_net.h) can never be silently dropped
+    # from the digest/relink contract.
+    expect(pipeline_contract.local_includes(RUNNER_SOURCE) == ["floe_clock.h", "floe_net.h"],
+           "local quoted includes are discovered (floe_clock.h, floe_net.h)")
+    expect(pipeline_contract.runner_source_set(RUNNER_SOURCE)
+           == ("floe_exec.c", "floe_clock.h", "floe_net.h", "Makefile"),
+           "runner source set is floe_exec.c + every quoted header + Makefile")
+    expect(pipeline_contract.local_includes('#  include <stdio.h>\n#include "a.h"\n') == ["a.h"],
+           "system <> includes are not treated as runner sources")
+    digest_record = ("%s  floe_exec.c\n%s  /build/floe_net.h\n"
+                     % (hashlib.sha256(RUNNER_SOURCE.encode()).hexdigest(),
+                        hashlib.sha256(RUNNER_NET_HEADER.encode()).hexdigest()))
+    parsed_record = pipeline_contract.parse_source_sha256_record(digest_record)
+    expect(parsed_record == {"floe_exec.c": hashlib.sha256(RUNNER_SOURCE.encode()).hexdigest(),
+                             "floe_net.h": hashlib.sha256(RUNNER_NET_HEADER.encode()).hexdigest()},
+           "runner-source-sha256 record parses with absolute paths reduced to basenames")
+
 
 def check_guest_protocol(out):
     script_path = os.path.join(out, "p3-script.txt")
@@ -335,8 +356,14 @@ def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="
     paths["runner_obj"] = runner_obj
     runner_sha256 = sha(runner_bin, "sha256")
     write(os.path.join(runner_out, "runner-sha256.txt"), "%s  floe-exec-riscv64\n" % runner_sha256)
+    # Exact-source digest manifest for the complete derived source set.
+    clock_header = "/* synthetic clock */\n"
+    makefile = "riscv64:\n\t@true\n"
+    source_fixture = {"floe_exec.c": RUNNER_SOURCE, "floe_clock.h": clock_header,
+                      "floe_net.h": RUNNER_NET_HEADER, "Makefile": makefile}
     write(os.path.join(runner_out, "runner-source-sha256.txt"),
-          "%s  floe_exec.c\n" % hashlib.sha256(RUNNER_SOURCE.encode()).hexdigest())
+           "".join("%s  %s\n" % (hashlib.sha256(payload.encode()).hexdigest(), name)
+                   for name, payload in source_fixture.items()))
     write(os.path.join(runner_out, "runner-constants.txt"),
           json.dumps({"runner_version": "2.0.0", "protocol": 3, "max_commands": 8,
                       "max_sessions": 4}, indent=2) + "\n")
@@ -362,9 +389,7 @@ def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="
           "    var artifactSHA512: String\n"
           "    var artifactBytes: Int64\n"
           "}\n")
-    for name, payload in (("floe_exec.c", RUNNER_SOURCE),
-                          ("floe_clock.h", "/* synthetic clock */\n"),
-                          ("Makefile", "riscv64:\n\t@true\n")):
+    for name, payload in source_fixture.items():
         write(os.path.join(repo, "FloeAgent/LinuxGuest/runner", name), payload)
     paths["repo"] = repo
     paths["image_dir"] = image_dir
@@ -480,10 +505,28 @@ def check_package(out):
     import tarfile
     relink = os.path.join(paths["out"], "linux-guest-runner-relink-floe-linux-guest-selfcheck-1.tar")
     with tarfile.open(relink) as tar:
-        names = sorted(tar.getnames())
-    for name in ("floe_exec.c", "floe_clock.h", "Makefile", "floe-exec-riscv64.o", "toolchain.txt",
-                 "runner-constants.txt", "RELINK.md"):
+        members = {member.name: member for member in tar.getmembers()}
+        names = sorted(members)
+        # The relink header is byte-identical to the target-commit checkout.
+        relink_net_bytes = tar.extractfile(members["floe_net.h"]).read() if "floe_net.h" in members else None
+        relink_md_bytes = tar.extractfile(members["RELINK.md"]).read() if "RELINK.md" in members else b""
+    for name in ("floe_exec.c", "floe_clock.h", "floe_net.h", "Makefile", "floe-exec-riscv64.o",
+                 "toolchain.txt", "runner-constants.txt", "runner-source-sha256.txt", "RELINK.md"):
         expect(name in names, "relink archive carries %s" % name)
+    expect(relink_net_bytes == open(os.path.join(paths["repo"], "FloeAgent/LinuxGuest/runner/floe_net.h"),
+                                    "rb").read(),
+           "relink floe_net.h is byte-identical to the target commit")
+    offer_text = open(os.path.join(paths["out"], "SOURCE-OFFER.md"), encoding="utf-8").read()
+    expect("floe_net.h" in offer_text and "runner-source-sha256.txt" in offer_text,
+           "SOURCE-OFFER names floe_net.h and the exact-source digest manifest")
+    expect("floe_net.h" in relink_md_bytes.decode(),
+           "RELINK.md names the complete source set including floe_net.h")
+    source_members = distribution.get("runnerSource", {}).get("members", [])
+    expect([entry["name"] for entry in source_members]
+           == ["floe_exec.c", "floe_clock.h", "floe_net.h", "Makefile"],
+           "distribution.runnerSource records the complete source set")
+    for entry in source_members:
+        expect(len(entry.get("sha256", "")) == 64, "distribution.runnerSource records a sha256 per member")
     ref = os.path.join(paths["out"], "linux-guest-reused-source-references-floe-linux-guest-selfcheck-1.tar")
     with tarfile.open(ref) as tar:
         ref_names = sorted(tar.getnames())
@@ -524,6 +567,39 @@ def check_package(out):
     no_origin = make_fixture(os.path.join(out, "noorigin"), engine_source=ENGINE_SOURCE_NO_ORIGIN)
     args, env = package_env(no_origin, base_toolchain)
     expect(run_package(args, env).returncode != 0, "engine without a compatible-origin field fails closed")
+
+    # --- floe_net.h exact-source contract fail-closed cases -----------------
+    # (a) runner-source-sha256.txt that omits floe_net.h must fail.
+    omitted_paths = make_fixture(os.path.join(out, "netomitted"))
+    omitted_record = "".join(
+        "%s  %s\n" % (hashlib.sha256(payload.encode()).hexdigest(), name)
+        for name, payload in (("floe_exec.c", RUNNER_SOURCE), ("floe_clock.h", "/* synthetic clock */\n"),
+                              ("Makefile", "riscv64:\n\t@true\n")))
+    write(os.path.join(omitted_paths["runner_out"], "runner-source-sha256.txt"), omitted_record)
+    args, env = package_env(omitted_paths, base_toolchain)
+    expect(run_package(args, env).returncode != 0,
+           "runner-source-sha256 that omits floe_net.h fails closed")
+
+    # (b) a digest that does not match the target-commit file must fail.
+    digest_drift_paths = make_fixture(os.path.join(out, "netdrift"))
+    drift_record = "".join(
+        "%s  %s\n" % (hashlib.sha256(payload.encode()).hexdigest(), name)
+        for name, payload in (("floe_exec.c", RUNNER_SOURCE),
+                              ("floe_clock.h", "/* synthetic clock */\n"),
+                              ("floe_net.h", "/* synthetic clock */\n"),
+                              ("Makefile", "riscv64:\n\t@true\n")))
+    write(os.path.join(digest_drift_paths["runner_out"], "runner-source-sha256.txt"), drift_record)
+    args, env = package_env(digest_drift_paths, base_toolchain)
+    expect(run_package(args, env).returncode != 0,
+           "a wrong floe_net.h digest in runner-source-sha256 fails closed")
+
+    # (c) floe_net.h missing from the checked-out runner dir must fail even if
+    # the digest record names it.
+    missing_paths = make_fixture(os.path.join(out, "netmissing"))
+    os.remove(os.path.join(missing_paths["repo"], "FloeAgent/LinuxGuest/runner/floe_net.h"))
+    args, env = package_env(missing_paths, base_toolchain)
+    expect(run_package(args, env).returncode != 0,
+           "floe_net.h absent from the target checkout fails closed")
 
     odd_paths = make_fixture(os.path.join(out, "oddorigin"),
                              engine_source=ENGINE_SOURCE_ODD_ORIGIN_NAME)

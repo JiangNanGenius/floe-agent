@@ -387,26 +387,66 @@ def main():
     relink_name = "linux-guest-runner-relink-%s.tar" % tag
     relink_path = os.path.join(args.out, relink_name)
     runner_dir = os.path.join(args.repo, "FloeAgent/LinuxGuest/runner")
+
+    # The complete corresponding-source set for the static runner: floe_exec.c
+    # plus every runner-owned header it quotes-includes (each enters the build
+    # through -I<runner dir>; floe_net.h is the one that configures first-boot
+    # networking) and the Makefile. Derived from floe_exec.c's own includes so
+    # a new header cannot be omitted from the digest/archive contract.
+    floe_exec_path = os.path.join(runner_dir, "floe_exec.c")
+    if not require(os.path.isfile(floe_exec_path), "floe_exec.c is in the target-commit checkout"):
+        return 1
+    with open(floe_exec_path, "r", encoding="utf-8") as handle:
+        floe_exec_text = handle.read()
+    source_members = pipeline_contract.runner_source_set(floe_exec_text)
+    require("floe_net.h" in source_members,
+            "runner source set includes floe_net.h (first-boot networking participates in the static build)")
+
+    # Exact-source digest contract: runner-source-sha256.txt from the build must
+    # (a) exist, (b) name the complete derived source set, and (c) match the
+    # target-commit files byte-for-byte. Omitting any member fails packaging.
+    source_digest_path = os.path.join(args.runner_out, "runner-source-sha256.txt")
+    source_digests = {}
+    if require(os.path.isfile(source_digest_path), "runner-source-sha256.txt exists"):
+        source_digests = pipeline_contract.parse_source_sha256_record(
+            open(source_digest_path, "r", encoding="utf-8").read())
+        require(sorted(source_digests) == sorted(source_members),
+                "runner-source-sha256 records exactly %s (got %s)"
+                % (list(source_members), sorted(source_digests)))
+        for member in source_members:
+            member_path = os.path.join(runner_dir, member)
+            if not require(os.path.isfile(member_path), "runner source member %s is present" % member):
+                continue
+            actual = sha(member_path, "sha256")
+            require(source_digests.get(member) == actual,
+                    "runner-source-sha256 digest for %s matches the target-commit file byte-for-byte" % member)
+    if failures:
+        return 1
+
+    source_list_md = ", ".join("`%s`" % name for name in source_members)
     relink_md = ("# Relink material (LGPL-2.1 §6)\n\n"
                  "The shipped runner `floe-exec-riscv64` (sha256 %s) is statically linked against glibc.\n"
-                 "This archive carries the complete runner source (MPL-2.0), the relocatable object\n"
-                 "`floe-exec-riscv64.o`, the exact link command in `toolchain.txt`, the protocol/limit\n"
-                 "constants in `runner-constants.txt`, and the digest that names the standalone runner\n"
-                 "inside the image archive, so the runner can be relinked against a modified glibc. The\n"
-                 "corresponding glibc/toolchain source is the Ubuntu cross toolchain recorded in\n"
-                 "`toolchain.txt`; its source is distributed by the base component release %s (toolchain\n"
-                 "source asset, referenced verbatim by this update after the version comparison in the\n"
-                 "reused-source references — see SOURCE-OFFER.md) because the toolchain packages are\n"
-                 "unchanged.\n"
-                 % (runner_sha256, base_tag))
+                 "This archive carries the complete corresponding runner source (MPL-2.0): %s; the\n"
+                 "relocatable object `floe-exec-riscv64.o`; the exact link command in `toolchain.txt`;\n"
+                 "the protocol/limit constants in `runner-constants.txt`; the per-source exact-source\n"
+                 "digests in `runner-source-sha256.txt`; and the digest that names the standalone runner\n"
+                 "inside the image archive, so the runner can be relinked against a modified glibc. Every\n"
+                 "packaged source file is byte-identical to the target commit %s and matches\n"
+                 "`runner-source-sha256.txt`. The corresponding glibc/toolchain source is the Ubuntu cross\n"
+                 "toolchain recorded in `toolchain.txt`; its source is distributed by the base component\n"
+                 "release %s (toolchain source asset, referenced verbatim by this update after the version\n"
+                 "comparison in the reused-source references — see SOURCE-OFFER.md) because the toolchain\n"
+                 "packages are unchanged.\n"
+                 % (runner_sha256, source_list_md, target[:12], base_tag))
     staging = os.path.join(args.out, ".relink-staging")
     os.makedirs(staging, exist_ok=True)
-    for source, dest in ((os.path.join(runner_dir, "floe_exec.c"), "floe_exec.c"),
-                         (os.path.join(runner_dir, "floe_clock.h"), "floe_clock.h"),
-                         (os.path.join(runner_dir, "Makefile"), "Makefile"),
-                         (runner_obj, "floe-exec-riscv64.o"),
+    for member in source_members:
+        with open(os.path.join(runner_dir, member), "rb") as src, \
+                open(os.path.join(staging, member), "wb") as dst:
+            dst.write(src.read())
+    for source, dest in ((runner_obj, "floe-exec-riscv64.o"),
                          (os.path.join(args.runner_out, "toolchain.txt"), "toolchain.txt"),
-                         (os.path.join(args.runner_out, "runner-source-sha256.txt"), "runner-source-sha256.txt"),
+                         (source_digest_path, "runner-source-sha256.txt"),
                          (runner_constants_path, "runner-constants.txt")):
         with open(source, "rb") as src, open(os.path.join(staging, dest), "wb") as dst:
             dst.write(src.read())
@@ -415,7 +455,20 @@ def main():
     with tarfile.open(relink_path, "w") as tar:
         for name in sorted(os.listdir(staging)):
             tar.add(os.path.join(staging, name), arcname=name)
-    ok("relink archive %s" % relink_name)
+    # Re-read the archive: every source member must be byte-identical to the
+    # target-commit file (not just present), so the exact-source claim is
+    # verified on what the release step will actually upload.
+    with tarfile.open(relink_path, "r") as tar:
+        packaged = {member.name: member for member in tar.getmembers()}
+        for member in source_members:
+            entry = packaged.get(member)
+            if require(entry is not None and entry.isfile(), "relink archive carries %s" % member):
+                extracted = tar.extractfile(entry).read()
+                with open(os.path.join(runner_dir, member), "rb") as handle:
+                    require(extracted == handle.read(),
+                            "relink archive %s is byte-identical to the target commit" % member)
+        require("runner-source-sha256.txt" in packaged, "relink archive carries runner-source-sha256.txt")
+    ok("relink archive %s (complete source set: %s)" % (relink_name, ", ".join(source_members)))
 
     # --- reused-source references (fresh API digests, no re-upload) ----------
     ref_name = "linux-guest-reused-source-references-%s.tar" % tag
@@ -424,14 +477,14 @@ def main():
         "schema": "floe-linux-guest-reused-source-references/v1",
         "recordedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "baseRelease": {"tag": base_tag, "url": env["BASE_RELEASE_URL"]},
-        "reason": ("the runner update changes only floe_exec.c/floe_clock.h/Makefile output; the Linux "
+        "reason": ("the runner update changes only the runner source set (%s) and its output; the Linux "
                    "kernel, bbl, Debian userland and cross toolchain are byte-identical to the base "
                    "component, so their corresponding-source assets are served by the base release "
                    "(MPL-2.0/GPL-2.0/LGPL-2.1/BSD-3-Clause all permit verbatim redistribution; the base "
                    "release remains published). Digests below were re-fetched from the GitHub API at "
                    "package time, not copied from old notes. The toolchain reuse is additionally bound to "
                    "the version comparison recorded here; without a match this packaging fails instead of "
-                   "claiming coverage it cannot show."),
+                   "claiming coverage it cannot show." % ", ".join(source_members)),
         "assets": {},
     }
     toolchain_comparison = None
@@ -552,24 +605,28 @@ def main():
     offer = ("# Corresponding source offer — Floe Linux guest runner update `%s`\n\n"
              "## License mapping\n\n"
              "| Component | License | Source |\n| --- | --- | --- |\n"
-             "| Floe runner (new, protocol 3) | MPL-2.0 | `%s` in this release + `%s` inside the image archive |\n"
+             "| Floe runner (new, protocol 3) | MPL-2.0 | complete runner source %s in this release + `%s` inside the image archive |\n"
              "| glibc (statically linked into the runner) | LGPL-2.1 | relink object + link command in `%s`; "
              "toolchain source served by base release %s (unchanged packages, version comparison in `%s`) |\n"
              "| Linux kernel 4.15 (riscv-linux) | GPL-2.0 | base release upstream asset (unchanged, referenced) |\n"
              "| riscv-pk / bbl | BSD-3-Clause | base release upstream asset (unchanged, referenced) |\n"
              "| Debian userland packages | per package | base release Debian source assets (unchanged, referenced) |\n\n"
              "## What changed vs the base\n\n"
-             "Only the runner (`floe_exec.c`, `floe_clock.h`, `Makefile` output). Every other binary in the\n"
+             "Only the runner, rebuilt from the complete corresponding source set %s (each file byte-identical "
+             "to the target commit `%s` and recorded in `runner-source-sha256.txt`). Every other binary in the\n"
              "image is byte-identical to the published base `%s` (whose manifest is a reused, pinned member);\n"
              "the manifest declares `%s` -> `%s` as the verified compatible origin so existing environment\n"
              "disks keep their installed packages. The reused-source archive `%s` carries the\n"
              "base asset URLs plus the digests re-verified at package time. No zero-gap claim is made beyond\n"
              "those verified digests and the recorded cross-toolchain version comparison.\n\n"
              "## Relink (LGPL-2.1 §6)\n\n"
-             "`%s` carries `floe_exec.c`, `floe_clock.h`, `Makefile`, the relocatable object, the exact link\n"
-             "command (`toolchain.txt`), the runner constants (`runner-constants.txt`) and `RELINK.md`.\n"
-             % (image_id, relink_name, RUNNER_MEMBER, relink_name, base_tag, ref_name,
-                origin_contract["field"], predecessor["imageID"], base_tag, ref_name, relink_name))
+             "`%s` carries the complete runner source %s, the relocatable object, the exact link\n"
+             "command (`toolchain.txt`), the runner constants (`runner-constants.txt`), the exact-source\n"
+             "digest manifest (`runner-source-sha256.txt`, one sha256 per source file) and `RELINK.md`.\n"
+             % (image_id, source_list_md, RUNNER_MEMBER, relink_name, base_tag, ref_name,
+                source_list_md, target, base_tag,
+                origin_contract["field"], predecessor["imageID"], ref_name,
+                relink_name, source_list_md))
     with open(os.path.join(args.out, "SOURCE-OFFER.md"), "w", encoding="utf-8") as handle:
         handle.write(offer)
 
@@ -593,6 +650,10 @@ def main():
         "runnerArtifact": {"path": RUNNER_MEMBER, "role": role, "rolePolicy": role_policy,
                            "sha512": runner_sha512, "bytes": runner_bytes,
                            "binarySha256": runner_sha256, "sourceCommit": target},
+        "runnerSource": {"members": [{"name": member, "sha256": source_digests[member]}
+                                    for member in source_members],
+                         "digestManifest": "runner-source-sha256.txt (inside %s)" % relink_name,
+                         "derivedFrom": "quoted #includes of floe_exec.c + Makefile"},
         "runnerCapabilities": caps_payload,
         "predecessorOrigin": {"field": origin_contract["field"],
                               "keys": origin_contract["keys"],

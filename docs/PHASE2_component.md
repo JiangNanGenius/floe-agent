@@ -141,7 +141,20 @@ a dry run cannot produce it.
 ## Licenses and corresponding source
 
 * Runner source (MPL-2.0) travels in the relink archive with the relocatable
-  object, exact link command, constants and `RELINK.md` (LGPL-2.1 §6).
+  object, exact link command, constants and `RELINK.md` (LGPL-2.1 §6). The
+  complete corresponding-source set is **derived from `floe_exec.c`'s own
+  quoted `#include`s** plus the `Makefile`: today it is
+  `floe_exec.c`, `floe_clock.h`, `floe_net.h`, `Makefile` (the first-boot
+  networking header `floe_net.h` enters the static build through `-I`; it did
+  not exist in the pinned base commit, so a runner-only update to a commit
+  whose runner includes it must ship it). Each member is copied into the
+  relink archive byte-identically, re-read and compared with the target-commit
+  checkout, and individually listed with its sha256 in
+  `runner-source-sha256.txt`; the packager fails if the digest manifest omits
+  a member or disagrees with the file bytes. `SOURCE-OFFER.md`, `RELINK.md`
+  and `distribution.json.runnerSource` name the same set. The dispatch
+  preflight additionally fetches every quoted header at the target commit
+  before a run starts.
 * Kernel/bbl/Debian userland are unchanged bytes in the reused disk, so their
   corresponding-source assets are referenced from the published base release
   with digests re-fetched at package time (`REUSED-SOURCES.json`, plus the

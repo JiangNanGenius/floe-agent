@@ -220,6 +220,16 @@ def check_target_commit(repo, base_commit, target):
             require(constants["max_sessions"] >= 2, "runner allows >=2 concurrent PTY sessions")
         for marker in RUNNER_MARKERS:
             require(marker in source, "runner source implements %s" % marker)
+        # Every runner-owned header floe_exec.c quotes (floe_clock.h, floe_net.h,
+        # ...) enters the static build and must exist at the target commit so
+        # the exact-source digest and the LGPL relink archive can carry it.
+        facts["runnerSourceSet"] = list(pipeline_contract.runner_source_set(source))
+        for header in pipeline_contract.local_includes(source):
+            relative = "FloeAgent/LinuxGuest/runner/%s" % header
+            require(gh_file(relative, target) is not None,
+                    "target commit contains runner header %s (included into the static runner build)" % header)
+        require("floe_net.h" in facts["runnerSourceSet"],
+                "runner source set covers floe_net.h (first-boot networking header)")
         base_runner = gh_file("FloeAgent/LinuxGuest/runner/floe_exec.c", base_commit)
         if base_runner:
             require(hashlib.sha256(runner_bytes).hexdigest() != hashlib.sha256(base_runner).hexdigest(),
