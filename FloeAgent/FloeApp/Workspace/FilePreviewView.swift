@@ -577,13 +577,11 @@ struct FilePreviewView: View {
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("file.preview.archive.browse")
             }
-            Button {
-                presentQuickLook()
-            } label: {
-                Label("inspector.preview.quicklook", systemImage: "eye")
+            if isArchiveBrowsable {
+                quickLookButton.buttonStyle(.bordered)
+            } else {
+                quickLookButton.buttonStyle(.borderedProminent)
             }
-            .buttonStyle(isArchiveBrowsable ? .bordered : .borderedProminent)
-            .disabled(!quickLookAvailable)
             if officeEditingAvailable {
                 Button {
                     presentOfficeEditor()
@@ -594,6 +592,19 @@ struct FilePreviewView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Quick Look is the primary action unless the archive browser button
+    /// above it is already the prominent one. The style is chosen with an
+    /// explicit if/else because `.bordered` and `.borderedProminent` are
+    /// different style types and cannot be selected in one ternary.
+    private var quickLookButton: some View {
+        Button {
+            presentQuickLook()
+        } label: {
+            Label("inspector.preview.quicklook", systemImage: "eye")
+        }
+        .disabled(!quickLookAvailable)
     }
 
     @ViewBuilder
