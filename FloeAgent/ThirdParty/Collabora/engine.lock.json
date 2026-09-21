@@ -3,12 +3,12 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "35495484711",
+    "runID": "35601638396",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10599654752,
-    "workflowCommit": "f2d3ae37ba321d47201798099d2c8a38de1d11ed",
-    "archiveSHA256": "2d0afe5150c6914b37add4031aaad4fbd96db47dca8e1c1008d25db8d87a12e0",
-    "executableSHA256": "e59f12780e47c72edd359c830881ccc282044cfada4e6a28aef2e0c2d0bdc4b2",
+    "artifactID": 10638824111,
+    "workflowCommit": "d1e1d59338cb64427cbe50134c7e59b238de85f4",
+    "archiveSHA256": "68489795bcafcb96aceeb147f55fff83d066c7aec84e0131b08b030611c0559a",
+    "executableSHA256": "a0f2a0de52ebb8e71af4d5d492e3e8ad2611cec24e8d43c104caf87bc41fdf44",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "995ec8f685700a8c79281d2e41dc4feee8ae1f01da1c03dc8c96affcf6769cba",
@@ -16,14 +16,13 @@
       "FloeOfficeAttachment.cpp": "281c55eb6ccb6ae85092ade38a7debe30cd2d010e76e0cbbcd3d88bcc42bfde8",
       "FloeOfficeAttachment.hxx": "0fe8268cd8bb8355593d662b1cd19e707a8ea5a03068d359c0ef1edfb67b8a76"
     },
-    "pendingHostRebuild": true,
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "8d18da2345892dfbf098ac114b43d7c2c1e638633e3e15ea40088b338aeef39a",
+    "manifestSHA256": "38ba599e61a64d9e4b9a727e5ba98700aa0ddd5cdcc7b54a92258b525039163f",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "995ec8f685700a8c79281d2e41dc4feee8ae1f01da1c03dc8c96affcf6769cba",
-      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
-      "Info.plist": "afc7a799d3a31e39e287acf0c5489594d63277fc3717faa7d6f1459868b1e9d3"
+      "Info.plist": "afc7a799d3a31e39e287acf0c5489594d63277fc3717faa7d6f1459868b1e9d3",
+      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
     },
     "swiftProbeSHA256": "edadb4a7251e1aae8d3c4cac0a6f3c83b4a148b6345034f11470ee6f4957032f",
     "hostAPI": [
@@ -32,7 +31,7 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Rebuilt in run 35495484711 from f2d3ae37 for the Office close-behind-open lifecycle repair. SOURCE AHEAD OF ARTIFACT: FloeOfficeNative.mm now adds the staged-font catalog fingerprint (profile identity re-runs engine font discovery when the CJK font set changes) and Pencil-only annotation input gating (finger stays navigation). The pinned framework artifact was produced before this source change, so the bootstrap check fails closed until CI rebuilds and re-qualifies the native host; device CJK rendering and physical Pencil behaviour remain unverified.",
+    "note": "Rebuilt and re-qualified in run 35601638396 from d1e1d593 for the device-feedback CJK font and Pencil repair: FloeOfficeNative.mm folds the staged-font catalog fingerprint into the engine profile identity and gates annotation input to Apple Pencil. Host compile/link and the Swift module import probe passed, the engine source and filter patch/overlay are unchanged, and the framework executable is byte-identical to the prior host build. This is framework evidence; App build, TestFlight and physical-device acceptance remain separate.",
     "filterOverlay": {
       "patchSHA256": "4d426890632f0fc72996917f3af268af9c81bb211ff85937999d951c5e341989",
       "sourceFiles": {
@@ -101,17 +100,17 @@
           "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
         }
       },
-      "archiveSHA256": "cecb4f071dcc0bb54d4e5e4c486b709c409e49ff9ae18e865ac455515797f535",
+      "archiveSHA256": "d7aeca1537984c559b0ea126a68cd85d14b52514a64642116cb7f136b68deb85",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "cecb4f071dcc0bb54d4e5e4c486b709c409e49ff9ae18e865ac455515797f535",
+      "selectedArchiveSHA256": "d7aeca1537984c559b0ea126a68cd85d14b52514a64642116cb7f136b68deb85",
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "cecb4f071dcc0bb54d4e5e4c486b709c409e49ff9ae18e865ac455515797f535",
-        "libooxlo.a": "72202c9468752f25dd1e183dabd73faf608c23e4f9ebd3bc793cd10c9657dd5d"
+        "libscfiltlo.a": "d7aeca1537984c559b0ea126a68cd85d14b52514a64642116cb7f136b68deb85",
+        "libooxlo.a": "a885d1792c8ea236746d47fc3c36bd1f42e07dd45147db442ed5cd539e5c9dd3"
       },
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "72202c9468752f25dd1e183dabd73faf608c23e4f9ebd3bc793cd10c9657dd5d",
+          "archiveSHA256": "a885d1792c8ea236746d47fc3c36bd1f42e07dd45147db442ed5cd539e5c9dd3",
           "objectSHA256ByMember": {
             "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77",
             "chartexport.o": "af7da7bb40ebc0af6204c5980be4b5963f96d642f1c37276674b463b4f237168"

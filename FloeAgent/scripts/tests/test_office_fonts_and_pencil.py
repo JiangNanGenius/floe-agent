@@ -10,8 +10,8 @@ native host sources, which the app build compiles and pins:
   discovery instead of reusing a stale cached catalog;
 * the host injects a pointer gate that lets only Apple Pencil ('pen') start a
   stroke while annotation mode is on, leaving finger input to navigation;
-* ``engine.lock.json`` records the exact source hash and states that the
-  pinned framework must be rebuilt before distribution.
+* ``engine.lock.json`` records the exact source hash and the rebuilt,
+  re-qualified framework artifact pinned from the qualifying CI run.
 
 These tests execute the real extracted JavaScript in Node (when available)
 and check the staging/pin contracts by value, not by prose.
@@ -184,18 +184,23 @@ class OfficeHostPinContract(unittest.TestCase):
             "the host source and its recorded pin must stay consistent",
         )
 
-    def test_lock_records_the_required_rebuild(self) -> None:
+    def test_lock_records_the_rebuilt_verified_pin(self) -> None:
         lock = json.loads(LOCK.read_text(encoding="utf-8"))
         pin = lock["qualifiedHostArtifact"]
-        note = pin.get("note", "")
-        self.assertIn("SOURCE AHEAD OF ARTIFACT", note)
-        self.assertIn("rebuild", note.lower())
-        # Machine-readable: the build must fail closed until a rebuilt and
-        # verified artifact replaces this pin (cleared by
-        # scripts/pin_office_host_artifact.py --apply).
-        self.assertIs(pin.get("pendingHostRebuild"), True)
-        # The artifact hashes still describe the previously qualified binary.
-        self.assertIn("archiveSHA256", pin)
+        # The rebuild is done: the source no longer leads the artifact, so the
+        # app build is no longer failed closed by bootstrap_office_host.py.
+        self.assertNotIn("SOURCE AHEAD OF ARTIFACT", pin.get("note", ""))
+        self.assertNotEqual(pin.get("pendingHostRebuild"), True)
+        # The pin names the exact artifact and the run that produced it, which
+        # bootstrap_office_host.py uses to re-download Vendor/Office/<runID>.
+        self.assertRegex(str(pin.get("runID")), r"^\d+$")
+        self.assertRegex(str(pin.get("workflowCommit")), r"^[0-9a-f]{40}$")
+        self.assertEqual(pin["artifactName"], "office-native-host-unsigned")
+        for key in ("archiveSHA256", "manifestSHA256", "executableSHA256"):
+            self.assertRegex(str(pin.get(key)), r"^[0-9a-f]{64}$")
+        self.assertGreater(pin.get("verifiedResourceFiles", 0), 0)
+        self.assertGreater(pin.get("verifiedResourceDirectories", 0), 0)
+        self.assertIn("Headers/FloeOfficeNative.h", pin["frameworkAuxiliarySHA256"])
 
 
 if __name__ == "__main__":

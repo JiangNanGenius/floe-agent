@@ -15,7 +15,7 @@ Usage:
   # From a completed "Qualify Floe Native Office Host" CI run:
   #   gh run download <run-id> -n office-native-host-unsigned -D ./host
   python3 FloeAgent/scripts/pin_office_host_artifact.py \
-      --artifact-zip ./host/OfficeNativeHost.zip [--apply]
+      --artifact-zip ./host/OfficeNativeHost.zip [--artifact-id <id>] [--apply]
 
 `--apply` refuses any artifact whose manifest was not built from the current
 host sources, whose overlay differs, or whose compile/link/Swift-import
@@ -118,21 +118,28 @@ def artifact_hashes(root: Path) -> dict:
     for path in sorted(framework_root.rglob("*")):
         if path.is_file() and path != executable:
             auxiliary[str(path.relative_to(framework_root))] = digest(path)
+    # The build script records runtimeResourceSHA256 relative to the resources
+    # root, so key the artifact's files the same way; otherwise the comparison
+    # below could never match a real artifact.
     resources = {}
+    resource_directories = 0
     resources_root = root / "OfficeRuntimeResources"
     if resources_root.is_dir():
         for path in sorted(resources_root.rglob("*")):
             if path.is_file():
-                resources[str(path.relative_to(root))] = digest(path)
+                resources[str(path.relative_to(resources_root))] = digest(path)
+            elif path.is_dir():
+                resource_directories += 1
     return {
         "manifestSHA256": digest(manifest),
         "executableSHA256": digest(executable),
         "frameworkAuxiliarySHA256": auxiliary,
         "runtimeResourceSHA256": resources,
+        "runtimeResourceDirectories": resource_directories,
     }
 
 
-def apply(lock_path: Path, artifact_zip: Path, note: str) -> int:
+def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = None) -> int:
     lock_path = Path(lock_path)
     lock = json.loads(lock_path.read_text())
     pin = lock["qualifiedHostArtifact"]
@@ -154,6 +161,21 @@ def apply(lock_path: Path, artifact_zip: Path, note: str) -> int:
     declared_resources = manifest.get("runtimeResourceSHA256", {})
     if declared_resources and declared_resources != hashes["runtimeResourceSHA256"]:
         failures.append("the artifact's runtime resources do not match its manifest")
+    # The filter overlay archive is reassembled for every host build, so the
+    # pin must record the rebuilt values in the same key space it already
+    # tracks; bootstrap_office_host.py compares them key by key against the
+    # manifest and would otherwise reject the pinned artifact.
+    rebuilt_overlay = {}
+    if pin.get("filterOverlay"):
+        declared_overlay = manifest.get("filterOverlay")
+        if not isinstance(declared_overlay, dict):
+            failures.append("the artifact carries no filter overlay qualification to record")
+        else:
+            omitted = sorted(key for key in pin["filterOverlay"] if key not in declared_overlay)
+            if omitted:
+                failures.append("the artifact's filter overlay omits " + ", ".join(omitted))
+            else:
+                rebuilt_overlay = {key: declared_overlay[key] for key in pin["filterOverlay"]}
     if failures:
         print("pin: refusing to pin this artifact", file=sys.stderr)
         for failure in failures:
@@ -165,9 +187,15 @@ def apply(lock_path: Path, artifact_zip: Path, note: str) -> int:
     updated["manifestSHA256"] = hashes["manifestSHA256"]
     updated["executableSHA256"] = hashes["executableSHA256"]
     updated["frameworkAuxiliarySHA256"] = hashes["frameworkAuxiliarySHA256"]
+    updated["verifiedResourceFiles"] = len(hashes["runtimeResourceSHA256"])
+    updated["verifiedResourceDirectories"] = hashes["runtimeResourceDirectories"]
     updated["hostSourceSHA256"] = {name: sources[name] for name in pin["hostSourceSHA256"]}
+    if rebuilt_overlay:
+        updated["filterOverlay"] = rebuilt_overlay
     updated["runID"] = manifest.get("runID", pin.get("runID"))
     updated["workflowCommit"] = manifest.get("workflowCommit", pin.get("workflowCommit"))
+    if artifact_id:
+        updated["artifactID"] = artifact_id
     updated["note"] = note
     updated.pop("pendingHostRebuild", None)
     lock["qualifiedHostArtifact"] = updated
@@ -183,6 +211,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lock", default=str(LOCK))
     parser.add_argument("--artifact-zip")
+    parser.add_argument("--artifact-id", type=int,
+                        help="the uploaded artifact id (gh run view --json artifacts)")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--check", action="store_true", help="read-only pin check (default)")
     parser.add_argument(
@@ -198,7 +228,7 @@ def main() -> int:
         if args.apply:
             if not args.artifact_zip:
                 parser.error("--apply requires --artifact-zip")
-            return apply(lock_path, Path(args.artifact_zip), args.note)
+            return apply(lock_path, Path(args.artifact_zip), args.note, args.artifact_id)
         return check(lock_path)
     except ValueError as failure:
         print(f"pin: {failure}", file=sys.stderr)
