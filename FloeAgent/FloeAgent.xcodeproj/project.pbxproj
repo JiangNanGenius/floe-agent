@@ -115,6 +115,7 @@
 		4ADD4F72F382289B6D7101CB /* SSHSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */; };
 		4C2AB5B8C64EC6493BF92520 /* ScreenShareCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A82429B0BF7E6E52C6B4A8C /* ScreenShareCenter.swift */; };
 		4C337AC9C80DE98A41054F60 /* BackgroundRunCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D916CCF8A7BB2EDB41913DD /* BackgroundRunCoordinator.swift */; };
+		4C6D341323D93B1251394C2D /* ArchiveBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73DFAEDB946E98188CAB234D /* ArchiveBrowserView.swift */; };
 		4DA4FE4D075259455908EC22 /* PDFOperationJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 036B56AC987CE799669752B9 /* PDFOperationJournal.swift */; };
 		504258FC47B23F164C439211 /* MediaEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */; };
 		51013E3CE31A8318EDF57DA7 /* CanvasSavedImageBatchCommitPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8EBFAB4ED3E3A0AC4E178A /* CanvasSavedImageBatchCommitPlanner.swift */; };
@@ -248,6 +249,7 @@
 		B3B23C39470308057F0D0761 /* IOSSystemShellBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */; };
 		B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */; };
 		B64AAD73B34ED0DC62DB552E /* commandDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = 0DE3488753123247EB0D9C9B /* commandDictionary.plist */; };
+		B650D55F015D7D23433E48D2 /* LinuxImageInstallCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98ED36DE4E8282455107F56F /* LinuxImageInstallCard.swift */; };
 		B6A8E8EF99A3CF38AB4684FF /* WorkspaceFileRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA0C2CAAB89E1162F2821B5 /* WorkspaceFileRouter.swift */; };
 		B7663C049754E27F2A652BD5 /* IDEGitHubActionsPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B91CD5A983CE9340539D00A0 /* IDEGitHubActionsPolicy.swift */; };
 		B850872108F008D942A08193 /* BrowserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D499B038C15DC8EA198B669A /* BrowserModels.swift */; };
@@ -297,6 +299,7 @@
 		D235FC7B7E50E4FD24FA01A6 /* NoteFileImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C1ABF02CBBFDC44F9B0577 /* NoteFileImporter.swift */; };
 		D27117ADEB48A630EEF5C7E2 /* DiagnosticsAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */; };
 		D280F700D57E336852039D32 /* PDFOperationSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */; };
+		D2DDABD333E6E9E1F0186ADB /* IDESidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DC1B32CC8B563333858CC18 /* IDESidebar.swift */; };
 		D3C48B06130B128E68B9D7BE /* dashD.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 293AE960803DF52F2523348D /* dashD.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D726802E186D86AE6DE707BA /* NotesTextLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB89286479C930C2ED16EFF6 /* NotesTextLayout.swift */; };
 		D75EF5BED6075C184EC0EC41 /* DocumentConversionTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BB114D01B97A798547225F0 /* DocumentConversionTool.swift */; };
@@ -521,6 +524,7 @@
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
 		4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsCenter.swift; sourceTree = "<group>"; };
 		4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeWorkspaceAttachmentPicker.swift; sourceTree = "<group>"; };
+		4DC1B32CC8B563333858CC18 /* IDESidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDESidebar.swift; sourceTree = "<group>"; };
 		4E430B5CA06ACEF487B5478F /* IDERunSourceStaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDERunSourceStaging.swift; sourceTree = "<group>"; };
 		5043AD7DE6FDAD5AD4A95D1A /* GitHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubSettingsView.swift; sourceTree = "<group>"; };
 		50BA473C0A70CA3815EF338B /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
@@ -574,6 +578,7 @@
 		725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideUITests.swift; sourceTree = "<group>"; };
 		72AD5C6F2C0701FB9F8D5C2A /* WorkspaceFileType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceFileType.swift; sourceTree = "<group>"; };
 		734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProtocolTests.swift; sourceTree = "<group>"; };
+		73DFAEDB946E98188CAB234D /* ArchiveBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveBrowserView.swift; sourceTree = "<group>"; };
 		75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeTheme.swift; sourceTree = "<group>"; };
 		760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkStatusMonitor.swift; sourceTree = "<group>"; };
 		7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSkillCreator.swift; sourceTree = "<group>"; };
@@ -622,6 +627,7 @@
 		97B9B3602FD264F0C21CE627 /* UsageStatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStatisticsView.swift; sourceTree = "<group>"; };
 		981B8A91A33287F0FDC3129C /* lodash.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = lodash.min.js; sourceTree = "<group>"; };
 		98C3AC8AABB6B8DA28928707 /* LinuxComponentUpdatePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxComponentUpdatePolicy.swift; sourceTree = "<group>"; };
+		98ED36DE4E8282455107F56F /* LinuxImageInstallCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxImageInstallCard.swift; sourceTree = "<group>"; };
 		98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARArchiveService.swift; sourceTree = "<group>"; };
 		9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		9C41B8992C84C7B27CF73906 /* ComposerReturnField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReturnField.swift; sourceTree = "<group>"; };
@@ -950,6 +956,7 @@
 		19EE8B16BC5E1462CE6B18DF /* Workspace */ = {
 			isa = PBXGroup;
 			children = (
+				73DFAEDB946E98188CAB234D /* ArchiveBrowserView.swift */,
 				891BEBD07BB7F67542319E7C /* Canvas3DDirectorView.swift */,
 				63EB5024B1FD6F3B9E73BBBF /* CanvasAgentTools.swift */,
 				8E8EBFAB4ED3E3A0AC4E178A /* CanvasSavedImageBatchCommitPlanner.swift */,
@@ -968,6 +975,7 @@
 				056D48997010E93B1EA2BD84 /* IDELanguageRunPolicy.swift */,
 				6B4C5A9025E3F2EFAD8D1CE6 /* IDELanguageRunView.swift */,
 				4E430B5CA06ACEF487B5478F /* IDERunSourceStaging.swift */,
+				4DC1B32CC8B563333858CC18 /* IDESidebar.swift */,
 				A67BD29EB5A04264BB080209 /* IDEWorkbenchState.swift */,
 				72437E7E364CC498927E9E10 /* IDEWorkbenchWebView.swift */,
 				2CA3163CD02BDC8D4255197F /* IDEWorkspaceTabs.swift */,
@@ -1203,6 +1211,7 @@
 		767A8A677CD42C54269BAEC2 /* Terminal */ = {
 			isa = PBXGroup;
 			children = (
+				98ED36DE4E8282455107F56F /* LinuxImageInstallCard.swift */,
 				09130318B26A8CC203740EA0 /* LocalTerminalView.swift */,
 				605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */,
 				9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */,
@@ -1869,6 +1878,7 @@
 				9480F3B70B2928BD0DAD3631 /* AppleSystemTools.swift in Sources */,
 				1025E15EE1084740B1DB0D0A /* ApprovalCardView.swift in Sources */,
 				53C5DF929A29A202B41358EA /* ApprovalModelBackend.swift in Sources */,
+				4C6D341323D93B1251394C2D /* ArchiveBrowserView.swift in Sources */,
 				67E0B11F77FD1726248D939B /* ArchiveCompressedBridge.swift in Sources */,
 				C7B7EEE61A3D6CEC98A41E7B /* AssistantMessageView.swift in Sources */,
 				6E35ADC25DC97B976CA965E9 /* AudioTranscribeTool.swift in Sources */,
@@ -1958,6 +1968,7 @@
 				93988B422674C07884228520 /* IDELanguageRunPolicy.swift in Sources */,
 				896228729C07DED7D28B1630 /* IDELanguageRunView.swift in Sources */,
 				B39E4B81FF77201F28FB7048 /* IDERunSourceStaging.swift in Sources */,
+				D2DDABD333E6E9E1F0186ADB /* IDESidebar.swift in Sources */,
 				9F8F0774BA9059D0D304F7C1 /* IDEWorkbenchState.swift in Sources */,
 				F86D19232FB8E1F4E6CEE0D0 /* IDEWorkbenchWebView.swift in Sources */,
 				1003F59DCF2B9F72C6831484 /* IDEWorkspaceTabs.swift in Sources */,
@@ -1969,6 +1980,7 @@
 				4838BB3738C24617246E8E50 /* LinuxComponentUpdatePolicy.swift in Sources */,
 				DBC1FDCC4AB616469B580A7A /* LinuxGuestBackend.swift in Sources */,
 				6973F414B96F2DD9372BF007 /* LinuxGuestImageDownloader.swift in Sources */,
+				B650D55F015D7D23433E48D2 /* LinuxImageInstallCard.swift in Sources */,
 				C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */,
 				E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */,
 				393897D35D5CD5D902B66450 /* LocalServiceTool.swift in Sources */,
@@ -2228,7 +2240,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -2275,7 +2287,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2359,7 +2371,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2405,7 +2417,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2516,7 +2528,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2546,7 +2558,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -2594,7 +2606,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2640,7 +2652,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 216;
+				CURRENT_PROJECT_VERSION = 217;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
