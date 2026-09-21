@@ -13,6 +13,9 @@
 import SwiftUI
 import FloeCore
 import FloeWorkspace
+// `CancellationToken` is declared in FloeTools and is part of the archive
+// service's public API; without the import the app target cannot name it.
+import FloeTools
 
 struct ArchiveBrowserView: View {
     let relativePath: String

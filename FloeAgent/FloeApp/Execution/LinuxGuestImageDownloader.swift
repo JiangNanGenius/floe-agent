@@ -41,6 +41,23 @@ private final class LinuxImageDownloadRedirectGuard: NSObject, URLSessionTaskDel
 }
 
 struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
+    /// Important-usage capacity of the download volume, falling back to the
+    /// coarse free-space value and then to `-1` when the volume cannot report
+    /// capacity, so an unknown value never blocks a download. This mirrors the
+    /// installer's own pre-write check (`LinuxGuestVolumeSpace` is internal to
+    /// FloeExecution) and keeps the download stage honest about space.
+    static func availableImportantBytes(for url: URL) -> Int64 {
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let capacity = values.volumeAvailableCapacityForImportantUsage, capacity > 0 {
+            return capacity
+        }
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+           let capacity = values.volumeAvailableCapacity {
+            return Int64(capacity)
+        }
+        return -1
+    }
+
     func download(
         _ url: URL,
         to destination: URL,
@@ -65,7 +82,7 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
         try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         if expected > 0 {
             let required = expected + 64 * 1024 * 1024
-            let available = LinuxGuestVolumeSpace.availableImportantBytes(for: destination.deletingLastPathComponent())
+            let available = Self.availableImportantBytes(for: destination.deletingLastPathComponent())
             if available >= 0, available < required {
                 throw LinuxGuestImageInstallError.insufficientSpace(required: required, available: available)
             }

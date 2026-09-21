@@ -25,7 +25,7 @@ import FloeTools
     func start(
         id: String,
         title: String,
-        progress: (@Sendable @escaping (Double) -> Void)? = nil,
+        progress: (@Sendable (Double) -> Void)? = nil,
         operation: @escaping @Sendable () async throws -> String
     ) {
         guard !running.contains(id) else { return }

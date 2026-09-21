@@ -383,14 +383,19 @@ final class AppEnvironment: ObservableObject {
         // One explicit preparation handler reused by exec.shell,
         // exec.localPython and the environment.prepareLinux tool. It never
         // takes an image URL or install script.
-        let linuxPreparation: LinuxPreparationHandler? =
-            FloePlatformServices.shared.linuxGuestImageStorageAvailable()
-            ? { request in
+        // Written as an if/else on purpose: a ternary whose branch is a
+        // closure literal makes the compiler fail to type-check the
+        // expression ("failed to produce diagnostic for expression").
+        let linuxPreparation: LinuxPreparationHandler?
+        if FloePlatformServices.shared.linuxGuestImageStorageAvailable() {
+            linuxPreparation = { request in
                 try await FloePlatformServices.shared.prepareLinuxEnvironment(
                     cancellation: request.cancellation
                 )
             }
-            : nil
+        } else {
+            linuxPreparation = nil
+        }
 
         // Phase 2 (TinyEMU migration): local Python runs only inside the task
         // environment's Linux guest (shared venv, real pip). The bundled
