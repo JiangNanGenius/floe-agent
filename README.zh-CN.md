@@ -18,7 +18,7 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-![Floe Agent 在 iPad 上的任务选择界面](docs/images/workflow-upgrade/task-selection-ipad.png)
+![Floe Agent 在 iPad 上的新建任务界面](docs/images/floe-agent-new-task-ipad.webp)
 
 <p align="center">
   <a href="feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json"><strong>添加到 Feather</strong></a>
@@ -34,11 +34,9 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（215）**。9 月 21 日 01:24 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。TinyEMU/Linux 是主要本地环境，原生 Python/Node 不再打包，真机验收由用户完成。[交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+**当前内部 TestFlight：1.7.0（216）**。9 月 21 日 07:55 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。它保留 Build 215 的全部反馈修复，并补齐 Office、HTTP 资格检查及 TinyEMU 迁移后 App 回归门禁的发布兼容性。TinyEMU/Linux 是主要本地环境，原生 Python/Node 不再打包，真机验收由用户完成。[版本说明](docs/RELEASE_NOTES_1.7.0_BUILD_216.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
-**Build 216 是当前待上传候选。** 它保留 Build 215 的全部反馈修复，并补齐 Office、HTTP 资格检查及 TinyEMU 迁移后 App 回归门禁的发布兼容性。这里只说明源码状态；云端构建、上传、Apple 处理及 Floe QA 可用性核实完成前，不视为可安装。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_216.md)。
-
-Floe 1.7 面向 iPad 优先升级手记、Office 编辑、思维导图、语音、图像与视频工作台，以及任务归属的运行环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
+Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
 ### 手记、Office 与本地语音
 
@@ -47,12 +45,6 @@ Floe 1.7 面向 iPad 优先升级手记、Office 编辑、思维导图、语音�
 思维导图随主题、附图和分支变化自动排版，连续编辑保留缩放，并适配 PDF 独立小窗。手记提供回收站恢复及二次确认的永久删除，延迟回收会保留共享附件和其他内容的撤销历史。
 
 语音输入、视频自动字幕与 Agent 文件转录已接入按需下载的多语言 Whisper Small，无法使用时回退 Apple 识别，支持 SRT、VTT 和 JSON 字幕导出。首页、普通对话及画布均可显式选择手记资料并撤销授权。资源安装不等于混合中英识别质量已验收；最新证据、限制和剩余内容见[本轮实施记录](docs/FLOE_1_7_CONTINUATION_STATUS.md)。
-
-### 媒体工作台预览
-
-<img src="docs/evidence/floe-1.7/native-media-workbench.png" width="360" alt="媒体工作台预览">
-
-iOS 模拟器上的开发界面，使用合成测试素材。截图展示素材播放、逐帧控制、播放速度及保存后的剪辑区间；完整 App、真机和共享任务队列仍在验收。
 
 ## 为什么使用 Floe Agent
 

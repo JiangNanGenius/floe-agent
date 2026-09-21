@@ -18,7 +18,7 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-![Floe Agent task picker on iPad](docs/images/workflow-upgrade/task-selection-ipad.png)
+![Floe Agent new-task workspace on iPad](docs/images/floe-agent-new-task-ipad.webp)
 
 <p align="center">
   <a href="feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json"><strong>Add to Feather</strong></a>
@@ -34,11 +34,9 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Floe 1.7 internal beta
 
-**Current internal TestFlight: 1.7.0 (215).** Apple VALID, unexpired and IN_BETA_TESTING in the existing private Floe QA group, verified September 21 at 01:24 UTC. TinyEMU/Linux is the main local environment; native Python/Node payloads are excluded. Device acceptance belongs to the user. [Delivery record](docs/TESTFLIGHT_1.7.0_BETA.md).
+**Current internal TestFlight: 1.7.0 (216).** Apple VALID, unexpired and IN_BETA_TESTING in the existing private Floe QA group, verified September 21 at 07:55 UTC. It retains the Build 215 feedback repairs and adds release-path compatibility fixes for Office, HTTP qualification and the TinyEMU-era App regression gate. TinyEMU/Linux is the main local environment; native Python/Node payloads are excluded. Device acceptance belongs to the user. [Release notes](docs/RELEASE_NOTES_1.7.0_BUILD_216.md) · [Delivery record](docs/TESTFLIGHT_1.7.0_BETA.md).
 
-**Build 216 is the current upload candidate.** It retains the Build 215 feedback repairs and adds release-path compatibility fixes for Office, HTTP qualification and the TinyEMU-era App regression gate. This line describes source status only; it is not installable until the cloud build, upload, Apple processing and Floe QA availability are verified. [Candidate notes](docs/RELEASE_NOTES_1.7.0_BUILD_216.md).
-
-Floe 1.7 upgrades the iPad-first Notes workspace, Office editing, mind maps, speech, image/video workbenches and task-owned environments. TinyEMU provides the main local Linux path; guest package managers own Linux language/tool installation, while WASM remains a separate compatibility route. See the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [migration guide](docs/FLOE_1_7_MIGRATION.md), [build boundaries](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [version archive](docs/README.md).
+Floe 1.7 upgrades the iPad-first Notes workspace with illustrated mind maps, native Office editing, image and creative tools, on-device speech, and task-owned environments running TinyEMU/Linux. TinyEMU provides the main local Linux path; guest package managers own Linux language/tool installation, while WASM remains a separate compatibility route. See the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [migration guide](docs/FLOE_1_7_MIGRATION.md), [build boundaries](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [version archive](docs/README.md).
 
 ### Notes, Office and local speech
 
@@ -47,12 +45,6 @@ Notes (手记) is a separate workspace above Creative mode, with its own durable
 Mind maps reflow as topics, images and branches change, preserve zoom during editing, and fit independent PDF windows. Notes supports Trash recovery and confirmed permanent deletion with deferred collection that protects shared files and undo history.
 
 Voice input, video automatic captions and Agent file transcription now share on-demand multilingual Whisper Small with Apple recognition fallback. Timed exports support SRT, VTT and JSON. Home, conversations and Canvas can explicitly select Notes material and revoke access. Installing speech resources does not establish bilingual recognition quality. See the [implementation and evidence record](docs/FLOE_1_7_CONTINUATION_STATUS.md) for remaining work; full package/model delivery and physical-device acceptance remain incomplete.
-
-### Media workbench preview
-
-<img src="docs/evidence/floe-1.7/native-media-workbench.png" width="360" alt="Media workbench preview">
-
-Development preview on iOS Simulator with a synthetic test clip. Source playback, frame controls, speed selection and the saved trim range are visible. Full App/device acceptance and the shared job queue remain in progress.
 
 ## Why Floe Agent
 

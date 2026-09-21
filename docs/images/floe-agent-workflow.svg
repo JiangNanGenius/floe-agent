@@ -1,20 +1,165 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
-  <title id="title">Floe Agent continuous task workflow</title>
-  <desc id="desc">A task keeps one conversation and workspace while multiple runs append model text, tools, evidence, plans and goals.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="wf-title wf-desc">
+  <title id="wf-title">One durable task, successive runs — shared context, evidence, workspace and recovery</title>
+  <desc id="wf-desc">Floe Agent keeps a single durable task and workspace across successive runs. Every run shares context, evidence, permissions, memory and checkpoints, and an interrupted run resumes from the latest checkpoint.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eef6ff"/><stop offset="1" stop-color="#f7f2ff"/></linearGradient>
-    <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".12"/></filter>
-    <style>.h{font:700 27px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#111827}.t{font:600 18px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#1f2937}.s{font:400 15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#5b6472}.card{fill:#fff;stroke:#d8e1ef;stroke-width:1.5}.line{stroke:#6d7df3;stroke-width:4;fill:none;stroke-linecap:round}.dot{fill:#6d7df3}</style>
+    <linearGradient id="wf-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef4ff"/>
+      <stop offset="0.55" stop-color="#f6f3ff"/>
+      <stop offset="1" stop-color="#eefbf8"/>
+    </linearGradient>
+    <style>
+      .h-title{font:700 30px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;fill:#0f172a}
+      .h-sub{font:400 17px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;fill:#5b6472}
+      .badge{font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#4338ca}
+      .card-title{font:700 17.5px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#111827}
+      .card-zh{font:400 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#64748b}
+      .card-body{font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#475569}
+      .panel-title{font:700 18px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#ffffff}
+      .panel-zh{font:400 14px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#9fb0ff}
+      .chip-en{font:700 13.5px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#f1f5f9}
+      .chip-zh{font:400 12px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#9aa6d8}
+      .rec-en{font:700 16px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#5b21b6}
+      .rec-zh{font:400 14px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#7c3aed}
+      .mini-en{font:700 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#334155}
+      .mini-zh{font:400 11px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#64748b}
+      .mini-hi-en{font:700 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#5b21b6}
+      .mini-hi-zh{font:400 11px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;fill:#7c3aed}
+    </style>
   </defs>
-  <rect width="1200" height="520" rx="30" fill="url(#bg)"/>
-  <text x="54" y="66" class="h">One task, a continuous timeline</text>
-  <text x="54" y="96" class="s">每次发送创建新的 Run，但上下文、工作区、权限与证据始终属于同一任务</text>
-  <path class="line" d="M120 250 H1080"/>
-  <circle class="dot" cx="155" cy="250" r="9"/><circle class="dot" cx="390" cy="250" r="9"/><circle class="dot" cx="625" cy="250" r="9"/><circle class="dot" cx="860" cy="250" r="9"/><circle class="dot" cx="1060" cy="250" r="9"/>
-  <g filter="url(#shadow)"><rect class="card" x="55" y="135" width="200" height="92" rx="18"/><text x="78" y="172" class="t">New task</text><text x="78" y="200" class="s">Model · workspace · policy</text></g>
-  <g filter="url(#shadow)"><rect class="card" x="290" y="276" width="200" height="104" rx="18"/><text x="313" y="315" class="t">Run 1</text><text x="313" y="343" class="s">Reasoning → tool → reply</text><text x="313" y="366" class="s">思考 → 工具 → 回复</text></g>
-  <g filter="url(#shadow)"><rect class="card" x="525" y="135" width="200" height="92" rx="18"/><text x="548" y="172" class="t">Run 2</text><text x="548" y="200" class="s">History + evidence restored</text></g>
-  <g filter="url(#shadow)"><rect class="card" x="760" y="276" width="200" height="104" rx="18"/><text x="783" y="315" class="t">Plan / Goal</text><text x="783" y="343" class="s">Criteria · budget · proof</text><text x="783" y="366" class="s">验收标准 · 预算 · 证据</text></g>
-  <g filter="url(#shadow)"><rect class="card" x="980" y="135" width="165" height="92" rx="18"/><text x="1003" y="172" class="t">Complete</text><text x="1003" y="200" class="s">Evidence-gated</text></g>
-  <rect x="55" y="425" width="1090" height="52" rx="16" fill="#17203a"/><text x="82" y="458" style="font:600 17px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#fff">Shared task context: messages · tool evidence · workspace · permissions · memory · checkpoints</text>
+
+  <rect width="1200" height="600" rx="28" fill="url(#wf-bg)"/>
+  <circle cx="1150" cy="40" r="150" fill="#ffffff" opacity="0.45"/>
+  <circle cx="40" cy="580" r="190" fill="#ffffff" opacity="0.35"/>
+
+  <!-- Header -->
+  <text x="56" y="66" class="h-title">One durable task, successive runs</text>
+  <text x="56" y="98" class="h-sub">同一条可持续任务 · 多次 Run 接续运行，共享上下文、证据与工作区，中断后可恢复</text>
+  <rect x="964" y="40" width="186" height="34" rx="17" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="1057" y="62" text-anchor="middle" class="badge">Durable task · 可持续任务</text>
+
+  <!-- Successive-run timeline -->
+  <path d="M272 242 L286 250 L272 258" fill="none" stroke="#8b9bf5" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M532 242 L546 250 L532 258" fill="none" stroke="#8b9bf5" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M792 242 L806 250 L792 258" fill="none" stroke="#8b9bf5" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Card 1: New task -->
+  <g>
+    <rect x="50" y="202" width="200" height="96" rx="16" fill="#0f172a" opacity="0.07"/>
+    <rect x="50" y="196" width="200" height="96" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+    <circle cx="80" cy="226" r="16" fill="#6d7df3"/>
+    <path d="M72 226 H88 M80 218 V234" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="106" y="224" class="card-title">New task</text>
+    <text x="106" y="243" class="card-zh">新建任务</text>
+    <line x1="66" y1="256" x2="234" y2="256" stroke="#eef2f7" stroke-width="1.5"/>
+    <text x="66" y="278" class="card-body">Model · workspace · policy</text>
+  </g>
+
+  <!-- Card 2: Run 1 -->
+  <g>
+    <rect x="310" y="202" width="200" height="96" rx="16" fill="#0f172a" opacity="0.07"/>
+    <rect x="310" y="196" width="200" height="96" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+    <circle cx="340" cy="226" r="16" fill="#0ea5e9"/>
+    <path d="M334 218 L348 226 L334 234 Z" fill="#ffffff"/>
+    <text x="366" y="224" class="card-title">Run 1</text>
+    <text x="366" y="243" class="card-zh">第一次运行</text>
+    <line x1="326" y1="256" x2="494" y2="256" stroke="#eef2f7" stroke-width="1.5"/>
+    <text x="326" y="278" class="card-body">Reasoning → tools → reply</text>
+  </g>
+
+  <!-- Card 3: Run 2 -->
+  <g>
+    <rect x="570" y="202" width="200" height="96" rx="16" fill="#0f172a" opacity="0.07"/>
+    <rect x="570" y="196" width="200" height="96" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+    <circle cx="600" cy="226" r="16" fill="#14b8a6"/>
+    <circle cx="600" cy="226" r="8.5" fill="none" stroke="#ffffff" stroke-width="2"/>
+    <path d="M600 220 V226 L605 229" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="626" y="224" class="card-title">Run 2</text>
+    <text x="626" y="243" class="card-zh">第二次运行</text>
+    <line x1="586" y1="256" x2="754" y2="256" stroke="#eef2f7" stroke-width="1.5"/>
+    <text x="586" y="278" class="card-body">History + evidence restored</text>
+  </g>
+
+  <!-- Card 4: Run N -->
+  <g>
+    <rect x="830" y="202" width="200" height="96" rx="16" fill="#0f172a" opacity="0.07"/>
+    <rect x="830" y="196" width="200" height="96" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+    <circle cx="860" cy="226" r="16" fill="#8b5cf6"/>
+    <path d="M860 216 L870 221.5 L860 227 L850 221.5 Z" fill="#ffffff"/>
+    <path d="M852 226 L860 230.5 L868 226 M852 231 L860 235.5 L868 231" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>
+    <text x="886" y="224" class="card-title">Run N</text>
+    <text x="886" y="243" class="card-zh">最新一次运行</text>
+    <line x1="846" y1="256" x2="1014" y2="256" stroke="#eef2f7" stroke-width="1.5"/>
+    <text x="846" y="278" class="card-body">Same task, never restarted</text>
+  </g>
+
+  <!-- Shared foundation panel -->
+  <rect x="50" y="320" width="1100" height="130" rx="20" fill="#141b34"/>
+  <text x="76" y="356" class="panel-title">Shared by every run</text>
+  <text x="268" y="356" class="panel-zh">每个 Run 共享同一份</text>
+
+  <!-- Chip: context -->
+  <g>
+    <rect x="70" y="372" width="160" height="58" rx="12" fill="#1f2a4d" stroke="#334066" stroke-width="1"/>
+    <path d="M86 402 H99 M86 407 H96 M86 412 H93" fill="none" stroke="#c7d2fe" stroke-width="1.7" stroke-linecap="round"/>
+    <text x="110" y="397" class="chip-en">Context</text>
+    <text x="110" y="416" class="chip-zh">上下文</text>
+  </g>
+  <!-- Chip: evidence -->
+  <g>
+    <rect x="250" y="372" width="160" height="58" rx="12" fill="#1f2a4d" stroke="#334066" stroke-width="1"/>
+    <circle cx="268" cy="407" r="8" fill="none" stroke="#c7d2fe" stroke-width="1.7"/>
+    <path d="M264 407 L267 410 L272 403" fill="none" stroke="#c7d2fe" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="290" y="397" class="chip-en">Evidence</text>
+    <text x="290" y="416" class="chip-zh">工具证据</text>
+  </g>
+  <!-- Chip: workspace -->
+  <g>
+    <rect x="430" y="372" width="160" height="58" rx="12" fill="#1f2a4d" stroke="#334066" stroke-width="1"/>
+    <path d="M446 402 H451 L453 405 H463 V416 H446 Z" fill="#c7d2fe" opacity="0.18" stroke="#c7d2fe" stroke-width="1.6" stroke-linejoin="round"/>
+    <text x="470" y="397" class="chip-en">Workspace</text>
+    <text x="470" y="416" class="chip-zh">工作区</text>
+  </g>
+  <!-- Chip: permissions -->
+  <g>
+    <rect x="610" y="372" width="160" height="58" rx="12" fill="#1f2a4d" stroke="#334066" stroke-width="1"/>
+    <path d="M630 399 L637 401.5 V407 C637 411 634.3 413 630 414 C625.7 413 623 411 623 407 V401.5 Z" fill="none" stroke="#c7d2fe" stroke-width="1.6" stroke-linejoin="round"/>
+    <text x="650" y="397" class="chip-en">Permissions</text>
+    <text x="650" y="416" class="chip-zh">权限</text>
+  </g>
+  <!-- Chip: memory -->
+  <g>
+    <rect x="790" y="372" width="160" height="58" rx="12" fill="#1f2a4d" stroke="#334066" stroke-width="1"/>
+    <rect x="806" y="400" width="10" height="13" rx="1.5" fill="none" stroke="#c7d2fe" stroke-width="1.6"/>
+    <rect x="811" y="397" width="10" height="13" rx="1.5" fill="#1f2a4d" stroke="#c7d2fe" stroke-width="1.6"/>
+    <text x="830" y="397" class="chip-en">Memory</text>
+    <text x="830" y="416" class="chip-zh">记忆</text>
+  </g>
+  <!-- Chip: checkpoints -->
+  <g>
+    <rect x="970" y="372" width="160" height="58" rx="12" fill="#1f2a4d" stroke="#334066" stroke-width="1"/>
+    <path d="M1006 418 V398 M1006 400 H1017 L1014 404 L1017 408 H1006" fill="none" stroke="#c7d2fe" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1030" y="397" class="chip-en">Checkpoints</text>
+    <text x="1030" y="416" class="chip-zh">检查点</text>
+  </g>
+
+  <!-- Recovery band -->
+  <rect x="50" y="470" width="1100" height="74" rx="16" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1.5" stroke-dasharray="7 6"/>
+  <circle cx="92" cy="507" r="19" fill="#8b5cf6"/>
+  <path d="M103 500.5 A13 13 0 1 0 104 515" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round"/>
+  <path d="M103 495 V501 H108" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="124" y="503" class="rec-en">Interrupted? Resume from the latest checkpoint</text>
+  <text x="124" y="528" class="rec-zh">中断后从最近检查点恢复——同一任务、同一工作区，证据与进度不丢失</text>
+
+  <!-- Recovery mini chain -->
+  <rect x="730" y="488" width="104" height="40" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.3"/>
+  <text x="782" y="505" text-anchor="middle" class="mini-en">Last run</text>
+  <text x="782" y="520" text-anchor="middle" class="mini-zh">上一 Run</text>
+  <path d="M848 501 L856 508 L848 515" fill="none" stroke="#a78bfa" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="868" y="488" width="104" height="40" rx="10" fill="#ede9fe" stroke="#c4b5fd" stroke-width="1.3"/>
+  <text x="920" y="505" text-anchor="middle" class="mini-hi-en">Checkpoint</text>
+  <text x="920" y="520" text-anchor="middle" class="mini-hi-zh">检查点</text>
+  <path d="M986 501 L994 508 L986 515" fill="none" stroke="#a78bfa" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="1006" y="488" width="104" height="40" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.3"/>
+  <text x="1058" y="505" text-anchor="middle" class="mini-en">Resume</text>
+  <text x="1058" y="520" text-anchor="middle" class="mini-zh">恢复运行</text>
 </svg>
