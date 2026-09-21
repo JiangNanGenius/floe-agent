@@ -31,7 +31,7 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Rebuilt and re-qualified in run 35601638396 from d1e1d593 for the device-feedback CJK font and Pencil repair: FloeOfficeNative.mm folds the staged-font catalog fingerprint into the engine profile identity and gates annotation input to Apple Pencil. Host compile/link and the Swift module import probe passed, the engine source and filter patch/overlay are unchanged, and the framework executable is byte-identical to the prior host build. This is framework evidence; App build, TestFlight and physical-device acceptance remain separate.",
+    "note": "Rebuilt and re-qualified in run 35601638396 from d1e1d593 for the device-feedback CJK font and Pencil repair: FloeOfficeNative.mm folds the staged-font catalog fingerprint into the engine profile identity and gates annotation input to Apple Pencil. Host compile/link and the Swift module import probe passed, and the engine source and filter patch/overlay are unchanged. Two rebuild runs on these sources produced the same framework executable (sha256:a0f2a0de…), which as expected differs from the previously pinned binary. This is framework evidence; App build, TestFlight and physical-device acceptance remain separate.",
     "filterOverlay": {
       "patchSHA256": "4d426890632f0fc72996917f3af268af9c81bb211ff85937999d951c5e341989",
       "sourceFiles": {

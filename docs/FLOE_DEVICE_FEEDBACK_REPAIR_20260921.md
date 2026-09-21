@@ -89,7 +89,9 @@ recorded artifact matches the current host sources (exit 0).
    `python3 FloeAgent/scripts/pin_office_host_artifact.py --artifact-zip … --artifact-id 10638824111 --apply`:
    archive `sha256:68489795bcafcb96aceeb147f55fff83d066c7aec84e0131b08b030611c0559a`,
    executable `sha256:a0f2a0de52ebb8e71af4d5d492e3e8ad2611cec24e8d43c104caf87bc41fdf44`
-   (byte-identical to the previous host build), manifest
+   (the superseded successful rebuild, run `35600927305`, produced the same
+   executable; the old pin `e59f1278…` is replaced, as the source changed),
+   manifest
    `sha256:38ba599e61a64d9e4b9a727e5ba98700aa0ddd5cdcc7b54a92258b525039163f`,
    and `pendingHostRebuild` cleared.
 4. `bootstrap_office_host.checked_lock()` and `verify_installed()` pass against
