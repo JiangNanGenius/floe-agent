@@ -73,6 +73,38 @@ def create(output):
     second = deck.slides.add_slide(deck.slide_layouts[6])
     second.shapes.add_textbox(Inches(1), Inches(1), Inches(10), Inches(2)).text = 'Second slide — preserve ordering'
     deck.save(output / 'fixture.pptx')
+    create_sample_deck(output / 'sample-deck.pptx')
+
+
+def create_sample_deck(path):
+    """The deterministic presentation used by the visible-render qualification.
+
+    `verify_pptx_deck_semantics.py` asserts every string, geometry and chart
+    value below from the saved package alone, so a rendered-tile receipt can be
+    tied to a known deck. Keep this function and that verifier in sync.
+    """
+    deck = Presentation()
+    deck.slide_width, deck.slide_height = Inches(13.333333), Inches(7.5)
+    slide = deck.slides.add_slide(deck.slide_layouts[6])          # slide 1
+    title = slide.shapes.add_textbox(Inches(.7), Inches(.5), Inches(12), Inches(.8))
+    title.text_frame.paragraphs[0].text = 'FLOE SAMPLE DECK — 幻灯片一'
+    title.text_frame.paragraphs[0].font.size = SlidePt(28)
+    box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(.8), Inches(2), Inches(3), Inches(2))
+    box.fill.solid()
+    box.fill.fore_color.rgb = RGBColor(0x16, 0x5D, 0xBE)
+    box.text = 'SAMPLE_BOX'
+    data = CategoryChartData()
+    data.categories = ['Alpha', 'Beta']
+    data.add_series('Values', (12, 24))
+    slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(5), Inches(1.8), Inches(7), Inches(4.5), data)
+    second = deck.slides.add_slide(deck.slide_layouts[6])          # slide 2
+    second.shapes.add_textbox(Inches(1), Inches(1), Inches(10), Inches(2)).text = 'SAMPLE_SECOND_SLIDE'
+    third = deck.slides.add_slide(deck.slide_layouts[6])           # slide 3
+    oval = third.shapes.add_shape(MSO_SHAPE.OVAL, Inches(2), Inches(2), Inches(3), Inches(3))
+    oval.fill.solid()
+    oval.fill.fore_color.rgb = RGBColor(0x00, 0xA6, 0x50)
+    oval.text = 'SAMPLE_THIRD_SLIDE'
+    deck.save(path)
 
 
 if __name__ == '__main__':

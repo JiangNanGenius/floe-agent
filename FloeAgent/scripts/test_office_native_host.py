@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 import copy
+import hashlib
+import json
 from pathlib import Path
+import tempfile
 import unittest
 from build_office_native_host import EXCLUDED_SOURCES, SYSTEM_FRAMEWORKS, framework_project
+import office_render_gate_swift
+import office_render_readiness
+from qualify_office_device_capabilities import qualify as device_qualify
+from verify_pptx_deck_semantics import DEFAULT_DECK, digest
+from office_release_gates import (CAPABILITY_FLAGS, capability_status, false_capabilities,
+                                  host_source_matches_pin, validate_capability_claims)
+from pin_office_host_artifact import LOCK, check as pin_check
 
 
 class NativeHostProjectTests(unittest.TestCase):
@@ -52,6 +62,156 @@ class NativeHostProjectTests(unittest.TestCase):
         project['objects']['sources']['files'].remove('build-main.m')
         with self.assertRaisesRegex(ValueError, 'boundaries changed'):
             framework_project(project, Path('/host'))
+
+
+class OfficeReleaseGateTests(unittest.TestCase):
+    def evidenced(self):
+        return {
+            'capabilityQualification': {
+                'embeddedEditorPassed': True,
+                'pptxVisibleRenderPassed': True,
+                'deviceRoundtripPassed': True,
+                'originalFileWritebackPassed': True,
+            },
+            'embeddedEditorEvidence': {'runID': '1', 'appBuildVersion': '219', 'payloadVerified': True,
+                                       'recordedAt': '2026-09-22T00:00:00Z'},
+            'pptxVisibleRenderEvidence': {'runID': '2', 'deviceModel': 'iPad14,3', 'osVersion': '26.0',
+                                          'documentType': 'presentation', 'readyTiles': 6,
+                                          'canvasWidth': 1024, 'canvasHeight': 768, 'elapsedMs': 2400,
+                                          'recordedAt': '2026-09-22T00:00:00Z'},
+            'deviceRoundtripEvidence': {'runID': '2', 'deviceModel': 'iPad14,3', 'osVersion': '26.0',
+                                        'documentTypes': ['docx', 'xlsx', 'pptx'],
+                                        'recordedAt': '2026-09-22T00:00:00Z'},
+            'originalFileWritebackEvidence': {'runID': '2', 'deviceModel': 'iPad14,3',
+                                              'documentType': 'pptx',
+                                              'savedSHA256': 'a' * 64, 'recordedAt': '2026-09-22T00:00:00Z'},
+        }
+
+    def test_compile_only_receipt_cannot_claim_release_capabilities(self):
+        self.assertEqual(validate_capability_claims({'capabilityQualification': false_capabilities()}), [])
+        status = capability_status({'capabilityQualification': false_capabilities()})
+        self.assertFalse(status['releaseReady'])
+        self.assertEqual(sorted(status['unproven']), sorted(CAPABILITY_FLAGS))
+
+    def test_fully_evidenced_capabilities_pass_the_release_gate(self):
+        status = capability_status(self.evidenced())
+        self.assertEqual(status['failures'], [])
+        self.assertTrue(status['releaseReady'])
+
+    def test_true_claim_without_evidence_is_rejected(self):
+        claims = self.evidenced()
+        del claims['pptxVisibleRenderEvidence']
+        failures = validate_capability_claims(claims)
+        self.assertTrue(any('pptxVisibleRenderPassed is claimed without pptxVisibleRenderEvidence' in failure
+                            for failure in failures))
+        self.assertFalse(capability_status(claims)['releaseReady'])
+
+    def test_placeholder_or_impossible_device_facts_are_rejected(self):
+        for mutation in ({'readyTiles': 0}, {'canvasWidth': 0}, {'canvasHeight': -4},
+                         {'documentType': 'text'}, {'readyTiles': 'many'}):
+            claims = self.evidenced()
+            claims['pptxVisibleRenderEvidence'].update(mutation)
+            self.assertTrue(validate_capability_claims(claims), mutation)
+        claims = self.evidenced()
+        claims['originalFileWritebackEvidence']['savedSHA256'] = 'not-a-digest'
+        self.assertTrue(validate_capability_claims(claims))
+
+    def test_inferred_capabilities_are_never_assumed(self):
+        # An absent block or absent flag is unproven, never passed; a rejected
+        # true claim is not passed either.
+        for claims in ({}, {'capabilityQualification': {'embeddedEditorPassed': True}},
+                       {'capabilityQualification': None}):
+            status = capability_status(claims)
+            self.assertFalse(status['releaseReady'])
+            self.assertNotIn('passed', status['capabilities'].values())
+        self.assertEqual(len(capability_status({})['unproven']), len(CAPABILITY_FLAGS))
+
+    def test_pin_check_reports_capabilities_read_only(self):
+        lock = json.loads(Path(LOCK).read_text())
+        pin = lock['qualifiedHostArtifact']
+        self.assertFalse(host_source_matches_pin({}, hashlib.sha256))
+        status = capability_status(pin)
+        self.assertFalse(status['releaseReady'])
+        self.assertEqual(capability_status({})['unproven'], status['unproven'])
+        with tempfile.TemporaryDirectory() as folder:
+            copy_path = Path(folder) / 'engine.lock.json'
+            copy_path.write_text(json.dumps(lock))
+            # Read-only: reports 0 (matches the pin) or 1 (source ahead);
+            # either way the lock content is untouched.
+            self.assertIn(pin_check(copy_path), (0, 1))
+            self.assertEqual(copy_path.read_text(), json.dumps(lock))
+
+    def test_shipped_render_probe_and_native_decision_qualify_visible_render(self):
+        # Runs the actual probe script and the compiled native decision against
+        # synthetic engine states: a decoded tile passes, page skeletons and a
+        # blank canvas never do.
+        receipt = office_render_readiness.check()
+        self.assertTrue(receipt['nativeDecisionCompiled'])
+        self.assertFalse(receipt['engineVisibleRenderPassed'])
+        self.assertFalse(receipt['deviceVisibleRenderPassed'])
+        self.assertEqual(len(receipt['checksPassed']), 8)
+
+    def test_shipped_swift_visible_render_gate_compiles_and_holds(self):
+        receipt = office_render_gate_swift.check()
+        self.assertTrue(receipt['swiftGateCompiled'])
+        self.assertFalse(receipt['deviceVisibleRenderPassed'])
+        self.assertEqual(len(receipt['checksPassed']), 6)
+
+    def synthetic_device_receipts(self, folder):
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        deck_digest = digest(DEFAULT_DECK)
+        events = [{'event': 'opened'}, {'event': 'visibleRender'}, {'event': 'saveRequested'},
+                  {'event': 'saveCompleted', 'detail': 'success'}, {'event': 'editingClosed'},
+                  {'event': 'reopenedReadonly'}]
+        (folder / 'render-receipt.json').write_text(json.dumps({
+            'docType': 'presentation', 'visibleRender': True, 'readyTiles': 5,
+            'canvasWidth': 1024, 'canvasHeight': 768, 'slideCount': 3,
+            'deckSHA256': deck_digest, 'elapsedMs': 2100, 'recordedAt': '2026-09-22T00:00:00Z'}))
+        (folder / 'events.json').write_text(json.dumps({'events': events}))
+        for extension in ('docx', 'xlsx', 'pptx'):
+            (folder / f'roundtrip-{extension}.json').write_text(json.dumps({
+                'documentType': extension, 'edited': True, 'savedWorkingCopy': True,
+                'closed': True, 'reopened': True, 'savedSHA256': 'c' * 64, 'events': events}))
+        writeback = folder / 'original-writeback.json'
+        writeback.write_text(json.dumps({
+            'originalFileWriteback': True, 'documentType': 'pptx', 'savedSHA256': 'd' * 64,
+            'deckSHA256': deck_digest, 'recordedAt': '2026-09-22T00:00:00Z'}))
+        embedded = folder / 'embedding.json'
+        embedded.write_text(json.dumps({
+            'unsignedPayloadVerified': True, 'appVersion': '1.7.0', 'appBuild': '219',
+            'hostExecutableSHA256': 'e' * 64}))
+        return folder, writeback, embedded
+
+    def test_device_capabilities_need_a_complete_roundtrip_and_are_never_inferred(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder, writeback, embedded = self.synthetic_device_receipts(temporary)
+            evidence, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                                writeback, embedded)
+            self.assertEqual(failures, [])
+            self.assertTrue(capability_status(evidence)['releaseReady'])
+            # Removing any single receipt, or a single device fact, fails closed.
+            (folder / 'roundtrip-pptx.json').unlink()
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded)
+            self.assertTrue(any('roundtrip-pptx.json' in failure for failure in failures))
+            folder, writeback, embedded = self.synthetic_device_receipts(temporary + '/second')
+            _, failures = device_qualify(folder, DEFAULT_DECK, None, '26.0', '1234', writeback, embedded)
+            self.assertTrue(any('device model' in failure for failure in failures))
+            folder, writeback, embedded = self.synthetic_device_receipts(temporary + '/third')
+            receipt = json.loads((folder / 'render-receipt.json').read_text())
+            receipt['readyTiles'] = 0
+            (folder / 'render-receipt.json').write_text(json.dumps(receipt))
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded)
+            self.assertTrue(any('readyTiles' in failure for failure in failures))
+            folder, writeback, embedded = self.synthetic_device_receipts(temporary + '/fourth')
+            events = {'events': [{'event': 'opened'}, {'event': 'visibleRender'},
+                                 {'event': 'unexpectedClose'}]}
+            (folder / 'events.json').write_text(json.dumps(events))
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded)
+            self.assertTrue(any('unexpectedClose' in failure for failure in failures))
 
 
 if __name__ == '__main__':

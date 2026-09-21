@@ -83,6 +83,108 @@ final class OfficeSaveReceipt {
     }
 }
 
+// FLOE_VISIBLE_RENDER_GATE_BEGIN
+/// How a document's readiness is proven. Presentations start in the engine's
+/// file-based view (endless slide scrolling / slide sorter), where page
+/// skeletons are painted before any document tile arrives, so `docloaded`, an
+/// open event, a sized canvas and the engine's backing permission are not proof
+/// of a rendered document. Those formats require the host's visible-render
+/// signal; Word/Excel keep their existing open-only contract.
+enum OfficeRenderRequirement: Equatable {
+    case visibleRenderRequired
+    case openOnly
+
+    /// Mirrors `FloeDocumentRequiresVisibleRender` in
+    /// `FloeAgent/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm`;
+    /// `office_render_readiness.py` asserts both lists stay identical.
+    static let renderRequiredExtensions: Set<String> = [
+        "ppt", "pptx", "pptm", "pps", "ppsx", "pot", "potx",
+        "odp", "otp", "fodp", "odg", "otg", "fodg",
+    ]
+
+    static func forDocument(pathExtension: String) -> OfficeRenderRequirement {
+        renderRequiredExtensions.contains(pathExtension.lowercased()) ? .visibleRenderRequired : .openOnly
+    }
+}
+
+/// Truthful readiness state machine for one mounted native session. The open
+/// event, the engine permission and a save receipt never make a
+/// `.visibleRenderRequired` session ready on their own: only the host's real
+/// painted-surface signal does. A host that never reports it leaves the session
+/// `.failed` (recoverable, working copy retained) instead of blank-but-ready.
+struct OfficeVisibleRenderGate: Equatable {
+    enum State: Equatable {
+        case waitingForOpen
+        case waitingForRender
+        case ready
+        case failed
+    }
+
+    let requirement: OfficeRenderRequirement
+    private(set) var state: State = .waitingForOpen
+
+    init(requirement: OfficeRenderRequirement) {
+        self.requirement = requirement
+    }
+
+    /// The UIDocument open (and the engine permission report) settled.
+    @discardableResult
+    mutating func openSettled() -> State {
+        if state == .waitingForOpen {
+            state = requirement == .visibleRenderRequired ? .waitingForRender : .ready
+        }
+        return state
+    }
+
+    /// The host observed a decoded document tile on a sized document canvas.
+    @discardableResult
+    mutating func visibleRenderObserved() -> State {
+        if state == .waitingForOpen || state == .waitingForRender { state = .ready }
+        return state
+    }
+
+    /// The bounded render deadline elapsed with no visible-render signal.
+    @discardableResult
+    mutating func deadlineExceeded() -> State {
+        if state == .waitingForRender { state = .failed }
+        return state
+    }
+
+    /// The host reported a bounded render failure.
+    @discardableResult
+    mutating func hostFailed() -> State {
+        if state != .ready { state = .failed }
+        return state
+    }
+
+    var isReady: Bool { state == .ready }
+    var awaitsVisibleRender: Bool { state == .waitingForRender }
+    var hasFailed: Bool { state == .failed }
+    /// A save may only start from a settled, rendered session: this is the same
+    /// condition `OfficeFileSession.canAct` enforces through `phase == .ready`,
+    /// so a presentation that never painted cannot reach the save path (and the
+    /// bounded failure keeps the editing copy for retry/recovery).
+    var permitsSave: Bool { isReady }
+}
+
+@MainActor
+enum OfficeRenderFailure {
+    /// Actionable, bilingual copy for a presentation that never painted. It
+    /// must state that the working copy was retained and offer recovery.
+    static func noVisibleRender(readOnly: Bool) -> NSError {
+        let description = readOnly
+            ? OfficeInkText.t(
+                "演示文稿未能在限定时间内完成渲染，未显示空白编辑界面；编辑副本已保留，可重试或从“保留的文档”恢复。",
+                "The presentation did not finish rendering in time. Your editing copy was retained; retry, or recover it under Retained Documents.")
+            : OfficeInkText.t(
+                "编辑副本未能在限定时间内完成渲染；编辑副本已保留，可重试或恢复。",
+                "The editing copy did not finish rendering in time. Your editing copy was retained; retry or recover it.")
+        return NSError(domain: "org.floeagent.office.render", code: 1,
+                       userInfo: [NSLocalizedDescriptionKey: description])
+    }
+}
+// FLOE_VISIBLE_RENDER_GATE_END
+
 @MainActor
 final class OfficeFileSession: ObservableObject {
     enum Phase { case idle, loading, ready, insertingAttachment, readingAttachments, saving, closing, failed }
@@ -142,6 +244,18 @@ final class OfficeFileSession: ObservableObject {
     /// Bounded opening watchdog. A host that never reports readiness must not
     /// leave the surface on a spinner forever.
     private var openWatchdog: Task<Void, Never>?
+    /// Truthful readiness for this mounted document. A presentation is only
+    /// ready once the host observed a decoded document tile on a sized canvas;
+    /// the open event and the engine permission are not render evidence.
+    private var renderGate: OfficeVisibleRenderGate?
+    /// Bounded Swift-side safety net for a host that reports neither render
+    /// outcome. It only fires while this session still awaits a render.
+    private var renderWatchdog: Task<Void, Never>?
+    /// True when the pinned host exposes the visible-render contract. The
+    /// framework is pinned separately from this source: an older host keeps the
+    /// previous open-only readiness (and the release gate keeps the Office
+    /// capability unqualified) until the rebuilt framework is pinned.
+    private var hostSupportsVisibleRender = false
     /// Invoked after a verified original-file commit. Owning surfaces use it to
     /// refresh sibling entries (IDE tabs, file tree, preview) so a save is
     /// visible from every entry point.
@@ -609,6 +723,39 @@ final class OfficeFileSession: ObservableObject {
         openWatchdog = nil
     }
 
+    /// True when the pinned host exposes the visible-render contract. The
+    /// framework is qualified separately from this source, so an older host is
+    /// detected at runtime and keeps the previous open-only readiness instead
+    /// of waiting for a signal that host can never send.
+    private static func hostSupportsVisibleRender(_ native: FloeOfficeNativeViewController) -> Bool {
+        native.responds(to: NSSelectorFromString("setOnVisibleRenderReady:"))
+            && native.responds(to: NSSelectorFromString("setOnVisibleRenderFailed:"))
+            && native.responds(to: NSSelectorFromString("renderDiagnostics"))
+    }
+
+    /// Bounded safety net for a host that reports neither render outcome (a
+    /// lost callback, or a host killed mid-open). It never fires once the
+    /// session settled, so a slow but successful render cannot be failed after
+    /// the fact.
+    private func startRenderWatchdog(for native: FloeOfficeNativeViewController) {
+        cancelRenderWatchdog()
+        let budget: UInt64 = readOnly ? 25_000_000_000 : 30_000_000_000
+        renderWatchdog = Task { @MainActor [weak self, weak native] in
+            try? await Task.sleep(nanoseconds: budget)
+            guard !Task.isCancelled, let self, let native, self.controller === native,
+                  self.phase == .loading, !self.runtimeFailed,
+                  self.renderGate?.awaitingVisibleRender == true else { return }
+            guard self.renderGate?.deadlineExceeded() == .failed else { return }
+            self.error = OfficeRenderFailure.noVisibleRender(readOnly: self.readOnly).localizedDescription
+            self.phase = .failed
+        }
+    }
+
+    private func cancelRenderWatchdog() {
+        renderWatchdog?.cancel()
+        renderWatchdog = nil
+    }
+
     /// Reads the pinned engine's real permission after an edit activation and
     /// attempts the engine's own mobile edit switch when it still reports
     /// readonly. A protected document or a switch the engine refuses returns
@@ -619,20 +766,26 @@ final class OfficeFileSession: ObservableObject {
     /// take several seconds to boot and mount (cold start, compact/iPhone
     /// layout), and an immediate JS probe of a not-yet-opened page used to be
     /// read as read-only and bounce the editor back to preview.
+    ///
+    /// An editable *backing* permission is not an editable *UI*: the mobile
+    /// editor starts every editable document in its viewing-first UI, and
+    /// Impress/Draw additionally start in the file-based (endless slide
+    /// scrolling) layout. Only `map.isEditMode()` proves the edit surface is
+    /// live, so this follows the engine's guarded entry once more when the UI
+    /// mode has not switched yet.
     private func acknowledgeEditPermission() async throws {
         #if canImport(FloeOfficeNative)
         guard let native = controller as? FloeOfficeNativeViewController else { return }
         var hostReadOnly = await awaitEnginePermission(seconds: 20)
-        if hostReadOnly == false {
-            engineSessionReadOnly = false
-            readOnly = false
-            editUnavailableReason = nil
-            return
-        }
         guard native.isViewLoaded, let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else {
             // Without a mounted surface the engine has not opened yet. The host
             // callback (or the open watchdog) still owns this session; never
             // fabricate a read-only denial from a missing page.
+            if hostReadOnly == false {
+                engineSessionReadOnly = false
+                readOnly = false
+                editUnavailableReason = nil
+            }
             return
         }
         var probe = await Self.permissionProbe(webView)
@@ -649,6 +802,40 @@ final class OfficeFileSession: ObservableObject {
         // probe is the fallback surface. An unverified (nil/unknown) state is
         // never read as an editable grant.
         if hostReadOnly == nil { hostReadOnly = probe.isKnown ? probe.isReadOnly : nil }
+        let requiresPresentationEditLayout = OfficeRenderRequirement.forDocument(
+            pathExtension: session?.workingURL.pathExtension ?? "") == .visibleRenderRequired
+        if hostReadOnly == false, probe.isEditMode != true,
+           requiresPresentationEditLayout || probe.isEditMode == false {
+            // The engine's backing permission is editable but its UI is still
+            // in the viewing-first (or file-based presentation) mode. Follow
+            // the engine's own guarded mobile entry, which retains its
+            // format/password/lock checks, and then re-read the UI mode. For
+            // Word/Excel a genuinely unknown probe keeps the previous
+            // behaviour instead of forcing an entry that could bounce a
+            // healthy editor back to preview.
+            let entry = await Self.enterEditMode(native)
+            if entry.pendingPassword {
+                editUnavailableReason = OfficeInkText.t(
+                    "该文档需要编辑密码，请在编辑器中输入。",
+                    "This document requires its edit password. Enter it in the editor.")
+                return
+            }
+            if entry.readOnly == false {
+                engineSessionReadOnly = false
+                readOnly = false
+                editUnavailableReason = nil
+                return
+            }
+            // The engine refused the switch: fall through to the truthful
+            // read-only/denied handling below instead of claiming editable.
+            hostReadOnly = true
+        } else if hostReadOnly == false {
+            // Backing permission editable and the engine's edit UI is live.
+            engineSessionReadOnly = false
+            readOnly = false
+            editUnavailableReason = nil
+            return
+        }
         if hostReadOnly == true {
             // Follow the engine's own guarded mobile entry through the host
             // API: it reports the engine state after the attempt and
@@ -1295,6 +1482,45 @@ final class OfficeFileSession: ObservableObject {
         runtimeFailed = false
         engineSessionReadOnly = nil
         resolveEnginePermission(nil)
+        cancelRenderWatchdog()
+        hostSupportsVisibleRender = Self.hostSupportsVisibleRender(native)
+        // The pinned framework is qualified separately from this source. An
+        // older host cannot report a painted surface, so its session keeps the
+        // previous open-only contract and the release gate keeps the Office
+        // capability unqualified until the rebuilt framework is pinned.
+        var requirement = OfficeRenderRequirement.forDocument(
+            pathExtension: session.workingURL.pathExtension)
+        if requirement == .visibleRenderRequired, !hostSupportsVisibleRender {
+            requirement = .openOnly
+        }
+        renderGate = OfficeVisibleRenderGate(requirement: requirement)
+        if hostSupportsVisibleRender {
+            // Installed through the runtime selectors: the framework is pinned
+            // separately from this source, so the app must keep compiling
+            // against a host that predates the visible-render contract (see
+            // `hostSupportsVisibleRender`). The host reports one of these
+            // exactly once; neither is an open or save event.
+            let ready: @convention(block) (NSString?, TimeInterval) -> Void = { [weak self, weak native] _, _ in
+                Task { @MainActor in
+                    guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+                    self.cancelRenderWatchdog()
+                    guard self.renderGate?.visibleRenderObserved() == .ready else { return }
+                    self.phase = .ready
+                }
+            }
+            _ = native.perform(NSSelectorFromString("setOnVisibleRenderReady:"), with: ready as AnyObject)
+            let failed: @convention(block) (NSError) -> Void = { [weak self, weak native] _ in
+                Task { @MainActor in
+                    guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+                    self.cancelRenderWatchdog()
+                    guard self.renderGate?.hostFailed() == .failed else { return }
+                    // A host that observed no painted surface fails the session
+                    // visibly; the working copy is retained for retry/recovery.
+                    self.fail(OfficeRenderFailure.noVisibleRender(readOnly: self.readOnly))
+                }
+            }
+            _ = native.perform(NSSelectorFromString("setOnVisibleRenderFailed:"), with: failed as AnyObject)
+        }
         startOpenWatchdog(for: native, readOnly: readOnly)
         // Readiness is claimed from the permission callback, not the raw
         // working-copy event: the host verifies the engine's actual backing
@@ -1311,10 +1537,10 @@ final class OfficeFileSession: ObservableObject {
         }
         native.onWorkingCopyOpenedWithPermission = { [weak self, weak native] success, readOnly in
             guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
-            self.cancelOpenWatchdog()
             self.engineSessionReadOnly = readOnly
             self.resolveEnginePermission(readOnly)
             if !success {
+                self.cancelOpenWatchdog()
                 self.fail(CocoaError(.fileReadCorruptFile))
                 return
             }
@@ -1336,7 +1562,17 @@ final class OfficeFileSession: ObservableObject {
                 self.readOnly = false
                 self.editUnavailableReason = nil
             }
-            self.phase = .ready
+            // The open event is not render evidence. A presentation stays
+            // loading until the host's painted-surface signal arrives, bounded
+            // by the host deadline and this session's render watchdog.
+            let state = self.renderGate?.openSettled() ?? .ready
+            if state == .ready {
+                self.cancelOpenWatchdog()
+                self.phase = .ready
+            } else {
+                self.cancelOpenWatchdog()
+                self.startRenderWatchdog(for: native)
+            }
         }
         native.onEnginePermissionChanged = { [weak self, weak native] readOnly in
             guard let self, let native, self.controller === native else { return }
@@ -1370,6 +1606,8 @@ final class OfficeFileSession: ObservableObject {
     private func closeController() async throws {
         guard let controller else { return }
         cancelOpenWatchdog()
+        cancelRenderWatchdog()
+        renderGate = nil
         resolveEnginePermission(nil)
         // No view means the upstream viewWillAppear has not opened a document.
         // Do not load a WebView merely to close an abandoned preview request.

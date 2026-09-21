@@ -51,6 +51,23 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// Raw engine/autosave persistence event. NOT an explicit-save acknowledgement,
 /// original-file writeback result, or layout verification.
 @property (nonatomic, copy, nullable) void (^onWorkingCopySaved)(BOOL success);
+/// First evidence that the engine actually painted the document surface for
+/// this session: at least one decoded document tile and a non-empty document
+/// canvas, observed through the editor's own tile pipeline. The UIDocument
+/// open, the engine backing permission, a save receipt and `docloaded` are
+/// explicitly NOT visible-render evidence. `docType` is the engine's own type
+/// string (text/spreadsheet/presentation/drawing) and `elapsed` is seconds
+/// since the working copy open settled. Fired at most once per session.
+@property (nonatomic, copy, nullable) void (^onVisibleRenderReady)(NSString * _Nullable docType, NSTimeInterval elapsed);
+/// Bounded failure: the session produced no visible-render evidence before the
+/// host deadline. The working copy is retained; the caller must fail visibly
+/// with retry/recovery instead of presenting a blank ready editor. Fired at
+/// most once per session and never for a session the host read-only script
+/// intentionally renders without document tiles.
+@property (nonatomic, copy, nullable) void (^onVisibleRenderFailed)(NSError *error);
+/// Format/type/open/render/save diagnostics for logging and qualification.
+/// Contains only engine state and counters, never document contents.
+@property (nonatomic, readonly, copy, nullable) NSDictionary<NSString *, id> *renderDiagnostics;
 /// Native close completed. The caller still owns writeback and recovery retention.
 @property (nonatomic, copy, nullable) void (^onClosed)(BOOL success);
 /// Force a normal engine save and wait for this request's native working-file

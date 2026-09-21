@@ -41,6 +41,25 @@ static NSError *OfficeError(NSInteger code, NSString *description) {
                           userInfo:@{NSLocalizedDescriptionKey: description}];
 }
 
+// FLOE_OFFICE_LOG_BEGIN
+// Bounded, content-free diagnostics. A report is a single line of engine state
+// (format, document type, open/permission/JS-bridge state, render counters and
+// save receipt identity) — never document text, paths or bytes. Logging is
+// capped so a stuck session cannot flood the device console.
+static void FloeOfficeLog(NSString *event, NSDictionary<NSString *, id> *facts) {
+    static NSUInteger emitted = 0;
+    if (emitted >= 256) return;
+    emitted++;
+    NSMutableArray<NSString *> *fields = [NSMutableArray array];
+    for (NSString *key in [facts.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        id value = facts[key];
+        if ([value isKindOfClass:NSString.class] || [value isKindOfClass:NSNumber.class])
+            [fields addObject:[NSString stringWithFormat:@"%@=%@", key, value]];
+    }
+    NSLog(@"[FloeOffice] %@ %@", event, [fields componentsJoinedByString:@" "]);
+}
+// FLOE_OFFICE_LOG_END
+
 static NSError *OfficeAttachmentReadError(NSInteger code, NSString *description, const std::exception &failure) {
     // Engine-only attachment readers throw fixed format/IO diagnostics, never
     // document contents. Keep them for qualification without changing UI copy.
@@ -224,6 +243,142 @@ static NSString *FloeInkInputGatingScript() {
 }
 // FLOE_INK_GATING_SCRIPT_END
 
+// FLOE_RENDER_READINESS_BEGIN
+// A document surface is "visible-rendered" only when the engine reports its
+// document type, the editor has decoded at least one document tile into an
+// image and the document canvas has a real size. `docloaded`, the UIDocument
+// open, the backing permission and a save receipt are all deliberately absent
+// from this decision: they can be true while nothing was ever painted. The
+// pixel fingerprint is a coarse, downsampled paint check used for non-Impress
+// formats and as a diagnostic; presentation decks must show decoded tiles
+// because their file-based view paints page skeletons before any tile arrives.
+// FLOE_RENDER_DECISION_BEGIN
+// Compiled independently by office_render_readiness.py against synthetic facts.
+typedef struct {
+    bool docTypeKnown;
+    bool docLoaded;
+    bool canvasSized;
+    bool tileDecoded;
+    bool pixelPainted;
+    bool vectorRendering;
+} FloeRenderFacts;
+
+static bool FloeRenderFactsSatisfyVisibleRender(FloeRenderFacts facts) {
+    if (!facts.docTypeKnown || !facts.docLoaded || !facts.canvasSized) return false;
+    if (facts.tileDecoded) return true;
+    // Vector-rendered documents have no bitmap tiles; require a real paint.
+    if (facts.vectorRendering && facts.pixelPainted) return true;
+    return false;
+}
+
+// Formats whose renderer starts in the engine's file-based view (endless
+// scrolling / slide sorter) where page skeletons are painted before any
+// document tile arrives, so `docloaded` plus a non-empty canvas is not proof of
+// a rendered document. Mirrored by OfficeRenderRequirement in
+// FloeAgent/FloeApp/Workspace/OfficeDocumentEditorView.swift; a focused check
+// asserts both lists stay identical.
+static bool FloeDocumentRequiresVisibleRender(NSString *extension) {
+    static NSSet<NSString *> *formats = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        formats = [NSSet setWithArray:@[@"ppt", @"pptx", @"pptm", @"pps", @"ppsx", @"pot", @"potx",
+                                        @"odp", @"otp", @"fodp", @"odg", @"otg", @"fodg"]];
+    });
+    return [formats containsObject:extension.lowercaseString ?: @""];
+}
+// FLOE_RENDER_DECISION_END
+
+// FLOE_RENDER_PROBE_SCRIPT_BEGIN
+// Downsampled document-canvas fingerprint. The probe never returns pixels or
+// document contents, only counters.
+static NSString *FloeRenderProbeScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    try {
+        const map = window.app && window.app.map;
+        if (!map) return { stage: 'map' };
+        const file = (window.app && window.app.file) || {};
+        const layer = map._docLayer || null;
+        const docType = layer && typeof layer._docType === 'string'
+            ? layer._docType
+            : (typeof map.getDocType === 'function' ? map.getDocType() : null);
+        const manager = window.RenderManager
+            || (window.app && window.app.definitions && window.app.definitions.RenderManager)
+            || null;
+        let tiles = 0;
+        let decodedTiles = 0;
+        if (manager && typeof manager.getTiles === 'function') {
+            const all = manager.getTiles();
+            if (all && typeof all.forEach === 'function') {
+                all.forEach((tile) => {
+                    tiles++;
+                    if (!tile) return;
+                    const ready = typeof tile.isReadyToDraw === 'function'
+                        ? tile.isReadyToDraw() : !!tile.image;
+                    if (ready) decodedTiles++;
+                });
+            }
+        }
+        const canvases = document.querySelectorAll('canvas');
+        let canvas = null;
+        for (let i = 0; i < canvases.length; i++) {
+            const candidate = canvases[i];
+            if (!candidate || candidate.width < 2 || candidate.height < 2) continue;
+            if (!canvas || candidate.width * candidate.height > canvas.width * canvas.height)
+                canvas = candidate;
+        }
+        let pixels = null;
+        if (canvas) {
+            try {
+                const probe = document.createElement('canvas');
+                probe.width = 24;
+                probe.height = 16;
+                const context = probe.getContext('2d', { willReadFrequently: true });
+                context.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, 24, 16);
+                const data = context.getImageData(0, 0, 24, 16).data;
+                const colours = {};
+                let distinct = 0;
+                let opaque = 0;
+                for (let i = 0; i < data.length; i += 4) {
+                    if (data[i + 3] > 8) opaque++;
+                    const key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+                    if (colours[key] !== true) {
+                        colours[key] = true;
+                        distinct++;
+                    }
+                }
+                pixels = { distinctColours: distinct, samples: data.length / 4, opaque: opaque };
+            } catch (_) { pixels = null; }
+        }
+        const vectorRendering = !!(manager && typeof manager.isVectorRendering === 'function'
+            && manager.isVectorRendering());
+        return {
+            stage: 'ready',
+            docType: docType || null,
+            docLoaded: map._docLoaded === true,
+            fileBasedView: file.fileBasedView === true,
+            backendReadOnly: file.readOnly === true,
+            uiEdit: typeof map.isEditMode === 'function' && map.isEditMode() === true,
+            permission: typeof map._permission === 'string' ? map._permission : null,
+            tiles: tiles,
+            decodedTiles: decodedTiles,
+            vectorRendering: vectorRendering,
+            canvas: canvas ? {
+                width: canvas.width,
+                height: canvas.height,
+                clientWidth: canvas.clientWidth,
+                clientHeight: canvas.clientHeight,
+            } : null,
+            pixels: pixels,
+        };
+    } catch (_) {
+        return { stage: 'error' };
+    }
+})()
+)FLOE_JS"];
+}
+// FLOE_RENDER_READINESS_END
+
 // FLOE_READONLY_SCRIPT_BEGIN
 static NSString *FloeReadOnlyScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
@@ -272,33 +427,87 @@ static NSString *FloeReadOnlyScript() {
 }
 // FLOE_READONLY_SCRIPT_END
 
+// FLOE_SESSION_FACTS_BEGIN
+// The host's own mount grant, exposed to the injected editor scripts. The
+// engine cannot infer the App's requested permission from a handshake that omits
+// `permission` for editable sessions, and a missing fact must never be read as
+// an editing grant. Contains no document contents.
+static NSString *FloeSessionFactsScript(BOOL readOnly, NSString *fileName) {
+    NSData *encoded = [NSJSONSerialization dataWithJSONObject:@{
+        @"readOnly": @(readOnly),
+        @"editable": @(!readOnly),
+        @"fileName": fileName.lastPathComponent ?: @"",
+        @"extension": fileName.pathExtension.lowercaseString ?: @"",
+    } options:0 error:nil];
+    NSString *facts = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding] ?: @"{}";
+    return [NSString stringWithFormat:
+        @"window.__floeOfficeSession = Object.freeze(%@);", facts];
+}
+// FLOE_SESSION_FACTS_END
+
 // FLOE_FULLSCREEN_EDIT_SCRIPT_BEGIN
 static NSString *FloeFullScreenEditScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
 (() => {
+    // Floe's fullscreen entry is already an explicit edit action. Honor the
+    // initial engine grant via the normal mobile entry point, which retains
+    // format/password/lock checks. The mobile app forces its viewing-first UI
+    // for every editable document, so `_permission === 'readonly'` after the
+    // first setPermission call describes the startup UI mode, not a denied
+    // document. The engine's own backing permission (app.file.readOnly) and
+    // the host mount grant are the only editing authorities.
+    //
+    // Mobile Impress/Draw start in the file-based (endless slide scrolling)
+    // view even when the backend document is editable. That view is not a
+    // denied document: the engine's mobile entry switches the document back to
+    // its part-based edit layout through its own `updatepermission` event.
+    // View-only file-based formats (PDF and friends) never reach this branch
+    // because their engine permission stays read-only.
+    const editableFileBasedTypes = {presentation: true, drawing: true};
     const install = () => {
         const proto = window.L && window.L.Map && window.L.Map.prototype;
         if (!proto || typeof proto.setPermission !== 'function' || proto.floeFullScreenEditInstalled) return;
         proto.floeFullScreenEditInstalled = true;
         const setPermission = proto.setPermission;
+        const facts = window.__floeOfficeSession || {};
+        const hostEditable = facts.editable === true;
+        const enterEdit = (map, allowDefer) => {
+            if (!hostEditable || map._permission !== 'readonly') return;
+            const file = window.app && window.app.file;
+            // The backing permission is authoritative. An unknown or read-only
+            // grant is never elevated, and a later downgrade stays locked.
+            if (!file || file.readOnly !== false) return;
+            if (typeof map._switchToEditMode !== 'function') return;
+            const layer = map._docLayer;
+            const docType = layer && typeof layer._docType === 'string' ? layer._docType
+                : (typeof map.getDocType === 'function' ? map.getDocType() : null);
+            if (file.fileBasedView === true && docType !== null && editableFileBasedTypes[docType] !== true) {
+                // A view-only file-based document (for example a PDF): keep the
+                // engine's own guarded entry untouched.
+                return;
+            }
+            if (file.fileBasedView === true && docType === null) {
+                // The document type is not known yet. Wait for the engine to
+                // report it instead of guessing, bounded so nothing hangs.
+                if (!allowDefer) return;
+                let attempts = 0;
+                const wait = () => {
+                    if (!hostEditable) return;
+                    if (map._permission !== 'readonly') return;
+                    const ready = map._docLayer && typeof map._docLayer._docType === 'string';
+                    if (ready) { enterEdit(map, false); return; }
+                    if (attempts++ < 100) setTimeout(wait, 50);
+                };
+                setTimeout(wait, 50);
+                return;
+            }
+            map._switchToEditMode();
+        };
         proto.setPermission = function (permission) {
             const firstOpen = this._permission === undefined;
             const result = setPermission.apply(this, arguments);
-            // Floe's fullscreen entry is already an explicit edit action. Honor
-            // the initial engine grant via the normal mobile entry point, which
-            // retains format/password/lock checks. The mobile app forces
-            // startreadonly=true for its viewing-first startup, so
-            // _shouldStartReadOnly() describes the initial UI mode, not a denied
-            // document; the backing permission (app.file.readOnly) is
-            // authoritative. Never relax a readonly/view grant, the PDF
-            // full-view mode, a non-native context or a later permission change.
-            const backendEditable = window.app && window.app.file && window.app.file.readOnly === false;
-            const startReadOnly = typeof this._shouldStartReadOnly === 'function' && this._shouldStartReadOnly();
-            if (firstOpen && permission === 'edit' && this._permission === 'readonly' &&
-                window.ThisIsAMobileApp && typeof this._switchToEditMode === 'function' &&
-                !(window.app && window.app.file && window.app.file.fileBasedView) &&
-                (backendEditable || !startReadOnly))
-                this._switchToEditMode();
+            if (!firstOpen || permission !== 'edit' || !window.ThisIsAMobileApp) return result;
+            enterEdit(this, true);
             return result;
         };
     };
@@ -660,6 +869,175 @@ static void ServerReady() {
 @end
 // FLOE_SAVE_RECEIPTS_END
 
+// FLOE_RENDER_PROBE_BEGIN
+// Bounded, main-queue owned probe for the first visible document render. It
+// polls the shipped `FloeRenderProbeScript` and finishes exactly once; a
+// session that never paints its document surface reports a bounded failure
+// instead of leaving a blank editor that claims to be ready.
+@interface FloeOfficeNativeViewController (FloeRenderProbe)
+- (void)evaluateRenderFactsWithCompletion:(void (^)(NSDictionary<NSString *, id> * _Nullable facts,
+                                                    NSError * _Nullable error))completion;
+- (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
+- (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics;
+- (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
+@end
+
+@interface FloeOfficeRenderProbe : NSObject
+@property (nonatomic, weak) FloeOfficeNativeViewController *controller;
+/// Presentation/drawing formats must show a decoded document tile; other
+/// formats report the first paint as diagnostics but never fail the session.
+@property (nonatomic) BOOL requiresVisibleRender;
+@property (nonatomic) NSTimeInterval deadline;
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *diagnostics;
+- (instancetype)initWithController:(FloeOfficeNativeViewController *)controller
+                          readOnly:(BOOL)readOnly
+                       workingFile:(NSURL *)workingFile;
+- (void)start;
+- (void)cancel;
+@end
+
+@implementation FloeOfficeRenderProbe {
+    NSDate *_startedAt;
+    NSUInteger _attempts;
+    BOOL _finished;
+    BOOL _cancelled;
+    NSMutableDictionary<NSString *, id> *_lastFacts;
+    /// Last logged probe stage; polling every 200 ms must not flood the log.
+    NSString *_lastLoggedStage;
+}
+
+- (instancetype)initWithController:(FloeOfficeNativeViewController *)controller
+                          readOnly:(BOOL)readOnly
+                       workingFile:(NSURL *)workingFile {
+    if ((self = [super init])) {
+        _controller = controller;
+        _requiresVisibleRender = FloeDocumentRequiresVisibleRender(workingFile.pathExtension);
+        // A preview of the same presentation shapes is cheaper than an editable
+        // session (no edit-mode switch and no part-based relayout), so it gets a
+        // smaller bound. Both stay below the App's open watchdog so the honest
+        // render failure wins over the generic open timeout.
+        _deadline = readOnly ? 20.0 : 25.0;
+        _lastFacts = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"format": workingFile.pathExtension.lowercaseString ?: @"",
+            @"readOnly": @(readOnly),
+            @"requiresVisibleRender": @(_requiresVisibleRender),
+            @"stage": @"not-started",
+        }];
+    }
+    return self;
+}
+
+- (NSDictionary<NSString *, id> *)diagnostics {
+    NSMutableDictionary *facts = [_lastFacts mutableCopy];
+    facts[@"attempts"] = @(_attempts);
+    facts[@"elapsed"] = @(_startedAt ? -[_startedAt timeIntervalSinceNow] : 0);
+    facts[@"deadline"] = @(self.deadline);
+    return facts;
+}
+
+- (void)start {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    if (_startedAt || _finished || _cancelled) return;
+    _startedAt = [NSDate date];
+    [self poll];
+}
+
+- (void)cancel {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    _cancelled = YES;
+    _finished = YES;
+    [_lastFacts setObject:@"cancelled" forKey:@"stage"];
+}
+
+- (void)poll {
+    if (_finished || _cancelled) return;
+    FloeOfficeNativeViewController *controller = self.controller;
+    if (!controller) {
+        _finished = YES;
+        [_lastFacts setObject:@"controller-gone" forKey:@"stage"];
+        [self reportFailureIfRequiredWithReason:@"editor-surface-missing"];
+        return;
+    }
+    _attempts++;
+    __weak FloeOfficeRenderProbe *weakSelf = self;
+    [controller evaluateRenderFactsWithCompletion:^(NSDictionary<NSString *, id> *facts, NSError *error) {
+        FloeOfficeRenderProbe *probe = weakSelf;
+        if (!probe || probe->_finished || probe->_cancelled) return;
+        if (facts) [probe->_lastFacts addEntriesFromDictionary:facts];
+        if (facts) {
+            NSString *stage = [facts[@"stage"] isKindOfClass:NSString.class] ? facts[@"stage"] : nil;
+            if (stage && ![stage isEqualToString:probe->_lastLoggedStage]) {
+                probe->_lastLoggedStage = stage;
+                FloeOfficeLog(@"render-probe-facts", facts);
+            }
+            FloeRenderFacts renderFacts = [probe renderFactsFromDictionary:facts];
+            if (FloeRenderFactsSatisfyVisibleRender(renderFacts)) {
+                probe->_finished = YES;
+                [probe->_lastFacts setObject:@"visible-render" forKey:@"stage"];
+                [probe.controller renderProbeDidObserveVisibleRender:probe.diagnostics];
+                return;
+            }
+        }
+        if (probe->_startedAt && -[probe->_startedAt timeIntervalSinceNow] >= probe.deadline) {
+            probe->_finished = YES;
+            [probe->_lastFacts setObject:@"deadline" forKey:@"stage"];
+            [probe reportFailureIfRequiredWithReason:error ? @"probe-error" : @"no-visible-render"];
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [weakSelf poll]; });
+    }];
+}
+
+- (FloeRenderFacts)renderFactsFromDictionary:(NSDictionary *)facts {
+    FloeRenderFacts render;
+    render.docTypeKnown = [facts[@"docType"] isKindOfClass:NSString.class]
+        && [(NSString *)facts[@"docType"] length] > 0;
+    render.docLoaded = [facts[@"docLoaded"] isKindOfClass:NSNumber.class] && [facts[@"docLoaded"] boolValue];
+    render.vectorRendering = [facts[@"vectorRendering"] isKindOfClass:NSNumber.class]
+        && [facts[@"vectorRendering"] boolValue];
+    NSDictionary *canvas = [facts[@"canvas"] isKindOfClass:NSDictionary.class] ? facts[@"canvas"] : nil;
+    double width = [canvas[@"width"] isKindOfClass:NSNumber.class] ? [canvas[@"width"] doubleValue] : 0;
+    double height = [canvas[@"height"] isKindOfClass:NSNumber.class] ? [canvas[@"height"] doubleValue] : 0;
+    render.canvasSized = canvas != nil && width > 1 && height > 1;
+    NSNumber *decoded = [facts[@"decodedTiles"] isKindOfClass:NSNumber.class] ? facts[@"decodedTiles"] : nil;
+    render.tileDecoded = decoded != nil && decoded.unsignedIntegerValue > 0;
+    NSDictionary *pixels = [facts[@"pixels"] isKindOfClass:NSDictionary.class] ? facts[@"pixels"] : nil;
+    NSNumber *distinct = [pixels[@"distinctColours"] isKindOfClass:NSNumber.class] ? pixels[@"distinctColours"] : nil;
+    NSNumber *opaque = [pixels[@"opaque"] isKindOfClass:NSNumber.class] ? pixels[@"opaque"] : nil;
+    NSNumber *samples = [pixels[@"samples"] isKindOfClass:NSNumber.class] ? pixels[@"samples"] : nil;
+    // A painted surface has more than one colour and is at least an eighth
+    // opaque; a cleared canvas fails both.
+    render.pixelPainted = distinct != nil && samples != nil && opaque != nil
+        && distinct.unsignedIntegerValue >= 2 && samples.unsignedIntegerValue > 0
+        && opaque.unsignedIntegerValue * 8 >= samples.unsignedIntegerValue;
+    return render;
+}
+
+- (void)reportFailureIfRequiredWithReason:(NSString *)reason {
+    [_lastFacts setObject:reason forKey:@"failure"];
+    if (!self.requiresVisibleRender) {
+        // DOCX/XLSX behaviour is deliberately preserved: a document that shows
+        // no decoded tile yet is left to the App's own open bound, and only the
+        // diagnostics record the missing paint.
+        [self.controller renderProbeDidFinishWithoutVisibleRender:self.diagnostics];
+        return;
+    }
+    NSError *error = [NSError errorWithDomain:FloeOfficeNativeErrorDomain code:50 userInfo:@{
+        NSLocalizedDescriptionKey:
+            @"The presentation did not paint its document surface in time. Your editing copies were retained; retry or recover the document.",
+        NSDebugDescriptionErrorKey: [self diagnosticsDescription],
+    }];
+    [self.controller renderProbeDidFail:error diagnostics:self.diagnostics];
+}
+
+- (NSString *)diagnosticsDescription {
+    NSData *encoded = [NSJSONSerialization dataWithJSONObject:self.diagnostics options:0 error:nil];
+    return encoded ? [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding] : @"render diagnostics unavailable";
+}
+@end
+// FLOE_RENDER_PROBE_END
+
 @interface FloeOfficeNativeViewController ()
 @property (nonatomic, readwrite, getter=isReadOnly) BOOL readOnly;
 @property (nonatomic, readwrite) BOOL sessionIsReadOnly;
@@ -689,6 +1067,12 @@ static void ServerReady() {
 /// The UIDocument open completed successfully; a live engine session exists.
 @property (nonatomic) BOOL documentOpened;
 @property (nonatomic, strong) NSMutableArray *closeWaiters;
+/// Bounded probe for the first painted document surface. A presentation that
+/// never paints must fail visibly instead of showing a blank ready editor.
+@property (nonatomic, strong) FloeOfficeRenderProbe *renderProbe;
+@property (nonatomic, readwrite, getter=hasVisibleRender) BOOL visibleRenderObserved;
+@property (nonatomic, readwrite, copy, nullable) NSDictionary<NSString *, id> *renderDiagnostics;
+- (void)startRenderProbe;
 - (void)enginePermissionDidUpdate:(BOOL)readOnly;
 - (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
                                completion:(void (^)(BOOL known, BOOL readOnly))completion;
@@ -745,12 +1129,20 @@ static void ServerReady() {
             host.openSettled = YES;
             host.documentOpened = success;
             if (host.onWorkingCopyOpened) host.onWorkingCopyOpened(success);
+            FloeOfficeLog(@"open", @{@"success": @(success),
+                                     @"format": host.workingFileURL.pathExtension.lowercaseString ?: @"",
+                                     @"readOnly": @(host.readOnly),
+                                     @"appDocId": @(host.editor.document->appDocId)});
             if (!success) {
                 host.sessionIsReadOnly = YES;
                 if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(NO, YES);
                 [host beginCloseIfRequested];
                 return;
             }
+            // Readiness is not the open event: start the bounded probe that
+            // requires a real painted surface (decoded document tile) for the
+            // file-based presentation formats.
+            [host startRenderProbe];
             if (host.readOnly) {
                 // A preview is forced readonly by the mount grant and the lock
                 // script, so the engine's backing permission cannot change the
@@ -791,15 +1183,22 @@ static void ServerReady() {
         };
         document.floeSaveCompletion = ^(BOOL success) {
             FloeOfficeNativeViewController *host = weakSelf;
+            FloeOfficeLog(@"save-persistence", @{@"success": @(success),
+                                                 @"sequence": @"unsequenced"});
             if (host.onWorkingCopySaved) host.onWorkingCopySaved(success);
         };
         document.floeSaveSequenceCompletion = ^(NSString *sequence, BOOL success) {
+            FloeOfficeLog(@"save-receipt", @{@"sequence": sequence ?: @"",
+                                             @"success": @(success)});
             [weakSelf.saveReceipts complete:sequence success:success];
         };
         document.floeSaveSequenceAssociation = ^(NSString *sequence, NSString *requestID) {
+            FloeOfficeLog(@"save-association", @{@"sequence": sequence ?: @"",
+                                                 @"request": requestID ?: @""});
             [weakSelf.saveReceipts associate:sequence requestID:requestID];
         };
         document.floeSaveRequestRejected = ^(NSString *requestID) {
+            FloeOfficeLog(@"save-rejected", @{@"request": requestID ?: @""});
             [weakSelf.saveReceipts reject:requestID];
         };
         _editor.floeCloseCompletion = ^(BOOL success) {
@@ -821,12 +1220,19 @@ static void ServerReady() {
         return;
     }
     NSString *requestID = [@"floe-save:" stringByAppendingString:NSUUID.UUID.UUIDString];
+    __weak FloeOfficeNativeViewController *weakSaveHost = self;
     if (![self.saveReceipts begin:requestID completion:^(BOOL success) {
+        FloeOfficeLog(@"save-completed", @{@"request": requestID ?: @"",
+                                           @"success": @(success),
+                                           @"visibleRender": @(weakSaveHost.visibleRenderObserved)});
         completion(success ? nil : OfficeError(8, @"Office could not complete this save. Your document copies have been retained."));
     }]) {
         completion(OfficeError(9, @"An Office save is already in progress."));
         return;
     }
+    FloeOfficeLog(@"save-requested", @{@"request": requestID ?: @"",
+                                       @"visibleRender": @(self.visibleRenderObserved),
+                                       @"uiEdit": @(self.sessionIsReadOnly == NO)});
     NSData *encoded = [NSJSONSerialization dataWithJSONObject:@[requestID] options:0 error:nil];
     NSString *argument = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
     NSString *script = [NSString stringWithFormat:
@@ -911,6 +1317,54 @@ static void ServerReady() {
     if (self.closing || self.closed || self.sessionIsReadOnly == readOnly) return;
     self.sessionIsReadOnly = readOnly;
     if (self.onEnginePermissionChanged) self.onEnginePermissionChanged(readOnly);
+}
+// MARK: - Visible render readiness
+- (void)startRenderProbe {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    if (self.renderProbe || self.closing || self.closed) return;
+    FloeOfficeRenderProbe *probe = [[FloeOfficeRenderProbe alloc] initWithController:self
+                                                                            readOnly:self.readOnly
+                                                                         workingFile:self.workingFileURL];
+    self.renderProbe = probe;
+    FloeOfficeLog(@"render-probe", @{@"deadline": @(probe.deadline),
+                                     @"requiresVisibleRender": @(probe.requiresVisibleRender)});
+    [probe start];
+}
+- (void)evaluateRenderFactsWithCompletion:(void (^)(NSDictionary<NSString *, id> * _Nullable,
+                                                     NSError * _Nullable))completion {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    if (self.closing || self.closed || !self.editor.webView) {
+        completion(nil, OfficeError(51, @"The editor surface is no longer available."));
+        return;
+    }
+    [self.editor.webView evaluateJavaScript:FloeRenderProbeScript()
+                          completionHandler:^(id value, NSError *error) {
+        NSDictionary<NSString *, id> *facts = [value isKindOfClass:NSDictionary.class] ? value : nil;
+        if (!facts || error)
+            FloeOfficeLog(@"render-probe-error", error ? @{@"code": @(error.code)} : @{@"stage": @"no-facts"});
+        completion(facts, error);
+    }];
+}
+- (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    self.visibleRenderObserved = YES;
+    self.renderDiagnostics = diagnostics;
+    FloeOfficeLog(@"visible-render", diagnostics);
+    if (self.onVisibleRenderReady)
+        self.onVisibleRenderReady(diagnostics[@"docType"],
+                                  [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
+                                      ? [diagnostics[@"elapsed"] doubleValue] : 0);
+}
+- (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    self.renderDiagnostics = diagnostics;
+    FloeOfficeLog(@"visible-render-failed", diagnostics);
+    if (self.onVisibleRenderFailed) self.onVisibleRenderFailed(error);
+}
+- (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    self.renderDiagnostics = diagnostics;
+    FloeOfficeLog(@"visible-render-unobserved", diagnostics);
 }
 // Retries only until the editor has created its map. app.file.readOnly is the
 // backing permission; _permission/isReadOnlyMode() alone is the mobile UI mode.
@@ -1081,6 +1535,10 @@ static void ServerReady() {
 }
 - (void)beginClose {
     if (self.closed || self.closing) return;
+    // A closed session can never paint again; stop the render probe so its
+    // deadline cannot report a failure or a ready signal for a dead surface.
+    [self.renderProbe cancel];
+    self.renderProbe = nil;
     // No live engine session can ever acknowledge this close when the host's
     // view was never mounted (created and discarded before appearing — the
     // preview-to-edit switch on a fast tap) or when its open already failed.
@@ -1215,6 +1673,12 @@ static void ServerReady() {
     // Add before viewWillAppear opens the document. At document start the
     // listener precedes the bundled editor's DOMContentLoaded callbacks.
     WKUserContentController *contentController = self.editor.webView.configuration.userContentController;
+    // The injected scripts need the host's own mount grant: the engine cannot
+    // infer it from a handshake that omits `permission` for editable sessions,
+    // and a missing fact must never be read as an editing grant.
+    [contentController addUserScript:[[WKUserScript alloc]
+        initWithSource:FloeSessionFactsScript(self.readOnly, self.workingFileURL.lastPathComponent)
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
     WKUserScript *script = [[WKUserScript alloc]
         initWithSource:self.readOnly ? FloeReadOnlyScript() : FloeFullScreenEditScript()
         injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];

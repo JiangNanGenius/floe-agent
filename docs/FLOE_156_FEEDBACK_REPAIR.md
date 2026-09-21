@@ -418,3 +418,67 @@ The user requested TestFlight first and waived dual-device qualification as an u
 The direct workflow in policy commit `9c741b0`, [run 34870170373](https://github.com/JiangNanGenius/floe-agent/actions/runs/34870170373), checks out the unchanged immutable app source `fb86fef896d41871fa98c8871237606f56c5ff39` / `v1.7.0-beta.29`. It builds only the accepted-SDK device app, retains an unsigned recovery IPA before signing, checks profiles and bundle metadata, and performs Apple's validation and upload. Simulator builds and tests are explicitly skipped in this direct run. Apple processing and Floe QA visibility still require separate readback. The half-hour target is not a guaranteed completion time.
 
 The original SDK 27 job separately finalized 159 App cases, all passed with zero failures or skips. These results do not imply iPad/iPhone UI or physical-device acceptance. The duplicated simulator selector is repaired for future runs: choose an available device on the newest installed matching-major runtime and pass the same UDID to both diagnostics and xcodebuild. Four selection regressions cover multiple runtimes, duplicates, unavailable devices and a missing target.
+
+## PowerPoint visible-render and edit repair (2026-09-22)
+
+The presentation editor could report itself ready while the engine never painted
+a slide. Root cause, from the pinned engine sources and the shipped `bundle.js`:
+
+- The mobile editor starts every editable document in its viewing-first UI
+  (`Permission.js` calls `_enterReadOnlyMode('readonly')` on the first
+  `setPermission('edit')`), and `ImpressTileLayer.initialize` additionally sets
+  `app.file.fileBasedView = true` for phones and tablets so presentations open
+  as endless slide scrolling with page skeletons.
+- Floe's injected fullscreen-entry wrapper refused that guarded entry whenever
+  `app.file.fileBasedView` was true, while the same wrapper's sibling scripts
+  read `app.file.readOnly` (the backing permission) as readiness. A PPTX
+  therefore became "editable" in the App while the engine stayed in its
+  viewing layout, and `docloaded` plus a sized canvas was accepted as a
+  rendered document even when no tile had been decoded.
+
+Fixes in this slice:
+
+- `FloeOfficeNative.mm` injects the host mount grant as
+  `window.__floeOfficeSession`, allows the engine's own guarded mobile entry for
+  `presentation`/`drawing` file-based layouts, defers (bounded) when the document
+  type is unknown, and never elevates a read-only backing permission, a
+  protected file or a view-only file-based document.
+- A bounded render probe polls the editor's own tile pipeline
+  (`RenderManager.getTiles()` / `Tile.isReadyToDraw()`) plus a downsampled
+  document-canvas fingerprint. Presentation/drawing formats must show a decoded
+  document tile on a sized canvas; `docloaded`, the open event, the engine
+  permission and a save receipt are explicitly not render evidence.
+- `OfficeFileSession` gains `OfficeVisibleRenderGate`: presentations stay
+  loading until the host's painted-surface signal, fail visibly at the bounded
+  deadline (with retry/recovery and the retained editing copy) and never present
+  a blank ready editor. Word/Excel keep their open-only contract. The host
+  callbacks are installed through runtime selectors, so the app still builds
+  against a pinned framework that predates the contract; the strict gate
+  activates with the rebuilt host.
+- Edit verification now requires the engine's *UI* mode (`map.isEditMode()`), not
+  only the backing permission: an editable presentation whose UI did not switch
+  follows the guarded entry once more before any writable claim.
+- Diagnostics: content-free `[FloeOffice]` lines record format, document type,
+  open/permission/JS state, first render facts and save receipt identity.
+
+Qualification gates:
+
+- `office_render_readiness.py` runs the shipped probe script in Node against
+  synthetic engine states and compiles the shipped native decision with clang;
+  page skeletons and blank canvases never qualify, a decoded tile does.
+- `office_render_gate_swift.py` compiles the shipped Swift gate and asserts the
+  open-vs-render distinction, the bounded failure and the retained-copy copy.
+- `verify_pptx_deck_semantics.py` checks the committed `sample-deck.pptx`
+  fixture from OOXML alone and validates rendered-tile receipts against it.
+- `office_release_gates.py` requires every release capability to carry device
+  provenance; `verify_office_app_embedding.py --require-release` and
+  `pin_office_host_artifact.py` reject a framework whose capabilities are
+  unproven, and `qualify_office_device_capabilities.py` is the only writer that
+  may record device evidence, from verified probe receipts.
+
+Remaining gates (not claimed here): the native framework must be rebuilt and
+re-qualified in cloud CI (`office-native-host.yml`) from this source and
+re-pinned; then the App build, a real PPTX edit/save/close/reopen and the
+original-file write-back need the user's physical-device acceptance. The pinned
+framework still predates this source, so `pin_office_host_artifact.py --check`
+reports SOURCE AHEAD OF ARTIFACT and the release gate fails closed.

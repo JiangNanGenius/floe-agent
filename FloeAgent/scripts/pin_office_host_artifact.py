@@ -33,6 +33,9 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from office_release_gates import (CAPABILITY_FLAGS, capability_status, false_capabilities,
+                                  validate_capability_claims)
+
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "ThirdParty/Collabora/engine.lock.json"
 HOST_SOURCES = ROOT / "ThirdParty/Collabora/FloeOfficeNative"
@@ -73,9 +76,15 @@ def check(lock_path: Path) -> int:
     actual = {name: source_hashes().get(name) for name in expected}
     mismatched = sorted(name for name, value in actual.items() if value != expected[name])
     pending = pin.get("pendingHostRebuild") is True
+    status = capability_status(pin)
+    for flag in status["unproven"]:
+        print(f"pin: Office capability not proven for release: {flag}")
+    if status["failures"]:
+        for failure in status["failures"]:
+            print(f"pin: REJECTED capability claim — {failure}")
     if not mismatched and not pending:
         print("pin: the recorded artifact matches the current host sources")
-        return 0
+        return 0 if not status["failures"] else 1
     detail = ", ".join(mismatched) if mismatched else "pendingHostRebuild is recorded"
     print(f"pin: SOURCE AHEAD OF ARTIFACT — the pinned framework predates the host sources ({detail})")
     print("     the app build fails closed until CI rebuilds and re-qualifies the host:")
@@ -149,7 +158,11 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         hashes = artifact_hashes(root)
 
     failures = []
-    if manifest.get("hostSourceSHA256") != pin["hostSourceSHA256"]:
+    # Compare against this checkout, not the pin: the pin legitimately predates
+    # a source change (that is why the rebuild is owed), while the artifact
+    # being applied must have been built from exactly these sources.
+    expected_sources = {name: sources.get(name) for name in pin["hostSourceSHA256"]}
+    if manifest.get("hostSourceSHA256") != expected_sources:
         failures.append("the artifact was built from different host sources; rebuild it from this revision")
     if manifest.get("sourceCommit") != lock.get("commit"):
         failures.append("the artifact was built from a different engine commit")
@@ -158,6 +171,18 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     for key in QUALIFICATION_KEYS:
         if manifest.get(key) is not True:
             failures.append(f"qualification flag {key} did not pass")
+    # A compile/link manifest must never claim release capabilities it cannot
+    # prove, and a true claim without device/render provenance is rejected.
+    failures.extend(validate_capability_claims(manifest, label="artifact manifest"))
+    manifest_claims = manifest.get("capabilityQualification")
+    if not isinstance(manifest_claims, dict):
+        failures.append("the artifact manifest carries no capabilityQualification block")
+    else:
+        for flag in CAPABILITY_FLAGS:
+            if flag not in manifest_claims:
+                failures.append(f"the artifact manifest omits capability {flag}")
+            elif not isinstance(manifest_claims[flag], bool):
+                failures.append(f"the artifact manifest capability {flag} is not a boolean")
     declared_resources = manifest.get("runtimeResourceSHA256", {})
     if declared_resources and declared_resources != hashes["runtimeResourceSHA256"]:
         failures.append("the artifact's runtime resources do not match its manifest")
@@ -197,12 +222,18 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     if artifact_id:
         updated["artifactID"] = artifact_id
     updated["note"] = note
+    updated["capabilityQualification"] = manifest_claims
     updated.pop("pendingHostRebuild", None)
     lock["qualifiedHostArtifact"] = updated
     lock_path.write_text(json.dumps(lock, indent=2, ensure_ascii=False) + "\n")
     print("pin: recorded the rebuilt artifact")
     print(f"  archiveSHA256={updated['archiveSHA256']}")
     print(f"  runID={updated.get('runID')}")
+    status = capability_status(updated)
+    for flag in status["unproven"]:
+        print(f"  release gate still unproven: {flag}")
+    if not status["releaseReady"]:
+        print("  this pin is framework evidence only; Office release capabilities are not proven")
     print("  next: re-run the App build so bootstrap_office_host.py verifies the new pin")
     return 0
 

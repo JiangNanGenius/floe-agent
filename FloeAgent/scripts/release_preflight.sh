@@ -38,11 +38,21 @@ fi
 # The native Office framework is a separately compiled, pinned dependency.
 # Fail before bootstrapping/building the App if its source changed without a
 # matching rebuilt artifact. This is the same read-only check as bootstrap.
+# The capability readout keeps the release log honest: a framework that only
+# compiled and linked must never be presented as a device-qualified editor.
+# For an Office-qualified release add `--require-release` to
+# verify_office_app_embedding.py, which refuses every unproven capability.
 python3 -B - <<'PY'
 import sys
 sys.path.insert(0, 'scripts')
 from bootstrap_office_host import LOCK, checked_lock
-checked_lock(LOCK)
+lock, pin = checked_lock(LOCK)
+from office_release_gates import capability_status
+status = capability_status(pin)
+for flag in status['unproven']:
+    print(f'Office capability not proven by a device artifact: {flag}')
+for failure in status['failures']:
+    print(f'REJECTED Office capability claim: {failure}')
 print('Office native source pin OK')
 PY
 

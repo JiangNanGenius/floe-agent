@@ -64,13 +64,16 @@ function makeEngine(options = {}) {
         this._permission = 'edit';
     };
     Map.prototype._proceedEditMode = function () { this._switchToEditMode(); };
+    Map.prototype.getDocType = function () { return options.docType || null; };
     const map = new Map();
     if (options.initialUiReadOnly !== false) map._permission = 'readonly';
+    if (options.docType) map._docLayer = { _docType: options.docType };
     map._docHasPasswordToModify = !!options.password;
     map._modifyPasswordProvided = false;
     const app = {
         file: { permission: options.backendReadOnly ? 'readonly' : 'edit',
-                readOnly: !!options.backendReadOnly, fileBasedView: false },
+                readOnly: !!options.backendReadOnly,
+                fileBasedView: options.fileBasedView === true },
         setPermission(permission) {
             app.file.permission = permission;
             app.file.readOnly = permission !== 'edit';
@@ -79,7 +82,15 @@ function makeEngine(options = {}) {
     app.map = map;
     const handlers = { floePermission: { messages: [], postMessage(message) { this.messages.push(message); } } };
     const document = makeDocument();
-    const window = { ThisIsAMobileApp: true, app, L: { Map }, webkit: { messageHandlers: handlers }, document };
+    const window = {
+        ThisIsAMobileApp: options.mobile !== false,
+        // The host only installs the fullscreen wrapper on a session it mounted
+        // editable; the fact is fixed at document start.
+        __floeOfficeSession: { editable: options.hostReadOnly !== true,
+                               readOnly: options.hostReadOnly === true,
+                               extension: options.extension || 'docx' },
+        app, L: { Map }, webkit: { messageHandlers: handlers }, document,
+    };
     return { Map, map, app, document, window, handlers };
 }
 
@@ -100,6 +111,38 @@ function call(script, env) {
     map.setPermission('edit');                     // the editor's first grant
     assert.equal(map.entries, 1, 'editable + startreadonly must follow the guarded entry once');
     assert.equal(map.isEditMode(), true, 'editable session ends in edit mode');
+}
+
+// 1b. Mobile Impress/Draw start file-based even when editable: the engine's own
+// guarded entry must still run and switch the layout through updatepermission.
+{
+    const env = makeEngine({ startReadOnly: true, backendReadOnly: false,
+                             fileBasedView: true, docType: 'presentation' });
+    install(FULLSCREEN, env);
+    const map = new env.Map();
+    map._docLayer = { _docType: 'presentation' };
+    map.setPermission('edit');
+    assert.equal(map.entries, 1, 'editable presentation follows the guarded entry');
+    assert.equal(map.isEditMode(), true, 'editable presentation ends in edit mode');
+}
+
+// 1c. A host-mounted read-only session never carries the editable fact.
+{
+    const env = makeEngine({ startReadOnly: true, backendReadOnly: false, hostReadOnly: true });
+    install(FULLSCREEN, env);
+    const map = new env.Map();
+    map.setPermission('edit');
+    assert.equal(map.entries || 0, 0, 'host read-only mount is never elevated');
+}
+
+// 1d. A view-only file-based document (PDF) keeps the engine's own behaviour.
+{
+    const env = makeEngine({ startReadOnly: true, backendReadOnly: true,
+                             fileBasedView: true });
+    install(FULLSCREEN, env);
+    const map = new env.Map();
+    map.setPermission('edit');
+    assert.equal(map.entries || 0, 0, 'view-only file-based document stays unchanged');
 }
 
 // 2. readonly grant must never be elevated.
@@ -159,6 +202,9 @@ function call(script, env) {
 
 console.log(JSON.stringify({ checks: [
     'editable + mobile startreadonly follows the guarded entry once',
+    'editable presentation file-based startup follows the guarded entry once',
+    'host read-only mount is never elevated',
+    'view-only file-based document keeps the engine behaviour',
     'readonly grant is never elevated',
     'editable backend first reporting readonly follows the guarded entry once',
     'edit-password document reports pendingPassword and stays readonly',

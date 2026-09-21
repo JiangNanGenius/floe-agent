@@ -12,6 +12,7 @@ import subprocess
 from package_office_engine import digest
 from prepare_office_native_sources import DEFAULT_LOCK
 from qualify_office_mobile import qualify
+from office_release_gates import false_capabilities
 
 HOST = DEFAULT_LOCK.parent / "FloeOfficeNative"
 NAME = "FloeOfficeNative"
@@ -105,6 +106,9 @@ def build_host(root, output, *, build=True, filter_overlay=None):
               'stage': 'prepare-host', 'hostCompilePassed': False,
               'hostLinkPassed': False, 'swiftModuleImportPassed': False,
               'originalFileWritebackPassed': False}
+    # A compile/link qualification can never prove the release capabilities.
+    # The block is explicit so a pin can never read an absent flag as passed.
+    report['capabilityQualification'] = false_capabilities()
     report.update(run_identity())
     receipt = output / 'native-host.json'
 

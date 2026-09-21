@@ -12,6 +12,12 @@ import Darwin
     private var working: URL?
     private var events: [[String: String]] = []
     private var expectedClose = false
+    /// Explicit operator attestation that the visible edit was made before the
+    /// save. A receipt never claims an edit that was not marked.
+    private var editPerformed = false
+    /// First visible-render facts reported by the host, if the rebuilt
+    /// framework with the render contract is linked.
+    private var renderReceipt: [String: Any] = [:]
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Optional process-only control for locale regression experiments.
@@ -51,7 +57,11 @@ import Darwin
         let label = UILabel()
         label.text = "Native Office roundtrip · \(Locale.preferredLanguages.first ?? "unknown")"
         stack.addArrangedSubview(label)
-        var fixtures = [("Word", "docx", "fixture"), ("Excel", "xlsx", "fixture"), ("PowerPoint", "pptx", "fixture")]
+        var fixtures = [("Word", "docx", "fixture"), ("Excel", "xlsx", "fixture"),
+                        ("PowerPoint", "pptx", "fixture"),
+                        // The visible-render qualification binds its receipt to
+                        // this deck; ship it in the probe bundle unchanged.
+                        ("Sample deck (render)", "pptx", "sample-deck")]
         #if FLOE_OLE_ANCHOR_PROBE
         fixtures += [("Excel page anchor", "xlsx", "fixture-anchor-page"),
                      ("Excel move anchor", "xlsx", "fixture-anchor-move"),
@@ -77,6 +87,8 @@ import Darwin
                         self.session = root
                         self.working = file
                         self.events = []
+                        self.editPerformed = false
+                        self.renderReceipt = [:]
                         self.record("fixtureCopied", detail: ext)
                         self.record("fixtureResource", detail: resource)
                         self.record("preferredLanguage", detail: Locale.preferredLanguages.first ?? "unknown")
@@ -99,8 +111,41 @@ import Darwin
         let controller = try FloeOfficeNativeViewController(workingFileURL: working, sessionDirectory: session, readOnly: readOnly)
         native = controller
         controller.title = readOnly ? "Reopened readonly" : "Native editing"
-        controller.onWorkingCopyOpened = { [weak self] success in self?.record("opened", detail: "\(success); readonly=\(readOnly)") }
+        controller.onWorkingCopyOpened = { [weak self] success in
+            guard let self else { return }
+            self.record("opened", detail: "\(success); readonly=\(readOnly)")
+            if readOnly, success {
+                self.record("reopenedReadonly")
+                self.markReopened()
+            }
+        }
         controller.onWorkingCopySaved = { [weak self] success in self?.record("workingPersistence", detail: "\(success)") }
+        // The visible-render contract is not the open event: record the host's
+        // first painted-surface signal and its bounded failure separately.
+        controller.onVisibleRenderReady = { [weak self, weak controller] docType, elapsed in
+            guard let self, let controller, self.native === controller else { return }
+            let diagnostics = controller.renderDiagnostics ?? [:]
+            let canvas = diagnostics["canvas"] as? [String: Any] ?? [:]
+            var receipt: [String: Any] = [
+                "docType": docType ?? diagnostics["docType"] ?? "",
+                "visibleRender": true,
+                "readyTiles": diagnostics["decodedTiles"] ?? 0,
+                "canvasWidth": canvas["width"] ?? 0,
+                "canvasHeight": canvas["height"] ?? 0,
+                "elapsedMs": Int(elapsed * 1000),
+                "recordedAt": ISO8601DateFormatter().string(from: Date()),
+            ]
+            if let deck = Bundle.main.url(forResource: "sample-deck", withExtension: "pptx"),
+               let bytes = try? Data(contentsOf: deck) {
+                receipt["deckSHA256"] = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            }
+            self.renderReceipt = receipt
+            self.record("visibleRender", detail: "\(receipt["docType"] ?? "?"); tiles=\(receipt["readyTiles"] ?? 0); ms=\(receipt["elapsedMs"] ?? 0)")
+            self.writeRenderReceipt()
+        }
+        controller.onVisibleRenderFailed = { [weak self] error in
+            self?.record("visibleRenderFailed", detail: error.localizedDescription)
+        }
         controller.onClosed = { [weak self, weak controller] success in
             guard let self, let controller, self.native === controller, !self.expectedClose else { return }
             self.record("unexpectedClose", detail: "\(success)")
@@ -131,13 +176,32 @@ import Darwin
                         self.expectedClose = false
                         self.record("editingClosed", detail: error?.localizedDescription ?? "success")
                         if let error { controller.title = error.localizedDescription; return }
+                        self.writeRoundtripReceipt()
                         do { try self.open(readOnly: true) }
                         catch { controller.title = error.localizedDescription }
                     }
                 }
             })
         if !readOnly && ["docx", "xlsx", "pptx"].contains(working.pathExtension) {
-            controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
+            var editableButtons = controller.navigationItem.leftBarButtonItems ?? []
+            editableButtons.append(UIBarButtonItem(title: "Mark edited", primaryAction: UIAction { [weak self, weak controller] _ in
+                guard let self, let controller else { return }
+                // Explicit operator attestation: the saved working copy is only
+                // reported as edited after a real visible edit was made.
+                self.editPerformed = true
+                controller.title = "Marked as edited; save and reopen when ready"
+            }))
+            if working.pathExtension.lowercased() == "pptx" {
+                editableButtons.append(UIBarButtonItem(title: "Present", primaryAction: UIAction { [weak self, weak controller] _ in
+                    guard let self, let controller else { return }
+                    self.record("presentationRequested")
+                    controller.startPresentation { error in
+                        self.record("presentationStarted", detail: error?.localizedDescription ?? "success")
+                        controller.title = error?.localizedDescription ?? "Presentation started"
+                    }
+                }))
+            }
+            editableButtons.append(UIBarButtonItem(
                 title: "Insert attachment",
                 primaryAction: UIAction { [weak self, weak controller] _ in
                     guard let self, let controller else { return }
@@ -147,17 +211,18 @@ import Darwin
                         let input = session.appendingPathComponent("附件 测试 📎.bin")
                         let bytes = Data((0..<65539).map { UInt8(truncatingIfNeeded: $0) })
                         try bytes.write(to: input, options: .atomic)
-                        controller.navigationItem.leftBarButtonItem?.isEnabled = false
+                        editableButtons.forEach { $0.isEnabled = false }
                         controller.navigationItem.rightBarButtonItem?.isEnabled = false
                         self.record("attachmentRequested", detail: input.lastPathComponent)
                         controller.insertAttachment(fromFileURL: input) { error in
                             self.record("attachmentCompleted", detail: error?.localizedDescription ?? "success")
                             controller.title = error?.localizedDescription ?? "Attachment inserted; not saved"
-                            controller.navigationItem.leftBarButtonItem?.isEnabled = true
+                            editableButtons.forEach { $0.isEnabled = true }
                             controller.navigationItem.rightBarButtonItem?.isEnabled = true
                         }
                     } catch { controller.title = error.localizedDescription }
-                })
+                }))
+            controller.navigationItem.leftBarButtonItems = editableButtons
         }
         if ["docx", "xlsx", "pptx"].contains(working.pathExtension) {
             var buttons = controller.navigationItem.leftBarButtonItems ?? []
@@ -231,5 +296,53 @@ import Darwin
         events.append(["event": event, "detail": detail, "time": ISO8601DateFormatter().string(from: Date())])
         guard let session, let data = try? JSONSerialization.data(withJSONObject: events, options: [.prettyPrinted, .sortedKeys]) else { return }
         try? data.write(to: session.appendingPathComponent("events.json"), options: .atomic)
+    }
+
+    /// Writes the host's visible-render facts. The receipt names the deck it
+    /// was produced for, so a capability cannot be claimed for another
+    /// document; `qualify_office_device_capabilities.py` validates it.
+    private func writeRenderReceipt() {
+        guard let session, !renderReceipt.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: renderReceipt,
+                                                      options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? data.write(to: session.appendingPathComponent("render-receipt.json"), options: .atomic)
+    }
+
+    /// Writes the per-format roundtrip receipt after edit, save, close and
+    /// reopen. `edited` is the operator's explicit attestation; `savedSHA256`
+    /// is the actual persisted working copy, never a claim.
+    private func writeRoundtripReceipt() {
+        guard let session, let working else { return }
+        let hash = (try? Data(contentsOf: working)).map {
+            SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+        }
+        let receipt: [String: Any] = [
+            "documentType": working.pathExtension.lowercased(),
+            "edited": editPerformed,
+            "savedWorkingCopy": hash != nil,
+            "closed": events.contains { $0["event"] == "editingClosed" },
+            "reopened": false,
+            "savedSHA256": hash ?? "",
+            "recordedAt": ISO8601DateFormatter().string(from: Date()),
+            "events": events,
+        ]
+        let name = "roundtrip-" + working.pathExtension.lowercased() + ".json"
+        guard let data = try? JSONSerialization.data(withJSONObject: receipt,
+                                                     options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? data.write(to: session.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// Updates the roundtrip receipt once the reopened preview actually opened,
+    /// so `reopened` is evidence rather than intent.
+    private func markReopened() {
+        guard let session else { return }
+        let name = "roundtrip-" + (working?.pathExtension.lowercased() ?? "unknown") + ".json"
+        let url = session.appendingPathComponent(name)
+        guard let data = try? Data(contentsOf: url),
+              var receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        receipt["reopened"] = true
+        guard let updated = try? JSONSerialization.data(withJSONObject: receipt,
+                                                        options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? updated.write(to: url, options: .atomic)
     }
 }

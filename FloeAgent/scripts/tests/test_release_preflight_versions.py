@@ -1,4 +1,5 @@
 """Exercise release preflight against committed, tagged project fixtures."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                          "scripts/validate_localization_catalog.py",
                          "scripts/audit_native_runtime_free.py",
                          "scripts/bootstrap_office_host.py",
+                         "scripts/office_release_gates.py",
                          "FloeAgent.xcodeproj/project.pbxproj", "FloeScreenShare/Info.plist",
                          "FloeApp/Resources/Localizable.xcstrings"):
                 target = app / name
@@ -42,6 +44,17 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                 target = app / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / name, target)
+            # A host-source change legitimately leads the pinned framework until
+            # cloud CI rebuilds and re-pins it. These version fixtures are about
+            # release metadata, so record the copied sources in the staged pin
+            # exactly as a re-pin would, leaving the real Office gate (overlay,
+            # filter patch, artifact identity) in force.
+            staged_lock = app / office / "engine.lock.json"
+            staged = json.loads(staged_lock.read_text())
+            for name in list(staged["qualifiedHostArtifact"]["hostSourceSHA256"]):
+                staged["qualifiedHostArtifact"]["hostSourceSHA256"][name] = hashlib.sha256(
+                    (app / office / "FloeOfficeNative" / name).read_bytes()).hexdigest()
+            staged_lock.write_text(json.dumps(staged))
             if missing_office_lock:
                 (app / office / "engine.lock.json").unlink()
             project = app / "FloeAgent.xcodeproj/project.pbxproj"

@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Verify unsigned Floe device-app Office payload, not runtime UI or document fidelity."""
+"""Verify unsigned Floe device-app Office payload, not runtime UI or document fidelity.
+
+`--require-release` additionally demands the release-capability gates: the
+embedded editor, the visible presentation render, the device roundtrip and the
+original-file writeback must each be proven by a recorded artifact, and the
+embedded framework must have been built from this checkout's host sources. A
+framework that only compiles and links can never qualify for release.
+"""
 import argparse
 import json
 from pathlib import Path
 import plistlib
 import subprocess
 from bootstrap_office_host import LOCK, ROOT, FRAMEWORK, checked_lock, verify_installed, digest
+from office_release_gates import capability_status, host_source_matches_pin
 
 
 def verify_payload(source, app, lock_path=LOCK):
@@ -38,7 +46,10 @@ def verify_payload(source, app, lock_path=LOCK):
         'verifiedResourceDirectories': len(manifest['runtimeResourceDirectories']),
         'appVersion': info.get('CFBundleShortVersionString'), 'appBuild': info.get('CFBundleVersion'),
         'unsignedPayloadVerified': True, 'engineOpened': False,
-        'embeddedEditorPassed': False, 'originalFileWritebackPassed': False, 'deviceRoundtripPassed': False}
+        # Payload bytes cannot prove a rendered slide, a device roundtrip or an
+        # original-file writeback; those stay unproven here.
+        'embeddedEditorPassed': False, 'pptxVisibleRenderPassed': False,
+        'originalFileWritebackPassed': False, 'deviceRoundtripPassed': False}
 
 
 
@@ -116,6 +127,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('app', type=Path)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--require-release', action='store_true',
+                        help='fail unless every Office release capability is proven by a recorded artifact')
     args = parser.parse_args()
     _, pin = checked_lock(LOCK)
     source = ROOT / 'Vendor/Office' / pin['runID'] / 'OfficeNativeHost'
@@ -128,8 +141,22 @@ def main():
     result.update(verify_office_load_chain(args.app, name))
     result.update(appExecutableSHA256=digest(binary),
         appPlatformLoadCommands=subprocess.check_output(['xcrun', 'vtool', '-show-build', str(binary)], text=True))
+    status = capability_status(pin)
+    result.update(hostSourceMatchesPin=host_source_matches_pin(pin, digest),
+        capabilityQualification=status,
+        releaseReady=status['releaseReady'])
     args.output.write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
+    if args.require_release:
+        failures = list(status['failures'])
+        if not result['hostSourceMatchesPin']:
+            failures.append('the embedded framework predates this checkout\'s host sources; '
+                            'run .github/workflows/office-native-host.yml and re-pin the artifact')
+        if status['unproven']:
+            failures.append('unproven Office capabilities: ' + ', '.join(status['unproven']))
+        if failures:
+            raise SystemExit('Office release gate failed:\n  - ' + '\n  - '.join(failures))
+        print('Office release gate: all capabilities proven')
 
 
 if __name__ == '__main__':
