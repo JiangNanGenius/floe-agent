@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 218 adds a clear Linux download-and-start flow, stable curated tools for multi-turn local-model work, an IDE source-control sidebar and archive browser, plus rebuilt Office CJK-font and Apple Pencil input handling. It also fixes the App compile issues found in Build 217. Please retest Linux installation and cancellation, Chinese title/body/table rendering, Pencil freehand save and reopen, workspace Office versus IDE tabs, Git initialization, archive browsing, and three-turn local-model file work.",
+  "zh-Hans": "Build 218 增加明确的 Linux 下载并启动流程，稳定本地模型多轮调用的精选工具，补充 IDE 源码管理侧栏和压缩包浏览，并重建 Office 中文字体与 Apple Pencil 输入处理；同时修复 Build 217 发现的 App 编译问题。请重点复测 Linux 安装和取消、中文标题/正文/表格、Pencil 自由笔迹保存重开、工作区 Office 与 IDE 标签的区别、Git 初始化、压缩包浏览，以及本地模型三轮文件操作。"
+}
