@@ -55,6 +55,60 @@ struct LocalGitServiceTests {
         #expect(branched.recentCommits.count == 2)
     }
 
+    @Test("Discovery terminates for a workspace outside the ownership boundary")
+    func repositoryRootTerminatesOutsideBoundary() async throws {
+        // Regression: `deletingLastPathComponent()` of "/" returns "/.." on
+        // Darwin, so the ancestor walk used to climb forever when the root was
+        // outside the boundary (a security-scoped external folder, or this
+        // test's temp directory) instead of reporting "no repository".
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let git = LocalGitService()
+        // Must return (nil) quickly rather than spinning in the walk.
+        #expect(await git.repositoryRoot(at: root) == nil)
+    }
+
+    @Test("Every successful mutation posts the repository-change notification")
+    func mutationsPostRepositoryChangeNotification() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeGitTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let recorder = RepositoryChangeRecorder()
+        let expectedRoot = root.standardizedFileURL
+        // The observer is process-wide, and other tests in this suite may run
+        // in parallel; only events for this repository are recorded.
+        let observer = NotificationCenter.default.addObserver(
+            forName: .floeGitRepositoryDidChange,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard let url = notification.userInfo?[GitRepositoryChange.rootKey] as? URL,
+                  url == expectedRoot else { return }
+            recorder.record(url)
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let git = LocalGitService()
+        _ = try await git.initialize(at: root)
+        #expect(recorder.roots.contains(expectedRoot))
+
+        let before = recorder.count
+        try Data("content\n".utf8).write(to: root.appendingPathComponent("file.txt"))
+        try await git.stageAll(at: root)
+        #expect(recorder.count > before)
+        #expect(recorder.roots.allSatisfy { $0 == expectedRoot })
+
+        // Read-only snapshots must not claim a change.
+        let afterStage = recorder.count
+        _ = try await git.snapshot(at: root)
+        _ = try await git.diff(at: root, path: "file.txt")
+        #expect(recorder.count == afterStage)
+    }
+
     @Test("repositoryRoot walks up to a repository and reports nil outside one")
     func repositoryRootDiscoversAncestors() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -311,5 +365,31 @@ struct LocalGitServiceTests {
         await #expect(throws: (any Error).self) {
             try await git.createBranch(at: root, name: "../bad")
         }
+    }
+}
+
+
+/// Thread-safe recorder for the repository-change notification. The posting
+/// actor is background, so collecting must not assume a queue.
+private final class RepositoryChangeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [URL] = []
+
+    func record(_ url: URL) {
+        lock.lock()
+        storage.append(url)
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.count
+    }
+
+    var roots: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

@@ -34,6 +34,17 @@ BUNDLE_MARKERS = [
     (re.compile(r"(^|/)NodeTools/"), "bundled NodeTools resources"),
     (re.compile(r"(^|/)site-packages/"), "bundled Python site-packages"),
     (re.compile(r"(^|/)node_modules/(npm|pnpm|yarn)/"), "bundled Node package managers"),
+    # Precompiled wheel dependencies were resolved at App build time for the
+    # retired in-process interpreter. Linux (pip/venv inside the guest) or the
+    # audited skill installer own them now; a .whl inside the App is the
+    # retired delivery path returning.
+    (re.compile(r"\.whl$", re.IGNORECASE), "bundled precompiled Python wheel"),
+    # Native Ruby/Rust runtimes: Ruby ships only as a WASM interpreter under
+    # Qualification/ThirdParty, Rust crates are compiled into the App, so a
+    # runtime library or interpreter binary in the bundle is a payload.
+    (re.compile(r"(^|/)(ruby|ruby[0-9.]+)$"), "bundled native Ruby interpreter"),
+    (re.compile(r"(^|/)libruby[a-z0-9_.-]*\.dylib$", re.IGNORECASE), "bundled native Ruby library"),
+    (re.compile(r"(^|/)libstd-[0-9a-f]+\.dylib$"), "bundled Rust standard library"),
 ]
 
 # Embedded framework directory names the retired pipeline signed into the app
@@ -75,6 +86,17 @@ PROJECT_MARKERS = [
     ("install_pandas_pure_dependencies", "pandas pure dependencies"),
     ("ios_wheelhouse", "ios-wheelhouse driver"),
     ("pin_python_bundled_packages", "bundled Python pins"),
+    ("Vendor/Ruby", "Ruby runtime embed"),
+    ("Vendor/Rust", "Rust runtime embed"),
+    ("ruby_runtime", "Ruby runtime payload"),
+    ("rust_runtime", "Rust runtime payload"),
+]
+
+# Manifest references that only the retired precompiled-wheel delivery path
+# would produce. Checked per line so a name in a comment is reported too.
+MANIFEST_PAYLOAD_MARKERS = [
+    (re.compile(r"\.whl\b", re.IGNORECASE), "bundled precompiled wheel"),
+    (re.compile(r"wheelhouse", re.IGNORECASE), "wheelhouse reference"),
 ]
 
 
@@ -117,6 +139,10 @@ def audit_project():
         for needle, label in PROJECT_MARKERS:
             if needle in text:
                 findings.append(f"{manifest.name}: {label} reference returned: {needle}")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for pattern, label in MANIFEST_PAYLOAD_MARKERS:
+                if pattern.search(line):
+                    findings.append(f"{manifest.name}:{line_number}: {label}: {line.strip()}")
     return findings
 
 

@@ -498,6 +498,40 @@ final class FloePlatformServices: @unchecked Sendable {
         )
     }
 
+    /// Every Linux-required entry point (shell, guest Python, local services,
+    /// apt/node/pip commands) goes through this: activate, and when the only
+    /// obstacle is a missing/unverified image run the same preparation flow
+    /// the model tool uses, then activate once more. Callers therefore never
+    /// need tools.list, an explicit prepareLinux decision or a separate
+    /// download step; the user sees the shared, cancellable install job.
+    func activateLinuxGuestWithPreparation(
+        id: String,
+        cancellation: CancellationToken? = nil
+    ) async throws {
+        do {
+            try await activateLinuxGuest(id: id)
+        } catch let error as LinuxGuestError {
+            guard case .imageNotQualified = error else { throw error }
+            let token = cancellation ?? CancellationToken()
+            _ = try await prepareLinuxEnvironment(cancellation: token)
+            try await activateLinuxGuest(id: id)
+        }
+    }
+
+    /// Real guest status for the execution-environment screen. nil when this
+    /// build/service cannot answer for the id.
+    func linuxGuestStatus(id: String?) async -> LinuxGuestStatus? {
+        guard let id, let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return nil }
+        return await guests.guestStatus(environmentID: id)
+    }
+
+    /// Explicit stop entry for the settings screen. Honest no-op when the
+    /// controller is unavailable; the caller re-reads the real status after.
+    func stopLinuxGuest(id: String) async {
+        guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return }
+        await guests.stopGuest(environmentID: id)
+    }
+
     /// Runs one command inside the environment's Linux guest with exactly the
     /// argv the caller supplies: no command-name or argument rewriting. An
     /// owned-but-stopped guest is started on demand (lazy activation); a
@@ -516,7 +550,7 @@ final class FloePlatformServices: @unchecked Sendable {
             throw FloeError.validationFailed(String(localized: "environment.packages.linux.guest_not_running"))
         }
         do {
-            try await activateLinuxGuest(id: id)
+            try await activateLinuxGuestWithPreparation(id: id, cancellation: cancellation)
         } catch {
             throw FloeError.validationFailed(error.localizedDescription)
         }
@@ -582,12 +616,22 @@ final class FloePlatformServices: @unchecked Sendable {
         for name in LinuxShellCommandRouter.routedCommandNames {
             commandRegistry.register(name) { arguments, stdout, stderr in
                 let invocation = FloeShellCommandRegistry.shared.context
-                // Lazy activation: an owned-but-stopped guest is started on
-                // demand so apt/dpkg never report "not running" when the
-                // component is simply not started yet. A start failure keeps
-                // the engine's honest reason.
-                if await FloePlatformServices.shared.linuxEnvironmentOwned(id: invocation?.environment?.id) {
-                    try? await FloePlatformServices.shared.activateLinuxGuest(id: invocation?.environment?.id ?? "")
+                // Lazy activation plus first-use preparation: an owned guest
+                // is started on demand, and a missing/unverified image runs
+                // the same shared download flow the model tool uses. A
+                // failure is printed with the command name instead of being
+                // flattened into "not running".
+                if let environmentID = invocation?.environment?.id,
+                   await FloePlatformServices.shared.linuxEnvironmentOwned(id: environmentID) {
+                    do {
+                        try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(
+                            id: environmentID,
+                            cancellation: invocation?.cancellation
+                        )
+                    } catch {
+                        FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n")
+                        return 127
+                    }
                 }
                 let router = LinuxShellCommandRouter(service: FloePlatformServices.shared.currentLinuxCommandService())
                 if let result = await router.runIfSupported(
@@ -696,7 +740,10 @@ final class FloePlatformServices: @unchecked Sendable {
                     return 127
                 }
                 do {
-                    try await self.activateLinuxGuest(id: environment.id)
+                    try await self.activateLinuxGuestWithPreparation(
+                        id: environment.id,
+                        cancellation: context.cancellation
+                    )
                 } catch {
                     FloeShellWrite(stderr, "\(name): \(error.localizedDescription)\n")
                     return 127

@@ -14,7 +14,12 @@ public enum LocalInferenceError: LocalizedError {
     case decodeFailed
     case visionLoadFailed
     case visionInputFailed
-    case insufficientMemory(required: UInt64, physical: UInt64)
+    case insufficientMemory(required: UInt64, physical: UInt64, reserved: UInt64)
+    /// Deterministic snapshot damage found before or during a load: a missing
+    /// artifact, a truncated/rewritten file or tensor extents beyond the file
+    /// end. Distinct from `insufficientMemory` so the UI can tell the user to
+    /// re-download the snapshot instead of freeing memory.
+    case corruptModelSnapshot(String)
     public var errorDescription: String? {
         switch self {
         case .modelLoadFailed: "Unable to load the local model runtime."
@@ -25,8 +30,12 @@ public enum LocalInferenceError: LocalizedError {
         case .decodeFailed: "The local model failed while decoding."
         case .visionLoadFailed: "The local vision projector could not be loaded."
         case .visionInputFailed: "The local model could not decode the supplied image."
-        case .insufficientMemory(let required, let physical):
-            "This model needs more safe memory headroom (model files: \(required) bytes, device memory: \(physical) bytes). Choose a smaller model or omit vision input."
+        case .insufficientMemory(let required, let physical, let reserved):
+            reserved > 0
+                ? "This model needs more safe memory headroom (model files: \(required) bytes, device allowance: \(physical) bytes, temporarily reserved by other Floe runtimes such as a running Linux guest: \(reserved) bytes). Stop the guest or choose a smaller model."
+                : "This model needs more safe memory headroom (model files: \(required) bytes, device memory: \(physical) bytes). Choose a smaller model or omit vision input."
+        case .corruptModelSnapshot(let reason):
+            "The on-device model snapshot is damaged or incomplete: " + reason + ". Delete and re-download this model in Local Models settings; existing files are only removed by your explicit action."
         }
     }
 }

@@ -23,9 +23,60 @@ final class SourceControlCenter: ObservableObject {
     private let github = GitHubService()
     private let credentials = GitHubCredentialStore()
     private var deviceLoginTask: Task<Void, Never>?
+    private var repositoryChangeObserver: NSObjectProtocol?
 
     init(environment: AppEnvironment) {
         self.environment = environment
+        observeRepositoryChanges()
+    }
+
+    // The observer is intentionally not removed: this center is an app-lifetime
+    // object, its closure captures self weakly, and NotificationCenter keeps no
+    // strong reference to the center. A deinit that touched the actor-isolated
+    // token would be a Swift 6 isolation hazard for no benefit.
+
+    /// Every host-side Git mutation (agent `git.*` tools, guest-triggered
+    /// changes recorded by the host service, this center's own buttons) posts
+    /// `floeGitRepositoryDidChange`; a mounted source-control pane therefore
+    /// shows a newly initialized repository, new staged files and new commits
+    /// immediately instead of waiting for a manual refresh or a remount.
+    private func observeRepositoryChanges() {
+        repositoryChangeObserver = NotificationCenter.default.addObserver(
+            forName: .floeGitRepositoryDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let root = notification.userInfo?[GitRepositoryChange.rootKey] as? URL else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.changedRootAffectsActiveWorkspace(root) else { return }
+                await self.refreshRepository()
+            }
+        }
+    }
+
+    /// True when a mutation under `changed` can change what the active
+    /// workspace's source-control pane shows: the changed tree is the active
+    /// workspace root, contains it (repository root above the workspace), is
+    /// inside it, or is the repository root currently displayed.
+    private func changedRootAffectsActiveWorkspace(_ changed: URL) -> Bool {
+        let changedPath = changed.standardizedFileURL.path
+        if let repositoryRoot, repositoryRoot.standardizedFileURL.path == changedPath { return true }
+        guard let active = environment.workspaceCenter.currentRootURL?.standardizedFileURL.path else {
+            return false
+        }
+        if changedPath == active { return true }
+        if active.hasPrefix(changedPath + "/") { return true }
+        if changedPath.hasPrefix(active + "/") { return true }
+        return false
+    }
+
+    /// Re-reads the repository state when the app becomes active again: guest
+    /// git (apt-installed inside Linux) writes through 9p and cannot post a
+    /// host notification, so returning to the app is the bounded moment to
+    /// pick those changes up.
+    func refreshOnForeground() async {
+        await refreshRepository()
     }
 
     var isGitHubConnected: Bool { account != nil }

@@ -62,11 +62,20 @@ struct LocalModelCatalogTests {
 
     @Test("Public catalog contains only immutable curated MLX snapshots")
     func curatedEntries() {
-        #expect(CuratedLocalModelCatalog.entries.count == 3)
+        // Two selectable 4-bit MLX entries. Gemma 4 E4B was moved to the
+        // retired list: its 5.15 GB snapshot cannot be admitted on an M4-class
+        // iPad allowance once Floe's footprint and a running Linux guest are
+        // accounted for, so it must not be a default/recommended download.
+        #expect(CuratedLocalModelCatalog.entries.count == 2)
+        #expect(!CuratedLocalModelCatalog.entries.contains { $0.id == "gemma4-e4b-mlx4" })
         #expect(!CuratedLocalModelCatalog.entries.contains { $0.id == "qwen3.5-9b-q4km" })
         #expect(!CuratedLocalModelCatalog.entries.contains { $0.id == "ministral3-3b-q4km" })
+        #expect(CuratedLocalModelCatalog.retiredEntries.contains { $0.id == "gemma4-e4b-mlx4" })
         #expect(CuratedLocalModelCatalog.retiredEntries.contains { $0.id == "qwen3.5-9b-q4km" })
         #expect(CuratedLocalModelCatalog.retiredEntries.contains { $0.id == "ministral3-3b-q4km" })
+        // A retired-but-installed snapshot is still discoverable so the user
+        // can delete it explicitly; nothing removes files on its own.
+        #expect(CuratedLocalModelCatalog.knownEntries.contains { $0.id == "gemma4-e4b-mlx4" })
         let publicProfileIDs = CuratedLocalModelCatalog.entries.map(\.profileID)
         #expect(Set(publicProfileIDs).count == publicProfileIDs.count)
         #expect(publicProfileIDs.allSatisfy(ProviderProfile.onDeviceModelIDs.contains))
@@ -91,7 +100,7 @@ struct LocalModelCatalogTests {
         #expect(qwen38?.supportsVision == false)
         #expect(qwen38?.supportsReasoning == true)
 
-        let gemma4 = CuratedLocalModelCatalog.entries.first {
+        let gemma4 = CuratedLocalModelCatalog.retiredEntries.first {
             $0.id == "gemma4-e4b-mlx4"
         }
         #expect(gemma4?.repository == "mlx-community/gemma-4-e4b-it-4bit")
@@ -175,21 +184,42 @@ struct LocalModelCatalogTests {
             mappedBytes: 9 * gib,
             physicalMemoryBytes: 8 * gib
         ))
-        // Gemma 4's mapped snapshot may be slightly larger than the current
-        // 4.7-4.9 GiB process allowance on an M4 iPad. MLX maps weights lazily,
-        // so this is allowed while a clearly larger snapshot is still denied.
+        // A 3 GB snapshot still fits the M4 allowance, but not on top of a
+        // 1.5 GB guest reservation: the reservation is subtracted before the
+        // 110% rule, so an impossible start is refused instead of crashing.
         #expect(LocalInferenceResourcePolicy.canLoad(
             mappedBytes: 5_146_800_534,
-            physicalMemoryBytes: 4_900_000_000
+            physicalMemoryBytes: 4_900_000_000,
+            reservedBytes: 0
         ))
         #expect(!LocalInferenceResourcePolicy.canLoad(
             mappedBytes: 6_000_000_000,
-            physicalMemoryBytes: 4_900_000_000
+            physicalMemoryBytes: 4_900_000_000,
+            reservedBytes: 0
         ))
+        #expect(LocalInferenceResourcePolicy.canLoad(
+            mappedBytes: 3_034_300_695,
+            physicalMemoryBytes: 4_900_000_000,
+            reservedBytes: 268_435_456
+        ))
+        #expect(!LocalInferenceResourcePolicy.canLoad(
+            mappedBytes: 3_034_300_695,
+            physicalMemoryBytes: 4_900_000_000,
+            reservedBytes: 4_026_531_840
+        ))
+        #expect(LocalInferenceResourcePolicy.effectiveHeadroomBytes(
+            physicalMemoryBytes: 4_900_000_000,
+            reservedBytes: 400_000_000
+        ) == 4_500_000_000)
+        #expect(LocalInferenceResourcePolicy.effectiveHeadroomBytes(
+            physicalMemoryBytes: 4_900_000_000,
+            reservedBytes: 5_000_000_000
+        ) == 0)
 
         let minimumScratch = LocalInferenceResourcePolicy.profile(
             mappedBytes: 5_146_800_534,
-            physicalMemoryBytes: 5_264_538_280
+            physicalMemoryBytes: 5_264_538_280,
+            reservedBytes: 0
         )
         #expect(minimumScratch.tier == .constrained)
         #expect(minimumScratch.contextSize == 8_192)

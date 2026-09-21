@@ -164,6 +164,23 @@ public actor MLXTextEngine {
             $0 += 1
             return $0
         }
+        // Deterministic snapshot damage is checked before MLX builds any
+        // graph: the engine's generic error code cannot distinguish a
+        // truncated/rewritten safetensors file from a GPU allocation failure,
+        // and the two need different user actions. Header + size reads only;
+        // nothing is deleted.
+        // Only a directory Floe installed (manifest present) is audited here:
+        // a test or hand-provided directory is not assumed to be a complete
+        // catalog snapshot.
+        let knownEntry = CuratedLocalModelCatalog.knownEntries.first {
+            $0.id == modelDirectory.lastPathComponent
+        }
+        let snapshotProblems = LocalModelStore.hasInstallManifest(in: modelDirectory)
+            ? LocalModelSnapshotIntegrity.problems(directory: modelDirectory, entry: knownEntry)
+            : []
+        if let problem = snapshotProblems.first {
+            throw LocalInferenceError.corruptModelSnapshot(problem.summary)
+        }
         // A previous model or a failed Metal graph can leave process-wide
         // allocations cached even after its Swift container is gone. Start a
         // new load from a known baseline so the preflight allowance describes
@@ -208,16 +225,43 @@ public actor MLXTextEngine {
             // in MLX's process-wide cache even though no container escaped.
             // Clear them before the runtime evaluates or loads another model.
             Self.drainPipelineAndClearCaches(context: "modelLoadFailure")
-            let nsError = error as NSError
-            // Keep the useful class/code while avoiding model paths or raw
-            // provider payloads in the user-visible diagnostic.
-            throw LocalInferenceError.modelLoadFailedWithReason(
-                "MLX container initialization failed (domain "
-                    + nsError.domain
-                    + ", code "
-                    + String(nsError.code)
-                    + "). Verify the model snapshot and device memory, then retry."
-            )
+            let mappedBytes = Self.safetensorsBytes(in: modelDirectory)
+            let headroom = LocalInferenceResourcePolicy.effectiveHeadroomBytes()
+            switch LocalModelLoadFailure.classify(
+                error: error,
+                snapshotProblems: snapshotProblems,
+                mappedBytes: mappedBytes,
+                headroomBytes: headroom
+            ) {
+            case .corruptSnapshot(let reason):
+                throw LocalInferenceError.corruptModelSnapshot(reason)
+            case .insufficientMemory(let required, let available):
+                throw LocalInferenceError.insufficientMemory(
+                    required: required,
+                    physical: available,
+                    reserved: UInt64(max(0, ResidentMemoryReservations.totalBytes()))
+                )
+            case .unknown(let detail):
+                // Keep the useful class/code while avoiding model paths or raw
+                // provider payloads in the user-visible diagnostic.
+                throw LocalInferenceError.modelLoadFailedWithReason(
+                    "MLX container initialization failed (" + detail + "). Verify the model snapshot and device memory, then retry."
+                )
+            }
+        }
+    }
+
+    /// Sum of the installed safetensors byte counts, used only to compare a
+    /// failed load against the current headroom. Bounded directory listing;
+    /// no file is opened.
+    static func safetensorsBytes(in directory: URL) -> UInt64 {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.fileSizeKey]
+        ) else { return 0 }
+        return contents.reduce(UInt64(0)) { total, file in
+            guard file.pathExtension.lowercased() == "safetensors" else { return total }
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            return total + UInt64(max(0, size))
         }
     }
 

@@ -36,15 +36,26 @@ export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
 swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 2
 bash FloeAgent/scripts/bootstrap_native_components.sh
 python3 FloeAgent/scripts/audit_native_runtime_free.py --project
+make -C FloeAgent/LinuxGuest/runner check-net
+python3 -m unittest discover -s FloeAgent/scripts/tests -p test_readme_source_links.py
 ```
+
+`check-net` is the network-free native check for the guest's first-boot
+resolver/interfaces/git-safe-directory files and the `net=up|partial|down`
+status vocabulary; the ioctl and resolver-probe side is Linux-only and needs a
+booted guest. `test_readme_source_links.py` keeps the README quick-add buttons
+on GitHub-safe `https` targets and pins the shared Feather source URL.
 
 Since the Phase 2 TinyEMU migration there is no bundled CPython/NodeMobile
 build input: local Python/Node execute inside each environment's TinyEMU
 Linux guest, and `audit_native_runtime_free.py` fails the build if a native
-Python/Node marker returns to the project or the packaged app. The retired
+Python/Node marker, a precompiled wheel payload or a native Ruby/Rust runtime
+returns to the project or the packaged app. The retired
 recipes (pinned runtime bootstrap, ios-wheelhouse builders, Node tools) are
 archived, not wired into the build, under
-`FloeAgent/ThirdParty/NativeRuntimeArchive/`.
+`FloeAgent/ThirdParty/NativeRuntimeArchive/`. WASM stays a separate
+compatibility route (`ThirdParty/WasmKit`, `ThirdParty/PHPWASI`, signed
+capability catalog) and is not an App-bundled language runtime.
 
 Check mode does not install resources or modify locks. Qualification covers environment, package, media, persistence and signed catalog paths; it does not replace App or device tests. Run commands sharing the SwiftPM scratch directory sequentially.
 

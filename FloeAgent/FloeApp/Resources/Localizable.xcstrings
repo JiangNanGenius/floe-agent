@@ -16336,6 +16336,108 @@
           }
         }
       }
+    },
+    "settings.exec.linux.section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux runtime"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 运行时"
+          }
+        }
+      }
+    },
+    "settings.exec.linux.start_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start the first Linux environment here, or manage each environment below."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可在此启动第一个 Linux 环境，或在下方逐个管理环境。"
+          }
+        }
+      }
+    },
+    "environment.backend.network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guest network"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "客户机网络"
+          }
+        }
+      }
+    },
+    "environment.backend.network.up": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Working (interface, route and DNS)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正常（网卡、路由和 DNS）"
+          }
+        }
+      }
+    },
+    "environment.backend.network.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interface up, DNS unanswered"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网卡已启用，DNS 无应答"
+          }
+        }
+      }
+    },
+    "environment.backend.network.down": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interface not configured"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网卡未配置成功"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

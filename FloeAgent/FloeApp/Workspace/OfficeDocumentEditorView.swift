@@ -505,7 +505,14 @@ final class OfficeFileSession: ObservableObject {
 
     private func executeEdit() async -> Bool {
         // No document yet: the open intent must complete first. A tap that
-        // arrives while the open owns the session is queued by performIntent.
+        // arrives while the open owns the session is queued by performIntent;
+        // a tap that beats the open entirely (the standalone host's edit
+        // intent can run before its parent's `.task` open) opens the requested
+        // document here and then continues into edit. Dropping that intent
+        // left the PPTX/Word/Excel editor on a preview with no edit entry.
+        if session == nil {
+            guard requestedURL != nil, await executePreview() else { return false }
+        }
         guard session != nil else { return false }
         if !readOnly, controller != nil, phase == .ready { return true }
         // A cloud/network snapshot has no write-back target yet: editing would
@@ -575,10 +582,17 @@ final class OfficeFileSession: ObservableObject {
     /// A host that never reports an open must not leave the surface on a
     /// spinner forever. The watchdog only fires while this exact controller is
     /// still loading and reports a truthful failed open with retained copies.
+    ///
+    /// An editable open is not just a load: the engine must also leave preview
+    /// mode, which a chart-heavy PPTX or a cold compact-layout start can take
+    /// longer than a plain preview. The editable budget is therefore larger
+    /// (45 s); the permission acknowledgement and save paths keep their own
+    /// separate, smaller bounds.
     private func startOpenWatchdog(for native: FloeOfficeNativeViewController, readOnly: Bool) {
         cancelOpenWatchdog()
+        let budget: UInt64 = readOnly ? 30_000_000_000 : 45_000_000_000
         openWatchdog = Task { @MainActor [weak self, weak native] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            try? await Task.sleep(nanoseconds: budget)
             guard !Task.isCancelled, let self, let native, self.controller === native,
                   self.phase == .loading, !self.runtimeFailed else { return }
             self.runtimeFailed = true
@@ -1541,6 +1555,7 @@ struct OfficeDocumentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var confirmingDiscard = false
+    @State private var confirmingClose = false
     @State private var comparingVersions = false
     @State private var convertedExport: OfficeConvertedExport?
     @State private var export: DocumentExportSnapshot?
@@ -1700,18 +1715,42 @@ struct OfficeDocumentEditorView: View {
                 }
                 Button("继续编辑", role: .cancel) {}
             }
+            .confirmationDialog("关闭前保存修改？", isPresented: $confirmingClose, titleVisibility: .visible) {
+                Button("保存并关闭") {
+                    Task { await saveAndDismiss() }
+                }
+                Button("放弃修改", role: .destructive) {
+                    Task { if await session.discardAndReturn() { dismissEditor() } }
+                }
+                Button("取消", role: .cancel) {}
+            } message: { Text("保存会通过共享保存流程写回原文件；放弃会删除编辑副本。") }
     }
 
     private var backButton: some View {
         Button("返回", systemImage: "chevron.left") {
             if session.phase == .failed { dismissEditor() }
-            else { Task { await saveAndDismiss() } }
+            else if ownsStandaloneExit {
+                // Save/discard/cancel instead of an implicit save: every
+                // format (DOCX/XLSX/PPTX) reaches the same shared save
+                // service, and the engine's modified flag decides whether the
+                // prompt is needed at all.
+                Task {
+                    if await session.hasLocalEditsToProtect() { confirmingClose = true }
+                    else { await saveAndDismiss() }
+                }
+            } else {
+                Task { await saveAndDismiss() }
+            }
         }
         .labelStyle(.iconOnly).frame(width: 44, height: 44)
         .disabled(!session.canAct && session.phase != .failed)
         .accessibilityIdentifier("office.editor.back")
         .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
     }
+
+    /// The fully standalone workspace-preview editor owns its exit decision;
+    /// feature-owned hosts (Notes, IDE) keep their own leave guards.
+    private var ownsStandaloneExit: Bool { onSaved == nil && onClose == nil }
 
     /// The App owns the edit entry: a preview exposes one clear host-level
     /// Edit action in its own top chrome on every size class (never a floating

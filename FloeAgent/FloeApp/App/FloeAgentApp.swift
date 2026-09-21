@@ -259,6 +259,11 @@ struct RootView: View {
                 Task {
                     try? await environment.configurationSync.synchronize()
                     await environment.conversationCenter.reload()
+                    // Guest git writes through 9p cannot post a host
+                    // notification; re-reading here makes those changes (and
+                    // anything else that landed while suspended) visible in
+                    // an open source-control pane.
+                    await environment.sourceControlCenter.refreshOnForeground()
                 }
             }
             if newPhase != .active {

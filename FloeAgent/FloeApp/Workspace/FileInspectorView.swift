@@ -138,7 +138,7 @@ struct FileInspectorView: View {
                     Spacer(minLength: 0)
                     // Already unwrapped by the enclosing `if let previewPath`;
                     // re-binding here would be a non-optional conditional bind.
-                    if isOfficePreview(previewPath) || isPDFPreview(previewPath) {
+                    if Self.previewHeaderShowsIDEEntry(for: previewPath) {
                         openDocumentInIDEButton
                     } else if canOpenCodeWorkbenchForPreview {
                         openIDEButton
@@ -261,17 +261,20 @@ struct FileInspectorView: View {
         .accessibilityIdentifier("workspace.openIDE")
     }
 
-    private func isOfficePreview(_ path: String) -> Bool {
-        WorkspaceFileRouter.destination(for: path) == .officeEditor && OfficeFileSession.available
-    }
-
-    private func isPDFPreview(_ path: String) -> Bool {
+    /// Preview-header routing policy. A PDF's expand action still opens the
+    /// IDE's internal viewer tab, but an Office document does not: its primary
+    /// action is the standalone full-screen Office editor inside the preview
+    /// (`file.preview.office.edit`), and the IDE embedded tab is reserved for
+    /// opens that start in the IDE file tree. Sending an Office preview into
+    /// the IDE instead mixed the two routes and could leave the document on an
+    /// embedded loading surface.
+    static func previewHeaderShowsIDEEntry(for path: String) -> Bool {
         WorkspaceTextPolicy.isPDFPath(path)
     }
 
-    /// The file manager's expand action for an Office/PDF document opens the
-    /// IDE, where the document lives in an internal editor tab (native
-    /// overlay) — never an outer task page and never a text decode.
+    /// The file manager's expand action for a PDF document opens the IDE,
+    /// where the document lives in an internal viewer tab (native overlay) —
+    /// never an outer task page and never a text decode.
     /// Disabled only while the workspace has no file service.
     private var openDocumentInIDEButton: some View {
         Button { showsIDE = true } label: {

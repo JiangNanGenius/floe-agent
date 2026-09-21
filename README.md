@@ -21,9 +21,9 @@
 ![Floe Agent new-task workspace on iPad](docs/images/floe-agent-new-task-ipad.webp)
 
 <p align="center">
-  <a href="feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json"><strong>Add to Feather</strong></a>
+  <a href="https://www.floe-agent.com/#download"><strong>Add to Feather</strong></a>
   ·
-  <a href="altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json"><strong>Add to AltStore</strong></a>
+  <a href="https://www.floe-agent.com/#download"><strong>Add to AltStore</strong></a>
   ·
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>Download releases</strong></a>
 </p>
@@ -102,7 +102,7 @@ GitHub prereleases include an unsigned IPA for advanced testers and downstream p
 
 ### Feather source
 
-Add the stable Floe feed directly to [Feather](feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json) or [AltStore](altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json). Its independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md).
+The stable Floe feed is published at `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`. Open the [download page](https://www.floe-agent.com/#download) and choose **Add to Feather** or **Add to AltStore**, or paste the source URL into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the website is the working quick-add entry. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md).
 
 ### Build from source
 

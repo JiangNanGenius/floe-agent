@@ -638,8 +638,29 @@ public actor LocalModelRuntime {
                     "这个模型版本暂不受支持，请在本地模型列表中选择可用型号"
                 )
             }
+            // Deterministic damage first: no memory measurement or MLX call
+            // can turn a truncated/rewritten snapshot into a working model,
+            // and reporting it as a memory problem sends the user to the
+            // wrong repair. The check is bounded (headers and file sizes
+            // only), runs only for a directory Floe actually installed
+            // (manifest present), and never deletes anything.
+            let snapshotEntry = CuratedLocalModelCatalog.knownEntries.first(where: { $0.id == modelID })
+            let snapshotProblems = LocalModelStore.hasInstallManifest(in: snapshot.directory)
+                ? LocalModelSnapshotIntegrity.problems(directory: snapshot.directory, entry: snapshotEntry)
+                : []
+            if let problem = snapshotProblems.first {
+                FloeLogger(category: .providers).warning(
+                    "localInferenceSnapshotInvalid trace=\(traceID) model=\(modelID) problems=\(snapshotProblems.count) first=\(problem.summary)"
+                )
+                throw LocalInferenceError.corruptModelSnapshot(problem.summary)
+            }
             let mappedBytes = snapshot.weightBytes
             let physicalMemory = ProcessInfo.processInfo.physicalMemory
+            // Memory already admitted to other in-process runtimes (the
+            // TinyEMU Linux guest with its fixed RAM budget) is subtracted
+            // from the allowance: a model must not be admitted on top of a
+            // guest whose pages the OS has not charged yet.
+            let reservedMemory = ResidentMemoryReservations.totalBytes()
             // Reclaim BEFORE measuring so the allowance describes the process
             // after the previous turn's teardown (drain + cache clear +
             // autorelease drain) rather than before it. The build-198 device
@@ -652,7 +673,8 @@ public actor LocalModelRuntime {
             var samples = [sampleMemory(index: 0)]
             if !LocalInferenceResourcePolicy.canLoad(
                 mappedBytes: mappedBytes,
-                physicalMemoryBytes: samples[0].availableBytes
+                physicalMemoryBytes: samples[0].availableBytes,
+                reservedBytes: reservedMemory
             ), preflightSettleSamples > 0 {
                 // Bounded settle window: reclaim, wait briefly for the kernel
                 // to return the freed pages, re-measure. Stops as soon as the
@@ -664,7 +686,8 @@ public actor LocalModelRuntime {
                     samples.append(sample)
                     if LocalInferenceResourcePolicy.canLoad(
                         mappedBytes: mappedBytes,
-                        physicalMemoryBytes: sample.availableBytes
+                        physicalMemoryBytes: sample.availableBytes,
+                        reservedBytes: reservedMemory
                     ) { break }
                 }
             }
@@ -672,7 +695,8 @@ public actor LocalModelRuntime {
             guard let viable = samples.first(where: {
                 LocalInferenceResourcePolicy.canLoad(
                     mappedBytes: mappedBytes,
-                    physicalMemoryBytes: $0.availableBytes
+                    physicalMemoryBytes: $0.availableBytes,
+                    reservedBytes: reservedMemory
                 )
             }) else {
                 lifecycle.recordPreflightRejected()
@@ -686,16 +710,19 @@ public actor LocalModelRuntime {
                 )
                 throw LocalInferenceError.insufficientMemory(
                     required: mappedBytes,
-                    physical: bestAvailable
+                    physical: bestAvailable,
+                    reserved: UInt64(max(0, reservedMemory))
                 )
             }
             let availableMemory = viable.availableBytes
             let measuredProfile = LocalInferenceResourcePolicy.profile(
                 mappedBytes: mappedBytes,
                 // Re-evaluate the tier for every load. Background tasks,
-                // decoded images and a previously loaded model can all change
-                // the process allowance without changing installed RAM.
-                physicalMemoryBytes: availableMemory
+                // decoded images, a running Linux guest and a previously
+                // loaded model can all change the process allowance without
+                // changing installed RAM.
+                physicalMemoryBytes: availableMemory,
+                reservedBytes: reservedMemory
             )
             let profile = Self.adjustedProfile(for: modelID, profile: measuredProfile)
             let gdnChunkCapped = profile.batchSize != measuredProfile.batchSize
@@ -1219,7 +1246,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 kind: .contextOverflow,
                 providerMessage: "The prepared on-device prompt (including native tool schemas) exceeded the local model context window. Compacting the conversation and retrying once; completed tools are not replayed."
             ))
-        case .insufficientMemory(let required, let available):
+        case .insufficientMemory(let required, let available, _):
             return .error(AgentEvent.NormalizedError(
                 // Resource exhaustion is transient and retryable; the
                 // harness retries from the saved dispatch checkpoint after

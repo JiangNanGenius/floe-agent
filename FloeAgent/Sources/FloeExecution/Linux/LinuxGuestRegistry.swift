@@ -65,6 +65,10 @@ public actor TinyEMULinuxGuestRegistry {
         var startedAt: Date
         var taskID: String?
         var forwards: [LinuxGuestServiceForward]
+        /// First-boot network result reported by the runner during this
+        /// session's capability handshake. nil when the boot path did not
+        /// negotiate (unknown, never assumed ready).
+        var networkStatus: LinuxGuestNetworkStatus?
     }
 
     private let environments: any LinuxGuestEnvironmentProviding
@@ -155,7 +159,8 @@ public actor TinyEMULinuxGuestRegistry {
                 imageDistributable: distributable,
                 lastResetSharedImpact: lastImpacts[environmentID],
                 activeGuestCount: admitted,
-                reservedGuestRAMMB: reservedRAM
+                reservedGuestRAMMB: reservedRAM,
+                networkStatus: session.networkStatus
             )
         }
         return LinuxGuestStatus(
@@ -198,6 +203,22 @@ public actor TinyEMULinuxGuestRegistry {
             )
         }
         guestReservations[environmentID] = ramMB
+        publishReservation(environmentID: environmentID, ramMB: ramMB)
+    }
+
+    /// Publishes the admitted guest RAM to the process-wide reservation
+    /// registry so the local-model memory preflight subtracts a running
+    /// guest's budget instead of admitting a model on top of pages the OS has
+    /// not charged yet. FloeExecution owns the reservation; FloeCore only
+    /// carries the number.
+    private func publishReservation(environmentID: String, ramMB: Int?) {
+        let bytes = Int64(max(0, ramMB ?? 0)) * 1_048_576
+        ResidentMemoryReservations.set(id: "linux-guest:" + environmentID, bytes: bytes)
+    }
+
+    /// Releases the published reservation for one environment.
+    private func clearReservation(environmentID: String) {
+        ResidentMemoryReservations.clear(id: "linux-guest:" + environmentID)
     }
 
     /// Starts the environment's guest. Returns false when the environment is
@@ -241,7 +262,10 @@ public actor TinyEMULinuxGuestRegistry {
             pendingStops.remove(environmentID)
             // A failed start whose VM refused to stop keeps its reservation:
             // the quarantined session still owns the environment's disk.
-            if !sessionRegistered, !quarantinedByFailure { guestReservations[environmentID] = nil }
+            if !sessionRegistered, !quarantinedByFailure {
+                guestReservations[environmentID] = nil
+                clearReservation(environmentID: environmentID)
+            }
         }
 
         // Bound the device's guest budget here, before the image is verified
@@ -315,6 +339,7 @@ public actor TinyEMULinuxGuestRegistry {
         // and returns a fresh channel over the renewed console stream; without
         // an upgrade the probed channel itself is the live one.
         var sessionChannel = channel
+        var negotiatedCapabilities: String?
         if descriptor.writableDirectory != nil {
             do {
                 // Persistent-disk runner upgrade: the disk is a mutable clone,
@@ -326,13 +351,15 @@ public actor TinyEMULinuxGuestRegistry {
                 // into the new runner. Without an artifact the start fails with
                 // an actionable upgrade error — a stale runner is never used
                 // silently.
-                sessionChannel = try await ensureGuestRunnerCurrent(
+                let current = try await ensureGuestRunnerCurrent(
                     descriptor: descriptor,
                     image: image,
                     imageDirectory: images.imageRoot?.appendingPathComponent(descriptor.imageID, isDirectory: true),
                     handle: handle,
                     channel: channel
                 )
+                sessionChannel = current.channel
+                negotiatedCapabilities = current.capabilities
             } catch {
                 lastErrors[environmentID] = error.localizedDescription
                 quarantinedByFailure = await abandonFailedStart(
@@ -369,7 +396,8 @@ public actor TinyEMULinuxGuestRegistry {
             channel: sessionChannel,
             startedAt: Date(),
             taskID: taskID,
-            forwards: []
+            forwards: [],
+            networkStatus: LinuxGuestNetworkStatus.from(capabilities: negotiatedCapabilities)
         )
         do {
             // Requested forwards are part of the start contract: if the
@@ -400,8 +428,13 @@ public actor TinyEMULinuxGuestRegistry {
         sessionRegistered = true
         lastErrors[environmentID] = nil
         FloeLogger(category: .tools).info(
-            "Linux guest started environment=\(environmentID) image=\(image.id) ramMB=\(limits.clampedRAMMB(descriptor.ramMB)) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB)"
+            "Linux guest started environment=\(environmentID) image=\(image.id) ramMB=\(limits.clampedRAMMB(descriptor.ramMB)) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB) network=\(session.networkStatus?.rawValue ?? "unknown")"
         )
+        if let network = session.networkStatus, !network.isReady, let diagnostic = network.diagnostic {
+            // The guest still starts: local shell/file work is valid. The
+            // degraded network is recorded and surfaced, never smoothed over.
+            lastErrors[environmentID] = "Linux guest network \(network.rawValue): \(diagnostic)"
+        }
         return true
     }
 
@@ -450,7 +483,7 @@ public actor TinyEMULinuxGuestRegistry {
         imageDirectory: URL?,
         handle: LinuxGuestSessionHandle,
         channel: LinuxGuestCommandChannel
-    ) async throws -> LinuxGuestCommandChannel {
+    ) async throws -> (channel: LinuxGuestCommandChannel, capabilities: String) {
         let environmentID = descriptor.id
         let expected = image.runnerCapabilities?.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -469,7 +502,7 @@ public actor TinyEMULinuxGuestRegistry {
                     descriptor: descriptor
                 )
             }
-            return channel
+            return (channel, capabilities)
         }
 
         // 2. Legacy runner. Without a verified artifact there is no safe
@@ -557,7 +590,7 @@ public actor TinyEMULinuxGuestRegistry {
         FloeLogger(category: .tools).info(
             "Linux guest runner upgraded in place environment=\(environmentID) caps=\(capabilities)"
         )
-        return channel
+        return (channel, capabilities)
     }
 
     private func recordRunnerLedger(
@@ -920,6 +953,7 @@ public actor TinyEMULinuxGuestRegistry {
             // start that will not register one.
             if !startingEnvironments.contains(environmentID) {
                 guestReservations[environmentID] = nil
+                clearReservation(environmentID: environmentID)
                 quarantinedEnvironments.remove(environmentID)
             }
             return
@@ -945,6 +979,7 @@ public actor TinyEMULinuxGuestRegistry {
         }
         quarantinedEnvironments.remove(environmentID)
         guestReservations[environmentID] = nil
+        clearReservation(environmentID: environmentID)
         // The disk and shares are untouched; only runtime state was dropped.
         lastImpacts[environmentID] =
             "\(action): guest runtime for \(environmentID) stopped and destroyed; persistent disk and shares preserved; other environments untouched"

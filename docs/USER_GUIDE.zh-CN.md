@@ -241,7 +241,9 @@ Floe 会向快捷指令公开**立即运行 Floe 任务**和**安排 Floe 任务
 
 ## 12. 本机 Python、受管包和代码编辑
 
-自 Phase 2（TinyEMU 迁移）起，本机 Python 与 Node.js 在每个任务环境的 TinyEMU Linux 客体中运行（riscv64 的真实 Debian 用户态），不再使用随包内置的 iOS 解释器。新建及未显式配置的环境默认使用 Linux 后端；显式选择**原生**的环境只保留 POSIX Shell 兼容子集（无 Python/Node）。尚未安装 Linux 组件时，所有 Python/Node 入口都会如实报告该状态，可在 设置 → 执行 中下载（固定目录、SHA-512 校验）。
+自 Phase 2（TinyEMU 迁移）起，本机 Python 与 Node.js 在每个任务环境的 TinyEMU Linux 客体中运行（riscv64 的真实 Debian 用户态），不再使用随包内置的 iOS 解释器。新建及未显式配置的环境默认使用 Linux 后端；显式选择**原生**的环境只保留 POSIX Shell 兼容子集（无 Python/Node）。尚未安装 Linux 组件时，所有依赖 Linux 的入口（Shell、Python、Node/npm、apt、后台服务）都会自行启动同一个固定目录、SHA-512 校验的下载任务，完成后继续执行原命令，不需要先让模型准备 Linux。设置 → 执行环境会显示组件状态以及下载/更新/启动入口，并提供进度、取消和重试。
+
+首次启动时客体自行配置网络：启用 slirp 网卡地址与默认路由，写入可用的 `/etc/resolv.conf`（不使用引擎保留但不可用的 10.0.2.3），并在系统 git 配置中把 `/workspace` 与 `/floe/env` 标记为安全目录，使 apt 安装的客体 git 能接受 9p 挂载上属主为宿主的文件。客体会报告 `up`、`partial`（网卡可用但 DNS 无应答）或 `down`，设置界面显示该状态，而不是默认网络可用。
 
 Shell、`exec.localPython`、受管安装服务和依赖页面共用每个环境唯一的解释器：客体 Debian python3 加该环境共享的 venv。`pip install`、`pip3` 与 `python3 -m pip` 直接运行客体真实 pip，并使用环境配置的索引——兼容的 Linux riscv64 wheel（含 NumPy、pandas、Pillow、lxml 等已发布版本）可正常安装。Node 使用客体 apt 的 `nodejs`/`npm` 与环境级前缀；客体自带 pnpm 时才提供 pnpm。失败或取消的变更保留上一代依赖；迁移前的旧安装保留在磁盘上（Python 包会在客体首次启动后按层清单重装到 venv；旧目录不会加入 PYTHONPATH）。调用工具所要求的任务权限和软件包审核仍然适用。
 
@@ -264,7 +266,7 @@ Build 179 候选版还以签名 WASM 能力形式提供 Lua 5.4.8：在 Shell �
 
 Agent 可通过 `document.createWord`、`document.createWorkbook` 和 `presentation.createDeck` 创建原生 DOCX、XLSX 与 PPTX；通过 `document.office.inspect` 读取语义字段，并使用 `document.office.updateText` 修改受限的文字、单元格、公式和幻灯片备注。这些操作在当前工作区内完成时属于本机低风险操作，不等待审批模型。
 
-从工作区或手记打开文档，进入全屏 Office 编辑器。带有内嵌 Office 引擎的构建提供 Word、表格和演示文稿的版面与编辑控件，文档菜单按类型提供画笔批注和放映等操作；手记保留文档标签页及助手入口。修复候选版将外层操作合并为一行，窄屏的更多操作收入菜单。保存会检查原文件版本，冲突或失败时保留可恢复草稿；高级宏、动画和桌面 Office 格式完全保真不作保证。
+从工作区或手记打开文档，进入全屏 Office 编辑器。带有内嵌 Office 引擎的构建提供 Word、表格和演示文稿的版面与编辑控件，文档菜单按类型提供画笔批注和放映等操作；工作区预览中的 Office 文档保持这条独立全屏路径，只有在 IDE 文件树中打开的文档才使用 IDE 内嵌标签。手记保留文档标签页及助手入口。保存会检查原文件版本，冲突或失败时保留可恢复草稿；独立编辑器存在未保存修改时关闭会询问保存、放弃或取消，Command-S 会通过 DOCX/XLSX/PPTX 共用的保存流程原地保存。高级宏、动画和桌面 Office 格式完全保真不作保证。
 
 Build 179 候选版调整了 Office 的字体选择、保存和关闭处理。文档被其他编辑器修改时，会保留你的草稿并提供冲突处理选项。原生控件、保存重开和导出仍需设备验证。
 

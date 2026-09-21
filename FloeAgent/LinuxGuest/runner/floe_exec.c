@@ -119,6 +119,7 @@
 #include <unistd.h>
 
 #include "floe_clock.h"
+#include "floe_net.h"
 
 #ifdef __linux__
 #include <sys/mount.h>
@@ -130,6 +131,11 @@
 
 #define FLOE_RUNNER_VERSION "2.0.0"
 #define FLOE_PROTOCOL_VERSION 3
+
+// Last reported network state, exposed in the CAPS answer (`net=...`) so the
+// host can report readiness honestly instead of assuming slirp means working
+// DNS. Native builds keep it at FLOE_NET_DOWN and never touch the host.
+static floe_net_status g_net_status = FLOE_NET_DOWN;
 
 // Bound on unconsumed console input. The host command envelope is capped at
 // LinuxGuestLimits.maxCommandBytes (32 KiB) by the app; this is far above it.
@@ -333,9 +339,10 @@ static int emit_failed(const char *token, const char *reason) {
 static int emit_caps(const char *token) {
     char buf[MAX_TOKEN + 128];
     int n = snprintf(buf, sizeof buf,
-                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d\x1e",
+                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d net=%s\x1e",
                      token, FLOE_RUNNER_VERSION, FLOE_PROTOCOL_VERSION,
-                     MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_SESSIONS);
+                     MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_SESSIONS,
+                     floe_net_status_text(g_net_status));
     if (n <= 0 || (size_t)n >= sizeof buf) return -1;
     if (write_all(STDOUT_FILENO, buf, (size_t)n) != 0) return -1;
     return emit_end(token, 0);
@@ -1323,6 +1330,228 @@ static void guest_bring_up(void) {
 static void guest_bring_up(void) {}
 #endif
 
+// ---------------------------------------------------------------------------
+// First-boot guest network (Linux only)
+// ---------------------------------------------------------------------------
+
+#ifdef __linux__
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <net/route.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+// Replaces path with `content` through a same-directory temp file + rename so
+// a crash cannot leave a truncated resolver or git config behind. Best
+// effort: failures are reported by the caller's status, never hidden.
+static int write_file_atomic(const char *path, const char *content, size_t len) {
+    char tmp[256];
+    int n = snprintf(tmp, sizeof tmp, "%s.floe.tmp", path);
+    if (n <= 0 || (size_t)n >= sizeof tmp) return -1;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return -1;
+    if (write_all(fd, content, len) != 0) {
+        close(fd);
+        (void)unlink(tmp);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        (void)unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, path) != 0) {
+        (void)unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+// Renders a config with floe_net_render_* and writes it, reporting one line
+// per failure. A missing parent directory is created.
+static int write_rendered(const char *path, int (*render)(char *, size_t)) {
+    char content[FLOE_NET_CONFIG_MAX];
+    char dir[256];
+    int n = render(content, sizeof content);
+    if (n < 0) {
+        diag("floe-exec: net %s: configuration does not fit\n", path);
+        return -1;
+    }
+    const char *slash = strrchr(path, '/');
+    if (slash != NULL && slash != path) {
+        size_t dlen = (size_t)(slash - path);
+        if (dlen < sizeof dir) {
+            memcpy(dir, path, dlen);
+            dir[dlen] = '\0';
+            mkdir_p(dir, 0755);
+        }
+    }
+    if (write_file_atomic(path, content, (size_t)n) != 0) {
+        diag("floe-exec: net %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+// Applies ioctl(2) network configuration: address, netmask, default route.
+// No shell, no bus, no DHCP client needed. Returns 0 only when the interface
+// is UP with the slirp address and a default route through the slirp host.
+static int apply_interface_config(int fd) {
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof ifr);
+    if (strlen(FLOE_NET_INTERFACE) >= sizeof ifr.ifr_name) return -1;
+    memcpy(ifr.ifr_name, FLOE_NET_INTERFACE, strlen(FLOE_NET_INTERFACE) + 1);
+
+    struct sockaddr_in *sin;
+
+    // Address.
+    sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    sin->sin_family = AF_INET;
+    if (inet_pton(AF_INET, FLOE_NET_GUEST_ADDRESS, &sin->sin_addr) != 1) return -1;
+    if (ioctl(fd, SIOCSIFADDR, &ifr) != 0) return -1;
+
+    // Netmask.
+    memset(&ifr.ifr_netmask, 0, sizeof ifr.ifr_netmask);
+    sin = (struct sockaddr_in *)&ifr.ifr_netmask;
+    sin->sin_family = AF_INET;
+    if (inet_pton(AF_INET, FLOE_NET_NETMASK, &sin->sin_addr) != 1) return -1;
+    if (ioctl(fd, SIOCSIFNETMASK, &ifr) != 0) return -1;
+
+    // Up (also re-reads flags: SIOCSIFFLAGS clobbers untouched fields, so
+    // preserve the current flag set).
+    memset(&ifr.ifr_flags, 0, sizeof ifr.ifr_flags);
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) != 0) return -1;
+    ifr.ifr_flags = (short)(ifr.ifr_flags | IFF_UP | IFF_RUNNING | IFF_MULTICAST);
+    if (ioctl(fd, SIOCSIFFLAGS, &ifr) != 0) return -1;
+
+    // Default route. SIOCADDRT fails with EEXIST when the route is already
+    // there (the runner re-runs on every boot, and an image built by an older
+    // revision may already carry it), which is success for this purpose.
+    struct rtentry route;
+    memset(&route, 0, sizeof route);
+    sin = (struct sockaddr_in *)&route.rt_dst;
+    sin->sin_family = AF_INET;
+    sin->sin_addr.s_addr = htonl(INADDR_ANY);
+    sin = (struct sockaddr_in *)&route.rt_genmask;
+    sin->sin_family = AF_INET;
+    sin->sin_addr.s_addr = htonl(INADDR_ANY);
+    sin = (struct sockaddr_in *)&route.rt_gateway;
+    sin->sin_family = AF_INET;
+    if (inet_pton(AF_INET, FLOE_NET_GATEWAY, &sin->sin_addr) != 1) return -1;
+    route.rt_flags = RTF_UP | RTF_GATEWAY;
+    route.rt_dev = (char *)FLOE_NET_INTERFACE;
+    if (ioctl(fd, SIOCADDRT, &route) != 0 && errno != EEXIST) {
+        diag("floe-exec: net default route: %s\n", strerror(errno));
+        // The address is still usable on-link; report a partial rather than
+        // pretending nothing was configured.
+    }
+
+    ifr.ifr_flags = 0;
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) != 0) return -1;
+    if ((ifr.ifr_flags & IFF_UP) == 0) return -1;
+    return 0;
+}
+
+// Bounded UDP DNS query for the first resolver. One short packet, 2 s
+// timeout, no retries: this is a readiness observation, not a resolver.
+static int resolver_answers(void) {
+    unsigned char query[64];
+    size_t qlen = 0;
+    // ID 0x464c ("FL"), standard query, one question, recursion desired.
+    query[qlen++] = 0x46; query[qlen++] = 0x4c;
+    query[qlen++] = 0x01; query[qlen++] = 0x00;
+    query[qlen++] = 0x00; query[qlen++] = 0x01;
+    query[qlen++] = 0x00; query[qlen++] = 0x00;
+    query[qlen++] = 0x00; query[qlen++] = 0x00;
+    query[qlen++] = 0x00; query[qlen++] = 0x00;
+    static const char name[] = "floe-agent.com";
+    const char *part = name;
+    while (*part != '\0') {
+        const char *dot = strchr(part, '.');
+        size_t label = dot != NULL ? (size_t)(dot - part) : strlen(part);
+        if (label == 0 || label > 63 || qlen + label + 1 + 4 > sizeof query) return 0;
+        query[qlen++] = (unsigned char)label;
+        memcpy(query + qlen, part, label);
+        qlen += label;
+        if (dot == NULL) break;
+        part = dot + 1;
+    }
+    query[qlen++] = 0x00; // root label
+    query[qlen++] = 0x00; query[qlen++] = 0x01; // type A
+    query[qlen++] = 0x00; query[qlen++] = 0x01; // class IN
+
+    struct sockaddr_in server;
+    memset(&server, 0, sizeof server);
+    server.sin_family = AF_INET;
+    server.sin_port = htons(53);
+    if (inet_pton(AF_INET, FLOE_NET_RESOLVER_1, &server.sin_addr) != 1) return 0;
+
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return 0;
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+
+    int ok = 0;
+    if (sendto(fd, query, qlen, 0, (struct sockaddr *)&server, sizeof server) == (ssize_t)qlen) {
+        unsigned char reply[512];
+        ssize_t got = recv(fd, reply, sizeof reply, 0);
+        // Accept any well-formed reply carrying our transaction ID; the
+        // point is that the path answers, not what it resolved.
+        if (got >= 12 && reply[0] == 0x46 && reply[1] == 0x4c) ok = 1;
+    }
+    close(fd);
+    return ok;
+}
+
+// First-boot network. Runs before the runner accepts any frame, so a guest
+// that answers HELLO has already had its interface, route and resolver
+// configured. Failures are reported through g_net_status and the console; the
+// command channel still starts, because a guest without network is still a
+// usable local shell.
+static void guest_bring_up_network(void) {
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        diag("floe-exec: net %s: no socket: %s\n", FLOE_NET_INTERFACE, strerror(errno));
+        return;
+    }
+    int configured = apply_interface_config(fd) == 0;
+    close(fd);
+    if (!configured) {
+        diag("floe-exec: net %s: interface configuration failed: %s\n",
+             FLOE_NET_INTERFACE, strerror(errno));
+        g_net_status = FLOE_NET_DOWN;
+        return;
+    }
+
+    // A failed config file is a degraded network (the running interface still
+    // works), not silence: report it and keep going.
+    if (write_rendered("/etc/resolv.conf", floe_net_render_resolv_conf) != 0 ||
+        write_rendered("/etc/network/interfaces.d/" FLOE_NET_INTERFACE,
+                       floe_net_render_interfaces) != 0) {
+        diag("floe-exec: net resolver/interface configuration incomplete\n");
+    }
+    if (write_rendered("/etc/gitconfig", floe_net_render_gitconfig) != 0) {
+        diag("floe-exec: net /etc/gitconfig (git safe.directory) not written\n");
+    }
+
+    if (resolver_answers()) {
+        g_net_status = FLOE_NET_UP;
+        diag("floe-exec: net %s=%s/%s gw=" FLOE_NET_GATEWAY " dns=" FLOE_NET_RESOLVER_1 " status=up\n",
+             FLOE_NET_INTERFACE, FLOE_NET_GUEST_ADDRESS, FLOE_NET_GUEST_PREFIX);
+    } else {
+        g_net_status = FLOE_NET_PARTIAL;
+        diag("floe-exec: net %s=%s/%s gw=" FLOE_NET_GATEWAY " dns=" FLOE_NET_RESOLVER_1
+             " status=partial (resolver did not answer in 2s)\n",
+             FLOE_NET_INTERFACE, FLOE_NET_GUEST_ADDRESS, FLOE_NET_GUEST_PREFIX);
+    }
+}
+#else
+// Native host build: the developer machine's network is never touched.
+static void guest_bring_up_network(void) {}
+#endif
+
 // True only for the guest's init process. The floe-guest-init script reaches
 // the runner through exec, so PID 1 is preserved; anything else (the native
 // protocol harness, the developer host, a runner started inside a live guest)
@@ -2208,6 +2437,10 @@ typedef struct {
 int main(void) {
     if (getpid() == 1 || getenv("FLOE_GUEST_INIT") != NULL) {
         guest_bring_up();
+        // Interface, default route, resolver and git safe.directory are
+        // applied before the channel accepts a frame, so a guest that
+        // answers HELLO is already usable for apt/pip/npm and guest git.
+        guest_bring_up_network();
     }
     if (is_guest_pid1()) {
         // guest_bring_up() mounted /proc; the boot clock must be applied

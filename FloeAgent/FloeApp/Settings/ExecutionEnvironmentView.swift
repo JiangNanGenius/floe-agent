@@ -17,8 +17,24 @@ import FloeSSH
 struct ExecutionEnvironmentView: View {
     @ObservedObject var center: SettingsCenter
 
+    /// Explicit Linux component state for the top-level execution screen: the
+    /// same App-shared install job the environment manager and the terminal
+    /// empty state use, so a first-use download here is shared, cancellable
+    /// and retryable rather than a second implementation.
+    @State private var linuxImageModel: LinuxImageInstallModel?
+    @State private var linuxImageStatus: LinuxGuestImageInstallationService.ImageStatus?
+    @State private var linuxEnvironmentID: String?
+    @State private var linuxGuestStatus: LinuxGuestStatus?
+    @State private var linuxBusy = false
+    @State private var linuxError: String?
+    @State private var linuxUpdateNotice: String?
+
     var body: some View {
         Form {
+            Section("settings.exec.linux.section") {
+                linuxComponentSection
+            }
+
             Section("settings.exec.runtimes") {
                 if center.runtimeInventory.isEmpty {
                     Text("settings.exec.runtimes.empty")
@@ -76,8 +92,145 @@ struct ExecutionEnvironmentView: View {
         .task {
             async let settings: Void = center.load()
             async let hosts: Void = center.environment.remoteSessionCenter.loadHosts()
-            _ = await (settings, hosts)
+            async let linux: Void = refreshLinux()
+            _ = await (settings, hosts, linux)
         }
+    }
+
+    // MARK: - Linux component (download / update / start)
+
+    @ViewBuilder
+    private var linuxComponentSection: some View {
+        if !FloePlatformServices.shared.linuxGuestImageStorageAvailable() {
+            Text("environment.backend.image_store_unavailable")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else {
+            if let model = linuxImageModel {
+                LinuxImageInstallCard(model: model) {
+                    // A finished install is exactly the first-use moment:
+                    // start the environment so the component is usable, but
+                    // do not hide a start failure behind the download result.
+                    await startLinuxEnvironment()
+                }
+            }
+            if let status = linuxImageStatus {
+                LabeledContent("environment.backend.image", value: status.id)
+                if status.installed, status.verificationFailure == nil {
+                    Label("environment.backend.status.running", systemImage: "checkmark.seal")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.success)
+                } else if let failure = status.verificationFailure {
+                    Text(failure)
+                        .font(.caption2)
+                        .foregroundStyle(FloeTheme.destructive)
+                        .textSelection(.enabled)
+                }
+            }
+            if let update = linuxUpdateNotice {
+                Label(update, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(FloeTheme.pending)
+            }
+            if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus {
+                LabeledContent("environment.backend.status", value: status.running
+                    ? String(localized: "environment.backend.status.running")
+                    : String(localized: "environment.backend.status.stopped"))
+                if status.running {
+                    if let network = status.networkStatus {
+                        LabeledContent("environment.backend.network", value: networkLabel(network))
+                    }
+                    if let message = status.lastError, status.networkStatus?.isReady != true {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(FloeTheme.pending)
+                            .textSelection(.enabled)
+                    }
+                    Button("environment.backend.stop", systemImage: "stop") {
+                        Task { await stopLinuxEnvironment(id: environmentID) }
+                    }
+                    .disabled(linuxBusy)
+                } else {
+                    Button("environment.backend.start", systemImage: "play") {
+                        Task { await startLinuxEnvironment() }
+                    }
+                    .disabled(linuxBusy || status.imageInstalled == false || status.imageVerificationFailure != nil)
+                }
+            } else {
+                Text("settings.exec.linux.start_hint")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if linuxBusy { ProgressView("environment.backend.checking") }
+            if let linuxError {
+                Label(linuxError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(FloeTheme.destructive)
+                    .textSelection(.enabled)
+            }
+            // The per-environment manager entry lives in the packages section
+            // below; this section only owns the shared component and the
+            // first start, so the screen does not grow a second identical link.
+        }
+    }
+
+    private func networkLabel(_ status: LinuxGuestNetworkStatus) -> String {
+        switch status {
+        case .up: return String(localized: "environment.backend.network.up")
+        case .partial: return String(localized: "environment.backend.network.partial")
+        case .down: return String(localized: "environment.backend.network.down")
+        }
+    }
+
+    /// Reads the App-shared image state, finds the first Linux environment and
+    /// reports the real guest state. No state is invented when the service is
+    /// unavailable.
+    private func refreshLinux() async {
+        guard FloePlatformServices.shared.linuxGuestImageStorageAvailable() else { return }
+        let imageID = LinuxGuestImageDistributionCatalog.defaultImageID
+        if linuxImageModel == nil {
+            linuxImageModel = LinuxImageInstallModel(imageID: imageID)
+        }
+        await linuxImageModel?.probeOnce()
+        linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID)
+        linuxUpdateNotice = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
+        guard let reports = try? await FloePlatformServices.shared.environmentReports() else { return }
+        let linux = reports.first { $0.record.effectiveExecutionBackend == .linuxVM && $0.record.state != .deleting }
+        linuxEnvironmentID = linux?.id
+        linuxGuestStatus = await FloePlatformServices.shared.linuxGuestStatus(id: linux?.id)
+    }
+
+    private func startLinuxEnvironment() async {
+        guard !linuxBusy else { return }
+        linuxBusy = true
+        linuxError = nil
+        defer { linuxBusy = false }
+        do {
+            var id = linuxEnvironmentID
+            if id == nil {
+                let reports = try? await FloePlatformServices.shared.environmentReports()
+                id = reports?.first(where: {
+                    $0.record.effectiveExecutionBackend == .linuxVM && $0.record.state != .deleting
+                })?.id
+            }
+            guard let id else {
+                linuxError = String(localized: "environment.backend.image_missing")
+                return
+            }
+            linuxEnvironmentID = id
+            try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(id: id)
+            await refreshLinux()
+        } catch {
+            linuxError = error.localizedDescription
+        }
+    }
+
+    private func stopLinuxEnvironment(id: String) async {
+        guard !linuxBusy else { return }
+        linuxBusy = true
+        defer { linuxBusy = false }
+        await FloePlatformServices.shared.stopLinuxGuest(id: id)
+        await refreshLinux()
     }
 
     private func runtimeRow(_ entry: RuntimeInventoryEntry) -> some View {
