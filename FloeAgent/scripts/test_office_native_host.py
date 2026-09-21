@@ -3,9 +3,14 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
-from build_office_native_host import EXCLUDED_SOURCES, SYSTEM_FRAMEWORKS, framework_project
+from unittest import mock
+from build_office_native_host import (EXCLUDED_SOURCES, SYSTEM_FRAMEWORKS, HOST_PUBLIC_HEADER,
+                                      SWIFT_IMPORT_PROBE, framework_project,
+                                      verify_swift_import_probe)
+import build_office_native_host as build_host
 import office_render_gate_swift
 import office_render_readiness
 from qualify_office_device_capabilities import qualify as device_qualify
@@ -62,6 +67,66 @@ class NativeHostProjectTests(unittest.TestCase):
         project['objects']['sources']['files'].remove('build-main.m')
         with self.assertRaisesRegex(ValueError, 'boundaries changed'):
             framework_project(project, Path('/host'))
+
+
+class SwiftImportProbeContractTests(unittest.TestCase):
+    """The generated ImportProbe must match how Swift imports the host header."""
+
+    @staticmethod
+    def _iphoneos_sdk():
+        result = subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
+                                capture_output=True, text=True)
+        path = result.stdout.strip()
+        return path if result.returncode == 0 and path else None
+
+    def test_header_and_probe_agree_on_render_diagnostics(self):
+        # Static contract: the property the cloud run rejected is imported from
+        # NSDictionary<NSString *, id> * into Swift as [String: Any]?. This pins
+        # the expectation to the real public declaration even without an SDK.
+        header = HOST_PUBLIC_HEADER.read_text()
+        self.assertRegex(
+            header,
+            r'@property[^\n]*nullable\)\s*NSDictionary<NSString \*, id> \*renderDiagnostics;')
+        probe = SWIFT_IMPORT_PROBE.read_text()
+        self.assertIn('let _: [String: Any]? = editor.renderDiagnostics', probe)
+        self.assertNotIn('let _: NSDictionary? = editor.renderDiagnostics', probe)
+
+    def test_build_copies_the_verified_probe_verbatim(self):
+        # build_host must generate ImportProbe.swift from the exact fixture this
+        # contract checks, not a second, drifting copy.
+        source = Path(__file__).resolve().parent / 'build_office_native_host.py'
+        text = source.read_text()
+        self.assertIn('shutil.copyfile(SWIFT_IMPORT_PROBE, probe)', text)
+        self.assertEqual(SWIFT_IMPORT_PROBE.name, 'office_native_host_api.swift')
+
+    def test_generated_probe_compiles_against_the_real_host_header(self):
+        sdk = self._iphoneos_sdk()
+        if not sdk:
+            self.skipTest('iphoneos SDK unavailable; the cloud build runs this gate')
+        receipt = verify_swift_import_probe(sdk=sdk)
+        self.assertTrue(receipt['swiftImportProbeCompiled'])
+        # A header-only type-check must never fabricate an engine/device result.
+        self.assertFalse(receipt['engineVisibleRenderPassed'])
+        self.assertFalse(receipt['deviceVisibleRenderPassed'])
+        self.assertEqual(receipt['swiftProbeSHA256'],
+                         hashlib.sha256(SWIFT_IMPORT_PROBE.read_bytes()).hexdigest())
+
+    def test_old_nsdictionary_expectation_is_rejected(self):
+        # The exact cloud regression: NSDictionary? against a property Swift
+        # imports as [String: Any]? must fail the gate rather than be weakened.
+        sdk = self._iphoneos_sdk()
+        if not sdk:
+            self.skipTest('iphoneos SDK unavailable; the cloud build runs this gate')
+        buggy = SWIFT_IMPORT_PROBE.read_text().replace(
+            'let _: [String: Any]? = editor.renderDiagnostics',
+            'let _: NSDictionary? = editor.renderDiagnostics')
+        self.assertIn('NSDictionary?', buggy)
+        with tempfile.TemporaryDirectory() as folder:
+            bad_probe = Path(folder) / 'office_native_host_api.swift'
+            bad_probe.write_text(buggy)
+            with mock.patch.object(build_host, 'SWIFT_IMPORT_PROBE', bad_probe):
+                with self.assertRaisesRegex(AssertionError, r"\[String : Any\]\?.*NSDictionary\?|ImportProbe"):
+                    verify_swift_import_probe(sdk=sdk)
 
 
 class OfficeReleaseGateTests(unittest.TestCase):

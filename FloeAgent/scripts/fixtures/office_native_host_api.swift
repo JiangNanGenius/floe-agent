@@ -17,7 +17,11 @@ func verifyOfficeHostAPI(file: URL, directory: URL) throws -> FloeOfficeNativeVi
     // and a bounded failure path.
     editor.onVisibleRenderReady = { docType, elapsed in _ = (docType, elapsed) }
     editor.onVisibleRenderFailed = { error in _ = error }
-    let _: NSDictionary? = editor.renderDiagnostics
+    // The header declares NSDictionary<NSString *, id> * _Nullable, which Swift
+    // imports as [String: Any]? — annotating NSDictionary? fails the gate.
+    let _: [String: Any]? = editor.renderDiagnostics
+    let diagnostics = editor.renderDiagnostics ?? [:]
+    let _ = diagnostics
     editor.saveWorkingCopy { error in _ = error }
     editor.cancelPendingSave()
     editor.enterEditMode { readOnly, error in _ = (readOnly, error) }
