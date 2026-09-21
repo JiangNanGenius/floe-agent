@@ -453,6 +453,7 @@ targets:
           - MailConnectorTests.swift
           - SkillLifecycleTests.swift
           - OfficeBridgeStateTests.swift
+          - ShellCoreUtilityTests.swift
           - RARFixtures.generated.swift
     dependencies:
       - target: FloeAgent
@@ -490,6 +491,7 @@ targets:
       - path: Tests/FloeAgentUITests/MailConnectorTests.swift
       - path: Tests/FloeAgentUITests/SkillLifecycleTests.swift
       - path: Tests/FloeAgentUITests/OfficeBridgeStateTests.swift
+      - path: Tests/FloeAgentUITests/ShellCoreUtilityTests.swift
       - path: Tests/FloeProvidersTests/VideoProviderAdapterTests.swift
       - path: Tests/FloeCoreTests/CreativeMediaModelsTests.swift
       - path: Tests/FloeAgentUITests/RARFixtures.generated.swift
