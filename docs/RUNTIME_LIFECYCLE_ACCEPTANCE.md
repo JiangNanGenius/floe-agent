@@ -1,5 +1,9 @@
 # Runtime lifecycle acceptance — service restart, environment deletion, Lua install
 
+> Historical record (builds 184-185). The `apt install floe/lua` entry point named below was later replaced by
+> installation from the verified signed WASI catalog (`wasm.packages`); the lifecycle/acceptance scope recorded
+> here is preserved as written. Current behavior is described in the [user guide](USER_GUIDE.md).
+
 Status: **tests authored, source-reviewed and syntax-checked locally, not
 executed here.** Target membership is wired in `project.yml` and both CI/release
 selectors; the real FloeAppTests run must still happen in cloud CI on an iOS

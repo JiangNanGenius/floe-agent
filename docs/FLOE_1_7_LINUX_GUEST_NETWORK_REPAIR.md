@@ -1,11 +1,15 @@
 # Floe Linux guest network repair — component boot with a real device and DNS
 
-Status: **source slice committed to a `codex/` branch; no release, tag, upload
-or TestFlight change.** The repair is verified locally (pure checks, host
-protocol suite, and a real TinyEMU guest boot on macOS). The final evidence
-that the updated Debian component reports `net=up` is one read-only-ish cloud
-workflow dispatch the coordinator owns; the job creates at most a **draft**
-component release and never publishes it.
+Status: **the repair is included in build 219 and its cloud dispatch passed.**
+The coordinator's read-only-preflight + draft-only update ran on `main` as
+[run 35652797196](https://github.com/JiangNanGenius/floe-agent/actions/runs/35652797196)
+(commit `ba739b71`, 2026-09-21T20:42:56Z, success). The downloaded protocol
+evidence reports `"netStatus": "up"`, `"failures": 0`, runner 2.0.0 protocol 3,
+the runner line `net eth0=10.0.2.15/24 gw=10.0.2.2 dns=10.0.2.3 status=up`,
+CAPS `net=up`, `FLOE_NET_DEVICE_OK_02:00:00:00:00:01` and `FLOE_NET_DNS_OK`
+(artifact `linux-guest-runner-update-evidence-35652797196`, `protocol-evidence/protocol-check.json`).
+Build 219 (`v1.7.0-beta.76`, source `0b21be93`) contains the runner changes;
+physical-device network behavior still belongs to the user's acceptance.
 
 ## 1. The failure (run 35645930554)
 
@@ -129,12 +133,13 @@ configured with only `nameserver 10.0.2.3` and `apt-get update`, an apt install
 and an HTTPS fetch all returned success. The cloud component re-dispatch
 below re-proves it with the new runner and the stricter gate.
 
-## 4. Remote-only step (coordinator) — exact cloud path
+## 4. Cloud path — dispatched and passed
 
-Dispatch the read-only-preflight + draft-only update from the branch commit;
-the boot must end with `FLOE-END p3done 0`, the transcript must carry the
-runner `status=up` line, `FLOE_NET_DEVICE_OK_02:00:00:00:00:01`,
-`FLOE_NET_DNS_OK` and CAPS `net=up`:
+The read-only-preflight + draft-only update was dispatched from `main` and
+finished `success` as run 35652797196; the boot ended with `FLOE-END p3done 0`
+and the transcript carries the runner `status=up` line,
+`FLOE_NET_DEVICE_OK_02:00:00:00:00:01`, `FLOE_NET_DNS_OK` and CAPS `net=up`.
+The command shape used was:
 
 ```sh
 gh workflow run linux-guest-runner-update.yml \
@@ -148,10 +153,13 @@ gh run watch --repo JiangNanGenius/floe-agent <run-id>
 
 Pass criteria: job `update` green; `protocol-check.json` has
 `"netStatus": "up"`, `failures: 0`; the draft release is created only after
-that. If GitHub's host network ever blocks the DNS path, the job fails openly
-at the network gate (it must not be weakened): the runner then reports
-`partial`/`down`, which is an honest degraded state the Settings UI already
-surfaces, and the component is not packaged.
+that. All criteria were met by run 35652797196: job `runner update (draft only)`
+reported `success`, including "Boot the updated image and run the focused
+protocol check" and component packaging. If GitHub's host network ever blocks
+the DNS path, the job fails openly at the network gate (it must not be
+weakened): the runner then reports `partial`/`down`, which is an honest
+degraded state the Settings UI already surfaces, and the component is not
+packaged.
 
 ## 5. Licenses
 

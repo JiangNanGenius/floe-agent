@@ -1,7 +1,7 @@
 # Floe Linux guest image — build and verification guide
 
 Status: the component pipeline in
-[`.github/workflows/component-image-ci.yml`](../../.github/workflows/component-image-ci.yml)
+[`.github/workflows/component-image-ci.yml`](../.github/workflows/component-image-ci.yml)
 builds and boot-verifies a **candidate** image and its corresponding-source
 bundle as GitHub component artifacts. Nothing here is published, no app
 version/tag changes, and the image stays `distributionAllowed: false` until the
@@ -11,12 +11,12 @@ primary release decision pins the archive digest in
 Companion documents:
 [source/license manifest](FLOE_LINUX_GUEST_IMAGE_MANIFEST.md) ·
 [guest backend contract](FLOE_LINUX_GUEST_BACKEND.md) ·
-[guest runner README](../../FloeAgent/LinuxGuest/README.md).
+[guest runner README](../FloeAgent/LinuxGuest/README.md).
 
 ## Pinned inputs
 
 Every value is in
-[`pinned-inputs.json`](../../FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json)
+[`pinned-inputs.json`](../FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json)
 and is verified by the build, not trusted:
 
 | Input | Pin |

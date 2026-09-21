@@ -90,7 +90,7 @@ capability stands on its own independent evidence.
 
 ## Produced as component artifacts (nothing published yet)
 
-[`component-image-ci`](../../.github/workflows/component-image-ci.yml)
+[`component-image-ci`](../.github/workflows/component-image-ci.yml)
 produces all of these for the candidate; they are reviewable GitHub component
 artifacts with recorded digests, **not** a public release and **not** a
 published source offer. The exact ids/sizes and the boot-verification results

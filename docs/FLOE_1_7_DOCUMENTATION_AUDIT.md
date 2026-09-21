@@ -1,5 +1,16 @@
 # Floe 1.7 文档维护清单
 
+## 2026-09-22 Build 219 公开文档审计 / Build 219 public-doc audit
+
+本轮把公开文档的“当前状态”对齐到 Build 219（TinyEMU/Linux 主要本地运行时），不修改任何代码、工作流、发布标签、`feather.json` 或私有文件：
+
+- 双语 README 与使用指南改写了当前交付线：首次使用 Linux 的自动准备流程及设置／终端入口、客体网络自配置、无原生 Python/Node/Ruby 载荷、工作区 Office 预览 → 独立全屏编辑而 IDE 文件树保留内嵌标签、有界压缩包浏览（ZIP/TAR/7z）与需要 Linux 运行时的格式如实提示、IDE 源码管理即时刷新、MLX 快照校验与客体内存核算（Gemma 4 E4B 退出推荐列表）。
+- 语言包描述由旧的 `apt install floe/lua|ruby|php` 形式改为签名 WASI 目录（`wasm.packages`），并明确它不是 Debian 包。
+- `docs/README.md` 重建当前入口：当前内部交付为 219（`v1.7.0-beta.76` / `0b21be93`，TestFlight、未签名 GitHub 预发布与 Feather 源均已发布），218 归为上一内部交付；旧 216/201/196/197/198/199/200 段落归入“历史交付记录”。Build 219 已由主 Agent 核实 Apple VALID、未过期、唯一私有 Floe QA 组及 IN_BETA_TESTING；真机行为仍由用户验收。
+- `FEATHER_SOURCE.md`、`ARCHITECTURE_OVERVIEW.md`、`ARCHITECTURE_LOCAL_SHELL.md`、`FLOE_1_7_COMPATIBILITY.md`、`FLOE_1_7_IMPLEMENTATION_STATUS.md`、`FLOE_LINUX_GUEST_BACKEND.md`、`FLOE_1_7_REPAIR_LIFECYCLE_MLX_IDE_OFFICE.md`、`FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md`、`PUBLIC_BETA_PREPARATION.md`、`WORKFLOW_UPGRADE.md` 修正当前状态并保留原始日期、提交、运行编号与失败结论。`FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md` 补记云端复核 run 35652797196（`netStatus=up`、`failures=0`）。
+- 历史文件（`RELEASE_NOTES_*`、`TESTFLIGHT_*`、`RELEASE_VERIFICATION_*`、`evidence/`）不作回改；已退役内容（进程内 Node、原生 Python 宿主、iOS wheel 产线）只加“已退役／历史”标注。
+- 检查：仓库内相对链接与引用、README 快速添加链接／Feather 源静态检查（`FloeAgent/scripts/tests/test_readme_source_links.py`）、中英文结构对照与私有信息关键词扫描。本清单只登记本轮刷新范围，不代表所有历史技术事实已重新验证。
+
 本轮刷新介绍、双语 README/使用指南、产品、总体架构、shell 边界、工程构建、贡献、支持、安全、技能中心和 wheelhouse 说明；新增构建验收、迁移恢复和兼容性入口。此清单是维护范围登记，不表示所有历史文档中的技术事实已重新验证。
 
 当前版本状态统一引用 [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。历史发布与证据不可回写成新版本成功结果；第三方许可/来源及签名生成产物保留各自流程。旧专题在对应功能变化时更新正文，不用统一日期掩盖内容年龄。
@@ -32,7 +43,7 @@
 | [FloeAgent/ThirdParty/WasmKit/Sources/WasmKit/Docs.docc/Docs.md](../FloeAgent/ThirdParty/WasmKit/Sources/WasmKit/Docs.docc/Docs.md) | 第三方或捆绑/生成内容 | 保留来源、许可与生成流程，不批量改写 |
 | [FloeAgent/ThirdParty/WasmKit/Sources/WasmParser/Docs.docc/Docs.md](../FloeAgent/ThirdParty/WasmKit/Sources/WasmParser/Docs.docc/Docs.md) | 第三方或捆绑/生成内容 | 保留来源、许可与生成流程，不批量改写 |
 | [FloeAgent/scripts/fixtures/OFFICE_NATIVE_PROBE.md](../FloeAgent/scripts/fixtures/OFFICE_NATIVE_PROBE.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
-| [FloeAgent/scripts/pandas-runtime-release.md](../FloeAgent/scripts/pandas-runtime-release.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
+| [FloeAgent/ThirdParty/NativeRuntimeArchive/recipes/pandas-runtime-release.md](../FloeAgent/ThirdParty/NativeRuntimeArchive/recipes/pandas-runtime-release.md) | 历史归档/既有计划 | 原生 pandas 配方已随 Phase 2 退役并移入 NativeRuntimeArchive，仅作历史记录 |
 | [PRODUCT.md](../PRODUCT.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
 | [README.md](../README.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
 | [README.zh-CN.md](../README.zh-CN.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
@@ -136,7 +147,7 @@
 | [docs/WORKFLOW_UPGRADE.md](WORKFLOW_UPGRADE.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
 | [docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md](WORKFLOW_UPGRADE_IMPLEMENTATION.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
 | [docs/evidence/workflow-upgrade-20260909/README.md](evidence/workflow-upgrade-20260909/README.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [ios-wheelhouse/README.md](../ios-wheelhouse/README.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
+| [ios-wheelhouse/](../ios-wheelhouse/) | 历史归档 | 已退役的 iOS wheel 产线目录（仅有旧产物），不接入构建，无 README |
 | [skill-hub/README.md](../skill-hub/README.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
 | [skill-hub/sources/floe-network/SKILL.md](../skill-hub/sources/floe-network/SKILL.md) | 可发布 Skill | 既有技能说明保留；行为变化时同步版本与签名 |
 | [skill-hub/sources/floe-office/SKILL.md](../skill-hub/sources/floe-office/SKILL.md) | 可发布 Skill | 既有技能说明保留；行为变化时同步版本与签名 |

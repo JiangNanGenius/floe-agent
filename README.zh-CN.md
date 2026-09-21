@@ -34,13 +34,15 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（218）**。9 月 21 日 15:08 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。本构建增加明确的 Linux 下载并启动入口，修复 Office 中文字体与 Pencil 输入，区分独立 Office 和 IDE 内嵌路径，并补充 IDE 源码管理、压缩包浏览和本地模型多轮工具续接。TinyEMU/Linux 仍是主要本地环境，原生 Python/Node 不再打包，真机验收由用户完成。[版本说明](docs/RELEASE_NOTES_1.7.0_BUILD_218.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+**当前内部 TestFlight：1.7.0（219）**。9 月 21 日 22:01 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING，中英文测试说明已保存并读回。真机验收由用户完成。[Build 219 说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+
+Build 219 把 TinyEMU/Linux 收敛为主要本地运行环境：首次使用 Shell、客体 Python、Node、APT/DPKG 或后台服务时会自动完成同一套下载、校验、安装与启动流程，然后继续执行原命令；**设置 → 执行环境**与终端提供同一份组件状态和明确的下载、更新、启动、停止入口，客体在对外报告能力前会先配置并上报自身网络状态。工作区 Office 预览进入独立全屏编辑器，只有 IDE 文件树中的打开保留内嵌标签；IDE 在仓库变更与回到前台后立即刷新源码管理；ZIP、TAR 与 7z 压缩包在有界浏览器中打开，需要 Linux 运行时的格式会如实说明而不会静默启动客体。本地 MLX 加载前校验已安装快照，并从设备预算中扣除正在运行的 Linux 客体内存。原生 Python、Node 与 Ruby 载荷不再随包分发；语言与软件包安装在 Linux 客体中，签名 WASI 命令目录仍是独立路径。[Build 219 版本说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md)。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
 ### 手记、Office 与本地语音
 
-手记是优先于创意模式的独立工作区，使用独立资料存储与撤销历史，复用 Floe 的模型、工具和权限服务。已接入 PDF/图片批注、[图文思维导图与文档小窗](docs/FLOE_1_7_MIND_MAPS.md)、Office 文件编辑、选区提问与可编辑归档；进一步集成与完整应用验收仍在进行。全项目以 iPadOS 27 为首要体验，iPhone 同步验证，26 保持兼容。
+手记是优先于创意模式的独立工作区，使用独立资料存储与撤销历史，复用 Floe 的模型、工具和权限服务。PDF/图片批注、[图文思维导图与文档小窗](docs/FLOE_1_7_MIND_MAPS.md)、原生 Office 编辑、选区提问与可编辑归档均已可用；Office 完整排版保真与真机验收仍以[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。全项目以 iPadOS 27 为首要体验，iPhone 同步验证，26 保持兼容。
 
 思维导图随主题、附图和分支变化自动排版，连续编辑保留缩放，并适配 PDF 独立小窗。手记提供回收站恢复及二次确认的永久删除，延迟回收会保留共享附件和其他内容的撤销历史。
 
@@ -49,14 +51,14 @@ Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 O
 ## 为什么使用 Floe Agent
 
 - **自带模型。** 用户自行连接兼容服务商，并可分别设置 Agent、识图、生图和图片编辑模型。
-- **合适时完全在设备端运行。** 可使用 iOS 27 的 Apple Foundation Model 或主动下载的 MLX 模型；本地模型采用独立上下文和内存策略，不缩减云端模型的上下文与工具能力。
+- **合适时完全在设备端运行。** 可使用 iOS 27 的 Apple Foundation Model 或主动下载的 MLX 模型；Floe 会在映射权重前校验已安装快照，并从真实设备可用额度中扣除正在运行的 Linux 客体内存预留。本地模型采用独立上下文和内存策略，不缩减云端模型的上下文与工具能力。
 - **全过程可检查。** 思考预览、工具调用、文件变更、浏览器状态、子 Agent、审批和错误统一出现在持续时间线中。
 - **直接使用自己的资源。** 支持 Files 工作区、图片操作、SSH、跳板机、VNC，以及用户可见的 WebKit 浏览器，不经过 Floe 中转服务。
 - **在工作区内构建视觉流程。** 每个工作区可打开一个原生无限画布项目，通过自然触控管理内容节点、显式生成任务、产物节点、节点原位 AI 与受限画布助手。
 - **连接标准 MCP。** 普通 Agent 可按需连接 Streamable HTTP 服务器；远程工具始终有独立命名空间、继续经过本地策略检查，并且默认不向画布开放。
 - **在工作区内管理源码。** 轻量原生源码管理可查看更改与差异、初始化仓库、暂存、提交、分支、抓取、快进拉取、推送并连接 GitHub。
 - **直接转换已有文档。** Markdown、Word、HTML、RTF 和文本互转，并支持 PDF 输入/输出。模型只需提供文件位置，无需重新抄写全文；源文件保留，扫描件及格式限制会明确提示。
-- **创建并修改 Office 文件。** 可在本机生成 DOCX、XLSX 和 PPTX，右侧只读查看，全屏后使用本地 Office 引擎编辑真实页面、单元格和幻灯片对象。完整功能与布局保真仍在验收，文档无需上传云端。
+- **创建并修改 Office 文件。** 可在本机生成 DOCX、XLSX 和 PPTX，右侧只读查看，随后使用本地 Office 引擎编辑真实页面、单元格和幻灯片对象。从工作区预览编辑时进入独立全屏编辑器；只有从 IDE 文件树打开才保留内嵌标签。关闭有未保存修改的文档会询问保存、放弃或取消，Command-S 通过同一保存路径就地保存，文档无需上传云端。完整排版保真与高级 Office 功能仍在验收。
 - **任务级权限。** 文件、网络、浏览器、上传、凭据和远程执行权限都有明确上限；敏感操作仍需逐次确认。
 - **真实恢复。** 后台协调、通知和检查点只恢复可安全继续的阶段；iOS 暂停和结果不确定不会伪装成成功。
 - **经审计的技能。** Skill Creator 与 Skill Finder 安装经过静态校验的指令/知识包。技能可以附带受限的 UTF-8 Python 脚本和锁定版本的纯 Python 包：创建或安装时统一审计一次，后续只有完全相同的脚本与依赖指纹才能免去重复询问。原生插件、安装钩子、代码变更和暗中扩大工具权限仍会被阻止。
@@ -84,7 +86,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.0（build 178）** 是目前分发记录中已向 **Floe QA 内部 TestFlight 测试组**开放的最新构建，详见[TestFlight 状态记录](docs/TESTFLIGHT_1.7.0_BETA.md)和 [build 178 发布说明](docs/RELEASE_NOTES_1.7.0_BUILD_178.md)。代码修改和测试截图不代表已有更新的构建上传。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
+Floe Agent **1.7.0（build 219）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（2026-09-21 22:01 UTC 核实 Apple VALID、未过期及 IN_BETA_TESTING）。[TestFlight 交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)保留精确的源码、构建、上传、测试说明与测试组证据，以及此前版本的交付历史。Build 192 与 193 从未编译成功；Build 194 与 195 被 Apple 接受但从未发布——[192](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)、[193](docs/RELEASE_NOTES_1.7.0_BUILD_193.md)、[194](docs/RELEASE_NOTES_1.7.0_BUILD_194.md)、[195](docs/RELEASE_NOTES_1.7.0_BUILD_195.md) 记录。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
 
 ### 未签名 IPA
 
@@ -138,7 +140,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 ### 模型与图片服务商
 
-系统管理的 Apple Foundation Model 始终显示在**设置 → 本地模型**。在 iOS/iPadOS 27 上，Floe 会显示系统返回的真实可用状态，例如设备不支持、Apple Intelligence 未开启或系统模型仍在准备。它不需要 API Key，也不由 Floe 下载。用户主动下载的 Qwen、Gemma 模型则可以分别启用或停用；Floe 会根据设备当前状态安排运行、在每轮结束后释放临时占用，并只提供这些小型模型能够可靠使用的任务工具。所有设备端模型都按纯文字模式运行，不再加载视觉组件；附图由 Apple Vision OCR 转成任务工作区文字文件。PDF 检查、页面渲染和 OCR 仍可使用，语义识图 `image.inspect` 只提供给兼容的云端模型。
+系统管理的 Apple Foundation Model 始终显示在**设置 → 本地模型**。在 iOS/iPadOS 27 上，Floe 会显示系统返回的真实可用状态，例如设备不支持、Apple Intelligence 未开启或系统模型仍在准备。它不需要 API Key，也不由 Floe 下载。用户主动下载的 Qwen MLX 模型则可以分别启用或停用；Floe 会在映射权重前按固定清单校验已安装快照，并从可用内存中扣除正在运行的 TinyEMU Linux 客体内存预留，按设备当前状态安排运行、在每轮结束后释放临时占用，并只提供这些小型模型能够可靠使用的任务工具。快照损坏与内存不足会分别报错；当前设备上放不下的模型（目前是 5.15 GB 的 Gemma 4 E4B）会从推荐下载列表移除，已下载的副本仍可由用户明确删除。所有设备端模型都按纯文字模式运行，不再加载视觉组件；附图由 Apple Vision OCR 转成任务工作区文字文件。PDF 检查、页面渲染和 OCR 仍可使用，语义识图 `image.inspect` 只提供给兼容的云端模型。
 
 每个已启用模型另有独立的**在主模型列表中隐藏**开关，默认关闭。隐藏只会把它从首页/新建任务的主 LLM 菜单移除；模型仍可保留为辅助角色、内部路由使用，并可继续服务已有任务。
 
@@ -146,21 +148,19 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 ### 工作区、Git 与审批
 
-私有任务工作区会与首条消息原子创建并绑定；项目工作区继续使用用户明确选择的 Files 范围。文件检查器新增轻量源码管理标签；**设置 → GitHub 与源码管理**支持 GitHub 官方设备授权直接登录和细粒度 Token 后备入口，凭据只保存在设备钥匙串，并可列出、克隆和创建仓库。
+私有任务工作区会与首条消息原子创建并绑定；项目工作区继续使用用户明确选择的 Files 范围。文件检查器新增轻量源码管理标签；ZIP、TAR 与 7z 压缩包也在同一检查器中有界浏览，支持条目预览与暂存解压，需要 Linux 运行时的格式（压缩 tar、单文件 gzip/bzip2/xz 与 RAR）会如实说明而不会静默启动客体。**设置 → GitHub 与源码管理**支持 GitHub 官方设备授权直接登录和细粒度 Token 后备入口，凭据只保存在设备钥匙串，并可列出、克隆和创建仓库。已打开的源码管理面板会在仓库初始化或任何 Git 变更后立即刷新，并在回到前台时重新读取，因此 Agent 工具创建的仓库无需手动刷新即可显示。
 
 有界只读、本地工作区操作、生图/识图、OCR、PDF 只读和局域网发现不等待审批模型。任务权限在聊天输入框下方选择后自动保存，也可在任务运行中切换。用户明确要求安装、部署、环境修复或更新 Floe 守护程序后，完成该目标所需的常规系统包、换源、依赖修复和守护程序原子更新不会逐条重复询问。删除、凭据、上传、付款、目标不明的宽泛远程命令，以及强制推送/历史改写仍会被阻止或要求明确复核。“帮我测试一下所有工具”这类宽泛请求可以授权安全诊断，但不会静默扩展为删除、凭据或破坏性测试。
 
 ### Python 执行
 
-本地 Python、Node.js、Shell 和服务统一运行在选定的 TinyEMU/Linux 环境中，可从设置 → 执行列表下载经校验的 Linux 组件。Shell 与直接 Python 入口共享该环境的文件和软件包；apt/dpkg 安装 Linux 包，Python 使用 pip/venv，Node 使用 npm。iOS 原生 Python/Node 的源码与构建配方已封存，运行时不再打进本版 App。二进制包须匹配 Linux 客体 ABI，iOS wheel 不会作为 Linux 二进制复用；WASM 保留为独立兼容能力。
+TinyEMU/Linux 是主要本地运行环境。本地 Python、Node.js、Shell 和服务运行在所选环境的 Linux 客体中；首次出现 Linux 需求（Shell、`exec.localPython`、Node/npm、`apt`/`dpkg`、后台服务或语言包）时，会先执行同一套可取消的“准备 → 下载 → 校验 → 安装 → 启动”流程，然后继续执行原命令。**设置 → 执行环境**与终端提供同一份组件状态，以及明确的下载、更新、启动、停止入口和客体上报的网络状态。Shell 与直接 Python 共享该环境的文件、软件包和唯一 venv；客体 apt/dpkg 安装 Linux 包，Python 使用 pip/venv，Node 使用客体的 npm。iOS 原生 Python/Node 的源码与构建配方已封存，其运行时载荷（包括原生 Ruby 解释器）不再随本版 App 分发；需要客体的语言或工具会如实提示，而不会回退到已移除的进程内运行时。二进制包须匹配 Linux 客体 ABI，iOS wheel 不会作为 Linux 二进制复用。签名 WASI 目录（如 Lua 5.4.8、Ruby 3.4.1、PHP 8.2.33 与 `floe-text`）仍是独立的 WebAssembly 沙箱能力，通过已验证目录安装，而不是 Debian 软件包。
 
 技能可以附带受限的 `.py` 文件和锁定版本的纯 Python 依赖。Floe 在创建或安装技能时验证脚本路径与源码、解析并检查通用 wheel，并记录获准的脚本和依赖指纹。后续运行只能复用这份完全相同的已审计代码，变化的任务数据通过 JSON 单独传入；修改脚本或依赖、提权、危险文件改动、凭据和外部副作用仍回到正常审批流程。
 
-### 原生 Office 文档——已发布 1.5.3 的能力
+### 原生 Office 文档
 
-Floe 可以创建 DOCX 文档、包含多张工作表及值/公式的 XLSX，以及带演讲者备注的 16:9 PPTX。文档包在本机生成并校验，不依赖网页编辑器，也不会上传到 Office 云端。打开 Office 文件时仍先使用系统预览；点击**编辑 Office 文档**后，进入独立的基础编辑器，可手工修改 Word 文字、表格单元格/公式、PowerPoint 文字和备注。保存时只更新发生变化的语义字段，原子重写 OOXML，并保留未修改的样式、媒体和关系。它不宣称支持桌面 Office 的全部高级排版、图表、宏、ActiveX 或像素级兼容。
-
-开发分支正在以上方升级说明中的原生 Office 前端替换这套基础编辑器，完整验收仍在进行。
+Floe 可以创建 DOCX 文档、包含多张工作表及值/公式的 XLSX，以及带演讲者备注的 16:9 PPTX。文档包在本机生成并校验，不依赖网页编辑器，也不会上传到 Office 云端。打开 Office 文件时仍先使用系统预览；从工作区预览点击**编辑 Office 文档**会进入独立全屏编辑器，而只有从 IDE 文件树打开才保留 IDE 内嵌文档标签。Word 文字、表格单元格/公式、PowerPoint 文字、备注、批注绘图设置和演示控制都由本地 Office 引擎处理，同一份 Office 文档在预览与编辑之间只保留一个工作副本。保存时只更新发生变化的语义字段，原子重写 OOXML，保留未修改的样式、媒体和关系，核对原文件版本，并在保存失败或冲突时保留可恢复草稿。关闭独立编辑器且存在未保存修改时会询问保存、放弃或取消，Command-S 通过同一共享保存路径就地保存 DOCX、XLSX 与 PPTX。它不宣称支持桌面 Office 的全部高级排版、图表、宏、ActiveX 或像素级兼容。
 
 ### 归档与凭据同步
 
@@ -190,13 +190,15 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 | 内容 | 简体中文 | English |
 | --- | --- | --- |
 | 产品使用 | [使用指南](docs/USER_GUIDE.zh-CN.md) | [User guide](docs/USER_GUIDE.md) |
+| 当前状态 | [实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) | [Implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 notes](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) |
 | 架构 | [架构总览（双语术语）](docs/ARCHITECTURE_OVERVIEW.md) | [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md) |
 | 参与开发 | [贡献指南](CONTRIBUTING.zh-CN.md) | [Contributing](CONTRIBUTING.md) |
 | 安全 | [安全策略](SECURITY.zh-CN.md) | [Security policy](SECURITY.md) |
 | 支持 | [支持](SUPPORT.zh-CN.md) | [Support](SUPPORT.md) |
-| 设计方向 | [设计方向](docs/WORKFLOW_UPGRADE.md) | 关键术语包含中文对照 |
+| 设计方向 | [设计方向](docs/WORKFLOW_UPGRADE.md)（1.5.3 时期范围表，历史） | 关键术语包含中文对照 |
+| 文档索引 | [文档索引](docs/README.md) | [Documentation index](docs/README.md) |
 
-历史实现报告和审计记录统一收录在 [`docs/README.md`](docs/README.md)。历史文件只代表其记录提交的状态，不能当作当前版本的功能声明。
+历史实现报告、发布档案和审计记录统一收录在 [`docs/`](docs/README.md)。历史文件只代表其记录提交的状态，不能当作当前版本的功能声明。
 
 ## 项目原则
 
@@ -213,6 +215,8 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。
 
 1.7 界面更新加入「通用 → 自动/日间/夜间」外观、项目与会话容器管理，以及可折叠的思考与工具调用组。功能可用性和测试版验收进展见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+
+工程文件预览已在工作区文件与 IDE 中提供：[格式矩阵与当前验证状态](docs/FLOE_ENGINEERING_VIEWERS.md)。DXF/DWG 支持本机线／圆／文字编辑与受保护保存；三维／PCB 预览可附带解析信息生成 AI 审阅附件。CAD 往返与独立 DWG 读取已在合成样本上通过；原生 App 验收与 KiCad 集成仍待完成。
 
 ### Feather 安装源
 

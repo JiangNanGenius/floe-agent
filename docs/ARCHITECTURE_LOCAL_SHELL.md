@@ -1,6 +1,10 @@
 # Floe Local Shell Substrate — Architecture
 
-Status: 1.7 Build 156 feedback repair candidate; full App regression and a new TestFlight delivery remain pending.
+Status: 1.7 current. TinyEMU/Linux is the primary local runtime (see
+[Linux backend](FLOE_LINUX_GUEST_BACKEND.md) and [Build 219 notes](RELEASE_NOTES_1.7.0_BUILD_219.md));
+the native `ios_system` substrate described below remains as the explicit
+compatibility backend for environments set to **Native**. Physical-device
+acceptance remains with the user.
 
 > Implementation audit 2026-09-12: the mini-root filesystem-isolation claim below
 > is not established by the pinned ios_system binaries. Treat security/concurrency
@@ -13,9 +17,9 @@ local command environment.
 
 ## 1.7 integration status and boundary
 
-The shell substrate is being integrated with explicit workspace/conversation environment ownership. Environment layers do not isolate same-process native execution. Path checks on App file operations and per-tool permission decisions remain necessary; a mini-root or changed working directory is not an OS-level containment boundary.
+The shell substrate is integrated with explicit workspace/conversation environment ownership. Environment layers do not isolate same-process native execution. Path checks on App file operations and per-tool permission decisions remain necessary; a mini-root or changed working directory is not an OS-level containment boundary.
 
-The current native simulator host passes 26 command cases and interactive input, covering scope, literal argument transport, exports, pipelines, bounded output, cancellation and worker shutdown. It uses callback fixtures for runtime dispatch; embedded Python/Node and complete App tests are separate. Dash routes expanded argv through literal delimiters before `ios_execve`, and resolves the production Python service through an internal alias so the upstream engine cannot rewrite it to missing PythonA/PythonB frameworks. Compound or builtin pipeline consumers that cannot run safely fail explicitly. Node now uses a persistent host; see [Node runtime](FLOE_1_7_NODE_RUNTIME.md). Apt candidate entries and model catalog entries are not automatically usable: see [compatibility](FLOE_1_7_COMPATIBILITY.md).
+In a Linux-backend environment the shell itself runs inside the guest, and every Linux-required entry point (shell, guest Python, Node/npm, apt/dpkg, background services, language packages) runs the same shared, cancellable prepare/download/verify/install/start flow before resuming the original command. The native simulator host below passes 26 command cases and interactive input, covering scope, literal argument transport, exports, pipelines, bounded output, cancellation and worker shutdown. It uses callback fixtures for runtime dispatch. The App no longer bundles an in-process CPython or NodeMobile runtime, so those older integration entries are historical; dash routes expanded argv through literal delimiters before `ios_execve`, and compound or builtin pipeline consumers that cannot run safely fail explicitly. Signed WASI commands install from the verified catalog and run in the WasmKit sandbox. Apt candidate entries and model catalog entries are not automatically usable: see [compatibility](FLOE_1_7_COMPATIBILITY.md).
 
 ## 1. What this adds
 
@@ -131,7 +135,7 @@ as the agent tools:
 | `python3` (`-c`, file) | the task environment's Linux guest Python (`LocalPythonService` guest route) |
 | `sha256sum` | `FloeDigest` |
 | `ping`, `traceroute`, `dig`/`nslookup`/`host`, `nc` | device network tools (`NetworkPingTool`, `NetworkTracerouteTool`, `NetworkDNSLookupTool`, `NetworkTCPProbeTool`) |
-| `apt`/`apt-get`/`pkg`, `dpkg -l` | `CapabilityInstaller` catalog query; installs return a structured hint to the `apt` tool |
+| `apt`/`apt-get`/`pkg`, `dpkg -l` | Inside a Linux environment: routed to the guest's real Debian apt/dpkg. In a native environment: `CapabilityInstaller` catalog query; installs return a structured hint to the catalog tool |
 | `git` | honest error pointing at `git.*` (libgit2) or a remote host |
 | `curl` | upstream `curl_ios` framework (per-command approval already applies) |
 
@@ -145,17 +149,19 @@ single manifest. Kinds: `pythonPackage`, `skill`, `font`, `model`,
 (reviewed download), `wheelhouse` (retired iOS wheelhouse), `deb`
 (data-only), `wasm` (sandboxed command). Since Phase 2 every Python package
 entry is `managed` and installs through the environment's guest pip; nothing
-Python is bundled in the app.
+Python, Node or Ruby is bundled in the app.
 
-Larger pure packages and `lxml`-dependent packages install on demand through the
-reviewed managed-pip path.
+In a Linux environment, larger packages including `lxml`-dependent ones install
+from the guest's configured index through the shared venv; the retired in-process
+`Application Support/FloeAgent/PythonPackages` path is no longer used there.
 
 ### 3.2 Installation rules (capability surface)
 
-- Pure Python only for managed installs: `--only-binary=:all:
-  --platform=any --implementation=py --abi=none`, staged and atomically
-  swapped into `Application Support/FloeAgent/PythonPackages`, native
-  artifacts rejected after install and by the wheel inspector.
+- Audited skill installs remain pure Python only: `--only-binary=:all:
+  --platform=any --implementation=py --abi=none`, staged, with native
+  artifacts rejected after install and by the wheel inspector. Environment
+  package pages, `pip` and `exec.localPython` package requests use the Linux
+  guest's own pip and venv instead.
 - `apt install/remove/download` and `exec.localPython` package requests and
   `exec.shell` package requests all route to the package-review backend
   (`ApprovalPolicy.isSoftwareInstallRequest`). Nothing downloads silently.
@@ -227,10 +233,12 @@ closest prior art; the Floe-specific delta is the stricter review pipeline.
 | WasmKit / WasmKitWASI (future dependency) | TBD | Apache-2.0 | WASM command runtime |
 | SwiftTerm (existing) | 1.10.0 | MIT | terminal rendering |
 
-Not embedded: TeX (GPL), perl/lua (size/licensing policy), `ssh_cmd`/scp/sftp
-(Floe has its own SSH stack), GNU coreutils (GPLv3).
+Not embedded: TeX (GPL), perl (size/licensing policy), `ssh_cmd`/scp/sftp
+(Floe has its own SSH stack), GNU coreutils (GPLv3). Lua, Ruby and PHP are not
+embedded runtimes: they install as signed WASM capabilities from the verified
+catalog.
 
-## 7. Verification status (this change)
+## 7. Verification status (historical landing record, 2026-09)
 
 Ultra-light verification was requested for this landing:
 

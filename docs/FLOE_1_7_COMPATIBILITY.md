@@ -8,18 +8,17 @@
 
 | 类型 | 当前证据与限制 |
 |---|---|
-| shell | 最新原生模拟器 26 项命令及交互输入通过，含参数原样传递、导出变量、多段管道、取消和线程退出；回调宿主不能替代完整 App 的 Python/Node 集成验收 |
-| Node | 锁定 Node Mobile 18.20.4；常驻宿主、串行 worker，9 个原生模拟器用例、7 个 Swift 适配层检查和 7 个宿主测试通过 |
-| npm / pnpm / yarn | 10.9.2 / 9.15.9 / 1.22.22 入口启动已验证；不等于公共包安装兼容性通过 |
-| 纯 JavaScript / Python | 原生宿主已验证 npm is-number 安装/导入/卸载及 Python colorama 安装/降级/升级/导入/卸载；完整 App 环境隔离仍待回归，不代表所有公共包兼容 |
-| 原生扩展 | 需要 iOS 预构建、可验证来源/签名、ABI 与设备测试；普通 Linux ELF/wheel 不可直接运行 |
-| apt 数据包 | 签名仓库、依赖、归属、升级/卸载有端到端测试样本；生产源配置与完整恢复验收待完成 |
+| Linux 客体运行时 | TinyEMU RV64 客体承载本地 Python/Node/Shell；首次使用的自动准备流程、客体网络与持久磁盘在 Build 219 的定向／云端检查中覆盖，完整真机行为仍由用户验收（见 [Linux 后端](FLOE_LINUX_GUEST_BACKEND.md)、[Build 219 说明](RELEASE_NOTES_1.7.0_BUILD_219.md)） |
+| shell（原生兼容后端） | 原生模拟器 26 项命令及交互输入通过，含参数原样传递、导出变量、多段管道、取消和线程退出；显式设为**原生**的环境才使用该后端 |
+| Node | 使用客体 apt 的 `nodejs`/`npm` 与环境前缀，Node 版本随客体镜像；进程内 NodeMobile 18.20.4 与相关宿主测试已退役，仅作历史证据 |
+| npm / pnpm | 客体自带管理器执行环境安装；pnpm 仅在客体提供时可用，公共包兼容性不逐个承诺 |
+| Python | 客体 Debian python3 加环境共享 venv（`/floe/env/python/venv`）；pip 使用环境配置的索引，riscv64 兼容包可装，缺少对应构建会明确失败 |
+| 原生扩展 | 需匹配 Linux 客体 ABI 或由技能安装器审计的纯 Python universal wheel；普通 iOS wheel／原生扩展不再随 App 分发 |
+| apt / dpkg | Linux 环境内为客体真实 Debian apt/dpkg；原生环境保留签名目录查询与经审核的纯数据 `dpkg-deb` 操作 |
 | 维护脚本/特殊文件 | 未接通时拒绝，不能返回假成功 |
 | 15 个软件包候选 | 逐版本制作/实测结论未完成，不能全部展示为已可用 |
 
-Node 来源、摘要规则和边界见 [Node 说明](FLOE_1_7_NODE_RUNTIME.md)。官方 Release 验签不能因信任密钥为空而跳过。独立 hold 状态、安装层及依赖查找均须归属当前环境。
-
-最新修复和原始结果见[Build 156 反馈验收记录](FLOE_156_FEEDBACK_REPAIR.md)。这些候选改动尚未上传新的 TestFlight。
+历史记录：[Node 说明（已退役）](FLOE_1_7_NODE_RUNTIME.md)、[Build 156 反馈验收记录](FLOE_156_FEEDBACK_REPAIR.md)。官方 Release 验签不能因信任密钥为空而跳过。独立 hold 状态、安装层及依赖查找均须归属当前环境。
 
 ## 媒体
 

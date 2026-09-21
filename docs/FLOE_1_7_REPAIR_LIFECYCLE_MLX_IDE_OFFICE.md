@@ -1,10 +1,13 @@
 # Floe 1.7 repair slice — Linux lifecycle, MLX fit, IDE Git, Office routes
 
-Status: **implementation commit in review. No release, tag, upload or TestFlight
-change is part of this slice.** Physical-device acceptance remains with the user.
+Status: **included in build 219, which has been built and uploaded; Apple
+processing, group availability and physical-device acceptance remain separate.**
 The evidence base is the build-218 device task log
 (`1-floe-task-31E70E65-…jsonl`, 2026-09-21), which installed and exercised the
-TinyEMU Linux guest and recorded the failures this slice repairs.
+TinyEMU Linux guest and recorded the failures this slice repairs. When this
+record was written the slice was source-only; it now ships in tag
+`v1.7.0-beta.76` (source `0b21be93`) and the section text below is preserved as
+the implementation record.
 
 ## 1. TinyEMU Linux is the primary local runtime
 

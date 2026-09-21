@@ -1,6 +1,52 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (218) — available in Floe QA
+## Current internal delivery: 1.7.0 (219) — available in Floe QA
+
+Apple **VALID**, unexpired, exactly one private internal **Floe QA** group
+(`internal=true`, feedback enabled, no public link), and `IN_BETA_TESTING` were
+verified at **2026-09-21T22:01:30Z** by
+[verify 35660445743](https://github.com/JiangNanGenius/floe-agent/actions/runs/35660445743).
+ASC build ID `fe178638-2bf8-449c-a321-54ef5899177c` (uploaded
+2026-09-21T21:42:22Z, audience `APP_STORE_ELIGIBLE`).
+[Discover 35659785733](https://github.com/JiangNanGenius/floe-agent/actions/runs/35659785733)
+listed build 219 as the latest `VALID` upload;
+[prepare 35660364957](https://github.com/JiangNanGenius/floe-agent/actions/runs/35660364957)
+saved and read back both beta-note locales — readback
+`{"buildID":"fe178638-2bf8-449c-a321-54ef5899177c","version":"1.7.0","build":"219","processing":"VALID","group":"Floe QA","betaNotesVerified":["en-US","zh-Hans"]}`.
+
+Immutable tag `v1.7.0-beta.76`, source
+[`0b21be93e173167827644f8c434f5d5a0f2070ea`](https://github.com/JiangNanGenius/floe-agent/commit/0b21be93e173167827644f8c434f5d5a0f2070ea).
+[Release run 35653989305](https://github.com/JiangNanGenius/floe-agent/actions/runs/35653989305)
+completed the accepted-SDK Release/device App build, retained the unsigned IPA
+and matching private symbols before signing, then validated and uploaded the
+signed package. The unsigned-only GitHub prerelease
+[v1.7.0-beta.76](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.76)
+publishes `Floe-Agent-1.7.0-build219-unsigned.ipa` (sha256
+`ef2006367ab65569210f0b98fc641ba38139608462d548395aca7c219410ca95`,
+745,812,559 B) with provenance, checksum and public validation metadata; no
+signed IPA is public. [Feather run 35658570911](https://github.com/JiangNanGenius/floe-agent/actions/runs/35658570911)
+verified that release and committed `feather.json` at
+[`b4922b78`](https://github.com/JiangNanGenius/floe-agent/commit/b4922b78)
+with the same digest, size and `sourceCommit`.
+
+Build 219 makes TinyEMU/Linux the primary local runtime with automatic first-use
+preparation, a qualified guest network, preserved environment disks and package
+state, explicit Settings and Terminal controls, and complete LGPL corresponding
+source/relink material for the runner. It adds MLX snapshot and memory checks,
+immediate IDE source-control refresh, standalone workspace Office editing, a
+bounded Office close/save path and a PPTX load watchdog. The README Feather and
+AltStore buttons use the official HTTPS download page because GitHub removes the
+custom URL schemes; the website remains the working quick-add surface.
+
+The user requested expedited internal delivery, so simulator/UI repetition was
+skipped in favor of focused checks, the qualified Linux component boot and the
+cloud accepted-SDK App build. Physical-device behavior, Office fidelity and
+Pencil feel remain for the user to accept. This record does not claim a public
+TestFlight or production App Store release. [Release notes](RELEASE_NOTES_1.7.0_BUILD_219.md)
+and [bilingual test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_219.json) describe the
+delivered slice.
+
+## Previous internal delivery: 1.7.0 (218) — available in Floe QA
 
 Apple **VALID**, unexpired, exactly one private internal **Floe QA** group
 (`internal=true`, feedback enabled, no public link), and `IN_BETA_TESTING` were

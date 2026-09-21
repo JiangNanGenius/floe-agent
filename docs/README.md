@@ -4,45 +4,51 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前内部 TestFlight：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；中英文测试说明已保存并读回，真机安装与行为仍由用户验收。固定标签 `v1.7.0-beta.75`，源码 `83eb91a8`，[发布作业 35612529418](https://github.com/JiangNanGenius/floe-agent/actions/runs/35612529418)；未签名 IPA 已随 [v1.7.0-beta.75 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.75) 证明发布，[Feather 作业 35615816474](https://github.com/JiangNanGenius/floe-agent/actions/runs/35615816474) 提交 `feather.json`（`bd7dbd61`，sha256/size/sourceCommit 一致）。按用户要求跳过重复模拟器／界面验收，只做定向检查与云端 App 构建。详见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
+**当前内部交付：1.7.0（219）**。固定标签 `v1.7.0-beta.76`，源码 `0b21be93`；2026-09-21T22:01:30Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING，中英文测试说明已保存并读回。未签名 GitHub 预发布 `Floe-Agent-1.7.0-build219-unsigned.ipa`（sha256 `ef2006367ab65569210f0b98fc641ba38139608462d548395aca7c219410ca95`，745,812,559 B）已发布，Feather 源提交 `b4922b78` 记录同一 digest/source。真机行为仍由用户验收。详见 [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md)、[TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)与 [v1.7.0-beta.76 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.76)。
 
-**Build 216 是上一版内部交付**（`v1.7.0-beta.73`，`c2f20f6e`，9 月 21 日 07:55 UTC 核实 VALID/未过期/Floe QA/IN_BETA_TESTING）。Build 214 是首个 TinyEMU/Linux 主环境版本，Build 215 修复其真机反馈，Build 216 补齐发布路径兼容性；各版本原始记录均保留在交付档案中。Build 217 编译失败且从未上传。
+**上一内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-此前内部 TestFlight **1.7.0（201）**，已核实 Apple VALID、未过期、唯一私有 Floe QA 组和 IN_BETA_TESTING（2026-09-19 17:44 UTC），中英文测试说明均已保存并读回。该构建的发布作业因冻结标签检出中缺少 `RELEASE_NOTES_1.7.0_BUILD_201.md` 而停止；[beta.58](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.58) 开发者包与 [Feather 源](FEATHER_SOURCE.md)均由同一保留工件恢复（未重新构建、未二次上传）。Build 196（[beta.53](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.53)）仍在同一内部组可安装。上一交付 191 保持原记录：三项界面失败仅获内部测试豁免。完整包/模型、RDP App 集成和部分真机验收仍未完成。[191 交付证据](qualification/build191-release/README.md)，历史记录保持原结论。
+### 历史交付记录（保留原始结论，不代表当前可用状态）
 
-**Build 196 已在内部 Floe QA TestFlight 可安装**（Apple buildID `27355e88…`，`VALID`／未过期／唯一私有 Floe QA 组／`IN_BETA_TESTING`，2026-09-19 02:24 UTC 核实；中英文测试说明已读回）。Build 192/193 编译失败；Build 194/195 被 Apple 接受但从未发布；四个标签均作为证据保留，194–196 的 App 源码相同。工作区包含 191 反馈修复，[Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_196.json)已附加到该构建。本构建内置的签名目录已包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名批次 35399070312，源提交 `96be231e`），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
+**Build 216 是 218 之前的内部交付**（`v1.7.0-beta.73`，`c2f20f6e`，9 月 21 日 07:55 UTC 核实 VALID/未过期/Floe QA/IN_BETA_TESTING）。Build 214 是首个 TinyEMU/Linux 主环境版本，Build 215 修复其真机反馈，Build 216 补齐发布路径兼容性；各版本原始记录均保留在交付档案中。Build 217 编译失败且从未上传。
+
+此前内部 TestFlight **1.7.0（201）**，已核实 Apple VALID、未过期、唯一私有 Floe QA 组和 IN_BETA_TESTING（2026-09-19 17:44 UTC），中英文测试说明均已保存并读回。该构建的发布作业因冻结标签检出中缺少 `RELEASE_NOTES_1.7.0_BUILD_201.md` 而停止；[beta.58](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.58) 开发者包与 [Feather 源](FEATHER_SOURCE.md)均由同一保留工件恢复（未重新构建、未二次上传）。Build 196（[beta.53](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.53)）仍在同一内部组保留原记录。上一交付 191 的历史结论为：三项界面失败仅获内部测试豁免。完整包/模型、RDP App 集成和部分真机验收仍未完成。[191 交付证据](qualification/build191-release/README.md)，历史记录保持原结论。
+
+**Build 196 曾在内部 Floe QA TestFlight 可安装**（Apple buildID `27355e88…`，`VALID`／未过期／唯一私有 Floe QA 组／`IN_BETA_TESTING`，2026-09-19 02:24 UTC 核实；中英文测试说明已读回）。Build 192/193 编译失败；Build 194/195 被 Apple 接受但从未发布；四个标签均作为证据保留，194–196 的 App 源码相同。工作区包含 191 反馈修复，[Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md)区分已实现、宿主级验证与待真机验收；[TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_196.json)已附加到该构建。该构建的签名目录包含 `floe/ruby` 3.4.1 与 `floe/php` 8.2.33（签名 WASI 目录条目，不是原生运行时载荷；当前构建同样不包含原生 Python/Node/Ruby 载荷），安装与真机运行验收仍由测试者完成；语言状态详见 [LANGUAGES.md](../capability-hub/LANGUAGES.md)。
 
 **Build 197（1.7.0，`v1.7.0-beta.54`）编译失败，从未上传**：标签 `v1.7.0-beta.54` 固定在 `f05b02ac`（不得移动）。[run 35426497884](https://github.com/JiangNanGenius/floe-agent/actions/runs/35426497884) 的验收上传 SDK App 编译报 5 条诊断、2 个独立错误：`ExecutionEnvironmentView.swift:82/105/124/147` 找不到 `RuntimeInventoryEntry`（缺 `import FloeExecution`），`FileInspectorView.swift:132` 对已解包的 `previewPath` 重复条件绑定；编译之后的步骤全部跳过，无工件、无签名、无 TestFlight 上传。其功能实现范围 `1cff5665..11681a0f`（8 个功能提交）保持不变，[Build 197 发布说明](RELEASE_NOTES_1.7.0_BUILD_197.md)保留原记录。
 
-**Build 198（1.7.0，`v1.7.0-beta.55`）已交付内部 Floe QA（Build 197 的替代）**：功能与 197 相同（思维导图触摸新增节点、视频公开候选与方舟凭据修复、跨 run 工具上下文恢复与摘要脱敏、执行环境真实版本与 APT 路由、妙控键盘 Return 发送／Shift+Return 换行、Office 首次预览／第二次直编与 IDE 集成、Pencil 墨迹与远端快照只读、移除无效“加入画布”入口），修复上述两处编译错误（`ExecutionEnvironmentView.swift` 增加 `import FloeExecution`；`FileInspectorView.swift` 去掉多余的第二处可选绑定），4 个 target 的版本／构建号统一为 1.7.0／198。[Build 198 发布说明](RELEASE_NOTES_1.7.0_BUILD_198.md)与 [TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_198.json)记录本轮轻量校验（swiftc parse、xcodegen、版本／构建号一致性、JSON 校验、`git diff --check`）；本地 Qwen/GDN 首次消息崩溃仍待真机确认（尚未证实修复）。
+**Build 198（1.7.0，`v1.7.0-beta.55`）曾交付内部 Floe QA（Build 197 的替代）**：功能与 197 相同（思维导图触摸新增节点、视频公开候选与方舟凭据修复、跨 run 工具上下文恢复与摘要脱敏、执行环境真实版本与 APT 路由、妙控键盘 Return 发送／Shift+Return 换行、Office 首次预览／第二次直编与 IDE 集成、Pencil 墨迹与远端快照只读、移除无效“加入画布”入口），修复上述两处编译错误（`ExecutionEnvironmentView.swift` 增加 `import FloeExecution`；`FileInspectorView.swift` 去掉多余的第二处可选绑定），4 个 target 的版本／构建号统一为 1.7.0／198。[Build 198 发布说明](RELEASE_NOTES_1.7.0_BUILD_198.md)与 [TestFlight 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_198.json)记录本轮轻量校验（swiftc parse、xcodegen、版本／构建号一致性、JSON 校验、`git diff --check`）；本地 Qwen/GDN 首次消息崩溃仍待真机确认（尚未证实修复）。
 
-**Build 199（`v1.7.0-beta.56`）未上传，Build 200（`v1.7.0-beta.57`，`45553423`）在验收上传 SDK App 编译内停止（无工件、无签名、无上传）**；其暴露的两处 Swift 6 诊断由 `3744103f` 修复。**Build 201（`be06cece`，`v1.7.0-beta.58`）为当前内部交付**：单次验收上传 SDK 构建（[run 35453588806](https://github.com/JiangNanGenius/floe-agent/actions/runs/35453588806)）保留未签名 IPA 与匹配私有符号、TestFlight 接受上传；发布作业因冻结标签检出缺少发布说明文件而停止，GitHub 预发布与 Feather 源随后从同一保留工件恢复（未重新构建、未二次上传），复用重试暴露的 `testflight-direct.yml` 元数据校验调用缺陷已在本分支修复并加回归测试。[Build 201 发布说明](RELEASE_NOTES_1.7.0_BUILD_201.md)记录完整恢复与核验证据。
+**Build 199（`v1.7.0-beta.56`）未上传，Build 200（`v1.7.0-beta.57`，`45553423`）在验收上传 SDK App 编译内停止（无工件、无签名、无上传）**；其暴露的两处 Swift 6 诊断由 `3744103f` 修复。**Build 201（`be06cece`，`v1.7.0-beta.58`）为该轮内部交付**：单次验收上传 SDK 构建（[run 35453588806](https://github.com/JiangNanGenius/floe-agent/actions/runs/35453588806)）保留未签名 IPA 与匹配私有符号、TestFlight 接受上传；发布作业因冻结标签检出缺少发布说明文件而停止，GitHub 预发布与 Feather 源随后从同一保留工件恢复（未重新构建、未二次上传），复用重试暴露的 `testflight-direct.yml` 元数据校验调用缺陷已在该分支修复并加回归测试。[Build 201 发布说明](RELEASE_NOTES_1.7.0_BUILD_201.md)记录完整恢复与核验证据。
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md) | 当前内部交付：本轮真机反馈修复；TestFlight、GitHub 预发布和 Feather 已完成 |
-| [Build 216 版本说明](RELEASE_NOTES_1.7.0_BUILD_216.md) | 上一版内部交付：Build 215 修复集与发布路径兼容修复 |
+| [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) | 当前内部交付：Linux 首次使用自动准备、客体网络、MLX 内存/快照、IDE Git 刷新与 Office 独立编辑路径；TestFlight、GitHub 预发布与 Feather 已完成 |
+| [Build 219 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_219.json) | 对应构建的中英文 TestFlight 测试说明 |
+| [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md) | 上一内部交付：真机反馈修复；TestFlight、GitHub 预发布和 Feather 已完成 |
+| [Build 216 版本说明](RELEASE_NOTES_1.7.0_BUILD_216.md) | 218 之前的内部交付：Build 215 修复集与发布路径兼容修复 |
 | [Build 215 候选说明](RELEASE_NOTES_1.7.0_BUILD_215.md) | 稳定性修复、轻量验证边界与待真机验收项 |
-| [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
+| [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 历史修复、原始失败、定向验证与剩余门槛 |
 | [本地模型/视频/工具上下文修复（2026-09-19）](FLOE_LOCAL_VIDEO_TOOLCHAIN_REPAIR_2026-09-19.md) | 本地聊天取消竞态、公开视频候选选择、工具证据回灌的根因、改动与待真机项 |
-| [Build 201 发布说明](RELEASE_NOTES_1.7.0_BUILD_201.md) | 当前交付（1.7.0/201，`v1.7.0-beta.58`）：构建与上传接受、从保留工件恢复发布、Floe QA 核验与复用步骤修复 |
-| [Build 198 发布说明](RELEASE_NOTES_1.7.0_BUILD_198.md) | 已交付内部 Floe QA（1.7.0/198，`v1.7.0-beta.55`）：功能与 197 相同并修复两处编译错误 |
+| [Build 201 发布说明](RELEASE_NOTES_1.7.0_BUILD_201.md) | 该轮交付（1.7.0/201，`v1.7.0-beta.58`）：构建与上传接受、从保留工件恢复发布、Floe QA 核验与复用步骤修复 |
+| [Build 198 发布说明](RELEASE_NOTES_1.7.0_BUILD_198.md) | 该轮交付（1.7.0/198，`v1.7.0-beta.55`）：功能与 197 相同并修复两处编译错误 |
 | [Build 197 发布说明](RELEASE_NOTES_1.7.0_BUILD_197.md) | 编译失败的候选（`v1.7.0-beta.54` 固定于 `f05b02ac`，run 35426497884 报 2 个编译错误，未上传）：功能实现、轻量校验与待真机项 |
-| [Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（已交付内部 Floe QA；192/193 编译失败、194/195 上传未发布记录见各自说明） |
-| [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 本轮改动、已验证范围与发布状态 |
-| [当前手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
-| [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 本轮改动与分发前剩余工作 |
+| [Build 196 发布说明](RELEASE_NOTES_1.7.0_BUILD_196.md) | 191 反馈修复：已实现、宿主级验证与待真机验收（该轮交付内部 Floe QA；192/193 编译失败、194/195 上传未发布记录见各自说明） |
+| [179 候选说明](RELEASE_1.7.0_BETA_36.md) | 历史改动、已验证范围与发布状态 |
+| [手记截图](qualification/build178-feedback/full-app-955e346a/README.md) / [CAD 编辑验证](qualification/build178-feedback/cad-layout/README.md) | 原始截图、固定源码与平台限制 |
+| [未发布变更草稿](FLOE_1_7_CHANGELOG_DRAFT.md) | 历史改动与分发前剩余工作 |
 | [本轮继续实施状态](FLOE_1_7_CONTINUATION_STATUS.md) | 手记、Office、Whisper 与剩余验收事实 |
-| [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md) | 已验证路径、固定提交和剩余门槛 |
+| [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md) | 已验证路径、当前交付源码和剩余门槛 |
 | [构建与验收](FLOE_1_7_BUILD_AND_ACCEPTANCE.md) | 本地定向测试、云端 SDK 构建和 TestFlight 门槛 |
 | [迁移与恢复](FLOE_1_7_MIGRATION.md) | 分层语义、数据保护和故障恢复限制 |
 | [兼容性说明](FLOE_1_7_COMPATIBILITY.md) | 包、编码器、模型的真实支持范围 |
 | [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md) | 15 个包、33 个模型逐项状态与待验证门槛 |
-| [TestFlight 候选记录](TESTFLIGHT_1.7.0_BETA.md) | 固定版本、构建尝试与 Apple 处理结果 |
+| [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) | 固定版本、构建尝试与 Apple 处理结果 |
 | [界面截图与交互测试](evidence/floe-1.7/interface/README.md) | 通用里的日夜主题、思考框和连续工具折叠 |
-| [Node 运行时](FLOE_1_7_NODE_RUNTIME.md) | 常驻宿主、依赖 pin 和验证证据 |
+| [Node 运行时（已退役）](FLOE_1_7_NODE_RUNTIME.md) | 进程内 NodeMobile 的历史证据；本地 Node 现运行于 Linux 客体 |
 | [文档维护清单](FLOE_1_7_DOCUMENTATION_AUDIT.md) | 当前说明、历史档案与生成内容的维护归属 |
 
 ## 当前有效（阅读与维护入口）
@@ -68,15 +74,16 @@
 | [TOOL_CLOSURE_IMPLEMENTATION.md](TOOL_CLOSURE_IMPLEMENTATION.md) | 工具闭环实现 |
 | `../FloeAgent/docs/`（本地资料，未随仓库分发） | 工程侧架构（HARNESS_PROMPT_PROTOCOL 等） |
 | [../FloeAgent/README.md](../FloeAgent/README.md) | 构建说明与模块图 |
-| [../skill-hub/](../skill-hub/) / [../ios-wheelhouse/](../ios-wheelhouse/README.md) | 官方技能中心 / iOS wheel 产线 |
+| [../skill-hub/](../skill-hub/) / [../ios-wheelhouse/](../ios-wheelhouse/) | 官方技能中心 / 已封存的 iOS wheel 产线（不再随 App 分发原生载荷，见 [Phase 2 迁移](PHASE2_migration.md)） |
 
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_218.md](RELEASE_NOTES_1.7.0_BUILD_218.md) — 当前内部交付（1.7.0/218，`v1.7.0-beta.75`；已核实 Floe QA 可安装，GitHub 预发布与 Feather 已发布，真机验收由用户完成）
-- [RELEASE_NOTES_1.7.0_BUILD_216.md](RELEASE_NOTES_1.7.0_BUILD_216.md) — 上一版内部交付（1.7.0/216，`v1.7.0-beta.73`；原始交付记录保留）
-- [RELEASE_NOTES_1.7.0_BUILD_215.md](RELEASE_NOTES_1.7.0_BUILD_215.md) — 上一版内部交付（1.7.0/215，`v1.7.0-beta.72`）：稳定性修复、验证边界与真机测试重点
-- [RELEASE_NOTES_1.7.0_BUILD_201.md](RELEASE_NOTES_1.7.0_BUILD_201.md) — 当前交付（1.7.0/201，`v1.7.0-beta.58`；构建/上传接受、发布从保留工件恢复、Floe QA 核验与复用步骤修复）
+- [RELEASE_NOTES_1.7.0_BUILD_219.md](RELEASE_NOTES_1.7.0_BUILD_219.md) — 当前内部交付（1.7.0/219，`v1.7.0-beta.76`；TestFlight、GitHub 预发布与 Feather 已发布，真机验收由用户完成）
+- [RELEASE_NOTES_1.7.0_BUILD_218.md](RELEASE_NOTES_1.7.0_BUILD_218.md) — 上一内部交付（1.7.0/218，`v1.7.0-beta.75`；已核实 Floe QA 可安装，GitHub 预发布与 Feather 已发布，真机验收由用户完成）
+- [RELEASE_NOTES_1.7.0_BUILD_216.md](RELEASE_NOTES_1.7.0_BUILD_216.md) — 218 之前的内部交付（1.7.0/216，`v1.7.0-beta.73`；原始交付记录保留）
+- [RELEASE_NOTES_1.7.0_BUILD_215.md](RELEASE_NOTES_1.7.0_BUILD_215.md) — 内部交付（1.7.0/215，`v1.7.0-beta.72`）：稳定性修复、验证边界与真机测试重点
+- [RELEASE_NOTES_1.7.0_BUILD_201.md](RELEASE_NOTES_1.7.0_BUILD_201.md) — 该轮交付（1.7.0/201，`v1.7.0-beta.58`；构建/上传接受、发布从保留工件恢复、Floe QA 核验与复用步骤修复）
 - [RELEASE_NOTES_1.7.0_BUILD_198.md](RELEASE_NOTES_1.7.0_BUILD_198.md) — 已交付内部 Floe QA（1.7.0/198，`v1.7.0-beta.55`；修复 197 的两处编译错误）
 - [RELEASE_NOTES_1.7.0_BUILD_197.md](RELEASE_NOTES_1.7.0_BUILD_197.md) — 编译失败记录（1.7.0/197，`v1.7.0-beta.54` 固定于 `f05b02ac`，run 35426497884 报 2 个编译错误；从未上传；标签不动）
 - [RELEASE_NOTES_1.7.0_BUILD_196.md](RELEASE_NOTES_1.7.0_BUILD_196.md) — 下一候选的完整说明（已冻结；发布工作流在冻结提交创建标签并上传，191 交付记录保持原样）
@@ -92,13 +99,13 @@
 
 - `FRAMEWORK_AUDIT_2026-08-13.md`（本地资料，未随仓库分发）、`SPIKE_MYLLM_APP_REVIEW_RESEARCH_2026-08-22.md`（本地资料，未随仓库分发）、`reviews/CODEX_*.md`（本地资料，未随仓库分发）
 - `ALPHA_DAILY_PLAN.md`（本地资料，未随仓库分发）、[MEDIA_MODEL_CATALOG_2026-09-08.md](MEDIA_MODEL_CATALOG_2026-09-08.md)（目录随版本更新）
-- ⚠️ `../FloeAgent/docs/ARCHITECTURE_EXECUTION.md` 中"本轮不做本地 Python"的 P3 结论是**历史结论**；现状为 BeeWare CPython 内嵌 + ios-wheelhouse，见 [USER_GUIDE](USER_GUIDE.md) 与 [../ios-wheelhouse/README.md](../ios-wheelhouse/README.md)。
+- ⚠️ `../FloeAgent/docs/ARCHITECTURE_EXECUTION.md` 中"本轮不做本地 Python"的 P3 结论是**历史结论**；当前实现为 Linux 客体（TinyEMU RV64）运行本地 Python/Node，`FloeAgent/scripts/audit_native_runtime_free.py` 阻止原生 Python/Node/Ruby 载荷回归，见 [USER_GUIDE](USER_GUIDE.md)、[Linux 环境后端](FLOE_LINUX_GUEST_BACKEND.md) 与 [Phase 2 迁移](PHASE2_migration.md)。`ios-wheelhouse/` 与 `FloeAgent/ThirdParty/NativeRuntimeArchive/` 仅作历史配方归档，不接入构建。
 
 ## 实施跟踪（当前里程碑）
 
 - [WORKFLOW_UPGRADE.md](WORKFLOW_UPGRADE.md) / [WORKFLOW_UPGRADE_IMPLEMENTATION.md](WORKFLOW_UPGRADE_IMPLEMENTATION.md) — Office 工作流升级
 - [OFFICE_FRONTEND_ACCEPTANCE.md](OFFICE_FRONTEND_ACCEPTANCE.md) / [OFFICE_SCREENSHOT_INDEX.md](OFFICE_SCREENSHOT_INDEX.md) — Office 验收矩阵与操作证据
-- [PDF_SKILL_HUB_IMPLEMENTATION.md](PDF_SKILL_HUB_IMPLEMENTATION.md) — 原生 pandas 与技能中心验收
+- [PDF_SKILL_HUB_IMPLEMENTATION.md](PDF_SKILL_HUB_IMPLEMENTATION.md) — PDF 技能中心验收（其中进程内 pandas 部分为历史，现行 Python 运行在 Linux 客体）
 - [SKILL_ROUTING_UPGRADE_WORK.md](SKILL_ROUTING_UPGRADE_WORK.md)、[STABILITY_1.4.88.md](STABILITY_1.4.88.md)
 
 ## 写作约定
@@ -114,12 +121,13 @@
 
 ## Floe 1.7 当前发布准备
 
+- [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) — 当前内部交付的改动、验证范围与真机验收项
 - [中英文功能介绍、版本说明及 TestFlight 测试描述](RELEASE_NOTES_1.7.0.md)
 - [手记、动态导图、语音与当前证据](FLOE_1_7_CONTINUATION_STATUS.md)
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)
 - [包与模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)
 
-当前为 [191 加急内部交付](qualification/build191-release/README.md)：原上传因发布 SDK 新增 iPhone 助手界面失败而在签名前停止；用户现已同意跳过全部三项失败，修正后的恢复任务35347141494已上传成功。13:43UTC 已核实 Apple VALID、未过期、Floe QA 和 IN_BETA_TESTING，中英文测试说明保存成功，内部测试者可安装。[190 最终结果](qualification/build190-release/final-results.json)与[封面截图](qualification/build190-release/accepted-ipad-covers-after-relaunch.png)均已保留。
+历史加急交付记录（保留原结论）：[191 加急内部交付](qualification/build191-release/README.md)原上传因发布 SDK 新增 iPhone 助手界面失败而在签名前停止；用户当时同意跳过全部三项失败，恢复任务 35347141494 上传成功，2026-09-16 13:43 UTC 核实 Apple VALID、未过期、Floe QA 和 IN_BETA_TESTING。[190 最终结果](qualification/build190-release/final-results.json)与[封面截图](qualification/build190-release/accepted-ipad-covers-after-relaunch.png)均已保留。此后版本与当前状态见文首交付记录。
 
 - [同时编辑与冲突恢复](FLOE_CONCURRENT_EDITING.md) — IDE、文本、Office、手记的保存规则与验证边界。
 
@@ -128,7 +136,7 @@
 - [Build 177 historical candidate record](RELEASE_NOTES_1.7.0_BUILD_177.md): earlier personalization, CAD/IDE and UI qualification work; its recorded status is historical.
 - [RDP integration status](FLOE_RDP.md): pinned native bridge, real loopback evidence and remaining App integration.
 
-- [Build 187 preparation](RELEASE_1.7.0_BETA_44.md): progressive content covers, navigation identity and pre-build localization checks; tagged d77aa11f; run35312393708 in progress, no upload yet.
+- [Build 187 record](RELEASE_1.7.0_BETA_44.md): progressive content covers, navigation identity and pre-build localization checks; tagged `d77aa11f`, run 35312393708 recorded component/UI failures and the build was never uploaded. Historical.
 - [Build 186 failed qualification](RELEASE_1.7.0_BETA_43.md): fixed source `d421fea2`, run `35306551280`; original evidence and unsigned recovery archive retained, not uploaded.
 - [Build 185 candidate](RELEASE_1.7.0_BETA_42.md): durable cloud jobs, WASI environment repair and content-cover qualification; both App regressions passed but UI failures blocked upload.
 - [Build 184 failed candidate](RELEASE_1.7.0_BETA_41.md): both SDK App builds passed; Lua runtime regression blocked upload.

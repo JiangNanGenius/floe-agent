@@ -2,7 +2,7 @@
 
 [README](../README.md) · [简体中文 README](../README.zh-CN.md) · [User guide](USER_GUIDE.md)
 
-This page describes the Floe 1.7 integration architecture (schema v40). Integration is incomplete; [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md) separates verified paths from planned behavior. Older audit and delivery documents retain their historical meaning.
+This page describes the Floe 1.7 integration architecture (schema v40). Integration is incomplete; [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md) separates verified paths from planned behavior, and the [Build 219 release notes](RELEASE_NOTES_1.7.0_BUILD_219.md) describe the current runtime behavior. Older audit and delivery documents retain their historical meaning.
 
 ## Floe 1.7 integration boundaries
 
@@ -10,7 +10,7 @@ This page describes the Floe 1.7 integration architecture (schema v40). Integrat
 
 Resolution order is session, project, shared, then base, with an explicit write layer. The integration is not complete across all Python/WASM/install paths. Environment separation is dependency/data/lifecycle layering, not a security sandbox for native code in the same process.
 
-The Node bridge starts a persistent host once and schedules serial requests with per-request workers. Media transcode/audio conversion use bounded processing and verified temporary outputs. Unconnected enhancement runners are not registered as available tools. Package transactions stage and verify payloads before journaled file changes; current fixture coverage and remaining gaps are tracked in [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md).
+Local Python, Node.js, shell commands and services run inside each environment's TinyEMU Linux guest; the App bundles no native Python, Node or Ruby payload, and the retired in-process CPython/NodeMobile recipes are archived under `FloeAgent/ThirdParty/NativeRuntimeArchive/` and blocked by `FloeAgent/scripts/audit_native_runtime_free.py`. First use of a Linux-required entry point runs one shared prepare/download/verify/install/start job and resumes the original command; the guest configures and reports its own network. Signed WASI commands remain a separate capability class. Media transcode/audio conversion use bounded processing and verified temporary outputs. Unconnected enhancement runners are not registered as available tools. Package transactions stage and verify payloads before journaled file changes; current fixture coverage and remaining gaps are tracked in [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md).
 
 ## Domain vocabulary / 领域术语
 
@@ -39,6 +39,7 @@ flowchart TB
     REMOTE["SSH · PTY · forwarding · VNC"]
     FILES["Private/Files workspaces · change artifacts · global font library"]
     GIT["Local Git · GitHub · cloud Git"]
+    LINUX["TinyEMU Linux guest · shared venv/npm · signed WASI catalog"]
 
     UI --> CENTER
     CENTER --> RUNTIME
@@ -51,6 +52,7 @@ flowchart TB
     TOOLS --> REMOTE
     TOOLS --> FILES
     TOOLS --> GIT
+    TOOLS --> LINUX
     RUNTIME --> PERSIST
 ```
 
@@ -108,7 +110,7 @@ Provider schema filtering reduces accidental requests; executor-side authorizati
 | `FloePersistence` | GRDB stores and append-only migrations through schema v40. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scope, working copies, change artifacts, documents, and local image operations. |
 | `FloeGit` | Non-destructive local repository operations, GitHub connection, and local/cloud source-control tools. |
-| `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution and visible computer control. |
+| `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution, the TinyEMU Linux guest runtime and visible computer control. Guest Python/Node and signed WASI commands are separate capability paths. |
 | `FloeSkills` | Declarative package validation, compatibility, provenance, and per-run tool ceiling. |
 | `FloeApp` | Native iPhone/iPad interface, browser sessions, voice, notifications, and lifecycle coordination. |
 
