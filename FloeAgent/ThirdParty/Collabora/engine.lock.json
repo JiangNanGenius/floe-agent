@@ -16,6 +16,7 @@
       "FloeOfficeAttachment.cpp": "281c55eb6ccb6ae85092ade38a7debe30cd2d010e76e0cbbcd3d88bcc42bfde8",
       "FloeOfficeAttachment.hxx": "0fe8268cd8bb8355593d662b1cd19e707a8ea5a03068d359c0ef1edfb67b8a76"
     },
+    "pendingHostRebuild": true,
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
     "manifestSHA256": "8d18da2345892dfbf098ac114b43d7c2c1e638633e3e15ea40088b338aeef39a",

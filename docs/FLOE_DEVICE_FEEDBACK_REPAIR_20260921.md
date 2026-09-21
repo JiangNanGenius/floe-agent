@@ -61,10 +61,34 @@ Nothing here publishes a release, moves a tag or claims device acceptance.
   identity (`27b21dc1-fonts-<fingerprint>`), so a font-set change re-runs
   discovery and previous profiles are retained for recovery. The engine still
   initializes against the final bundle resource path.
-- `engine.lock.json` records the new `FloeOfficeNative.mm` SHA-256 and a
-  `SOURCE AHEAD OF ARTIFACT` note: the pinned framework predates this source
-  change, so `bootstrap_office_host.py` fails closed until CI rebuilds and
-  re-qualifies the host. That rebuild is required before distribution.
+- `engine.lock.json` records the new `FloeOfficeNative.mm` SHA-256,
+  `pendingHostRebuild: true` and a `SOURCE AHEAD OF ARTIFACT` note: the pinned
+  framework binary predates this source change, so `bootstrap_office_host.py`
+  fails closed (the artifact's own manifest hash no longer matches the pin)
+  until CI rebuilds and re-qualifies the host. **This revision cannot be
+  released against the old binary: CJK rendering and Pencil input are only
+  fixed once the rebuilt, verified framework is pinned.**
+
+### Native host rebuild / re-pin path (required before any release)
+
+1. Run the existing qualification workflow — `.github/workflows/office-native-host.yml`
+   ("Qualify Floe Native Office Host", `workflow_dispatch`). It compiles and
+   links the host from this revision and uploads `office-native-host-unsigned`
+   plus `office-native-host-evidence` (compile/link/Swift-import logs and
+   `native-host.json`).
+2. Download the artifact: `gh run download <run-id> -n office-native-host-unsigned -D ./host`.
+3. Record the pin:
+   `python3 FloeAgent/scripts/pin_office_host_artifact.py --artifact-zip ./host/OfficeNativeHost.zip --apply`.
+   The script refuses an artifact built from different sources, a different
+   engine commit/overlay, failed qualification flags, or resources that do not
+   match its manifest; it recomputes the archive, executable, framework
+   auxiliary and manifest hashes and clears `pendingHostRebuild`.
+4. Re-run the App build so `bootstrap_office_host.py` verifies the new pin;
+   then the device CJK/Pencil checks below.
+
+Check the current state at any time (read-only):
+`python3 FloeAgent/scripts/pin_office_host_artifact.py --check` — it exits
+non-zero while the source leads the pinned artifact.
 
 **Pencil annotation**
 
@@ -147,9 +171,19 @@ tool-call stream).
 | `xcrun xctest …/FloeExecutionTests.xctest` | 71 tests, 14 issues; pristine baseline is the same 14 (5 unexpected) — new installer/preparation tests pass |
 | `xcrun xctest …/FloeWorkspaceTests.xctest` | 77 tests passed, including 6 new archive-browser tests |
 | `xcrun xctest …/FloeLocalModelsTests.xctest` | 70 tests, 3 issues; pristine baseline is the same 3 — 4 new base-schema tests pass |
-| `python3 scripts/tests/test_office_fonts_and_pencil.py` | 7 passed (Node executes the Pencil gate) |
+| `python3 scripts/tests/test_office_fonts_and_pencil.py` | 7 passed (Node executes the Pencil gate; the lock is asserted source-ahead-of-artifact) |
+| `python3 scripts/tests/test_office_host_pin_path.py` | 5 passed (pin check fails closed; refuses unverified artifacts; records a verified one) |
+| `python3 scripts/pin_office_host_artifact.py --check` | exits 1 with the rebuild path while `pendingHostRebuild` is set |
 | `python3 scripts/tests/test_office_ink_bridge.py` | 4 passed (unchanged) |
 | `python3 -c json.load(Localizable.xcstrings)` | 1,135 keys, valid JSON, en + zh-Hans |
+
+Local environment note: this Mac runs Python 3.9.6 while the Office CI
+workflows pin Python 3.12. `scripts/test_office_engine_bundle.py` therefore
+fails locally with `extractall() got an unexpected keyword argument 'filter'`
+(14 errors) — an interpreter-version limitation, unrelated to this patch and
+covered by CI. The other Office script suites (host bootstrap, mobile
+qualification, native host, filter overlay, save receipts, readonly,
+fullscreen edit, drain, editor language) all pass locally.
 
 Pre-existing failures were classified by re-running the same bundles with the
 corresponding changes temporarily reverted: `FloeAgentRuntimeTests` 13/13,
@@ -162,10 +196,14 @@ JSON fixtures, guest console scripts, background-job workspace preflight).
 - **Cloud CI App build/archive**: the app target (FloeApp) was not compiled
   locally; heavy App compilation and packaging belong to CI. Swift 6
   concurrency diagnostics for the new app views need that build.
-- **Native Office host rebuild**: `engine.lock.json` is intentionally
-  source-ahead-of-artifact. CI must rebuild and re-qualify
+- **Native Office host rebuild (release blocker)**: `engine.lock.json` is
+  intentionally source-ahead-of-artifact and carries
+  `pendingHostRebuild: true`. CI must rebuild and re-qualify
   `FloeOfficeNative.framework` (font fingerprint profile identity + Pencil
-  gating) and update the pin before any release.
+  gating) via `.github/workflows/office-native-host.yml` and record it with
+  `scripts/pin_office_host_artifact.py --apply` before any release. Until then
+  the app build fails closed and **no claim is made that CJK rendering or
+  Pencil input is fixed against the currently pinned binary.**
 - **Device-only**: CJK heading/body/table rendering through a real engine in
   workspace preview, standalone Office and IDE Office; physical Apple Pencil
   stroke feel, undo and save/reopen; finger navigation during annotation;

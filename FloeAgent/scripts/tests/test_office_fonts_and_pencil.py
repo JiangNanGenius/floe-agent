@@ -186,12 +186,16 @@ class OfficeHostPinContract(unittest.TestCase):
 
     def test_lock_records_the_required_rebuild(self) -> None:
         lock = json.loads(LOCK.read_text(encoding="utf-8"))
-        note = lock["qualifiedHostArtifact"].get("note", "")
+        pin = lock["qualifiedHostArtifact"]
+        note = pin.get("note", "")
         self.assertIn("SOURCE AHEAD OF ARTIFACT", note)
         self.assertIn("rebuild", note.lower())
-        # The artifact hashes still describe the previously qualified binary;
-        # bootstrap fails closed until CI rebuilds and re-qualifies it.
-        self.assertIn("archiveSHA256", lock["qualifiedHostArtifact"])
+        # Machine-readable: the build must fail closed until a rebuilt and
+        # verified artifact replaces this pin (cleared by
+        # scripts/pin_office_host_artifact.py --apply).
+        self.assertIs(pin.get("pendingHostRebuild"), True)
+        # The artifact hashes still describe the previously qualified binary.
+        self.assertIn("archiveSHA256", pin)
 
 
 if __name__ == "__main__":
