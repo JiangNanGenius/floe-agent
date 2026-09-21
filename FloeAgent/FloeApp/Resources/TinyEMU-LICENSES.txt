@@ -189,7 +189,7 @@ year range); only that file's trailing RCS identifiers are omitted.
 Downloaded Linux guest / 下载的 Linux 环境
 =========================================
 
-Image / 镜像: floe-debian13-riscv64-20260921.1
+Image / 镜像: floe-debian13-riscv64-20260922.2
 
 The Linux guest is a separate download. Its kernel is GPL-2.0, the bbl boot
 loader is BSD-3-Clause, the Floe runner is MPL-2.0, and the runner's statically
@@ -216,7 +216,7 @@ Source, notices and relink materials / 源码、声明和重新链接材料:
 https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1
 
 Runner update / 运行器更新:
-https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260921.1
+https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260922.2
 The update includes the new runner source and relink object; unchanged guest
 source and notices remain at the base release linked above, with pinned hashes
 in the update release’s SOURCE-OFFER.md and source-reference archive.

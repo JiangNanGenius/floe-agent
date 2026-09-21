@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 219 makes TinyEMU/Linux the primary local runtime with automatic first-use preparation, repaired guest networking/DNS, persistent-disk runner upgrades and honest background-service recovery. It adds MLX snapshot/memory diagnostics, immediate IDE Git refresh, standalone full-screen Office editing from workspace previews, bounded DOCX/XLSX/PPTX save-on-close, and working README Feather/AltStore links. Please retest first Linux download and networking, installed package persistence, a background Node service stop/restart, PPTX edit/save/close, Git initialization, and MLX loading while Linux is active.",
+  "zh-Hans": "Build 219 将 TinyEMU/Linux 收敛为主要本地运行环境，首次使用会自动准备，修复客体网络与 DNS，并保留磁盘、已装包和可恢复的后台服务状态；同时增加 MLX 快照/内存诊断、IDE Git 即时刷新、工作区预览直达独立全屏 Office、DOCX/XLSX/PPTX 有界保存退出，以及可用的 README Feather/AltStore 入口。请重点复测 Linux 首次下载与联网、已装包持久化、后台 Node 服务停止/重启、PPTX 编辑保存退出、Git 初始化，以及 Linux 运行时的 MLX 加载。"
+}

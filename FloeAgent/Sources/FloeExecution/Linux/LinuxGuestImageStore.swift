@@ -260,15 +260,15 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
 
 public enum LinuxGuestImageDistributionCatalog {
     /// One fixed component release. Keep the App default and download entry aligned.
-    public static let defaultImageID = "floe-debian13-riscv64-20260921.1"
+    public static let defaultImageID = "floe-debian13-riscv64-20260922.2"
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,
-            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260921.1/floe-linux-guest-floe-debian13-riscv64-20260921.1.zip")!,
-            archiveSHA512: "060aba24fd6a013075b4decf5c741658dbfabb45c27f05e30bf100bae9b39aa6c319aba818150235f875fb6419500d7c32638934fe3a02a88bbd6caade83f295",
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/floe-linux-guest-floe-debian13-riscv64-20260922.2.zip")!,
+            archiveSHA512: "bde2b2198bf5f70411b12587b9e6b4b42a183671b5564b90319eae7bbd2ae7eb09f686e0d4009096eba0da3b75a89c65bc7c45ac31ac61146482377fc0bdae04",
             provenance: LinuxGuestImageProvenance(
-                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260921.1",
-                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/floe-linux-guest-20260921.1/FloeAgent/scripts/linux-guest-runner-update",
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260922.2",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/ba739b71f902507da2382d52ba6393eb6cba5afb/FloeAgent/scripts/linux-guest-runner-update",
                 license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1",
                 distributionAllowed: true
             )
