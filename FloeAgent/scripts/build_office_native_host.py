@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import tempfile
 
 from package_office_engine import digest
 from prepare_office_native_sources import DEFAULT_LOCK
@@ -16,6 +17,15 @@ from office_release_gates import false_capabilities
 
 HOST = DEFAULT_LOCK.parent / "FloeOfficeNative"
 NAME = "FloeOfficeNative"
+# The Swift import probe is copied verbatim from this fixture into the build
+# output as ImportProbe.swift. It must type-check against the real public
+# header, so a probe type that disagrees with how Clang imports the Objective-C
+# API (e.g. NSDictionary<NSString *, id> * -> [String: Any]) fails the gate.
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent.parent
+SWIFT_IMPORT_PROBE = SCRIPT_DIR / "fixtures" / "office_native_host_api.swift"
+HOST_PUBLIC_HEADER = HOST / (NAME + ".h")
+SWIFT_IMPORT_TARGET = "arm64-apple-ios26.0"
 EXCLUDED_SOURCES = {"main.m", "AppDelegate.mm", "SceneDelegate.mm",
     "DocumentBrowserViewController.mm", "TemplateCollectionViewController.mm", "TemplateSectionHeaderView.m"}
 SYSTEM_FRAMEWORKS = ('UIKit', 'Foundation', 'CoreFoundation', 'CoreGraphics', 'CoreText', 'Security')
@@ -99,6 +109,59 @@ def framework_project(project, host_directory):
     return project
 
 
+def verify_swift_import_probe(*, sdk=None):
+    """Type-check the *generated* import probe against the real public header.
+
+    This is the same Swift-import gate the cloud build runs after linking the
+    framework, but without needing the multi-GB Collabora engine build: the
+    framework is recreated as a header-only Clang module (``DEFINES_MODULE``
+    produces an umbrella ``framework module`` over the public header), and the
+    exact probe fixture that ``build_host`` copies verbatim into
+    ``ImportProbe.swift`` is type-checked against it.
+
+    It catches a probe whose Swift annotation disagrees with the Objective-C
+    import — the cloud failure was ``NSDictionary?`` against a property declared
+    ``NSDictionary<NSString *, id> *``, which Swift imports as ``[String: Any]?``
+    — and proves every other referenced host API still resolves. This never
+    links an engine and never grants a release capability.
+    """
+    header = HOST_PUBLIC_HEADER
+    if not header.is_file():
+        raise FileNotFoundError(f'missing host public header: {header}')
+    if not SWIFT_IMPORT_PROBE.is_file():
+        raise FileNotFoundError(f'missing Swift import probe: {SWIFT_IMPORT_PROBE}')
+    if sdk is None:
+        sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
+                                      text=True).strip()
+    modulemap = ('framework module ' + NAME + ' {\n'
+                 '  umbrella header "' + NAME + '.h"\n'
+                 '  export *\n}\n')
+    with tempfile.TemporaryDirectory(prefix='floe-office-import-probe-') as temporary:
+        framework = Path(temporary) / (NAME + '.framework')
+        (framework / 'Headers').mkdir(parents=True)
+        (framework / 'Modules').mkdir(parents=True)
+        shutil.copyfile(header, framework / 'Headers' / (NAME + '.h'))
+        (framework / 'Modules' / 'module.modulemap').write_text(modulemap)
+        probe = Path(temporary) / 'ImportProbe.swift'
+        shutil.copyfile(SWIFT_IMPORT_PROBE, probe)
+        command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk,
+                   '-target', SWIFT_IMPORT_TARGET, '-F', str(framework.parent), str(probe)]
+        result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode:
+        raise AssertionError('generated ImportProbe does not match the Swift-imported host API:\n'
+                             + result.stderr.strip())
+    return {
+        'swiftImportProbe': str(SWIFT_IMPORT_PROBE.relative_to(REPO_ROOT)),
+        'swiftProbeSHA256': digest(SWIFT_IMPORT_PROBE),
+        'hostHeaderSHA256': digest(header),
+        'swiftImportTarget': SWIFT_IMPORT_TARGET,
+        'swiftImportProbeCompiled': True,
+        # A type-check of a header-only module is not an engine/device result.
+        'engineVisibleRenderPassed': False,
+        'deviceVisibleRenderPassed': False,
+    }
+
+
 def build_host(root, output, *, build=True, filter_overlay=None):
     root, output = Path(root).resolve(), Path(output).resolve()
     base = qualify(root, output, build=False)
@@ -180,9 +243,9 @@ def build_host(root, output, *, build=True, filter_overlay=None):
     save()
     sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
     probe = output / 'ImportProbe.swift'
-    shutil.copyfile(Path(__file__).resolve().parent / 'fixtures/office_native_host_api.swift', probe)
+    shutil.copyfile(SWIFT_IMPORT_PROBE, probe)
     report['swiftProbeSHA256'] = digest(probe)
-    module_command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk, '-target', 'arm64-apple-ios26.0',
+    module_command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk, '-target', SWIFT_IMPORT_TARGET,
         '-F', str(framework.parent), str(probe)]
     with (output / 'swift-import.log').open('w') as log:
         result = subprocess.run(module_command, stdout=log, stderr=subprocess.STDOUT)
@@ -196,11 +259,18 @@ def build_host(root, output, *, build=True, filter_overlay=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('bundle', type=Path)
-    parser.add_argument('output', type=Path)
+    parser.add_argument('bundle', nargs='?', type=Path)
+    parser.add_argument('output', nargs='?', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--filter-overlay', type=Path)
+    parser.add_argument('--verify-swift-import-probe', action='store_true',
+                        help='type-check the generated ImportProbe against the real header without a build')
     args = parser.parse_args()
-    result = build_host(args.bundle, args.output, build=not args.prepare_only,
-                        filter_overlay=args.filter_overlay)
-    print(json.dumps({key: value for key, value in result.items() if key != 'runtimeResourceSHA256'}, indent=2))
+    if args.verify_swift_import_probe:
+        print(json.dumps(verify_swift_import_probe(), indent=2))
+    else:
+        if args.bundle is None or args.output is None:
+            parser.error('bundle and output are required unless --verify-swift-import-probe is set')
+        result = build_host(args.bundle, args.output, build=not args.prepare_only,
+                            filter_overlay=args.filter_overlay)
+        print(json.dumps({key: value for key, value in result.items() if key != 'runtimeResourceSHA256'}, indent=2))
