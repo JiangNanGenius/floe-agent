@@ -137,6 +137,15 @@ def main():
     caps_payload = (verdict.get("capsPayload") or "").strip()
     caps = pipeline_contract.parse_caps(caps_payload)
     require(caps is not None, "verdict records a verbatim CAPS payload: %r" % caps_payload)
+    # A runner-only update whose guest cannot reach the network is not
+    # shippable: the component's whole purpose is a usable Linux environment
+    # (apt/pip/npm). The guest's own bounded DNS probe decides `up`; a
+    # missing field, `partial` or `down` all fail here instead of shipping a
+    # silently degraded component.
+    if require(caps is not None and caps.get("net") in pipeline_contract.CAPS_NET_STATUSES,
+               "verdict CAPS payload carries a first-boot net= state"):
+        require(caps.get("net") == "up",
+                "guest reports net=up (its bounded DNS probe answered): %r" % caps_payload)
     if failures:
         return 1
 
@@ -160,11 +169,25 @@ def main():
         require(constants.get("protocol") == 3, "runner source constant protocol == 3")
         require(constants.get("max_commands", 0) >= 4, "runner source allows >=4 concurrent commands")
         require(constants.get("max_sessions", 0) >= 2, "runner source allows >=2 concurrent sessions")
+        # The runner source must actually emit the network field; otherwise a
+        # stray `net=up` in the payload would be compared against a source
+        # that never produces it, and the manifest would claim a network
+        # contract the shipped runner does not implement.
+        runner_source_path = os.path.join(
+            args.repo, pipeline_contract.RUNNER_SOURCE_BASE, "floe_exec.c")
+        runner_source = ""
+        if require(os.path.isfile(runner_source_path),
+                   "runner source floe_exec.c is in the checkout"):
+            with open(runner_source_path, "r", encoding="utf-8") as handle:
+                runner_source = handle.read()
+        require(pipeline_contract.caps_net_field(runner_source),
+                "runner source emits the first-boot net= capability field")
         source_caps = pipeline_contract.expected_caps({
             "runner_version": constants.get("runner_version", ""),
             "protocol": constants.get("protocol", 0),
             "max_commands": constants.get("max_commands", 0),
-            "max_sessions": constants.get("max_sessions", 0)})
+            "max_sessions": constants.get("max_sessions", 0)},
+            net_status="up")
         require(source_caps == caps_payload,
                 "guest CAPS payload %r equals the runner source constants %r" % (caps_payload, source_caps))
         require(caps.get("protocol") == 3, "guest CAPS payload says protocol=3")

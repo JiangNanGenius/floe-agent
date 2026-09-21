@@ -11,9 +11,14 @@
 #      the cross toolchain to the exact versions the base component used
 #   4. fetch + verify the base image archive, replace ONLY floe-exec in the
 #      whole-disk ext4 via the repo's install-into-image.sh
-#   5. boot the updated image once under the real TinyEMU host and run the
-#      focused protocol check (negotiation, concurrency, cancel + recovery,
-#      PTYs, background service) — not the full package/SMP/UI matrix
+#   5. boot the updated image once under the real TinyEMU host, with the
+#      App's network switch on (`floe_vm_host --net`, the CLI form of
+#      FloeVMConfig.net_enable), and run the focused protocol check
+#      (negotiation, concurrency, cancel + recovery, PTYs, background
+#      service, plus the first-boot network contract: the guest must report
+#      net=up from its bounded DNS probe and the transcript must show the
+#      real eth0 and a userland DNS answer) — not the full package/SMP/UI
+#      matrix
 #   6. package manifest/catalog ZIP (including the standalone verified runner)
 #      + runnerArtifact/runnerCapabilities + relink + reused-source references
 #   7. create/complete the DRAFT prerelease (never published, never latest,
@@ -322,11 +327,21 @@ jobs:
           echo "until=$UNTIL" | tee "$EVID/p3-until.txt"
           CMDLINE="console=hvc0 root=/dev/vda rw loglevel=4 init=/usr/local/bin/floe-exec floe.epoch=$(date +%s)"
           set +e
+          # --net is REQUIRED: it is the host-side switch that makes the
+          # adapter create the per-VM slirp backend and the virtio-net MMIO
+          # device (FloeVMConfig.net_enable, exactly what the App sets from
+          # LinuxGuestEnvironmentDescriptor.networkEnabled). Without it
+          # eth_count stays 0, TinyEMU creates no network device, the guest
+          # kernel has no eth0 and the runner honestly answers net=down -
+          # which this check now fails on instead of hiding. Run 35645930554
+          # failed exactly there: the flag was missing here, so the guest had
+          # no device at all.
           timeout 420 "$RUNNER_TEMP/tinyemu-build/floe_vm_host" \
             --bios "$RUNNER_TEMP/image/bbl64.bin" \
             --kernel "$RUNNER_TEMP/image/kernel-riscv64.bin" \
             --disk "$RUNNER_TEMP/image/disk.img" --rw \
             --ram 512 --cmdline "$CMDLINE" \
+            --net \
             --share floe="$EVID/share9p" \
             --script "$EVID/p3-script.txt" \
             --transcript "$EVID/p3-transcript.txt" \

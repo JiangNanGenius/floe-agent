@@ -5,17 +5,20 @@ Runs in a few seconds on any machine with python3 and no network, so the cloud
 dispatch fails on a broken script rather than halfway through a 572 MB download
 or a guest boot. It exercises the real scripts with synthetic fixtures:
 
-  1. pipeline_contract: runner constants, CAPS payload, Role-enum parsing and
-     the role policy (`runner` when the engine has it, recorded `disk`
-     fallback otherwise);
+  1. pipeline_contract: runner constants, the CAPS payload with and without
+     the first-boot net= field, Role-enum parsing and the role policy
+     (`runner` when the engine has it, recorded `disk` fallback otherwise),
+     plus the workflow guard that the qualification boot passes --net;
   2. guest_protocol_check: generate a timed script that the real
-     `floe_vm_host` parser can read (line format + length limit), then assert a
-     synthetic protocol-3 transcript passes and a broken one fails;
+     `floe_vm_host` parser can read (line format + length limit), then assert
+     a synthetic protocol-3 transcript with the guest-side device/DNS probes
+     passes and broken, degraded (net=down/partial) and probe-failed ones
+     fail;
   3. package_component end-to-end on tiny fixtures: standalone runner artifact,
      `runnerArtifact`/`runnerCapabilities` in the manifest, ZIP member digests,
      sums, relink + reused-source archives, plus the fail-closed cases
-     (caps/source mismatch, toolchain version drift, engine without the
-     artifact fields).
+     (caps/source mismatch, missing or degraded net= state, toolchain version
+     drift, engine without the artifact fields).
 
 Usage: python3 selfcheck.py [--repo DIR] [--out DIR] [--keep]
 `--repo` is the checkout that provides write-image-manifest.py; the engine
@@ -28,6 +31,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,7 +57,12 @@ RUNNER_SOURCE = """\
 #define FLOE_RUNNER_VERSION "2.0.0"
 #define MAX_CONCURRENT_COMMANDS 8
 #define MAX_CONCURRENT_SESSIONS 4
+static const char *caps_format =
+    "\\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d net=%s\\x1e";
 """
+# The same runner without the first-boot network field: the packaging gate
+# must fail closed when the guest answers net=up but the source cannot emit it.
+RUNNER_SOURCE_NO_NET = RUNNER_SOURCE.replace("maxSessions=%d net=%s", "maxSessions=%d")
 RUNNER_NET_HEADER = "/* synthetic first-boot networking header for the pipeline self-check */\n"
 ENGINE_SOURCE = """\
 public enum LinuxGuestImageArtifact {
@@ -114,6 +123,10 @@ public struct LinuxGuestImage {
 }
 """
 VERDICT_CHECKS = ["boot clock applied", "HELLO answered", "final marker"]
+# The runner's CAPS payload with the first-boot network field: the update's
+# boot gate requires net=up (the runner's bounded DNS probe answered).
+CAPS_WITH_NET = "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=up"
+CAPS_LEGACY = "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4"
 # Pinned predecessor identity for the synthetic base manifest (the package
 # must read these from the manifest bytes, not from notes).
 BASE_IMAGE_ID = "floe-debian13-riscv64-base-selfcheck"
@@ -164,12 +177,33 @@ def expect(condition, label):
     return condition
 
 
-def transcript_for(caps, broken=False):
-    """A synthetic protocol-3 transcript with the frames the guest emits."""
+def transcript_for(caps, broken=False, net="up", device=True):
+    """A synthetic protocol-3 transcript with the frames the guest emits.
+
+    `net`/`device` model the first-boot network contract: the runner's own
+    status line, the guest-side device/DNS markers, and a `down` mode that
+    reproduces run 35645930554 (no device, net=down).
+    """
     blob = bytearray()
     blob += b"floe-exec: clock set from floe.epoch=1760000000\n"
+    if net == "up":
+        blob += (b"floe-exec: net eth0=10.0.2.15/24 gw=10.0.2.2 "
+                 b"dns=10.0.2.3 status=up\n")
+    elif net == "partial":
+        blob += (b"floe-exec: net eth0=10.0.2.15/24 gw=10.0.2.2 "
+                 b"status=partial (no resolver answered in 8s)\n")
+    else:
+        blob += b"floe-exec: net eth0: interface configuration failed: No such device\n"
     blob += b"\x1eFLOE-CAPS hello1 %s\x1e" % caps.encode()
     blob += b"\x1eFLOE-END hello1 0\x1e"
+    if device:
+        blob += b"\x1eFLOE-BEGIN netdev\x1eFLOE_NET_DEVICE_OK_"
+        blob += guest_protocol_check.DEVICE_MAC.encode()
+        blob += b"\n\x1eFLOE-END netdev 0\x1e"
+        blob += b"\x1eFLOE-BEGIN netdns\x1eFLOE_NET_DNS_OK\n\x1eFLOE-END netdns 0\x1e"
+    else:
+        blob += b"\x1eFLOE-BEGIN netdev\x1eFLOE_NET_DEVICE_MISSING\n\x1eFLOE-END netdev 9\x1e"
+        blob += b"\x1eFLOE-BEGIN netdns\x1eFLOE_NET_DNS_FAIL\n\x1eFLOE-END netdns 9\x1e"
     for n in (1, 2, 3, 4):
         blob += b"\x1eFLOE-BEGIN cc%d\x1e" % n
         blob += b"FLOE_CC%d_OF_4\n" % n
@@ -190,14 +224,65 @@ def transcript_for(caps, broken=False):
     return bytes(blob)
 
 
-def check_contract(out):
+def check_contract(out, repo):
     constants = pipeline_contract.parse_runner_constants(RUNNER_SOURCE)
     expect(constants == {"runner_version": "2.0.0", "protocol": 3, "max_commands": 8, "max_sessions": 4},
            "runner constants parse")
     caps = pipeline_contract.expected_caps(constants)
-    expect(caps == "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4", "CAPS payload format")
-    parsed = pipeline_contract.parse_caps(caps)
-    expect(parsed is not None and parsed["protocol"] == 3, "CAPS payload parses back")
+    expect(caps == CAPS_LEGACY, "CAPS payload format without the network field")
+    expect(pipeline_contract.expected_caps(constants, net_status="up") == CAPS_WITH_NET,
+           "CAPS payload format with the network field")
+    try:
+        pipeline_contract.expected_caps(constants, net_status="degraded")
+        raise SystemExit("selfcheck FAIL: an unknown net status must fail closed")
+    except ValueError:
+        print("selfcheck OK: an unknown net status fails closed", flush=True)
+    parsed = pipeline_contract.parse_caps(CAPS_WITH_NET)
+    expect(parsed is not None and parsed["protocol"] == 3 and parsed["net"] == "up",
+           "CAPS payload with the network field parses back")
+    expect(parsed is not None and parsed["maxCommands"] == 8 and parsed["maxSessions"] == 4,
+           "CAPS fields before the network field still parse")
+    legacy_parsed = pipeline_contract.parse_caps(CAPS_LEGACY)
+    expect(legacy_parsed is not None and legacy_parsed["net"] is None,
+           "a pre-network CAPS payload still parses, with no network claim")
+    expect(pipeline_contract.parse_caps(CAPS_WITH_NET.replace("net=up", "net=degraded")) is None,
+           "an unknown network value does not parse")
+    expect(pipeline_contract.parse_caps("runner=1.0 protocol=3 maxCommands=8 maxSessions=4 net=up extra") is None,
+           "a CAPS payload with a trailing field does not parse")
+    expect(pipeline_contract.caps_net_field(RUNNER_SOURCE),
+           "the runner source's net= capability slot is discovered")
+    expect(not pipeline_contract.caps_net_field(RUNNER_SOURCE_NO_NET),
+           "a runner source without the net= slot is reported as such")
+    # The workflow must hand the host the App's network switch; a missing
+    # --net is exactly how run 35645930554 booted a guest with no eth0.
+    workflow_path = os.path.join(repo, ".github/workflows/linux-guest-runner-update.yml")
+    expect(os.path.isfile(workflow_path), "component workflow is in the checkout")
+    workflow = open(workflow_path, encoding="utf-8").read()
+    expect(pipeline_contract.workflow_enables_guest_network(workflow),
+           "component workflow boots floe_vm_host with --net")
+    stripped = re.sub(r"(?m)^\s*--net\s*\\?\s*$\n?", "", workflow)
+    expect(not pipeline_contract.workflow_enables_guest_network(stripped),
+           "a boot command without --net fails the workflow guard")
+    expect(pipeline_contract.workflow_enables_guest_network(
+        'run: timeout 60 floe_vm_host --bios b --kernel k --net \\\n'),
+        "an inline --net after floe_vm_host is accepted")
+    # The boot gate's required eth0 MAC must be the one the adapter really
+    # assigns (adapter/floe_vm.c net->mac_addr[0..5]); deriving it here keeps
+    # the guest-device assertion coupled to the engine instead of a string.
+    adapter_path = os.path.join(
+        repo, "FloeAgent/ThirdParty/TinyEMU/adapter/floe_vm.c")
+    expect(os.path.isfile(adapter_path), "adapter source is in the checkout")
+    adapter = open(adapter_path, encoding="utf-8").read()
+    expect(pipeline_contract.adapter_guest_mac(adapter)
+           == guest_protocol_check.DEVICE_MAC,
+           "guest eth0 device MAC is re-derived from adapter/floe_vm.c (%s)"
+           % guest_protocol_check.DEVICE_MAC)
+    expect(pipeline_contract.adapter_guest_mac(
+        adapter.replace("mac_addr[5] = 0x01;", "mac_addr[5] = 0x02;"))
+        == "02:00:00:00:00:02",
+        "an adapter MAC change is visible to the boot-gate coupling")
+    expect(pipeline_contract.adapter_guest_mac("no mac here") is None,
+           "a missing adapter MAC fails the coupling instead of guessing")
     roles, has_fields = pipeline_contract.engine_runner_contract(ENGINE_SOURCE)
     expect(has_fields and roles == ["bios", "disk", "initrd", "kernel", "runner"],
            "engine contract + Role enum parse")
@@ -283,6 +368,10 @@ def check_guest_protocol(out):
     expect(any(t == b"\x03" for t in seen_tokens), "script exercises the legacy 0x03 cancel")
     expect(any(t.startswith(b"\x1eFLOE-EXEC p3done ") for t in seen_tokens),
            "script ends with the terminal END token")
+    expect(any(t.startswith(b"\x1eFLOE-EXEC netdev ") for t in seen_tokens),
+           "script probes the kernel's eth0 before the protocol matrix")
+    expect(any(t.startswith(b"\x1eFLOE-EXEC netdns ") for t in seen_tokens),
+           "script resolves a name from the guest userland")
     expect(all(("echo s >/floe/cc%d.start" % n) in guest_protocol_check.CC_CMD.format(n)
                and ("\\n' %d $n" % n) in guest_protocol_check.CC_CMD.format(n)
                for n in (1, 2, 3, 4)),
@@ -294,22 +383,22 @@ def check_guest_protocol(out):
     share = os.path.join(out, "share9p")
     os.makedirs(share, exist_ok=True)
     write(os.path.join(share, "svc1.log"), "tick0\ntick1\ntick2\ntick3\n")
-    good = write(os.path.join(out, "good-transcript.txt"),
-                 transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4"))
+    good = write(os.path.join(out, "good-transcript.txt"), transcript_for(CAPS_WITH_NET))
     verdict_path = os.path.join(out, "protocol-check.json")
     rc = guest_protocol_check.run_assert(good, share, verdict_path)
-    expect(rc == 0, "a complete protocol-3 transcript passes")
+    expect(rc == 0, "a complete protocol-3 transcript with net=up passes")
     verdict = json.load(open(verdict_path))
-    expect(verdict["capsPayload"] == "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4",
-           "verdict records the verbatim CAPS payload")
+    expect(verdict["capsPayload"] == CAPS_WITH_NET,
+           "verdict records the verbatim CAPS payload with the network field")
+    expect(verdict["netStatus"] == "up", "verdict records the network state")
     expect(verdict["serviceTicks"] == 4 and verdict["failures"] == 0, "verdict records service ticks")
 
     bad = write(os.path.join(out, "bad-transcript.txt"),
-                transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4", broken=True))
+                transcript_for(CAPS_WITH_NET, broken=True))
     expect(quiet(guest_protocol_check.run_assert, bad, share, os.path.join(out, "bad-verdict.json")) == 1,
            "a transcript without the recovery marker fails closed")
     no_overlap = write(os.path.join(out, "no-overlap-transcript.txt"),
-                       transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4")
+                       transcript_for(CAPS_WITH_NET)
                        .replace(b"FLOE_CC1_OF_4", b"FLOE_CC1_NO_OVERLAP")
                        .replace(b"FLOE-END cc1 0", b"FLOE-END cc1 7"))
     expect(quiet(guest_protocol_check.run_assert, no_overlap, share,
@@ -320,11 +409,34 @@ def check_guest_protocol(out):
     expect(quiet(guest_protocol_check.run_assert, legacy, share,
                  os.path.join(out, "legacy-verdict.json")) == 1,
            "a protocol-2 transcript fails closed")
+    # The network contract fails closed: a guest with no device (net=down,
+    # the run 35645930554 state), a configured interface whose DNS never
+    # answered (net=partial), and a transcript whose userland probes failed
+    # must all fail the boot gate instead of shipping a degraded component.
+    no_device = write(os.path.join(out, "net-down-transcript.txt"),
+                      transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=down",
+                                     net="down", device=False))
+    expect(quiet(guest_protocol_check.run_assert, no_device, share,
+                 os.path.join(out, "net-down-verdict.json")) == 1,
+           "a guest without eth0 (net=down) fails the boot gate")
+    partial = write(os.path.join(out, "net-partial-transcript.txt"),
+                    transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=partial",
+                                   net="partial", device=False))
+    expect(quiet(guest_protocol_check.run_assert, partial, share,
+                 os.path.join(out, "net-partial-verdict.json")) == 1,
+           "a configured interface without a DNS answer (net=partial) fails the boot gate")
+    probe_failed = write(os.path.join(out, "net-probe-failed-transcript.txt"),
+                         transcript_for(CAPS_WITH_NET, device=False))
+    expect(quiet(guest_protocol_check.run_assert, probe_failed, share,
+                 os.path.join(out, "net-probe-failed-verdict.json")) == 1,
+           "a failed guest device/DNS probe fails the boot gate even if CAPS says net=up")
 
 
-def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="4:13.2.0-7ubuntu1"):
+def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="4:13.2.0-7ubuntu1",
+                 runner_source=None):
     """Tiny but real files for a package_component round trip."""
     paths = {}
+    runner_source = RUNNER_SOURCE if runner_source is None else runner_source
     writer_path = writer_path or _MANIFEST_WRITER
     fixture = os.path.join(root, "fixture")
     image_dir = os.path.join(fixture, "image")
@@ -359,7 +471,7 @@ def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="
     # Exact-source digest manifest for the complete derived source set.
     clock_header = "/* synthetic clock */\n"
     makefile = "riscv64:\n\t@true\n"
-    source_fixture = {"floe_exec.c": RUNNER_SOURCE, "floe_clock.h": clock_header,
+    source_fixture = {"floe_exec.c": runner_source, "floe_clock.h": clock_header,
                       "floe_net.h": RUNNER_NET_HEADER, "Makefile": makefile}
     write(os.path.join(runner_out, "runner-source-sha256.txt"),
            "".join("%s  %s\n" % (hashlib.sha256(payload.encode()).hexdigest(), name)
@@ -399,7 +511,7 @@ def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="
     return paths
 
 
-def package_env(paths, base_toolchain, caps="runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4"):
+def package_env(paths, base_toolchain, caps=CAPS_WITH_NET):
     verdict = {
         "schema": "floe-linux-guest-runner-update-check/v1",
         "transcriptBytes": 4096, "serviceTicks": 4, "capsPayload": caps,
@@ -462,8 +574,8 @@ def check_package(out):
            "manifest runnerArtifact uses the standalone path and the distinct runner role")
     expect(artifact.get("sha512") == sha(paths["runner_bin"]) and artifact.get("bytes") ==
            os.path.getsize(paths["runner_bin"]), "manifest runnerArtifact digest/size match the built runner")
-    expect(manifest.get("runnerCapabilities") == "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4",
-           "manifest runnerCapabilities is the verbatim CAPS payload")
+    expect(manifest.get("runnerCapabilities") == CAPS_WITH_NET,
+           "manifest runnerCapabilities is the verbatim CAPS payload (with net=up)")
     expect(manifest.get("compatibleOrigins") == [{"imageID": BASE_IMAGE_ID,
                                                   "sha512": BASE_DISK_SHA512,
                                                   "bytes": BASE_DISK_BYTES}],
@@ -535,8 +647,31 @@ def check_package(out):
 
     # --- fail-closed cases --------------------------------------------------
     bad_paths = make_fixture(os.path.join(out, "mismatch"))
-    args, env = package_env(bad_paths, base_toolchain, caps="runner=2.0.0 protocol=3 maxCommands=1 maxSessions=1")
+    args, env = package_env(bad_paths, base_toolchain,
+                            caps="runner=2.0.0 protocol=3 maxCommands=1 maxSessions=1 net=up")
     expect(run_package(args, env).returncode != 0, "CAPS/source mismatch fails closed")
+
+    # A guest that answered net=down/partial must never be packaged: the
+    # component exists to give the App a usable network (apt/pip/npm).
+    degraded_paths = make_fixture(os.path.join(out, "netdown"))
+    args, env = package_env(degraded_paths, base_toolchain,
+                            caps="runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=down")
+    expect(run_package(args, env).returncode != 0, "a net=down guest verdict fails closed")
+    partial_paths = make_fixture(os.path.join(out, "netpartial"))
+    args, env = package_env(partial_paths, base_toolchain,
+                            caps="runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=partial")
+    expect(run_package(args, env).returncode != 0, "a net=partial guest verdict fails closed")
+    missing_field_paths = make_fixture(os.path.join(out, "netabsent"))
+    args, env = package_env(missing_field_paths, base_toolchain, caps=CAPS_LEGACY)
+    expect(run_package(args, env).returncode != 0,
+           "a CAPS payload without the net= field fails closed when the source emits it")
+    # A runner source that does not emit the net field cannot back the
+    # manifest's runnerCapabilities claim, even with a matching payload.
+    no_field_paths = make_fixture(os.path.join(out, "nosourcefield"),
+                                  runner_source=RUNNER_SOURCE_NO_NET)
+    args, env = package_env(no_field_paths, base_toolchain, caps=CAPS_LEGACY)
+    expect(run_package(args, env).returncode != 0,
+           "a runner source without the net= slot cannot package a network claim")
 
     drifted = write(os.path.join(out, "base-toolchain-drift.txt"),
                     "binary gcc-riscv64-linux-gnu 4:13.3.0-9ubuntu1 source gcc-defaults 1.209\n"
@@ -630,7 +765,7 @@ def main():
     _MANIFEST_WRITER = manifest_writer
 
     try:
-        check_contract(out)
+        check_contract(out, args.repo)
         check_guest_protocol(out)
         check_package(out)
         write(os.path.join(out, "selfcheck-passed.json"),

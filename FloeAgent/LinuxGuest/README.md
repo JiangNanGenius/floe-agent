@@ -111,6 +111,40 @@ Mount options match the verified form: `trans=virtio,version=9p2000.L`
 sends none. After the mounts (and before serving any frame) PID 1 also applies
 the host-supplied boot clock described below.
 
+## First-boot network (device + DNS)
+
+The guest can only configure `eth0` when the host actually attached a
+virtio-net device. The adapter creates that device (and the per-VM slirp
+backend) only for a VM created with `FloeVMConfig.net_enable = 1`; the App
+sets it from `LinuxGuestEnvironmentDescriptor.networkEnabled`
+(`FloeApp/Execution/LinuxGuestBackend.swift`), and the qualification host uses
+the `floe_vm_host --net` switch. Without the switch `eth_count` stays 0,
+TinyEMU registers no network device, the kernel has no `eth0`, and the runner
+honestly reports `net=down` (`interface configuration failed: No such
+device`) — the state of run 35645930554.
+
+With the device present, PID 1 configures it before answering HELLO (no DHCP
+client, no init system):
+
+1. `SIOCSIFADDR`/`SIOCSIFNETMASK`/`SIOCSIFFLAGS` on `eth0` with the slirp
+   defaults (`10.0.2.15/24`, gateway `10.0.2.2`), then a default route.
+2. Renders `/etc/resolv.conf` (slirp's own `10.0.2.3` alias first, then four
+   fixed public resolvers), `/etc/network/interfaces.d/eth0` and
+   `/etc/gitconfig` from `runner/floe_net.h`.
+3. Runs a bounded UDP DNS probe over that ordered list (2 s per resolver, at
+   most 4 attempts) and reports the state in `FLOE-CAPS`:
+   `net=up` (a resolver answered), `net=partial` (interface configured, no
+   answer inside the budget) or `net=down` (interface could not be
+   configured). The host never treats `partial`/`down`/missing as ready.
+
+Why `10.0.2.3` comes first: it is slirp's name-server alias, and the pinned
+engine rewrites a guest datagram sent there to the host's own first resolver
+(`socket.c: sosendto` → `get_dns_addr()`), so a network that forces its own
+DNS still answers. Qualification run 35500083112 proved the path end to end:
+with only `nameserver 10.0.2.3` in the guest, `apt-get update`, an apt install
+and an HTTPS fetch all succeeded. The public resolvers remain as fallbacks for
+a host whose resolver slirp cannot read (it then falls back to loopback).
+
 ## Boot clock (`floe.epoch=`)
 
 The pinned guest kernel has no usable RTC (`CONFIG_RTC_CLASS` is not enabled),
@@ -156,11 +190,12 @@ apt-get update && apt-get install -y python3 python3-pip
 
 That requires the guest to be started with networking
 (`LinuxGuestEnvironmentDescriptor.networkEnabled == true`, i.e. the engine's
-slirp). The app currently starts Linux environments with
-`networkEnabled: false`; enabling it is a host-side decision, and the runner
-does not pretend an offline image can install packages. For offline use,
-bake `python3` into the image at build time — no Python is required to
-*execute* commands.
+slirp). The app starts Linux environments with `networkEnabled: true`
+(`AppLinuxGuestEnvironmentProvider`), so the guest has `eth0` and the resolver
+path described under "First-boot network" above; the runner still reports the
+actual state (`net=partial`/`down`) instead of pretending an offline image can
+install packages. For offline use, bake `python3` into the image at build
+time — no Python is required to *execute* commands.
 
 ## Protocol summary
 
@@ -202,9 +237,22 @@ signalled.
 # protocol run, no command execution and no clock change):
 make -C FloeAgent/LinuxGuest/runner check-clock
 
+# First-boot network plan (resolvers/interfaces/git config + net= vocabulary,
+# pure: no ioctl, no file write, no network):
+make -C FloeAgent/LinuxGuest/runner check-net
+
 # Full host protocol suite (real runner child processes over real stdio):
 bash FloeAgent/LinuxGuest/tests/host_protocol_check.sh
 ```
+
+`check-net` compiles the real `floe_net.h` with the runner's `-Werror` flags
+and checks the ordered resolver plan (slirp's alias first, public fallbacks
+behind it), the rendered `interfaces`/`gitconfig` files, the probe bounds and
+the `up`/`partial`/`down` taxonomy with unknown/missing values mapping to
+`down`. The ioctl and DNS-probe side only runs in a booted guest; the component
+boot check (`guest_protocol_check.py`) proves it there with a guest-side
+`/sys/class/net/eth0` read and a userland resolution, and fails on
+`net=down`/`net=partial`.
 
 `check-clock` compiles the real `floe_clock.h` with the runner's `-Werror`
 flags and checks a valid current epoch, zero, whitespace/token-boundary

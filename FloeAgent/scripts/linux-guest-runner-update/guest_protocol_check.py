@@ -3,8 +3,9 @@
 update pipeline (NOT the full package/SMP/UI matrix).
 
 generate: write the timed floe_vm_host script that drives one real guest boot
-  through capability negotiation, concurrent one-shot commands, targeted and
-  legacy cancellation with channel recovery, concurrent PTY sessions and the
+  through capability negotiation, the first-boot network contract (kernel
+  eth0 + userland DNS), concurrent one-shot commands, targeted and legacy
+  cancellation with channel recovery, concurrent PTY sessions and the
   background-service control channel. Every frame is the exact wire format the
   host sends (base64 inline payloads, closing-mark control frames). It also
   writes the terminal marker the host must wait for (see below).
@@ -12,6 +13,13 @@ generate: write the timed floe_vm_host script that drives one real guest boot
 assert:   verify the boot transcript and the 9p share against the expected
   frames/markers and write a JSON verdict. Exit 1 on any failure and keep the
   evidence (the caller uploads it either way).
+
+Network gate: the component boot must prove a real device, not a runner
+  claim: the runner's own line (`net eth0=... status=up`, driven by a bounded
+  DNS probe over the ordered resolver plan in floe_net.h), the kernel's
+  /sys/class/net/eth0 address (the adapter's per-VM MAC), a userland
+  `getent hosts` answer, and the CAPS `net=up` field. `net=partial`,
+  `net=down`, a missing device and a failed probe all fail the check.
 
 Marker honesty: guest markers are produced by printf commands assembled at
 runtime; frame payloads are base64, so a transcript hit can only come from the
@@ -44,6 +52,25 @@ import pipeline_contract  # noqa: E402  (sibling script directory)
 MARK = b"\x1e"
 MAX_LINE = 1000  # floe_vm_host script text buffer is 1024; keep a margin.
 CAPS_FRAME = re.compile(rb"\x1eFLOE-CAPS (\S+) ([^\x1e]+)\x1e")
+
+# The per-VM MAC the adapter hands the virtio-net device
+# (ThirdParty/TinyEMU/adapter/floe_vm.c, net->mac_addr). The guest-side
+# device probe reads it from /sys/class/net/eth0/address, so a kernel-created
+# interface can never be confused with a runner claim, and the pipeline
+# self-check re-derives this constant from the adapter source so the coupling
+# cannot drift silently.
+DEVICE_MAC = "02:00:00:00:00:01"
+
+# Guest-side network contract probes. The device probe reads the kernel's own
+# view of eth0 (sysfs), and the DNS probe resolves through glibc with the
+# resolver file the runner just wrote - independent of the runner's internal
+# readiness probe, so a runner that lied about either would still be caught.
+NET_DEVICE_CMD = ("if [ -r /sys/class/net/eth0/address ]; then "
+                  "printf 'FLOE_NET_DEVICE_%s_%s\\n' OK \"$(cat /sys/class/net/eth0/address)\"; "
+                  "else printf 'FLOE_NET_DEVICE_%s\\n' MISSING; exit 9; fi")
+NET_DNS_CMD = ("if getent hosts deb.debian.org >/dev/null 2>&1; then "
+               "printf 'FLOE_NET_DNS_%s\\n' OK; "
+               "else printf 'FLOE_NET_DNS_%s\\n' FAIL; exit 9; fi")
 
 
 def payload(fields):
@@ -127,19 +154,25 @@ def generate(out_path, terminal_out=None):
 
     # 1. capability negotiation (protocol 3 gate).
     at(25, control(b"HELLO", "hello1"))
-    # 2. four concurrent one-shot commands with a real overlap barrier.
+    # 2. the first-boot network contract, proven from inside the guest:
+    #    the kernel really created eth0 with the adapter's MAC, and the
+    #    guest's own resolver path answers. These run as normal commands, so
+    #    the markers cannot appear unless the guest userland executed them.
+    at(27, sh("netdev", NET_DEVICE_CMD))
+    at(28, sh("netdns", NET_DNS_CMD))
+    # 3. four concurrent one-shot commands with a real overlap barrier.
     for n in (1, 2, 3, 4):
         at(30, sh("cc%d" % n, CC_CMD.format(n)))
-    # 3. targeted cancellation of one command (TERM) while others finished.
+    # 4. targeted cancellation of one command (TERM) while others finished.
     at(46, sh("cancelme", "sleep 300"))
     at(52, control(b"SIGNAL", "cancelme", b"TERM"))
-    # 4. legacy 0x03 interrupt-all with two in-flight commands...
+    # 5. legacy 0x03 interrupt-all with two in-flight commands...
     at(58, sh("legacy1", "sleep 300"))
     at(58, sh("legacy2", "sleep 300"))
     at(66, b"\x03")
-    # 5. ...and the channel must recover immediately afterwards.
+    # 6. ...and the channel must recover immediately afterwards.
     at(74, sh("recovery", "printf 'FLOE_RECOVERY_%s\\n' OK"))
-    # 6. two concurrent PTY sessions with per-token input routing. OPEN must
+    # 7. two concurrent PTY sessions with per-token input routing. OPEN must
     #    use the chunked envelope; IN is raw base64 bytes (not a payload).
     for sess in ("ptyA", "ptyB"):
         for frame in chunked(b"OPEN", sess, ["pty", "/", "80", "24", "/bin/sh"]):
@@ -148,7 +181,7 @@ def generate(out_path, terminal_out=None):
     at(88, pty_input("ptyB", b"printf 'FLOE_PTYB_%s\\n' OK\n"))
     at(96, control(b"CLOSE", "ptyA"))
     at(96, control(b"CLOSE", "ptyB"))
-    # 7. background service: spawn a detached ticker logging to the 9p share
+    # 8. background service: spawn a detached ticker logging to the 9p share
     #    (SPAWN must be chunked), plus honest negative answers for pids the
     #    runner never spawned.
     for frame in chunked(b"SPAWN", "svc1",
@@ -157,7 +190,7 @@ def generate(out_path, terminal_out=None):
         at(102, frame)
     at(110, control(b"ALIVE", "alivebad", b"999999"))
     at(110, control(b"KILL", "killbad", b"999999"))
-    # 8. final guest marker plus the terminal END frame the host waits for.
+    # 9. final guest marker plus the terminal END frame the host waits for.
     at(118, sh(TERMINAL_TOKEN, "printf 'FLOE_P3_%s\\n' DONE"))
 
     with open(out_path, "wb") as handle:
@@ -172,8 +205,20 @@ def generate(out_path, terminal_out=None):
 REQUIRED = [
     # (label, regex over the raw transcript bytes)
     ("boot clock applied", rb"floe-exec: clock set from floe\.epoch=[0-9]+"),
+    # The runner's own first-boot report: interface configured with the slirp
+    # address/route and one resolver answered. `status=up` is the same state
+    # the CAPS net= field carries; a missing device prints the forbidden
+    # "interface configuration failed" line instead.
+    ("guest network configured with slirp address/route",
+     rb"floe-exec: net eth0=10\.0\.2\.15/24 gw=10\.0\.2\.2 dns=\S+ status=up"),
+    # Independent guest-userland proof: the kernel's own eth0 (sysfs MAC) and
+    # a glibc resolution through the written resolver file.
+    ("guest kernel created eth0 with the adapter MAC",
+     rb"FLOE_NET_DEVICE_OK_" + re.escape(DEVICE_MAC.encode())),
+    ("guest userland resolved a name through the guest resolver",
+     rb"FLOE_NET_DNS_OK"),
     ("HELLO answered", rb"FLOE-CAPS hello1 runner=[^\s]+ protocol=3 "
-                       rb"maxCommands=[0-9]+ maxSessions=[0-9]+"),
+                       rb"maxCommands=[0-9]+ maxSessions=[0-9]+ net=[a-z]+"),
     ("HELLO end", rb"FLOE-END hello1 0"),
     ("cc1 overlap", rb"FLOE_CC1_OF_4"), ("cc2 overlap", rb"FLOE_CC2_OF_4"),
     ("cc3 overlap", rb"FLOE_CC3_OF_4"), ("cc4 overlap", rb"FLOE_CC4_OF_4"),
@@ -204,6 +249,15 @@ FORBIDDEN = [
     ("cancelme wrong exit", rb"FLOE-END cancelme (0|125|130)\b"),
     ("overlap barrier timeout", rb"FLOE_CC[0-9]_NO_OVERLAP"),
     ("overlap command non-zero exit", rb"FLOE-END cc[0-9] (?!0\b)[0-9]+"),
+    # The network contract fails closed in the transcript itself: a missing
+    # device, a degraded/absent capability state, or a failing guest probe
+    # must never be read as a working network.
+    ("guest eth0 configuration failed", rb"interface configuration failed"),
+    ("guest network device absent", rb"No such device"),
+    ("CAPS net=down", rb"net=down"),
+    ("CAPS net=partial", rb"net=partial"),
+    ("guest device probe missing", rb"FLOE_NET_DEVICE_MISSING"),
+    ("guest DNS probe failed", rb"FLOE_NET_DNS_FAIL"),
 ]
 
 
@@ -248,7 +302,11 @@ def run_assert(transcript_path, share_dir, out_path):
     extra = [
         ("HELLO token is hello1 and the answer is a framed 0x1e CAPS frame",
          caps_frame is not None and caps_frame.group(1) == b"hello1"),
-        ("CAPS payload parses as runner=/protocol=/maxCommands=/maxSessions=", caps is not None),
+        ("CAPS payload parses as runner=/protocol=/maxCommands=/maxSessions=/net=", caps is not None),
+        ("CAPS reports the first-boot network field",
+         caps is not None and caps["net"] in pipeline_contract.CAPS_NET_STATUSES),
+        ("CAPS network state is up (the guest DNS probe answered)",
+         caps is not None and caps["net"] == "up"),
         ("CAPS protocol is exactly 3", caps is not None and caps["protocol"] == 3),
         ("CAPS allows >=4 concurrent commands (4-way overlap check)",
          caps is not None and caps["maxCommands"] >= 4),
@@ -268,6 +326,7 @@ def run_assert(transcript_path, share_dir, out_path):
                "protocol": caps["protocol"] if caps else None,
                "maxCommands": caps["maxCommands"] if caps else None,
                "maxSessions": caps["maxSessions"] if caps else None,
+               "netStatus": caps["net"] if caps else None,
                "checks": checks, "failures": failed}
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(verdict, handle, indent=2)

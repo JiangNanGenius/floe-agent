@@ -456,7 +456,9 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
     public var provenance: LinuxGuestImageProvenance?
     /// Optional standalone runner binary (`path` relative to the image
     /// directory, `sha512`, `bytes`) plus the exact CAPS payload it answers
-    /// (e.g. "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4"). When
+    /// (e.g. "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=up";
+    /// the `net=` field is the runner's first-boot network state, see
+    /// `LinuxGuestNetworkStatus`). When
     /// present, an environment whose persistent disk still boots an older
     /// runner is upgraded in-guest from these verified bytes — never by
     /// wiping the disk.
@@ -792,11 +794,12 @@ public protocol LinuxGuestControlling: Sendable {
 
 /// First-boot network state the runner reports in its capability answer
 /// (`net=up|partial|down`, see LinuxGuest/runner/floe_net.h). `up` means the
-/// interface, default route and resolver file were applied and the first
-/// resolver answered a bounded query; `partial` means the interface is
-/// configured but DNS did not answer; `down` means the interface could not be
-/// configured. A runner that predates the field reports nothing and is
-/// reported as `nil` (unknown), never as ready.
+/// interface, default route and resolver file were applied and one resolver
+/// in the runner's ordered plan (slirp's own 10.0.2.3 alias first) answered a
+/// bounded query; `partial` means the interface is configured but no resolver
+/// answered; `down` means the interface could not be configured. A runner
+/// that predates the field reports nothing and is reported as `nil`
+/// (unknown), never as ready.
 public enum LinuxGuestNetworkStatus: String, Sendable, Equatable, CaseIterable {
     case up
     case partial

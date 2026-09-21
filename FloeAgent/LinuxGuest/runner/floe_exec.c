@@ -1451,9 +1451,14 @@ static int apply_interface_config(int fd) {
     return 0;
 }
 
-// Bounded UDP DNS query for the first resolver. One short packet, 2 s
-// timeout, no retries: this is a readiness observation, not a resolver.
-static int resolver_answers(void) {
+// Bounded UDP DNS query over the ordered resolver plan (floe_net.h). One
+// short packet per resolver, FLOE_NET_PROBE_TIMEOUT_SECONDS each, at most
+// FLOE_NET_PROBE_MAX_ATTEMPTS attempts, no retries: this is a readiness
+// observation, not a resolver. The first entry is slirp's 10.0.2.3 alias,
+// which the engine relays to the host's own resolver, so a host that forces
+// its DNS still answers. Returns the resolver text that answered, NULL when
+// none did inside the budget.
+static const char *resolver_answers(void) {
     unsigned char query[64];
     size_t qlen = 0;
     // ID 0x464c ("FL"), standard query, one question, recursion desired.
@@ -1468,7 +1473,7 @@ static int resolver_answers(void) {
     while (*part != '\0') {
         const char *dot = strchr(part, '.');
         size_t label = dot != NULL ? (size_t)(dot - part) : strlen(part);
-        if (label == 0 || label > 63 || qlen + label + 1 + 4 > sizeof query) return 0;
+        if (label == 0 || label > 63 || qlen + label + 1 + 4 > sizeof query) return NULL;
         query[qlen++] = (unsigned char)label;
         memcpy(query + qlen, part, label);
         qlen += label;
@@ -1479,30 +1484,37 @@ static int resolver_answers(void) {
     query[qlen++] = 0x00; query[qlen++] = 0x01; // type A
     query[qlen++] = 0x00; query[qlen++] = 0x01; // class IN
 
-    struct sockaddr_in server;
-    memset(&server, 0, sizeof server);
-    server.sin_family = AF_INET;
-    server.sin_port = htons(53);
-    if (inet_pton(AF_INET, FLOE_NET_RESOLVER_1, &server.sin_addr) != 1) return 0;
+    size_t attempts = FLOE_NET_RESOLVER_COUNT;
+    if (attempts > FLOE_NET_PROBE_MAX_ATTEMPTS) attempts = FLOE_NET_PROBE_MAX_ATTEMPTS;
+    for (size_t i = 0; i < attempts; i++) {
+        const char *server_text = floe_net_resolver_at(i);
+        if (server_text == NULL) break;
+        struct sockaddr_in server;
+        memset(&server, 0, sizeof server);
+        server.sin_family = AF_INET;
+        server.sin_port = htons(53);
+        if (inet_pton(AF_INET, server_text, &server.sin_addr) != 1) continue;
 
-    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return 0;
-    struct timeval tv;
-    tv.tv_sec = 2;
-    tv.tv_usec = 0;
-    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+        int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return NULL;
+        struct timeval tv;
+        tv.tv_sec = FLOE_NET_PROBE_TIMEOUT_SECONDS;
+        tv.tv_usec = 0;
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
 
-    int ok = 0;
-    if (sendto(fd, query, qlen, 0, (struct sockaddr *)&server, sizeof server) == (ssize_t)qlen) {
-        unsigned char reply[512];
-        ssize_t got = recv(fd, reply, sizeof reply, 0);
-        // Accept any well-formed reply carrying our transaction ID; the
-        // point is that the path answers, not what it resolved.
-        if (got >= 12 && reply[0] == 0x46 && reply[1] == 0x4c) ok = 1;
+        int ok = 0;
+        if (sendto(fd, query, qlen, 0, (struct sockaddr *)&server, sizeof server) == (ssize_t)qlen) {
+            unsigned char reply[512];
+            ssize_t got = recv(fd, reply, sizeof reply, 0);
+            // Accept any well-formed reply carrying our transaction ID; the
+            // point is that the path answers, not what it resolved.
+            if (got >= 12 && reply[0] == 0x46 && reply[1] == 0x4c) ok = 1;
+        }
+        close(fd);
+        if (ok) return server_text;
     }
-    close(fd);
-    return ok;
+    return NULL;
 }
 
 // First-boot network. Runs before the runner accepts any frame, so a guest
@@ -1536,15 +1548,18 @@ static void guest_bring_up_network(void) {
         diag("floe-exec: net /etc/gitconfig (git safe.directory) not written\n");
     }
 
-    if (resolver_answers()) {
+    const char *answered = resolver_answers();
+    if (answered != NULL) {
         g_net_status = FLOE_NET_UP;
-        diag("floe-exec: net %s=%s/%s gw=" FLOE_NET_GATEWAY " dns=" FLOE_NET_RESOLVER_1 " status=up\n",
-             FLOE_NET_INTERFACE, FLOE_NET_GUEST_ADDRESS, FLOE_NET_GUEST_PREFIX);
+        diag("floe-exec: net %s=%s/%s gw=" FLOE_NET_GATEWAY " dns=%s status=up\n",
+             FLOE_NET_INTERFACE, FLOE_NET_GUEST_ADDRESS, FLOE_NET_GUEST_PREFIX,
+             answered);
     } else {
         g_net_status = FLOE_NET_PARTIAL;
-        diag("floe-exec: net %s=%s/%s gw=" FLOE_NET_GATEWAY " dns=" FLOE_NET_RESOLVER_1
-             " status=partial (resolver did not answer in 2s)\n",
-             FLOE_NET_INTERFACE, FLOE_NET_GUEST_ADDRESS, FLOE_NET_GUEST_PREFIX);
+        diag("floe-exec: net %s=%s/%s gw=" FLOE_NET_GATEWAY
+             " status=partial (no resolver answered in %ds)\n",
+             FLOE_NET_INTERFACE, FLOE_NET_GUEST_ADDRESS, FLOE_NET_GUEST_PREFIX,
+             FLOE_NET_PROBE_MAX_ATTEMPTS * FLOE_NET_PROBE_TIMEOUT_SECONDS);
     }
 }
 #else

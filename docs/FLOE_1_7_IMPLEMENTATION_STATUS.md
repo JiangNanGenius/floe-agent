@@ -26,6 +26,16 @@ No version, tag, upload or TestFlight state was changed. Evidence, commands and
 the remaining physical-device checks are in
 [the repair slice record](FLOE_1_7_REPAIR_LIFECYCLE_MLX_IDE_OFFICE.md).
 
+A follow-up source-only repair restores the real TinyEMU guest network in the
+runner-only component pipeline: the component boot now passes the same network
+switch the App uses (`floe_vm_host --net` / `FloeVMConfig.net_enable`), the
+guest DNS plan leads with slirp's engine-served `10.0.2.3` alias plus public
+fallbacks with an ordered bounded probe, the CAPS parser accepts and verifies
+the `net=up|partial|down` field, and the cloud boot gate requires a real eth0,
+a userland DNS answer and `net=up` (run 35645930554 failed with no eth0 because
+the boot command omitted `--net`). See
+[the network repair record](FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md).
+
 ## Checkpoints
 
 - `fb3480f`: original new-module source checkpoint (not build-qualified).
