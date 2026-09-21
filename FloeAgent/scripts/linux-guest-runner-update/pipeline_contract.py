@@ -17,6 +17,7 @@ packager all need:
 
 Pure parsing, no I/O beyond reading the file the caller points at.
 """
+import os
 import re
 
 CAPS_PATTERN = re.compile(
@@ -38,6 +39,53 @@ BINARY_PATTERN = re.compile(r"^binary\s+(?P<name>\S+)\s+(?P<version>\S+)"
 
 RUNNER_CONSTANT_NAMES = ("FLOE_RUNNER_VERSION", "FLOE_PROTOCOL_VERSION",
                          "MAX_CONCURRENT_COMMANDS", "MAX_CONCURRENT_SESSIONS")
+
+# A local (quoted) `#include "..."` names a runner-owned header that is part of
+# the static build: the cross compile uses `-I<runner dir>`, so every such
+# header is compile input and therefore corresponding source that must travel
+# in the relink archive and in runner-source-sha256.txt. System includes
+# (`<...>`) are deliberately excluded.
+LOCAL_INCLUDE_PATTERN = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"(?P<name>[^"]+)"', re.M)
+
+# The complete runner source set, in the deterministic order used by every
+# digest/archive step: the translation unit, every runner-owned header it
+# includes (sorted), and the Makefile that drives the static build.
+RUNNER_SOURCE_BASE = "FloeAgent/LinuxGuest/runner"
+
+
+def local_includes(floe_exec_text):
+    """Sorted runner-owned header names quoted-included by floe_exec.c."""
+    return sorted(set(LOCAL_INCLUDE_PATTERN.findall(floe_exec_text or "")))
+
+
+def runner_source_set(floe_exec_text):
+    """All runner source files for floe_exec.c (names relative to runner dir).
+
+    Derived from the source's own quoted includes instead of a hand-maintained
+    list, so adding a new runner-owned header (e.g. floe_net.h) extends the
+    exact-source digest, the LGPL relink archive and every gate together.
+    """
+    return ("floe_exec.c",) + tuple(local_includes(floe_exec_text)) + ("Makefile",)
+
+
+def parse_source_sha256_record(text):
+    """{basename: sha256} from a sha256sum-style runner-source-sha256 record.
+
+    sha256sum writes the path it was given (often absolute); only the basename
+    matters because every member lives in the one runner directory.
+    """
+    record = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        digest, _, name = line.partition("  ")
+        if not name:
+            digest, _, name = line.partition(" ")
+        name = os.path.basename(name.strip())
+        if re.fullmatch(r"[0-9a-f]{64}", digest.strip()):
+            record[name] = digest.strip()
+    return record
 
 
 def parse_runner_constants(text):
