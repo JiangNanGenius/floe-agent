@@ -571,6 +571,7 @@ final class OfficeFileSession: ObservableObject {
         waiter.resume(returning: value)
     }
 
+    #if canImport(FloeOfficeNative)
     /// A host that never reports an open must not leave the surface on a
     /// spinner forever. The watchdog only fires while this exact controller is
     /// still loading and reports a truthful failed open with retained copies.
@@ -587,6 +588,7 @@ final class OfficeFileSession: ObservableObject {
             self.phase = .failed
         }
     }
+    #endif
 
     private func cancelOpenWatchdog() {
         openWatchdog?.cancel()
@@ -705,6 +707,7 @@ final class OfficeFileSession: ObservableObject {
         #endif
     }
 
+    #if canImport(FloeOfficeNative)
     /// Runs the host's guarded mobile edit entry. `readOnly` is the engine's
     /// own state after the attempt; a pending edit password (error 42) is a
     /// challenge, not a denial. A session the host mounted read-only refuses
@@ -717,6 +720,7 @@ final class OfficeFileSession: ObservableObject {
             }
         }
     }
+    #endif
 
     private struct PermissionProbe {
         let backendReadOnly: Bool?
@@ -1412,6 +1416,7 @@ final class OfficeFileSession: ObservableObject {
         case timedOut
     }
 
+    #if canImport(FloeOfficeNative)
     /// Bounded native close. The pinned host settles the UIDocument and calls
     /// back; a host that never calls back must not strand the session.
     private static func closeWorkingCopy(_ native: FloeOfficeNativeViewController,
@@ -1431,6 +1436,7 @@ final class OfficeFileSession: ObservableObject {
         timeoutTask.cancel()
         return result
     }
+    #endif
     private func fail(_ error: Error) {
         self.error = error.localizedDescription
         phase = .failed
