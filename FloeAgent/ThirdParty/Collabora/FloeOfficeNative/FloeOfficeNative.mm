@@ -161,7 +161,8 @@ static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
     // Both staged locations the engine scans: the app-level Fonts directory
     // (bundled CJK families) and the engine's own share/fonts resources.
     for (NSString *relative in @[@"Fonts", @"share/fonts"]) {
-        NSURL *root = [bundle.resourcePath URLByAppendingPathComponent:relative isDirectory:YES];
+        NSURL *resourceRoot = [NSURL fileURLWithPath:bundle.resourcePath isDirectory:YES];
+        NSURL *root = [resourceRoot URLByAppendingPathComponent:relative isDirectory:YES];
         NSDirectoryEnumerator<NSURL *> *enumerator = [fileManager enumeratorAtURL:root
                                                       includingPropertiesForKeys:@[NSURLFileSizeKey]
                                                                          options:NSDirectoryEnumerationSkipsHiddenFiles
