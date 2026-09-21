@@ -1,20 +1,18 @@
 # Floe Agent User Guide
 
-Build 214 is available in internal Floe QA TestFlight (Apple VALID, unexpired, IN_BETA_TESTING verified September 20 at 21:32 UTC). It includes the TinyEMU/Linux migration and all feedback code repairs. [Delivery and device acceptance limits](qualification/build214-release/README.md). The Build 191/192 descriptions below are historical snapshots.
+Current internal release: **1.7.0 (218) / beta.75**, installable in the private Floe QA TestFlight group. Apple VALID, unexpired status and IN_BETA_TESTING were verified September 21 at 15:08 UTC; the matching GitHub developer IPA and Feather feed are published. Only focused and cloud accepted-SDK checks were required, so physical-device behavior remains for the tester. [Delivery record](TESTFLIGHT_1.7.0_BETA.md) · [Build 218 notes](RELEASE_NOTES_1.7.0_BUILD_218.md).
 
-Current internal release: **1.7.0 (191) / beta.48**, installable in Floe QA. The GitHub developer IPA and Feather feed are published. Three UI failures were waived for internal device testing only; full acceptance is not claimed. [Delivery and limitations](qualification/build191-release/README.md). Historical screenshots retain their build labels.
-
-A build 192 repair candidate is being prepared in the working tree. It has not been built, uploaded or verified by Apple and is not installable; the [reserved Build 192 notes](RELEASE_NOTES_1.7.0_BUILD_192.md) separate implemented behavior, host-level validation and open device acceptance. Sections below that mention the "build 192 repair candidate" describe that work.
+The Build 191/192 descriptions and screenshots below are historical snapshots. Their candidate and waiver wording records those releases and does not describe current availability.
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide covers existing Floe workflows and the 1.7 internal beta (build 191, plus marked build 192 candidate repairs). Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
+This guide covers existing Floe workflows and the 1.7 internal beta. Labels vary with the installed build. Consult [1.7 status](FLOE_1_7_IMPLEMENTATION_STATUS.md) and [upgrade/recovery](FLOE_1_7_MIGRATION.md); a source commit or successful build does not establish TestFlight availability.
 
 This guide includes the build 172 workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
 
 ## Build 192 repair candidate (in preparation, not distributable)
 
-The following behavior is implemented in the current working tree and validated at host/fixture level, but not by an upload-SDK App build or a device run. Treat it as candidate behavior until a frozen build passes device acceptance. Build 191 remains the current internal TestFlight delivery.
+The following paragraph preserves the Build 192 candidate boundary as it stood at the time: the behavior had only host/fixture validation, while Build 191 was then the current internal TestFlight delivery. Current availability is recorded at the top of this guide.
 
 - **Office editability is the engine's truth.** An unknown or missing read-only flag never becomes editable; a protected or read-only document returns to preview with a reason, and an edit-password document prompts for the password. The native host behind this compiled in cloud run `35373122891`; save/close/reopen on a device is still pending. An imported workbook with its own formulas, sheets or embeddings is never silently rewritten — strict save validation may reject the save and keep your original file.
 - **The IDE routes by file type.** Every entry point sends text/code to the code workbench, Office to the Office editor, PDF, drawings, images and media to their viewers, and archives or unknown binaries to Quick Look. The code workbench refuses Office and binary bytes for both read and write. Inside the IDE, text/code, PDF and Office share the workbench's internal editor tabs and file tree: the native PDF/Office surface is overlaid on the internal tab, and one Office document keeps a single working copy between its preview and editing; closing that tab with unsaved changes asks first. Drawings, images, media and Quick Look documents keep their typed native tabs.

@@ -34,7 +34,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（216）**。9 月 21 日 07:55 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。它保留 Build 215 的全部反馈修复，并补齐 Office、HTTP 资格检查及 TinyEMU 迁移后 App 回归门禁的发布兼容性。TinyEMU/Linux 是主要本地环境，原生 Python/Node 不再打包，真机验收由用户完成。[版本说明](docs/RELEASE_NOTES_1.7.0_BUILD_216.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+**当前内部 TestFlight：1.7.0（218）**。9 月 21 日 15:08 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING。本构建增加明确的 Linux 下载并启动入口，修复 Office 中文字体与 Pencil 输入，区分独立 Office 和 IDE 内嵌路径，并补充 IDE 源码管理、压缩包浏览和本地模型多轮工具续接。TinyEMU/Linux 仍是主要本地环境，原生 Python/Node 不再打包，真机验收由用户完成。[版本说明](docs/RELEASE_NOTES_1.7.0_BUILD_218.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 

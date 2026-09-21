@@ -1,6 +1,46 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (216) — available in Floe QA
+## Current internal delivery: 1.7.0 (218) — available in Floe QA
+
+Apple **VALID**, unexpired, exactly one private internal **Floe QA** group
+(`internal=true`, feedback enabled, no public link), and `IN_BETA_TESTING` were
+verified at **2026-09-21T15:08:27Z** by
+[verify 35616870748](https://github.com/JiangNanGenius/floe-agent/actions/runs/35616870748).
+ASC build ID `8d636b00-d114-42d6-bc0c-4081317fb38e` (uploaded
+2026-09-21T14:59:56Z, audience `APP_STORE_ELIGIBLE`).
+[Discover 35616665807](https://github.com/JiangNanGenius/floe-agent/actions/runs/35616665807)
+listed build 218 as the latest `VALID` upload;
+[prepare 35616732222](https://github.com/JiangNanGenius/floe-agent/actions/runs/35616732222)
+saved and read back both beta-note locales — readback
+`{"buildID":"8d636b00-d114-42d6-bc0c-4081317fb38e","version":"1.7.0","build":"218","processing":"VALID","group":"Floe QA","betaNotesVerified":["en-US","zh-Hans"]}`.
+
+Immutable tag `v1.7.0-beta.75`, source
+[`83eb91a846a6d36e4ffd24eee563ba2d50cc9893`](https://github.com/JiangNanGenius/floe-agent/commit/83eb91a846a6d36e4ffd24eee563ba2d50cc9893).
+[Release run 35612529418](https://github.com/JiangNanGenius/floe-agent/actions/runs/35612529418)
+completed the accepted-SDK Release/device App build, retained the unsigned IPA
+and matching private symbols before signing, and then validated and uploaded the
+signed package. The unsigned-only GitHub prerelease
+[v1.7.0-beta.75](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.75)
+publishes `Floe-Agent-1.7.0-build218-unsigned.ipa` (sha256
+`ddc0568beafc4c51c2977dd01548c9deba98546c38bfa8d5b0081945537b04cc`,
+745,755,983 B) with provenance, checksum and public validation metadata; no
+signed IPA is public. [Feather run 35615816474](https://github.com/JiangNanGenius/floe-agent/actions/runs/35615816474)
+verified that release and committed `feather.json` at
+[`bd7dbd61`](https://github.com/JiangNanGenius/floe-agent/commit/bd7dbd61fa01d2651623016380737fecee75bd4a)
+with the same digest, size and `sourceCommit`.
+
+Build 218 repairs the device-feedback paths for Linux installation, Office CJK
+font discovery and Pencil input, workspace-versus-IDE Office routing, IDE source
+control and archive browsing, and stable multi-turn local-model tools. Build 217
+failed during App compilation before producing or uploading an IPA; the failure
+is retained at immutable tag `v1.7.0-beta.74`. The user requested expedited
+internal delivery, so only focused checks plus the cloud accepted-SDK App build,
+signing and Apple validation were used. Physical-device behavior remains for the
+user to accept. This record does not claim a public TestFlight or production App
+Store release. [Release notes](RELEASE_NOTES_1.7.0_BUILD_218.md) and
+[bilingual test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_218.json) describe the slice.
+
+## Previous internal delivery: 1.7.0 (216) — available in Floe QA
 
 Apple **VALID**, unexpired, exactly one private internal **Floe QA** group
 (`internal=true`, feedback enabled, no public link), and `IN_BETA_TESTING` were

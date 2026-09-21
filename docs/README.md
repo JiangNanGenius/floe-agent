@@ -4,9 +4,9 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前内部 TestFlight：1.7.0（216）**。2026-09-21T07:55:04Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；中英文测试说明已保存并读回，真机安装仍由用户验收。固定标签 `v1.7.0-beta.73`，源码 `c2f20f6e`，[发布作业 35570785184](https://github.com/JiangNanGenius/floe-agent/actions/runs/35570785184)；未签名 IPA 已随 [v1.7.0-beta.73 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.73) 证明发布，[Feather 作业 35573496016](https://github.com/JiangNanGenius/floe-agent/actions/runs/35573496016) 提交 `feather.json`（`72b21a3e`，sha256/size/sourceCommit 一致）。按用户要求跳过模拟器/界面验收，只做定向检查与云端 App 构建。详见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [版本说明](RELEASE_NOTES_1.7.0_BUILD_216.md)。
+**当前内部 TestFlight：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；中英文测试说明已保存并读回，真机安装与行为仍由用户验收。固定标签 `v1.7.0-beta.75`，源码 `83eb91a8`，[发布作业 35612529418](https://github.com/JiangNanGenius/floe-agent/actions/runs/35612529418)；未签名 IPA 已随 [v1.7.0-beta.75 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.75) 证明发布，[Feather 作业 35615816474](https://github.com/JiangNanGenius/floe-agent/actions/runs/35615816474) 提交 `feather.json`（`bd7dbd61`，sha256/size/sourceCommit 一致）。按用户要求跳过重复模拟器／界面验收，只做定向检查与云端 App 构建。详见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
-**Build 214 已成为上一版内部交付**（`v1.7.0-beta.71`，`33759e44`，9 月 20 日 21:32 UTC 核实 VALID/未过期/Floe QA/IN_BETA_TESTING）：首个 TinyEMU/Linux 主环境版本，原生 Python/Node 不再打包；[交付证据](qualification/build214-release/README.md)保持原记录。Build 215 在其真机日志基础上修复本地模型第二轮工具续写、跨任务闭环、并行终端与取消、Git 初始化、IDE 内 Office/PDF、中文字体、保存流程和思维导图拖动。
+**Build 216 是上一版内部交付**（`v1.7.0-beta.73`，`c2f20f6e`，9 月 21 日 07:55 UTC 核实 VALID/未过期/Floe QA/IN_BETA_TESTING）。Build 214 是首个 TinyEMU/Linux 主环境版本，Build 215 修复其真机反馈，Build 216 补齐发布路径兼容性；各版本原始记录均保留在交付档案中。Build 217 编译失败且从未上传。
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
@@ -22,8 +22,9 @@
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 216 版本说明](RELEASE_NOTES_1.7.0_BUILD_216.md) | 当前内部交付：Build 215 修复集与发布路径兼容修复；TestFlight、GitHub 预发布和 Feather 已完成 |
-| [Build 215 候选说明](RELEASE_NOTES_1.7.0_BUILD_215.md) | 上一版内部交付：稳定性修复、轻量验证边界与待真机验收项 |
+| [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md) | 当前内部交付：本轮真机反馈修复；TestFlight、GitHub 预发布和 Feather 已完成 |
+| [Build 216 版本说明](RELEASE_NOTES_1.7.0_BUILD_216.md) | 上一版内部交付：Build 215 修复集与发布路径兼容修复 |
+| [Build 215 候选说明](RELEASE_NOTES_1.7.0_BUILD_215.md) | 稳定性修复、轻量验证边界与待真机验收项 |
 | [178 反馈修复与 179 验证](FLOE_BUILD178_FEEDBACK_REPAIR.md) | 当前修复、原始失败、定向验证与剩余门槛 |
 | [本地模型/视频/工具上下文修复（2026-09-19）](FLOE_LOCAL_VIDEO_TOOLCHAIN_REPAIR_2026-09-19.md) | 本地聊天取消竞态、公开视频候选选择、工具证据回灌的根因、改动与待真机项 |
 | [Build 201 发布说明](RELEASE_NOTES_1.7.0_BUILD_201.md) | 当前交付（1.7.0/201，`v1.7.0-beta.58`）：构建与上传接受、从保留工件恢复发布、Floe QA 核验与复用步骤修复 |
@@ -72,7 +73,8 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_216.md](RELEASE_NOTES_1.7.0_BUILD_216.md) — 当前内部交付（1.7.0/216，`v1.7.0-beta.73`；已核实 Floe QA 可安装，GitHub 预发布与 Feather 已发布，真机验收由用户完成）
+- [RELEASE_NOTES_1.7.0_BUILD_218.md](RELEASE_NOTES_1.7.0_BUILD_218.md) — 当前内部交付（1.7.0/218，`v1.7.0-beta.75`；已核实 Floe QA 可安装，GitHub 预发布与 Feather 已发布，真机验收由用户完成）
+- [RELEASE_NOTES_1.7.0_BUILD_216.md](RELEASE_NOTES_1.7.0_BUILD_216.md) — 上一版内部交付（1.7.0/216，`v1.7.0-beta.73`；原始交付记录保留）
 - [RELEASE_NOTES_1.7.0_BUILD_215.md](RELEASE_NOTES_1.7.0_BUILD_215.md) — 上一版内部交付（1.7.0/215，`v1.7.0-beta.72`）：稳定性修复、验证边界与真机测试重点
 - [RELEASE_NOTES_1.7.0_BUILD_201.md](RELEASE_NOTES_1.7.0_BUILD_201.md) — 当前交付（1.7.0/201，`v1.7.0-beta.58`；构建/上传接受、发布从保留工件恢复、Floe QA 核验与复用步骤修复）
 - [RELEASE_NOTES_1.7.0_BUILD_198.md](RELEASE_NOTES_1.7.0_BUILD_198.md) — 已交付内部 Floe QA（1.7.0/198，`v1.7.0-beta.55`；修复 197 的两处编译错误）

@@ -1,8 +1,10 @@
 # Floe 1.7.0 (218) — device feedback repair / 真机反馈修复
 
-Status: candidate for the existing private internal Floe QA TestFlight group and
-the matching GitHub prerelease. Build, upload, Apple processing and group
-availability are recorded separately after they occur.
+Status: available in the existing private internal Floe QA TestFlight group and
+published as the matching unsigned-only GitHub prerelease and Feather entry.
+Apple VALID, unexpired status and IN_BETA_TESTING were verified at
+2026-09-21T15:08:27Z. Build, upload, Apple processing and group availability are
+recorded separately in the [delivery record](TESTFLIGHT_1.7.0_BETA.md).
 
 Build 217 failed during App compilation before an IPA was produced or uploaded.
 Build 218 retains that source scope and includes the compile repairs verified by
