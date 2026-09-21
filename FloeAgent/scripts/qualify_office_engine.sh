@@ -16,6 +16,9 @@ sdk=subprocess.run(['xcrun','--sdk','iphoneos','--show-sdk-path'],capture_output
 report={'commit':lock['commit'],'freeGiB':round(free,2),'requiredFreeGiB':lock['minimumFreeGiB'],
  'missingTools':missing,'iphoneosSDKAvailable':sdk is not None and sdk.returncode==0,
  'nativeBuildPassed':False,'embeddedEditorPassed':False,'deviceRoundtripPassed':False,
+ 'pptxVisibleRenderPassed':False,'originalFileWritebackPassed':False,
+ 'capabilityQualification':{'embeddedEditorPassed':False,'pptxVisibleRenderPassed':False,
+  'deviceRoundtripPassed':False,'originalFileWritebackPassed':False},
  'minimumIOS':lock['minimumIOS'],'sourcePatchSHA256':lock['sourcePatchSHA256'],
  'engineConfigureArguments':lock['engineConfigureArguments'],
  'gateNote':lock['minimumFreeGiBNote'],'recommendedFreeGiB':lock['recommendedFreeGiB'],'buildReserveGiB':lock['buildReserveGiB']}

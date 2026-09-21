@@ -10,6 +10,7 @@ import subprocess
 
 from package_office_engine import digest
 from prepare_office_native_sources import prepare, DEFAULT_LOCK
+from office_release_gates import false_capabilities
 
 
 def shadow_sources(root, shadow, overlay):
@@ -94,7 +95,11 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     report = {"sourceCommit": lock["commit"], "overlaySHA256": lock["embeddingOverlay"]["sha256"],
               "nativeCompilePassed": False, "nativeLinkPassed": False,
               "embeddedEditorPassed": False, "deviceRoundtripPassed": False,
+              "pptxVisibleRenderPassed": False, "originalFileWritebackPassed": False,
+              "kind": "Mobile UI compile/link qualification; no runtime or render evidence",
               "stage": "verify-inputs"}
+    # A compile-only receipt must never imply release capabilities.
+    report["capabilityQualification"] = false_capabilities()
 
     def save():
         (destination / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")

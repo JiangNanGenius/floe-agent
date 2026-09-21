@@ -242,6 +242,99 @@ struct OfficeIDETabTests {
     }
 }
 
+@Suite("FloeApp.OfficeVisibleRenderGate")
+struct OfficeVisibleRenderGateTests {
+
+    @Test("A presentation is not ready when only UIDocument open and permission settled")
+    func presentationOpenIsNotReady() {
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        #expect(gate.openSettled() == .waitingForRender)
+        #expect(!gate.isReady)
+        #expect(gate.awaitsVisibleRender)
+        // A save may not start from an unrendered presentation: this is the
+        // same condition `canAct` applies through `phase == .ready`.
+        #expect(!gate.permitsSave)
+        // The engine permission and the save receipt are not render evidence:
+        // neither exists in this state machine, and only the host's painted
+        // surface can move it to ready.
+        #expect(gate.visibleRenderObserved() == .ready)
+        #expect(gate.isReady)
+        #expect(gate.permitsSave)
+    }
+
+    @Test("The visible-render signal settles ready in either order")
+    func renderSignalSettlesInEitherOrder() {
+        var renderFirst = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        #expect(renderFirst.visibleRenderObserved() == .ready)
+        #expect(renderFirst.openSettled() == .ready)
+        var openFirst = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        #expect(openFirst.openSettled() == .waitingForRender)
+        #expect(openFirst.visibleRenderObserved() == .ready)
+        #expect(openFirst.isReady)
+    }
+
+    @Test("The bounded deadline fails a presentation that never paints")
+    func deadlineFailsWithoutRender() {
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        _ = gate.openSettled()
+        #expect(gate.deadlineExceeded() == .failed)
+        #expect(gate.hasFailed)
+        #expect(!gate.permitsSave)
+        // A host failure is terminal too, and a late render cannot revive it.
+        #expect(gate.visibleRenderObserved() == .failed)
+        #expect(!gate.isReady)
+    }
+
+    @Test("A late host failure never fails an already rendered session")
+    func lateFailureCannotFailReadySession() {
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        _ = gate.openSettled()
+        _ = gate.visibleRenderObserved()
+        #expect(gate.hostFailed() == .ready)
+        #expect(gate.isReady)
+        #expect(gate.permitsSave)
+    }
+
+    @Test("Word and Excel keep the open-only contract")
+    func documentsKeepOpenOnlyReadiness() {
+        var gate = OfficeVisibleRenderGate(requirement: .openOnly)
+        #expect(gate.openSettled() == .ready)
+        #expect(gate.deadlineExceeded() == .ready)
+        #expect(gate.hostFailed() == .ready)
+        #expect(gate.isReady)
+        #expect(gate.permitsSave)
+    }
+
+    @Test("Presentation formats require a visible render; Word/Excel do not")
+    func formatClassification() {
+        for name in ["ppt", "pptx", "pptm", "pps", "ppsx", "pot", "potx",
+                     "odp", "otp", "fodp", "odg", "otg", "fodg", "PPTX", "PpTx"] {
+            #expect(OfficeRenderRequirement.forDocument(pathExtension: name) == .visibleRenderRequired,
+                    Comment(rawValue: name))
+        }
+        for name in ["docx", "doc", "xlsx", "xls", "odt", "ods", "rtf", "txt", "pdf", ""] {
+            #expect(OfficeRenderRequirement.forDocument(pathExtension: name) == .openOnly,
+                    Comment(rawValue: name))
+        }
+    }
+
+    @Test("The no-render failure retains the editing copy and offers recovery")
+    @MainActor
+    func noRenderFailureIsActionable() {
+        for readOnly in [true, false] {
+            let error = OfficeRenderFailure.noVisibleRender(readOnly: readOnly)
+            let text = (error.userInfo[NSLocalizedDescriptionKey] as? String) ?? ""
+            #expect(text.contains("保留") || text.contains("retained"),
+                    Comment(rawValue: "copy must state the working copy was retained: \(text)"))
+            #expect(text.contains("恢复") || text.contains("retry") || text.contains("recover"),
+                    Comment(rawValue: "copy must offer retry/recovery: \(text)"))
+            // Never a blank editor claim: the copy must not present as a
+            // successful, ready presentation.
+            #expect(!text.contains("已就绪") || text.contains("未"))
+        }
+    }
+}
+
 @Suite("FloeApp.OfficeOpenRecovery")
 struct OfficeOpenRecoveryTests {
 

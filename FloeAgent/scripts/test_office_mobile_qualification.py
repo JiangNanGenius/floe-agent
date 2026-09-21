@@ -96,6 +96,13 @@ class MobileQualificationTests(unittest.TestCase):
             self.assertEqual(report['stage'], 'input-verification-failed')
             self.assertFalse(report['nativeCompilePassed'])
             self.assertFalse(report['embeddedEditorPassed'])
+            # A compile/link receipt can never imply a painted slide, a device
+            # roundtrip or an original-file writeback.
+            self.assertFalse(report['pptxVisibleRenderPassed'])
+            self.assertFalse(report['deviceRoundtripPassed'])
+            self.assertFalse(report['originalFileWritebackPassed'])
+            self.assertFalse(report['capabilityQualification']['pptxVisibleRenderPassed'])
+            self.assertFalse(report['capabilityQualification']['deviceRoundtripPassed'])
 
 
 if __name__ == '__main__':

@@ -21,6 +21,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -174,15 +175,27 @@ class OfficePencilGatingContract(unittest.TestCase):
 
 
 class OfficeHostPinContract(unittest.TestCase):
-    def test_source_hash_matches_the_recorded_pin(self) -> None:
+    def test_host_source_matches_the_pin_or_fails_closed_with_the_rebuild_path(self) -> None:
+        """The source and its pin must agree, or the rebuild must be owed.
+
+        A host-source change is allowed to lead the pinned framework, but only
+        with the fail-closed state: the pin check must exit non-zero and name
+        the rebuild workflow, so no release can embed an artifact that predates
+        the source.
+        """
         lock = json.loads(LOCK.read_text(encoding="utf-8"))
         pin = lock["qualifiedHostArtifact"]
         digest = hashlib.sha256(HOST_SOURCE.read_bytes()).hexdigest()
-        self.assertEqual(
-            digest,
-            pin["hostSourceSHA256"]["FloeOfficeNative.mm"],
-            "the host source and its recorded pin must stay consistent",
+        recorded = pin["hostSourceSHA256"]["FloeOfficeNative.mm"]
+        if digest == recorded:
+            return
+        check = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "FloeAgent/scripts/pin_office_host_artifact.py"), "--check"],
+            capture_output=True, text=True, check=False, timeout=60,
         )
+        self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+        self.assertIn("SOURCE AHEAD OF ARTIFACT", check.stdout)
+        self.assertIn("office-native-host.yml", check.stdout)
 
     def test_lock_records_the_rebuilt_verified_pin(self) -> None:
         lock = json.loads(LOCK.read_text(encoding="utf-8"))

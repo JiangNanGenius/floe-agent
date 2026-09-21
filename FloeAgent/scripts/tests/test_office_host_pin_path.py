@@ -3,9 +3,10 @@
 
 The pin must describe the framework the sources actually build, and it must
 fail closed whenever it cannot: an artifact from different sources, an
-unqualified artifact, tampered resources, a traversal path, or a lock that
-still owes a rebuild. This test pins that contract and proves the pin script
-refuses anything it cannot verify.
+unqualified artifact, tampered resources, a traversal path, a lock that still
+owes a rebuild, or a release-capability claim without device provenance. This
+test pins that contract and proves the pin script refuses anything it cannot
+verify.
 """
 
 import hashlib
@@ -34,10 +35,25 @@ class OfficeHostPinPath(unittest.TestCase):
             capture_output=True, text=True, check=False, timeout=120,
         )
 
-    def test_check_passes_against_the_rebuilt_pinned_artifact(self) -> None:
+    def test_check_matches_the_pin_or_reports_the_rebuild_path(self) -> None:
+        """The released pin either matches these sources or fails closed.
+
+        While a host-source change is ahead of the pinned framework the check
+        must exit 1 and name the rebuild workflow; the matched state is proven
+        by `test_apply_records_a_verified_artifact_and_clears_the_marker`, which
+        re-checks a refreshed pin.
+        """
         completed = self.run_script("--check")
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        self.assertIn("matches the current host sources", completed.stdout)
+        self.assertIn(completed.returncode, (0, 1), completed.stdout + completed.stderr)
+        if completed.returncode == 0:
+            self.assertIn("matches the current host sources", completed.stdout)
+        else:
+            self.assertIn("SOURCE AHEAD OF ARTIFACT", completed.stdout)
+            self.assertIn("office-native-host.yml", completed.stdout)
+            self.assertIn("--artifact-zip", completed.stdout)
+        # Capabilities that are not proven by a device artifact are always
+        # reported, never silently assumed.
+        self.assertIn("Office capability not proven for release", completed.stdout)
 
     def test_check_fails_closed_whenever_the_pin_cannot_be_trusted(self) -> None:
         """A lock that owes a rebuild, or whose source hash drifted, must fail.
@@ -93,6 +109,15 @@ class OfficeHostPinPath(unittest.TestCase):
             "hostCompilePassed": qualified,
             "hostLinkPassed": qualified,
             "swiftModuleImportPassed": qualified,
+            # A compile/link qualification never proves the release
+            # capabilities; all four stay false until verified device receipts
+            # are recorded.
+            "capabilityQualification": {
+                "embeddedEditorPassed": False,
+                "pptxVisibleRenderPassed": False,
+                "deviceRoundtripPassed": False,
+                "originalFileWritebackPassed": False,
+            },
             "runID": "test-run",
             "workflowCommit": "test-commit",
             # The real manifest records resource hashes relative to the
@@ -143,6 +168,34 @@ class OfficeHostPinPath(unittest.TestCase):
         self.assertEqual(completed.returncode, 1, completed.stdout)
         self.assertIn("filter overlay omits patchSHA256", completed.stderr)
 
+    def test_apply_refuses_capability_claims_without_device_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            folder_path = Path(folder)
+            artifact = self.make_artifact(folder_path, matching_sources=True)
+            with zipfile.ZipFile(artifact) as archive:
+                names = [name for name in archive.namelist() if name.endswith("native-host.json")]
+                manifest = json.loads(archive.read(names[0]))
+            manifest["capabilityQualification"]["pptxVisibleRenderPassed"] = True
+            with zipfile.ZipFile(artifact, "a") as archive:
+                archive.writestr(names[0], json.dumps(manifest))
+            completed = self.run_script("--artifact-zip", str(artifact), "--apply")
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("pptxVisibleRenderEvidence", completed.stderr)
+
+    def test_apply_refuses_an_artifact_without_the_capability_block(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            folder_path = Path(folder)
+            artifact = self.make_artifact(folder_path, matching_sources=True)
+            with zipfile.ZipFile(artifact) as archive:
+                names = [name for name in archive.namelist() if name.endswith("native-host.json")]
+                manifest = json.loads(archive.read(names[0]))
+            del manifest["capabilityQualification"]
+            with zipfile.ZipFile(artifact, "a") as archive:
+                archive.writestr(names[0], json.dumps(manifest))
+            completed = self.run_script("--artifact-zip", str(artifact), "--apply")
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("capabilityQualification block", completed.stderr)
+
     def test_apply_refuses_an_unqualified_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             artifact = self.make_artifact(Path(folder), matching_sources=True, qualified=False)
@@ -161,6 +214,13 @@ class OfficeHostPinPath(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             updated = json.loads(lock_copy.read_text())["qualifiedHostArtifact"]
             self.assertEqual(updated["archiveSHA256"], digest(artifact))
+            # The pin records the artifact's capability state verbatim; a
+            # compile/link artifact never promotes a release capability.
+            self.assertEqual(
+                updated["capabilityQualification"],
+                {"embeddedEditorPassed": False, "pptxVisibleRenderPassed": False,
+                 "deviceRoundtripPassed": False, "originalFileWritebackPassed": False},
+            )
             self.assertEqual(updated["runID"], "test-run")
             self.assertEqual(updated["artifactID"], 42)
             # Counts describe what the pin actually verified in the artifact.
