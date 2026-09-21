@@ -299,7 +299,6 @@ jobs:
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
             -only-testing:FloeAppTests/LocalShellRuntimeTests \
-            -only-testing:FloeAppTests/LocalServiceLifecycleTests \
             -only-testing:FloeAppTests/LuaShellInstallTests \
             -only-testing:FloeAppTests/IDEGitHubActionsTests \
             -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
@@ -371,7 +370,6 @@ jobs:
               -only-testing:FloeAppTests/MailConnectorTests \
               -only-testing:FloeAppTests/SkillLifecycleTests \
                 -only-testing:FloeAppTests/LocalShellRuntimeTests \
-              -only-testing:FloeAppTests/LocalServiceLifecycleTests \
               -only-testing:FloeAppTests/LuaShellInstallTests \
               -only-testing:FloeAppTests/IDEGitHubActionsTests \
               -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \

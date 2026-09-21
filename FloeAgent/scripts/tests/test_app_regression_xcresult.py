@@ -46,6 +46,16 @@ class AppRegressionGateTests(unittest.TestCase):
             source = (root / ".github/workflows" / workflow).read_text()
             self.assertEqual(source.count("-only-testing:FloeAppTests/HomeTaskCreationTests "), 2, workflow)
 
+    def test_retired_native_runtime_suites_are_not_required_or_selected(self):
+        root = Path(__file__).resolve().parents[3]
+        retired = ("LocalPythonRuntimeTests", "LocalServiceLifecycleTests")
+        for suite in retired:
+            self.assertNotIn(suite, verifier.SUITE_MINIMUMS)
+        for workflow in ("ci.yml", "release-unsigned-ipa.yml"):
+            source = (root / ".github/workflows" / workflow).read_text()
+            for suite in retired:
+                self.assertNotIn(f"-only-testing:FloeAppTests/{suite} ", source, workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
