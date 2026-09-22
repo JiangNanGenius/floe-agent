@@ -17,6 +17,10 @@ import FloeSSH
 struct ExecutionEnvironmentView: View {
     @ObservedObject var center: SettingsCenter
 
+    /// Deep links from a Linux session/service notification focus one
+    /// environment instead of whichever Linux environment happens to be first.
+    var initialEnvironmentID: String? = nil
+
     /// Explicit Linux component state for the top-level execution screen: the
     /// same App-shared install job the environment manager and the terminal
     /// empty state use, so a first-use download here is shared, cancellable
@@ -24,15 +28,25 @@ struct ExecutionEnvironmentView: View {
     @State private var linuxImageModel: LinuxImageInstallModel?
     @State private var linuxImageStatus: LinuxGuestImageInstallationService.ImageStatus?
     @State private var linuxEnvironmentID: String?
+    @State private var linuxEnvironmentTitle = "Linux 环境"
     @State private var linuxGuestStatus: LinuxGuestStatus?
     @State private var linuxBusy = false
     @State private var linuxError: String?
     @State private var linuxUpdateNotice: String?
+    /// Shared background-work record for the Linux session (state + the
+    /// bounded metrics sample). Read from the app-wide registry so this screen
+    /// shows the same numbers as notifications and the status surface.
+    @State private var linuxBackgroundWork: BackgroundWorkSnapshot?
+    @State private var activeServiceCount: Int?
 
     var body: some View {
         Form {
             Section("settings.exec.linux.section") {
                 linuxComponentSection
+            }
+
+            if let environmentID = linuxEnvironmentID, linuxGuestStatus?.running == true {
+                linuxBackgroundSection(environmentID: environmentID)
             }
 
             Section("settings.exec.runtimes") {
@@ -94,6 +108,117 @@ struct ExecutionEnvironmentView: View {
             async let hosts: Void = center.environment.remoteSessionCenter.loadHosts()
             async let linux: Void = refreshLinux()
             _ = await (settings, hosts, linux)
+        }
+        .task(id: linuxEnvironmentID) { await observeLinuxBackgroundWork() }
+        .task(id: linuxGuestStatus?.running) { await pollServiceCount() }
+    }
+
+    // MARK: - Linux background session (explicit user control)
+
+    /// The user's explicit keep-alive switch plus the bounded, truthful
+    /// resource sample. Nothing here claims the guest survives process
+    /// termination; the caption says what the system actually does.
+    @ViewBuilder
+    private func linuxBackgroundSection(environmentID: String) -> some View {
+        Section("Linux 后台运行") {
+            Toggle("后台保持运行", isOn: backgroundSessionBinding(environmentID: environmentID))
+                .frame(minHeight: FloeTheme.minimumTarget)
+            Text("开启后，离开 Floe 时系统会用持续处理任务为该环境争取后台时间；应用被系统回收后环境会停止（磁盘保留），重新打开后可再次启动。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            LabeledContent("后台任务状态") {
+                Text(linuxBackgroundWork?.progressText ?? (center.environment.backgroundRunCoordinator
+                    .linuxBackgroundSessionIsEnabled(environmentID: environmentID)
+                    ? String(localized: "environment.backend.checking") : "未开启"))
+                    .foregroundStyle(.secondary)
+            }
+            if let work = linuxBackgroundWork {
+                LabeledContent("已运行", value: work.elapsedTimeLabel())
+                metricsRows(work.metrics)
+            }
+            LabeledContent("托管服务") {
+                Text(activeServiceCount.map(String.init) ?? "—")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func backgroundSessionBinding(environmentID: String) -> Binding<Bool> {
+        let coordinator = center.environment.backgroundRunCoordinator
+        return Binding(
+            get: { coordinator.linuxBackgroundSessionIsEnabled(environmentID: environmentID) },
+            set: { enabled in
+                coordinator.setLinuxBackgroundSessionEnabled(
+                    enabled,
+                    environmentID: environmentID,
+                    title: linuxEnvironmentTitle
+                )
+            }
+        )
+    }
+
+    /// Only measured values are shown; a missing sample renders "—", and the
+    /// guest GPU is reported unavailable because TinyEMU has no GPU
+    /// passthrough (graphics run through native Apple frameworks instead).
+    @ViewBuilder
+    private func metricsRows(_ metrics: BackgroundWorkMetrics?) -> some View {
+        LabeledContent("模拟器 CPU", value: percentText(metrics?.emulatorCPUFraction))
+        LabeledContent("客户机 CPU", value: percentText(metrics?.guestCPUFraction))
+        LabeledContent("客户机内存", value: memoryText(metrics))
+        LabeledContent("网络流量", value: networkText(metrics))
+        LabeledContent("GPU") {
+            Text("不可用（TinyEMU 无 GPU 直通；图形使用原生框架）")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func percentText(_ fraction: Double?) -> String {
+        guard let fraction else { return "—" }
+        return String(format: "%.0f%%", min(1, max(0, fraction)) * 100)
+    }
+
+    private func memoryText(_ metrics: BackgroundWorkMetrics?) -> String {
+        guard let used = metrics?.guestMemoryUsedMB, let total = metrics?.guestMemoryTotalMB else {
+            return "—"
+        }
+        return "\(used) / \(total) MB"
+    }
+
+    private func networkText(_ metrics: BackgroundWorkMetrics?) -> String {
+        guard let rx = metrics?.networkRxKB, let tx = metrics?.networkTxKB else { return "—" }
+        return String(format: "↓ %.0f KB · ↑ %.0f KB", rx, tx)
+    }
+
+    /// A Linux guest only outlives the screen when the user asked for it, so
+    /// the work record is only sampled while the switch is on.
+    private func observeLinuxBackgroundWork() async {
+        guard let environmentID = linuxEnvironmentID else {
+            linuxBackgroundWork = nil
+            return
+        }
+        let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
+        for await snapshots in await BackgroundWorkRegistry.shared.snapshots() {
+            if Task.isCancelled { return }
+            linuxBackgroundWork = snapshots.first { $0.id == workID }
+        }
+    }
+
+    private func pollServiceCount() async {
+        guard linuxGuestStatus?.running == true, let environmentID = linuxEnvironmentID else {
+            activeServiceCount = nil
+            return
+        }
+        let controller = FloePlatformServices.shared.linuxLocalServiceController()
+        while !Task.isCancelled {
+            activeServiceCount = await controller?.activeLocalServiceCount(
+                environmentID: environmentID
+            )
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
         }
     }
 
@@ -195,8 +320,17 @@ struct ExecutionEnvironmentView: View {
         linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID)
         linuxUpdateNotice = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
         guard let reports = try? await FloePlatformServices.shared.environmentReports() else { return }
-        let linux = reports.first { $0.record.effectiveExecutionBackend == .linuxVM && $0.record.state != .deleting }
+        let linuxReports = reports.filter {
+            $0.record.effectiveExecutionBackend == .linuxVM && $0.record.state != .deleting
+        }
+        // A notification deep link focuses its own environment; otherwise the
+        // first Linux environment is the only honest choice (never a temporary
+        // directory or a native fallback).
+        let linux = linuxReports.first { $0.id == initialEnvironmentID } ?? linuxReports.first
         linuxEnvironmentID = linux?.id
+        if let name = linux?.record.name, !name.isEmpty {
+            linuxEnvironmentTitle = name
+        }
         linuxGuestStatus = await FloePlatformServices.shared.linuxGuestStatus(id: linux?.id)
     }
 
@@ -220,6 +354,17 @@ struct ExecutionEnvironmentView: View {
             linuxEnvironmentID = id
             try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(id: id)
             await refreshLinux()
+            // A user who already enabled background operation keeps it when
+            // the environment starts again: refresh the work record and the
+            // system continued-processing request against the live guest.
+            if center.environment.backgroundRunCoordinator
+                .linuxBackgroundSessionIsEnabled(environmentID: id) {
+                center.environment.backgroundRunCoordinator.setLinuxBackgroundSessionEnabled(
+                    true,
+                    environmentID: id,
+                    title: linuxEnvironmentTitle
+                )
+            }
         } catch {
             linuxError = error.localizedDescription
         }
@@ -229,6 +374,13 @@ struct ExecutionEnvironmentView: View {
         guard !linuxBusy else { return }
         linuxBusy = true
         defer { linuxBusy = false }
+        // Stopping the guest ends any background keep-alive with it: leaving
+        // the switch on would claim a session that no longer exists.
+        center.environment.backgroundRunCoordinator.setLinuxBackgroundSessionEnabled(
+            false,
+            environmentID: id,
+            title: linuxEnvironmentTitle
+        )
         await FloePlatformServices.shared.stopLinuxGuest(id: id)
         await refreshLinux()
     }

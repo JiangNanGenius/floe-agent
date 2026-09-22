@@ -14,6 +14,10 @@ import FloeAgentRuntime
 
 extension Notification.Name {
     static let floeOpenConversation = Notification.Name("org.floeagent.open-conversation")
+    /// Deep link for Linux session/service work: the app presents the
+    /// execution-environment surface (optionally focused on one environment).
+    /// `userInfo` carries the raw `BackgroundWorkDeepLink` payload keys.
+    static let floeOpenExecutionEnvironment = Notification.Name("org.floeagent.open-execution-environment")
 }
 
 /// Exponential media-refresh backoff: 15s doubling per retry, capped at 30
@@ -101,6 +105,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private struct ActiveRun {
         let conversationID: UUID?
         let title: String
+        /// When this workload first reported itself; used for the completion
+        /// dwell's honest elapsed-time caption.
+        var startedAt = Date()
         let continuedProcessingOrigin: ContinuedProcessingStartOrigin
         let allowsContinuedProcessing: Bool
         let retainsSurfaceOnFailure: Bool
@@ -150,6 +157,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
+    /// Successfully finished run shown for the completion dwell. Never
+    /// restorable after the dwell: the owner removes the work record.
+    private var dwellCompletedRun: (id: UUID, run: ActiveRun)?
+    /// Monotonic generation of the current visual-surface owner. A newer run
+    /// bumps it so a delayed teardown from an older run cannot close the
+    /// surface that now belongs to the new one.
+    private var visualSurfaceGeneration: UInt64 = 0
+    private var visualSurfaceTeardownTask: Task<Void, Never>?
+    /// Linux environments the user explicitly asked to keep running in the
+    /// background. Persisted so the setting survives a relaunch; the guest
+    /// itself never outlives the process (see `reconcileSchedulesAfterLaunch`).
+    private var linuxBackgroundSessionIDs: Set<String> = []
+    private static let linuxBackgroundSessionsDefaultsKey = "linuxBackgroundSessions.v1"
+    private var linuxMetricsSamplers: [String: LinuxGuestMetricsSampler] = [:]
+    private var linuxMetricsTasks: [String: Task<Void, Never>] = [:]
     private var lastSkippedContinuedUpdateAt: Date = .distantPast
     private var continuedEligibility = ContinuedProcessingEligibilityState<UUID>()
     private var surfacedRunID: UUID?
@@ -212,6 +234,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 for: preference,
                 launchPreferencesLoaded: launchPreferencesLoaded
             )
+    }
+
+    /// A Linux background session is its own explicit user request for the
+    /// system continued-processing mechanism. The conversation surface
+    /// preference (standard/PiP/screen share) governs the optional PiP
+    /// surface, never whether the user's Linux keep-alive task exists.
+    nonisolated static func shouldSubmitLinuxSessionContinuedProcessing(
+        origin: ContinuedProcessingStartOrigin,
+        launchPreferencesLoaded: Bool,
+        hasAggregateForegroundScene: Bool
+    ) -> Bool {
+        origin.allowsContinuedSubmission
+            && launchPreferencesLoaded
+            && hasAggregateForegroundScene
     }
 
     /// Provider media jobs are durable and resume through BGAppRefresh,
@@ -287,12 +323,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     func backgroundExecutionPreferenceDidChange(
         to preference: BackgroundExecutionPreference
     ) {
+        // The release gate may downgrade a PiP choice to the standard path;
+        // reconcile against what the app actually honors.
+        let honored = StatusPiPReleaseGate.effectivePreference(
+            preference,
+            statusPiPEnabled: StatusPiPReleaseGate.isEnabled
+        )
         if #available(iOS 26.0, *) {
-            if Self.shouldKeepContinuedProcessing(
-                for: preference,
-                launchPreferencesLoaded:
-                    environment.settingsCenter.launchPreferencesLoaded
-            ) {
+            let launchPreferencesLoaded = environment.settingsCenter.launchPreferencesLoaded
+            let keepsConversationTask = Self.shouldKeepContinuedProcessing(
+                for: honored,
+                launchPreferencesLoaded: launchPreferencesLoaded
+            )
+            let keepsLinuxSessionTask = launchPreferencesLoaded && !linuxBackgroundSessionIDs.isEmpty
+            if keepsConversationTask || keepsLinuxSessionTask {
                 if let active = activeRuns.values.first(where: {
                     $0.allowsContinuedProcessing
                         && $0.continuedProcessingOrigin.allowsContinuedSubmission
@@ -304,7 +348,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                         stage: active.stage,
                         progress: active.progress
                     )
-                } else {
+                } else if !keepsLinuxSessionTask {
                     // Preference restoration and automatic-only workloads
                     // cannot retain a stale Live Activity from another run.
                     finishContinuedTasks(success: true)
@@ -330,7 +374,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // preference publication. Changing settings never starts PiP and never
         // presents ReplayKit authorization; it only prepares/stops surfaces the
         // user has already selected.
-        let transition = Self.visualSurfaceTransition(for: preference)
+        let transition = Self.visualSurfaceTransition(for: honored)
         if transition.stopsPictureInPicture {
             surfacedRunID = nil
             pipCarouselTask?.cancel()
@@ -363,6 +407,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         effectiveScenePhase == .active && scenePhases.values.contains(.active)
     }
 
+    /// The execution preference the app may actually honor. Status PiP is an
+    /// opt-in surface behind `StatusPiPReleaseGate`; when the gate is
+    /// disabled, a PiP choice degrades to the compliant standard path (30s
+    /// lease + system continued processing) instead of creating a controller.
+    private var effectiveBackgroundExecutionPreference: BackgroundExecutionPreference {
+        StatusPiPReleaseGate.effectivePreference(
+            environment.settingsCenter.backgroundExecution,
+            statusPiPEnabled: StatusPiPReleaseGate.isEnabled
+        )
+    }
+
     func continuedProcessingOrigin(forRunID runID: UUID) -> ContinuedProcessingStartOrigin {
         continuedEligibility.origin(forRun: runID) ?? .automaticTool
     }
@@ -378,7 +433,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         stage: String = "正在运行",
         progress: Int64 = 5
     ) -> Bool {
-        let preference = environment.settingsCenter.backgroundExecution
+        let preference = effectiveBackgroundExecutionPreference
         let loaded = environment.settingsCenter.launchPreferencesLoaded
         guard Self.shouldSubmitContinuedProcessing(
             for: preference,
@@ -386,10 +441,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             origin: origin,
             hasAggregateForegroundScene: hasAggregateForegroundScene
         ) else {
-            if !Self.shouldKeepContinuedProcessing(
+            let keepsConversationTask = Self.shouldKeepContinuedProcessing(
                 for: preference,
                 launchPreferencesLoaded: loaded
-            ), #available(iOS 26.0, *) {
+            )
+            // An enabled Linux background session keeps its own system task,
+            // even while the chat surface preference is a visual mode.
+            let keepsLinuxSessionTask = loaded && !linuxBackgroundSessionIDs.isEmpty
+            if !keepsConversationTask, !keepsLinuxSessionTask, #available(iOS 26.0, *) {
                 finishContinuedTasks(success: true)
             }
             FloeLogger(category: .app).info(
@@ -414,6 +473,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             self.visualSurfacePolicy = restored
         } else {
             self.visualSurfacePolicy = BackgroundVisualSurfacePolicy()
+        }
+        if let stored = UserDefaults.standard.array(
+            forKey: Self.linuxBackgroundSessionsDefaultsKey
+        ) as? [String] {
+            self.linuxBackgroundSessionIDs = Set(stored)
         }
         super.init()
         if #available(iOS 26.0, *) {
@@ -468,7 +532,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
         persistVisualSurfacePolicy()
         retainedPausedRun = nil
-        activeRuns[runID] = ActiveRun(
+        // A new run owns the surface again: cancel and invalidate any pending
+        // success teardown from the previous run.
+        invalidateVisualSurfaceTeardown()
+        dwellCompletedRun = nil
+        let run = ActiveRun(
             conversationID: conversationID,
             title: title,
             continuedProcessingOrigin: origin,
@@ -476,7 +544,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             retainsSurfaceOnFailure: true,
             sendsTerminalNotification: true
         )
+        activeRuns[runID] = run
         _ = continuedEligibility.registerRun(runID, origin: origin)
+        publishRunWork(
+            runID: runID,
+            title: title,
+            conversationID: conversationID,
+            startedAt: run.startedAt,
+            state: .running,
+            progressText: "正在运行"
+        )
         FloeLogger(category: .app).info(
             "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) origin=\(origin.rawValue) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
         )
@@ -503,6 +580,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
         persistVisualSurfacePolicy()
         retainedPausedRun = nil
+        // Media work takes the surface too: invalidate any pending success
+        // teardown from a run that just finished.
+        invalidateVisualSurfaceTeardown()
+        dwellCompletedRun = nil
         activeRuns[workID] = ActiveRun(
             conversationID: nil,
             title: title,
@@ -625,6 +706,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
         }
+        publishRunWork(
+            runID: runID,
+            title: active.title,
+            conversationID: active.conversationID,
+            startedAt: active.startedAt,
+            state: .running,
+            progress: Double(active.progress) / 100,
+            progressText: stage
+        )
     }
 
     /// Keeps a durable, user-resumable run visible without turning the
@@ -647,6 +737,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         FloeLogger(category: .app).info(
             "backgroundRunSuspended run=\(runID.uuidString) message=\(message) activeRuns=\(activeRuns.count)"
         )
+        publishRunWork(
+            runID: runID,
+            title: active.title,
+            conversationID: active.conversationID,
+            startedAt: active.startedAt,
+            state: .suspended,
+            interruption: .checkpointed,
+            progress: Double(active.progress) / 100,
+            progressText: message
+        )
     }
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
@@ -660,49 +760,479 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let conversationID = finished.conversationID
         notifiedApprovalRuns.remove(runID)
         if finished.sendsTerminalNotification, let conversationID {
-            Task { [weak self] in
-                guard let self else { return }
-                let policy = try? await SQLiteWorkspaceStore(database: environment.database)
-                    .taskPolicy(conversationID: conversationID)
-                let shouldNotify = switch policy?.notificationPolicy {
-                case .off: false
-                case .critical: !succeeded
-                case .terminal, .stages, nil: true
-                }
-                guard shouldNotify else { return }
-                self.postNotification(
-                    identifier: "run.\(runID.uuidString)",
-                    conversationID: conversationID,
-                    title: succeeded ? "本轮已结束" : "本轮运行失败",
-                    body: message ?? (succeeded ? "打开任务查看本轮结果与待办进度。" : "打开任务查看并恢复。")
-                )
-            }
+            notifyTerminal(
+                conversationID: conversationID,
+                runID: runID,
+                succeeded: succeeded,
+                message: message
+            )
         }
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
             finishContinuedTasks(success: succeeded)
         }
-        if surfacedRunID == runID, !activeRuns.isEmpty {
-            surfacedRunID = nil
-            resumeBackgroundSurfaceIfNeeded()
+        finishRunWork(
+            runID: runID,
+            title: finished.title,
+            conversationID: conversationID,
+            startedAt: finished.startedAt,
+            succeeded: succeeded,
+            message: message
+        )
+        // The completion policy decides the surface's terminal behavior. A
+        // newer run bumps the generation, so a delayed teardown scheduled
+        // here can only close the surface it was scheduled for.
+        let plan = BackgroundSurfaceCompletionPolicy.plan(
+            succeeded: succeeded,
+            retainsSurfaceOnFailure: finished.retainsSurfaceOnFailure,
+            generation: bumpVisualSurfaceGeneration()
+        )
+        let wasSurfaced = surfacedRunID == runID
+        switch plan.disposition {
+        case .dwellThenTearDown:
+            if activeRuns.isEmpty {
+                dwellCompletedRun = (runID, finished)
+                retainedPausedRun = nil
+                if wasSurfaced {
+                    environment.backgroundVideoService.update(
+                        title: finished.title,
+                        progress: Self.completedSurfaceText(for: finished)
+                    )
+                }
+                scheduleSuccessSurfaceTeardown(generation: plan.generation, dwell: plan.delay)
+            } else {
+                dwellCompletedRun = nil
+                if wasSurfaced {
+                    surfacedRunID = nil
+                    resumeBackgroundSurfaceIfNeeded()
+                }
+            }
+        case .retainForRecovery:
+            dwellCompletedRun = nil
+            if activeRuns.isEmpty {
+                // A failed/checkpointed task is paused work, not completed
+                // work. Keep the user-owned surface alive with the real
+                // failure reason and the recovery action so reopening the
+                // task offers a path forward instead of a silent
+                // disappearance.
+                surfacedRunID = runID
+                retainedPausedRun = (runID, finished)
+                environment.backgroundVideoService.update(
+                    title: finished.title,
+                    progress: Self.failedSurfaceText(for: finished, message: message)
+                )
+                FloeLogger(category: .app).info(
+                    "backgroundSurfaceRetained reason=unfinishedRun run=\(runID.uuidString)"
+                )
+            } else if wasSurfaced {
+                surfacedRunID = nil
+                resumeBackgroundSurfaceIfNeeded()
+            }
+        case .tearDownImmediately:
+            dwellCompletedRun = nil
+            if activeRuns.isEmpty {
+                retainedPausedRun = nil
+                tearDownBackgroundExecutionPreference()
+            } else if wasSurfaced {
+                surfacedRunID = nil
+                resumeBackgroundSurfaceIfNeeded()
+            }
         }
-        if activeRuns.isEmpty,
-           succeeded || !finished.retainsSurfaceOnFailure {
-            retainedPausedRun = nil
-            tearDownBackgroundExecutionPreference()
-        } else if activeRuns.isEmpty {
-            // A failed/checkpointed task is paused work, not completed work.
-            // Keep the user-owned PiP/screen-share surface alive so reopening
-            // the task offers a recovery path instead of silently disappearing.
-            surfacedRunID = runID
-            retainedPausedRun = (runID, finished)
-            environment.backgroundVideoService.update(
-                title: finished.title,
-                progress: "任务已暂停，打开 Floe 可继续"
+    }
+
+    /// Honest success caption for the completion dwell: the real outcome and
+    /// the run's measured elapsed time. No invented progress.
+    nonisolated static func completedSurfaceText(for run: (title: String, startedAt: Date), now: Date = Date()) -> String {
+        let elapsed = max(0, Int(now.timeIntervalSince(run.startedAt)))
+        let minutes = elapsed / 60
+        let seconds = elapsed % 60
+        let duration = minutes > 0 ? "\(minutes) 分 \(seconds) 秒" : "\(seconds) 秒"
+        return "\(run.title)\n已完成 · 用时 \(duration)"
+    }
+
+    private nonisolated static func completedSurfaceText(for run: ActiveRun) -> String {
+        completedSurfaceText(for: (title: run.title, startedAt: run.startedAt))
+    }
+
+    /// Actionable failure caption: the failure reason plus what the user can
+    /// do. The durable recovery point is written by ConversationCenter; this
+    /// text never claims the run is still working.
+    private nonisolated static func failedSurfaceText(for run: ActiveRun, message: String?) -> String {
+        var lines = [run.title, "运行失败 · 打开 Floe 可恢复"]
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append(String(message.prefix(80)))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Invalidates any pending success teardown and returns the new
+    /// generation for the caller to schedule against.
+    @discardableResult
+    private func bumpVisualSurfaceGeneration() -> UInt64 {
+        visualSurfaceGeneration &+= 1
+        visualSurfaceTeardownTask?.cancel()
+        visualSurfaceTeardownTask = nil
+        return visualSurfaceGeneration
+    }
+
+    private func invalidateVisualSurfaceTeardown() {
+        _ = bumpVisualSurfaceGeneration()
+    }
+
+    /// Success dwell: keep the Completed state visible for the policy's dwell,
+    /// then tear the surface down — but only while this schedule is still the
+    /// current generation. A newer run cancels the task and bumps the
+    /// generation, so a stale timer can never close the new surface.
+    private func scheduleSuccessSurfaceTeardown(generation: UInt64, dwell: TimeInterval) {
+        visualSurfaceTeardownTask?.cancel()
+        visualSurfaceTeardownTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(max(0, dwell)))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            guard BackgroundSurfaceCompletionPolicy.teardownIsCurrent(
+                scheduledGeneration: generation,
+                currentGeneration: self.visualSurfaceGeneration
+            ) else {
+                FloeLogger(category: .app).info(
+                    "backgroundSurfaceTeardownSkipped reason=staleGeneration scheduled=\(generation) current=\(self.visualSurfaceGeneration)"
+                )
+                return
+            }
+            self.visualSurfaceTeardownTask = nil
+            if let completed = self.dwellCompletedRun {
+                self.dwellCompletedRun = nil
+                Task { await BackgroundWorkRegistry.shared.remove(id: completed.id) }
+            }
+            self.tearDownBackgroundExecutionPreference()
+        }
+    }
+
+    // MARK: - Shared background-work records
+
+    /// Publishes a conversation-run snapshot into the app-wide registry so the
+    /// status surface, notifications and diagnostics read one model.
+    private func publishRunWork(
+        runID: UUID,
+        title: String,
+        conversationID: UUID?,
+        startedAt: Date,
+        state: BackgroundWorkState,
+        interruption: BackgroundWorkInterruption = .none,
+        progress: Double? = nil,
+        progressText: String,
+        activeCommandCount: Int = 0
+    ) {
+        let snapshot = BackgroundWorkSnapshot(
+            id: runID,
+            kind: .modelRun,
+            title: title,
+            state: state,
+            interruption: interruption,
+            progress: progress,
+            progressText: progressText,
+            startedAt: startedAt,
+            activeCommandCount: activeCommandCount,
+            deepLink: BackgroundWorkDeepLink(
+                kind: .modelRun,
+                conversationID: conversationID,
+                runID: runID
             )
+        )
+        Task { await BackgroundWorkRegistry.shared.register(snapshot) }
+    }
+
+    /// Records the terminal state. A failed run keeps its record (deep link +
+    /// recovery) until the user resolves it; a completed run's record is
+    /// removed after the completion dwell.
+    private func finishRunWork(
+        runID: UUID,
+        title: String,
+        conversationID: UUID?,
+        startedAt: Date,
+        succeeded: Bool,
+        message: String?
+    ) {
+        let interruption: BackgroundWorkInterruption = succeeded ? .none : .checkpointed
+        let text = succeeded
+            ? Self.completedSurfaceText(for: (title: title, startedAt: startedAt))
+            : Self.failedSurfaceText(
+                for: ActiveRun(
+                    conversationID: conversationID,
+                    title: title,
+                    startedAt: startedAt,
+                    continuedProcessingOrigin: .automaticTool,
+                    allowsContinuedProcessing: false,
+                    retainsSurfaceOnFailure: true,
+                    sendsTerminalNotification: false
+                ),
+                message: message
+            )
+        let snapshot = BackgroundWorkSnapshot(
+            id: runID,
+            kind: .modelRun,
+            title: title,
+            state: succeeded ? .completed : .failed,
+            interruption: interruption,
+            progress: succeeded ? 1 : nil,
+            progressText: text,
+            startedAt: startedAt,
+            deepLink: BackgroundWorkDeepLink(
+                kind: .modelRun,
+                conversationID: conversationID,
+                runID: runID
+            )
+        )
+        Task { await BackgroundWorkRegistry.shared.register(snapshot) }
+    }
+
+    // MARK: - Notifications
+
+    /// Maps the system authorization status into the platform-independent
+    /// state the pure decision uses.
+    nonisolated static func notificationAuthorizationState(
+        _ status: UNAuthorizationStatus
+    ) -> NotificationAuthorizationState {
+        switch status {
+        case .notDetermined: .notDetermined
+        case .denied: .denied
+        case .authorized: .authorized
+        case .provisional: .provisional
+        case .ephemeral: .ephemeral
+        @unknown default: .notDetermined
+        }
+    }
+
+    /// Reads the real system authorization state. Never assumes authorized.
+    static func currentNotificationAuthorization() async -> NotificationAuthorizationState {
+        await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                continuation.resume(
+                    returning: Self.notificationAuthorizationState(settings.authorizationStatus)
+                )
+            }
+        }
+    }
+
+    /// Terminal (completed/failed) notification. Policy + real authorization +
+    /// real foreground state decide delivery; the deep link identity is
+    /// shared with the in-app banner and the work record.
+    private func notifyTerminal(
+        conversationID: UUID,
+        runID: UUID,
+        succeeded: Bool,
+        message: String?
+    ) {
+        Task { [weak self] in
+            guard let self else { return }
+            let policy = try? await SQLiteWorkspaceStore(database: self.environment.database)
+                .taskPolicy(conversationID: conversationID)
+            let decision = TaskNotificationDecision.resolve(
+                policy: policy?.notificationPolicy,
+                event: .terminal,
+                succeeded: succeeded,
+                authorization: await Self.currentNotificationAuthorization(),
+                appIsForeground: self.hasAggregateForegroundScene
+            )
+            self.deliver(
+                decision,
+                title: succeeded ? "本轮已结束" : "本轮运行失败",
+                body: message ?? (succeeded ? "打开任务查看本轮结果与待办进度。" : "打开任务查看并恢复。"),
+                identifier: "run.\(runID.uuidString)",
+                deepLink: BackgroundWorkDeepLink(
+                    kind: .modelRun,
+                    conversationID: conversationID,
+                    runID: runID
+                )
+            )
+        }
+    }
+
+    /// Executes a resolved decision. System notifications carry the full deep
+    /// link; a foreground decision shows the in-app banner instead so the user
+    /// never sees a duplicated alert.
+    private func deliver(
+        _ decision: TaskNotificationDecision,
+        title: String,
+        body: String,
+        identifier: String,
+        deepLink: BackgroundWorkDeepLink
+    ) {
+        switch decision.delivery {
+        case .none:
+            return
+        case .system:
+            postNotification(
+                identifier: identifier,
+                title: title,
+                body: body,
+                deepLink: deepLink
+            )
+        case .inAppBanner:
+            TaskBannerCenter.shared.present(
+                title: title,
+                body: body,
+                deepLink: deepLink
+            )
+        case .blockedByAuthorization:
+            // The app is in the background and authorization is missing or
+            // denied: nothing can be presented. Record the truthful state so
+            // settings/diagnostics can explain why no alert appeared.
             FloeLogger(category: .app).info(
-                "backgroundSurfaceRetained reason=unfinishedRun run=\(runID.uuidString)"
+                "notificationBlockedByAuthorization identifier=\(identifier) workKind=\(deepLink.kind.rawValue)"
             )
         }
+    }
+
+    private func postNotification(
+        identifier: String,
+        title: String,
+        body: String,
+        deepLink: BackgroundWorkDeepLink
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.userInfo = deepLink.userInfo
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: identifier, content: content, trigger: nil
+        ))
+    }
+
+    // MARK: - Linux background sessions
+
+    /// True when the user explicitly keeps this environment running in the
+    /// background. The guest never outlives the process; this only controls
+    /// the system continued-processing request and metrics sampling.
+    func linuxBackgroundSessionIsEnabled(environmentID: String) -> Bool {
+        linuxBackgroundSessionIDs.contains(environmentID)
+    }
+
+    /// Explicit user control: keep (or stop keeping) a Linux environment
+    /// alive with the system continued-processing task while the user leaves
+    /// the app. Truthful about the guest lifecycle: iOS may still terminate
+    /// the process, and a relaunch always starts from the durable disk.
+    func setLinuxBackgroundSessionEnabled(
+        _ enabled: Bool,
+        environmentID: String,
+        title: String
+    ) {
+        let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
+        if enabled {
+            linuxBackgroundSessionIDs.insert(environmentID)
+            persistLinuxBackgroundSessions()
+            let deepLink = BackgroundWorkDeepLink(
+                kind: .linuxSession,
+                environmentID: environmentID
+            )
+            let snapshot = BackgroundWorkSnapshot(
+                id: workID,
+                kind: .linuxSession,
+                title: title,
+                state: .running,
+                progressText: "后台保持运行",
+                deepLink: deepLink
+            )
+            Task { await BackgroundWorkRegistry.shared.register(snapshot) }
+            // The user's explicit toggle is the only origin allowed to submit;
+            // the registry coalesces concurrent submissions.
+            _ = continuedEligibility.registerRun(workID, origin: .explicitUserAction)
+            if #available(iOS 26.0, *) {
+                if Self.shouldSubmitLinuxSessionContinuedProcessing(
+                    origin: .explicitUserAction,
+                    launchPreferencesLoaded: environment.settingsCenter.launchPreferencesLoaded,
+                    hasAggregateForegroundScene: hasAggregateForegroundScene
+                ) {
+                    updateContinuedTask(title: title, stage: "Linux 环境后台运行", progress: 10)
+                    BackgroundPolicyRegistry.shared.requestContinuedProcessing()
+                } else {
+                    FloeLogger(category: .app).info(
+                        "continuedProcessingSkipped workload=linuxBackgroundSession reason=lifecycleGate"
+                    )
+                }
+            }
+            startLinuxMetricsSampling(environmentID: environmentID)
+            FloeLogger(category: .app).info(
+                "linuxBackgroundSessionEnabled environment=\(environmentID)"
+            )
+        } else {
+            linuxBackgroundSessionIDs.remove(environmentID)
+            persistLinuxBackgroundSessions()
+            continuedEligibility.finishRun(workID)
+            stopLinuxMetricsSampling(environmentID: environmentID)
+            Task { await BackgroundWorkRegistry.shared.remove(id: workID) }
+            if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
+                finishContinuedTasks(success: true)
+            }
+            FloeLogger(category: .app).info(
+                "linuxBackgroundSessionDisabled environment=\(environmentID)"
+            )
+        }
+    }
+
+    /// The shared work record for a Linux environment, when one exists.
+    func linuxBackgroundSessionWork(environmentID: String) async -> BackgroundWorkSnapshot? {
+        await BackgroundWorkRegistry.shared.snapshot(
+            id: BackgroundWorkSnapshot.stableID(for: environmentID)
+        )
+    }
+
+    private func persistLinuxBackgroundSessions() {
+        UserDefaults.standard.set(
+            Array(linuxBackgroundSessionIDs).sorted(),
+            forKey: Self.linuxBackgroundSessionsDefaultsKey
+        )
+    }
+
+    /// Metrics sampling is bounded: one short bounded guest read per interval,
+    /// only while a consumer is registered, and only while a scene is in the
+    /// foreground. The last sample stays visible (with `updatedAt`) after
+    /// sampling stops.
+    private func startLinuxMetricsSampling(environmentID: String) {
+        guard linuxMetricsTasks[environmentID] == nil else { return }
+        guard let service = environment.linuxGuestService else { return }
+        let sampler = linuxMetricsSamplers[environmentID] ?? LinuxGuestMetricsSampler(
+            environmentID: environmentID,
+            commandRunner: service,
+            emulatorSampleProvider: { id in
+                await service.emulatorThreadCPUSample(environmentID: id)
+            }
+        )
+        linuxMetricsSamplers[environmentID] = sampler
+        let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
+        linuxMetricsTasks[environmentID] = Task { [weak self] in
+            for await metrics in await sampler.metrics() {
+                guard !Task.isCancelled else { return }
+                await self?.applyLinuxMetrics(metrics, workID: workID)
+            }
+        }
+    }
+
+    private func stopLinuxMetricsSampling(environmentID: String) {
+        linuxMetricsTasks[environmentID]?.cancel()
+        linuxMetricsTasks[environmentID] = nil
+    }
+
+    private func pauseLinuxMetricsSampling() {
+        for environmentID in Array(linuxMetricsTasks.keys) {
+            stopLinuxMetricsSampling(environmentID: environmentID)
+        }
+    }
+
+    private func resumeLinuxMetricsSampling() {
+        guard hasAggregateForegroundScene else { return }
+        for environmentID in linuxBackgroundSessionIDs {
+            startLinuxMetricsSampling(environmentID: environmentID)
+        }
+    }
+
+    private func applyLinuxMetrics(_ metrics: BackgroundWorkMetrics, workID: UUID) async {
+        let existing = await BackgroundWorkRegistry.shared.snapshot(id: workID)
+        guard var snapshot = existing else { return }
+        snapshot.metrics = metrics
+        await BackgroundWorkRegistry.shared.register(snapshot)
     }
 
     /// A manual/system PiP close is respected for the current active batch.
@@ -734,7 +1264,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         conversationID: UUID?,
         runTitle: String
     ) {
-        let preference = environment.settingsCenter.backgroundExecution
+        let preference = effectiveBackgroundExecutionPreference
         guard visualSurfacePolicy.allowsVisualSurface(
             for: preference
         ) else {
@@ -809,7 +1339,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// leaving the completed title frozen indefinitely.
     private func resumeBackgroundSurfaceIfNeeded() {
         guard visualSurfacePolicy.allowsVisualSurface(
-                  for: environment.settingsCenter.backgroundExecution
+                  for: effectiveBackgroundExecutionPreference
               ) else { return }
         let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
             ?? retainedPausedRun
@@ -870,33 +1400,26 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         Task { [weak self] in
             guard let self else { return }
-            let policy = try? await SQLiteWorkspaceStore(database: environment.database)
+            let policy = try? await SQLiteWorkspaceStore(database: self.environment.database)
                 .taskPolicy(conversationID: conversationID)
-            guard policy?.notificationPolicy != .off,
-                  policy?.notificationPolicy != .terminal else { return }
-            self.postNotification(
-                identifier: "approval.\(runID.uuidString)",
-                conversationID: conversationID,
+            let decision = TaskNotificationDecision.resolve(
+                policy: policy?.notificationPolicy,
+                event: .approval,
+                authorization: await Self.currentNotificationAuthorization(),
+                appIsForeground: self.hasAggregateForegroundScene
+            )
+            self.deliver(
+                decision,
                 title: "任务等待审批",
-                body: "需要确认：\(toolName)"
+                body: "需要确认：\(toolName)",
+                identifier: "approval.\(runID.uuidString)",
+                deepLink: BackgroundWorkDeepLink(
+                    kind: .modelRun,
+                    conversationID: conversationID,
+                    runID: runID
+                )
             )
         }
-    }
-
-    private func postNotification(
-        identifier: String,
-        conversationID: UUID,
-        title: String,
-        body: String
-    ) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        content.userInfo = ["conversationID": conversationID.uuidString]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: identifier, content: content, trigger: nil
-        ))
     }
 
     @available(iOS 26.0, *)
@@ -907,11 +1430,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         handles[handleID] = task
         continuedTasksByIdentifier[task.identifier] = handles
 
-        guard Self.shouldKeepContinuedProcessing(
-            for: environment.settingsCenter.backgroundExecution,
-            launchPreferencesLoaded:
-                environment.settingsCenter.launchPreferencesLoaded
-        ), continuedEligibility.hasEligibleWork else {
+        let launchPreferencesLoaded = environment.settingsCenter.launchPreferencesLoaded
+        let keepsConversationTask = Self.shouldKeepContinuedProcessing(
+            for: effectiveBackgroundExecutionPreference,
+            launchPreferencesLoaded: launchPreferencesLoaded
+        )
+        let keepsLinuxSessionTask = launchPreferencesLoaded && !linuxBackgroundSessionIDs.isEmpty
+        guard keepsConversationTask || keepsLinuxSessionTask,
+              continuedEligibility.hasEligibleWork else {
             // A cold-launch callback can arrive while SettingsCenter still has
             // its in-memory `.standard` default. Fail closed until the stored
             // preference has been restored so no transient Live Activity is
@@ -1039,6 +1565,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         switch effective {
         case .background:
             isAppInBackground = true
+            // A backgrounded app must not spend cycles reading guest /proc
+            // files: sampling is a foreground-only, consumer-bounded loop.
+            pauseLinuxMetricsSampling()
             resumeBackgroundSurfaceIfNeeded()
             lease = BackgroundPolicyRegistry.shared.beginShortCompletion(name: "Keep agent run active")
             Task { [weak self] in
@@ -1058,11 +1587,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             }
         case .active:
             isAppInBackground = false
+            resumeLinuxMetricsSampling()
             pipCarouselTask?.cancel()
             pipCarouselTask = nil
             environment.backgroundVideoService.retractForForeground()
             if visualSurfacePolicy.allowsVisualSurface(
-                for: environment.settingsCenter.backgroundExecution
+                for: effectiveBackgroundExecutionPreference
             ) {
                 prepareBackgroundSurfaceIfNeeded()
             }
@@ -1096,7 +1626,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// this method itself never starts PiP from a scene-phase callback.
     private func prepareBackgroundSurfaceIfNeeded() {
         guard visualSurfacePolicy.allowsVisualSurface(
-                  for: environment.settingsCenter.backgroundExecution
+                  for: effectiveBackgroundExecutionPreference
               ),
               !environment.backgroundVideoService.isPreparingPiP else { return }
         let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
@@ -1107,7 +1637,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             title: run.title,
             progress: run.presentation(),
             automaticallyStartsFromInline:
-                environment.settingsCenter.backgroundExecution == .pictureInPicture
+                effectiveBackgroundExecutionPreference == .pictureInPicture
         )
     }
 
@@ -1205,6 +1735,36 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     func reconcileSchedulesAfterLaunch() async {
         await reconcilePendingMediaJobs()
         await runDueSchedules()
+        await reconcileLinuxBackgroundSessionsAfterLaunch()
+    }
+
+    /// A TinyEMU guest cannot outlive the process, so a persisted "running in
+    /// the background" record is stale by definition after a relaunch. Report
+    /// the truth (interrupted by the system; durable disk preserved), keep the
+    /// user's setting, and never claim the guest survived.
+    func reconcileLinuxBackgroundSessionsAfterLaunch() async {
+        guard !linuxBackgroundSessionIDs.isEmpty else { return }
+        for environmentID in linuxBackgroundSessionIDs {
+            let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
+            let existing = await BackgroundWorkRegistry.shared.snapshot(id: workID)
+            let title = existing?.title ?? "Linux 环境"
+            let snapshot = BackgroundWorkSnapshot(
+                id: workID,
+                kind: .linuxSession,
+                title: title,
+                state: .interrupted,
+                interruption: .terminatedBySystem,
+                progressText: "应用已退出，Linux 环境已停止；打开后可重新启动并继续",
+                deepLink: BackgroundWorkDeepLink(
+                    kind: .linuxSession,
+                    environmentID: environmentID
+                )
+            )
+            await BackgroundWorkRegistry.shared.register(snapshot)
+        }
+        FloeLogger(category: .app).info(
+            "linuxBackgroundSessionsReconciled count=\(linuxBackgroundSessionIDs.count) reason=processRelaunch"
+        )
     }
 
     /// The app owns exactly one background URLSession for generated media.
@@ -1289,13 +1849,36 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard let raw = response.notification.request.content.userInfo["conversationID"] as? String,
-              let id = UUID(uuidString: raw) else { return }
+        let userInfo = response.notification.request.content.userInfo
+        // The deep-link payload is the routing contract. Parsing is shared
+        // with the in-app banner, and legacy notifications that carried only
+        // a conversation id still route to their conversation.
+        guard let link = BackgroundWorkDeepLink.parse(userInfo) else { return }
         await MainActor.run {
+            Self.route(deepLink: link, userInfo: userInfo)
+        }
+    }
+
+    /// Routes a deep link to exactly one destination. The payload identity
+    /// (kind + ids) decides where it goes; nothing is inferred from titles.
+    nonisolated static func route(deepLink: BackgroundWorkDeepLink, userInfo: [AnyHashable: Any] = [:]) {
+        switch deepLink.kind {
+        case .modelRun:
+            guard let conversationID = deepLink.conversationID else { return }
             NotificationCenter.default.post(
                 name: .floeOpenConversation,
                 object: nil,
-                userInfo: ["conversationID": id]
+                userInfo: ["conversationID": conversationID]
+            )
+        case .linuxSession, .linuxService:
+            var payload = userInfo
+            payload["workKind"] = deepLink.kind.rawValue
+            if let environmentID = deepLink.environmentID { payload["environmentID"] = environmentID }
+            if let serviceJobID = deepLink.serviceJobID { payload["serviceJobID"] = serviceJobID.uuidString }
+            NotificationCenter.default.post(
+                name: .floeOpenExecutionEnvironment,
+                object: nil,
+                userInfo: payload
             )
         }
     }

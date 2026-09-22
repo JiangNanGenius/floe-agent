@@ -13,8 +13,21 @@ TinyEMU Linux guest. This audit is the anti-regression gate with two modes:
 Both modes exit non-zero with a named finding per violation. Keep the markers
 lean and exact: they name artifacts the retired pipeline produced, never a
 legitimate remaining component (PDFium, LibArchive, dash, Office, Whisper).
+
+Two further gates cover the Linux-convergence contract without touching any
+artifact or license:
+
+  --keepalive   Fail if a silent-audio/keepalive keep-alive pattern reappears in
+                the background-execution or Linux-guest code paths. Explicit
+                user work runs under the system continued-processing task, not
+                an inaudible audio session.
+  --convergence Verify the generic-runtime convergence declarations: retired
+                interpreter tool names are declared Linux-guest routed, and
+                every signed catalog package still has recorded provenance.
+                Read-only: no catalog, artifact or license is modified.
 """
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -99,6 +112,101 @@ MANIFEST_PAYLOAD_MARKERS = [
     (re.compile(r"wheelhouse", re.IGNORECASE), "wheelhouse reference"),
 ]
 
+# Silent-audio/keep-alive patterns. The app must never keep itself alive with
+# an inaudible audio session: explicit user work uses the system
+# continued-processing task plus the bounded completion lease. Checked only in
+# the background-execution and Linux-guest sources so unrelated prose or a
+# legitimate AVPlayer audio-session configuration is not flagged.
+KEEPALIVE_MARKERS = [
+    (re.compile(r"silent[-_ ]?audio", re.IGNORECASE), "silent-audio keepalive"),
+    (re.compile(r"(silent|inaudible)[A-Za-z]*[Aa]udio(Player|Track|Loop|Engine)"),
+     "silent audio player/track/loop"),
+    (re.compile(r"SilentAudioKeepAlive", re.IGNORECASE), "silent audio keep-alive type"),
+    (re.compile(r"keepAlive(Silent)?Track", re.IGNORECASE), "keep-alive audio track"),
+    (re.compile(r"silenceLoop", re.IGNORECASE), "silence loop"),
+]
+
+KEEPALIVE_SOURCE_DIRS = [
+    "FloeAgent/FloeApp/Platform",
+    "FloeAgent/Sources/FloeExecution/Linux",
+]
+
+# Generic interpreter surfaces that converged on the Linux guest. Each name
+# must be declared Linux-routed in the capability router; a native/bundled
+# payload for one of them is a regression.
+CONVERGED_RUNTIME_TOOL_NAMES = ["exec.wasm", "exec.compatEvaluator", "wasm.packages"]
+
+CAPABILITY_ROUTER_SOURCE = "FloeAgent/Sources/FloeTools/CapabilityExecutionRouter.swift"
+CAPABILITY_CATALOG = "capability-hub/catalog.json"
+CAPABILITY_LANGUAGES_DOC = "capability-hub/LANGUAGES.md"
+
+
+def audit_keepalive(root=None):
+    """Fail when a silent-audio/keep-alive pattern returns to the sources."""
+    base = Path(root) if root else ROOT.parent
+    findings = []
+    for relative in KEEPALIVE_SOURCE_DIRS:
+        directory = base / relative
+        if not directory.exists():
+            continue
+        for path in sorted(directory.rglob("*.swift")):
+            text = path.read_text(errors="ignore")
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                for pattern, label in KEEPALIVE_MARKERS:
+                    if pattern.search(line):
+                        findings.append(
+                            f"{path.relative_to(base)}:{line_number}: {label}: {line.strip()}"
+                        )
+                        break
+    return findings
+
+
+def audit_convergence(root=None):
+    """Verify Linux convergence declarations and catalog provenance."""
+    base = Path(root) if root else ROOT.parent
+    findings = []
+
+    router = base / CAPABILITY_ROUTER_SOURCE
+    router_text = router.read_text(errors="ignore") if router.exists() else ""
+    if not router.exists():
+        findings.append(f"{CAPABILITY_ROUTER_SOURCE}: capability router is missing")
+    else:
+        for tool_name in CONVERGED_RUNTIME_TOOL_NAMES:
+            if f'"{tool_name}"' not in router_text:
+                findings.append(
+                    f"{CAPABILITY_ROUTER_SOURCE}: converged runtime tool {tool_name} is not declared"
+                )
+        if "linuxGuest" not in router_text:
+            findings.append(f"{CAPABILITY_ROUTER_SOURCE}: no Linux guest backend declared")
+
+    catalog = base / CAPABILITY_CATALOG
+    if not catalog.exists():
+        findings.append(f"{CAPABILITY_CATALOG}: signed catalog is missing")
+        return findings
+    try:
+        document = json.loads(catalog.read_text())
+    except (OSError, ValueError) as error:
+        findings.append(f"{CAPABILITY_CATALOG}: unreadable catalog: {error}")
+        return findings
+    packages = document.get("packages")
+    if not isinstance(packages, list) or not packages:
+        findings.append(f"{CAPABILITY_CATALOG}: no signed packages recorded")
+        return findings
+    languages_doc = base / CAPABILITY_LANGUAGES_DOC
+    languages_text = languages_doc.read_text(errors="ignore") if languages_doc.exists() else ""
+    for package in packages:
+        for field in ("id", "version", "sha256", "url"):
+            if not package.get(field):
+                findings.append(
+                    f"{CAPABILITY_CATALOG}: package {package.get('id', '?')} has no {field}"
+                )
+        identifier = package.get("id")
+        if identifier and identifier not in languages_text:
+            findings.append(
+                f"{CAPABILITY_LANGUAGES_DOC}: provenance for {identifier} is not recorded"
+            )
+    return findings
+
 
 def audit_paths(paths, source):
     findings = []
@@ -151,13 +259,31 @@ def main():
     parser.add_argument("--project", action="store_true", help="lint project.yml/Package.swift")
     parser.add_argument("--app", type=Path, help="audit a built .app bundle")
     parser.add_argument("--ipa", type=Path, help="audit a packaged .ipa (file list only)")
+    parser.add_argument(
+        "--keepalive", action="store_true",
+        help="lint background/Linux sources for silent-audio keepalive patterns",
+    )
+    parser.add_argument(
+        "--convergence", action="store_true",
+        help="verify Linux convergence declarations and signed catalog provenance",
+    )
     args = parser.parse_args()
 
     findings = []
     ran = False
-    if args.project or (not args.app and not args.ipa):
+    default_run = (
+        not args.app and not args.ipa and not args.project
+        and not args.keepalive and not args.convergence
+    )
+    if args.project or default_run:
         ran = True
         findings.extend(audit_project())
+    if args.keepalive or default_run:
+        ran = True
+        findings.extend(audit_keepalive())
+    if args.convergence or default_run:
+        ran = True
+        findings.extend(audit_convergence())
     if args.app:
         ran = True
         findings.extend(audit_app(args.app))
@@ -165,10 +291,10 @@ def main():
         ran = True
         findings.extend(audit_ipa(args.ipa))
     if not ran:
-        parser.error("choose --project, --app or --ipa")
+        parser.error("choose --project, --keepalive, --convergence, --app or --ipa")
 
     if findings:
-        print("native Python/Node markers found (Phase 2 forbids them):")
+        print("native-runtime/keepalive/convergence markers found (forbidden):")
         for finding in findings[:50]:
             print(f"  {finding}")
         if len(findings) > 50:

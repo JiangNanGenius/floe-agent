@@ -102,17 +102,17 @@ Provider schema filtering reduces accidental requests; executor-side authorizati
 
 | Target | Responsibility |
 | --- | --- |
-| `FloeCore`, `FloeModels` | Shared protocols, profiles, events, policies, and value models. |
+| `FloeCore`, `FloeModels` | Shared protocols, profiles, events, policies, and value models. Also the pure background-work contracts: the durable `BackgroundWorkSnapshot`/`BackgroundWorkRegistry` model, the completion-dwell and generation-safe teardown policy, the opt-in status PiP release gate, the guest `/proc` parsers, and the notification policy/authorization decision types. |
 | `FloeProviders` | SSE/wire translation plus text, vision, image-generation, and image-editing adapters. |
 | `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX models, memory policy, dynamic context, and bounded local tool translation. |
 | `FloeAgentRuntime` | State machine, harness, context assembly, Plan/Goal/Memory, checkpoints, and tool loop. |
-| `FloeTools`, `FloeSecurity` | Compile-time catalog, authorization, approvals, audit, and catastrophic-action detection. |
+| `FloeTools`, `FloeSecurity` | Compile-time catalog, authorization, approvals, audit, and catastrophic-action detection. `CapabilityExecutionRouter` is the exhaustive, pure decision table declaring which backend owns each stable tool name: interpreters/CLIs/packages/servers in the Linux guest, heavy media/GPU work on native Apple frameworks with no silent emulator fallback, and remote-prefixed commands on a configured SSH host. `CapabilityRouteLedger` keeps a bounded trail of the routing actually used. |
 | `FloePersistence` | GRDB stores and append-only migrations through schema v40. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scope, working copies, change artifacts, documents, and local image operations. |
 | `FloeGit` | Non-destructive local repository operations, GitHub connection, and local/cloud source-control tools. |
-| `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution, the TinyEMU Linux guest runtime and visible computer control. Guest Python/Node and signed WASI commands are separate capability paths. |
+| `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution, the TinyEMU Linux guest runtime and visible computer control. Guest Python/Node and signed WASI commands are separate capability paths. `LinuxGuestMetricsSampler` produces bounded, consumer-limited resource samples (emulator-thread CPU, guest `/proc` CPU and memory, network counters; GPU always unavailable) and only runs while a foreground consumer is registered. |
 | `FloeSkills` | Declarative package validation, compatibility, provenance, and per-run tool ceiling. |
-| `FloeApp` | Native iPhone/iPad interface, browser sessions, voice, notifications, and lifecycle coordination. |
+| `FloeApp` | Native iPhone/iPad interface, browser sessions, voice, notifications, and lifecycle coordination. `BackgroundRunCoordinator` is the single owner of background-work lifetime: it requests the system continued-processing task only for explicit foreground user actions, publishes snapshots into `BackgroundWorkRegistry`, keeps one foreground in-app banner instead of duplicating a system alert, routes notification deep links by payload identity, and applies the 3-second success completion dwell with generation-checked teardown (failures/checkpoints stay actionable). |
 
 ## Creative mode and asset architecture
 

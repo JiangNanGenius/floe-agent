@@ -890,6 +890,19 @@ public struct LinuxGuestStatus: Sendable, Equatable {
     }
 }
 
+/// One cumulative CPU-time sample for the host thread that executes emulator
+/// slices. The metrics sampler turns two samples into a host-side CPU fraction
+/// (a proxy for vCPU usage). Wall time uses a monotonic clock.
+public struct LinuxGuestEmulatorCPUSample: Sendable, Equatable {
+    public let cpuNanos: UInt64
+    public let wallNanos: UInt64
+
+    public init(cpuNanos: UInt64, wallNanos: UInt64) {
+        self.cpuNanos = cpuNanos
+        self.wallNanos = wallNanos
+    }
+}
+
 /// Low-level guest console byte pipe. Implemented by the TinyEMU bridge; the
 /// command channel and tests depend on this seam only.
 public protocol LinuxGuestConsoleTransport: Sendable {

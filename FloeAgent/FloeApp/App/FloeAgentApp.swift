@@ -212,6 +212,13 @@ struct RootView: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var isPhoneSidebarOpen = false
     @GestureState private var phoneDrawerTranslation: CGFloat = 0
+    /// Foreground notification banner (terminal/approval events that would
+    /// otherwise duplicate a system alert).
+    @ObservedObject private var taskBannerCenter = TaskBannerCenter.shared
+    /// Linux session/service deep link destination, optionally focused on the
+    /// environment the notification came from.
+    @State private var presentedExecutionEnvironment = false
+    @State private var focusedLinuxEnvironmentID: String?
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -225,6 +232,39 @@ struct RootView: View {
 
     private var forceRegularForUITest: Bool {
         ProcessInfo.processInfo.arguments.contains("-ui-testing-ipad")
+    }
+
+    /// One tappable in-app banner for foreground terminal/approval events.
+    /// The tap performs the exact same deep link a system notification would,
+    /// so routing behavior does not depend on how the event was presented.
+    @ViewBuilder
+    private var foregroundBanner: some View {
+        if let banner = taskBannerCenter.banner {
+            Button {
+                BackgroundRunCoordinator.route(deepLink: banner.deepLink)
+                taskBannerCenter.dismiss()
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(banner.title).font(.subheadline.weight(.semibold))
+                    Text(banner.body)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(3)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.secondary.opacity(0.25))
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .accessibilityIdentifier("task.banner")
+        }
     }
 
     var body: some View {
@@ -241,6 +281,7 @@ struct RootView: View {
         .background(alignment: .bottomTrailing) {
             BackgroundPiPSceneSource(videoService: environment.backgroundVideoService)
         }
+        .overlay(alignment: .top) { foregroundBanner }
         .onAppear {
             GitHubActionsJobCenter.shared.scenePhaseChanged(active: scenePhase == .active, sceneID: sceneID)
         }
@@ -323,6 +364,29 @@ struct RootView: View {
             if let id = notification.userInfo?["conversationID"] as? UUID {
                 router.openConversation(id)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .floeOpenExecutionEnvironment)) { notification in
+            // A Linux session/service notification routes to the execution
+            // surface, focused on its own environment when the payload names
+            // one. It never opens a conversation the id did not identify.
+            focusedLinuxEnvironmentID = notification.userInfo?["environmentID"] as? String
+            presentedExecutionEnvironment = true
+        }
+        .sheet(isPresented: $presentedExecutionEnvironment, onDismiss: {
+            focusedLinuxEnvironmentID = nil
+        }) {
+            NavigationStack {
+                ExecutionEnvironmentView(
+                    center: environment.settingsCenter,
+                    initialEnvironmentID: focusedLinuxEnvironmentID
+                )
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("action.done") { presentedExecutionEnvironment = false }
+                    }
+                }
+            }
+            .environmentObject(environment)
         }
         .sheet(item: $router.presentedSetup, onDismiss: markDismissedSetupSkipped) { _ in
             OnboardingView(center: environment.conversationCenter)
