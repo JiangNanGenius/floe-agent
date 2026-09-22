@@ -723,6 +723,13 @@ final class OfficeFileSession: ObservableObject {
         openWatchdog = nil
     }
 
+    // Both watchdogs and the capability probe take the host controller, which
+    // only exists when the pinned framework is available (device builds). The
+    // simulator target compiles this file without `FloeOfficeNative`, so every
+    // host-typed reference must stay inside this import guard; the plain
+    // `cancel…` helpers above/below it deliberately remain unguarded because
+    // they only touch app-owned state.
+    #if canImport(FloeOfficeNative)
     /// True when the pinned host exposes the visible-render contract. The
     /// framework is qualified separately from this source, so an older host is
     /// detected at runtime and keeps the previous open-only readiness instead
@@ -750,6 +757,7 @@ final class OfficeFileSession: ObservableObject {
             self.phase = .failed
         }
     }
+    #endif
 
     private func cancelRenderWatchdog() {
         renderWatchdog?.cancel()
