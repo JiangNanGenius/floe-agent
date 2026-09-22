@@ -473,6 +473,7 @@ targets:
     sources:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
+      - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift

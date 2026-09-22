@@ -30,6 +30,10 @@ struct NotesOfficeView: View {
     @State private var externalUpdateAvailable = false
     @State private var pendingExternalResource: UUID?
     @State private var externalRefreshRunning = false
+    /// True when the last staged-open attempt failed before the engine ever
+    /// mounted. The Notes bar then offers an explicit retry instead of leaving
+    /// the surface on an unowned "opening" spinner.
+    @State private var canRetryOpen = false
     private struct Recovery: Identifiable, Sendable {
         let url: URL
         let date: Date
@@ -58,6 +62,7 @@ struct NotesOfficeView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(message).font(.callout)
                     HStack {
+                        if canRetryOpen { Button("重试打开") { Task { await prepare(force: true) } }.disabled(committing) }
                         if pendingCommit { Button("重试保存到手记") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
                         if let recoveryURL { ShareLink("导出恢复副本", item: recoveryURL) }
                     }
@@ -232,15 +237,47 @@ struct NotesOfficeView: View {
         OfficeInkDocumentIdentity(workspaceIdentity: modeScope, relativePath: modeDocument)
     }
 
-    private func prepare() async {
-        guard draftURL == nil, session.store != nil else { return }
+    private func prepare(force: Bool = false) async {
+        if force {
+            canRetryOpen = false
+            message = nil
+        }
+        guard force || draftURL == nil, session.store != nil else {
+            // A missing store is a real, terminal failure: never leave the
+            // surface on an unowned "opening" spinner.
+            if message == nil {
+                reportStagingFailure(OfficeInkText.t(
+                    "无法读取该手记的文档存储；原文件未被修改。",
+                    "This note's document storage is unavailable. Nothing was changed."))
+            }
+            return
+        }
         do {
-            guard let latest = await latestOfficeDocument(), let root = try? draftsRoot() else { return }
+            // Every early return below is a terminal, user-visible outcome: an
+            // unbounded "正在打开文档…" spinner is never an acceptable result of
+            // a staging failure.
+            guard let latest = await latestOfficeDocument() else {
+                reportStagingFailure(OfficeInkText.t(
+                    "该手记中的 Office 文档已不存在或缺少资源；原文件未被修改。",
+                    "This note's Office document is missing its resource. Nothing was changed."))
+                return
+            }
+            guard let root = try? draftsRoot() else {
+                reportStagingFailure(OfficeInkText.t(
+                    "无法创建 Office 编辑草稿目录；原文件未被修改。",
+                    "The Office draft directory could not be created. Nothing was changed."))
+                return
+            }
             if let resource = latest.officeResourceID, let store = session.store,
                let source = try? await store.resourceURL(resource) {
-                recoveries = try await scanRecoveries(documentID: latest.id, source: source, root: root)
+                recoveries = (try? await scanRecoveries(documentID: latest.id, source: source, root: root)) ?? []
             }
-            guard let staged = try await stageWorkingCopy(latest) else { return }
+            guard let staged = try await stageWorkingCopy(latest) else {
+                reportStagingFailure(OfficeInkText.t(
+                    "无法准备该 Office 文档的编辑副本；原文件未被修改。",
+                    "This Office document's editing copy could not be prepared. Nothing was changed."))
+                return
+            }
             apply(staged)
             // Resolve the entry mode before the open begins: `open()` reports
             // readiness through the engine's async callback, and the
@@ -257,9 +294,27 @@ struct NotesOfficeView: View {
             // edit entry reports the real reason instead of silently staying
             // preview.
             if shouldEdit { _ = await office.requestEditing() }
+            canRetryOpen = false
             if let error = office.error { message = error }
             else if let reason = office.editUnavailableReason { message = reason }
-        } catch { message = error.localizedDescription }
+        } catch {
+            // A thrown staging/scan error is the same terminal outcome: make it
+            // visible and retryable instead of dropping the intent silently.
+            reportStagingFailure(error.localizedDescription)
+        }
+    }
+
+    /// Publishes a staging failure as a visible, retryable state. The engine
+    /// never mounted, so the session is failed explicitly (the surface then
+    /// shows the error instead of an unowned "opening" spinner) while the
+    /// original resource and any retained drafts stay untouched.
+    private func reportStagingFailure(_ text: String) {
+        message = text
+        canRetryOpen = true
+        office.reportOpenFailure(NSError(
+            domain: "org.floeagent.notes.office.staging",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: text]))
     }
 
     /// Resolve the freshest persisted revision instead of trusting the value

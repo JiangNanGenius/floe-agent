@@ -251,6 +251,16 @@ final class OfficeFileSession: ObservableObject {
     /// Bounded Swift-side safety net for a host that reports neither render
     /// outcome. It only fires while this session still awaits a render.
     private var renderWatchdog: Task<Void, Never>?
+    /// Bounded, user-facing opening contract for the mounted session
+    /// (`FloeDocuments.OfficeOpeningPolicy`). It owns the budgets the watchdogs
+    /// use and the recoverable outcome a bounded presentation must reach.
+    private var openingPolicy: OfficeOpeningPolicy?
+    /// Set when a presentation settled without the host's visible-render
+    /// evidence. The engine surface stays mounted and interactive and every
+    /// owning surface shows a visible, recoverable notice with retry/recovery
+    /// instead of an unbounded spinner or a dead-end error. A late render
+    /// observation clears it.
+    @Published private(set) var renderUnverified = false
     /// True when the pinned host exposes the visible-render contract. The
     /// framework is pinned separately from this source: an older host keeps the
     /// previous open-only readiness (and the release gate keeps the Office
@@ -296,6 +306,13 @@ final class OfficeFileSession: ObservableObject {
         "Cloud and network documents are read-only snapshots. To edit, download the file to a local workspace and open it there.")
 
     var canAct: Bool { phase == .ready && !operating }
+
+    /// The visible, recoverable notice for the current bounded outcome, if any.
+    /// Only the render-unverified presentation state uses the inline banner; a
+    /// failed session keeps its full-surface error view.
+    var openingWarning: OfficeOpeningWarning? {
+        renderUnverified ? openingPolicy?.warning : nil
+    }
     var supportsAttachmentInsertion: Bool {
         guard !readOnly, let session else { return false }
         return ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].contains(session.workingURL.pathExtension.lowercased())
@@ -704,15 +721,21 @@ final class OfficeFileSession: ObservableObject {
     /// separate, smaller bounds.
     private func startOpenWatchdog(for native: FloeOfficeNativeViewController, readOnly: Bool) {
         cancelOpenWatchdog()
-        let budget: UInt64 = readOnly ? 30_000_000_000 : 45_000_000_000
+        // One source of budgets: the bounded opening contract this session was
+        // mounted with. The fallback matches the historical 30 s preview /
+        // 45 s editable bound for a session that never built a policy.
+        let seconds = openingPolicy?.openingBudget ?? (readOnly ? 30 : 45)
+        let budget = UInt64(max(1, seconds) * 1_000_000_000)
         openWatchdog = Task { @MainActor [weak self, weak native] in
             try? await Task.sleep(nanoseconds: budget)
             guard !Task.isCancelled, let self, let native, self.controller === native,
                   self.phase == .loading, !self.runtimeFailed else { return }
             self.runtimeFailed = true
-            self.error = readOnly
-                ? "文档引擎未能在限定时间内打开预览；原文件未被修改。"
-                : "文档引擎未能在限定时间内打开编辑副本；编辑副本已保留。"
+            self.openingPolicy?.openingDeadlineElapsed()
+            self.error = self.openingPolicy?.warning.map { OfficeInkText.t($0.detailZh, $0.detailEn) }
+                ?? (readOnly
+                    ? "文档引擎未能在限定时间内打开预览；原文件未被修改。"
+                    : "文档引擎未能在限定时间内打开编辑副本；编辑副本已保留。")
             self.phase = .failed
         }
     }
@@ -743,21 +766,43 @@ final class OfficeFileSession: ObservableObject {
     /// Bounded safety net for a host that reports neither render outcome (a
     /// lost callback, or a host killed mid-open). It never fires once the
     /// session settled, so a slow but successful render cannot be failed after
-    /// the fact.
+    /// the fact. Its outcome is the recoverable `renderUnverified` state, never
+    /// an unbounded spinner or a dead end.
     private func startRenderWatchdog(for native: FloeOfficeNativeViewController) {
         cancelRenderWatchdog()
-        let budget: UInt64 = readOnly ? 25_000_000_000 : 30_000_000_000
+        let seconds = openingPolicy?.renderBudget ?? (readOnly ? 25 : 30)
+        let budget = UInt64(max(1, seconds) * 1_000_000_000)
         renderWatchdog = Task { @MainActor [weak self, weak native] in
             try? await Task.sleep(nanoseconds: budget)
             guard !Task.isCancelled, let self, let native, self.controller === native,
                   self.phase == .loading, !self.runtimeFailed,
                   self.renderGate?.awaitsVisibleRender == true else { return }
             guard self.renderGate?.deadlineExceeded() == .failed else { return }
-            self.error = OfficeRenderFailure.noVisibleRender(readOnly: self.readOnly).localizedDescription
-            self.phase = .failed
+            self.markRenderUnverified()
         }
     }
     #endif
+
+    /// Settles a presentation whose bounded render wait elapsed without the
+    /// host's visible-render evidence. The engine surface stays mounted and
+    /// interactive; the owning surface shows the policy's visible, recoverable
+    /// notice (retry preview / recover / dismiss) instead of failing the
+    /// session. Nothing claims a verified paint, and the retained working copy
+    /// is never touched, so a late render observation can still settle it ready.
+    private func markRenderUnverified() {
+        guard var policy = openingPolicy, policy.requiresVisibleRender else { return }
+        guard policy.renderDeadlineElapsed() == .renderUnverified else { return }
+        openingPolicy = policy
+        renderUnverified = true
+        cancelOpenWatchdog()
+        if phase == .loading { phase = .ready }
+    }
+
+    /// Clears the recoverable notice without changing the mounted engine
+    /// session. The render gate still reports that no paint was observed.
+    func dismissRenderUnverified() {
+        renderUnverified = false
+    }
 
     private func cancelRenderWatchdog() {
         renderWatchdog?.cancel()
@@ -1252,6 +1297,8 @@ final class OfficeFileSession: ObservableObject {
         // Terminal from here on: a queued/replayed intent must never re-open
         // a working copy on this session.
         released = true
+        renderUnverified = false
+        openingPolicy = nil
         guard !operating else { releaseRequested = true; return }
         // Defensive: a queued intent can never run against a released session,
         // and its waiter must be resumed instead of hanging.
@@ -1289,8 +1336,12 @@ final class OfficeFileSession: ObservableObject {
     /// re-arms the owning loader, exactly like `retryPreview()`.
     @discardableResult
     func recoverFailedSession() async -> Bool {
-        guard phase == .failed else { return false }
+        // Recovery also covers the bounded render-unverified outcome: the
+        // mounted surface is usable but the engine never painted it, and the
+        // user asked for a fresh preview of the retained working copy.
+        guard phase == .failed || renderUnverified else { return false }
         if session == nil, controller == nil {
+            renderUnverified = false
             phase = .idle
             error = nil
             return true
@@ -1299,6 +1350,7 @@ final class OfficeFileSession: ObservableObject {
         operating = true
         defer { finishOperation() }
         runtimeFailed = false
+        renderUnverified = false
         error = nil
         do {
             // closeController() is bounded and never blocks on the wedged
@@ -1502,6 +1554,13 @@ final class OfficeFileSession: ObservableObject {
             requirement = .openOnly
         }
         renderGate = OfficeVisibleRenderGate(requirement: requirement)
+        // The user-facing contract follows the same capability decision: a host
+        // without the render contract keeps the open-only readiness, so such a
+        // session can never be told to wait for a signal that host cannot send.
+        openingPolicy = OfficeOpeningPolicy(
+            requiresVisibleRender: requirement == .visibleRenderRequired,
+            readOnly: readOnly)
+        renderUnverified = false
         if hostSupportsVisibleRender {
             // Installed through the runtime selectors: the framework is pinned
             // separately from this source, so the app must keep compiling
@@ -1513,6 +1572,10 @@ final class OfficeFileSession: ObservableObject {
                     guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
                     self.cancelRenderWatchdog()
                     guard self.renderGate?.visibleRenderObserved() == .ready else { return }
+                    // A real paint always wins, including after a bounded
+                    // unverified outcome: a slow render is never a failure.
+                    self.openingPolicy?.renderObserved()
+                    self.renderUnverified = false
                     self.phase = .ready
                 }
             }
@@ -1522,9 +1585,11 @@ final class OfficeFileSession: ObservableObject {
                     guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
                     self.cancelRenderWatchdog()
                     guard self.renderGate?.hostFailed() == .failed else { return }
-                    // A host that observed no painted surface fails the session
-                    // visibly; the working copy is retained for retry/recovery.
-                    self.fail(OfficeRenderFailure.noVisibleRender(readOnly: self.readOnly))
+                    // The host's bounded outcome is the engine's own report that
+                    // no paint was observed. The mounted surface stays usable
+                    // with a visible, recoverable notice (retry/recovery); the
+                    // retained working copy is never touched.
+                    self.markRenderUnverified()
                 }
             }
             _ = native.perform(NSSelectorFromString("setOnVisibleRenderFailed:"), with: failed as AnyObject)
@@ -1572,7 +1637,9 @@ final class OfficeFileSession: ObservableObject {
             }
             // The open event is not render evidence. A presentation stays
             // loading until the host's painted-surface signal arrives, bounded
-            // by the host deadline and this session's render watchdog.
+            // by the host deadline and this session's render watchdog; the
+            // bounded outcome is the recoverable notice, never a dead end.
+            self.openingPolicy?.openSettled()
             let state = self.renderGate?.openSettled() ?? .ready
             if state == .ready {
                 self.cancelOpenWatchdog()
@@ -1741,13 +1808,64 @@ struct OfficeDocumentSurface: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(FloeTheme.readingSurface)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if session.readOnly && session.hasUncommittedChanges {
-                Label("有未写回原文件的修改", systemImage: "doc.badge.clock")
-                    .font(.footnote).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(8)
-                    .background(.regularMaterial)
+            VStack(spacing: 0) {
+                if session.renderUnverified, let warning = session.openingWarning {
+                    OfficeRenderUnverifiedBanner(session: session, warning: warning)
+                }
+                if session.readOnly && session.hasUncommittedChanges {
+                    Label("有未写回原文件的修改", systemImage: "doc.badge.clock")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(8)
+                        .background(.regularMaterial)
+                }
             }
         }
+    }
+}
+
+/// Visible, recoverable notice for a presentation that settled without the
+/// host's visible-render evidence. Every owning surface (Workspace preview,
+/// IDE tab, Notes, fullscreen editor) hosts `OfficeDocumentSurface`, so this is
+/// the one place the bounded outcome is shown. It never blocks the mounted
+/// engine surface, never claims a verified paint, and always offers an exit:
+/// retry a truthful preview of the retained working copy, or dismiss and keep
+/// looking at the current surface.
+private struct OfficeRenderUnverifiedBanner: View {
+    @ObservedObject var session: OfficeFileSession
+    let warning: OfficeOpeningWarning
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(OfficeInkText.t(warning.titleZh, warning.titleEn), systemImage: "exclamationmark.triangle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text(OfficeInkText.t(warning.detailZh, warning.detailEn))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                if warning.actions.contains(.retryPreview) || warning.actions.contains(.recover) {
+                    Button(OfficeInkText.t("重试预览", "Retry Preview")) {
+                        Task { _ = await session.recoverFailedSession() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("office.render.retry")
+                }
+                if warning.actions.contains(.dismiss) {
+                    Button(OfficeInkText.t("继续查看", "Keep Viewing")) {
+                        session.dismissRenderUnverified()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("office.render.dismiss")
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityIdentifier("office.render.unverified")
     }
 }
 

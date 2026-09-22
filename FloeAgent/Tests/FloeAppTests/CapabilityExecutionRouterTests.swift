@@ -112,14 +112,14 @@ struct ToolResultProvenanceBackendTests {
 
     @Test("Runtime-authored backend provenance round-trips and defaults to unknown")
     func backendProvenanceRoundTrip() throws {
-        let defaulted = ToolResultProvenance(sourceID: "src", toolName: "exec.shell")
+        let defaulted = ToolResultProvenance(sourceID: "src", toolName: "exec.shell", runID: UUID())
         #expect(defaulted.executionBackend == nil)
         #expect(defaulted.executionBackendReason == nil)
 
         let authored = ToolResultProvenance(
             sourceID: "src",
             toolName: "exec.shell",
-            conversationID: UUID(),
+            runID: UUID(),
             executionBackend: CapabilityBackend.linuxGuest.rawValue,
             executionBackendReason: "interpreter/CLI workloads run inside the TinyEMU Linux guest"
         )
