@@ -1,0 +1,119 @@
+# gitee-mirror — one-way GitHub → Gitee mirror.
+#
+# GitHub (this repository) is the single authority. This workflow only *pushes*
+# refs to the public Gitee mirror https://gitee.com/JiangNanGenius/floe-agent;
+# it never fetches from Gitee and Gitee can never overwrite GitHub.
+#
+# Mirrored refs:
+#   * the main branch (every push)
+#   * release tags: v* (App releases) and floe-linux-guest-* (component releases)
+#
+# Secret handling: the Gitee personal access token is read only from the
+# GitHub Actions secret GITEE_TOKEN (step env). Each step copies it into a
+# mode-0600 mktemp file under RUNNER_TEMP for the duration of the step only
+# (removed by an EXIT trap). git reads it through a credential helper and
+# curl reads an Authorization header file; in both cases argv, URLs, logs and
+# persisted config carry at most the variable NAME (GITEE_TOKEN_FILE), never
+# the token value.
+#
+# Bootstrap: the Gitee repository started with an unrelated README commit, so
+# the first run needs an explicit force sync. Dispatch with bootstrap_force=true
+# once; subsequent pushes fast-forward and the force path is never used again.
+name: gitee-mirror
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+      - 'floe-linux-guest-*'
+  workflow_dispatch:
+    inputs:
+      bootstrap_force:
+        description: 'Force the Gitee refs to the GitHub refs (one-time bootstrap only)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: mirror refs to Gitee
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push refs one-way to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          BOOTSTRAP_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_force || 'false' }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
+          umask 077
+          # Short-lived credential file: mode 0600, removed on step exit.
+          TOKEN_FILE="$(mktemp "${RUNNER_TEMP}/gitee-token.XXXXXX")"
+          trap 'rm -f "$TOKEN_FILE"' EXIT
+          printf '%s' "$GITEE_TOKEN" > "$TOKEN_FILE"
+          GITEE_TOKEN_FILE="$TOKEN_FILE"
+          export GITEE_TOKEN_FILE
+
+          GITEE_URL="https://gitee.com/JiangNanGenius/floe-agent.git"
+          git remote add gitee "$GITEE_URL"
+
+          # Credential helper: argv/config carry only the variable NAME; the
+          # child shell expands the value from the 0600 file at runtime.
+          CRED_HELPER='!f() { printf "username=x-access-token\n"; printf "password=%s\n" "$(cat "$GITEE_TOKEN_FILE")"; }; f'
+          ggit() { git -c "credential.helper=${CRED_HELPER}" "$@"; }
+
+          FORCE_FLAGS=""
+          if [ "$BOOTSTRAP_FORCE" = "true" ]; then
+            echo "bootstrap: force-syncing main and release tags to Gitee"
+            FORCE_FLAGS="--force"
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${GITHUB_REF_NAME}" = "main" ]; then
+            ggit push $FORCE_FLAGS gitee main
+          fi
+
+          # Push the tag that triggered this run, or every release tag on a
+          # manual dispatch. Tag refs are immutable under normal operation.
+          case "${GITHUB_REF_TYPE:-}" in
+            tag) ggit push $FORCE_FLAGS gitee "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" ;;
+          esac
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            git for-each-ref --format='%(refname:strip=2)' refs/tags | while read -r tag; do
+              case "$tag" in v*|floe-linux-guest-*) ggit push $FORCE_FLAGS gitee "refs/tags/$tag:refs/tags/$tag" ;; esac
+            done
+          fi
+
+      - name: Verify Gitee main matches GitHub main
+        if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'main' }}
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
+          umask 077
+          # Header file: mode 0600, removed on step exit; argv carries only
+          # the file path, never the token.
+          HEADER_FILE="$(mktemp "${RUNNER_TEMP}/gitee-auth-header.XXXXXX")"
+          trap 'rm -f "$HEADER_FILE"' EXIT
+          printf 'Authorization: token %s\n' "$GITEE_TOKEN" > "$HEADER_FILE"
+          GITHUB_SHA=$(git rev-parse refs/heads/main)
+          GITEE_SHA=$(curl -fsS -H @"$HEADER_FILE" \
+            "https://gitee.com/api/v5/repos/JiangNanGenius/floe-agent/branches/main" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')
+          echo "github main: $GITHUB_SHA"
+          echo "gitee main:  $GITEE_SHA"
+          [ "$GITHUB_SHA" = "$GITEE_SHA" ]
