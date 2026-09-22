@@ -7,6 +7,8 @@ Environments provide dependency/data layering, not process security isolation.
 
 Current internal delivery: `v1.7.0-beta.76` / `0b21be93` (build 219). Apple VALID, unexpired, exactly one private internal Floe QA group with no public link, and IN_BETA_TESTING were verified at 2026-09-21T22:01:30Z (ASC build `fe178638-2bf8-449c-a321-54ef5899177c`; discover 35659785733, prepare 35660364957, verify 35660445743; en-US/zh-Hans notes read back). Release workflow 35653989305 completed the accepted-SDK App build, retained the unsigned IPA and private symbols, then signed, validated and uploaded. The unsigned GitHub prerelease and Feather entry are published (feed commit `b4922b78`, IPA sha256 `ef200636…10ca95`, 745,812,559 B). Build 218 is the previous internal delivery. See [delivery record](TESTFLIGHT_1.7.0_BETA.md). Simulator/UI qualification was waived by user request; physical-device acceptance remains with the user. The checkpoints below retain their original scopes; full package/model delivery and physical-device acceptance remain incomplete.
 
+Build 220 candidate: version and release metadata is prepared from the integrated source `9e83fcfa` on branch `codex/build220-release-metadata` ([candidate notes](RELEASE_NOTES_1.7.0_BUILD_220.md)), covering Linux environment disks, caches, 9P `ls -l` semantics and install state, the explicit background mode with measured-only metrics, task-completion notifications and the PPTX visible-render/edit-entry repair. It has **not** been built, signed, uploaded or processed by Apple and has no device acceptance.
+
 ## Build 219 slice (delivered to Floe QA; device acceptance separate)
 
 This source slice addresses the build-218 device findings recorded in the
