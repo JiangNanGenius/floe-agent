@@ -1,15 +1,18 @@
 # Floe 1.7.0 (225) — 修复 Build 224 验收 SDK 编译失败（Linux 镜像下载类型化抛错）/ Build 224 accepted-SDK compile repair (typed throws in the Linux image downloader)
 
-Status: source candidate. This document describes the Build 225 source candidate.
-All four shipping targets declare build 225 in `FloeAgent/project.yml` and the
-regenerated `FloeAgent.xcodeproj` matches. Cloud App build, saved IPA, signed
-upload, Apple processing, Floe QA availability, TestFlight availability,
-GitHub prerelease publication and physical-device acceptance are recorded only
-after each result is obtained; none is claimed here. The immutable Build 224
+Status: delivered to the private internal Floe QA TestFlight group. All four
+shipping targets declare build 225 in `FloeAgent/project.yml` and the regenerated
+`FloeAgent.xcodeproj` matches. Immutable tag `v1.7.0-beta.82` binds source
+`fe0852b4559ab2fb14bef671cf73aec3d7370f03`. Release run
+[35773856510](https://github.com/JiangNanGenius/floe-agent/actions/runs/35773856510)
+completed the accepted-SDK build, retained the unsigned IPA, uploaded the signed
+App and published the [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.82).
+Apple build `b53b6e02-a0cb-4eba-8d94-921805ff80e1` was verified `VALID`, unexpired
+and `IN_BETA_TESTING` in the sole private internal Floe QA group at
+2026-09-22T20:17:32Z. Physical-device acceptance remains with the user. The immutable Build 224
 tag `v1.7.0-beta.81` (source `c36b7b24`) and its failed accepted-SDK run
 [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)
-are retained unchanged; no release was dispatched for Build 225 in this
-preparation.
+are retained unchanged.
 
 ## 简体中文
 
@@ -71,9 +74,9 @@ SwiftPM macOS 编译，不编译 `#if canImport(SwiftUI) && canImport(UIKit)` �
   `-typecheck`），零错误。同一契约下编译 Build 224 标签的原文件，精确复现
   `:100/:101 thrown expression type 'any Error' cannot be converted…`，证明该
   检查对目标缺陷有检出力。
-* 这是本机源码/契约证据，不是云端验收 SDK（Xcode 26.6 + iPhoneOS 26.5）
-  App 构建、签名上传、Apple 处理、TestFlight 可用性或真机行为的证据；这些
-  仍需在发布流水线中单独取得。FloeExecutionTests 全量在 macOS 宿主另有 5
+* 上述内容仅是本机源码/契约证据；云端验收 SDK 构建、签名上传、Apple 处理与
+  TestFlight 可用性已由本页开头列出的独立发布证据取得，仍不代表真机行为验收。
+  FloeExecutionTests 全量在 macOS 宿主另有 5
   项环境相关失败（客体 Python venv、客体控制台、节点管理器、后台作业
   workspace 门、WASM 目录发现），与本修复无关，在本候选中不改变其结论。
 
@@ -131,8 +134,8 @@ in the cloud device App build.
 35767875337's accepted-SDK build job failed with exit code 65, produced no IPA
 and no upload, never reached Apple processing, and all downstream publish jobs
 were skipped. The tag and run are not moved, deleted or re-evidenced. Build 225
-is planned for the next immutable tag, `v1.7.0-beta.82`; this preparation does
-not create that tag, trigger a workflow or publish any deliverable.
+was subsequently delivered from the new immutable tag `v1.7.0-beta.82` as
+recorded at the start of this document.
 
 **Source validation (kept distinct from cloud/device evidence).**
 
@@ -152,14 +155,14 @@ not create that tag, trigger a workflow or publish any deliverable.
   contract reproduces exactly the `:100/:101 thrown expression type 'any
   Error' cannot be converted…` error, demonstrating the check catches the
   target defect.
-* This is local source/contract evidence only. It is not a cloud accepted-SDK
-  (Xcode 26.6 + iPhoneOS 26.5) App build, signed upload, Apple processing,
-  TestFlight availability or physical-device evidence; those remain separate
-  release-pipeline gates. Five other environmental failures in the full
+* The preceding evidence is local source/contract evidence only. The cloud
+  accepted-SDK App build, signed upload, Apple processing and TestFlight
+  availability were obtained separately and are recorded at the top of this
+  document; none of them is physical-device evidence. Five other environmental failures in the full
   FloeExecutionTests macOS-host run (guest Python venv, guest console, node
   manager, background-job workspace gate, WASM catalog discovery) are
   unrelated to this repair and their conclusions are unchanged in this
-  candidate.
+  delivery.
 
 ## Build 224 failure record (immutable)
 
@@ -171,11 +174,11 @@ not create that tag, trigger a workflow or publish any deliverable.
 | Failed job | "Build once with the accepted upload SDK or reuse the retained unsigned IPA / upload" (job 106881974925), exit code 65 |
 | Diagnostic | `FloeApp/Execution/LinuxGuestImageDownloader.swift:101:9: error: thrown expression type 'any Error' cannot be converted to error type 'LinuxGuestImageTransferError'` (Xcode 26.6, iPhoneOS 26.5 SDK, Swift 6) |
 | Artifacts | None: no IPA, no upload, no Apple processing; publish jobs skipped |
-| Disposition | Tag/run retained as the immutable Build 224 failure record; repaired source is Build 225 (this candidate) |
+| Disposition | Tag/run retained as the immutable Build 224 failure record; repaired source was delivered as Build 225 |
 
 ## Build 223 recovery note
 
-Build 223 remains the current delivered internal baseline, pinned by
+Build 223 remains a retained previous internal baseline, pinned by
 `v1.7.0-beta.80` at source `e933305d`. Release run 35725410528 completed the
 accepted-SDK build, preserved the unsigned IPA, signed and uploaded the App,
 and published the GitHub prerelease. Apple build
