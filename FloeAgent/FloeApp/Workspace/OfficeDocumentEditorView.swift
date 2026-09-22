@@ -751,7 +751,7 @@ final class OfficeFileSession: ObservableObject {
             try? await Task.sleep(nanoseconds: budget)
             guard !Task.isCancelled, let self, let native, self.controller === native,
                   self.phase == .loading, !self.runtimeFailed,
-                  self.renderGate?.awaitingVisibleRender == true else { return }
+                  self.renderGate?.awaitsVisibleRender == true else { return }
             guard self.renderGate?.deadlineExceeded() == .failed else { return }
             self.error = OfficeRenderFailure.noVisibleRender(readOnly: self.readOnly).localizedDescription
             self.phase = .failed

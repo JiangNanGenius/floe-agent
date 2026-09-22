@@ -9,6 +9,7 @@
 
 import SwiftUI
 import FloeExecution
+import FloeTools
 
 @MainActor
 final class LinuxImageInstallModel: ObservableObject {
@@ -62,7 +63,14 @@ final class LinuxImageInstallModel: ObservableObject {
         }
         let imageStatus = await services.linuxImageStatus(id: imageID)
         let updateDetail = await services.linuxComponentUpdateNeeded(id: imageID)
-        let environmentID = environmentIDHint ?? await services.firstLinuxEnvironmentID()
+        // `??` takes an autoclosure, so the asynchronous lookup has to be
+        // awaited into a local value before the fallback is chosen.
+        let environmentID: String?
+        if let environmentIDHint {
+            environmentID = environmentIDHint
+        } else {
+            environmentID = await services.firstLinuxEnvironmentID()
+        }
         let guestStatus = await services.linuxGuestStatus(id: environmentID)
 
         var facts = LinuxGuestInstallFacts()

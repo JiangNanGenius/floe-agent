@@ -6,6 +6,8 @@ import UserNotifications
 import BackgroundTasks
 import CryptoKit
 import FloeCore
+import FloeExecution
+import FloeModels
 import FloePersistence
 import FloeProviders
 import FloeSync
@@ -1849,13 +1851,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        let userInfo = response.notification.request.content.userInfo
+        let payload = response.notification.request.content.userInfo
         // The deep-link payload is the routing contract. Parsing is shared
         // with the in-app banner, and legacy notifications that carried only
         // a conversation id still route to their conversation.
-        guard let link = BackgroundWorkDeepLink.parse(userInfo) else { return }
+        guard let link = BackgroundWorkDeepLink.parse(payload) else { return }
+        // The parsed identity is `Sendable`; only its string payload crosses to
+        // the main actor, never the raw `Any`-valued notification dictionary.
+        // Routing reads exactly these keys, so the rebuilt payload is the same
+        // contract the notification carried.
+        let forwarded = link.userInfo
         await MainActor.run {
-            Self.route(deepLink: link, userInfo: userInfo)
+            Self.route(deepLink: link, userInfo: forwarded)
         }
     }
 
