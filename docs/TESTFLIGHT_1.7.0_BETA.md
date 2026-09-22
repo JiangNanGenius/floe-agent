@@ -1,23 +1,45 @@
 # Floe 1.7 TestFlight delivery
 
-## Preparing: 1.7.0 (220) — metadata only, not built or uploaded
+## Preparing: 1.7.0 (221) — metadata only, not built or uploaded
 
-Build 220 version and release metadata is prepared from the integrated `main`
+Build 221 is the App-compile repair of the integrated Build 220 source: all
+four shipping targets declare `MARKETING_VERSION 1.7.0` /
+`CURRENT_PROJECT_VERSION 221` in `FloeAgent/project.yml`, the regenerated
+`FloeAgent.xcodeproj` matches, and the [release notes](RELEASE_NOTES_1.7.0_BUILD_221.md)
+plus [bilingual test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json) document
+the repair (missing `FloeExecution`/`FloeModels` imports in
+`BackgroundRunCoordinator.swift`, the `LinuxImageInstallCard` async/import
+errors, the `OfficeVisibleRenderGate` property mismatch, and one Swift 6
+sendable-payload routing fix) with the same functional slice as Build 220.
+
+This section records source state only. Build 221 has **not** been built in
+cloud CI, signed, uploaded or processed by Apple, is not attached to any beta
+group, and has no simulator/UI or physical-device acceptance. A local
+unsigned Debug device-SDK compile with the pinned Office host succeeds; the
+cloud accepted-SDK compile, upload and Floe QA availability must be verified
+separately. The Build 219 record below remains the latest delivery.
+
+## Build 220 candidate (1.7.0 (220)) — metadata prepared; cloud device compile failed, superseded by Build 221
+
+Build 220 version and release metadata was prepared from the integrated `main`
 source `9e83fcfa` on branch `codex/build220-release-metadata`: all four shipping
-targets declare `MARKETING_VERSION 1.7.0` / `CURRENT_PROJECT_VERSION 220` in
-`FloeAgent/project.yml`, the regenerated `FloeAgent.xcodeproj` matches, and the
+targets declared `MARKETING_VERSION 1.7.0` / `CURRENT_PROJECT_VERSION 220` in
+`FloeAgent/project.yml`, the regenerated `FloeAgent.xcodeproj` matched, and the
 [release notes](RELEASE_NOTES_1.7.0_BUILD_220.md) plus
-[bilingual test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json) describe the
+[bilingual test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json) described the
 slice (per-environment Linux disks with `/floe/env` caches, the 9P `ls -l`
 repair, truthful install state, an explicit background mode with measured-only
 metrics, task-completion notifications, the PPTX visible-render/edit-entry
 repair and the documentation/sideload-link refresh).
 
-This section records source state only. Build 220 has **not** been built,
-signed, uploaded or processed by Apple, is not attached to any beta group, and
-has no simulator/UI or physical-device acceptance. The Build 219 record below
-remains the latest delivery until a build 220 upload and Floe QA availability
-are verified separately.
+The accepted-SDK Release/device App compile stopped in the App target with 14
+diagnostics across `BackgroundRunCoordinator.swift`, `LinuxImageInstallCard.swift`
+and `OfficeDocumentEditorView.swift` (rebuild run
+[35673428023](https://github.com/JiangNanGenius/floe-agent/actions/runs/35673428023));
+no artifact was retained, signed or uploaded. The repair and the 221 version
+bump are recorded in the [Build 221 notes](RELEASE_NOTES_1.7.0_BUILD_221.md);
+build 220 was never uploaded, processed by Apple, attached to a beta group or
+accepted on a device.
 
 ## Current internal delivery: 1.7.0 (219) — available in Floe QA
 

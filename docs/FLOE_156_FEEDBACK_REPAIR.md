@@ -500,3 +500,40 @@ reports SOURCE AHEAD OF ARTIFACT and the release gate fails closed.
   outside `canImport(FloeOfficeNative)`); `67a37db3` guards both watchdogs and
   adds focused regression coverage. The full-App simulator build re-run is the
   remaining cloud gate and had not completed at audit time.
+
+## Build 220 device-App compile failure and Build 221 repair (2026-09-22)
+
+The accepted-SDK Release/device App compile for build 220 stopped in the App
+target (`FloeAgent`), after every SPM target compiled, with 14 diagnostics in
+three files (rebuild run 35673428023, Xcode 26.6 / iPhoneOS 26.5; diagnostics
+preserved under `Local/Scratch/build220-release-failure/`). No artifact was
+retained, signed or uploaded.
+
+- `FloeApp/Platform/BackgroundRunCoordinator.swift` (9): the durable-background
+  slice named `LinuxGuestMetricsSampler` (FloeExecution) and
+  `TaskNotificationDecision` / `NotificationAuthorizationState` (FloeModels)
+  without importing those modules. Fix: add both imports; no behavior change.
+- `FloeApp/Terminal/LinuxImageInstallCard.swift` (4):
+  `environmentIDHint ?? await services.firstLinuxEnvironmentID()` is invalid
+  because `??` evaluates an autoclosure that cannot be `async`, and
+  `CancellationToken` (FloeTools) was named without an import. Fix: explicit
+  if/else that awaits the fallback lookup, plus `import FloeTools`.
+- `FloeApp/Workspace/OfficeDocumentEditorView.swift` (1): the render watchdog
+  referenced `awaitingVisibleRender`; the gate property is
+  `awaitsVisibleRender`. The typo was latent because the block compiles only
+  when `FloeOfficeNative` is importable; device builds reached it once the
+  rebuilt host was re-pinned at `f0ca71a7`.
+
+A local full-App device-SDK compile (Xcode 27, Debug, unsigned, pinned host
+artifact run 35668651442 whose archive matches
+`engine.lock.json` `archiveSHA256 cd423813…542ca`) found one additional Swift 6
+strict-concurrency error in the same changed file: the non-`Sendable`
+notification dictionary crossed into a `MainActor` closure
+(`userNotificationCenter(_:didReceive:)`). It now forwards only the
+`Sendable` string payload rebuilt from the parsed `BackgroundWorkDeepLink`,
+with identical routing keys. After this repair the local device-SDK build
+compiled, linked and passed the hash-verified host embedding, and the App plus
+Screen Share extension both report 1.7.0 (221). The local Vendor host at
+`34722048321` predated the pin and was replaced locally by the verified
+`35668651442` artifact; the cloud accepted-SDK build remains the release gate
+and has not run for this repair. Detail: [Build 221 release notes](RELEASE_NOTES_1.7.0_BUILD_221.md).

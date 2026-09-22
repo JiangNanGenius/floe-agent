@@ -10,7 +10,9 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-**Build 220 候选元数据已准备**：合并后的 `main` 源码 `9e83fcfa` 在 `codex/build220-release-metadata` 分支上把四个出货目标统一为 1.7.0（220）并重新生成 Xcode 工程，同时加入 [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md)与双语 TestFlight 说明。219 之后的源码级改动包括 Linux 持久磁盘／缓存／9P／安装状态修复、显式后台模式与实测指标、任务完成通知、PPTX 可见渲染门禁与宿主重新固定 `f0ca71a7`、模拟器编译守卫 `67a37db3`，以及侧载链接与文档修复。在取得新的构建／TestFlight／预发布证据之前，不宣称 Build 220 已构建、已上传、已被 Apple 处理、可安装、通过真机验收或已发布；构建与云端口禁状态见 [Build 156 反馈修复记录](FLOE_156_FEEDBACK_REPAIR.md) 的 2026-09-22 更新。
+**Build 221 候选元数据已准备（当前上传候选）**：Build 220 的云端验收 SDK 设备 App 编译在 App 目标失败（rebuild run [35673428023](https://github.com/JiangNanGenius/floe-agent/actions/runs/35673428023)，3 个文件共 14 条诊断：`BackgroundRunCoordinator.swift` 缺 `FloeExecution`/`FloeModels` 导入、`LinuxImageInstallCard.swift` 的 `?? await` 与 `CancellationToken` 导入、`OfficeVisibleRenderGate` 属性名不符）。Build 221 在 `main` 上修复全部诊断并另修一处 Swift 6 非 Sendable 通知负载跨 actor 的错误，四个出货目标统一为 1.7.0（221）并重新生成 Xcode 工程，详见 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md)与双语 TestFlight 说明。本机已用 Xcode 27 对真机 SDK（iphoneos）Debug 无签名构建通过（含固定 Office 宿主工件的设备编译路径，App 与扩展版本均为 1.7.0（221））；在取得云端验收 SDK 构建／TestFlight／预发布证据之前，不宣称 Build 221 已构建、已上传、已被 Apple 处理、可安装、通过真机验收或已发布。
+
+**Build 220 候选元数据（已被 221 取代）**：合并后的 `main` 源码 `9e83fcfa` 在 `codex/build220-release-metadata` 分支上把四个出货目标统一为 1.7.0（220）并重新生成 Xcode 工程，同时加入 [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md)与双语 TestFlight 说明。其云端设备 App 编译失败（rebuild run 35673428023，14 条诊断，无工件、无签名、无上传），修复后的源码即 Build 221。219 之后的源码级改动包括 Linux 持久磁盘／缓存／9P／安装状态修复、显式后台模式与实测指标、任务完成通知、PPTX 可见渲染门禁与宿主重新固定 `f0ca71a7`、模拟器编译守卫 `67a37db3`，以及侧载链接与文档修复。在取得新的构建／TestFlight／预发布证据之前，不宣称 Build 220 已构建、已上传、已被 Apple 处理、可安装、通过真机验收或已发布；构建与云端口禁状态见 [Build 156 反馈修复记录](FLOE_156_FEEDBACK_REPAIR.md) 的 2026-09-22 更新。
 
 ### 历史交付记录（保留原始结论，不代表当前可用状态）
 
@@ -28,8 +30,10 @@
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md) | 上传候选：1.7.0（220），源码 `9e83fcfa` 加元数据提交；Linux 持久化／后台模式与指标／完成通知／PPTX 宿主修复，尚未构建、上传或验收 |
-| [Build 220 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json) | 上传候选的中英文 TestFlight 测试说明（尚未随构建提交） |
+| [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) | 当前上传候选：Build 220 云端编译 14 条诊断的完整修复 + 1 处 Swift 6 并发修复；四个出货目标 1.7.0（221）；本机真机 SDK Debug 构建通过，尚未经云端构建、上传或验收 |
+| [Build 221 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json) | 当前上传候选的中英文 TestFlight 测试说明（尚未随构建提交） |
+| [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md) | 已被取代：1.7.0（220）元数据已准备，但云端设备 App 编译失败（run 35673428023，14 条诊断，无工件、无上传） |
+| [Build 220 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json) | Build 220 的中英文 TestFlight 测试说明（该构建未上传） |
 | [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) | 当前内部交付：Linux 首次使用自动准备、客体网络、MLX 内存/快照、IDE Git 刷新与 Office 独立编辑路径；TestFlight、GitHub 预发布与 Feather 已完成 |
 | [Build 219 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_219.json) | 对应构建的中英文 TestFlight 测试说明 |
 | [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md) | 上一内部交付：真机反馈修复；TestFlight、GitHub 预发布和 Feather 已完成 |
@@ -85,7 +89,8 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_220.md](RELEASE_NOTES_1.7.0_BUILD_220.md) — 上传候选（1.7.0/220，源码 `9e83fcfa` 加元数据提交；构建、上传、Apple 处理与真机验收均未发生）
+- [RELEASE_NOTES_1.7.0_BUILD_221.md](RELEASE_NOTES_1.7.0_BUILD_221.md) — 当前上传候选（1.7.0/221，Build 220 云端编译失败的完整修复；本机真机 SDK Debug 构建通过；云端构建、上传、Apple 处理与真机验收均未发生）
+- [RELEASE_NOTES_1.7.0_BUILD_220.md](RELEASE_NOTES_1.7.0_BUILD_220.md) — 已被 221 取代（1.7.0/220，源码 `9e83fcfa` 加元数据提交；云端设备 App 编译失败 run 35673428023，14 条诊断，无工件、无上传）
 - [RELEASE_NOTES_1.7.0_BUILD_219.md](RELEASE_NOTES_1.7.0_BUILD_219.md) — 当前内部交付（1.7.0/219，`v1.7.0-beta.76`；TestFlight、GitHub 预发布与 Feather 已发布，真机验收由用户完成）
 - [RELEASE_NOTES_1.7.0_BUILD_218.md](RELEASE_NOTES_1.7.0_BUILD_218.md) — 上一内部交付（1.7.0/218，`v1.7.0-beta.75`；已核实 Floe QA 可安装，GitHub 预发布与 Feather 已发布，真机验收由用户完成）
 - [RELEASE_NOTES_1.7.0_BUILD_216.md](RELEASE_NOTES_1.7.0_BUILD_216.md) — 218 之前的内部交付（1.7.0/216，`v1.7.0-beta.73`；原始交付记录保留）
@@ -128,7 +133,8 @@
 
 ## Floe 1.7 当前发布准备
 
-- [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md) — 当前上传候选（1.7.0/220）的改动、验证边界与真机验收项
+- [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) — 当前上传候选（1.7.0/221）的改动、验证边界与真机验收项
+- [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md) — 被取代的候选（云端设备 App 编译失败 run 35673428023，无上传）
 - [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) — 当前内部交付的改动、验证范围与真机验收项
 - [中英文功能介绍、版本说明及 TestFlight 测试描述](RELEASE_NOTES_1.7.0.md)
 - [手记、动态导图、语音与当前证据](FLOE_1_7_CONTINUATION_STATUS.md)

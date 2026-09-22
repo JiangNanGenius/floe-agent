@@ -1,5 +1,47 @@
 # Floe 1.7 文档维护清单
 
+## 2026-09-22 Build 221：Build 220 App 编译修复与发布元数据 / Build 221: Build 220 App compile repair and release metadata
+
+Build 220 的云端验收 SDK Release 设备 App 编译（rebuild run
+[35673428023](https://github.com/JiangNanGenius/floe-agent/actions/runs/35673428023)，
+Xcode 26.6 / iPhoneOS 26.5）在 App 目标失败：3 个文件共 14 条诊断
+（`BackgroundRunCoordinator.swift` 9 条缺类型、`LinuxImageInstallCard.swift`
+4 条 async/import、`OfficeDocumentEditorView.swift` 1 条属性名），无工件、无
+签名、无上传。本轮在 `main` 上修复并把版本推进到 1.7.0（221）：
+
+- 代码修复（不用条件编译隐藏，不移动文件）：`BackgroundRunCoordinator.swift`
+  补 `import FloeExecution`（`LinuxGuestMetricsSampler`）与
+  `import FloeModels`（`TaskNotificationDecision`、
+  `NotificationAuthorizationState`），并把通知响应路由中送入 `MainActor` 闭包
+  的非 Sendable 原始字典改为从深链身份重建的 `Sendable` 字符串负载；
+  `LinuxImageInstallCard.swift` 改写 `hint ?? await …`（autoclosure 不支持
+  并发）并补 `import FloeTools`（`CancellationToken`）；
+  `OfficeDocumentEditorView.swift` 看门狗改用门禁真实属性
+  `awaitsVisibleRender`。新增源文件的目标归属经核对：App 源按目录、SPM 目标
+  按路径自动纳入，`TaskBannerCenter.swift` 已在生成工程中。
+- 版本：四个出货目标统一 `MARKETING_VERSION 1.7.0` /
+  `CURRENT_PROJECT_VERSION 221`，xcodegen 重新生成，pbxproj 仅 8 处
+  `CURRENT_PROJECT_VERSION` 变化。
+- 文档：新增 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) 与
+  [Build 221 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json)；更新
+  `docs/README.md`、[TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)（220
+  标记为编译失败、221 为当前候选）、实施状态与构建验收文档；Build 219 及
+  更早记录保持原样。仓库根双语 README 不在本轮声明的编辑范围内，其候选段落
+  仍指向 Build 220，留给下一步在授权范围内更新。
+- 明确不做的：不创建或移动标签（尤其不动 `v1.7.0-beta.77` 与既有 beta 标签）、
+  不推送、不触发工作流、不上传，也不宣称 Build 221 已云端构建、被 Apple
+  处理、可安装、通过真机验收或已发布。
+- 本轮检查：本机 Xcode 27 对修复后源码的 Debug 真机 SDK
+  （iphoneos / generic iOS device）无签名完整构建成功（含固定 Office 宿主
+  工件 run 35668651442、`engine.lock.json` 哈希校验与嵌入；App 与 Screen
+  Share 扩展版本均为 1.7.0（221）；`#if canImport(FloeOfficeNative)` 设备
+  路径参与编译）；`test_release_preflight_versions.py`（8）、
+  `test_release_review_workflows.py`（28）、`test_readme_source_links.py`（4）、
+  `test_feather_source.py`（4）、`test_prepare_testflight.py`（4）、
+  `test_release_notes_component_gate.py`（24）与 FloeCore/FloeModels/
+  FloeExecution 定向 Swift 测试、project.yml/pbxproj 版本一致性检查、
+  TestFlight JSON 校验、`git diff --check`。
+
 ## 2026-09-22 Build 220 版本与发布元数据准备 / Build 220 version and release-metadata preparation
 
 本轮在隔离分支 `codex/build220-release-metadata` 上把合并后的 `main` 源码 `9e83fcfa` 准备为 Floe 1.7.0（220），不改产品代码、工作流、标签或 `feather.json`：
