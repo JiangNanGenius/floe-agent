@@ -323,12 +323,12 @@ private actor AsyncGatedDownloader: LinuxGuestImageDownloading {
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func download(_ url: URL, to destination: URL, maxBytes: Int64,
-                  onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+                  onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws(LinuxGuestImageTransferError) {
         started += 1
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in waiters.append(c) }
         // Never completes in this test (both callers await the shared task).
-        try await Task.sleep(for: .seconds(30))
-        throw LinuxGuestImageInstallError.cancelled
+        try? await Task.sleep(for: .seconds(30))
+        throw .cancelled
     }
 
     nonisolated func release() {}
@@ -338,9 +338,9 @@ private actor AsyncGatedDownloader: LinuxGuestImageDownloading {
 private struct FailingDownloader: LinuxGuestImageDownloading {
     var invocations = 0
     func download(_ url: URL, to destination: URL, maxBytes: Int64,
-                  onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+                  onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws(LinuxGuestImageTransferError) {
         XCTFail("downloader must not be invoked for an installed image")
-        throw LinuxGuestImageInstallError.downloadFailed("unexpected")
+        throw .responseInvalid(detail: "unexpected")
     }
 }
 

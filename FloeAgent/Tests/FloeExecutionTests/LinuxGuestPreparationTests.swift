@@ -174,8 +174,8 @@ private struct CancellingImageDownloader: LinuxGuestImageDownloading {
         to destination: URL,
         maxBytes: Int64,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
-    ) async throws {
-        throw LinuxGuestImageInstallError.cancelled
+    ) async throws(LinuxGuestImageTransferError) {
+        throw .cancelled
     }
 }
 
@@ -189,21 +189,25 @@ private struct ScriptedImageDownloader: LinuxGuestImageDownloading {
         to destination: URL,
         maxBytes: Int64,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
-    ) async throws {
+    ) async throws(LinuxGuestImageTransferError) {
         let chunk = 1_024
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        FileManager.default.createFile(atPath: destination.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: destination)
-        defer { try? handle.close() }
-        var written = 0
-        while written < bytes {
-            let size = min(chunk, bytes - written)
-            try handle.write(contentsOf: Data(repeating: 0x41, count: size))
-            written += size
-            onProgress(Int64(written), Int64(bytes))
+        do {
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            FileManager.default.createFile(atPath: destination.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: destination)
+            defer { try? handle.close() }
+            var written = 0
+            while written < bytes {
+                let size = min(chunk, bytes - written)
+                try handle.write(contentsOf: Data(repeating: 0x41, count: size))
+                written += size
+                onProgress(Int64(written), Int64(bytes))
+            }
+        } catch {
+            throw .localRejection(detail: error.localizedDescription)
         }
     }
 }

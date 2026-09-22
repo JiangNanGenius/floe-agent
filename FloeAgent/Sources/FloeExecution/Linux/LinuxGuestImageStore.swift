@@ -239,20 +239,178 @@ public actor LinuxGuestImageVerifier {
     }
 }
 
+/// Bounded failure raised while *transporting* an archive. The cases are the
+/// only place that decides whether another source may be tried: a connectivity
+/// or server-availability failure can fall through to the next mirror, while
+/// anything that could describe content (or local conditions that a mirror
+/// cannot change) fails closed and never touches another source.
+public enum LinuxGuestImageTransferError: Error, LocalizedError, Sendable, Equatable {
+    /// The source could not be reached or the connection broke (DNS, connect,
+    /// timeout, connection lost). The only failure class that allows fallback.
+    case networkFailure(detail: String)
+    /// The source answered, but is temporarily unable to serve the pinned
+    /// asset (HTTP 5xx, 408 or 429). Also allows a fallback.
+    case serverUnavailable(status: Int?, detail: String)
+    /// A definite HTTP answer that is not the pinned asset (4xx other than
+    /// 408/429). Retrying another host cannot turn a pinned 404 into the
+    /// asset, so it fails closed.
+    case responseRejected(status: Int, detail: String)
+    /// The payload is not the one described by the catalog (non-HTTP, empty
+    /// body, wrong framing). Fails closed.
+    case responseInvalid(detail: String)
+    /// The local device rejected the transfer before or while writing (size
+    /// cap or free space). A mirror cannot change local conditions.
+    case localRejection(detail: String)
+    /// Transfer was cancelled by the caller; never falls back.
+    case cancelled
+
+    /// Only a bounded primary-source *availability* failure may activate the
+    /// next mirror. Digest/archive errors never reach this classification,
+    /// and local, definite-answer and content-shaped failures stay closed.
+    public var allowsNextSource: Bool {
+        switch self {
+        case .networkFailure, .serverUnavailable:
+            return true
+        case .responseRejected, .responseInvalid, .localRejection, .cancelled:
+            return false
+        }
+    }
+
+    public var errorDescription: String? {
+        switch self {
+        case .networkFailure(let detail):
+            return "network failure reaching the image source: \(detail)"
+        case .serverUnavailable(let status, let detail):
+            return "image source unavailable (HTTP \(status.map(String.init) ?? "?"): \(detail))"
+        case .responseRejected(let status, let detail):
+            return "image source refused the pinned archive (HTTP \(status): \(detail))"
+        case .responseInvalid(let detail):
+            return "image source returned an invalid response: \(detail)"
+        case .localRejection(let detail):
+            return "the device rejected the image transfer: \(detail)"
+        case .cancelled:
+            return "image transfer cancelled"
+        }
+    }
+}
+
+/// One verified piece of a sharded mirror archive. Mirrors such as Gitee cap
+/// individual attachments (100 MB on Gitee), so an archive larger than the cap
+/// is published as fixed-size pieces; the manifest pins every piece's size and
+/// SHA-512, exactly the same trust model as the archive itself.
+public struct LinuxGuestImageShard: Sendable, Codable, Equatable {
+    public var index: Int
+    /// Asset path relative to the shard manifest URL's directory.
+    public var name: String
+    public var bytes: Int
+    public var sha512: String
+
+    public init(index: Int, name: String, bytes: Int, sha512: String) {
+        self.index = index
+        self.name = name
+        self.bytes = bytes
+        self.sha512 = sha512
+    }
+}
+
+/// Manifest published beside a sharded mirror archive. It cannot add an image:
+/// the install path re-verifies that `archiveSHA512` is the pinned digest and
+/// only then downloads the listed, contiguously indexed pieces.
+public struct LinuxGuestImageShardManifest: Sendable, Codable, Equatable {
+    public static let currentSchema = "floe-image-shard-manifest/v1"
+    public static let assetName = "shard-manifest.json"
+
+    public var schema: String
+    public var imageID: String
+    public var archive: String
+    public var archiveBytes: Int
+    public var archiveSHA512: String
+    public var shards: [LinuxGuestImageShard]
+
+    public init(
+        schema: String = currentSchema,
+        imageID: String,
+        archive: String,
+        archiveBytes: Int,
+        archiveSHA512: String,
+        shards: [LinuxGuestImageShard]
+    ) {
+        self.schema = schema
+        self.imageID = imageID
+        self.archive = archive
+        self.archiveBytes = archiveBytes
+        self.archiveSHA512 = archiveSHA512
+        self.shards = shards
+    }
+
+    /// Failure unless the manifest describes the exact pinned archive and a
+    /// complete, ordered, well-formed shard set.
+    public func validationFailure(imageID expectedImageID: String, archiveSHA512 expectedSHA512: String) -> String? {
+        guard schema == Self.currentSchema else { return "shard manifest has unknown schema \(schema)" }
+        guard imageID == expectedImageID else { return "shard manifest is for a different image \(imageID)" }
+        guard archiveSHA512.lowercased() == expectedSHA512.lowercased() else {
+            return "shard manifest does not pin the trusted archive digest"
+        }
+        guard archiveBytes > 0, !shards.isEmpty else { return "shard manifest lists no pieces" }
+        guard shards.map(\.index) == Array(0..<shards.count) else {
+            return "shard manifest pieces are not contiguous from index 0"
+        }
+        let totalBytes = shards.reduce(0) { $0 + $1.bytes }
+        guard totalBytes == archiveBytes else {
+            return "shard piece sizes (\(totalBytes)) do not sum to the archive size (\(archiveBytes))"
+        }
+        for shard in shards {
+            guard shard.bytes > 0, !shard.name.isEmpty, !shard.name.hasPrefix("/"),
+                  !shard.name.contains(".."),
+                  shard.sha512.count == 128,
+                  !shard.sha512.contains(where: { !$0.isHexDigit }) else {
+                return "shard #\(shard.index) is malformed"
+            }
+        }
+        return nil
+    }
+}
+
+/// One public mirror of the pinned archive. `archiveURL` is the direct asset
+/// (used when present and within limits) and `shardManifestURL` provides the
+/// verified piece set used to reconstruct the exact same bytes.
+public struct LinuxGuestImageMirror: Sendable, Equatable {
+    public var archiveURL: URL
+    public var shardManifestURL: URL
+
+    public init(archiveURL: URL, shardManifestURL: URL) {
+        self.archiveURL = archiveURL
+        self.shardManifestURL = shardManifestURL
+    }
+}
+
 /// One image this build is allowed to download. Pinned here (not in a
 /// manifest the user can edit): the archive digest is the trust anchor, and
 /// provenance names where the guest source and build configuration live.
-/// Empty until a qualified image is produced and its distribution obligations
-/// (guest userland licenses, matching source) are published.
+/// `archiveURL` is the trust-bearing primary source and `mirrors` are ordered
+/// public mirrors (e.g. Gitee) that are contacted *only* after a bounded
+/// availability failure of every earlier source. Every source serves the
+/// exact same bytes: they all verify against one shared `archiveSHA512`.
 public struct LinuxGuestTrustedImage: Sendable, Equatable {
     public var id: String
+    /// Trust-bearing primary archive URL (GitHub Releases).
     public var archiveURL: URL
+    /// Ordered fallback mirrors, tried after the primary fails with a bounded
+    /// network/server-availability error.
+    public var mirrors: [LinuxGuestImageMirror]
     public var archiveSHA512: String
     public var provenance: LinuxGuestImageProvenance
 
-    public init(id: String, archiveURL: URL, archiveSHA512: String, provenance: LinuxGuestImageProvenance) {
+    public init(
+        id: String,
+        archiveURL: URL,
+        mirrors: [LinuxGuestImageMirror] = [],
+        archiveSHA512: String,
+        provenance: LinuxGuestImageProvenance
+    ) {
         self.id = id
         self.archiveURL = archiveURL
+        self.mirrors = mirrors
         self.archiveSHA512 = archiveSHA512
         self.provenance = provenance
     }
@@ -265,6 +423,16 @@ public enum LinuxGuestImageDistributionCatalog {
         LinuxGuestTrustedImage(
             id: defaultImageID,
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/floe-linux-guest-floe-debian13-riscv64-20260922.2.zip")!,
+            mirrors: [
+                // Public Gitee China mirror. Byte-identical asset; the
+                // reconstructed archive is verified against the same pinned
+                // SHA-512 before import. Contacted only after the primary
+                // fails with a bounded availability error.
+                LinuxGuestImageMirror(
+                    archiveURL: URL(string: "https://gitee.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/floe-linux-guest-floe-debian13-riscv64-20260922.2.zip")!,
+                    shardManifestURL: URL(string: "https://gitee.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/shard-manifest.json")!
+                )
+            ],
             archiveSHA512: "bde2b2198bf5f70411b12587b9e6b4b42a183671b5564b90319eae7bbd2ae7eb09f686e0d4009096eba0da3b75a89c65bc7c45ac31ac61146482377fc0bdae04",
             provenance: LinuxGuestImageProvenance(
                 sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260922.2",
@@ -280,18 +448,27 @@ public enum LinuxGuestImageDistributionCatalog {
     }
 }
 
-/// Bounded HTTPS download for one image archive. Implemented by the app with
-/// URLSession; the package only needs this narrow seam so verification and
-/// import stay testable without a network.
+/// Bounded HTTPS fetch for one image archive or a shard manifest. Implemented
+/// by the app with URLSession; the package only needs this narrow seam so
+/// verification and import stay testable without a network.
+///
+/// Failures are the typed transfer classification: the package coordinator
+/// uses `allowsNextSource` as the *only* switch to a mirror. Digest and
+/// archive errors are never thrown here for downloaded bytes (they are checked
+/// after the transfer and fail closed), and anything unclassified fails
+/// closed as well.
 public protocol LinuxGuestImageDownloading: Sendable {
-    /// Downloads one bounded archive. `onProgress` reports received bytes and
-    /// the expected total (-1 when the server sends no Content-Length).
+    /// Downloads one bounded asset. `onProgress` reports received bytes and
+    /// the expected total (-1 when the server sends no Content-Length). Used
+    /// for the primary archive, a mirror's shard manifest and every shard;
+    /// per-piece retries, piece verification, stable resume and assembly all
+    /// live in the package (`LinuxGuestImageShardFetch`).
     func download(
         _ url: URL,
         to destination: URL,
         maxBytes: Int64,
         onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void
-    ) async throws
+    ) async throws(LinuxGuestImageTransferError)
 }
 
 /// Install/remove/status for images under one artifact root.
@@ -475,24 +652,16 @@ public actor LinuxGuestImageInstallationService {
                 detail: "the pinned image records no published guest source/license provenance"
             )
         }
-        guard trusted.archiveURL.scheme?.lowercased() == "https" else {
-            throw LinuxGuestImageInstallError.noDistributableImage(id: id, detail: "the pinned archive URL is not HTTPS")
-        }
         try fileManager.createDirectory(at: imagesRoot, withIntermediateDirectories: true)
         let stagingArchive = imagesRoot.appendingPathComponent(".download-\(UUID().uuidString).zip")
         defer { try? fileManager.removeItem(at: stagingArchive) }
-        do {
-            try await downloader.download(
-                trusted.archiveURL,
-                to: stagingArchive,
-                maxBytes: limits.maxArchiveBytes,
-                onProgress: onProgress
-            )
-        } catch let installError as LinuxGuestImageInstallError {
-            throw installError
-        } catch {
-            throw LinuxGuestImageInstallError.downloadFailed(error.localizedDescription)
-        }
+        try await LinuxGuestImageSourceFetch.fetch(
+            image: trusted,
+            to: stagingArchive,
+            maxBytes: limits.maxArchiveBytes,
+            downloader: downloader,
+            onProgress: onProgress
+        )
         return try await importArchive(at: stagingArchive, expectedSHA512: trusted.archiveSHA512, fileManager: fileManager)
     }
 

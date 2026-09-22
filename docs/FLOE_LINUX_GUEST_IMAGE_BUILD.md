@@ -155,3 +155,30 @@ Change `pinned-inputs.json` only as a deliberate upgrade: a new Debian daily
 build needs its SHA-512/SHA-256/size and a fresh image run; a new kernel/bbl
 revision needs the matching diff/config and a fresh capability run. Never edit
 a digest to make a check pass.
+
+## Distribution mirror (Gitee, sharded)
+
+The pinned archive (`floe-linux-guest-floe-debian13-riscv64-20260922.2.zip`,
+573,254,199 bytes, SHA-512 `bde2b219…dae04`) exceeds Gitee's 100 MB
+single-attachment cap, so the Gitee mirror release publishes the byte-identical
+archive as a manifest plus nine 64 MiB pieces (the last one short):
+
+- Manifest: `https://gitee.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/shard-manifest.json`
+  (`schema: floe-image-shard-manifest/v1`; pins `archiveBytes`, `archiveSHA512`
+  and every piece's `name`/`bytes`/`sha512`).
+- Pieces: `part-00.bin` … `part-08.bin` beside the manifest.
+
+The app (`LinuxGuestImageSourceFetch` + `LinuxGuestImageShardFetch` in
+`FloeExecution`) contacts GitHub first and the Gitee manifest only after a
+bounded availability failure of the primary; a definite 4xx, invalid response,
+local rejection or cancellation fails closed without touching the mirror. The
+manifest must re-pin the catalog's image id and archive SHA-512, every piece is
+verified against its SHA-512 before reuse, verified pieces persist in a stable
+staging directory (`image id + archive SHA-512` derived) so a failed install
+resumes instead of restarting, and the concatenated archive is checked against
+the pinned SHA-512 before the existing atomic import re-verifies it.
+
+Published/verified 2026-09-23: all nine pieces downloaded from the public
+URLs, sizes and per-piece SHA-512 matched the manifest, and the reassembled
+archive hashed to the pinned SHA-512 above. The one-way GitHub→Gitee ref sync
+lives in `.github/workflows/gitee-mirror.yml`.

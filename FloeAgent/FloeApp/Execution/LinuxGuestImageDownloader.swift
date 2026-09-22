@@ -1,11 +1,14 @@
-// FloeApp — bounded HTTPS download for a pinned Linux guest image archive.
+// FloeApp — bounded HTTPS transport for the pinned Linux guest image.
 //
-// The downloader only knows how to fetch bytes under a hard size cap; all
-// verification (archive SHA-512, manifest digests, path containment) happens
-// in FloeExecution before anything is promoted into the image directory.
-// Redirects are refused so a pinned HTTPS URL cannot be bounced to another
-// host or scheme, and the destination is written in the app's image staging
-// area rather than a temporary directory.
+// The downloader is intentionally the narrowest seam: it fetches bytes under
+// a hard size cap and pre-classifies failures. Everything that carries trust
+// lives in FloeExecution: ordered primary→mirror selection, per-piece retries,
+// piece SHA-512 verification, stable resume/assembly, the immutable whole-
+// archive SHA-512 and manifest/path checks.
+//
+// Redirects are HTTPS-only so a pinned URL cannot be bounced to another
+// scheme; only a bounded availability error lets the package coordinator
+// switch from GitHub to the Gitee mirror.
 
 import Foundation
 import FloeExecution
@@ -48,11 +51,11 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
     /// FloeExecution) and keeps the download stage honest about space.
     static func availableImportantBytes(for url: URL) -> Int64 {
         if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
-           let capacity = values.volumeAvailableCapacityForImportantUsage, capacity > 0 {
+            let capacity = values.volumeAvailableCapacityForImportantUsage, capacity > 0 {
             return capacity
         }
         if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
-           let capacity = values.volumeAvailableCapacity {
+            let capacity = values.volumeAvailableCapacity {
             return Int64(capacity)
         }
         return -1
@@ -63,32 +66,70 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
         to destination: URL,
         maxBytes: Int64,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
-    ) async throws {
+    ) async throws(LinuxGuestImageTransferError) {
+        try await Self.stream(url: url, to: destination, maxBytes: maxBytes, onProgress: onProgress)
+    }
+
+    // MARK: internals
+
+    /// Bounded HTTPS streaming fetch; the only place that talks to the
+    /// network. Every failure is classified for the mirror decision.
+    private static func stream(
+        url: URL,
+        to destination: URL,
+        maxBytes: Int64,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws(LinuxGuestImageTransferError) {
         guard url.scheme?.lowercased() == "https" else {
-            throw LinuxGuestImageInstallError.downloadFailed("image downloads require HTTPS")
+            throw .responseInvalid(detail: "image downloads require HTTPS")
         }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
         configuration.urlCache = nil
-        let session = URLSession(configuration: configuration, delegate: LinuxImageDownloadRedirectGuard(), delegateQueue: nil)
+        let session = URLSession(
+            configuration: configuration,
+            delegate: LinuxImageDownloadRedirectGuard(),
+            delegateQueue: nil
+        )
         defer { session.invalidateAndCancel() }
-        let (bytes, response) = try await session.bytes(for: URLRequest(url: url))
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw LinuxGuestImageInstallError.downloadFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await session.bytes(for: URLRequest(url: url))
+        } catch let urlError as URLError {
+            throw classify(urlError)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw .responseInvalid(detail: "the source did not answer with HTTP")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw classify(status: http.statusCode)
         }
         let expected = http.expectedContentLength
-        // Verify free space against the real archive size before writing.
+        // Verify free space against the real asset size before writing.
         let fileManager = FileManager.default
-        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            throw .localRejection(detail: "cannot create the download directory")
+        }
         if expected > 0 {
             let required = expected + 64 * 1024 * 1024
-            let available = Self.availableImportantBytes(for: destination.deletingLastPathComponent())
+            let available = availableImportantBytes(for: destination.deletingLastPathComponent())
             if available >= 0, available < required {
-                throw LinuxGuestImageInstallError.insufficientSpace(required: required, available: available)
+                throw .localRejection(
+                    detail: LinuxGuestImageInstallError.insufficientSpace(required: required, available: available).localizedDescription
+                )
             }
         }
         fileManager.createFile(atPath: destination.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: destination)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: destination)
+        } catch {
+            throw .localRejection(detail: "cannot open the download file")
+        }
         defer { try? handle.close() }
         var written: Int64 = 0
         var buffer = Data()
@@ -117,11 +158,45 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
                 onProgress(written, expected)
             }
         } catch is CancellationError {
-            throw LinuxGuestImageInstallError.cancelled
+            throw .cancelled
+        } catch let error as LinuxGuestImageTransferError {
+            throw error
+        } catch let urlError as URLError {
+            throw classify(urlError)
+        } catch let installError as LinuxGuestImageInstallError {
+            switch installError {
+            case .archiveTooLarge:
+                throw .localRejection(detail: installError.localizedDescription)
+            default:
+                throw .responseInvalid(detail: installError.localizedDescription)
+            }
+        } catch {
+            throw .responseInvalid(detail: error.localizedDescription)
         }
         guard written > 0 else {
-            throw LinuxGuestImageInstallError.downloadFailed("the archive response was empty")
+            throw .responseInvalid(detail: "the archive response was empty")
         }
+    }
+
+    /// Classifies a transport-level URLError for the fallback decision.
+    private static func classify(_ error: URLError) -> LinuxGuestImageTransferError {
+        switch error.code {
+        case .notConnectedToInternet, .timedOut, .cannotFindHost, .cannotConnectToHost,
+             .networkConnectionLost, .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff,
+             .callIsActive:
+            return .networkFailure(detail: error.localizedDescription)
+        default:
+            // A definite, non-connectivity error cannot be repaired by a mirror.
+            return .responseInvalid(detail: error.localizedDescription)
+        }
+    }
+
+    /// Classifies a non-2xx HTTP status for the fallback decision.
+    private static func classify(status: Int) -> LinuxGuestImageTransferError {
+        if status == 408 || status == 429 || (500..<600).contains(status) {
+            return .serverUnavailable(status: status, detail: "HTTP \(status)")
+        }
+        return .responseRejected(status: status, detail: "HTTP \(status)")
     }
 
     /// Real archive size in bytes for the pinned image, following the same

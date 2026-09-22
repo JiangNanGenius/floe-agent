@@ -1051,8 +1051,8 @@ private struct NoopImageDownloader: LinuxGuestImageDownloading {
         to destination: URL,
         maxBytes: Int64,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
-    ) async throws {
-        throw LinuxGuestImageInstallError.downloadFailed("not used")
+    ) async throws(LinuxGuestImageTransferError) {
+        throw .responseInvalid(detail: "not used")
     }
 }
 
