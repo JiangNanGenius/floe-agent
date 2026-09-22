@@ -36,7 +36,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 **当前内部 TestFlight：1.7.0（219）**。9 月 21 日 22:01 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING，中英文测试说明已保存并读回。真机验收由用户完成。[Build 219 说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
-Build 219 把 TinyEMU/Linux 收敛为主要本地运行环境：首次使用 Shell、客体 Python、Node、APT/DPKG 或后台服务时会自动完成同一套下载、校验、安装与启动流程，然后继续执行原命令；**设置 → 执行环境**与终端提供同一份组件状态和明确的下载、更新、启动、停止入口，客体在对外报告能力前会先配置并上报自身网络状态。工作区 Office 预览进入独立全屏编辑器，只有 IDE 文件树中的打开保留内嵌标签；IDE 在仓库变更与回到前台后立即刷新源码管理；ZIP、TAR 与 7z 压缩包在有界浏览器中打开，需要 Linux 运行时的格式会如实说明而不会静默启动客体。本地 MLX 加载前校验已安装快照，并从设备预算中扣除正在运行的 Linux 客体内存。原生 Python、Node 与 Ruby 载荷不再随包分发；语言与软件包安装在 Linux 客体中，签名 WASI 命令目录仍是独立路径。[Build 219 版本说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md)。
+**Build 220 是当前上传候选。** 它修复 Linux 持久化与安装状态（每环境按需增长的 ext4 磁盘、可写的 `/floe/env` 缓存、合并并发安装、如实显示已安装/运行状态），修正导致 `ls -l` 报 524 的 9P 语义，新增显式**在后台保持运行**开关与只上报实测值的指标和如实的中断报告，把任务完成通知统一为前台单条应用内横幅并支持已授权的后台提醒与深链，并把 PPTX 编辑门禁放在引擎真实编辑入口与可见渲染之上。本行只描述源码状态；在云端构建、上传、Apple 处理与 Floe QA 可用性核实之前，Build 220 不可安装。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_220.md)。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
@@ -199,7 +199,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 | 内容 | 简体中文 | English |
 | --- | --- | --- |
 | 产品使用 | [使用指南](docs/USER_GUIDE.zh-CN.md) | [User guide](docs/USER_GUIDE.md) |
-| 当前状态 | [实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) | [Implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 notes](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) |
+| 当前状态 | [实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) · [Build 220 候选](docs/RELEASE_NOTES_1.7.0_BUILD_220.md) | [Implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 notes](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) · [Build 220 candidate](docs/RELEASE_NOTES_1.7.0_BUILD_220.md) |
 | 架构 | [架构总览（双语术语）](docs/ARCHITECTURE_OVERVIEW.md) | [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md) |
 | 参与开发 | [贡献指南](CONTRIBUTING.zh-CN.md) | [Contributing](CONTRIBUTING.md) |
 | 安全 | [安全策略](SECURITY.zh-CN.md) | [Security policy](SECURITY.md) |

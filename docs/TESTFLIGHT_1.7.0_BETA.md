@@ -1,5 +1,24 @@
 # Floe 1.7 TestFlight delivery
 
+## Preparing: 1.7.0 (220) — metadata only, not built or uploaded
+
+Build 220 version and release metadata is prepared from the integrated `main`
+source `9e83fcfa` on branch `codex/build220-release-metadata`: all four shipping
+targets declare `MARKETING_VERSION 1.7.0` / `CURRENT_PROJECT_VERSION 220` in
+`FloeAgent/project.yml`, the regenerated `FloeAgent.xcodeproj` matches, and the
+[release notes](RELEASE_NOTES_1.7.0_BUILD_220.md) plus
+[bilingual test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json) describe the
+slice (per-environment Linux disks with `/floe/env` caches, the 9P `ls -l`
+repair, truthful install state, an explicit background mode with measured-only
+metrics, task-completion notifications, the PPTX visible-render/edit-entry
+repair and the documentation/sideload-link refresh).
+
+This section records source state only. Build 220 has **not** been built,
+signed, uploaded or processed by Apple, is not attached to any beta group, and
+has no simulator/UI or physical-device acceptance. The Build 219 record below
+remains the latest delivery until a build 220 upload and Floe QA availability
+are verified separately.
+
 ## Current internal delivery: 1.7.0 (219) — available in Floe QA
 
 Apple **VALID**, unexpired, exactly one private internal **Floe QA** group

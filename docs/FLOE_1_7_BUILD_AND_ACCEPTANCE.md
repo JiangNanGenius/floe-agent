@@ -51,7 +51,7 @@ Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输
 
 ## 当前描述文件与新链路验收
 
-当前版本入口为 [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md)；上传后必须补入实际固定提交、构建号、Apple 处理结果与可安装状态，当前交付记录见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)。1.7.0 系列的历史版本文件保留，不改写为新版本说明；较早的概述见 [RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md)。
+当前上传候选为 [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md)（版本与发布元数据已准备，尚未构建、上传或取得 Apple／真机证据）；当前已交付版本说明见 [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md)。上传后必须补入实际固定提交、构建号、Apple 处理结果与可安装状态，当前交付记录见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)。1.7.0 系列的历史版本文件保留，不改写为新版本说明；较早的概述见 [RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md)。
 
 ### 192–196 结果（2026-09-19）
 

@@ -1,5 +1,16 @@
 # Floe 1.7 文档维护清单
 
+## 2026-09-22 Build 220 版本与发布元数据准备 / Build 220 version and release-metadata preparation
+
+本轮在隔离分支 `codex/build220-release-metadata` 上把合并后的 `main` 源码 `9e83fcfa` 准备为 Floe 1.7.0（220），不改产品代码、工作流、标签或 `feather.json`：
+
+- 版本：`FloeAgent/project.yml` 四个出货目标（App、Screen Share、Share、Widgets）统一为 `MARKETING_VERSION 1.7.0` / `CURRENT_PROJECT_VERSION 220`，并用 xcodegen 重新生成 `FloeAgent.xcodeproj`。生成结果与提交内容一致（`gen_project.sh` 的干净树检查）；pbxproj 仅 8 处 `CURRENT_PROJECT_VERSION` 变化，`MARKETING_VERSION` 不变，无 219 残留。
+- 新增 [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md)（中英双语：Linux 持久磁盘／`/floe/env` 缓存／9P `ls -l` 语义／安装状态，显式后台模式与实测指标，任务完成通知，PPTX 可见渲染与编辑入口修复，文档与侧载链接刷新；并区分源码实现与云端编译、真机验收）与 [Build 220 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json)。
+- 指针更新：双语 README 的当前候选段落改为 Build 220（保留 219 已核实可安装的交付陈述）；`docs/README.md` 增加 220 候选入口、测试说明行与发布档案条目；[TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 顶部新增 “Preparing: 1.7.0 (220) — metadata only, not built or uploaded”；实施状态与构建验收文档补记候选状态。
+- 明确不做的：不创建或移动标签、不推送、不触发工作流、不上传，也不宣称 Build 220 已构建、已被 Apple 处理、可安装、通过真机验收或已发布；219 及更早的发布档案保持原样。
+- 顺带修复：`FloeAgent/scripts/tests/test_release_review_workflows.py` 的便携 plist／版本夹具此前只在 `release_preflight.sh` 依赖 `bootstrap_office_host` 时打了桩，未给新增的 `office_release_gates` 读取打桩，导致该夹具在 HEAD 上 3 项失败（已用 stash 对照确认与本次版本改动无关）。本轮按夹具自身的“隔离便携检查、Office 门禁另有专项测试”约定补上通过型 no-op 桩，不弱化任何断言。
+- 本轮检查：`test_release_preflight_versions.py`（8 项通过，含真实 Office pin 门禁与版本夹具）、`test_release_review_workflows.py`（28 项通过）、`test_readme_source_links.py`／`test_feather_source.py`／`test_prepare_testflight.py`／`test_release_notes_component_gate.py`（36 项通过）、TestFlight JSON 校验、真实 `project.yml` 与 pbxproj 的版本一致性 awk 检查、发布说明中英标题检查、改动文档相对链接检查与 `git diff --check`。
+
 ## 2026-09-22 侧载入口与 219 之后现状复核 / Sideload and post-219 audit
 
 本轮只修改公开文档（`README.md`、`README.zh-CN.md` 与 `docs/`），不改代码、工作流、标签、`feather.json` 或 `Local/` 私有内容：

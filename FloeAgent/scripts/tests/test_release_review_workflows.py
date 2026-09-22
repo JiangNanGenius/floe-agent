@@ -109,6 +109,12 @@ class PortablePreflightFixtureTests(unittest.TestCase):
             'LOCK = None\n'
             'def checked_lock(_):\n'
             '    return {}, {}\n', encoding='utf-8')
+        # release_preflight.sh also reads the Office capability readout after
+        # bootstrap; stub it with the same passing no-op shape so this fixture
+        # keeps exercising the portable plist/version checks.
+        (app / 'scripts/office_release_gates.py').write_text(
+            'def capability_status(_pin):\n'
+            '    return {"unproven": [], "failures": []}\n', encoding='utf-8')
         plist_path = app / 'FloeScreenShare/Info.plist'
         plist_path.write_text(transform(plist_path.read_text()))
         git_env = dict(os.environ, GIT_AUTHOR_NAME='Floe Review', GIT_COMMITTER_NAME='Floe Review',
