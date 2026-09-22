@@ -1,5 +1,7 @@
 # Floe 1.7 构建与验收 / Build and acceptance
 
+Build 222 is the active release candidate. Its local evidence is limited to Swift 6 object compilation of `FloeExecution`, focused PPT policy tests and metadata consistency. Cloud App build, saved IPA, signed upload, Apple processing, Floe QA availability and real-iPad Linux/PPT/PiP behavior must be reported separately. See [Build 222 notes](RELEASE_NOTES_1.7.0_BUILD_222.md).
+
 本说明适用于 1.7 整合分支；完整验收状态以[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。最低系统为 iOS/iPadOS 26，数据库迁移至 v40。重型 App 构建与归档放在云端，本地仅做定向验证。正式发布不属于本轮自动动作。
 
 ## 本地准备
@@ -51,7 +53,7 @@ Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输
 
 ## 当前描述文件与新链路验收
 
-当前上传候选为 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md)（修复 Build 220 云端设备编译的全部 14 条诊断，版本号 1.7.0（221）；已通过本机 Debug 设备 SDK 编译与定向检查，尚未经云端验收 SDK 构建、上传或取得 Apple／真机证据）；Build 220 候选在 App 目标编译失败（run 35673428023，14 条诊断，无工件、无上传），其源码修复即为 Build 221；当前已交付版本说明见 [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md)。上传后必须补入实际固定提交、构建号、Apple 处理结果与可安装状态，当前交付记录见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)。1.7.0 系列的历史版本文件保留，不改写为新版本说明；较早的概述见 [RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md)。
+当前内部交付为 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md)：固定标签 `v1.7.0-beta.78`、源码 `20253e67`，云端验收 SDK 构建与上传成功；Apple build `387e2282-0814-4384-88a8-5a756d46a5ef` 已核实 VALID、未过期、唯一私有内部 Floe QA 组和 IN_BETA_TESTING。Build 220 候选在 App 目标编译失败（run 35673428023，14 条诊断，无工件、无上传），其源码修复即为 Build 221。完整交付记录见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)；模拟器 UI 验收按加速发布要求跳过，真机验收仍由用户执行。1.7.0 系列历史版本文件保留原始结论。
 
 ### 192–196 结果（2026-09-19）
 

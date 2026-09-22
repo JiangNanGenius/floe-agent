@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 222 introduces TinyEMU Runtime v2: one verified shared Linux base, per-environment CoW system changes, isolated data and a four-VM pool with a 1.5–2 GiB dynamic budget. It migrates older Linux installs safely, repairs missing 9P directories, coordinates Linux with the MLX local model, and fixes local-model tool crashes and later tool rounds. PPT/PPTX opening is now bounded and recoverable instead of spinning forever. Please retest an existing Linux install, package persistence, multiple environments, local-model multi-turn tools, PPT opening/save/reopen, background PiP, port forwarding and task notifications.",
+  "zh-Hans": "Build 222 引入 TinyEMU Runtime v2：共享一份已验证 Linux 基础镜像，每个环境只保存 CoW 系统变化与独立数据，最多四台 VM 共用 1.5–2 GiB 动态预算。它会安全迁移旧 Linux、补齐缺失的 9P 目录、协调 Linux 与 MLX 本地模型，并修复本地模型工具闪退和后续轮次失效。PPT/PPTX 打开改为有界且可恢复，不再无限转圈。请重点复测旧 Linux 安装迁移、软件包持久化、多环境、本地模型多轮工具、PPT 打开保存重开、后台画中画、端口转发和任务通知。"
+}

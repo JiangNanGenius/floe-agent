@@ -1,5 +1,9 @@
 # Build 156 feedback repair — build 172 delivery tracking
 
+## 2026-09-22 — Build 222 Runtime v2 and PPT recovery candidate
+
+The 221 device feedback is addressed in the Build 222 source candidate: old Linux images migrate through verified staging and atomic registry switching; missing 9P host directories are created before boot; install state is derived from verified storage and the boot probe; persistent environments use a shared base plus CoW delta; Linux and MLX share one heavy-runtime arbiter; local-model tool continuations retain stable schemas and recover errors without crashing the app. PPT opening now has a bounded recoverable outcome rather than an indefinite spinner. Local evidence is compilation/policy testing only; device behavior remains unverified until TestFlight acceptance.
+
 ## 2026-09-20 — Shell gate/session recovery and background-service preflight (post-build 204)
 
 User feedback after build 204: repeated `exec.shell` exit 75 not-started with the
@@ -535,5 +539,9 @@ with identical routing keys. After this repair the local device-SDK build
 compiled, linked and passed the hash-verified host embedding, and the App plus
 Screen Share extension both report 1.7.0 (221). The local Vendor host at
 `34722048321` predated the pin and was replaced locally by the verified
-`35668651442` artifact; the cloud accepted-SDK build remains the release gate
-and has not run for this repair. Detail: [Build 221 release notes](RELEASE_NOTES_1.7.0_BUILD_221.md).
+`35668651442` artifact. Release run 35678610685 then passed the accepted-SDK
+build, retained recovery and symbol artifacts, signed and uploaded Build 221.
+Apple build `387e2282-0814-4384-88a8-5a756d46a5ef` is VALID, unexpired and
+IN_BETA_TESTING in the sole private internal Floe QA group (verify 35682374446).
+Physical-device behavior remains for user acceptance. Detail:
+[Build 221 release notes](RELEASE_NOTES_1.7.0_BUILD_221.md).

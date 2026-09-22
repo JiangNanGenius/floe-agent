@@ -1,6 +1,10 @@
 # Floe 1.7 TestFlight delivery
 
-## Preparing: 1.7.0 (221) — metadata only, not built or uploaded
+## Preparing: 1.7.0 (222) — source candidate, not yet delivered
+
+All four shipping targets declare build 222. The candidate integrates TinyEMU Runtime v2, old-image/9P migration, a four-VM dynamic resource pool, Linux/MLX arbitration, local-model multi-turn tool repair and bounded PPT opening. `FloeExecution` passed Swift 6 object compilation and the focused PPT policy suite reports 7/7. No cloud build, IPA, upload, Apple processing, Floe QA availability or device acceptance is claimed in this section. See [release notes](RELEASE_NOTES_1.7.0_BUILD_222.md), [test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_222.json) and [Runtime v2 architecture](TINYEMU_RUNTIME_V2.md).
+
+## Current internal delivery: 1.7.0 (221) — available in Floe QA
 
 Build 221 is the App-compile repair of the integrated Build 220 source: all
 four shipping targets declare `MARKETING_VERSION 1.7.0` /
@@ -12,12 +16,26 @@ the repair (missing `FloeExecution`/`FloeModels` imports in
 errors, the `OfficeVisibleRenderGate` property mismatch, and one Swift 6
 sendable-payload routing fix) with the same functional slice as Build 220.
 
-This section records source state only. Build 221 has **not** been built in
-cloud CI, signed, uploaded or processed by Apple, is not attached to any beta
-group, and has no simulator/UI or physical-device acceptance. A local
-unsigned Debug device-SDK compile with the pinned Office host succeeds; the
-cloud accepted-SDK compile, upload and Floe QA availability must be verified
-separately. The Build 219 record below remains the latest delivery.
+Immutable tag `v1.7.0-beta.78` binds source
+[`20253e67`](https://github.com/JiangNanGenius/floe-agent/commit/20253e67e71d6b7950915aad60c0b3c18c2299d9).
+[Release run 35678610685](https://github.com/JiangNanGenius/floe-agent/actions/runs/35678610685)
+completed the accepted-SDK App build, preserved the unsigned IPA and private
+symbols before signing, and uploaded the signed package. Apple build
+`387e2282-0814-4384-88a8-5a756d46a5ef` is `VALID`, unexpired, attached to
+exactly one private internal `Floe QA` group with no public link, and
+`IN_BETA_TESTING`; [prepare 35682313921](https://github.com/JiangNanGenius/floe-agent/actions/runs/35682313921)
+read back `en-US` and `zh-Hans` notes, and
+[verify 35682374446](https://github.com/JiangNanGenius/floe-agent/actions/runs/35682374446)
+confirmed the final group and availability state at 2026-09-22T03:13:57Z.
+
+The unsigned-only [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.78)
+publishes `Floe-Agent-1.7.0-build221-unsigned.ipa` (sha256
+`c9662126b15783cebe3381e11d8355253b78fd94691f995f0668aacd7111072d`,
+746,110,508 B) with provenance and validation metadata; no signed IPA is
+public. [Feather run 35681097386](https://github.com/JiangNanGenius/floe-agent/actions/runs/35681097386)
+updated `feather.json` at commit `ff0969e5` from the same artifact. Simulator/UI
+qualification was waived by the user's expedited request; physical-device
+acceptance remains with the user.
 
 ## Build 220 candidate (1.7.0 (220)) — metadata prepared; cloud device compile failed, superseded by Build 221
 
@@ -41,7 +59,7 @@ bump are recorded in the [Build 221 notes](RELEASE_NOTES_1.7.0_BUILD_221.md);
 build 220 was never uploaded, processed by Apple, attached to a beta group or
 accepted on a device.
 
-## Current internal delivery: 1.7.0 (219) — available in Floe QA
+## Previous internal delivery: 1.7.0 (219) — available in Floe QA
 
 Apple **VALID**, unexpired, exactly one private internal **Floe QA** group
 (`internal=true`, feedback enabled, no public link), and `IN_BETA_TESTING` were

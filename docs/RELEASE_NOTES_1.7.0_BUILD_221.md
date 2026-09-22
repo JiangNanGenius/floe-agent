@@ -1,12 +1,12 @@
 # Floe 1.7.0 (221) — Build 220 App 编译失败修复 / Build 220 App compile repair
 
-Status: version and release metadata prepared for the authorized expedited
-private internal Floe QA TestFlight, the matching unsigned-only GitHub
-prerelease and the Feather source entry. This document describes the source
-state after the Build 220 compile-repair commit `2ce4f763` on `main`, which
-follows the integrated `main` HEAD `9e83fcfa`. Build, upload, Apple processing
-and group availability have **not** happened for build 221 and are recorded
-separately after they occur. Simulator/UI qualification is expected to be
+Status: delivered to the authorized private internal Floe QA TestFlight, the
+matching unsigned-only GitHub prerelease and the Feather source. Immutable tag
+`v1.7.0-beta.78` binds source `20253e67` after the Build 220 compile-repair
+commit `2ce4f763` on `main`. Release run 35678610685 built with the accepted
+SDK, retained recovery artifacts, signed and uploaded the package. Apple build
+`387e2282-0814-4384-88a8-5a756d46a5ef` is VALID, unexpired and IN_BETA_TESTING
+in the sole private internal Floe QA group. Simulator/UI qualification was
 waived by the user's expedited request; physical-device acceptance remains
 with the user.
 
@@ -68,10 +68,13 @@ Office 宿主工件（run 35668651442，`engine.lock.json` 的 `archiveSHA256
 cd423813…542ca`），因此 `#if canImport(FloeOfficeNative)` 内的设备路径（包括
 可见渲染看门狗）同样参与编译；编译、链接与宿主哈希校验嵌入全部成功，App 与
 Screen Share 扩展的版本均为 1.7.0（221）。另运行了发布契约脚本测试与
-FloeCore/FloeModels/FloeExecution 的定向 Swift 测试。Build 221 **尚未**经过
-云端验收 SDK（Xcode 26.6）App 编译、签名、上传、Apple 处理或 Floe QA 可用
-性核实，也没有模拟器 UI 与真机验收；首次下载、磁盘持久化、`ls -l`、后台
-停止／重启、完成通知与 PPTX 保存退出仍由用户在真机上验收。
+FloeCore/FloeModels/FloeExecution 的定向 Swift 测试。随后发布 run
+35678610685 完成云端验收 SDK App 编译、工件留存、签名与上传；Apple build
+`387e2282-0814-4384-88a8-5a756d46a5ef` 已核实 VALID、未过期、位于唯一私有
+内部 Floe QA 组并处于 IN_BETA_TESTING。`en-US` 与 `zh-Hans` 测试说明已读回；
+GitHub 未签名预发布和 Feather 源均已发布。没有进行模拟器 UI 与真机验收；首次
+下载、磁盘持久化、`ls -l`、后台停止／重启、完成通知与 PPTX 保存退出仍由用户
+在真机上验收。
 
 ## English
 
@@ -116,9 +119,12 @@ device-only `#if canImport(FloeOfficeNative)` path — including the
 visible-render watchdog — was compiled too; compilation, linking and the
 hash-verified host embedding all succeeded, and both the App and the Screen
 Share extension report 1.7.0 (221). The release-contract script tests and
-focused FloeCore/FloeModels/FloeExecution Swift tests were also run. Build 221
-has **not** been compiled by the cloud accepted-SDK (Xcode 26.6) App build,
-signed, uploaded, processed by Apple or verified available to Floe QA, and it
-has no simulator/UI or physical-device acceptance; first-download, disk
-persistence, `ls -l`, background stop/restart, completion notifications and
-PPTX save-on-close remain for the user to accept on a device.
+focused FloeCore/FloeModels/FloeExecution Swift tests were also run. Release
+run 35678610685 then completed the cloud accepted-SDK App build, artifact
+retention, signing and upload. Apple build
+`387e2282-0814-4384-88a8-5a756d46a5ef` is verified VALID, unexpired and
+IN_BETA_TESTING in the sole private internal Floe QA group; `en-US` and
+`zh-Hans` notes were read back, and the unsigned GitHub prerelease and Feather
+entry are published. It has no simulator/UI or physical-device acceptance;
+first-download, disk persistence, `ls -l`, background stop/restart, completion
+notifications and PPTX save-on-close remain for the user to accept on a device.

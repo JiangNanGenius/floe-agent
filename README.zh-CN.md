@@ -34,9 +34,9 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（219）**。9 月 21 日 22:01 UTC 已核实 Apple VALID、未过期、现有私有 Floe QA 组及 IN_BETA_TESTING，中英文测试说明已保存并读回。真机验收由用户完成。[Build 219 说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+**当前内部 TestFlight：1.7.0（221）**。9 月 22 日 03:13 UTC 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组及 IN_BETA_TESTING，中英文测试说明已保存并读回。真机验收由用户完成。[Build 221 说明](docs/RELEASE_NOTES_1.7.0_BUILD_221.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md) · [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.78)。
 
-**Build 220 是当前上传候选。** 它修复 Linux 持久化与安装状态（每环境按需增长的 ext4 磁盘、可写的 `/floe/env` 缓存、合并并发安装、如实显示已安装/运行状态），修正导致 `ls -l` 报 524 的 9P 语义，新增显式**在后台保持运行**开关与只上报实测值的指标和如实的中断报告，把任务完成通知统一为前台单条应用内横幅并支持已授权的后台提醒与深链，并把 PPTX 编辑门禁放在引擎真实编辑入口与可见渲染之上。本行只描述源码状态；在云端构建、上传、Apple 处理与 Floe QA 可用性核实之前，Build 220 不可安装。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_220.md)。
+**Build 222 是当前发布候选。** 它引入 TinyEMU Runtime v2：共享内容寻址基础镜像、每环境 CoW 状态、最多四台 VM 与 1.5–2 GiB 动态预算；同时修复旧镜像/9P 迁移、Linux/MLX 资源仲裁、本地模型多轮工具和 PPT 有界打开。源码编译与定向策略测试已通过；云端构建、上传、Apple 处理、Floe QA 可用性和真机验收仍是独立门槛。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_222.md)。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
@@ -86,7 +86,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.0（build 219）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（2026-09-21 22:01 UTC 核实 Apple VALID、未过期及 IN_BETA_TESTING）。[TestFlight 交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)保留精确的源码、构建、上传、测试说明与测试组证据，以及此前版本的交付历史。Build 192 与 193 从未编译成功；Build 194 与 195 被 Apple 接受但从未发布——[192](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)、[193](docs/RELEASE_NOTES_1.7.0_BUILD_193.md)、[194](docs/RELEASE_NOTES_1.7.0_BUILD_194.md)、[195](docs/RELEASE_NOTES_1.7.0_BUILD_195.md) 记录。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
+Floe Agent **1.7.0（build 221）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（2026-09-22 03:13 UTC 核实 Apple VALID、未过期及 IN_BETA_TESTING）。[TestFlight 交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)保留精确的源码、构建、上传、测试说明与测试组证据，以及此前版本的交付历史。Build 192 与 193 从未编译成功；Build 194 与 195 被 Apple 接受但从未发布——[192](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)、[193](docs/RELEASE_NOTES_1.7.0_BUILD_193.md)、[194](docs/RELEASE_NOTES_1.7.0_BUILD_194.md)、[195](docs/RELEASE_NOTES_1.7.0_BUILD_195.md) 记录。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
 
 ### 未签名 IPA
 

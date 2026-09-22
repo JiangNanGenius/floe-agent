@@ -1,5 +1,9 @@
 # Floe 1.7 文档维护清单
 
+## 2026-09-22 Build 222：Runtime v2 与专项修复 / Runtime v2 and focused repairs
+
+Build 222 documents the versioned Runtime v2 layout, content-addressed shared images, per-environment CoW/data ownership, migration recovery points, one-writer leases, four-VM queue, dynamic memory budget and Linux/MLX arbitration. It also records the local-model multi-turn tool repair and bounded PPT opening behavior. All four shipping targets move to 1.7.0 (222); release notes and bilingual TestFlight notes are added. Current evidence is source-level only: `FloeExecution` Swift 6 object compilation and seven focused PPT policy tests. Cloud distribution and physical-device results remain separate.
+
 ## 2026-09-22 Build 221：Build 220 App 编译修复与发布元数据 / Build 221: Build 220 App compile repair and release metadata
 
 Build 220 的云端验收 SDK Release 设备 App 编译（rebuild run
@@ -41,6 +45,13 @@ Xcode 26.6 / iPhoneOS 26.5）在 App 目标失败：3 个文件共 14 条诊断
   `test_release_notes_component_gate.py`（24）与 FloeCore/FloeModels/
   FloeExecution 定向 Swift 测试、project.yml/pbxproj 版本一致性检查、
   TestFlight JSON 校验、`git diff --check`。
+- 后续交付：固定标签 `v1.7.0-beta.78` 绑定源码 `20253e67`；release run
+  35678610685 完成云端验收 SDK 构建、恢复工件留存、签名和上传。Apple build
+  `387e2282-0814-4384-88a8-5a756d46a5ef` 经 prepare 35682313921 与 verify
+  35682374446 核实 VALID、未过期、唯一私有内部 Floe QA 组、无公开链接且
+  IN_BETA_TESTING，中英文测试说明已读回。GitHub 未签名预发布与 Feather 源已
+  发布；模拟器 UI 按加速要求跳过，真机行为仍由用户验收。上述发布前限制保留为
+  当时记录，不代表最终交付状态。
 
 ## 2026-09-22 Build 220 版本与发布元数据准备 / Build 220 version and release-metadata preparation
 
