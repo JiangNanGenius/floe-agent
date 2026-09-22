@@ -80,7 +80,10 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     public let environmentID: String
     private let image: LinuxGuestImage
     private let descriptor: LinuxGuestEnvironmentDescriptor
-    private let ramMB: Int
+    /// Guest RAM for the NEXT `start()`. The engine allocates RAM once at
+    /// create time and has no balloon/resize API, so a tier change takes
+    /// effect through the safe stop → flush → restart path only.
+    private var ramMB: Int
     private let consoleStream: AsyncStream<Data>
     private let sink: TinyEMUConsoleSink
     private let lock = NSLock()
@@ -117,6 +120,14 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         return running
     }
 
+    /// Sets the RAM used by the next `start()`. Only meaningful between a
+    /// confirmed stop and the restart; the running VM is never mutated.
+    public func setRAMMB(_ newValue: Int) {
+        lock.lock()
+        ramMB = newValue
+        lock.unlock()
+    }
+
     /// Creates the VM and starts the run loop thread. Idempotent while the
     /// guest is running.
     public func start() throws {
@@ -125,8 +136,22 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         guard vm == nil else { return }
 
         let sharePlan = Array(descriptor.shares.prefix(Int(FLOE_VM_MAX_SHARES)))
-        guard sharePlan.allSatisfy({ FileManager.default.fileExists(atPath: $0.hostDirectory.path) }) else {
-            throw LinuxGuestError.invalidConfiguration("every 9p share host directory must exist")
+        // Every configured 9p host directory is created before validation:
+        // a share that has never been used (fresh workspace, fresh cache
+        // export) must not fail the start with a spurious "missing" error.
+        // The check afterwards still requires real directories, so a path
+        // that exists as a file is still an honest configuration error.
+        for share in sharePlan {
+            try? FileManager.default.createDirectory(
+                at: share.hostDirectory, withIntermediateDirectories: true
+            )
+        }
+        guard sharePlan.allSatisfy({ url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.hostDirectory.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }) else {
+            throw LinuxGuestError.invalidConfiguration("every 9p share host directory must exist as a directory")
         }
 
         var cStrings: [UnsafeMutablePointer<CChar>?] = []
@@ -477,7 +502,8 @@ public struct TinyEMUGuestSessionFactory: Sendable {
             isRunning: { machine.isRunning },
             addForward: { try machine.addForward($0) },
             removeForward: { try machine.removeForward($0) },
-            emulatorCPUSample: { machine.emulatorThreadCPUSample() }
+            emulatorCPUSample: { machine.emulatorThreadCPUSample() },
+            setRAMMB: { machine.setRAMMB($0) }
         )
     }
 }

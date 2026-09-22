@@ -124,7 +124,7 @@ public struct LinuxGuestLimits: Sendable, Equatable {
 
     public init(
         defaultRAMMB: Int = 256,
-        maxRAMMB: Int = 512,
+        maxRAMMB: Int = 1024,
         minRAMMB: Int = 96,
         defaultMaxOutputBytes: Int = 256 * 1024,
         maxOutputBytes: Int = 1024 * 1024,
@@ -854,6 +854,10 @@ public struct LinuxGuestStatus: Sendable, Equatable {
     /// report capacity.
     public var activeGuestCount: Int?
     public var reservedGuestRAMMB: Int?
+    /// Start requests currently waiting in the admission queue (Runtime v2:
+    /// at most four VMs run and further requests queue instead of failing).
+    /// nil when the service has no queue.
+    public var queuedGuestCount: Int?
     /// First-boot network state reported by the running runner. nil means the
     /// runner did not report one (older runner) — an unknown state, not a
     /// working one.
@@ -879,7 +883,8 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         activeGuestCount: Int? = nil,
         reservedGuestRAMMB: Int? = nil,
         networkStatus: LinuxGuestNetworkStatus? = nil,
-        diskResizeFailure: String? = nil
+        diskResizeFailure: String? = nil,
+        queuedGuestCount: Int? = nil
     ) {
         self.environmentID = environmentID
         self.running = running
@@ -895,6 +900,7 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         self.reservedGuestRAMMB = reservedGuestRAMMB
         self.networkStatus = networkStatus
         self.diskResizeFailure = diskResizeFailure
+        self.queuedGuestCount = queuedGuestCount
     }
 }
 

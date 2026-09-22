@@ -73,15 +73,34 @@ enum LinuxGuestBackendAssembly {
     /// unavailable, so a Linux-selected request cannot fall back to native.
     static func makeService(registry: EnvironmentRegistry, artifactRoot: URL?) -> TinyEMULinuxCommandService {
         let images: any LinuxGuestImageResolving
+        let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
         if let artifactRoot {
-            images = FileLinuxGuestImageResolver(root: artifactRoot
+            let legacyRoot = artifactRoot
                 .appendingPathComponent("LinuxGuest", isDirectory: true)
-                .appendingPathComponent("images", isDirectory: true))
+                .appendingPathComponent("images", isDirectory: true)
+            let legacy = FileLinuxGuestImageResolver(root: legacyRoot)
+            if let layout = try? RuntimeV2Layout.production() {
+                let store = RuntimeV2Store(layout: layout)
+                let integrator = RuntimeV2GuestIntegrator(
+                    store: store,
+                    legacyImagesRoot: legacyRoot
+                )
+                runtimeV2 = integrator
+                images = RuntimeV2CompositeImageResolver(
+                    expandedImagesRoot: layout.expandedImagesDirectory,
+                    legacy: legacy,
+                    verifiedGate: { imageID in await integrator.isImageVerified(imageID: imageID) }
+                )
+            } else {
+                runtimeV2 = nil
+                images = legacy
+            }
         } else {
             FloeLogger(category: .tools).warning(
                 "Linux guest images unavailable: no durable artifact root"
             )
             images = UnavailableLinuxGuestImageResolver()
+            runtimeV2 = nil
         }
         let guestRegistry = TinyEMULinuxGuestRegistry(
             environments: AppLinuxGuestEnvironmentProvider(
@@ -90,7 +109,8 @@ enum LinuxGuestBackendAssembly {
             ),
             images: images,
             limits: .standard,
-            factory: TinyEMUGuestSessionFactory()
+            factory: TinyEMUGuestSessionFactory(),
+            runtimeV2: runtimeV2
         )
         return TinyEMULinuxCommandService(registry: guestRegistry)
     }

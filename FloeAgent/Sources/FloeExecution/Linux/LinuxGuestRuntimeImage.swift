@@ -20,7 +20,7 @@
 //    back to a byte copy;
 //  - every environment disk is a raw ext4 image grown logically (sparse,
 //    grow-only) to `LinuxGuestDiskLayout.targetLogicalCapacityBytes`
-//    (8 GiB); the guest extends the ext4 filesystem to that capacity on the
+//    (16 GiB by default, expandable to 32 GiB); the guest extends the ext4 filesystem to that capacity on the
 //    next boot. An older, smaller disk is migrated in place — never replaced
 //    — and its sidecar records schema and capacity provenance;
 //  - a sidecar records the origin image id, the declared base digest and the
@@ -38,11 +38,13 @@ import FloeCore
 /// Capacity layout shared by host disk preparation and the in-guest ext4
 /// resize. The guest sees one raw block device; the host file stays sparse.
 public enum LinuxGuestDiskLayout {
-    /// Logical capacity every environment disk is grown to (8 GiB). Host
+    /// Logical capacity every environment disk is grown to (16 GiB). Host
     /// allocation is sparse (copy-on-write clone + holes), so first creation
-    /// costs the base image's physical bytes, not 8 GiB; the guest ext4
+    /// costs the base image's physical bytes, not 16 GiB; the guest ext4
     /// filesystem is extended to this capacity after boot.
-    public static let targetLogicalCapacityBytes: Int64 = 8 * 1024 * 1024 * 1024
+    public static let targetLogicalCapacityBytes: Int64 = 16 * 1024 * 1024 * 1024
+    /// Largest supported grow-only logical capacity for this layout.
+    public static let maximumLogicalCapacityBytes: Int64 = 32 * 1024 * 1024 * 1024
     /// Smallest target a caller may request; keeps tests honest without
     /// allowing an unusable disk.
     public static let minimumLogicalCapacityBytes: Int64 = 1 * 1024 * 1024
@@ -189,6 +191,18 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
     ) -> LinuxGuestRuntimeDiskOrigin? {
         let url = environmentDiskDirectory(writableDirectory: writableDirectory, environmentID: environmentID)
             .appendingPathComponent(originFileName)
+        guard let data = try? Data(contentsOf: url),
+              let origin = try? decodeOrigin(data) else { return nil }
+        return origin
+    }
+
+    /// Reads the origin sidecar inside an arbitrary disk directory (used by
+    /// the Runtime v2 migration for already-located legacy disk dirs).
+    static func diskOrigin(
+        atDiskDirectory directory: URL,
+        fileManager: FileManager = .default
+    ) -> LinuxGuestRuntimeDiskOrigin? {
+        let url = directory.appendingPathComponent(originFileName)
         guard let data = try? Data(contentsOf: url),
               let origin = try? decodeOrigin(data) else { return nil }
         return origin
@@ -414,7 +428,10 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
                 path: root.path
             )
         }
-        let capacity = max(LinuxGuestDiskLayout.minimumLogicalCapacityBytes, targetCapacityBytes)
+        let capacity = min(
+            LinuxGuestDiskLayout.maximumLogicalCapacityBytes,
+            max(LinuxGuestDiskLayout.minimumLogicalCapacityBytes, targetCapacityBytes)
+        )
 
         let directory = root
             .appendingPathComponent(Self.writableDirectoryName, isDirectory: true)
