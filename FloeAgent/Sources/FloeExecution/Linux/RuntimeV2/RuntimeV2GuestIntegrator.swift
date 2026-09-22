@@ -69,6 +69,10 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     func expandedImageDirectory(imageID: String) async throws -> URL
     /// Verified-image truth for status composition.
     func isImageVerified(imageID: String) async -> Bool
+    /// Verified-image truth WITHOUT triggering a migration: answers only
+    /// whether the v2 store already holds this image verified, so a status
+    /// read can never kick off a multi-gigabyte migration as a side effect.
+    func isImageVerifiedWithoutMigration(imageID: String) async -> Bool
     /// Runner capability ledger (system/runner.json in v2).
     func recordedRunnerCapabilities(environmentID: String) async -> String?
     func recordRunnerCapabilities(_ capabilities: String, environmentID: String) async
@@ -275,6 +279,15 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     public func isImageVerified(imageID: String) async -> Bool {
         try? await ensureImageMigrated(imageID)
         return (try? await store.images.isImageVerified(imageID: imageID)) ?? false
+    }
+
+    public func isImageVerifiedWithoutMigration(imageID: String) async -> Bool {
+        do {
+            try await ensurePrepared()
+            return try await store.images.isImageVerified(imageID: imageID)
+        } catch {
+            return false
+        }
     }
 
     public func environmentDataDirectory(environmentID: String) async throws -> URL {

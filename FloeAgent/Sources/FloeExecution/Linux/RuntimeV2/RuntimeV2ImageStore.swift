@@ -204,6 +204,24 @@ public actor RuntimeV2ImageStore {
         let legacyDirectory = legacyImagesRoot.appendingPathComponent(imageID, isDirectory: true)
         let legacyManifestURL = legacyDirectory.appendingPathComponent("manifest.json")
 
+        // Idempotent rerun: a previous migration already verified the v2
+        // install and moved the legacy directory aside into its rollback
+        // point. Report the recorded outcome instead of failing on the
+        // missing source or copying a second time. A v2 manifest without a
+        // verified registry row is NOT completion — that state falls through
+        // to the discovered phase and is repaired or failed honestly there.
+        if !fileManager.fileExists(atPath: legacyManifestURL.path),
+           let existing = try manifest(imageID: imageID),
+           try await registry.bootableImage(id: imageID, root: layout.root) != nil {
+            let stored = (try? await registry.migration(id: migrationID)) ?? nil
+            return MigrationReport(
+                imageID: imageID, migrationID: migrationID,
+                phase: stored?.phase ?? .cleanupPending,
+                reusedExisting: true,
+                blobDigests: existing.artifacts.values.map(\.sha512).sorted()
+            )
+        }
+
         // Phase: discovered.
         try await registry.beginMigration(
             id: migrationID, kind: "legacy-image",

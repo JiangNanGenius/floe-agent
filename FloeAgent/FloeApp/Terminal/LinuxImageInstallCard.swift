@@ -143,6 +143,12 @@ struct LinuxImageInstallCard: View {
     @ObservedObject var model: LinuxImageInstallModel
     /// Called once after a successful install so the owner can start Linux.
     var onInstalled: (() async -> Void)? = nil
+    /// Whether the card may offer a manual guest start. Settings passes
+    /// false: execution prepares and leases the conversation's environment
+    /// automatically, so a standalone "Start Linux guest" control there only
+    /// suggests the user must boot a VM by hand before running anything.
+    /// The Terminal keeps its explicit start affordance.
+    var allowsManualStart: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -210,7 +216,7 @@ struct LinuxImageInstallCard: View {
             Label("environment.backend.status.installed_stopped", systemImage: "checkmark.seal")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let environmentID {
+            if allowsManualStart, let environmentID {
                 Button {
                     Task { await model.startGuest(environmentID: environmentID) }
                 } label: {
@@ -223,7 +229,7 @@ struct LinuxImageInstallCard: View {
                   systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption)
                 .foregroundStyle(FloeTheme.pending)
-            if let environmentID {
+            if allowsManualStart, let environmentID {
                 Button {
                     Task { await model.startGuest(environmentID: environmentID) }
                 } label: {
@@ -236,7 +242,7 @@ struct LinuxImageInstallCard: View {
                 .font(.caption)
                 .foregroundStyle(FloeTheme.destructive)
                 .textSelection(.enabled)
-            if let environmentID {
+            if allowsManualStart, let environmentID {
                 Button {
                     Task { await model.startGuest(environmentID: environmentID) }
                 } label: {

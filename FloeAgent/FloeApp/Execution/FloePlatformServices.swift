@@ -34,6 +34,11 @@ final class FloePlatformServices: @unchecked Sendable {
     /// Verified Linux guest image storage (import/remove/status). Set by the
     /// app assembly on the same artifact root as the guest image resolver.
     private var linuxImages: LinuxGuestImageInstallationService?
+    /// Runtime v2 verified-image truth, injected by the Linux backend
+    /// assembly. Once the v2 migration moves the legacy image directory into
+    /// its rollback point, the legacy-only status below would wrongly report
+    /// "not installed" and offer a re-download; the v2 store is the truth.
+    private var linuxImageRuntimeV2: LinuxGuestRuntimeV2ImageStatus?
     private var mediaRenderer: Any?
     private var baseSliceURL: URL?
     private var management: EnvironmentManagementService?
@@ -236,11 +241,27 @@ final class FloePlatformServices: @unchecked Sendable {
         lock.withLock { linuxImages = service }
     }
 
+    /// Runtime v2 verified-image truth for install-state composition. Set by
+    /// the Linux backend assembly when the Runtime v2 substrate exists.
+    func setLinuxImageRuntimeV2(_ status: LinuxGuestRuntimeV2ImageStatus?) {
+        lock.withLock { linuxImageRuntimeV2 = status }
+    }
+
     /// Real image state for the environment UI: manifest present, digest
-    /// verification failure, and whether this build may distribute it.
+    /// verification failure, and whether this build may distribute it. When
+    /// the legacy directory was already moved aside by the verified Runtime
+    /// v2 migration, the answer comes from the v2 store — an installed
+    /// component never reports "not installed" after its migration.
     func linuxImageStatus(id: String?) async -> LinuxGuestImageInstallationService.ImageStatus? {
         guard let id, let images = lock.withLock({ linuxImages }) else { return nil }
-        return await images.status(id: id)
+        var status = await images.status(id: id)
+        if !status.installed, let v2 = lock.withLock({ linuxImageRuntimeV2 }),
+           let image = await v2.verifiedImage(id: id) {
+            status.installed = true
+            status.verificationFailure = nil
+            status.image = image
+        }
+        return status
     }
 
     /// True when this build has injected verified image storage. The settings
@@ -252,13 +273,20 @@ final class FloePlatformServices: @unchecked Sendable {
 
     /// Explicit runner-update state for the installed component, read from
     /// the image manifest's optional runner metadata. nil when the component
-    /// is current, not installed, or carries no runner record.
+    /// is current, not installed, or carries no runner record. After the
+    /// Runtime v2 migration moved the legacy directory aside, the verbatim
+    /// manifest is read from the expanded view instead.
     func linuxComponentUpdateNeeded(id: String?) async -> String? {
         guard let id, let images = lock.withLock({ linuxImages }) else { return nil }
         let manifest = images.imagesDirectory
             .appendingPathComponent(id, isDirectory: true)
             .appendingPathComponent("manifest.json")
-        let data = try? Data(contentsOf: manifest)
+        var data = try? Data(contentsOf: manifest)
+        if data == nil, let v2 = lock.withLock({ linuxImageRuntimeV2 }) {
+            data = try? Data(contentsOf: v2.expandedImagesRoot
+                .appendingPathComponent(id, isDirectory: true)
+                .appendingPathComponent("manifest.json"))
+        }
         return LinuxComponentUpdatePolicy.updateNeededReason(manifestData: data)
     }
 

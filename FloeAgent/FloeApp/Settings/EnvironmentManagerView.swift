@@ -271,6 +271,13 @@ private struct EnvironmentDetailView: View {
     @State private var backendBusy = false
     @State private var guestStatus: LinuxGuestStatus?
     @State private var imageStorageAvailable = false
+    /// App-shared Linux component truth (base image + runtime version), read
+    /// independently of this environment: the image is shared storage, not
+    /// an environment layer.
+    @State private var linuxComponent: LinuxGuestImageInstallationService.ImageStatus?
+    /// Guest runtime versions probed live from this environment's guest
+    /// (Python/Node), nil when the guest is not running.
+    @State private var guestRuntimes: [String: String] = [:]
     @Environment(\.dismiss) private var dismiss
     private var record: ContainerRecord { (current ?? report).record }
     private var writable: Bool { record.kind.isWritableLayer && record.state == .active && !record.requiresRebuild && !busy && !jobs.running.contains(report.id) }
@@ -331,12 +338,36 @@ private struct EnvironmentDetailView: View {
                 }.font(.caption)
             }
             if busy { ProgressView("正在处理…") }
+            // App-shared Linux runtime component: the verified base image and
+            // its runner version belong to the app, not to any one
+            // conversation's environment, so they are presented once and
+            // separately from the per-environment state below.
+            Section("environment.backend.shared_runtime_section") {
+                LabeledContent("environment.backend.base_image", value: linuxComponent?.id ?? guestStatus?.imageID ?? LinuxGuestBackendAssembly.defaultImageID)
+                LabeledContent("environment.backend.runtime_version", value: runtimeVersionLabel)
+                LabeledContent("environment.backend.component_status", value: componentStatusLabel)
+                if let update = componentUpdateNeeded {
+                    Label(update, systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(FloeTheme.pending)
+                }
+                // The pinned guest image is App-shared storage, not an
+                // environment layer. When this build can distribute it
+                // and it is missing (or failed digest verification),
+                // the real install path is reachable from here: fixed
+                // catalog id, no URL input, service-owned task.
+                if canInstallGuestImage, imageStorageAvailable {
+                    imageInstallControls
+                }
+            }
             // Execution backend: Linux is the default since the Phase 2
             // migration (shell/Python/Node/services run inside this
             // environment's TinyEMU guest); native is the explicit
             // compatibility backend (POSIX shell subset, no Python/Node).
-            // The status text below is the real guest/image state, including
-            // the exact reason a guest cannot start.
+            // Running Python, Node or Shell prepares and leases this
+            // environment automatically, so there is no manual VM start
+            // control here — only the real per-environment state, the guest
+            // runtimes and the active VM, plus an explicit stop.
             Section("environment.backend.title") {
                 Picker("environment.backend.picker", selection: $backendSelection) {
                     Text("environment.backend.native").tag(EnvironmentExecutionBackend.native)
@@ -351,11 +382,14 @@ private struct EnvironmentDetailView: View {
                 if backendSelection == .linuxVM {
                     if let status = guestStatus {
                         LabeledContent("environment.backend.status", value: status.running ? String(localized: "environment.backend.status.running") : String(localized: "environment.backend.status.stopped"))
-                        if let imageID = status.imageID {
-                            LabeledContent("environment.backend.image", value: imageID)
-                        }
-                        if status.running, let startedAt = status.startedAt {
-                            LabeledContent("environment.backend.started", value: startedAt.formatted(date: .abbreviated, time: .shortened))
+                        if status.running {
+                            LabeledContent("environment.backend.active_vm", value: activeVMSummary)
+                            LabeledContent("Python", value: guestRuntimes["Python"] ?? String(localized: "settings.exec.runtime.not_installed"))
+                                .foregroundStyle(guestRuntimes["Python"] == nil ? .secondary : .primary)
+                            LabeledContent("Node", value: guestRuntimes["Node"] ?? String(localized: "settings.exec.runtime.not_installed"))
+                                .foregroundStyle(guestRuntimes["Node"] == nil ? .secondary : .primary)
+                            Button("environment.backend.stop", systemImage: "stop") { apply(backend: .linuxVM, stopOnly: true) }
+                                .disabled(backendBusy)
                         }
                         if let message = backendUserMessage {
                             Label(message, systemImage: "exclamationmark.triangle")
@@ -366,21 +400,6 @@ private struct EnvironmentDetailView: View {
                             Text("environment.backend.distribution_hint")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                        }
-                        if status.running {
-                            Button("environment.backend.stop", systemImage: "stop") { apply(backend: .linuxVM, stopOnly: true) }
-                                .disabled(backendBusy)
-                        } else {
-                            Button("environment.backend.start", systemImage: "play") { apply(backend: .linuxVM) }
-                                .disabled(backendBusy || status.imageInstalled == false || status.imageVerificationFailure != nil)
-                        }
-                        // The pinned guest image is App-shared storage, not an
-                        // environment layer. When this build can distribute it
-                        // and it is missing (or failed digest verification),
-                        // the real install path is reachable from here: fixed
-                        // catalog id, no URL input, service-owned task.
-                        if canInstallGuestImage, imageStorageAvailable {
-                            imageInstallControls
                         }
                     } else {
                         ProgressView().controlSize(.small)
@@ -669,9 +688,66 @@ private struct EnvironmentDetailView: View {
     @MainActor private func reloadGuestStatus() async {
         imageStorageAvailable = FloePlatformServices.shared.linuxGuestImageStorageAvailable()
         guestStatus = await FloePlatformServices.shared.linuxEnvironmentStatus(id: report.id)
+        let imageID = guestStatus?.imageID ?? LinuxGuestBackendAssembly.defaultImageID
+        linuxComponent = await FloePlatformServices.shared.linuxImageStatus(id: imageID)
         componentUpdateNeeded = await FloePlatformServices.shared.linuxComponentUpdateNeeded(
-            id: guestStatus?.imageID
+            id: imageID
         )
+        await refreshGuestRuntimes()
+    }
+
+    /// Shared-component runtime version: the runner version recorded in the
+    /// verified image manifest (e.g. "runner=2.0.0 protocol=3 …"). A dash
+    /// when no verified manifest is installed — never an invented number.
+    private var runtimeVersionLabel: String {
+        guard let capabilities = linuxComponent?.image?.runnerCapabilities else { return "—" }
+        for field in capabilities.split(separator: " ") where field.hasPrefix("runner=") {
+            return "runner " + field.dropFirst("runner=".count)
+        }
+        return capabilities
+    }
+
+    /// Shared-component install truth: verified, failed (with the recorded
+    /// reason) or not installed. Never claims installed on a status miss.
+    private var componentStatusLabel: String {
+        guard let component = linuxComponent else {
+            return String(localized: "environment.backend.checking")
+        }
+        if component.installed, component.verificationFailure == nil {
+            return String(localized: "environment.backend.component.installed")
+        }
+        if let failure = component.verificationFailure { return failure }
+        return String(localized: "settings.exec.runtime.not_installed")
+    }
+
+    /// The active VM's honest footprint: granted guest RAM plus the start
+    /// time, or just "Running" when the engine did not report either.
+    private var activeVMSummary: String {
+        var parts: [String] = []
+        if let ramMB = guestStatus?.ramMB { parts.append("\(ramMB) MB") }
+        if let startedAt = guestStatus?.startedAt {
+            parts.append(startedAt.formatted(date: .abbreviated, time: .shortened))
+        }
+        return parts.isEmpty ? String(localized: "environment.backend.status.running") : parts.joined(separator: " · ")
+    }
+
+    /// Live guest runtime versions (Python/Node) read from this
+    /// environment's own guest. A missing or failing probe reads as not
+    /// installed; nothing is guessed from the host.
+    @MainActor private func refreshGuestRuntimes() async {
+        guard let status = guestStatus, status.running else {
+            guestRuntimes = [:]
+            return
+        }
+        var versions: [String: String] = [:]
+        for (name, argv) in [("Python", ["python3", "--version"]), ("Node", ["node", "--version"])] {
+            guard let result = try? await FloePlatformServices.shared.runLinuxCommand(
+                id: report.id, argv: argv, timeout: 30
+            ), result.exitCode == 0 else { continue }
+            let line = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty { versions[name] = line }
+        }
+        guestRuntimes = versions
     }
     /// Applies a backend choice through the same platform service the shell
     /// entry uses; failures (unqualified image, guest start failure) surface

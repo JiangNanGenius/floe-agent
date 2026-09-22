@@ -171,9 +171,21 @@ public actor RuntimeV2EnvironmentMigrator {
                             .appendingPathComponent("disk-\(environmentID)-\(UUID().uuidString)", isDirectory: true)
                         try? fileManager.moveItem(at: legacyDiskDirectory, to: quarantine)
                     }
-                    try await registry.setEnvironmentState(
-                        id: environmentID, state: "repairRequired",
-                        repairReason: "the environment disk does not descend from the verified base image; it was quarantined, never overwritten"
+                    // The row may not exist yet (first migration attempt): an
+                    // UPDATE would silently affect zero rows and lose the
+                    // repair state, so the environment is upserted with the
+                    // honest state instead.
+                    let now = Date()
+                    try await registry.upsertEnvironment(
+                        RuntimeV2Registry.EnvironmentRow(
+                            id: environmentID, kind: kind, ownerID: ownerID, name: name,
+                            baseImageID: baseImageID, baseRootfsDigest: baseDigest,
+                            state: "repairRequired",
+                            dataPath: "environments/\(environmentID)/data",
+                            compatHostFHS: false,
+                            repairReason: "the environment disk does not descend from the verified base image; it was quarantined, never overwritten",
+                            createdAt: now, lastUsedAt: now
+                        )
                     )
                     throw RuntimeV2Error.deltaBaseConflict(
                         environmentID: environmentID, recorded: legacyOriginSHA512, verified: baseDigest

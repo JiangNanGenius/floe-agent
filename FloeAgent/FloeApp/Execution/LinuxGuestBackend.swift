@@ -63,6 +63,33 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     }
 }
 
+/// Runtime v2 verified-image truth for install-state composition. Once the
+/// verified v2 migration moves the legacy image directory into its rollback
+/// point, a legacy-only status read would wrongly report "not installed" and
+/// offer a re-download of gigabytes the device already has. This provider
+/// answers from the v2 store only — it never triggers a migration as a side
+/// effect of a status read.
+struct LinuxGuestRuntimeV2ImageStatus: Sendable {
+    /// Non-migrating verified gate (`isImageVerifiedWithoutMigration`).
+    let isVerified: @Sendable (String) async -> Bool
+    /// `RuntimeV2Layout.expandedImagesDirectory`: the rebuildable view that
+    /// carries the verbatim legacy manifest as `manifest.json`.
+    let expandedImagesRoot: URL
+
+    /// The verified legacy manifest of an already-migrated image, or nil when
+    /// the v2 store does not hold this image verified.
+    func verifiedImage(id: String) async -> LinuxGuestImage? {
+        guard await isVerified(id) else { return nil }
+        let manifestURL = expandedImagesRoot
+            .appendingPathComponent(id, isDirectory: true)
+            .appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(LinuxGuestImage.self, from: data)
+    }
+}
+
 /// Builds the single injected Linux guest service for the app.
 enum LinuxGuestBackendAssembly {
     /// Manifest id expected under `<artifact root>/LinuxGuest/images/<id>/`.
@@ -90,6 +117,17 @@ enum LinuxGuestBackendAssembly {
                     expandedImagesRoot: layout.expandedImagesDirectory,
                     legacy: legacy,
                     verifiedGate: { imageID in await integrator.isImageVerified(imageID: imageID) }
+                )
+                // Install-state truth for Settings and the IDE capability
+                // gate: after the verified migration moves the legacy image
+                // directory aside, image status must come from the v2 store.
+                FloePlatformServices.shared.setLinuxImageRuntimeV2(
+                    LinuxGuestRuntimeV2ImageStatus(
+                        isVerified: { imageID in
+                            await integrator.isImageVerifiedWithoutMigration(imageID: imageID)
+                        },
+                        expandedImagesRoot: layout.expandedImagesDirectory
+                    )
                 )
             } else {
                 runtimeV2 = nil
