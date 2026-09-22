@@ -119,6 +119,17 @@ public actor RuntimeV2EnvironmentMigrator {
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         let migrationID = "legacy-env-\(environmentID)"
         let registry = store.registry
+        // Fail closed on every retry: a repairRequired row means an earlier
+        // attempt quarantined the legacy disk (origin conflict) or could not
+        // salvage state. Re-running would activate an empty environment over
+        // the preserved data — row existence is never proof of a completed
+        // migration, the state is.
+        if let existing = try await registry.environment(id: environmentID),
+           existing.state == "repairRequired" {
+            throw RuntimeV2Error.environmentRepairRequired(
+                environmentID: environmentID, reason: existing.repairReason
+            )
+        }
         do {
             try await registry.beginMigration(
                 id: migrationID, kind: "legacy-environment",

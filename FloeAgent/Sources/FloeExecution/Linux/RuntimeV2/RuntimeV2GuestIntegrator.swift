@@ -156,6 +156,16 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 legacyLayerDirectory: legacyWritableDirectory
             )
         }
+        // Fail closed before any lease or materialization: an environment
+        // whose migration ended repairRequired (e.g. an origin conflict that
+        // quarantined the legacy disk) must never boot a fresh empty
+        // data/delta over the preserved data, on any retry.
+        if let row = try await store.registry.environment(id: environmentID),
+           row.state == "repairRequired" {
+            throw RuntimeV2Error.environmentRepairRequired(
+                environmentID: environmentID, reason: row.repairReason
+            )
+        }
         // Lease first: single writable ownership of the environment's delta.
         // In-process staleness is already proven by the caller: the registry
         // only reaches here when no session exists, no teardown is in flight

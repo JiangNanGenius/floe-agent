@@ -144,6 +144,16 @@ public actor RuntimeV2ImageStore {
         return expanded
     }
 
+    /// True when the rebuildable expanded view exists and carries every
+    /// artifact at its recorded size. The view is disposable — the registry
+    /// row, the v2 manifest and the blobs are the truth — so this answers
+    /// "is the cache intact", never "is the image installed".
+    public func isExpandedViewComplete(imageID: String) throws -> Bool {
+        guard let manifest = try manifest(imageID: imageID) else { return false }
+        let expanded = try layout.expandedImageDirectory(imageID: imageID)
+        return try expandedViewComplete(imageID: imageID, manifest: manifest, directory: expanded)
+    }
+
     /// Writes the expanded tree into `directory`: the verbatim legacy manifest
     /// plus every artifact materialized from its blob, then re-verifies every
     /// file against the recorded digest before returning.

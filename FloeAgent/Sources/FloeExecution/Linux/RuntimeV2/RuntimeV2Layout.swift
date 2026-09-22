@@ -54,6 +54,7 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
     case blobMissing(String)
     case deltaCorrupt(environmentID: String, reason: String)
     case deltaBaseConflict(environmentID: String, recorded: String, verified: String)
+    case environmentRepairRequired(environmentID: String, reason: String?)
     case leaseHeld(environmentID: String, runtimeID: String)
     case leaseNotHeld(environmentID: String)
     case queueFull(limit: Int)
@@ -85,6 +86,8 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
             return "system delta for \(environmentID) is corrupt: \(reason); previous state was retained"
         case .deltaBaseConflict(let environmentID, let recorded, let verified):
             return "system delta for \(environmentID) was captured from base \(recorded.prefix(16))… but the verified base is \(verified.prefix(16))…; the delta was not applied or overwritten"
+        case .environmentRepairRequired(let environmentID, let reason):
+            return "environment \(environmentID) requires repair before it can boot: \(reason ?? "no reason recorded"); the preserved data was not overwritten"
         case .leaseHeld(let environmentID, let runtimeID):
             return "environment \(environmentID) is owned by live runtime \(runtimeID); a second writer is refused"
         case .leaseNotHeld(let environmentID):

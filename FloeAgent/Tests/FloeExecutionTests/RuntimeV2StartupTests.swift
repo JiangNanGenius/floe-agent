@@ -418,6 +418,193 @@ final class RuntimeV2StartupTests: XCTestCase {
         XCTAssertEqual(quarantined.count, 1)
     }
 
+    // MARK: - repairRequired fail-closed regressions
+
+    /// Review blocker: an origin-conflict migration upserts a
+    /// repairRequired row and quarantines the legacy disk, but a later
+    /// `prepareWorkingDisk` treated mere row existence as "migrated" and
+    /// booted a fresh empty data/delta while the real disk stayed
+    /// quarantined. Every retry must now fail closed — before any lease,
+    /// materialization or capture — and the preserved data must survive.
+    func testRepairRequiredEnvironmentFailsClosedOnEveryPrepareRetry() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+
+        // A legacy writable layer whose disk declares a foreign origin.
+        let layer = root.appendingPathComponent("legacy-layer", isDirectory: true)
+        let diskDirectory = layer
+            .appendingPathComponent("LinuxGuest/disks/env-retry", isDirectory: true)
+        try FileManager.default.createDirectory(at: diskDirectory, withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 1 << 20).write(to: diskDirectory.appendingPathComponent("disk.img"))
+        let origin = LinuxGuestRuntimeDiskOrigin(
+            imageID: "some-other-image",
+            artifactSHA512: String(repeating: "a", count: 128),
+            artifactBytes: 1 << 20
+        )
+        let originEncoder = JSONEncoder()
+        originEncoder.dateEncodingStrategy = .iso8601
+        try originEncoder.encode(origin).write(
+            to: diskDirectory.appendingPathComponent("origin.json"), options: .atomic
+        )
+
+        // First attempt: the migration itself fails with the origin conflict
+        // and quarantines the disk.
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        do {
+            _ = try await integrator.prepareWorkingDisk(
+                environmentID: "env-retry", runtimeID: "rt-retry", imageID: image.id,
+                legacyWritableDirectory: layer, targetCapacityBytes: 4 << 20
+            )
+            XCTFail("an origin conflict must fail the start")
+        } catch RuntimeV2Error.deltaBaseConflict {
+            // expected
+        }
+        let row = try await store.registry.environment(id: "env-retry")
+        XCTAssertEqual(row?.state, "repairRequired")
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("disk-env-retry") }
+        XCTAssertEqual(quarantined.count, 1)
+
+        // The retry (e.g. the user tapping start again, or the next launch)
+        // must fail closed with the explicit repair state — never boot a
+        // fresh empty environment over the quarantined data.
+        let relaunched = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        do {
+            _ = try await relaunched.prepareWorkingDisk(
+                environmentID: "env-retry", runtimeID: "rt-retry-2", imageID: image.id,
+                legacyWritableDirectory: layer, targetCapacityBytes: 4 << 20
+            )
+            XCTFail("a repairRequired environment must never boot")
+        } catch RuntimeV2Error.environmentRepairRequired(let environmentID, _) {
+            XCTAssertEqual(environmentID, "env-retry")
+        }
+        // Nothing was materialized, captured or leased by the failed retry.
+        let deltaAfterRetry = try await store.deltas.loadDelta(environmentID: "env-retry")
+        XCTAssertNil(deltaAfterRetry)
+        let leaseAfterRetry = try await store.leases.holder(environmentID: "env-retry")
+        XCTAssertNil(leaseAfterRetry)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: (try? layout.runtimeVMDirectory(runtimeID: "rt-retry-2"))?.path ?? ""
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: (try? layout.environmentDataDirectory(environmentID: "env-retry"))?.path ?? ""
+            )
+        )
+        // The quarantined disk is still preserved, untouched.
+        let quarantinedAfterRetry = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("disk-env-retry") }
+        XCTAssertEqual(quarantinedAfterRetry.count, 1)
+        let rowAfterRetry = try await store.registry.environment(id: "env-retry")
+        XCTAssertEqual(rowAfterRetry?.state, "repairRequired")
+    }
+
+    /// A direct migrator retry against a repairRequired environment fails
+    /// closed too: re-running the phase machine would skip the (quarantined)
+    /// disk, copy the layer and activate an empty system delta.
+    func testRepairRequiredMigrationRetryFailsClosed() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+
+        let layer = root.appendingPathComponent("legacy-layer", isDirectory: true)
+        let diskDirectory = layer
+            .appendingPathComponent("LinuxGuest/disks/env-migrator-retry", isDirectory: true)
+        try FileManager.default.createDirectory(at: diskDirectory, withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 1 << 20).write(to: diskDirectory.appendingPathComponent("disk.img"))
+        let origin = LinuxGuestRuntimeDiskOrigin(
+            imageID: "some-other-image",
+            artifactSHA512: String(repeating: "a", count: 128),
+            artifactBytes: 1 << 20
+        )
+        let originEncoder = JSONEncoder()
+        originEncoder.dateEncodingStrategy = .iso8601
+        try originEncoder.encode(origin).write(
+            to: diskDirectory.appendingPathComponent("origin.json"), options: .atomic
+        )
+
+        let migrator = RuntimeV2EnvironmentMigrator(store: store)
+        do {
+            _ = try await migrator.migrateLegacyEnvironment(
+                environmentID: "env-migrator-retry", kind: "linuxVM", ownerID: nil, name: nil,
+                baseImageID: image.id, legacyDiskDirectory: diskDirectory, legacyLayerDirectory: layer
+            )
+            XCTFail("an origin conflict must throw")
+        } catch RuntimeV2Error.deltaBaseConflict {
+            // expected
+        }
+
+        // Retry with the disk now quarantined (directory gone): the migrator
+        // must refuse instead of activating an empty environment.
+        do {
+            _ = try await migrator.migrateLegacyEnvironment(
+                environmentID: "env-migrator-retry", kind: "linuxVM", ownerID: nil, name: nil,
+                baseImageID: image.id, legacyDiskDirectory: diskDirectory, legacyLayerDirectory: layer
+            )
+            XCTFail("a repairRequired environment must never re-migrate into activation")
+        } catch RuntimeV2Error.environmentRepairRequired(let environmentID, _) {
+            XCTAssertEqual(environmentID, "env-migrator-retry")
+        }
+        let row = try await store.registry.environment(id: "env-migrator-retry")
+        XCTAssertEqual(row?.state, "repairRequired")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: (try? layout.environmentDataDirectory(environmentID: "env-migrator-retry"))?.path ?? ""
+            )
+        )
+    }
+
+    /// Review blocker: install status reads the disposable
+    /// `images/expanded/<id>/manifest.json`. When the registry row, v2
+    /// manifest and blobs are verified but the expanded view is lost
+    /// (it is excluded from backup), startup recovery must rebuild it from
+    /// the verified blobs — never report uninstalled, never redownload.
+    func testMissingExpandedViewRebuildsFromVerifiedBlobsOnRecovery() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        let expanded = try await store.images.ensureExpanded(imageID: image.id)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expanded.appendingPathComponent("manifest.json").path))
+
+        // The disposable view is lost (device restore, cache prune).
+        try FileManager.default.removeItem(at: expanded)
+
+        // Relaunch: recovery rebuilds the view from the verified blobs.
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertEqual(report.rebuiltExpandedViews, [image.id])
+        XCTAssertTrue(report.notes.isEmpty)
+
+        let rebuilt = try await relaunched.images.ensureExpanded(imageID: image.id)
+        // The exact read the install-status surface performs: the verbatim
+        // legacy manifest decodes again.
+        let manifestData = try Data(contentsOf: rebuilt.appendingPathComponent("manifest.json"))
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(LinuxGuestImage.self, from: manifestData)
+        XCTAssertEqual(decoded.id, image.id)
+        // Every artifact is back at its recorded digest.
+        for artifact in image.artifacts ?? [] {
+            let digest = try FloeDigest.sha512Hex(
+                ofFileAt: rebuilt.appendingPathComponent(artifact.path)
+            )
+            XCTAssertEqual(digest, artifact.sha512.lowercased())
+        }
+        let stillVerified = try await relaunched.images.isImageVerified(imageID: image.id)
+        XCTAssertTrue(stillVerified)
+
+        // A second launch finds the intact view and rebuilds nothing.
+        let third = RuntimeV2Store(layout: layout)
+        let thirdReport = try await third.prepareAndRecover(build: "test")
+        XCTAssertEqual(thirdReport.rebuiltExpandedViews, [])
+    }
+
     // MARK: - integrator start/stop cycle (no VM)
 
     /// The full Runtime v2 ownership cycle the guest registry drives on a
