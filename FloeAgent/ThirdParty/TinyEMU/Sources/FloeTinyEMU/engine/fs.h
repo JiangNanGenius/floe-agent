@@ -89,7 +89,15 @@
 #define	P9_ENOSPC    28
 #define P9_ENOTEMPTY 39
 #define P9_EPROTO    71
-#define P9_ENOTSUP   524
+#define P9_ENOTSUP   95
+/* FLOE-EMBED (patch 0009): the guest is Linux/glibc, where ENOTSUP and
+   EOPNOTSUPP share the generic errno value 95. Upstream pinned 524, which
+   the guest received verbatim and printed as "Unknown error 524". */
+#define P9_EISDIR    21
+#define P9_ENODATA   61
+
+/* unlinkat() flags (9P2000.L follows the Linux uapi values) */
+#define P9_AT_REMOVEDIR 0x00000200
 
 typedef struct FSDevice FSDevice;
 typedef struct FSFile FSFile;
@@ -188,10 +196,45 @@ struct FSDevice {
     int (*fs_readlink)(FSDevice *fs, char *buf, int buf_size, FSFile *f);
     int (*fs_renameat)(FSDevice *fs, FSFile *f, const char *name, 
                        FSFile *new_f, const char *new_name);
-    int (*fs_unlinkat)(FSDevice *fs, FSFile *f, const char *name);
+    int (*fs_unlinkat)(FSDevice *fs, FSFile *f, const char *name, uint32_t flags);
     int (*fs_lock)(FSDevice *fs, FSFile *f, const FSLock *lock);
     int (*fs_getlock)(FSDevice *fs, FSFile *f, FSLock *lock);
 };
+
+/* FLOE-EMBED (patch 0009): shared 9P policy as static inline so the engine
+   and host-side checks compile one identical definition. */
+
+/* Txattrwalk policy for an export that carries no extended attributes:
+   an empty name is the list-xattrs request and yields an empty list
+   (size 0); a named attribute query yields ENODATA, so getxattr callers
+   such as GNU ls -l (system.posix_acl_access / security.selinux probes)
+   degrade silently instead of surfacing an "Unknown error". */
+static inline int floe_9p_xattrwalk_result(const char *name,
+                                           uint64_t *size_out)
+{
+    if (size_out)
+        *size_out = 0;
+    if (name != NULL && name[0] != '\0')
+        return -P9_ENODATA;
+    return 0;
+}
+
+/* Tunlinkat flag/type decision. Unknown flag bits are rejected, removing a
+   directory without AT_REMOVEDIR is EISDIR, and AT_REMOVEDIR on a non
+   directory is ENOTDIR. Symlinks are non-directories and are removed as
+   links (their target is never touched). */
+static inline int floe_9p_unlink_decision(uint32_t flags, uint32_t p9_mode)
+{
+    if (flags & ~(uint32_t)P9_AT_REMOVEDIR)
+        return -P9_EINVAL;
+    int is_dir = (p9_mode & P9_S_IFMT) == P9_S_IFDIR;
+    int remove_dir = (flags & P9_AT_REMOVEDIR) != 0;
+    if (is_dir && !remove_dir)
+        return -P9_EISDIR;
+    if (!is_dir && remove_dir)
+        return -P9_ENOTDIR;
+    return 0;
+}
 
 FSDevice *fs_disk_init(const char *root_path);
 FSDevice *fs_mem_init(void);

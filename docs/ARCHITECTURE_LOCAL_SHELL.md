@@ -224,6 +224,50 @@ closest prior art; the Floe-specific delta is the stricter review pipeline.
   (`ShellHome`, `ShellTmp`, `Packages/bin`) in the native backend, and at the
   guest's environment layer in the Linux backend.
 
+### 5.1 Linux guest disk, cache and install state
+
+- Each Linux environment owns a raw ext4 disk cloned from the compact
+  verified base image (APFS copy-on-write `clonefile` when the volume
+  supports it, otherwise a byte copy). The container is grown **sparsely and
+  grow-only** to a logical 8 GiB (`LinuxGuestDiskLayout`); the host file
+  keeps the base image's physical footprint until the guest writes into the
+  new blocks. On the next boot the guest runs an online, idempotent
+  `resize2fs` to extend the filesystem. Older, smaller disks are migrated in
+  place — never replaced — and the origin sidecar records schema
+  (v1→v2) and capacity provenance. A failed grow/resize is surfaced as a
+  repair state while the guest stays usable at its previous capacity.
+- Temp and package caches are routed into the persistent environment write
+  layer instead of the compact RAM-backed root partition: `TMPDIR`/`TMP`/
+  `TEMP` → `/floe/env/tmp` (01777), `PIP_CACHE_DIR` → `/floe/env/cache/pip`,
+  `XDG_CACHE_HOME` → `/floe/env/cache/xdg`, `npm_config_cache` →
+  `/floe/env/cache/npm`. This keeps a pip source build without a riscv64
+  wheel (e.g. Pillow) from filling the root partition. The runner creates
+  the directories at boot and falls back to `/tmp` only when the share is
+  missing or unwritable. The Swift authority is `LinuxGuestWritablePaths`.
+- One authoritative install/environment state (`LinuxGuestInstallState`
+  derived by `LinuxGuestInstallStateDerivation` from verified image, disk
+  migration and live runtime facts) drives both Settings and the terminal
+  card. A verified installed or running guest can never render the
+  "download and start" card; phases are download (with progress/cancel),
+  installed-stopped, running, repair and update. First Linux use
+  (shell/Python/services/apt/npm) runs the shared, cancellable preparation
+  job automatically — concurrent callers share one download, both at the
+  service (`installTrustedImage` coalescing) and UI job (`runShared`)
+  layers; the model does not have to discover `environment.prepareLinux`.
+- The 9P backend propagates `unlinkat` flags and verifies target type with
+  `AT_SYMLINK_NOFOLLOW`: empty directories are removable on Darwin hosts
+  (whose `unlinkat(...,0)` returns EPERM), a non-empty directory is still
+  `ENOTEMPTY`, and a symlink is removed as a link without touching its
+  target. `Txattrwalk` answers a list request with an empty list and a
+  named query with `ENODATA` instead of the upstream bogus status 524, so
+  GNU `ls -l` no longer prints "Unknown error 524". Verified by
+  `FloeAgent/LinuxGuest/tests/ninep_semantics_check.sh`.
+
+> Device-validation limit: the disk grow, in-guest `resize2fs`, temp/cache
+> routing and 9P behavior are unit/host-tested here but are only proven on a
+> physical iPad guest by the cloud TinyEMU/Linux qualification; no on-device
+> result is claimed by this change.
+
 ## 6. Third-party components
 
 | Component | Version | License | Use |

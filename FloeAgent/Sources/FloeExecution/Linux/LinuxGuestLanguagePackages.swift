@@ -61,8 +61,9 @@ public struct LinuxGuestNodePackage: Sendable, Equatable {
 /// Python/Node package operations for one injected Linux guest runner.
 public struct LinuxGuestLanguagePackages: Sendable {
     /// Guest-side pip cache, kept inside the environment layer so a package is
-    /// downloaded once and survives a guest restart.
-    public static let pythonCacheDirectory = LinuxGuestMountPoint.environment + "/var/pip-cache"
+    /// downloaded once and survives a guest restart. One path with the runner
+    /// default (see LinuxGuestWritablePaths).
+    public static let pythonCacheDirectory = LinuxGuestWritablePaths.pipCache
     /// Guest-side npm/pnpm caches and the Node transaction root.
     public static let nodeTransactionRoot = LinuxGuestNodeEnvironment.guestTransactionRoot
 
@@ -390,10 +391,12 @@ public struct LinuxGuestLanguagePackages: Sendable {
 
         let output: String
         do {
-            var variables: [String: String] = [
+            let variables: [String: String] = [
                 "HOME": LinuxGuestMountPoint.environment + "/home",
-                "TMPDIR": LinuxGuestMountPoint.environment + "/tmp",
-                "npm_config_cache": LinuxGuestMountPoint.environment + "/var/npm",
+                "TMPDIR": LinuxGuestWritablePaths.tmp,
+                "TMP": LinuxGuestWritablePaths.tmp,
+                "TEMP": LinuxGuestWritablePaths.tmp,
+                "npm_config_cache": LinuxGuestWritablePaths.npmCache,
                 "npm_config_store_dir": LinuxGuestMountPoint.environment + "/opt/pnpm-store",
                 "npm_config_prefix": stage,
                 "npm_config_global": "false",
@@ -703,7 +706,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         dest=/floe/env/usr/lib/node_modules
         tx=/floe/env/var/floe-node-transaction
         rm -rf "$tx"
-        mkdir -p "$tx/stage" /floe/env/usr/lib /floe/env/home /floe/env/tmp /floe/env/var/npm /floe/env/opt/pnpm-store
+        mkdir -p "$tx/stage" /floe/env/usr/lib /floe/env/home /floe/env/tmp /floe/env/cache/npm /floe/env/cache/pip /floe/env/cache/xdg /floe/env/opt/pnpm-store
         : > "$tx/empty.npmrc"
         : > "$tx/empty-global.npmrc"
         printf 'prepared' > "$tx/journal"

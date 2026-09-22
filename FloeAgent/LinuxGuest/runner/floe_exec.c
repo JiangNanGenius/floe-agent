@@ -1282,9 +1282,10 @@ static void mkdir_parents(const char *path, mode_t mode) {
 }
 
 #ifdef __linux__
-static void mkdir_p(const char *path, mode_t mode) {
+static int mkdir_p(const char *path, mode_t mode) {
     mkdir_parents(path, mode);
-    (void)mkdir(path, mode);
+    if (mkdir(path, mode) == 0) return 0;
+    return errno == EEXIST ? 0 : -1;
 }
 
 static void try_mount(const char *source, const char *target, const char *fstype, const char *data) {
@@ -1656,6 +1657,44 @@ static void set_default_environment(void) {
     if (access("/floe/env", X_OK) == 0) setenv("FLOE_ENV_DIR", "/floe/env", 1);
     if (access("/workspace", X_OK) == 0) setenv("FLOE_WORKSPACE_DIR", "/workspace", 1);
 #ifdef __linux__
+    // Persistent temp/cache inside the environment write layer. The root
+    // partition is a compact image with a RAM-backed /tmp, so native
+    // apt/pip/npm/gem work must not stage temp or cache there: a pip source
+    // build (e.g. Pillow when no riscv64 wheel exists) would otherwise
+    // ENOSPC the root partition. Paths are kept aligned with
+    // LinuxGuestWritablePaths (Sources/FloeExecution/Linux).
+    #define FLOE_ENV_TMP "/floe/env/tmp"
+    #define FLOE_ENV_CACHE_XDG "/floe/env/cache/xdg"
+    #define FLOE_ENV_CACHE_PIP "/floe/env/cache/pip"
+    #define FLOE_ENV_CACHE_NPM "/floe/env/cache/npm"
+    static const struct { const char *path; mode_t mode; } writable_dirs[] = {
+        {FLOE_ENV_TMP, 01777},
+        {FLOE_ENV_CACHE_XDG, 0755},
+        {FLOE_ENV_CACHE_PIP, 0755},
+        {FLOE_ENV_CACHE_NPM, 0755},
+    };
+    int writable_ready = access("/floe/env", W_OK) == 0;
+    if (writable_ready) {
+        for (size_t i = 0; i < sizeof writable_dirs / sizeof writable_dirs[0]; i++) {
+            if (mkdir_p(writable_dirs[i].path, writable_dirs[i].mode) != 0
+                || access(writable_dirs[i].path, W_OK) != 0) {
+                writable_ready = 0;
+                break;
+            }
+        }
+    }
+    if (writable_ready) {
+        // overwrite: every guest command (shell, apt, pip, npm, gem, native
+        // builds) sees the persistent locations.
+        setenv("TMPDIR", FLOE_ENV_TMP, 1);
+        setenv("TMP", FLOE_ENV_TMP, 1);
+        setenv("TEMP", FLOE_ENV_TMP, 1);
+        setenv("XDG_CACHE_HOME", FLOE_ENV_CACHE_XDG, 1);
+        setenv("PIP_CACHE_DIR", FLOE_ENV_CACHE_PIP, 1);
+        setenv("npm_config_cache", FLOE_ENV_CACHE_NPM, 1);
+    }
+    // If the share is missing/unwritable the /tmp defaults above stay in
+    // effect; the failure is observed per command rather than hidden.
     if (access("/root", F_OK) != 0) (void)mkdir("/root", 0700);
 #endif
 }

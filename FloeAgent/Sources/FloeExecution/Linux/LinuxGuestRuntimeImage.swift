@@ -12,14 +12,21 @@
 //  - bios/kernel/initrd resolve to absolute, regular files inside the image
 //    directory; they are used in place, so the verified bytes are the booted
 //    bytes and the manifest digests stay meaningful;
-//  - the disk is copied once per environment into
+//  - the disk is cloned once per environment into
 //    `<writableDirectory>/LinuxGuest/disks/<environmentID>/disk.img` through a
 //    sibling staging file and an atomic rename, then reused across restarts so
-//    packages installed in the guest survive a stop/start;
-//  - a sidecar records the origin image id and the declared base digest. An
-//    existing environment disk prepared from a different verified base is a
-//    conflict: it is reported, never silently overwritten, because it is the
-//    user's environment state.
+//    packages installed in the guest survive a stop/start. The clone uses
+//    APFS clonefile (copy-on-write) when the volume supports it and falls
+//    back to a byte copy;
+//  - every environment disk is a raw ext4 image grown logically (sparse,
+//    grow-only) to `LinuxGuestDiskLayout.targetLogicalCapacityBytes`
+//    (8 GiB); the guest extends the ext4 filesystem to that capacity on the
+//    next boot. An older, smaller disk is migrated in place — never replaced
+//    — and its sidecar records schema and capacity provenance;
+//  - a sidecar records the origin image id, the declared base digest and the
+//    logical capacity. An existing environment disk prepared from a
+//    different verified base is a conflict: it is reported, never silently
+//    overwritten, because it is the user's environment state.
 //
 // Failed or cancelled preparations only ever remove their own staging files;
 // the verified base and an already promoted environment disk are untouched.
@@ -27,6 +34,22 @@
 import Darwin
 import Foundation
 import FloeCore
+
+/// Capacity layout shared by host disk preparation and the in-guest ext4
+/// resize. The guest sees one raw block device; the host file stays sparse.
+public enum LinuxGuestDiskLayout {
+    /// Logical capacity every environment disk is grown to (8 GiB). Host
+    /// allocation is sparse (copy-on-write clone + holes), so first creation
+    /// costs the base image's physical bytes, not 8 GiB; the guest ext4
+    /// filesystem is extended to this capacity after boot.
+    public static let targetLogicalCapacityBytes: Int64 = 8 * 1024 * 1024 * 1024
+    /// Smallest target a caller may request; keeps tests honest without
+    /// allowing an unusable disk.
+    public static let minimumLogicalCapacityBytes: Int64 = 1 * 1024 * 1024
+    /// Guest block device the verified cmdline mounts as root; resize2fs is
+    /// run against it when the filesystem is below the container capacity.
+    public static let guestRootDevice = "/dev/vda"
+}
 
 /// Preparation failures for one guest start. Every case names the missing or
 /// conflicting path so the caller can report an honest reason; nothing here
@@ -37,6 +60,10 @@ enum LinuxGuestRuntimeImageError: Error, LocalizedError, Sendable, Equatable {
     case writableRootMissing(environmentID: String, path: String)
     case diskPreparationFailed(path: String, reason: String)
     case diskOriginConflict(disk: String, existing: String, verified: String)
+    /// Grow-only logical capacity growth failed (typically ENOSPC/EDQUOT on
+    /// the host volume). The environment disk is untouched and still boots at
+    /// its previous capacity.
+    case diskGrowthFailed(path: String, existingCapacity: Int64, targetCapacity: Int64, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -50,6 +77,8 @@ enum LinuxGuestRuntimeImageError: Error, LocalizedError, Sendable, Equatable {
             return "cannot prepare the Linux guest disk at \(path): \(reason)"
         case .diskOriginConflict(let disk, let existing, let verified):
             return "Linux environment disk \(disk) was created from \(existing), the verified image is \(verified), and the manifest declares no compatible predecessor origin; refusing to overwrite the environment state"
+        case .diskGrowthFailed(let path, let existing, let target, let reason):
+            return "cannot grow the Linux environment disk at \(path) from \(existing) to \(target) bytes: \(reason); the existing disk and its packages are preserved"
         }
     }
 }
@@ -58,30 +87,51 @@ enum LinuxGuestRuntimeImageError: Error, LocalizedError, Sendable, Equatable {
 /// verified manifest declared for the base disk when this environment disk was
 /// first copied; later starts compare against that record — never against a
 /// re-hash of the (intentionally mutated) environment copy.
+///
+/// Schema history:
+///  - v1: image id + base digest/bytes (no logical-capacity record).
+///  - v2: adds `logicalCapacityBytes` plus migration provenance; a v1
+///    sidecar is decoded with absent capacity and the disk is grown once,
+///    in place, then rewritten as v2.
 struct LinuxGuestRuntimeDiskOrigin: Codable, Equatable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int
     var imageID: String
     var artifactSHA512: String
     var artifactBytes: Int64
     var createdAt: Date
+    /// Logical size of the raw container in bytes after host-side
+    /// preparation. nil for a v1 sidecar; such a disk is migrated (grown)
+    /// once and the sidecar is rewritten as v2.
+    var logicalCapacityBytes: Int64?
+    /// Logical capacity before the last grow-only migration, nil for a disk
+    /// created already at its target capacity.
+    var migratedFromCapacityBytes: Int64?
+    var migratedAt: Date?
 
     init(
         imageID: String,
         artifactSHA512: String,
         artifactBytes: Int64,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        logicalCapacityBytes: Int64? = nil,
+        migratedFromCapacityBytes: Int64? = nil,
+        migratedAt: Date? = nil
     ) {
         self.version = Self.currentVersion
         self.imageID = imageID
         self.artifactSHA512 = artifactSHA512
         self.artifactBytes = artifactBytes
         self.createdAt = createdAt
+        self.logicalCapacityBytes = logicalCapacityBytes
+        self.migratedFromCapacityBytes = migratedFromCapacityBytes
+        self.migratedAt = migratedAt
     }
 
     var summary: String {
-        "image \(imageID) (\(artifactSHA512.prefix(16))…, \(artifactBytes) bytes)"
+        let capacity = logicalCapacityBytes.map { String($0) } ?? "v1"
+        return "image \(imageID) (\(artifactSHA512.prefix(16))…, \(artifactBytes) bytes, capacity \(capacity))"
     }
 }
 
@@ -129,6 +179,20 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
     }
 
     // MARK: runner upgrade ledger
+
+    /// Reads the disk origin sidecar for one environment, nil when it is
+    /// absent or unreadable (the registry treats that as preparation state).
+    public static func diskOrigin(
+        writableDirectory: URL,
+        environmentID: String,
+        fileManager: FileManager = .default
+    ) -> LinuxGuestRuntimeDiskOrigin? {
+        let url = environmentDiskDirectory(writableDirectory: writableDirectory, environmentID: environmentID)
+            .appendingPathComponent(originFileName)
+        guard let data = try? Data(contentsOf: url),
+              let origin = try? decodeOrigin(data) else { return nil }
+        return origin
+    }
 
     /// The runner capability line recorded for this environment's disk, nil
     /// when the ledger is absent/unreadable (treated as "unknown — check the
@@ -211,11 +275,16 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
     /// Returns a copy of `image` whose boot paths are absolute files inside
     /// `imageDirectory` and whose disk (when declared) is the environment's
     /// own writable copy under `writableDirectory`.
+    ///
+    /// `targetCapacityBytes` is the raw-container logical size every disk is
+    /// grown to (sparse, grow-only); tests pass a smaller value. The in-guest
+    /// ext4 filesystem is extended separately after boot.
     func prepare(
         image: LinuxGuestImage,
         imageDirectory: URL,
         environmentID: String,
         writableDirectory: URL?,
+        targetCapacityBytes: Int64 = LinuxGuestDiskLayout.targetLogicalCapacityBytes,
         fileManager: FileManager = .default
     ) throws -> LinuxGuestImage {
         try Task.checkCancellation()
@@ -249,6 +318,7 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
                 imageDirectory: imageDirectory,
                 environmentID: environmentID,
                 writableDirectory: writableDirectory,
+                targetCapacityBytes: targetCapacityBytes,
                 fileManager: fileManager
             ).path
         }
@@ -314,6 +384,7 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
         imageDirectory: URL,
         environmentID: String,
         writableDirectory: URL?,
+        targetCapacityBytes: Int64,
         fileManager: FileManager
     ) throws -> URL {
         let base = try Self.resolveArtifact(
@@ -343,6 +414,7 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
                 path: root.path
             )
         }
+        let capacity = max(LinuxGuestDiskLayout.minimumLogicalCapacityBytes, targetCapacityBytes)
 
         let directory = root
             .appendingPathComponent(Self.writableDirectoryName, isDirectory: true)
@@ -357,6 +429,7 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
                 originURL: originURL,
                 image: image,
                 declared: declared,
+                targetCapacityBytes: capacity,
                 fileManager: fileManager
             )
         }
@@ -365,24 +438,30 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
         let stagingDisk = directory.appendingPathComponent("disk.staging-\(UUID().uuidString).img")
         let stagingOrigin = directory.appendingPathComponent("origin.staging-\(UUID().uuidString).json")
         defer {
-            // Promotion renames the staging files away; whatever is left after
-            // a failure or cancellation is this attempt's own scratch data.
-            try? fileManager.removeItem(at: stagingDisk)
-            try? fileManager.removeItem(at: stagingOrigin)
+            // Promotion renames the staging files away; whatever is left
+            // after a failure or cancellation is this attempt's own scratch
+            // data. A promoted (already absent) file is normal, so the
+            // cleanup tolerates ENOENT and never masks the real result.
+            try? removeIfPresent(stagingDisk, fileManager: fileManager)
+            try? removeIfPresent(stagingOrigin, fileManager: fileManager)
         }
-
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try Task.checkCancellation()
+            // Clone the compact verified base (APFS copy-on-write when the
+            // volume supports it), then grow the raw container logically to
+            // the target capacity before promotion.
+            try stageCopy(from: base, to: stagingDisk, fileManager: fileManager)
+            try verifyStagedCopy(staging: stagingDisk, base: base, fileManager: fileManager)
+            try Task.checkCancellation()
+            try Self.growSparseFile(at: stagingDisk, capacityBytes: capacity, fileManager: fileManager)
             let origin = LinuxGuestRuntimeDiskOrigin(
                 imageID: image.id,
                 artifactSHA512: declared.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-                artifactBytes: declared.bytes
+                artifactBytes: declared.bytes,
+                logicalCapacityBytes: capacity
             )
             try Self.encodeOrigin(origin).write(to: stagingOrigin, options: .atomic)
-            try Task.checkCancellation()
-            try stageCopy(from: base, to: stagingDisk, fileManager: fileManager)
-            try verifyStagedCopy(staging: stagingDisk, base: base, fileManager: fileManager)
             try Task.checkCancellation()
 
             // Promote the sidecar first: a crash between the two renames
@@ -414,11 +493,12 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
         originURL: URL,
         image: LinuxGuestImage,
         declared: LinuxGuestImageArtifact,
+        targetCapacityBytes: Int64,
         fileManager: FileManager
     ) throws -> URL {
         let verifiedDigest = declared.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let verified = "image \(image.id) (\(verifiedDigest.prefix(16))…)"
-        guard let values = try? disk.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+        guard let values = try? disk.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
               values.isRegularFile == true,
               values.isSymbolicLink != true else {
             throw LinuxGuestRuntimeImageError.diskPreparationFailed(
@@ -426,29 +506,131 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
                 reason: "the existing environment disk is not a regular file"
             )
         }
+        let currentSize = Int64(values.fileSize ?? -1)
         var origin: LinuxGuestRuntimeDiskOrigin?
         if let data = try? Data(contentsOf: originURL) {
             origin = try? Self.decodeOrigin(data)
         }
-        if let origin, origin.version == LinuxGuestRuntimeDiskOrigin.currentVersion {
-            if origin.imageID == image.id, origin.artifactSHA512 == verifiedDigest {
+        if let origin, origin.version >= 1 && origin.version <= LinuxGuestRuntimeDiskOrigin.currentVersion {
+            let sameBase = origin.imageID == image.id && origin.artifactSHA512 == verifiedDigest
+            let adoptedBase = acceptsOrigin(origin, image: image)
+            guard sameBase || adoptedBase else {
+                throw LinuxGuestRuntimeImageError.diskOriginConflict(
+                    disk: disk.path,
+                    existing: origin.summary,
+                    verified: verified
+                )
+            }
+            // Grow-only migration in place. A v1 sidecar has no recorded
+            // capacity: the disk itself (the compact base size) is grown to
+            // the target and the sidecar is rewritten with provenance. A v2
+            // disk at or above the target is reused untouched; a disk larger
+            // than the target is never shrunk (grow-only).
+            let recordedCapacity = origin.logicalCapacityBytes
+            let physicalCapacity = currentSize
+            let needsGrow: Bool
+            if let recordedCapacity {
+                needsGrow = recordedCapacity < targetCapacityBytes
+            } else {
+                // v1 sidecar: trust the on-disk container size.
+                needsGrow = physicalCapacity < targetCapacityBytes
+            }
+            guard !needsGrow else {
+                try growExistingDisk(
+                    disk: disk,
+                    originURL: originURL,
+                    origin: origin,
+                    fromCapacity: min(recordedCapacity ?? physicalCapacity, physicalCapacity),
+                    toCapacity: targetCapacityBytes,
+                    fileManager: fileManager
+                )
                 return disk
             }
-            // Runner-only component release: the manifest names the exact
-            // predecessor base image(s) whose disks it may adopt. All three
-            // recorded fields must match; the mutable disk and its original
-            // origin.json stay exactly as they are (the origin is the honest
-            // record of the bytes this disk was cloned from, and the runner is
-            // replaced in-guest from the verified standalone artifact).
-            if acceptsOrigin(origin, image: image) {
-                return disk
+            // Sidecar normalization: a v1 origin on an already-large disk is
+            // rewritten once with its real capacity (no data movement).
+            if origin.version < LinuxGuestRuntimeDiskOrigin.currentVersion
+                || origin.logicalCapacityBytes == nil
+                || origin.logicalCapacityBytes != physicalCapacity {
+                var updated = origin
+                updated.version = LinuxGuestRuntimeDiskOrigin.currentVersion
+                if updated.logicalCapacityBytes == nil {
+                    updated.logicalCapacityBytes = physicalCapacity
+                    updated.migratedFromCapacityBytes = nil
+                }
+                try writeOrigin(updated, to: originURL)
             }
+            return disk
         }
         throw LinuxGuestRuntimeImageError.diskOriginConflict(
             disk: disk.path,
             existing: origin?.summary ?? "an unrecorded base",
             verified: verified
         )
+    }
+
+    /// Grows an existing environment disk in place (never replaces it) and
+    /// rewrites the origin sidecar with migration provenance. The grow is
+    /// sparse: no bytes are allocated beyond the existing physical data.
+    private func growExistingDisk(
+        disk: URL,
+        originURL: URL,
+        origin: LinuxGuestRuntimeDiskOrigin,
+        fromCapacity: Int64,
+        toCapacity: Int64,
+        fileManager: FileManager
+    ) throws {
+        let beforeSize = (try? disk.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap(Int64.init) ?? -1
+        do {
+            try Self.growSparseFile(at: disk, capacityBytes: toCapacity, fileManager: fileManager)
+        } catch let error as LinuxGuestRuntimeImageError {
+            throw error
+        } catch {
+            throw LinuxGuestRuntimeImageError.diskGrowthFailed(
+                path: disk.path,
+                existingCapacity: beforeSize,
+                targetCapacity: toCapacity,
+                reason: error.localizedDescription
+            )
+        }
+        var migrated = origin
+        migrated.version = LinuxGuestRuntimeDiskOrigin.currentVersion
+        migrated.logicalCapacityBytes = toCapacity
+        migrated.migratedFromCapacityBytes = max(0, fromCapacity)
+        migrated.migratedAt = Date()
+        let staging = originURL.deletingLastPathComponent()
+            .appendingPathComponent("origin.migration-\(UUID().uuidString).json")
+        do {
+            try Self.encodeOrigin(migrated).write(to: staging, options: .atomic)
+            try promote(staging, to: originURL, role: "origin")
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            throw LinuxGuestRuntimeImageError.diskGrowthFailed(
+                path: disk.path,
+                existingCapacity: beforeSize,
+                targetCapacity: toCapacity,
+                reason: "disk was grown but the provenance sidecar could not be recorded: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func writeOrigin(_ origin: LinuxGuestRuntimeDiskOrigin, to url: URL) throws {
+        try Self.encodeOrigin(origin).write(to: url, options: .atomic)
+    }
+
+    /// Removes a scratch staging file. A successful promotion already
+    /// renamed it away (ENOENT is the common case and is ignored); any
+    /// other error is reported so staging cleanup failures stay visible.
+    private func removeIfPresent(_ url: URL, fileManager: FileManager) throws {
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError { return }
+            if let posix = error as? POSIXError, posix.code == .ENOENT { return }
+            // FileManager may surface ENOENT through a wrapped POSIX code.
+            if (nsError.userInfo[NSUnderlyingErrorKey] as? POSIXError)?.code == .ENOENT { return }
+            throw error
+        }
     }
 
     /// True when the environment disk's recorded origin matches one of the
@@ -473,6 +655,77 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
             return
         }
         try fileManager.copyItem(at: base, to: staging)
+    }
+
+    /// Grows a raw disk image logically to exactly `capacityBytes` without
+    /// allocating the new range: extending with ftruncate creates a hole on
+    /// APFS/HFS+, so an 8 GiB container keeps the base's physical footprint
+    /// until the guest writes into the new blocks. Growth is grow-only: a
+    /// file already at or above the target is never shrunk (that could
+    /// truncate a guest filesystem).
+    static func growSparseFile(
+        at url: URL,
+        capacityBytes: Int64,
+        fileManager: FileManager = .default
+    ) throws {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        let current = Int64(values.fileSize ?? -1)
+        guard current >= 0 else {
+            throw LinuxGuestRuntimeImageError.diskPreparationFailed(
+                path: url.path,
+                reason: "cannot read the disk size"
+            )
+        }
+        if current == capacityBytes { return }
+        if current > capacityBytes {
+            // Grow-only: leave a larger disk untouched.
+            return
+        }
+        // O_RDWR (not O_WRONLY): FileHandle(forWritingTo:) did not reliably
+        // extend a clonefile-produced file on current Darwin SDKs, while an
+        // O_RDWR descriptor + ftruncate grows it to the requested offset.
+        let fd = open(url.path, O_RDWR)
+        var fdClosed = false
+        defer { if !fdClosed { close(fd) } }
+        guard fd >= 0 else {
+            throw LinuxGuestRuntimeImageError.diskGrowthFailed(
+                path: url.path,
+                existingCapacity: current,
+                targetCapacity: capacityBytes,
+                reason: "the disk is not writable: \(String(cString: strerror(errno)))"
+            )
+        }
+        let truncateResult = ftruncate(fd, off_t(capacityBytes))
+        let truncateErrno = errno
+        fsync(fd)
+        close(fd)
+        fdClosed = true
+        guard truncateResult == 0 else {
+            throw LinuxGuestRuntimeImageError.diskGrowthFailed(
+                path: url.path,
+                existingCapacity: current,
+                targetCapacity: capacityBytes,
+                reason: String(cString: strerror(truncateErrno))
+            )
+        }
+        // Report the real resulting size; a volume that forced allocation or
+        // any unexpected truncation is surfaced rather than assumed sparse.
+        // Read via FileManager after close: NSURL resourceValues on a reused
+        // URL can return the pre-growth cached size.
+        let after: Int64
+        do {
+            after = Int64((try fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? -1)
+        } catch {
+            after = -1
+        }
+        guard after == capacityBytes else {
+            throw LinuxGuestRuntimeImageError.diskGrowthFailed(
+                path: url.path,
+                existingCapacity: current,
+                targetCapacity: capacityBytes,
+                reason: "the disk reports \(after) bytes after growth instead of \(capacityBytes)"
+            )
+        }
     }
 
     /// A copy is as trustworthy as its length; re-hashing the whole disk on

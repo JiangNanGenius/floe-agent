@@ -65,6 +65,50 @@ import FloeTools
         cancel(id: id)
         await task.value
     }
+
+    /// Throwing task storage for shared operations awaited from non-UI
+    /// callers (shell auto-preparation, the model tool). `running`/`messages`/
+    /// `failures` still drive the UI, so one download is observable whether
+    /// the user pressed the button or first Linux use started it.
+    private var sharedThrowingTasks: [String: Task<String, Error>] = [:]
+
+    /// Runs `operation` under one shared job id. A second caller while the
+    /// job is running awaits the same task, so two entry points never start
+    /// duplicate downloads; errors propagate to every awaiter.
+    @discardableResult
+    func runShared(
+        id: String,
+        title: String,
+        operation: @escaping @Sendable () async throws -> String
+    ) async throws -> String {
+        if let existing = sharedThrowingTasks[id] {
+            return try await existing.value
+        }
+        running.insert(id)
+        messages[id] = title
+        failures.remove(id)
+        fractions[id] = nil
+        let task = Task { try await operation() }
+        sharedThrowingTasks[id] = task
+        defer {
+            sharedThrowingTasks[id] = nil
+            running.remove(id)
+            progressHandlerBindings[id] = nil
+            revision += 1
+        }
+        do {
+            let result = try await task.value
+            messages[id] = result
+            return result
+        } catch is CancellationError {
+            messages[id] = "任务已取消；重新读取依赖以确认当前状态"
+            throw CancellationError()
+        } catch {
+            messages[id] = error.localizedDescription
+            failures.insert(id)
+            throw error
+        }
+    }
 }
 
 struct EnvironmentManagerView: View {

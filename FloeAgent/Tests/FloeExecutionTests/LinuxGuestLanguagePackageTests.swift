@@ -111,7 +111,7 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         XCTAssertTrue(install.argv.contains("/floe/env/python/venv/bin/python3"), install.joined)
         XCTAssertTrue(install.argv.contains("demo==1.0"))
         XCTAssertTrue(install.argv.contains("PIP_INDEX_URL=https://mirror.example.com/simple/"), install.joined)
-        XCTAssertTrue(install.argv.contains("PIP_CACHE_DIR=/floe/env/var/pip-cache"), install.joined)
+        XCTAssertTrue(install.argv.contains("PIP_CACHE_DIR=/floe/env/cache/pip"), install.joined)
         XCTAssertFalse(install.joined.contains("--only-binary"), install.joined)
         XCTAssertFalse(install.joined.contains("--platform any"), install.joined)
         // The host layer path (a macOS path) never reaches the guest.

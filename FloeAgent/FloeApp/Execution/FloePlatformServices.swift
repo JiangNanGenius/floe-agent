@@ -280,15 +280,31 @@ final class FloePlatformServices: @unchecked Sendable {
         if current.installed && current.verificationFailure == nil {
             return "Linux image \(imageID) is already installed"
         }
-        return try await withTaskCancellationHandler {
-            let image = try await images.installTrustedImage(
-                id: imageID,
-                downloader: LinuxGuestImageHTTPDownloader(),
-                onProgress: onProgress
-            )
-            return "Linux image \(image.id) installed and verified"
-        } onCancel: {
-            cancellation.cancel()
+        let jobID = "linux-image:" + imageID
+        // One shared, cancellable job whether the user pressed the card or
+        // first Linux use (shell, Python, services, apt/npm) auto-prepares:
+        // two callers never start two downloads and both see progress.
+        return try await EnvironmentPackageJobs.shared.runShared(
+            id: jobID,
+            title: String(format: String(localized: "environment.backend.image_download_title"), imageID)
+        ) {
+            try await withTaskCancellationHandler {
+                let image = try await images.installTrustedImage(
+                    id: imageID,
+                    downloader: LinuxGuestImageHTTPDownloader(),
+                    onProgress: { received, expected in
+                        onProgress(received, expected)
+                        guard expected > 0 else { return }
+                        let fraction = min(1, Double(received) / Double(expected))
+                        Task { @MainActor in
+                            EnvironmentPackageJobs.shared.reportProgress(id: jobID, fraction: fraction)
+                        }
+                    }
+                )
+                return "Linux image \(image.id) installed and verified"
+            } onCancel: {
+                cancellation.cancel()
+            }
         }
     }
 
@@ -516,6 +532,14 @@ final class FloePlatformServices: @unchecked Sendable {
             _ = try await prepareLinuxEnvironment(cancellation: token)
             try await activateLinuxGuest(id: id)
         }
+    }
+
+    /// First environment record configured with the Linux backend, if any.
+    /// Used by UI that must attach the shared component card to one real
+    /// environment instead of inventing a guest state.
+    func firstLinuxEnvironmentID() async -> String? {
+        guard let reports = try? await environmentReports() else { return nil }
+        return reports.first { $0.record.effectiveExecutionBackend == .linuxVM && $0.record.state != .deleting }?.id
     }
 
     /// Real guest status for the execution-environment screen. nil when this
@@ -788,8 +812,11 @@ final class FloePlatformServices: @unchecked Sendable {
                         + [LinuxGuestPythonEnvironment.guestVenvPath + "/bin", LinuxGuestNodeEnvironment.defaultGuestPath]).joined(separator: ":"),
                     "NODE_PATH": LinuxGuestNodeEnvironment.guestNodeModules,
                     "HOME": LinuxGuestMountPoint.environment + "/home",
-                    "TMPDIR": LinuxGuestMountPoint.environment + "/tmp",
-                    "npm_config_cache": LinuxGuestMountPoint.environment + "/var/npm",
+                    "TMPDIR": LinuxGuestWritablePaths.tmp,
+                    "TMP": LinuxGuestWritablePaths.tmp,
+                    "TEMP": LinuxGuestWritablePaths.tmp,
+                    "XDG_CACHE_HOME": LinuxGuestWritablePaths.xdgCache,
+                    "npm_config_cache": LinuxGuestWritablePaths.npmCache,
                     "CI": "1",
                     "FLOE_ENVIRONMENT_ID": environment.id
                 ]

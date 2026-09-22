@@ -2337,9 +2337,29 @@ static int virtio_9p_recv_request(VIRTIODevice *s1, int queue_idx,
         break;
     case 30: /* xattrwalk */
         {
-            /* not supported yet */
-            err = -P9_ENOTSUP;
-            goto error;
+            uint32_t fid, newfid;
+            char *name;
+            FSFile *f;
+            uint64_t xattr_size;
+
+            if (unmarshall(s, queue_idx, desc_idx, &offset,
+                           "wws", &fid, &newfid, &name))
+                goto protocol_error;
+            f = fid_find(s, fid);
+            if (!f) {
+                err = -P9_EPROTO;
+            } else {
+                /* FLOE-EMBED (patch 0009): no extended attributes are
+                   exported. Empty name -> empty xattr list (size 0); a named
+                   query -> ENODATA. Replaces the upstream P9_ENOTSUP (524)
+                   that GNU ls -l surfaced as "Unknown error 524". */
+                err = floe_9p_xattrwalk_result(name, &xattr_size);
+            }
+            free(name);
+            if (err != 0)
+                goto error;
+            buf_len = marshall(s, buf, sizeof(buf), "d", xattr_size);
+            virtio_9p_send_reply(s, queue_idx, desc_idx, id, tag, buf, buf_len);
         }
         break;
     case 40: /* readdir */
@@ -2512,7 +2532,7 @@ static int virtio_9p_recv_request(VIRTIODevice *s1, int queue_idx,
             if (!f) {
                 err = -P9_EPROTO;
             } else {
-                err = fs->fs_unlinkat(fs, f, name);
+                err = fs->fs_unlinkat(fs, f, name, flags);
             }
             free(name);
             if (err != 0)
