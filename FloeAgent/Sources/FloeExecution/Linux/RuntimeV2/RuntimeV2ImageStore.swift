@@ -144,6 +144,16 @@ public actor RuntimeV2ImageStore {
         return expanded
     }
 
+    /// True when the rebuildable expanded view exists and carries every
+    /// artifact at its recorded size. The view is disposable — the registry
+    /// row, the v2 manifest and the blobs are the truth — so this answers
+    /// "is the cache intact", never "is the image installed".
+    public func isExpandedViewComplete(imageID: String) throws -> Bool {
+        guard let manifest = try manifest(imageID: imageID) else { return false }
+        let expanded = try layout.expandedImageDirectory(imageID: imageID)
+        return try expandedViewComplete(imageID: imageID, manifest: manifest, directory: expanded)
+    }
+
     /// Writes the expanded tree into `directory`: the verbatim legacy manifest
     /// plus every artifact materialized from its blob, then re-verifies every
     /// file against the recorded digest before returning.
@@ -203,6 +213,24 @@ public actor RuntimeV2ImageStore {
         let migrationID = "legacy-image-\(imageID)"
         let legacyDirectory = legacyImagesRoot.appendingPathComponent(imageID, isDirectory: true)
         let legacyManifestURL = legacyDirectory.appendingPathComponent("manifest.json")
+
+        // Idempotent rerun: a previous migration already verified the v2
+        // install and moved the legacy directory aside into its rollback
+        // point. Report the recorded outcome instead of failing on the
+        // missing source or copying a second time. A v2 manifest without a
+        // verified registry row is NOT completion — that state falls through
+        // to the discovered phase and is repaired or failed honestly there.
+        if !fileManager.fileExists(atPath: legacyManifestURL.path),
+           let existing = try manifest(imageID: imageID),
+           try await registry.bootableImage(id: imageID, root: layout.root) != nil {
+            let stored = (try? await registry.migration(id: migrationID)) ?? nil
+            return MigrationReport(
+                imageID: imageID, migrationID: migrationID,
+                phase: stored?.phase ?? .cleanupPending,
+                reusedExisting: true,
+                blobDigests: existing.artifacts.values.map(\.sha512).sorted()
+            )
+        }
 
         // Phase: discovered.
         try await registry.beginMigration(

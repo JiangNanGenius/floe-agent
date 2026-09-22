@@ -167,9 +167,15 @@ public actor RuntimeV2Registry {
     }
 
     private static let schemaMigrations: [(version: Int, name: String, sql: String)] = [
+        // The `schema_migrations` table itself is owned by the bootstrap in
+        // `applySchemaMigrations()` (created there before any script runs, so
+        // an applied-version check is always possible). A migration script
+        // must therefore NEVER create it again: Build 222/223 shipped v1 with
+        // `CREATE TABLE schema_migrations`, which collided with the bootstrap
+        // table on every fresh database and made the registry impossible to
+        // open — the "Linux installed but cannot start" regression.
         (1, "initial", """
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);
         CREATE TABLE images (
           id TEXT PRIMARY KEY,
           manifest_path TEXT NOT NULL,
@@ -281,15 +287,23 @@ public actor RuntimeV2Registry {
             Int(sqlite3_column_int(statement, 0))
         })
         for migration in RuntimeV2Registry.schemaMigrations where !applied.contains(migration.version) {
-            try transaction {
-                try execute(migration.sql)
-                try run(
-                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-                    bind: { statement in
-                        sqlite3_bind_int(statement, 1, Int32(migration.version))
-                        Self.bindText(migration.name, to: statement, index: 2)
-                        Self.bindText(Self.iso(Date()), to: statement, index: 3)
-                    }
+            do {
+                try transaction {
+                    try execute(migration.sql)
+                    try run(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                        bind: { statement in
+                            sqlite3_bind_int(statement, 1, Int32(migration.version))
+                            Self.bindText(migration.name, to: statement, index: 2)
+                            Self.bindText(Self.iso(Date()), to: statement, index: 3)
+                        }
+                    )
+                }
+            } catch let error as RuntimeV2Error {
+                // Name the failing script: a schema collision must be
+                // diagnosable from the error alone, without a debugger.
+                throw RuntimeV2Error.registryCorrupt(
+                    "schema migration \(migration.version) '\(migration.name)' failed: \(error.localizedDescription)"
                 )
             }
             // Audit artifact: the applied SQL is preserved next to the

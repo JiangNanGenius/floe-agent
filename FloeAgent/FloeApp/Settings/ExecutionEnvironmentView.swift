@@ -268,12 +268,15 @@ struct ExecutionEnvironmentView: View {
         } else {
             // One card derives the single authoritative state: a verified
             // installed/running component never renders the download entry.
+            // Settings offers no manual guest start: running Python, Node or
+            // Shell prepares and leases this conversation's environment
+            // automatically, so a standalone Start control only misleads.
             if let model = linuxImageModel {
-                LinuxImageInstallCard(model: model) {
-                    // A finished install is exactly the first-use moment:
-                    // start the environment, but never hide a start failure.
-                    await startLinuxEnvironment()
-                }
+                LinuxImageInstallCard(
+                    model: model,
+                    onInstalled: { await startLinuxEnvironment() },
+                    allowsManualStart: false
+                )
             }
             if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus, status.running {
                 LabeledContent("environment.backend.status", value: String(localized: "environment.backend.status.running"))

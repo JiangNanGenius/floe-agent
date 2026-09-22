@@ -19,6 +19,7 @@ public actor RuntimeV2Store {
         public var salvagedRuntimeDirs: [String]
         public var quarantinedRuntimeDirs: [String]
         public var repairedImages: [String]
+        public var rebuiltExpandedViews: [String]
         public var sweptStagingEntries: Int
         public var notes: [String]
 
@@ -28,6 +29,7 @@ public actor RuntimeV2Store {
             self.salvagedRuntimeDirs = []
             self.quarantinedRuntimeDirs = []
             self.repairedImages = []
+            self.rebuiltExpandedViews = []
             self.sweptStagingEntries = 0
             self.notes = []
         }
@@ -127,6 +129,13 @@ public actor RuntimeV2Store {
         // 6. Orphan v2 manifests without a registry row (crash window):
         //    verify and register, or quarantine the manifest.
         report.notes.append(contentsOf: await repairOrphanManifests())
+
+        // 7. Verified images whose rebuildable expanded view was lost (the
+        //    view is disposable — excluded from backup, re-materialized on
+        //    demand; registry row + manifest + blobs are the truth):
+        //    rebuild from the verified blobs so a status read never reports
+        //    "uninstalled" and the boot path never redownloads.
+        report = await rebuildMissingExpandedViews(report: report)
 
         await logs.log("Runtime v2 recovery: \(report.notes.count) notes, salvaged=\(report.salvagedRuntimeDirs.count), quarantined=\(report.quarantinedRuntimeDirs.count)")
         return report
@@ -299,6 +308,28 @@ public actor RuntimeV2Store {
             }
         }
         return notes
+    }
+
+    /// Re-materializes the expanded view of every verified image whose view
+    /// is missing or incomplete, straight from the verified blobs — the same
+    /// verified path `ensureExpanded` already runs on demand. A rebuild that
+    /// fails (a blob genuinely lost) is surfaced as an explicit recovery
+    /// note, never silently ignored and never treated as "uninstalled".
+    private func rebuildMissingExpandedViews(report: RecoveryReport) async -> RecoveryReport {
+        var report = report
+        guard let verified = try? await registry.images(state: .verified) else { return report }
+        for row in verified {
+            do {
+                guard try await images.isExpandedViewComplete(imageID: row.id) == false else { continue }
+                _ = try await images.ensureExpanded(imageID: row.id)
+                report.rebuiltExpandedViews.append(row.id)
+            } catch {
+                report.notes.append(
+                    "verified image \(row.id) has no complete expanded view and it could not be rebuilt: \(error.localizedDescription)"
+                )
+            }
+        }
+        return report
     }
 
     // MARK: scratch environment promotion

@@ -69,6 +69,10 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     func expandedImageDirectory(imageID: String) async throws -> URL
     /// Verified-image truth for status composition.
     func isImageVerified(imageID: String) async -> Bool
+    /// Verified-image truth WITHOUT triggering a migration: answers only
+    /// whether the v2 store already holds this image verified, so a status
+    /// read can never kick off a multi-gigabyte migration as a side effect.
+    func isImageVerifiedWithoutMigration(imageID: String) async -> Bool
     /// Runner capability ledger (system/runner.json in v2).
     func recordedRunnerCapabilities(environmentID: String) async -> String?
     func recordRunnerCapabilities(_ capabilities: String, environmentID: String) async
@@ -150,6 +154,16 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 baseImageID: imageID,
                 legacyDiskDirectory: legacyDiskDirectory,
                 legacyLayerDirectory: legacyWritableDirectory
+            )
+        }
+        // Fail closed before any lease or materialization: an environment
+        // whose migration ended repairRequired (e.g. an origin conflict that
+        // quarantined the legacy disk) must never boot a fresh empty
+        // data/delta over the preserved data, on any retry.
+        if let row = try await store.registry.environment(id: environmentID),
+           row.state == "repairRequired" {
+            throw RuntimeV2Error.environmentRepairRequired(
+                environmentID: environmentID, reason: row.repairReason
             )
         }
         // Lease first: single writable ownership of the environment's delta.
@@ -275,6 +289,15 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     public func isImageVerified(imageID: String) async -> Bool {
         try? await ensureImageMigrated(imageID)
         return (try? await store.images.isImageVerified(imageID: imageID)) ?? false
+    }
+
+    public func isImageVerifiedWithoutMigration(imageID: String) async -> Bool {
+        do {
+            try await ensurePrepared()
+            return try await store.images.isImageVerified(imageID: imageID)
+        } catch {
+            return false
+        }
     }
 
     public func environmentDataDirectory(environmentID: String) async throws -> URL {

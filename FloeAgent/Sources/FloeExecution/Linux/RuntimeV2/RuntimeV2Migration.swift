@@ -119,6 +119,17 @@ public actor RuntimeV2EnvironmentMigrator {
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         let migrationID = "legacy-env-\(environmentID)"
         let registry = store.registry
+        // Fail closed on every retry: a repairRequired row means an earlier
+        // attempt quarantined the legacy disk (origin conflict) or could not
+        // salvage state. Re-running would activate an empty environment over
+        // the preserved data — row existence is never proof of a completed
+        // migration, the state is.
+        if let existing = try await registry.environment(id: environmentID),
+           existing.state == "repairRequired" {
+            throw RuntimeV2Error.environmentRepairRequired(
+                environmentID: environmentID, reason: existing.repairReason
+            )
+        }
         do {
             try await registry.beginMigration(
                 id: migrationID, kind: "legacy-environment",
@@ -171,9 +182,21 @@ public actor RuntimeV2EnvironmentMigrator {
                             .appendingPathComponent("disk-\(environmentID)-\(UUID().uuidString)", isDirectory: true)
                         try? fileManager.moveItem(at: legacyDiskDirectory, to: quarantine)
                     }
-                    try await registry.setEnvironmentState(
-                        id: environmentID, state: "repairRequired",
-                        repairReason: "the environment disk does not descend from the verified base image; it was quarantined, never overwritten"
+                    // The row may not exist yet (first migration attempt): an
+                    // UPDATE would silently affect zero rows and lose the
+                    // repair state, so the environment is upserted with the
+                    // honest state instead.
+                    let now = Date()
+                    try await registry.upsertEnvironment(
+                        RuntimeV2Registry.EnvironmentRow(
+                            id: environmentID, kind: kind, ownerID: ownerID, name: name,
+                            baseImageID: baseImageID, baseRootfsDigest: baseDigest,
+                            state: "repairRequired",
+                            dataPath: "environments/\(environmentID)/data",
+                            compatHostFHS: false,
+                            repairReason: "the environment disk does not descend from the verified base image; it was quarantined, never overwritten",
+                            createdAt: now, lastUsedAt: now
+                        )
                     )
                     throw RuntimeV2Error.deltaBaseConflict(
                         environmentID: environmentID, recorded: legacyOriginSHA512, verified: baseDigest
