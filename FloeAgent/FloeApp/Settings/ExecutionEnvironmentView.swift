@@ -272,11 +272,11 @@ struct ExecutionEnvironmentView: View {
             // Shell prepares and leases this conversation's environment
             // automatically, so a standalone Start control only misleads.
             if let model = linuxImageModel {
-                LinuxImageInstallCard(model: model, allowsManualStart: false) {
-                    // A finished install is exactly the first-use moment:
-                    // start the environment, but never hide a start failure.
-                    await startLinuxEnvironment()
-                }
+                LinuxImageInstallCard(
+                    model: model,
+                    onInstalled: { await startLinuxEnvironment() },
+                    allowsManualStart: false
+                )
             }
             if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus, status.running {
                 LabeledContent("environment.backend.status", value: String(localized: "environment.backend.status.running"))
