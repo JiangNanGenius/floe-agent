@@ -10,6 +10,8 @@
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
+**219 之后的 `main` 目前只有源码级修复**（演示文稿可见渲染门禁、原生宿主重新固定 `f0ca71a7`、模拟器编译守卫 `67a37db3`），尚未进入任何已上传构建。在取得新的 TestFlight／预发布证据之前，不宣称 Build 220 已构建、已上传、已被 Apple 处理、可安装、通过真机验收或已发布；构建与云端口禁状态见 [Build 156 反馈修复记录](FLOE_156_FEEDBACK_REPAIR.md) 的 2026-09-22 更新。
+
 ### 历史交付记录（保留原始结论，不代表当前可用状态）
 
 **Build 216 是 218 之前的内部交付**（`v1.7.0-beta.73`，`c2f20f6e`，9 月 21 日 07:55 UTC 核实 VALID/未过期/Floe QA/IN_BETA_TESTING）。Build 214 是首个 TinyEMU/Linux 主环境版本，Build 215 修复其真机反馈，Build 216 补齐发布路径兼容性；各版本原始记录均保留在交付档案中。Build 217 编译失败且从未上传。
@@ -58,6 +60,8 @@
 | [../AGENTS.md](../AGENTS.md) | Repository instructions for coding agents: architecture, focused checks, release recovery and cleanup |
 | [../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md) | 项目门面：能力总览与当前候选版本 |
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
+| [FEATHER_SOURCE.md](FEATHER_SOURCE.md) | Feather/AltStore 安装源：稳定源地址、官网深层链接、发布校验与手动添加步骤 |
+| [FLOE_156_FEEDBACK_REPAIR.md](FLOE_156_FEEDBACK_REPAIR.md) | 反馈修复记录、PPTX 可见渲染门禁与 2026-09-22 宿主重建/重新固定更新 |
 | [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md) | 总体架构 |
 | [ARCHITECTURE_LOCAL_SHELL.md](ARCHITECTURE_LOCAL_SHELL.md) | 本地 Shell / 终端 / apt·pkg 能力层架构（安全边界、Linux 兼容性、第三方许可） |
 | [Shell 工具路由与运行时版本展示](FLOE_SHELL_TOOL_ROUTES.md) | 评审工具路由目录、运行时版本真实来源、`--check-tools` 校验与真机限制（2026-09-19） |
