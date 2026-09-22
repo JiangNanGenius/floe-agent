@@ -415,6 +415,26 @@ struct RootView: View {
             WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
                 .environmentObject(environment)
         }
+        .alert(
+            "本地模型需要停止 Linux 环境",
+            isPresented: Binding(
+                get: { environment.heavyRuntimeConflictCenter.pending != nil },
+                set: { presented in
+                    // Any dismissal that is not one of the two buttons defers:
+                    // the arbiter only stops guests after an explicit confirm.
+                    if !presented { environment.heavyRuntimeConflictCenter.resolve(.deferLocalModel) }
+                }
+            )
+        ) {
+            Button("取消", role: .cancel) {
+                environment.heavyRuntimeConflictCenter.resolve(.deferLocalModel)
+            }
+            Button("停止并继续", role: .destructive) {
+                environment.heavyRuntimeConflictCenter.resolve(.stopGuestsAndProceed)
+            }
+        } message: {
+            Text(Self.heavyRuntimeConflictMessage(environment.heavyRuntimeConflictCenter.pending))
+        }
         .alert("删除任务？", isPresented: Binding(
             get: { deletingConversation != nil },
             set: { if !$0 { deletingConversation = nil } }
@@ -526,6 +546,19 @@ struct RootView: View {
         if environment.conversationCenter.modelPreferences.onboardingStatus == .unseen {
             router.presentedSetup = .firstLaunch
         }
+    }
+
+    /// Bounded, redacted conflict description: counts only. The environment
+    /// IDs themselves are internal identifiers and are not shown in the alert.
+    private static func heavyRuntimeConflictMessage(
+        _ pending: HeavyRuntimeConflictCenter.PendingConflict?
+    ) -> String {
+        guard let pending else { return "" }
+        var parts: [String] = []
+        if pending.guestCount > 0 { parts.append("\(pending.guestCount) 个 Linux 环境") }
+        if pending.serviceCount > 0 { parts.append("\(pending.serviceCount) 个本地服务") }
+        let running = parts.isEmpty ? "Linux 环境" : parts.joined(separator: "、")
+        return "本机正在运行 \(running)。本地模型与 Linux 环境不能同时运行：继续将先停止这些环境（磁盘与数据会保留），或取消本次本地模型请求。"
     }
 
     private func markDismissedSetupSkipped() {

@@ -1819,6 +1819,50 @@ struct AgentRuntimeTests {
         #expect(await runtime.state.name == "completed")
     }
 
+    @Test("One model turn with several tool requests executes them sequentially in order")
+    func multipleToolRequestsInOneTurnExecuteSequentially() async throws {
+        // Build 222 on-device protocol: a single response may carry several
+        // sequential calls. The adapter yields one `.toolRequest` per call
+        // before a single tool-use completion; the harness must execute the
+        // whole batch in order and hand every call/result association to the
+        // continuation turn.
+        let adapter = MockAdapter()
+        let first = try TestFixtures.toolCall(
+            id: "batch-1",
+            arguments: #"{"text":"first"}"#
+        )
+        let second = try TestFixtures.toolCall(
+            id: "batch-2",
+            arguments: #"{"text":"second"}"#
+        )
+        adapter.script = [
+            [.toolRequest(first), .toolRequest(second), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "both completed")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        // Side-effecting tools are barriers, so execution order is asserted
+        // strictly rather than through the parallel read-only path.
+        registerEcho(in: executor, sideEffecting: true)
+        executor.results = [
+            ToolResult(callID: "batch-1", status: .ok, outputSummary: "first-output", outputDigest: "d1"),
+            ToolResult(callID: "batch-2", status: .ok, outputSummary: "second-output", outputDigest: "d2")
+        ]
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            policy: AutomaticApprovalPolicy(backend: RecordingApprovalBackend())
+        )
+
+        try await runtime.start(goal: "Run both echo calls in order")
+
+        #expect(executor.executedCalls.map(\.id) == ["batch-1", "batch-2"])
+        #expect(adapter.requests.count == 2)
+        let continuation = try #require(adapter.requests.last)
+        #expect(continuation.pendingToolCalls.map(\.id) == ["batch-1", "batch-2"])
+        #expect(continuation.toolResults.map(\.callID) == ["batch-1", "batch-2"])
+        #expect(await runtime.state.name == "completed")
+    }
+
     @Test("Replay trimming honors pair and byte budgets without splitting pairs")
     func toolReplayPlannerTrimsToBudget() throws {
         func pair(_ index: Int, summaryBytes: Int = 8) throws -> ReplayedToolPair {

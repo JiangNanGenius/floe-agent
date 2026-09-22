@@ -635,7 +635,10 @@ struct LocalModelCatalogTests {
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
         #expect(build.selectedToolCount == 4)
-        #expect(build.systemInstructions.contains("emit the documented single JSON tool_call"))
+        // The Qwen-family bounded protocol documents the exact JSON envelope
+        // and never promises a native tool interface the template cannot use.
+        #expect(build.systemInstructions.contains("documented JSON tool_call"))
+        #expect(build.systemInstructions.contains(#"{"tool_call":{"name":"exact.offered.name","arguments":{}}}"#))
         #expect(build.selectedTools.map(\.name) == [
             "document.pdf.inspect", "document.pdf.render", "image.ocr", "workspace.readFile"
         ])

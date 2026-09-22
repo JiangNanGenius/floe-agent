@@ -178,30 +178,38 @@ struct LocalModelLifecycleTests {
     @available(macOS 15.4, iOS 26.0, *)
     func firstTextTurnThenSecondTextTurn() async throws {
         let harness = Harness(memorySamples: [4_000_000_000])
-        // Turn 1: load -> generate -> unload.
+        // Turn 1: load -> generate -> retain for the Build 222 idle window. The
+        // per-turn teardown inside the engine still drains the GPU stream and
+        // clears the allocator cache; only the weight mapping stays resident.
         let first = try await harness.runtime.completeMeasured(
             modelID: modelID, instructions: "i", prompt: "turn one",
             images: [], tools: [], maxTokens: 32
         )
         #expect(first.text == "synthetic answer")
         #expect(harness.factory.created.count == 1)
-        #expect(harness.factory.created[0].shutdownCount == 1)
-        #expect(harness.factory.liveCount == 0)
-        #expect(await harness.runtime.currentLoadState() == .unloaded)
-        // Turn 2 (text-only continuation): reloads the same pinned snapshot,
-        // never two containers at once, and receives zero image bytes.
+        #expect(harness.factory.created[0].shutdownCount == 0)
+        #expect(harness.factory.liveCount == 1)
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the resident engine to stay ready between turns")
+            return
+        }
+        // Turn 2 (text-only continuation): reuses the resident container
+        // instead of reloading, never has two containers at once, and
+        // receives zero image bytes.
         let second = try await harness.runtime.completeMeasured(
             modelID: modelID, instructions: "i", prompt: "turn two",
             images: [], tools: [], maxTokens: 32
         )
         #expect(second.text == "synthetic answer")
-        #expect(harness.factory.created.count == 2)
+        #expect(harness.factory.created.count == 1)
         #expect(harness.factory.maxLive == 1)
-        #expect(harness.factory.created[1].receivedImages.isEmpty)
-        #expect(harness.factory.created[1].includesVisionProjector == false)
+        #expect(harness.factory.created[0].receivedImages.isEmpty)
+        #expect(harness.factory.created[0].includesVisionProjector == false)
         let lifecycle = await harness.runtime.lifecycleDiagnostics()
-        #expect(lifecycle.engineCreateCount == 2)
-        #expect(lifecycle.engineShutdownCount == 2)
+        #expect(lifecycle.engineCreateCount == 1)
+        #expect(lifecycle.engineShutdownCount == 0)
+        #expect(lifecycle.engineReuseCount == 1)
+        #expect(lifecycle.idleUnloadCount == 0)
         #expect(lifecycle.visionShedCount == 0)
         #expect(lifecycle.decodeRetryCount == 0)
         #expect(lifecycle.consecutiveFailureCount == 0)
@@ -247,7 +255,12 @@ struct LocalModelLifecycleTests {
         #expect(harness.factory.created.count == 2)
         #expect(harness.factory.created[0].shutdownCount == 1)
         #expect(harness.factory.maxLive == 1)
-        #expect(await harness.runtime.currentLoadState() == .unloaded)
+        // The recovered engine now stays resident for the idle window.
+        #expect(harness.factory.created[1].shutdownCount == 0)
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the recovered engine to stay ready")
+            return
+        }
         let lifecycle = await harness.runtime.lifecycleDiagnostics()
         #expect(lifecycle.decodeRetryCount == 1)
         #expect(lifecycle.consecutiveFailureCount == 0)
@@ -305,7 +318,11 @@ struct LocalModelLifecycleTests {
         )
         #expect(result.text == "clean retry")
         #expect(factory.created.count == 4)
-        #expect(await runtime.currentLoadState() == .unloaded)
+        #expect(factory.created[3].shutdownCount == 0)
+        guard case .ready = await runtime.currentLoadState() else {
+            Issue.record("Expected the recovered engine to stay ready")
+            return
+        }
         lifecycle = await runtime.lifecycleDiagnostics()
         #expect(lifecycle.decodeRetryCount == 2)
         #expect(lifecycle.consecutiveFailureCount == 0)
@@ -443,10 +460,11 @@ struct LocalModelLifecycleTests {
     @Test("Switching resident models never keeps two containers alive")
     @available(macOS 15.4, iOS 26.0, *)
     func modelSwitchKeepsSingleContainer() async throws {
-        // A second *selectable* MLX entry: Gemma 4 E4B moved to the retired
-        // list (its snapshot cannot be admitted on an M4-class allowance), and
-        // retired entries are intentionally not routable.
-        let otherID = "qwen3.8-4b-heretic-mlx4"
+        // A second *selectable* MLX entry distinct from `modelID`: Gemma 4 E4B
+        // moved to the retired list (its snapshot cannot be admitted on an
+        // M4-class allowance), and retired entries are intentionally not
+        // routable, so the switch uses the other live Qwen snapshot.
+        let otherID = "qwen3.5-4b-mlx4"
         let harness = Harness(memorySamples: [8_000_000_000])
         let factory = harness.factory
         let runtime = LocalModelRuntime(
@@ -472,10 +490,16 @@ struct LocalModelLifecycleTests {
         }
         #expect(factory.created.count == 3)
         #expect(factory.maxLive == 1)
+        // Switching unloads the previous container immediately; the final
+        // engine stays resident for the Build 222 idle window and an explicit
+        // unload releases it.
+        #expect(factory.created[0].shutdownCount == 1)
+        #expect(factory.created[1].shutdownCount == 1)
+        #expect(factory.created[2].shutdownCount == 0)
+        #expect(factory.liveCount == 1)
+        await runtime.unload()
+        #expect(factory.created[2].shutdownCount == 1)
         #expect(factory.liveCount == 0)
-        for engine in factory.created {
-            #expect(engine.shutdownCount == 1)
-        }
     }
 
     // MARK: 7. Recoverable on-device boundary events

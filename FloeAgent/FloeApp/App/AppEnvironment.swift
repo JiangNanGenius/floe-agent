@@ -107,6 +107,11 @@ final class AppEnvironment: ObservableObject {
     /// Explicit native tools (exec.localPython, …) are never rerouted. nil
     /// only where the engine is not built in.
     let linuxGuestService: TinyEMULinuxCommandService?
+    /// App-facing half of the Build 222 heavy-runtime arbitration: the local
+    /// model start reports active Linux guests/services here and the alert in
+    /// `FloeAgentApp` gets the explicit confirmation before anything is
+    /// stopped (or the local request is refused).
+    let heavyRuntimeConflictCenter: HeavyRuntimeConflictCenter
     /// Layered-environment registry. Exposed so task-scoped wiring (for
     /// example the Notes document assistant) can ensure its own session
     /// environment with an explicit backend instead of inheriting a shared
@@ -372,6 +377,52 @@ final class AppEnvironment: ObservableObject {
             artifactRoot: try? FloeArtifactStore.root()
         )
         self.linuxGuestService = linuxGuests
+
+        // Build 222 heavy-runtime arbitration wiring. One process-wide arbiter
+        // owns the boundary between on-device MLX inference and TinyEMU Linux:
+        //   * a guest start waits cancellably while any local inference
+        //     session is active (`TinyEMULinuxGuestRegistry.start`),
+        //   * beginning local-model use probes this app for active guests and
+        //     local services and presents the conflict here,
+        //   * guests are stopped only after the user confirms; a declined or
+        //     cancelled confirmation fails the local request before any model
+        //     work instead of overlapping the guest.
+        let conflictCenter = HeavyRuntimeConflictCenter()
+        self.heavyRuntimeConflictCenter = conflictCenter
+        let arbiterEnvironments = environmentRegistry
+        let arbiterGuests = linuxGuests
+        HeavyRuntimeArbiter.shared.configure(
+            activityProbe: {
+                var runningGuests: [String] = []
+                for record in await arbiterEnvironments.all()
+                where record.effectiveExecutionBackend == .linuxVM {
+                    if await arbiterGuests.guestIsRunning(environmentID: record.id) {
+                        runningGuests.append(record.id)
+                    }
+                }
+                var services: [String] = []
+                for environmentID in runningGuests {
+                    let count = await arbiterGuests.activeLocalServiceCount(
+                        environmentID: environmentID
+                    )
+                    if count > 0 {
+                        services.append("\(environmentID):\(count)")
+                    }
+                }
+                return HeavyRuntimeArbiter.LinuxActivity(
+                    guestEnvironmentIDs: runningGuests,
+                    localServices: services
+                )
+            },
+            guestStopper: { activity in
+                for environmentID in activity.guestEnvironmentIDs {
+                    await arbiterGuests.stopGuest(environmentID: environmentID)
+                }
+            },
+            decisionHandler: { activity in
+                await conflictCenter.requestDecision(activity)
+            }
+        )
         FloePlatformServices.shared.setLinuxCommandService(linuxGuests)
         // Verified image storage backs `floe-env image …`: digests are checked
         // against the qualification record and archives are only promoted

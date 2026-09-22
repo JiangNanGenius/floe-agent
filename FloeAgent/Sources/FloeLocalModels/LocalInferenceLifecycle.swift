@@ -52,6 +52,9 @@ struct LocalInferenceLifecycleDiagnostics {
 
     private(set) var engineCreateCount = 0
     private(set) var engineShutdownCount = 0
+    /// Build 222: engines released by the two-minute idle timer rather than by
+    /// an explicit unload, a failure or a decode retry.
+    private(set) var idleUnloadCount = 0
     private(set) var engineReuseCount = 0
     private(set) var visionShedCount = 0
     private(set) var loadFailureCount = 0
@@ -67,6 +70,7 @@ struct LocalInferenceLifecycleDiagnostics {
 
     mutating func recordEngineCreated() { engineCreateCount += 1 }
     mutating func recordEngineShutdown() { engineShutdownCount += 1 }
+    mutating func recordIdleUnload() { idleUnloadCount += 1 }
     mutating func recordEngineReused() { engineReuseCount += 1 }
     mutating func recordVisionShed() { visionShedCount += 1 }
     mutating func recordReclaim() { reclaimCount += 1 }
@@ -103,6 +107,7 @@ struct LocalInferenceLifecycleDiagnostics {
     /// prompt text, no image data, no secrets.
     var summaryLine: String {
         "enginesCreated=\(engineCreateCount) enginesShutdown=\(engineShutdownCount) "
+            + "idleUnloads=\(idleUnloadCount) "
             + "engineReuses=\(engineReuseCount) visionSheds=\(visionShedCount) "
             + "loadFailures=\(loadFailureCount) loadRecoveries=\(loadRecoveredCount) "
             + "decodeRetries=\(decodeRetryCount) reclaims=\(reclaimCount) "

@@ -103,8 +103,10 @@ struct LocalBaseToolSchemaTests {
         #expect(build.requiresToolCall, "an action request with offered tools must require a call")
         #expect(build.systemInstructions.contains("OFFERED TOOLS FOR THIS TURN"))
         #expect(build.systemInstructions.contains("workspace.createFile"))
-        // No discovery round-trip is required for these.
-        #expect(build.systemInstructions.contains("never claim an action succeeded without a tool result"))
+        // No discovery round-trip is required for these. The truthful-completion
+        // rule names the receipt explicitly (Build 222 bounded protocol).
+        #expect(build.systemInstructions.contains("never claim"))
+        #expect(build.systemInstructions.contains("TOOL RESULT with the same call id"))
     }
 
     /// The create→read chain: after a settled tool result, the same wiring

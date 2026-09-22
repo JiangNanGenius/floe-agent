@@ -346,7 +346,12 @@ public actor MLXTextEngine {
                             .system(instructions),
                             .user(prompt, images: imageInputs)
                         ],
-                        tools: toolSchemas,
+                        // Build 222: the bounded Qwen protocol passes no
+                        // schemas, and `nil` is what keeps the chat template's
+                        // tool section from rendering at all. A non-nil empty
+                        // array still reaches `applyChatTemplate(tools:)` and
+                        // makes some templates emit an empty tool preamble.
+                        tools: toolSchemas.isEmpty ? nil : toolSchemas,
                         // Qwen 3.x templates enable thinking by default. Floe
                         // routes reasoning privately and the on-device path has
                         // a tight context, so explicitly disable it instead of
@@ -519,10 +524,18 @@ public actor MLXTextEngine {
                 info = completionInfo
             case .toolCall(let call):
                 // Floe's provider-neutral harness already parses this compact
-                // envelope and applies the normal approval path.
+                // envelope and applies the normal approval path. A model that
+                // emits several native calls in one response must produce
+                // separate JSON objects: join them on their own lines so the
+                // adapter's sequential parser (`toolCalls(from:)`) sees one
+                // object per line instead of `}{`.
                 if let encoded = Self.encodeToolCall(call) {
                     if firstTokenAt == nil { firstTokenAt = Date() }
-                    text += encoded
+                    if text.isEmpty || text.hasSuffix("\n") {
+                        text += encoded
+                    } else {
+                        text += "\n" + encoded
+                    }
                 }
             }
         }

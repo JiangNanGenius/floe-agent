@@ -235,17 +235,26 @@ struct LocalReplayedToolEvidenceTests {
         #expect(!section.contains("EARLIER TOOL CALL workspace.readFile id=call-0 "))
     }
 
-    @Test("The on-device runtime envelope is bounded while keeping head and tail")
+    @Test("The on-device runtime envelope is preserved verbatim, never silently clipped")
     @available(macOS 15.4, *)
-    func runtimeEnvelopeIsBounded() throws {
+    func runtimeEnvelopeIsPreserved() throws {
+        // Build 222 supersedes the intermediate head/tail clipping: the
+        // harness envelope carries the memory context, the live clock and
+        // auxiliary request instructions, and `LocalModelCatalogTests`
+        // (`localPromptIsBounded`) pins the same no-silent-discard contract for
+        // the complete envelope. A envelope that cannot fit the advertised
+        // window is refused through `exceedsContextWindow` instead of being
+        // rewritten into a prompt the harness never composed.
         let envelope = "HEAD-MARKER " + String(repeating: "context line ", count: 4_000) + " TAIL-MARKER"
         let local = LocalProviderAdapter.buildPrompt(for: try request(
             replayedPairs: [],
             systemEnvelope: envelope
         ))
-        #expect(local.systemInstructions.count < 12_000)
+        #expect(local.systemInstructions.contains(envelope))
         #expect(local.systemInstructions.contains("HEAD-MARKER"))
         #expect(local.systemInstructions.contains("TAIL-MARKER"))
+        // The transcript stays bounded independently of the envelope.
+        #expect(local.text.contains("Continue the review."))
     }
 }
 
