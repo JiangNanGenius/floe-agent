@@ -1,6 +1,6 @@
 # Floe 1.7 implementation status
 
-Build 222 candidate: TinyEMU Runtime v2 is integrated on `main`. The verified base image is content-addressed and shared; environments own CoW system deltas and durable data while VM directories are disposable. A four-VM pool, one-writer leases, 1.5–2 GiB memory budget, old-layout migration, Linux/MLX arbitration, local-model tool continuation repair and bounded PPT opening are included. `FloeExecution` completed Swift 6 object compilation and the focused PPT policy suite reports 7/7; cloud App compilation, distribution and physical-device behavior are not yet claimed. See [Runtime v2 architecture](TINYEMU_RUNTIME_V2.md) and [Build 222 notes](RELEASE_NOTES_1.7.0_BUILD_222.md).
+Build 223 candidate: TinyEMU Runtime v2 is integrated on `main`. The verified base image is content-addressed and shared; environments own CoW system deltas and durable data while VM directories are disposable. A four-VM pool, one-writer leases, 1.5–2 GiB memory budget, old-layout migration, Linux/MLX arbitration, local-model tool continuation repair and bounded PPT opening are included. `FloeExecution` completed Swift 6 object compilation and the focused PPT policy suite reports 7/7; cloud App compilation, distribution and physical-device behavior are not yet claimed. See [Runtime v2 architecture](TINYEMU_RUNTIME_V2.md) and [Build 223 notes](RELEASE_NOTES_1.7.0_BUILD_223.md).
 
 Accepted scope: integrate environments, package management, Node, media processing,
 33 model evaluations covering 15 capabilities, and a lightweight workspace media

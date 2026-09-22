@@ -1,6 +1,6 @@
 # Floe 1.7 构建与验收 / Build and acceptance
 
-Build 222 is the active release candidate. Its local evidence is limited to Swift 6 object compilation of `FloeExecution`, focused PPT policy tests and metadata consistency. Cloud App build, saved IPA, signed upload, Apple processing, Floe QA availability and real-iPad Linux/PPT/PiP behavior must be reported separately. See [Build 222 notes](RELEASE_NOTES_1.7.0_BUILD_222.md).
+Build 223 is the active release candidate. Its local evidence is limited to Swift 6 object compilation of `FloeExecution`, focused PPT policy tests and metadata consistency. Cloud App build, saved IPA, signed upload, Apple processing, Floe QA availability and real-iPad Linux/PPT/PiP behavior must be reported separately. See [Build 223 notes](RELEASE_NOTES_1.7.0_BUILD_223.md).
 
 本说明适用于 1.7 整合分支；完整验收状态以[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。最低系统为 iOS/iPadOS 26，数据库迁移至 v40。重型 App 构建与归档放在云端，本地仅做定向验证。正式发布不属于本轮自动动作。
 

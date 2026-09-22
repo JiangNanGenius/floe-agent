@@ -6,7 +6,7 @@
 
 **当前内部交付：1.7.0（221）**。固定标签 `v1.7.0-beta.78`，源码 `20253e67`；2026-09-22T03:13:57Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING，中英文测试说明已保存并读回。未签名 GitHub 预发布 `Floe-Agent-1.7.0-build221-unsigned.ipa`（sha256 `c9662126b15783cebe3381e11d8355253b78fd94691f995f0668aacd7111072d`，746,110,508 B）已发布，Feather 源提交 `ff0969e5` 记录同一来源。真机行为仍由用户验收。详见 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md)、[TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)与 [v1.7.0-beta.78 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.78)。
 
-**当前发布候选：1.7.0（222）**。Runtime v2 将共享基础镜像、Environment CoW、Workspace、缓存、恢复点和临时 VM 明确分层，并加入四 VM 池、动态内存预算、Linux/MLX 仲裁、旧镜像迁移、本地模型多轮工具与 PPT 有界恢复。当前只有源码编译与定向测试证据；发布状态见 [Build 222 候选说明](RELEASE_NOTES_1.7.0_BUILD_222.md)和 [Runtime v2 架构](TINYEMU_RUNTIME_V2.md)。
+**当前发布候选：1.7.0（223）**。Runtime v2 将共享基础镜像、Environment CoW、Workspace、缓存、恢复点和临时 VM 明确分层，并加入四 VM 池、动态内存预算、Linux/MLX 仲裁、旧镜像迁移、本地模型多轮工具与 PPT 有界恢复。当前只有源码编译与定向测试证据；发布状态见 [Build 223 候选说明](RELEASE_NOTES_1.7.0_BUILD_223.md)和 [Runtime v2 架构](TINYEMU_RUNTIME_V2.md)。
 
 **上一内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
@@ -32,8 +32,8 @@
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 222 版本说明](RELEASE_NOTES_1.7.0_BUILD_222.md) | 当前发布候选：Runtime v2、资源仲裁、本地模型多轮工具与 PPT 有界恢复；云端与真机状态待核实 |
-| [Build 222 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_222.json) | 当前候选的中英文 TestFlight 测试重点 |
+| [Build 223 版本说明](RELEASE_NOTES_1.7.0_BUILD_223.md) | 当前发布候选：Runtime v2、资源仲裁、本地模型多轮工具与 PPT 有界恢复；云端与真机状态待核实 |
+| [Build 223 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_223.json) | 当前候选的中英文 TestFlight 测试重点 |
 | [TinyEMU Runtime v2](TINYEMU_RUNTIME_V2.md) | 目录归属、CoW、迁移、租约、VM 池、内存与恢复约束 |
 | [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) | 当前内部交付：Build 220 云端编译 14 条诊断的完整修复 + 1 处 Swift 6 并发修复；TestFlight、GitHub 预发布与 Feather 已完成 |
 | [Build 221 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json) | 当前内部构建已保存并读回的中英文 TestFlight 测试说明 |

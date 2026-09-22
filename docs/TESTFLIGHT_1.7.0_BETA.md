@@ -1,8 +1,8 @@
 # Floe 1.7 TestFlight delivery
 
-## Preparing: 1.7.0 (222) — source candidate, not yet delivered
+## Preparing: 1.7.0 (223) — source candidate, not yet delivered
 
-All four shipping targets declare build 222. The candidate integrates TinyEMU Runtime v2, old-image/9P migration, a four-VM dynamic resource pool, Linux/MLX arbitration, local-model multi-turn tool repair and bounded PPT opening. `FloeExecution` passed Swift 6 object compilation and the focused PPT policy suite reports 7/7. No cloud build, IPA, upload, Apple processing, Floe QA availability or device acceptance is claimed in this section. See [release notes](RELEASE_NOTES_1.7.0_BUILD_222.md), [test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_222.json) and [Runtime v2 architecture](TINYEMU_RUNTIME_V2.md).
+All four shipping targets declare build 223. The candidate integrates TinyEMU Runtime v2, old-image/9P migration, a four-VM dynamic resource pool, Linux/MLX arbitration, local-model multi-turn tool repair and bounded PPT opening. `FloeExecution` passed Swift 6 object compilation and the focused PPT policy suite reports 7/7. No cloud build, IPA, upload, Apple processing, Floe QA availability or device acceptance is claimed in this section. See [release notes](RELEASE_NOTES_1.7.0_BUILD_223.md), [test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_223.json) and [Runtime v2 architecture](TINYEMU_RUNTIME_V2.md).
 
 ## Current internal delivery: 1.7.0 (221) — available in Floe QA
 
