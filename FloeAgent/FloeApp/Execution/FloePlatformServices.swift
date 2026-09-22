@@ -167,6 +167,7 @@ final class FloePlatformServices: @unchecked Sendable {
         // executing with the writable layer attached.
         if let guests = currentLinuxCommandService() as? any LinuxGuestControlling {
             await guests.stopGuest(environmentID: id)
+            await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
         }
         try await managementService().stopEnvironment(id: id)
     }
@@ -184,7 +185,11 @@ final class FloePlatformServices: @unchecked Sendable {
             throw error
         }
     }
-    func deleteEnvironment(id: String) async throws { try await managementService().deleteEnvironment(id: id) }
+    func deleteEnvironment(id: String) async throws {
+        try await managementService().deleteEnvironment(id: id)
+        // A deleted environment has no future VM to restore: forget its rules.
+        await LinuxPortForwardCenter.shared.forget(environmentID: id)
+    }
     func saveEnvironmentTemplate(id: String, name: String) async throws { try await managementService().saveEnvironmentTemplate(id: id, name: name) }
 
     var isConfigured: Bool {
@@ -210,6 +215,20 @@ final class FloePlatformServices: @unchecked Sendable {
     /// this for Linux environments so Node/Python services run in the guest.
     func linuxLocalServiceController() -> (any LinuxGuestLocalServiceControlling)? {
         lock.withLock { linuxCommandService as? any LinuxGuestLocalServiceControlling }
+    }
+
+    /// The Linux guest controller (start/stop/status/forward) when this build
+    /// has a Linux backend. Build 222 port-forward restoration and the
+    /// background surface read/observe it instead of touching the concrete
+    /// TinyEMU type.
+    func linuxGuestController() -> (any LinuxGuestControlling)? {
+        lock.withLock { linuxCommandService as? any LinuxGuestControlling }
+    }
+
+    /// A command runner for bounded guest reads (the background surface's
+    /// active-command probe). The same injected service the tools use.
+    func linuxCommandRunner() -> (any LinuxCommandRunning)? {
+        lock.withLock { linuxCommandService }
     }
 
     /// Injected verified image storage (same artifact root as the resolver).
@@ -493,6 +512,9 @@ final class FloePlatformServices: @unchecked Sendable {
         if await guests.guestIsRunning(environmentID: id) { return true }
         _ = try await guests.startGuest(environmentID: id, taskID: taskID)
         await LegacyPythonPackageMigration.seedIfNeeded(environmentID: id, runner: service)
+        // Build 222: a started VM restores its persisted port-forward rules,
+        // remapping any fixed port that is already taken.
+        await LinuxPortForwardCenter.shared.applyRules(environmentID: id)
         return true
     }
 
@@ -512,6 +534,7 @@ final class FloePlatformServices: @unchecked Sendable {
                 await LegacyPythonPackageMigration.seedIfNeeded(environmentID: environmentID, runner: service)
             }
         )
+        await LinuxPortForwardCenter.shared.applyRules(environmentID: id)
     }
 
     /// Every Linux-required entry point (shell, guest Python, local services,
@@ -554,6 +577,9 @@ final class FloePlatformServices: @unchecked Sendable {
     func stopLinuxGuest(id: String) async {
         guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return }
         await guests.stopGuest(environmentID: id)
+        // The engine drops the VM's forwards with it; clear the applied view
+        // but keep the durable rules.
+        await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
     }
 
     /// Runs one command inside the environment's Linux guest with exactly the

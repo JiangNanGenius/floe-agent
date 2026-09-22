@@ -49,6 +49,16 @@ struct ExecutionEnvironmentView: View {
                 linuxBackgroundSection(environmentID: environmentID)
             }
 
+            if let environmentID = linuxEnvironmentID {
+                LinuxPortForwardSection(
+                    environmentID: environmentID,
+                    environmentTitle: linuxEnvironmentTitle,
+                    guestRunning: linuxGuestStatus?.running == true
+                )
+            }
+
+            notificationDiagnosticsSection
+
             Section("settings.exec.runtimes") {
                 if center.runtimeInventory.isEmpty {
                     Text("settings.exec.runtimes.empty")
@@ -121,9 +131,9 @@ struct ExecutionEnvironmentView: View {
     @ViewBuilder
     private func linuxBackgroundSection(environmentID: String) -> some View {
         Section("Linux 后台运行") {
-            Toggle("后台保持运行", isOn: backgroundSessionBinding(environmentID: environmentID))
+            Toggle("允许后台运行", isOn: backgroundSessionBinding(environmentID: environmentID))
                 .frame(minHeight: FloeTheme.minimumTarget)
-            Text("开启后，离开 Floe 时系统会用持续处理任务为该环境争取后台时间；应用被系统回收后环境会停止（磁盘保留），重新打开后可再次启动。")
+            Text("开启后，离开 Floe 时系统会用持续处理任务为该环境争取后台时间，并在后台准备状态画中画；关闭画中画会安全停止该 VM 并刷新磁盘，但保留此偏好。应用被系统回收后环境仍会停止（磁盘保留），重新打开后可再次启动。系统不保证无限后台执行。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             LabeledContent("后台任务状态") {
@@ -135,11 +145,36 @@ struct ExecutionEnvironmentView: View {
             if let work = linuxBackgroundWork {
                 LabeledContent("已运行", value: work.elapsedTimeLabel())
                 metricsRows(work.metrics)
+                LabeledContent("命令 / 服务 / 端口") {
+                    Text("\(work.activeCommandCount) / \(work.activeServiceCount) / \(work.portForwardCount)")
+                        .foregroundStyle(.secondary)
+                }
             }
             LabeledContent("托管服务") {
                 Text(activeServiceCount.map(String.init) ?? "—")
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// Real authorization plus the last scheduling failure/success, so a
+    /// missing alert can be explained instead of guessed at.
+    @ViewBuilder
+    private var notificationDiagnosticsSection: some View {
+        let diagnostics = center.environment.backgroundRunCoordinator.notificationDiagnostics()
+        Section("任务通知") {
+            LabeledContent("通知授权", value: diagnostics.authorizationSummary)
+            LabeledContent("待发送", value: String(diagnostics.pendingCount))
+            LabeledContent("上次调度失败") {
+                Text(diagnostics.lastFailureSummary)
+                    .foregroundStyle(.secondary)
+            }
+            if let at = diagnostics.lastScheduledAt {
+                LabeledContent("上次发送", value: at.formatted(date: .abbreviated, time: .standard))
+            }
+            Text("完成、失败、取消和等待审批都会成为持久事件；授权未就绪时排队，不会丢弃。前台与后台都通过系统通知中心展示，点击会跳转到对应任务或环境。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -338,6 +373,9 @@ struct ExecutionEnvironmentView: View {
                     environmentID: id,
                     title: linuxEnvironmentTitle
                 )
+            } else {
+                // A started VM still restores its persisted port-forward rules.
+                await LinuxPortForwardCenter.shared.applyRules(environmentID: id)
             }
         } catch {
             linuxError = error.localizedDescription
@@ -348,10 +386,10 @@ struct ExecutionEnvironmentView: View {
         guard !linuxBusy else { return }
         linuxBusy = true
         defer { linuxBusy = false }
-        // Stopping the guest ends any background keep-alive with it: leaving
-        // the switch on would claim a session that no longer exists.
-        center.environment.backgroundRunCoordinator.setLinuxBackgroundSessionEnabled(
-            false,
+        // Stopping the guest ends the current background hold; the durable
+        // "allow background running" preference is preserved so starting the
+        // environment again restores it.
+        await center.environment.backgroundRunCoordinator.linuxEnvironmentDidStop(
             environmentID: id,
             title: linuxEnvironmentTitle
         )

@@ -183,6 +183,9 @@ public struct BackgroundWorkSnapshot: Sendable, Codable, Hashable, Identifiable 
     public var updatedAt: Date
     public var activeCommandCount: Int
     public var activeServiceCount: Int
+    /// Published TCP port forwards for this work (Linux VM rules). Zero for
+    /// work families that cannot publish ports.
+    public var portForwardCount: Int
     public var metrics: BackgroundWorkMetrics?
     public let deepLink: BackgroundWorkDeepLink
 
@@ -198,6 +201,7 @@ public struct BackgroundWorkSnapshot: Sendable, Codable, Hashable, Identifiable 
         updatedAt: Date = Date(),
         activeCommandCount: Int = 0,
         activeServiceCount: Int = 0,
+        portForwardCount: Int = 0,
         metrics: BackgroundWorkMetrics? = nil,
         deepLink: BackgroundWorkDeepLink
     ) {
@@ -212,6 +216,7 @@ public struct BackgroundWorkSnapshot: Sendable, Codable, Hashable, Identifiable 
         self.updatedAt = updatedAt
         self.activeCommandCount = max(0, activeCommandCount)
         self.activeServiceCount = max(0, activeServiceCount)
+        self.portForwardCount = max(0, portForwardCount)
         self.metrics = metrics
         self.deepLink = deepLink
     }

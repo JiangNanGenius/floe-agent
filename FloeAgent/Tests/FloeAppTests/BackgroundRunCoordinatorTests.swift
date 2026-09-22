@@ -11,6 +11,7 @@ import Testing
 import UIKit
 import UserNotifications
 import FloeCore
+import FloeExecution
 import FloeModels
 @testable import FloeApp
 
@@ -308,4 +309,308 @@ private final class CapturedNotification: @unchecked Sendable {
         return events
     }
 }
+
+/// Scriptable guest applier. Records every forward the center publishes and
+/// can be told to reject specific host ports, exactly like the engine does
+/// when another process already owns the port.
+actor FakePortForwardApplier: LinuxPortForwardApplying {
+    struct Applied: Sendable, Equatable {
+        var environmentID: String
+        var forward: LinuxGuestServiceForward
+    }
+
+    private(set) var applied: [Applied] = []
+    private(set) var removed: [Applied] = []
+    var running = true
+    var rejectedHostPorts: Set<UInt16> = []
+
+    func setRunning(_ value: Bool) { running = value }
+    func setRejected(_ ports: Set<UInt16>) { rejectedHostPorts = ports }
+
+    func guestIsRunning(environmentID: String) async -> Bool { running }
+
+    func apply(environmentID: String, forward: LinuxGuestServiceForward) async throws {
+        if rejectedHostPorts.contains(forward.hostPort) {
+            throw LinuxGuestError.serviceForwardingUnavailable(
+                "host port \(forward.hostPort) is already bound"
+            )
+        }
+        applied.append(Applied(environmentID: environmentID, forward: forward))
+    }
+
+    func remove(environmentID: String, forward: LinuxGuestServiceForward) async {
+        removed.append(Applied(environmentID: environmentID, forward: forward))
+    }
+}
+
+/// Ephemeral UserDefaults suite so port-rule persistence never touches the
+/// app's real store.
+private struct TempDefaults {
+    let name: String
+    let defaults: UserDefaults
+
+    init(_ label: String) {
+        let suite = "floe.apptests.\(label).\(UUID().uuidString)"
+        self.name = suite
+        self.defaults = UserDefaults(suiteName: suite)!
+        self.defaults.removePersistentDomain(forName: suite)
+    }
+
+    func cleanup() {
+        UserDefaults.standard.removePersistentDomain(forName: name)
+    }
+}
+
+@Suite("FloeApp.LinuxPortForwardCenter")
+@MainActor
+struct LinuxPortForwardCenterTests {
+
+    @Test("Rules apply through the guest controller inside the managed range")
+    func appliesRules() async throws {
+        let temp = TempDefaults("pf.apply")
+        defer { temp.cleanup() }
+        let applier = FakePortForwardApplier()
+        let center = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { "192.168.1.20" }
+        )
+        try await center.addRule(
+            environmentID: "env-1",
+            guestPort: 8080,
+            requestedHostPort: 50_000,
+            label: "web"
+        )
+        try await center.addRule(
+            environmentID: "env-1",
+            guestPort: 3000,
+            requestedHostPort: nil,
+            label: "api"
+        )
+        let applied = await applier.applied
+        #expect(applied.count == 2)
+        #expect(applied[0].forward.hostAddress == LinuxPortForwardLimits.defaultBindAddress)
+        #expect(applied[0].forward.hostPort == 50_000)
+        #expect(applied[0].forward.guestPort == 8080)
+        // The dynamic rule takes the lowest free port in the range.
+        #expect(applied[1].forward.hostPort == 49_152)
+        #expect(applied[1].forward.guestPort == 3000)
+    }
+
+    @Test("An occupied fixed port is remapped and reported")
+    func conflictRemap() async throws {
+        let temp = TempDefaults("pf.conflict")
+        defer { temp.cleanup() }
+        let applier = FakePortForwardApplier()
+        await applier.setRejected([50_000])
+        let center = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { "192.168.1.20" }
+        )
+        try await center.addRule(
+            environmentID: "env-1",
+            guestPort: 8080,
+            requestedHostPort: 50_000,
+            label: "web"
+        )
+        let applied = await applier.applied
+        #expect(applied.count == 1)
+        #expect(applied[0].forward.hostPort == 49_152)
+        #expect(center.lastConflictNotice != nil)
+        let preview = center.previews(environmentID: "env-1").first
+        #expect(preview?.plan.wasRemapped == true)
+    }
+
+    @Test("A stopped VM keeps its rules and clears the applied view")
+    func stopKeepsRules() async throws {
+        let temp = TempDefaults("pf.stop")
+        defer { temp.cleanup() }
+        let applier = FakePortForwardApplier()
+        let center = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { "192.168.1.20" }
+        )
+        try await center.addRule(
+            environmentID: "env-1",
+            guestPort: 8080,
+            requestedHostPort: nil,
+            label: "web"
+        )
+        #expect(!center.plans(environmentID: "env-1").isEmpty)
+        center.guestStopped(environmentID: "env-1")
+        #expect(center.plans(environmentID: "env-1").isEmpty)
+        #expect(center.rules(environmentID: "env-1").count == 1)
+        // The preview still shows the planned port, marked as not applied.
+        let preview = center.previews(environmentID: "env-1").first
+        #expect(preview?.isApplied == false)
+        #expect(preview?.plan.hostPort == 49_152)
+    }
+
+    @Test("Rules persist per environment and restore on a new instance")
+    func persistence() async throws {
+        let temp = TempDefaults("pf.persist")
+        defer { temp.cleanup() }
+        let applier = FakePortForwardApplier()
+        let center = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { "192.168.1.20" }
+        )
+        try await center.addRule(
+            environmentID: "env-1",
+            guestPort: 8080,
+            requestedHostPort: 50_010,
+            label: "web"
+        )
+        try await center.addRule(
+            environmentID: "env-2",
+            guestPort: 5000,
+            requestedHostPort: nil,
+            label: "other"
+        )
+        let restored = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { "192.168.1.20" }
+        )
+        #expect(restored.rules(environmentID: "env-1").first?.guestPort == 8080)
+        #expect(restored.rules(environmentID: "env-2").first?.requestedHostPort == nil)
+        // Restoring applies through the controller again (restart restoration).
+        await restored.applyRules(environmentID: "env-1")
+        let applied = await applier.applied
+        #expect(applied.contains { $0.forward.hostPort == 50_010 })
+    }
+
+    @Test("LAN URL and QR payload use only the local address")
+    func urls() async throws {
+        let temp = TempDefaults("pf.url")
+        defer { temp.cleanup() }
+        let applier = FakePortForwardApplier()
+        let center = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { "192.168.1.20" }
+        )
+        try await center.addRule(
+            environmentID: "env-1",
+            guestPort: 8080,
+            requestedHostPort: 50_000,
+            label: "web"
+        )
+        let preview = try #require(center.previews(environmentID: "env-1").first)
+        #expect(preview.lanURL?.absoluteString == "http://192.168.1.20:50000")
+        #expect(preview.loopbackURL?.absoluteString == "http://127.0.0.1:50000")
+        #expect(preview.qrPayload == "http://192.168.1.20:50000")
+    }
+
+    @Test("The per-VM cap is enforced before anything reaches the guest")
+    func capEnforced() async throws {
+        let temp = TempDefaults("pf.cap")
+        defer { temp.cleanup() }
+        let applier = FakePortForwardApplier()
+        let center = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { nil }
+        )
+        for index in 0..<LinuxPortForwardLimits.maximumRulesPerEnvironment {
+            try await center.addRule(
+                environmentID: "env-1",
+                guestPort: 8000 + index,
+                requestedHostPort: nil,
+                label: "svc-\(index)"
+            )
+        }
+        await #expect(throws: LinuxPortForwardRuleError.ruleCapReached(
+            limit: LinuxPortForwardLimits.maximumRulesPerEnvironment
+        )) {
+            try await center.addRule(
+                environmentID: "env-1",
+                guestPort: 9000,
+                requestedHostPort: nil,
+                label: "overflow"
+            )
+        }
+        #expect(center.enabledRuleCount(environmentID: "env-1")
+            == LinuxPortForwardLimits.maximumRulesPerEnvironment)
+    }
+
+    @Test("A stopped VM records no rule as applied and deletes cleanly")
+    func stoppedEnvironment() async throws {
+        let temp = TempDefaults("pf.stopped")
+        defer { temp.cleanup() }
+        let applier = FakePortForwardApplier()
+        await applier.setRunning(false)
+        let center = LinuxPortForwardCenter(
+            applier: applier,
+            defaults: temp.defaults,
+            deviceAddressProvider: { nil }
+        )
+        try await center.addRule(
+            environmentID: "env-1",
+            guestPort: 8080,
+            requestedHostPort: nil,
+            label: "web"
+        )
+        #expect(await applier.applied.isEmpty)
+        #expect(center.rules(environmentID: "env-1").count == 1)
+        await center.forget(environmentID: "env-1")
+        #expect(center.rules(environmentID: "env-1").isEmpty)
+        #expect(center.previews(environmentID: "env-1").isEmpty)
+    }
+}
+
+@Suite("FloeApp.BackgroundNotificationGate")
+@MainActor
+struct BackgroundNotificationGateTests {
+
+    @Test("The persisted policy maps onto durable terminal kinds")
+    func gateMapping() {
+        let terminal = BackgroundRunCoordinator.eventGate(for: .terminal)
+        #expect(terminal.allows(.completed))
+        #expect(terminal.allows(.failed))
+        #expect(terminal.allows(.cancelled))
+        #expect(!terminal.allows(.actionRequired))
+
+        let critical = BackgroundRunCoordinator.eventGate(for: .critical)
+        #expect(!critical.allows(.completed))
+        #expect(critical.allows(.failed))
+        #expect(!critical.allows(.cancelled))
+        #expect(critical.allows(.actionRequired))
+
+        let stages = BackgroundRunCoordinator.eventGate(for: .stages)
+        #expect(stages.allows(.completed))
+        #expect(stages.allows(.failed))
+        #expect(stages.allows(.cancelled))
+        #expect(stages.allows(.actionRequired))
+
+        let off = BackgroundRunCoordinator.eventGate(for: .off)
+        for kind in TaskTerminalEventKind.allCases {
+            #expect(!off.allows(kind))
+        }
+        // A missing record follows the documented default (.stages).
+        #expect(BackgroundRunCoordinator.eventGate(for: nil).allows(.failed))
+    }
+
+    @Test("Terminal outcomes map onto work states and interruptions")
+    func terminalOutcomeMapping() {
+        #expect(BackgroundRunCoordinator.TerminalOutcome.succeeded.state == .completed)
+        #expect(!BackgroundRunCoordinator.TerminalOutcome.succeeded.interruption.offersRecovery)
+        #expect(BackgroundRunCoordinator.TerminalOutcome.cancelled.state == .cancelled)
+        #expect(BackgroundRunCoordinator.TerminalOutcome.failed.state == .failed)
+        #expect(BackgroundRunCoordinator.TerminalOutcome.failed.interruption == .checkpointed)
+    }
+
+    @Test("The system authorization status maps to the platform-independent state")
+    func authorizationMapping() {
+        #expect(BackgroundRunCoordinator.notificationAuthorizationState(.authorized) == .authorized)
+        #expect(BackgroundRunCoordinator.notificationAuthorizationState(.denied) == .denied)
+        #expect(BackgroundRunCoordinator.notificationAuthorizationState(.provisional) == .provisional)
+        #expect(BackgroundRunCoordinator.notificationAuthorizationState(.ephemeral) == .ephemeral)
+        #expect(BackgroundRunCoordinator.notificationAuthorizationState(.notDetermined) == .notDetermined)
+    }
+}
+
 #endif

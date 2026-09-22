@@ -33,6 +33,20 @@ public extension TaskNotificationPolicy {
         case .critical, .stages: true
         }
     }
+
+    /// Cancellation is a terminal outcome, not a failure: `.critical`
+    /// ("failures only") stays quiet, while `.terminal` and `.stages` report
+    /// the real end of the run so the durable terminal event is not lost.
+    var shouldNotifyCancellation: Bool {
+        switch self {
+        case .off, .critical: false
+        case .terminal, .stages: true
+        }
+    }
+
+    /// Action-required is the approval rule under the Build 222 durable-event
+    /// vocabulary; it must not drift from `shouldNotifyApproval`.
+    var shouldNotifyActionRequired: Bool { shouldNotifyApproval }
 }
 
 /// Platform-independent notification authorization state, mapped from
@@ -48,7 +62,7 @@ public enum NotificationAuthorizationState: String, Sendable, Codable, Hashable 
     case ephemeral
 
     /// Whether a posted notification can be presented as a user-visible alert.
-    var canPresentAlert: Bool {
+    public var canPresentAlert: Bool {
         switch self {
         case .authorized, .provisional, .ephemeral: true
         case .denied, .notDetermined: false
