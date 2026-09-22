@@ -13,6 +13,7 @@ from build_office_native_host import (EXCLUDED_SOURCES, SYSTEM_FRAMEWORKS, HOST_
 import build_office_native_host as build_host
 import office_render_gate_swift
 import office_render_readiness
+import office_simulator_guard
 from qualify_office_device_capabilities import qualify as device_qualify
 from verify_pptx_deck_semantics import DEFAULT_DECK, digest
 from office_release_gates import (CAPABILITY_FLAGS, capability_status, false_capabilities,
@@ -127,6 +128,65 @@ class SwiftImportProbeContractTests(unittest.TestCase):
             with mock.patch.object(build_host, 'SWIFT_IMPORT_PROBE', bad_probe):
                 with self.assertRaisesRegex(AssertionError, r"\[String : Any\]\?.*NSDictionary\?|ImportProbe"):
                     verify_swift_import_probe(sdk=sdk)
+
+
+class AppSimulatorImportGuardTests(unittest.TestCase):
+    """The App keeps compiling where the pinned host is absent.
+
+    `FloeOfficeNative` is linked into iphoneos builds only, so the simulator
+    target compiles the Office editor with `canImport(FloeOfficeNative)` false.
+    A host-typed reference outside that guard is a hard compile error in the
+    CI step that builds the App regression host — the rebuilt presentation host
+    added `hostSupportsVisibleRender(_:)` and `startRenderWatchdog(for:)`
+    outside it and broke the simulator target while the device path stayed
+    correct.
+    """
+
+    def test_app_sources_keep_every_host_typed_reference_behind_the_guard(self):
+        receipt = office_simulator_guard.check()
+        self.assertTrue(receipt['simulatorGuardPassed'])
+        self.assertGreater(receipt['appSourcesScanned'], 0)
+        self.assertTrue(receipt['visibleRenderGateArmedInGuard'])
+        # A static boundary proves nothing about the engine or a device.
+        self.assertFalse(receipt['engineVisibleRenderPassed'])
+        self.assertFalse(receipt['deviceVisibleRenderPassed'])
+
+    def test_detector_rejects_the_watchdog_that_broke_the_simulator(self):
+        broken = (
+            "    #if canImport(FloeOfficeNative)\n"
+            "    private func startOpenWatchdog(for native: FloeOfficeNativeViewController) {}\n"
+            "    #endif\n"
+            "\n"
+            "    private static func hostSupportsVisibleRender(_ native: FloeOfficeNativeViewController) -> Bool {\n"
+            "        true\n"
+            "    }\n"
+        )
+        violations = office_simulator_guard.unguarded_host_references(broken, 'regression')
+        self.assertEqual(len(violations), 1, violations)
+        self.assertTrue(violations[0].startswith('regression:5:'), violations)
+
+        guarded = (
+            "    #if canImport(FloeOfficeNative)\n"
+            "    private static func hostSupportsVisibleRender(_ native: FloeOfficeNativeViewController) -> Bool {\n"
+            "        true\n"
+            "    }\n"
+            "    #endif\n"
+        )
+        self.assertEqual(office_simulator_guard.unguarded_host_references(guarded, 'fixed'), [])
+
+    def test_the_absent_framework_branch_counts_as_unguarded(self):
+        # The `#else` branch compiles exactly when FloeOfficeNative is absent,
+        # so a host-typed reference there still breaks the simulator target.
+        text = (
+            "    #if canImport(FloeOfficeNative)\n"
+            "    let native = FloeOfficeNativeViewController()\n"
+            "    #else\n"
+            "    private static func wrong(_ native: FloeOfficeNativeViewController) {}\n"
+            "    #endif\n"
+        )
+        violations = office_simulator_guard.unguarded_host_references(text, 'else-branch')
+        self.assertEqual(len(violations), 1, violations)
+        self.assertTrue(violations[0].startswith('else-branch:4:'), violations)
 
 
 class OfficeReleaseGateTests(unittest.TestCase):
