@@ -533,6 +533,91 @@ struct LocalModelIdleUnloadTests {
         #expect(engine.shutdownCount == 1)
     }
 
+    @Test("An explicitly retained task keeps its engine through the idle window")
+    @available(macOS 15.4, iOS 26.0, *)
+    func retainedTaskKeepsEngineThroughIdleWindow() async throws {
+        // Build 224 regression: the task launch retains the model BEFORE the
+        // preparing phase, and the preparing phase (OCR, PDF staging, a long
+        // workspace read) can outlast the idle window. The idle timer must not
+        // tear the mapping down while a durable run still owns it: the next
+        // turn would otherwise pay a spurious multi-gigabyte container
+        // re-initialization, the exact unload/reload boundary device logs tie
+        // to "MLX container initialization failed".
+        let engine = RecordingEngine(behavior: RecordingEngine.text("synthetic answer"))
+        let harness = try LocalRuntimeHarness(
+            engine: engine,
+            idleUnloadInterval: .milliseconds(150)
+        )
+        defer { harness.cleanUp() }
+        let taskID = UUID()
+        await harness.runtime.retainForTask(taskID: taskID, modelID: "qwen3.5-4b-mlx4")
+        try await harness.runtime.preload(modelID: "qwen3.5-4b-mlx4")
+        #expect(harness.created.value == 1)
+        // The idle window elapses with the task still retained.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(engine.shutdownCount == 0)
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("A retained task must keep its resident engine through the idle window")
+            return
+        }
+        // The task's first turn reuses the resident container: no reload.
+        _ = try await harness.runtime.completeMeasured(
+            modelID: "qwen3.5-4b-mlx4",
+            instructions: "bounded",
+            prompt: "turn one",
+            images: [],
+            tools: [],
+            maxTokens: 32
+        )
+        #expect(harness.created.value == 1)
+        #expect(engine.shutdownCount == 0)
+        // Once the last task releases, the accepted idle window applies again.
+        await harness.runtime.releaseForTask(taskID: taskID, reason: "finished")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(engine.shutdownCount == 1)
+        #expect(await harness.runtime.currentLoadState() == .unloaded)
+    }
+
+    @Test("A mid-run gap past the idle window keeps the engine for the continuation")
+    @available(macOS 15.4, iOS 26.0, *)
+    func midRunGapKeepsEngineForContinuation() async throws {
+        // An approval prompt or a slow tool routinely outlasts the idle
+        // window. The continuation turn must find the container resident;
+        // unloading here forced a container re-initialization per approval
+        // wait on device.
+        let engine = RecordingEngine(behavior: RecordingEngine.text("synthetic answer"))
+        let harness = try LocalRuntimeHarness(
+            engine: engine,
+            idleUnloadInterval: .milliseconds(150)
+        )
+        defer { harness.cleanUp() }
+        let taskID = UUID()
+        await harness.runtime.retainForTask(taskID: taskID, modelID: "qwen3.5-4b-mlx4")
+        _ = try await harness.runtime.completeMeasured(
+            modelID: "qwen3.5-4b-mlx4",
+            instructions: "bounded",
+            prompt: "turn one",
+            images: [],
+            tools: [],
+            maxTokens: 32
+        )
+        // The approval/tool gap outlasts the idle window while the run is active.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(engine.shutdownCount == 0)
+        _ = try await harness.runtime.completeMeasured(
+            modelID: "qwen3.5-4b-mlx4",
+            instructions: "bounded",
+            prompt: "turn two",
+            images: [],
+            tools: [],
+            maxTokens: 32
+        )
+        #expect(harness.created.value == 1)
+        #expect(engine.shutdownCount == 0)
+        #expect(engine.generationCount == 2)
+        await harness.runtime.releaseForTask(taskID: taskID, reason: "finished")
+    }
+
     @Test("An explicit unload releases the engine before the idle window")
     @available(macOS 15.4, iOS 26.0, *)
     func explicitUnloadIsImmediate() async throws {

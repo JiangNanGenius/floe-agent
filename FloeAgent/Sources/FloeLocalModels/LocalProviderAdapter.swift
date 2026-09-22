@@ -233,9 +233,24 @@ public actor LocalModelRuntime {
 
     /// Starts (or restarts) the idle-unload timer. Called after every turn and
     /// when the last task releases its claim; any later activity cancels it.
+    /// Build 224: the timer is only armed while NO durable task retains the
+    /// model. Task launch retains the run before the preparing phase and
+    /// multi-turn runs hold approvals and slow tools between turns; an idle
+    /// timer armed during those windows tore the mapping down mid-task, so the
+    /// next turn paid a spurious multi-gigabyte container re-initialization —
+    /// the exact unload/reload boundary device logs tie to "MLX container
+    /// initialization failed". `releaseForTask` schedules the unload when the
+    /// last task releases, which keeps the accepted two-minute idle window for
+    /// the genuinely idle process.
     private func scheduleIdleUnload(reason: String) {
         idleUnloadTask?.cancel()
         activityGeneration &+= 1
+        guard taskResidency.activeTaskCount == 0 else {
+            FloeLogger(category: .providers).debug(
+                "localInferenceIdleUnloadDeferred reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+            )
+            return
+        }
         let generation = activityGeneration
         let interval = idleUnloadInterval
         let residentModel = activeEngine?.key.modelID ?? "none"
@@ -259,11 +274,22 @@ public actor LocalModelRuntime {
 
     /// Idle timer body. Waits for the FIFO slot so an unload can never race a
     /// decode, re-checks that no newer activity happened, then releases the
-    /// container and its process-wide MLX caches.
+    /// container and its process-wide MLX caches. Build 224: the fire-time
+    /// ledger check is the authoritative backstop — a timer that was armed
+    /// before a task retained (or before a turn landed) must never evict an
+    /// engine a durable run still owns. The skip is safe: the task's next
+    /// activity cancels/re-arms as usual, and `releaseForTask` schedules the
+    /// real unload when the last claim drops.
     private func performIdleUnload(generation: UInt64, reason: String) async {
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
         guard generation == activityGeneration else { return }
+        guard taskResidency.activeTaskCount == 0 else {
+            FloeLogger(category: .providers).info(
+                "localInferenceIdleUnloadSkipped reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+            )
+            return
+        }
         guard let previous = activeEngine else { return }
         activeEngine = nil
         idleUnloadTask = nil
@@ -297,6 +323,9 @@ public actor LocalModelRuntime {
         // Build 222: an explicit preload is governed by the same idle window.
         // Two minutes without a message or tool continuation releases the
         // mapping instead of leaving a settings preload resident forever.
+        // Build 224: while a durable task is retained (task launch preloads
+        // before the preparing phase), the window is deferred to
+        // `releaseForTask` so the timer cannot evict the engine mid-task.
         scheduleIdleUnload(reason: "preloadFinished")
     }
 
@@ -573,7 +602,9 @@ public actor LocalModelRuntime {
         // next turn (a tool continuation, the second or third user message)
         // reuses the weights instead of paying a reload that device logs tied
         // to repeated failures. `scheduleIdleUnload` releases the mapping
-        // after two minutes without a message or tool continuation.
+        // after two minutes without a message or tool continuation once no
+        // durable task retains the model (Build 224); a retained task keeps
+        // the engine through approval waits and slow mid-run gaps.
         scheduleIdleUnload(reason: "turnFinished")
         let endedAt = Date()
         let availableAfterInference = measureAvailableMemory()
