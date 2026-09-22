@@ -96,8 +96,17 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
             (bytes, response) = try await session.bytes(for: URLRequest(url: url))
+        } catch is CancellationError {
+            throw .cancelled
         } catch let urlError as URLError {
-            throw classify(urlError)
+            throw classify(urlError, taskIsCancelled: Task.isCancelled)
+        } catch {
+            // Under typed throws this catch keeps the function exhaustive.
+            // `session.bytes` is an untyped-throws seam: a non-URLError
+            // failure cannot be proven to be availability-related, so it
+            // fails closed as an invalid response rather than guessing that
+            // switching to a mirror could repair it.
+            throw .responseInvalid(detail: error.localizedDescription)
         }
 
         guard let http = response as? HTTPURLResponse else {
@@ -162,7 +171,7 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
         } catch let error as LinuxGuestImageTransferError {
             throw error
         } catch let urlError as URLError {
-            throw classify(urlError)
+            throw classify(urlError, taskIsCancelled: Task.isCancelled)
         } catch let installError as LinuxGuestImageInstallError {
             switch installError {
             case .archiveTooLarge:
@@ -179,7 +188,17 @@ struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
     }
 
     /// Classifies a transport-level URLError for the fallback decision.
-    private static func classify(_ error: URLError) -> LinuxGuestImageTransferError {
+    /// `URLError.cancelled` only becomes the caller-cancelled transfer class
+    /// while the surrounding task is actually cancelled (or the shared
+    /// session is being torn down because of that); an unexpected
+    /// cancellation stays fail-closed and never switches mirrors.
+    private static func classify(
+        _ error: URLError,
+        taskIsCancelled: Bool
+    ) -> LinuxGuestImageTransferError {
+        if error.code == .cancelled {
+            return taskIsCancelled ? .cancelled : .responseInvalid(detail: error.localizedDescription)
+        }
         switch error.code {
         case .notConnectedToInternet, .timedOut, .cannotFindHost, .cannotConnectToHost,
              .networkConnectionLost, .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff,

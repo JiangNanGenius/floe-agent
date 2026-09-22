@@ -36,7 +36,9 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 **当前内部 TestFlight：1.7.0（223）**。9 月 22 日 13:19 UTC 已核实 Apple `VALID`、未过期、唯一私有内部 Floe QA 组及 `IN_BETA_TESTING`。验收 SDK 发布作业在签名上传前保留了未签名 IPA，对应 GitHub 预发布已公开；真机行为仍由用户验收。[Build 223 说明](docs/RELEASE_NOTES_1.7.0_BUILD_223.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md) · [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.80)。
 
-**Build 224 是当前发布候选。** 它修复 Build 223 Runtime v2 的启动/迁移链（全新注册表和旧 Linux 安装都能再次启动，已验证内容不会被误报为未安装，需要修复的环境安全中止），让设备端 MLX 模型在任务保留的空闲间隙保持驻留，并修复 PPT/PPTX 编辑入口使编辑能进入首个可编辑渲染。Linux 镜像下载保持 GitHub 优先，仅在主源出现有界失败后才使用分片 Gitee 镜像；另有 GitHub→Gitee 单向工作流镜像仓库。源码级测试已通过；云端构建、上传、Apple 处理、Floe QA 可用性和真机验收仍是独立门槛。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)。
+**Build 225 是当前发布候选。** 它承载 Build 224 候选的全部内容——Build 223 Runtime v2 启动/迁移修复（全新注册表和旧 Linux 安装都能再次启动，已验证内容不会被误报为未安装，需要修复的环境安全中止）、任务保留空闲间隙的 MLX 模型驻留、PPT/PPTX 编辑入口首个可编辑渲染，以及 GitHub 优先的分片 Gitee 回退和 GitHub→Gitee 单向仓库镜像——并修复阻断 Build 224 验收 SDK App 构建的唯一一处 Swift 6 类型化抛错（Linux 镜像下载器），不改变 fail-closed 镜像切换与取消语义。本机 23 项定向 Linux 镜像测试与修复源文件的 Swift 6 iOS SDK 对象码编译均通过；云端构建、上传、Apple 处理、Floe QA 可用性和真机验收仍是独立门槛。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_225.md)。
+
+**Build 224 从未编译成功。** 其不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败的验收 SDK run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留；参见 [Build 224 说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)与 Build 225 说明中的失败记录表。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
