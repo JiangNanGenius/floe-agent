@@ -39,6 +39,36 @@ private final class OfficeCloseAck {
     }
 }
 
+/// One-shot, main-queue acknowledgement that bounds the host's guarded mobile
+/// edit entry. The first resolver (host callback or timeout) wins. A host that
+/// never calls back reads as unverified-read-only so the caller's re-probe and
+/// fallback decide from the engine's real state — a lost native completion can
+/// never wedge the edit acknowledgement and leave `operating` stuck (which
+/// would refuse every later recovery).
+@MainActor
+final class OfficeEditEntryAck {
+    private var continuation: CheckedContinuation<(readOnly: Bool, pendingPassword: Bool), Never>?
+    private var settledResult: (readOnly: Bool, pendingPassword: Bool)?
+
+    func wait() async -> (readOnly: Bool, pendingPassword: Bool) {
+        if let settledResult { return settledResult }
+        return await withCheckedContinuation { continuation in
+            if let settledResult {
+                continuation.resume(returning: settledResult)
+            } else {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func resolve(_ result: (readOnly: Bool, pendingPassword: Bool)) {
+        guard settledResult == nil else { return }
+        settledResult = result
+        continuation?.resume(returning: result)
+        continuation = nil
+    }
+}
+
 /// One-shot, main-queue save receipt used to bound a native working-copy
 /// save. The first resolver (engine receipt or timeout) wins; later resolutions
 /// are ignored so a completion arriving after a timeout can never resume twice
@@ -829,7 +859,7 @@ final class OfficeFileSession: ObservableObject {
     private func acknowledgeEditPermission() async throws {
         #if canImport(FloeOfficeNative)
         guard let native = controller as? FloeOfficeNativeViewController else { return }
-        var hostReadOnly = await awaitEnginePermission(seconds: 20)
+        var hostReadOnly = await awaitEnginePermission(seconds: 25)
         guard native.isViewLoaded, let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else {
             // Without a mounted surface the engine has not opened yet. The host
             // callback (or the open watchdog) still owns this session; never
@@ -909,13 +939,14 @@ final class OfficeFileSession: ObservableObject {
             hostReadOnly = entry.readOnly
             // The mobile UI switches modes asynchronously after the guarded
             // entry; give the engine a bounded settling window before
-            // concluding that the document is denied. Cold starts and remounts
-            // on compact layouts can take several seconds before the page
-            // reports its real backing permission through the observer, so the
-            // window must outlast them — the previous 3s budget read a slow
-            // editable document as denied and bounced it back to preview,
-            // which is why later edit attempts kept failing.
-            for _ in 0..<60 {
+            // concluding that the document is denied. Cold starts, remounts
+            // on compact layouts and the close-then-reopen document switch
+            // can take well past ten seconds before the page reports its real
+            // backing permission through the observer, so the window must
+            // outlast them — the previous 3s budget read a slow editable
+            // document as denied and bounced it back to preview, which is why
+            // later edit attempts kept failing.
+            for _ in 0..<100 {
                 if Task.isCancelled { break }
                 if hostReadOnly == false { break }
                 try? await Task.sleep(nanoseconds: 150_000_000)
@@ -965,14 +996,25 @@ final class OfficeFileSession: ObservableObject {
     /// Runs the host's guarded mobile edit entry. `readOnly` is the engine's
     /// own state after the attempt; a pending edit password (error 42) is a
     /// challenge, not a denial. A session the host mounted read-only refuses
-    /// (error 41) and stays read-only.
+    /// (error 41) and stays read-only. Bounded: a host that never acknowledges
+    /// reads as unverified-read-only so the edit acknowledgement can never
+    /// wedge the session (a stuck `operating` refuses every later recovery);
+    /// the caller's re-probe and fallback then decide from the engine's state.
     private static func enterEditMode(_ native: FloeOfficeNativeViewController) async -> (readOnly: Bool, pendingPassword: Bool) {
-        await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, Bool), Never>) in
+        let ack = OfficeEditEntryAck()
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            ack.resolve((true, false))
+        }
+        Task { @MainActor in
             native.enterEditMode { readOnly, error in
                 let pendingPassword = (error as NSError?)?.code == 42
-                continuation.resume(returning: (readOnly, pendingPassword))
+                ack.resolve((readOnly, pendingPassword))
             }
         }
+        let result = await ack.wait()
+        timeoutTask.cancel()
+        return result
     }
     #endif
 

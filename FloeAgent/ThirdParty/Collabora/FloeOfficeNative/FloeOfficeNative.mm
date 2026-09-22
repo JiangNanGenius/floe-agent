@@ -904,6 +904,11 @@ static void ServerReady() {
     NSMutableDictionary<NSString *, id> *_lastFacts;
     /// Last logged probe stage; polling every 200 ms must not flood the log.
     NSString *_lastLoggedStage;
+    /// Wall-clock deadline. The completion-driven check below only runs after a
+    /// probe eval finishes; a content process that never answers an eval would
+    /// otherwise delay the honest bounded outcome past the App's budgets. The
+    /// timer guarantees the render report fires at the deadline either way.
+    dispatch_source_t _deadlineTimer;
 }
 
 - (instancetype)initWithController:(FloeOfficeNativeViewController *)controller
@@ -939,22 +944,47 @@ static void ServerReady() {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
     if (_startedAt || _finished || _cancelled) return;
     _startedAt = [NSDate date];
+    __weak FloeOfficeRenderProbe *weakSelf = self;
+    _deadlineTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(_deadlineTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.deadline * NSEC_PER_SEC)),
+                              DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler(_deadlineTimer, ^{
+        FloeOfficeRenderProbe *probe = weakSelf;
+        if (!probe || probe->_finished || probe->_cancelled) return;
+        [probe finishWithStage:@"deadline"];
+        [probe reportFailureIfRequiredWithReason:@"no-visible-render"];
+    });
+    dispatch_resume(_deadlineTimer);
     [self poll];
+}
+
+- (void)invalidateDeadlineTimer {
+    if (_deadlineTimer) {
+        dispatch_source_cancel(_deadlineTimer);
+        _deadlineTimer = nil;
+    }
 }
 
 - (void)cancel {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
     _cancelled = YES;
     _finished = YES;
+    [self invalidateDeadlineTimer];
     [_lastFacts setObject:@"cancelled" forKey:@"stage"];
+}
+
+- (void)finishWithStage:(NSString *)stage {
+    _finished = YES;
+    [self invalidateDeadlineTimer];
+    [_lastFacts setObject:stage forKey:@"stage"];
 }
 
 - (void)poll {
     if (_finished || _cancelled) return;
     FloeOfficeNativeViewController *controller = self.controller;
     if (!controller) {
-        _finished = YES;
-        [_lastFacts setObject:@"controller-gone" forKey:@"stage"];
+        [self finishWithStage:@"controller-gone"];
         [self reportFailureIfRequiredWithReason:@"editor-surface-missing"];
         return;
     }
@@ -972,15 +1002,13 @@ static void ServerReady() {
             }
             FloeRenderFacts renderFacts = [probe renderFactsFromDictionary:facts];
             if (FloeRenderFactsSatisfyVisibleRender(renderFacts)) {
-                probe->_finished = YES;
-                [probe->_lastFacts setObject:@"visible-render" forKey:@"stage"];
+                [probe finishWithStage:@"visible-render"];
                 [probe.controller renderProbeDidObserveVisibleRender:probe.diagnostics];
                 return;
             }
         }
         if (probe->_startedAt && -[probe->_startedAt timeIntervalSinceNow] >= probe.deadline) {
-            probe->_finished = YES;
-            [probe->_lastFacts setObject:@"deadline" forKey:@"stage"];
+            [probe finishWithStage:@"deadline"];
             [probe reportFailureIfRequiredWithReason:error ? @"probe-error" : @"no-visible-render"];
             return;
         }
@@ -1076,6 +1104,8 @@ static void ServerReady() {
 - (void)enginePermissionDidUpdate:(BOOL)readOnly;
 - (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
                                completion:(void (^)(BOOL known, BOOL readOnly))completion;
+- (void)attemptEngineEditEntryWithAttempts:(NSUInteger)attempts
+                                completion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion;
 - (void)attemptEngineEditEntryWithCompletion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion;
 @end
 
@@ -1366,8 +1396,11 @@ static void ServerReady() {
     self.renderDiagnostics = diagnostics;
     FloeOfficeLog(@"visible-render-unobserved", diagnostics);
 }
-// Retries only until the editor has created its map. app.file.readOnly is the
+// Retries until the editor has created its map. app.file.readOnly is the
 // backing permission; _permission/isReadOnlyMode() alone is the mobile UI mode.
+// The budget covers a cold page load of the multi-megabyte editor bundle plus
+// the close-then-reopen document switch on a device: giving up earlier misread
+// a slow editable open as a denied document and bounced the editor to preview.
 - (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
                                completion:(void (^)(BOOL known, BOOL readOnly))completion {
     NSAssert(NSThread.isMainThread, @"Office permission probes are main-queue owned");
@@ -1379,7 +1412,10 @@ static void ServerReady() {
     [self.editor.webView evaluateJavaScript:FloeEnginePermissionProbeScript()
                           completionHandler:^(id value, NSError *error) {
         FloeOfficeNativeViewController *host = weakSelf;
-        if (!host) return;
+        if (!host) {
+            completion(NO, YES);
+            return;
+        }
         NSDictionary *result = [value isKindOfClass:NSDictionary.class] ? value : nil;
         NSNumber *backendReadOnly = [result[@"backendReadOnly"] isKindOfClass:NSNumber.class]
             ? result[@"backendReadOnly"] : nil;
@@ -1387,7 +1423,7 @@ static void ServerReady() {
             completion(YES, backendReadOnly.boolValue);
             return;
         }
-        if (attempts >= 40 || error) {
+        if (attempts >= 150 || error) {
             completion(NO, host.sessionIsReadOnly);
             return;
         }
@@ -1397,7 +1433,13 @@ static void ServerReady() {
         });
     }];
 }
-- (void)attemptEngineEditEntryWithCompletion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion {
+// Follows the engine's normal mobile edit entry. A page that is still loading
+// (or a context momentarily busy during the document switch) returns
+// `not-ready` or no result at all; that transient state is retried, bounded,
+// instead of being misread as a denied document. Only a definitive engine
+// answer reports.
+- (void)attemptEngineEditEntryWithAttempts:(NSUInteger)attempts
+                                completion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion {
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
     if (self.closing || self.closed || !self.editor.webView) {
         completion(YES, NO);
@@ -1407,8 +1449,20 @@ static void ServerReady() {
     [self.editor.webView evaluateJavaScript:FloeEngineEditEntryScript()
                           completionHandler:^(id value, NSError *error) {
         FloeOfficeNativeViewController *host = weakSelf;
-        if (!host) return;
+        if (!host) {
+            completion(YES, NO);
+            return;
+        }
         NSDictionary *result = [value isKindOfClass:NSDictionary.class] ? value : nil;
+        NSString *reason = [result[@"reason"] isKindOfClass:NSString.class] ? result[@"reason"] : nil;
+        BOOL transient = !result || [reason isEqualToString:@"not-ready"] || [reason isEqualToString:@"error"];
+        if (transient && attempts < 24) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [host attemptEngineEditEntryWithAttempts:attempts + 1 completion:completion];
+            });
+            return;
+        }
         if (!result) {
             completion(YES, NO);
             return;
@@ -1420,6 +1474,9 @@ static void ServerReady() {
             && [result[@"pendingPassword"] boolValue];
         completion(backendReadOnly || !uiEdit, pendingPassword);
     }];
+}
+- (void)attemptEngineEditEntryWithCompletion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion {
+    [self attemptEngineEditEntryWithAttempts:0 completion:completion];
 }
 - (void)enterEditModeWithCompletion:(void (^)(BOOL readOnly, NSError *error))completion {
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
