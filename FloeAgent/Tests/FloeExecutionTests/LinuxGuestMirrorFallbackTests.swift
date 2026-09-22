@@ -130,7 +130,7 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         } catch {
             return XCTFail("a primary 5xx must fall back: \(error)")
         }
-        let expected = fixture.pieces.map(\.value).reduce(Data(), +)
+        let expected = fixture.pieceNames.compactMap { fixture.pieces[$0] }.reduce(Data(), +)
         let actual = try? Data(contentsOf: destination)
         XCTAssertEqual(actual, expected)
     }
