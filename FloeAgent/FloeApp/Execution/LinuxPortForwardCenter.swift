@@ -130,6 +130,10 @@ final class LinuxPortForwardCenter: ObservableObject {
         self.defaults = defaults
         self.deviceAddressProvider = deviceAddressProvider
         self.rulesByEnvironment = LinuxPortForwardRuleStore.load(from: defaults)
+        self.appliedPlansByEnvironment = [:]
+        self.lastError = nil
+        self.lastConflictNotice = nil
+        self.lastAppliedAt = nil
     }
 
     // MARK: - Reads
