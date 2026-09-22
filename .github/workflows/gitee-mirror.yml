@@ -73,7 +73,7 @@ jobs:
 
           # Credential helper: argv/config carry only the variable NAME; the
           # child shell expands the value from the 0600 file at runtime.
-          CRED_HELPER='!f() { printf "username=x-access-token\n"; printf "password=%s\n" "$(cat "$GITEE_TOKEN_FILE")"; }; f'
+          CRED_HELPER='!f() { printf "username=JiangNanGenius\n"; printf "password=%s\n" "$(cat "$GITEE_TOKEN_FILE")"; }; f'
           ggit() { git -c "credential.helper=${CRED_HELPER}" "$@"; }
 
           FORCE_FLAGS=""
