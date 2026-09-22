@@ -105,7 +105,7 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         XCTAssertTrue(orderedCalls.contains(fixture.trusted.mirrors[0].shardManifestURL), "the Gitee manifest is fetched")
         XCTAssertTrue(orderedCalls.contains { $0.absoluteString.hasSuffix(fixture.pieceNames[0]) }, "the first piece is fetched")
         let bytes = try? Data(contentsOf: destination)
-        let expected = fixture.manifest.shards.reduce(Data()) { $0 + (fixture.pieces[$1.name] ?? Data()) }
+        let expected = fixture.pieceNames.compactMap { fixture.pieces[$0] }.reduce(Data(), +)
         XCTAssertEqual(bytes, expected, "the staged archive was reconstructed from verified mirror pieces")
     }
 
@@ -131,10 +131,8 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
             return XCTFail("a primary 5xx must fall back: \(error)")
         }
         let expected = fixture.pieces.map(\.value).reduce(Data(), +)
-        let actual = try Data(contentsOf: destination)
-        if actual != expected {
-            XCTFail("actual=\(actual.map { String(format: "%02x", $0) }.joined()) expected=\(expected.map { String(format: "%02x", $0) }.joined())")
-        }
+        let actual = try? Data(contentsOf: destination)
+        XCTAssertEqual(actual, expected)
     }
 
     func testDefiniteAnswerDoesNotFallBack() async {
