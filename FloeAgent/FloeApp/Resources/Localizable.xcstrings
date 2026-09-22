@@ -2866,6 +2866,23 @@
         }
       }
     },
+    "environment.backend.update_start" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update and start"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新并启动"
+          }
+        }
+      }
+    },
     "environment.backend.image_missing": {
       "extractionState": "manual",
       "localizations": {
@@ -3053,6 +3070,23 @@
         }
       }
     },
+    "environment.backend.status.installed_stopped": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Component installed; guest stopped"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "组件已安装；客户机已停止"
+          }
+        }
+      }
+    },
     "environment.backend.status.stopped": {
       "extractionState": "manual",
       "localizations": {
@@ -3066,6 +3100,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "已停止"
+          }
+        }
+      }
+    },
+    "environment.backend.repair": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repair and start"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修复并启动"
           }
         }
       }

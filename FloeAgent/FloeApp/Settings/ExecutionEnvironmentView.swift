@@ -25,7 +25,7 @@ struct ExecutionEnvironmentView: View {
     /// same App-shared install job the environment manager and the terminal
     /// empty state use, so a first-use download here is shared, cancellable
     /// and retryable rather than a second implementation.
-    @State private var linuxImageModel: LinuxImageInstallModel?
+    @State private var linuxImageModel: LinuxImageInstallModel? = LinuxImageInstallModel(imageID: LinuxGuestImageDistributionCatalog.defaultImageID)
     @State private var linuxImageStatus: LinuxGuestImageInstallationService.ImageStatus?
     @State private var linuxEnvironmentID: String?
     @State private var linuxEnvironmentTitle = "Linux 环境"
@@ -231,60 +231,36 @@ struct ExecutionEnvironmentView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         } else {
+            // One card derives the single authoritative state: a verified
+            // installed/running component never renders the download entry.
             if let model = linuxImageModel {
                 LinuxImageInstallCard(model: model) {
                     // A finished install is exactly the first-use moment:
-                    // start the environment so the component is usable, but
-                    // do not hide a start failure behind the download result.
+                    // start the environment, but never hide a start failure.
                     await startLinuxEnvironment()
                 }
             }
-            if let status = linuxImageStatus {
-                LabeledContent("environment.backend.image", value: status.id)
-                if status.installed, status.verificationFailure == nil {
-                    Label("environment.backend.status.running", systemImage: "checkmark.seal")
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(FloeTheme.success)
-                } else if let failure = status.verificationFailure {
-                    Text(failure)
+            if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus, status.running {
+                LabeledContent("environment.backend.status", value: String(localized: "environment.backend.status.running"))
+                if let network = status.networkStatus {
+                    LabeledContent("environment.backend.network", value: networkLabel(network))
+                }
+                if let resize = status.diskResizeFailure {
+                    Label(resize, systemImage: "wrench.and.screwdriver")
                         .font(.caption2)
-                        .foregroundStyle(FloeTheme.destructive)
+                        .foregroundStyle(FloeTheme.pending)
                         .textSelection(.enabled)
                 }
-            }
-            if let update = linuxUpdateNotice {
-                Label(update, systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption)
-                    .foregroundStyle(FloeTheme.pending)
-            }
-            if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus {
-                LabeledContent("environment.backend.status", value: status.running
-                    ? String(localized: "environment.backend.status.running")
-                    : String(localized: "environment.backend.status.stopped"))
-                if status.running {
-                    if let network = status.networkStatus {
-                        LabeledContent("environment.backend.network", value: networkLabel(network))
-                    }
-                    if let message = status.lastError, status.networkStatus?.isReady != true {
-                        Text(message)
-                            .font(.caption2)
-                            .foregroundStyle(FloeTheme.pending)
-                            .textSelection(.enabled)
-                    }
-                    Button("environment.backend.stop", systemImage: "stop") {
-                        Task { await stopLinuxEnvironment(id: environmentID) }
-                    }
-                    .disabled(linuxBusy)
-                } else {
-                    Button("environment.backend.start", systemImage: "play") {
-                        Task { await startLinuxEnvironment() }
-                    }
-                    .disabled(linuxBusy || status.imageInstalled == false || status.imageVerificationFailure != nil)
+                if let message = status.lastError, status.networkStatus?.isReady != true {
+                    Text(message)
+                        .font(.caption2)
+                        .foregroundStyle(FloeTheme.pending)
+                        .textSelection(.enabled)
                 }
-            } else {
-                Text("settings.exec.linux.start_hint")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Button("environment.backend.stop", systemImage: "stop") {
+                    Task { await stopLinuxEnvironment(id: environmentID) }
+                }
+                .disabled(linuxBusy)
             }
             if linuxBusy { ProgressView("environment.backend.checking") }
             if let linuxError {
@@ -293,9 +269,6 @@ struct ExecutionEnvironmentView: View {
                     .foregroundStyle(FloeTheme.destructive)
                     .textSelection(.enabled)
             }
-            // The per-environment manager entry lives in the packages section
-            // below; this section only owns the shared component and the
-            // first start, so the screen does not grow a second identical link.
         }
     }
 
@@ -332,6 +305,7 @@ struct ExecutionEnvironmentView: View {
             linuxEnvironmentTitle = name
         }
         linuxGuestStatus = await FloePlatformServices.shared.linuxGuestStatus(id: linux?.id)
+        await linuxImageModel?.refresh(environmentIDHint: linux?.id)
     }
 
     private func startLinuxEnvironment() async {

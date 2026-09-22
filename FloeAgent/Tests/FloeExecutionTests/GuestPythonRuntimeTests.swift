@@ -60,8 +60,10 @@ private final class ScriptedGuest: LinuxCommandRunning, LinuxGuestPathMapping, L
     }
 
     // LinuxGuestControlling (only what the activator touches is live)
+    var startHook: (() throws -> Bool)?
     func startGuest(environmentID: String, taskID: String?) async throws -> Bool {
         startCalls += 1
+        if let hook = startHook { return try hook() }
         running = true
         return true
     }
@@ -272,4 +274,51 @@ final class GuestPythonRuntimeTests: XCTestCase {
         XCTAssertTrue(message.contains("shared folders"), message)
         XCTAssertFalse(guest.calls.contains { $0.argv.contains("-c") })
     }
+
+    /// First Linux use on an uninstalled/unqualified image must invoke the
+    /// shared preparation handler once, then resume the original action —
+    /// the model never has to discover environment.prepareLinux itself.
+    func testMissingImageInvokesPreparationThenResumes() async throws {
+        let guest = ScriptedGuest()
+        guest.running = false
+        var firstStart = true
+        var prepareCalls = 0
+        guest.startHook = {
+            if firstStart {
+                firstStart = false
+                throw LinuxGuestError.imageNotQualified(
+                    environmentID: "env-prep",
+                    reason: "image not installed"
+                )
+            }
+            guest.running = true
+            return true
+        }
+        Self.provisioned(guest)
+        let environmentID = "env-\(UUID().uuidString)"
+        defer { Task { await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID) } }
+        let prepareBox = Counter()
+        let prepare: LinuxPreparationHandler = { _ in
+            prepareBox.increment()
+            return "prepared"
+        }
+        let outcome = await GuestPythonRuntime.run(
+            ScriptExecutionRequest(script: "1+1", timeout: 10, maxOutputBytes: 4096,
+                                   pythonContext: .init(environmentID: environmentID)),
+            environmentID: environmentID, guests: guest, controller: guest,
+            prepareLinux: prepare, cancellation: nil
+        )
+        guard case .ok = outcome else {
+            return XCTFail("expected the command to run after preparation, got \(outcome)")
+        }
+        XCTAssertEqual(prepareBox.value, 1, "missing image must trigger exactly one preparation")
+        XCTAssertEqual(guest.startCalls, 2, "activation retries once after preparation")
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }

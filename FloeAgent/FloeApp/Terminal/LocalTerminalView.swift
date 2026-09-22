@@ -30,7 +30,9 @@ final class LocalTerminalOwner: Identifiable {
     private(set) var alive = false
     private(set) var opening = false
     /// Set when the Linux image is missing or fails qualification; drives the
-    /// Download and Start Linux card.
+    /// Set when the Linux image is missing or fails qualification; drives the
+    /// authoritative Linux component card (never shown for an installed or
+    /// running guest).
     private(set) var missingImageID: String?
     private var token = CancellationToken()
     private var columns = 80
@@ -221,6 +223,7 @@ struct LocalTerminalView: View {
                     onInstalled: { await owner.open() }
                 )
                 .padding()
+                .task { await model.refresh() }
             } else if owner.missingImageID == nil, !owner.alive {
                 Button(owner.opening ? String(localized: "terminal.starting") : String(localized: "terminal.start")) { Task { await owner.open() } }
                     .buttonStyle(.borderedProminent)

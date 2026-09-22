@@ -858,6 +858,12 @@ public struct LinuxGuestStatus: Sendable, Equatable {
     /// runner did not report one (older runner) — an unknown state, not a
     /// working one.
     public var networkStatus: LinuxGuestNetworkStatus?
+    /// Non-nil when the environment disk's logical capacity was grown (or
+    /// already grew) but the in-guest ext4 filesystem could not be extended
+    /// to match. The guest still runs at its previous filesystem capacity;
+    /// the UI exposes this as a repair/update state instead of pretending the
+    /// full disk is available.
+    public var diskResizeFailure: String?
 
     public init(
         environmentID: String,
@@ -872,7 +878,8 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         lastResetSharedImpact: String? = nil,
         activeGuestCount: Int? = nil,
         reservedGuestRAMMB: Int? = nil,
-        networkStatus: LinuxGuestNetworkStatus? = nil
+        networkStatus: LinuxGuestNetworkStatus? = nil,
+        diskResizeFailure: String? = nil
     ) {
         self.environmentID = environmentID
         self.running = running
@@ -887,6 +894,7 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         self.activeGuestCount = activeGuestCount
         self.reservedGuestRAMMB = reservedGuestRAMMB
         self.networkStatus = networkStatus
+        self.diskResizeFailure = diskResizeFailure
     }
 }
 

@@ -149,6 +149,8 @@ static int errno_table[][2] = {
     { P9_ENOENT, ENOENT },
     { P9_EIO, EIO },
     { P9_EEXIST, EEXIST },
+    { P9_EISDIR, EISDIR },
+    { P9_ENODATA, ENODATA },
     { P9_EINVAL, EINVAL },
     { P9_ENOSPC, ENOSPC },
     { P9_ENOTEMPTY, ENOTEMPTY },
@@ -817,23 +819,37 @@ static int fs_renameat(FSDevice *fs, FSFile *f, const char *name,
     return ret;
 }
 
-static int fs_unlinkat(FSDevice *fs, FSFile *f, const char *name)
+/* FLOE-EMBED (patch 0009): flags are propagated and the target type is
+   verified with AT_SYMLINK_NOFOLLOW before removal. This gives the guest
+   Linux semantics on every host (Darwin's unlinkat() on a directory returns
+   EPERM, which upstream treated as a hard failure that left empty
+   directories undeletable), and a symlink is removed as a link -- never its
+   target. A non-empty directory is still refused with ENOTEMPTY by the
+   host unlinkat(AT_REMOVEDIR). */
+static int fs_unlinkat(FSDevice *fs, FSFile *f, const char *name,
+                       uint32_t flags)
 {
     int dfd, ret;
     (void)fs;
+    struct stat st;
 
     if (!fs_valid_name(name))
         return -P9_EPERM;
     dfd = fs_fid_dirfd(f);
     if (dfd < 0)
         return -errno_to_p9(errno);
-    ret = unlinkat(dfd, name, 0);
-    if (ret < 0 && errno == EISDIR)
-        ret = unlinkat(dfd, name, AT_REMOVEDIR);
-    if (ret < 0)
-        ret = -errno_to_p9(errno);
+    if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        close(dfd);
+        return -errno_to_p9(errno);
+    }
+    ret = floe_9p_unlink_decision(flags, (uint32_t)st.st_mode);
+    if (ret != 0) {
+        close(dfd);
+        return ret;
+    }
+    ret = unlinkat(dfd, name, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0);
     close(dfd);
-    return ret;
+    return ret < 0 ? -errno_to_p9(errno) : 0;
 }
 
 static int fs_lock(FSDevice *fs, FSFile *f, const FSLock *lock)

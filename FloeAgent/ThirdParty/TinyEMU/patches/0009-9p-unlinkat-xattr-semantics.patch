@@ -1,0 +1,168 @@
+--- a/fs.h
++++ b/fs.h
+@@ -89,8 +89,16 @@
+ #define	P9_ENOSPC    28
+ #define P9_ENOTEMPTY 39
+ #define P9_EPROTO    71
+-#define P9_ENOTSUP   524
++#define P9_ENOTSUP   95
++/* FLOE-EMBED (patch 0009): the guest is Linux/glibc, where ENOTSUP and
++   EOPNOTSUPP share the generic errno value 95. Upstream pinned 524, which
++   the guest received verbatim and printed as "Unknown error 524". */
++#define P9_EISDIR    21
++#define P9_ENODATA   61
+ 
++/* unlinkat() flags (9P2000.L follows the Linux uapi values) */
++#define P9_AT_REMOVEDIR 0x00000200
++
+ typedef struct FSDevice FSDevice;
+ typedef struct FSFile FSFile;
+ 
+@@ -188,11 +196,46 @@
+     int (*fs_readlink)(FSDevice *fs, char *buf, int buf_size, FSFile *f);
+     int (*fs_renameat)(FSDevice *fs, FSFile *f, const char *name, 
+                        FSFile *new_f, const char *new_name);
+-    int (*fs_unlinkat)(FSDevice *fs, FSFile *f, const char *name);
++    int (*fs_unlinkat)(FSDevice *fs, FSFile *f, const char *name, uint32_t flags);
+     int (*fs_lock)(FSDevice *fs, FSFile *f, const FSLock *lock);
+     int (*fs_getlock)(FSDevice *fs, FSFile *f, FSLock *lock);
+ };
+ 
++/* FLOE-EMBED (patch 0009): shared 9P policy as static inline so the engine
++   and host-side checks compile one identical definition. */
++
++/* Txattrwalk policy for an export that carries no extended attributes:
++   an empty name is the list-xattrs request and yields an empty list
++   (size 0); a named attribute query yields ENODATA, so getxattr callers
++   such as GNU ls -l (system.posix_acl_access / security.selinux probes)
++   degrade silently instead of surfacing an "Unknown error". */
++static inline int floe_9p_xattrwalk_result(const char *name,
++                                           uint64_t *size_out)
++{
++    if (size_out)
++        *size_out = 0;
++    if (name != NULL && name[0] != '\0')
++        return -P9_ENODATA;
++    return 0;
++}
++
++/* Tunlinkat flag/type decision. Unknown flag bits are rejected, removing a
++   directory without AT_REMOVEDIR is EISDIR, and AT_REMOVEDIR on a non
++   directory is ENOTDIR. Symlinks are non-directories and are removed as
++   links (their target is never touched). */
++static inline int floe_9p_unlink_decision(uint32_t flags, uint32_t p9_mode)
++{
++    if (flags & ~(uint32_t)P9_AT_REMOVEDIR)
++        return -P9_EINVAL;
++    int is_dir = (p9_mode & P9_S_IFMT) == P9_S_IFDIR;
++    int remove_dir = (flags & P9_AT_REMOVEDIR) != 0;
++    if (is_dir && !remove_dir)
++        return -P9_EISDIR;
++    if (!is_dir && remove_dir)
++        return -P9_ENOTDIR;
++    return 0;
++}
++
+ FSDevice *fs_disk_init(const char *root_path);
+ FSDevice *fs_mem_init(void);
+ FSDevice *fs_net_init(const char *url, void (*start)(void *opaque), void *opaque);
+--- a/virtio.c
++++ b/virtio.c
+@@ -2275,9 +2275,29 @@
+         break;
+     case 30: /* xattrwalk */
+         {
+-            /* not supported yet */
+-            err = -P9_ENOTSUP;
+-            goto error;
++            uint32_t fid, newfid;
++            char *name;
++            FSFile *f;
++            uint64_t xattr_size;
++
++            if (unmarshall(s, queue_idx, desc_idx, &offset,
++                           "wws", &fid, &newfid, &name))
++                goto protocol_error;
++            f = fid_find(s, fid);
++            if (!f) {
++                err = -P9_EPROTO;
++            } else {
++                /* FLOE-EMBED (patch 0009): no extended attributes are
++                   exported. Empty name -> empty xattr list (size 0); a named
++                   query -> ENODATA. Replaces the upstream P9_ENOTSUP (524)
++                   that GNU ls -l surfaced as "Unknown error 524". */
++                err = floe_9p_xattrwalk_result(name, &xattr_size);
++            }
++            free(name);
++            if (err != 0)
++                goto error;
++            buf_len = marshall(s, buf, sizeof(buf), "d", xattr_size);
++            virtio_9p_send_reply(s, queue_idx, desc_idx, id, tag, buf, buf_len);
+         }
+         break;
+     case 40: /* readdir */
+@@ -2444,7 +2464,7 @@
+             if (!f) {
+                 err = -P9_EPROTO;
+             } else {
+-                err = fs->fs_unlinkat(fs, f, name);
++                err = fs->fs_unlinkat(fs, f, name, flags);
+             }
+             free(name);
+             if (err != 0)
+--- a/fs_disk.c
++++ b/fs_disk.c
+@@ -139,6 +139,8 @@
+     { P9_ENOENT, ENOENT },
+     { P9_EIO, EIO },
+     { P9_EEXIST, EEXIST },
++    { P9_EISDIR, EISDIR },
++    { P9_ENODATA, ENODATA },
+     { P9_EINVAL, EINVAL },
+     { P9_ENOSPC, ENOSPC },
+     { P9_ENOTEMPTY, ENOTEMPTY },
+@@ -807,23 +809,37 @@
+     return ret;
+ }
+ 
+-static int fs_unlinkat(FSDevice *fs, FSFile *f, const char *name)
++/* FLOE-EMBED (patch 0009): flags are propagated and the target type is
++   verified with AT_SYMLINK_NOFOLLOW before removal. This gives the guest
++   Linux semantics on every host (Darwin's unlinkat() on a directory returns
++   EPERM, which upstream treated as a hard failure that left empty
++   directories undeletable), and a symlink is removed as a link -- never its
++   target. A non-empty directory is still refused with ENOTEMPTY by the
++   host unlinkat(AT_REMOVEDIR). */
++static int fs_unlinkat(FSDevice *fs, FSFile *f, const char *name,
++                       uint32_t flags)
+ {
+     int dfd, ret;
+     (void)fs;
++    struct stat st;
+ 
+     if (!fs_valid_name(name))
+         return -P9_EPERM;
+     dfd = fs_fid_dirfd(f);
+     if (dfd < 0)
+         return -errno_to_p9(errno);
+-    ret = unlinkat(dfd, name, 0);
+-    if (ret < 0 && errno == EISDIR)
+-        ret = unlinkat(dfd, name, AT_REMOVEDIR);
+-    if (ret < 0)
+-        ret = -errno_to_p9(errno);
++    if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
++        close(dfd);
++        return -errno_to_p9(errno);
++    }
++    ret = floe_9p_unlink_decision(flags, (uint32_t)st.st_mode);
++    if (ret != 0) {
++        close(dfd);
++        return ret;
++    }
++    ret = unlinkat(dfd, name, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0);
+     close(dfd);
+-    return ret;
++    return ret < 0 ? -errno_to_p9(errno) : 0;
+ }
+ 
+ static int fs_lock(FSDevice *fs, FSFile *f, const FSLock *lock)

@@ -1060,7 +1060,7 @@ private struct NoopImageDownloader: LinuxGuestImageDownloading {
 
 /// A small on-disk qualified image: real files, real digests, relative
 /// manifest paths — exactly the shape the production resolver verifies.
-private struct RuntimeImageFixture {
+struct RuntimeImageFixture {
     var root: URL
     var id: String
     var manifest: LinuxGuestImage
@@ -1077,14 +1077,14 @@ private struct RuntimeImageFixture {
     }
 }
 
-private func makeTemporaryDirectory(_ name: String) throws -> URL {
+func makeTemporaryDirectory(_ name: String) throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("floe-\(name)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
 
-private func makeRuntimeImageFixture(
+func makeRuntimeImageFixture(
     name: String,
     id: String = "floe-runtime-test",
     diskBytes: Data = Data(repeating: 0xA1, count: 8 * 1024)
@@ -1138,14 +1138,14 @@ private func resolvedPath(_ url: URL) -> String {
     url.resolvingSymlinksInPath().standardizedFileURL.path
 }
 
-private func runtimeDiskDirectory(writable: URL, environmentID: String) -> URL {
+func runtimeDiskDirectory(writable: URL, environmentID: String) -> URL {
     writable
         .appendingPathComponent(LinuxGuestRuntimeImagePreparer.writableDirectoryName, isDirectory: true)
         .appendingPathComponent("disks", isDirectory: true)
         .appendingPathComponent(environmentID, isDirectory: true)
 }
 
-private func stagingFiles(under writable: URL) -> [String] {
+func stagingFiles(under writable: URL) -> [String] {
     guard let enumerator = FileManager.default.enumerator(at: writable, includingPropertiesForKeys: nil) else { return [] }
     return enumerator.compactMap { ($0 as? URL)?.lastPathComponent }.filter { $0.contains(".staging-") }
 }
@@ -1180,7 +1180,13 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
             environments: FakeEnvironmentProvider(descriptors: descriptors),
             images: FileLinuxGuestImageResolver(root: fixture.root),
             limits: .standard,
-            factory: FakeSessionFactory(ledger: ledger) { _, token in reply(token) }
+            factory: FakeSessionFactory(ledger: ledger) { _, token in
+                // Negotiation probes get a protocol-3 capability answer;
+                // the in-guest resize (an ordinary command) gets a reply.
+                token.hasPrefix("hello-") ? caps(token) : reply(token, stdout: "floe-resize: current\n", stderr: "", exit: 0)
+            },
+            // Tests use small fixture disks; production defaults to 8 GiB.
+            targetDiskCapacityBytes: 1024 * 1024
         )
     }
 
@@ -1204,7 +1210,11 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
         XCTAssertEqual(captured.initrdPath, resolvedPath(fixture.initrdURL))
         let diskPath = try XCTUnwrap(captured.diskPath)
         XCTAssertTrue(diskPath.hasPrefix(resolvedPath(writable) + "/"), "disk must live under the environment writable root, got \(diskPath)")
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: diskPath)), fixture.diskBytes)
+        let diskData = try Data(contentsOf: URL(fileURLWithPath: diskPath))
+        // The container is grown sparsely to 1 MiB (production: 8 GiB); the
+        // base bytes still occupy its prefix verbatim.
+        XCTAssertEqual(diskData.prefix(fixture.diskBytes.count), Data(fixture.diskBytes))
+        XCTAssertEqual(diskData.count, 1024 * 1024)
         XCTAssertTrue(FileManager.default.fileExists(atPath: diskPath))
         // The verified base is the immutable verification source: starting an
         // environment must not touch it.
@@ -1242,8 +1252,11 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
         let secondDisk = try XCTUnwrap(ledger.image(for: "env-a")?.diskPath)
         XCTAssertEqual(secondDisk, firstDisk, "a restart must reuse the environment disk")
         let contents = try Data(contentsOf: URL(fileURLWithPath: secondDisk))
-        XCTAssertEqual(contents.count, fixture.diskBytes.count + marker.count, "a restart must not re-copy the base over the mutated disk")
-        XCTAssertEqual(contents.suffix(marker.count), marker)
+        // First prepare grew the container sparsely to 1 MiB; the appended
+        // package marker is preserved on restart (no re-copy, no shrink).
+        XCTAssertEqual(contents.count, 1024 * 1024 + marker.count, "a restart must not re-copy the base over the mutated disk")
+        XCTAssertEqual(contents.prefix(fixture.diskBytes.count), Data(fixture.diskBytes))
+        XCTAssertTrue(contents.range(of: marker) != nil)
         XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: fixture.diskURL), fixture.diskDigest)
         XCTAssertTrue(stagingFiles(under: writable).isEmpty)
     }
@@ -1270,8 +1283,11 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
         _ = try await registry.start(environmentID: "env-b", taskID: nil)
         let diskB = try XCTUnwrap(ledger.image(for: "env-b")?.diskPath)
         XCTAssertNotEqual(diskA, diskB, "different environments must not share one writable disk")
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: diskB)), fixture.diskBytes, "env-b must start from the base, not env-a's edits")
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: diskA)), marker, "env-a's disk must keep its own state")
+        let diskBData = try Data(contentsOf: URL(fileURLWithPath: diskB))
+        XCTAssertEqual(diskBData.prefix(fixture.diskBytes.count), Data(fixture.diskBytes), "env-b must start from the base, not env-a's edits")
+        XCTAssertEqual(diskBData.count, 1024 * 1024, "env-b container is grown to the target capacity")
+        let diskAData = try Data(contentsOf: URL(fileURLWithPath: diskA))
+        XCTAssertTrue(diskAData.range(of: marker) != nil, "env-a's disk must keep its own state")
         XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: fixture.diskURL), fixture.diskDigest)
     }
 
@@ -1342,7 +1358,7 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
         }
         let preserved = try Data(contentsOf: URL(fileURLWithPath: disk))
         XCTAssertEqual(preserved.suffix(marker.count), marker, "the environment disk must keep its own state")
-        XCTAssertEqual(preserved.count, fixture.diskBytes.count + marker.count)
+        XCTAssertEqual(preserved.count, 1024 * 1024 + marker.count)
         XCTAssertTrue(stagingFiles(under: writable).isEmpty)
     }
 
@@ -1358,7 +1374,8 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
             image: fixture.manifest,
             imageDirectory: fixture.imageDirectory,
             environmentID: "env-a",
-            writableDirectory: writable
+            writableDirectory: writable,
+            targetCapacityBytes: 1024 * 1024
         )
         let before = try Data(contentsOf: diskURL)
 
@@ -1369,7 +1386,8 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
                 image: arguments.0.manifest,
                 imageDirectory: arguments.0.imageDirectory,
                 environmentID: "env-a",
-                writableDirectory: arguments.1
+                writableDirectory: arguments.1,
+                targetCapacityBytes: 1024 * 1024
             )
         }
         task.cancel()

@@ -24,7 +24,9 @@
 #    compiles with DEBUG undefined), riscv_cpu_template.h (patches/0005
 #    FENCE compatibility), slirp/{slirp,socket,udp,ip_icmp,tcp_subr}.c and
 #    slirp/{slirp,main,libslirp}.h (patches/0006 per-instance slirp state)
-#    and virtio.c (patches/0008 recoverable guest-fault paths). --check
+#    and virtio.c (patches/0008 recoverable guest-fault paths); patch 0009
+#    fixes unlinkat flag/directory semantics and replaces the bogus 524
+#    xattrwalk response (fs.h, virtio.c, fs_disk.c). --check
 #    rebuilds the pristine tree + patches + rename and diffs, so a
 #    hand-edited vendored file fails the check.
 #  - adapter/floe_vm.{c,h} are symlinked from ../../adapter (single source).
@@ -76,7 +78,8 @@ PATCHES="0001-htif-poweroff-callback.patch \
 0005-fence-hints.patch \
 0006-slirp-per-instance-state.patch \
 0007-9p-export-root-containment.patch \
-0008-recoverable-guest-fault-paths.patch"
+0008-recoverable-guest-fault-paths.patch \
+0009-9p-unlinkat-xattr-semantics.patch"
 
 # slirp declares its own BSD structs (ipovly/tcpcb/sbuf/udphdr/arphdr/icmp)
 # whose tags collide with Darwin SDK umbrella-module headers when compiled

@@ -300,6 +300,11 @@ public actor LinuxGuestImageInstallationService {
     private let imagesRoot: URL
     private let limits: LinuxGuestImageImportLimits
     private let verifier: LinuxGuestImageVerifier
+    /// In-flight trusted installs keyed by image id. Two callers that ask
+    /// for the same image while a download is running share one download:
+    /// the model tool, shell auto-preparation and the UI can never start
+    /// duplicate transfers of the same archive.
+    private var installsInFlight: [String: Task<LinuxGuestImage, Error>] = [:]
 
     public init(
         root: URL,
@@ -426,6 +431,36 @@ public actor LinuxGuestImageInstallationService {
         downloader: any LinuxGuestImageDownloading,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in },
         fileManager: FileManager = .default
+    ) async throws -> LinuxGuestImage {
+        // Already present and verified: never start a second download.
+        let current = await status(id: id)
+        if current.installed && current.verificationFailure == nil, let image = current.image {
+            return image
+        }
+        // A second request while a download is running shares the in-flight
+        // install instead of fetching the archive again. Its own progress
+        // callback stays silent; the originating call reports progress.
+        if let inFlight = installsInFlight[id] {
+            return try await inFlight.value
+        }
+        let task = Task<LinuxGuestImage, Error> {
+            try await performTrustedInstall(
+                id: id,
+                downloader: downloader,
+                onProgress: onProgress,
+                fileManager: fileManager
+            )
+        }
+        installsInFlight[id] = task
+        defer { installsInFlight[id] = nil }
+        return try await task.value
+    }
+
+    private func performTrustedInstall(
+        id: String,
+        downloader: any LinuxGuestImageDownloading,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        fileManager: FileManager
     ) async throws -> LinuxGuestImage {
         guard let trusted = LinuxGuestImageDistributionCatalog.entry(id: id) else {
             throw LinuxGuestImageInstallError.noDistributableImage(

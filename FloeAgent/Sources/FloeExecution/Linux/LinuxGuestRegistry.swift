@@ -62,6 +62,10 @@ public protocol LinuxGuestSessionCreating: Sendable {
 extension TinyEMUGuestSessionFactory: LinuxGuestSessionCreating {}
 
 public actor TinyEMULinuxGuestRegistry {
+    /// Logical capacity of each environment raw disk. Test registries can
+    /// override via `init(targetDiskCapacityBytes:)`; production grows to
+    /// the 8 GiB `LinuxGuestDiskLayout` target.
+    private let targetDiskCapacityBytes: Int64
     private struct Session {
         var descriptor: LinuxGuestEnvironmentDescriptor
         var image: LinuxGuestImage
@@ -83,6 +87,10 @@ public actor TinyEMULinuxGuestRegistry {
     private var sessions: [String: Session] = [:]
     private var lastErrors: [String: String] = [:]
     private var lastImpacts: [String: String] = [:]
+    /// Per-environment failure of the in-guest ext4 resize after the host
+    /// grew the raw container. The guest still runs at its previous
+    /// capacity; the UI surfaces this as a repair state.
+    private var diskResizeFailures: [String: String] = [:]
     private var terminalSessions: [String: TerminalSession] = [:]
     /// Environments whose start is in flight. The actor is reentrant across
     /// awaits, so without this a concurrent start of the same environment
@@ -115,12 +123,14 @@ public actor TinyEMULinuxGuestRegistry {
         environments: any LinuxGuestEnvironmentProviding,
         images: any LinuxGuestImageResolving,
         limits: LinuxGuestLimits = .standard,
-        factory: any LinuxGuestSessionCreating = TinyEMUGuestSessionFactory()
+        factory: any LinuxGuestSessionCreating = TinyEMUGuestSessionFactory(),
+        targetDiskCapacityBytes: Int64 = LinuxGuestDiskLayout.targetLogicalCapacityBytes
     ) {
         self.environments = environments
         self.images = images
         self.limits = limits
         self.factory = factory
+        self.targetDiskCapacityBytes = targetDiskCapacityBytes
     }
 
     /// True when this service owns the environment as a Linux guest, running
@@ -165,7 +175,8 @@ public actor TinyEMULinuxGuestRegistry {
                 lastResetSharedImpact: lastImpacts[environmentID],
                 activeGuestCount: admitted,
                 reservedGuestRAMMB: reservedRAM,
-                networkStatus: session.networkStatus
+                networkStatus: session.networkStatus,
+                diskResizeFailure: diskResizeFailures[environmentID]
             )
         }
         return LinuxGuestStatus(
@@ -179,7 +190,8 @@ public actor TinyEMULinuxGuestRegistry {
             imageDistributable: distributable,
             lastResetSharedImpact: lastImpacts[environmentID],
             activeGuestCount: admitted,
-            reservedGuestRAMMB: reservedRAM
+            reservedGuestRAMMB: reservedRAM,
+            diskResizeFailure: diskResizeFailures[environmentID]
         )
     }
 
@@ -318,7 +330,8 @@ public actor TinyEMULinuxGuestRegistry {
                     image: image,
                     imageDirectory: imageRoot.appendingPathComponent(descriptor.imageID, isDirectory: true),
                     environmentID: environmentID,
-                    writableDirectory: descriptor.writableDirectory
+                    writableDirectory: descriptor.writableDirectory,
+                    targetCapacityBytes: targetDiskCapacityBytes
                 )
             } catch {
                 lastErrors[environmentID] = error.localizedDescription
@@ -371,6 +384,19 @@ public actor TinyEMULinuxGuestRegistry {
                 )
                 sessionChannel = current.channel
                 negotiatedCapabilities = current.capabilities
+                // Extend the ext4 filesystem to the host-grown container
+                // capacity (grow-only). Idempotent; a failure is recorded as
+                // a repair state, not a start failure — the guest remains
+                // usable at its previous capacity.
+                switch await ensureGuestFilesystemCapacity(descriptor: descriptor, channel: sessionChannel) {
+                case .none:
+                    break
+                case .ok:
+                    diskResizeFailures[environmentID] = nil
+                case .failed(let detail):
+                    diskResizeFailures[environmentID] = detail
+                    lastErrors[environmentID] = detail
+                }
             } catch {
                 lastErrors[environmentID] = error.localizedDescription
                 quarantinedByFailure = await abandonFailedStart(
@@ -602,6 +628,48 @@ public actor TinyEMULinuxGuestRegistry {
             "Linux guest runner upgraded in place environment=\(environmentID) caps=\(capabilities)"
         )
         return (channel, capabilities)
+    }
+
+    // MARK: persistent-disk ext4 resize
+
+    private enum GuestFilesystemResizeResult: Sendable {
+        /// No persistent disk was prepared by this build: nothing to do.
+        case none
+        /// Resize ran (no-op or successful extension).
+        case ok
+        /// Resize could not run or failed; the guest keeps its old capacity.
+        case failed(String)
+    }
+
+    /// Extends the ext4 filesystem to the host-grown raw-container capacity
+    /// right after the runner is current. Only runs when the host sidecar
+    /// records a prepared logical capacity. A failure is non-fatal: the guest
+    /// remains usable at its prior capacity and the UI shows a repair state.
+    private func ensureGuestFilesystemCapacity(
+        descriptor: LinuxGuestEnvironmentDescriptor,
+        channel: LinuxGuestCommandChannel
+    ) async -> GuestFilesystemResizeResult {
+        guard let writable = descriptor.writableDirectory else { return .none }
+        guard let origin = LinuxGuestRuntimeImagePreparer.diskOrigin(
+            writableDirectory: writable,
+            environmentID: descriptor.id
+        ), (origin.logicalCapacityBytes ?? 0) > 0 else {
+            return .none
+        }
+        let result: LinuxCommandResult
+        do {
+            result = try await channel.run(
+                argv: ["/bin/sh", "-c", LinuxGuestFilesystemResize.ensureScript()],
+                timeout: 180,
+                cancellation: nil
+            )
+        } catch {
+            return .failed("the ext4 filesystem could not be resized to the 8 GiB disk capacity: \(error.localizedDescription)")
+        }
+        if result.exitCode == 0 { return .ok }
+        let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tail = detail.count > 300 ? String(detail.suffix(300)) : detail
+        return .failed("the ext4 filesystem could not be resized to the 8 GiB disk capacity (exit \(result.exitCode)): \(tail)")
     }
 
     private func recordRunnerLedger(
