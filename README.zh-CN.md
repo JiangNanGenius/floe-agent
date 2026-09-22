@@ -34,9 +34,9 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（221）**。9 月 22 日 03:13 UTC 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组及 IN_BETA_TESTING，中英文测试说明已保存并读回。真机验收由用户完成。[Build 221 说明](docs/RELEASE_NOTES_1.7.0_BUILD_221.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md) · [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.78)。
+**当前内部 TestFlight：1.7.0（223）**。9 月 22 日 13:19 UTC 已核实 Apple `VALID`、未过期、唯一私有内部 Floe QA 组及 `IN_BETA_TESTING`。验收 SDK 发布作业在签名上传前保留了未签名 IPA，对应 GitHub 预发布已公开；真机行为仍由用户验收。[Build 223 说明](docs/RELEASE_NOTES_1.7.0_BUILD_223.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md) · [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.80)。
 
-**Build 222 是当前发布候选。** 它引入 TinyEMU Runtime v2：共享内容寻址基础镜像、每环境 CoW 状态、最多四台 VM 与 1.5–2 GiB 动态预算；同时修复旧镜像/9P 迁移、Linux/MLX 资源仲裁、本地模型多轮工具和 PPT 有界打开。源码编译与定向策略测试已通过；云端构建、上传、Apple 处理、Floe QA 可用性和真机验收仍是独立门槛。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_222.md)。
+**Build 224 是当前发布候选。** 它修复 Build 223 Runtime v2 的启动/迁移链（全新注册表和旧 Linux 安装都能再次启动，已验证内容不会被误报为未安装，需要修复的环境安全中止），让设备端 MLX 模型在任务保留的空闲间隙保持驻留，并修复 PPT/PPTX 编辑入口使编辑能进入首个可编辑渲染。Linux 镜像下载保持 GitHub 优先，仅在主源出现有界失败后才使用分片 Gitee 镜像；另有 GitHub→Gitee 单向工作流镜像仓库。源码级测试已通过；云端构建、上传、Apple 处理、Floe QA 可用性和真机验收仍是独立门槛。[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
@@ -99,6 +99,10 @@ GitHub 预发布版本为高级测试者和下游打包者提供未签名 IPA：
 
 > [!WARNING]
 > GitHub IPA 不是 TestFlight/App Store 安装包，通常不能直接安装。Floe Agent 不提供证书、描述文件或代签服务。
+
+### Gitee 中国镜像
+
+面向 GitHub 较慢的网络，公开单向镜像发布在 [`gitee.com/JiangNanGenius/floe-agent`](https://gitee.com/JiangNanGenius/floe-agent)。GitHub 始终是唯一承担信任的主源：Linux 客体下载器总是先尝试 GitHub Releases，仅在主源出现有界可用性失败（断网、5xx、408/429）后才联系 Gitee 镜像；明确 4xx、无效响应、本地拒绝或取消一律安全中止。由于 Gitee 单个附件上限 100 MB，约 573 MB 的 Linux 镜像以一份清单加九个 64 MiB 分片发布，每个分片按大小与 SHA-512 固定，整包按与目录一致的摘要固定；已验证分片保留在稳定暂存目录，中断后可断点续传，重组归档在导入前再次比对整包 SHA-512。[gitee-mirror](.github/workflows/gitee-mirror.yml) 工作流把 `main` 与发布标签单向从 GitHub 推送到 Gitee 并校验两边 `main` 一致；它从不从 Gitee 拉取，因此 Gitee 永远不能覆盖 GitHub。详见[镜像分发说明](docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md#distribution-mirror-gitee-sharded)。
 
 ### Feather 安装源
 

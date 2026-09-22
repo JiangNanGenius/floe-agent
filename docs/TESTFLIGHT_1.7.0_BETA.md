@@ -1,10 +1,14 @@
 # Floe 1.7 TestFlight delivery
 
-## Preparing: 1.7.0 (223) — source candidate, not yet delivered
+## Preparing: 1.7.0 (224) — source candidate, not yet delivered
 
-All four shipping targets declare build 223. The candidate integrates TinyEMU Runtime v2, old-image/9P migration, a four-VM dynamic resource pool, Linux/MLX arbitration, local-model multi-turn tool repair and bounded PPT opening. `FloeExecution` passed Swift 6 object compilation and the focused PPT policy suite reports 7/7. No cloud build, IPA, upload, Apple processing, Floe QA availability or device acceptance is claimed in this section. See [release notes](RELEASE_NOTES_1.7.0_BUILD_223.md), [test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_223.json) and [Runtime v2 architecture](TINYEMU_RUNTIME_V2.md).
+All four shipping targets declare build 224 in `FloeAgent/project.yml` and the regenerated `FloeAgent.xcodeproj` matches (eight `CURRENT_PROJECT_VERSION` entries across Debug/Release). The candidate repairs the Build 223 Runtime v2 startup/migration chain (duplicate `schema_migrations` migration rollback, idempotent legacy-image migration, repairRequired fail-closed at both seams, accurate install state and expanded-view rebuild), keeps the MLX local model resident through retained-task idle windows, repairs the PPT/PPTX edit-entry chain so editing reaches its first editable render (host framework rebuilt and re-pinned by CI run 35747909238), and adds GitHub-primary/Gitee-sharded Linux image fallback plus the one-way GitHub→Gitee `gitee-mirror` workflow. Source-level suites pass (`RuntimeV2StartupTests` 16 tests, `FloeLocalModels`/arbiter, Gitee shard/fallback and PPT edit-entry tests). No cloud build, IPA, upload, Apple processing, Floe QA availability, TestFlight availability, release publication or device acceptance is claimed in this section. See [release notes](RELEASE_NOTES_1.7.0_BUILD_224.md), [test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_224.json) and [Runtime v2 architecture](TINYEMU_RUNTIME_V2.md).
 
-## Current internal delivery: 1.7.0 (221) — available in Floe QA
+## Current internal delivery: 1.7.0 (223) — available in Floe QA
+
+Immutable tag `v1.7.0-beta.80` binds source `e933305d`. [Release run 35725410528](https://github.com/JiangNanGenius/floe-agent/actions/runs/35725410528) completed the accepted-SDK App build, preserved `Floe-Agent-1.7.0-build223-unsigned.ipa` (746,855,726 bytes; SHA-256 `74a7f7e11de0918889c2a5c76075327dda5c3d6e7adc385829a501bb0a97ebae`) before signing, uploaded the signed App and published the [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.80). Apple build `19f9bebc-88f0-437c-8863-b25d76e6b9be` was verified `VALID`, unexpired, attached only to the private internal `Floe QA` group (no public link) and `IN_BETA_TESTING` at 2026-09-22T13:19:54Z by [verify run 35732736716](https://github.com/JiangNanGenius/floe-agent/actions/runs/35732736716). Build 224 supersedes its source behavior but has separate delivery gates. Physical-device acceptance remains with the user. See the retained [Build 223 release notes](RELEASE_NOTES_1.7.0_BUILD_223.md) and [test notes](TESTFLIGHT_1.7_WHATS_NEW_BUILD_223.json).
+
+## Previous internal delivery: 1.7.0 (221) — retained in Floe QA history
 
 Build 221 is the App-compile repair of the integrated Build 220 source: all
 four shipping targets declare `MARKETING_VERSION 1.7.0` /
