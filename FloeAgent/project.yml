@@ -471,6 +471,8 @@ targets:
     platform: iOS
     deploymentTarget: "26.0"
     sources:
+      - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
+      - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift

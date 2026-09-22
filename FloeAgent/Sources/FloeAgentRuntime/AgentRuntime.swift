@@ -2971,6 +2971,11 @@ public actor FloeAgentRuntime {
         identity.append(Data(call.toolName.utf8))
         let sourceID = SHA256.hash(data: identity)
             .map { String(format: "%02x", $0) }.joined()
+        // Record the declared execution backend on the runtime-authored
+        // provenance so tool output cannot claim a different backend, and
+        // append the choice to the bounded capability-route ledger.
+        let route = CapabilityExecutionRouter.decision(for: call.toolName)
+        Task { await CapabilityRouteLedger.shared.record(toolName: call.toolName) }
         finalized.provenance = ToolResultProvenance(
             sourceID: sourceID,
             toolName: call.toolName,
@@ -2980,7 +2985,9 @@ public actor FloeAgentRuntime {
                 in: finalized.outputSummary,
                 toolName: call.toolName,
                 artifacts: finalized.artifacts
-            )
+            ),
+            executionBackend: route.backend.rawValue,
+            executionBackendReason: route.reason
         )
         return finalized
     }

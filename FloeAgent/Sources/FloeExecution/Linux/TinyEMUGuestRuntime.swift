@@ -89,6 +89,11 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     private var thread: Thread?
     private var stopRequested = false
     private var running = false
+    /// Last cumulative CPU-time sample from the run thread. Updated a few
+    /// times per second so the metrics sampler can derive a host-side emulator
+    /// CPU fraction without scanning process threads.
+    private var threadCPUSample: LinuxGuestEmulatorCPUSample?
+    private static let sampleIntervalSlices = 40
 
     init(
         descriptor: LinuxGuestEnvironmentDescriptor,
@@ -359,6 +364,7 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     }
 
     private func runLoop(_ machine: OpaquePointer) {
+        var sliceCount = 0
         while true {
             lock.lock()
             let stop = stopRequested
@@ -366,11 +372,41 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
             if stop { break }
             let result = floe_vm_run_slice(machine, 10)
             if result != 0 { break }
+            sliceCount += 1
+            if sliceCount % Self.sampleIntervalSlices == 0 {
+                recordThreadCPUSample()
+            }
         }
         lock.lock()
         running = false
         exited = true
         lock.unlock()
+    }
+
+    /// Reads the run thread's own consumed CPU time (accurate per-thread, no
+    /// need to identify threads via Mach APIs) against a monotonic wall clock
+    /// and stores the pair for the metrics sampler.
+    private func recordThreadCPUSample() {
+        let cpu = Self.readClock(CLOCK_THREAD_CPUTIME_ID)
+        let wall = Self.readClock(CLOCK_MONOTONIC)
+        lock.lock()
+        threadCPUSample = LinuxGuestEmulatorCPUSample(cpuNanos: cpu, wallNanos: wall)
+        lock.unlock()
+    }
+
+    /// The latest emulator-thread CPU sample, or nil before the first interval.
+    public func emulatorThreadCPUSample() -> LinuxGuestEmulatorCPUSample? {
+        lock.lock()
+        defer { lock.unlock() }
+        return threadCPUSample
+    }
+
+    private static func readClock(_ clock: clockid_t) -> UInt64 {
+        var ts = timespec()
+        guard clock_gettime(clock, &ts) == 0 else { return 0 }
+        let seconds = UInt64(max(0, ts.tv_sec))
+        let nanos = UInt64(max(0, ts.tv_nsec))
+        return seconds * 1_000_000_000 &+ nanos
     }
 
     /// Waits for the run loop to leave its last slice. The slice budget is
@@ -440,7 +476,8 @@ public struct TinyEMUGuestSessionFactory: Sendable {
             close: { await machine.close() },
             isRunning: { machine.isRunning },
             addForward: { try machine.addForward($0) },
-            removeForward: { try machine.removeForward($0) }
+            removeForward: { try machine.removeForward($0) },
+            emulatorCPUSample: { machine.emulatorThreadCPUSample() }
         )
     }
 }

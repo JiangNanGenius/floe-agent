@@ -94,6 +94,24 @@ Promotion rules:
   the device ships the Ruby/PHP entries, and the main-only publish job re-runs
   the signing step and verifies the same bytes.
 
+## Linux convergence (2026-09-22)
+
+Generic interpreter entry points converged on the Linux guest rather than a
+bundled in-process payload:
+
+* `exec.wasm`, `exec.compatEvaluator` and `wasm.packages` are declared
+  Linux-guest routed in
+  `FloeAgent/Sources/FloeTools/CapabilityExecutionRouter.swift`; the retired
+  WASI/PHP/Ruby/Lua command surfaces answer through the guest instead of
+  shipping an interpreter.
+* The signed entries listed above stay installable and verified exactly as
+  before. Their bytes, digests, receipts and license records are unchanged —
+  convergence removes no user installation and deletes no provenance.
+* `python3 capability-hub/build.py --check` / `--check-tools` (read-only) and
+  `python3 FloeAgent/scripts/audit_native_runtime_free.py --convergence` verify
+  the catalog signature, the tool-route catalog and the convergence
+  declarations respectively.
+
 ## Provenance and licenses
 
 * `FloeAgent/ThirdParty/LuaWASI` — Lua 5.4.8 (MIT), wasi-sdk 34.

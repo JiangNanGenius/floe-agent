@@ -413,11 +413,20 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// Records an active run without creating an independent foreground
     /// surface. PiP mode prepares through the persistent scene host so AVKit can
     /// honor the user's Home/app-switch gesture; other modes remain manual.
+    ///
+    /// Status PiP is opt-in behind `StatusPiPReleaseGate`: when the gate is
+    /// disabled this degrades to a no-op (and stops any prepared controller),
+    /// so no build can create a status PiP surface the release decision
+    /// excluded.
     func setRunContext(
         title: String,
         progress: String,
         automaticallyStartsFromInline: Bool = false
     ) {
+        guard StatusPiPReleaseGate.isEnabled else {
+            stop()
+            return
+        }
         currentTitle = title
         currentProgress = progress
         self.automaticallyStartsFromInline = automaticallyStartsFromInline

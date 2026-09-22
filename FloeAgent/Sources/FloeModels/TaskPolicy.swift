@@ -12,6 +12,50 @@ public enum TaskNotificationPolicy: String, Sendable, Codable, CaseIterable, Has
     case stages
 }
 
+public extension TaskNotificationPolicy {
+    /// Whether a terminal (completed/failed) notification is sent.
+    func shouldNotifyTerminal(succeeded: Bool) -> Bool {
+        switch self {
+        case .off: false
+        case .terminal, .stages: true
+        case .critical: !succeeded
+        }
+    }
+
+    /// Mid-run stage/checkpoint notifications (`.stages` only).
+    var shouldNotifyStages: Bool { self == .stages }
+
+    /// Approval-required notifications: the task cannot continue without the
+    /// user, so `.critical` and `.stages` both surface them.
+    var shouldNotifyApproval: Bool {
+        switch self {
+        case .off, .terminal: false
+        case .critical, .stages: true
+        }
+    }
+}
+
+/// Platform-independent notification authorization state, mapped from
+/// UNUserNotificationCenter in the app layer so the decision/policy logic
+/// stays testable off-device.
+public enum NotificationAuthorizationState: String, Sendable, Codable, Hashable {
+    case notDetermined
+    case denied
+    /// Authorized normally (alert/sound may be delivered in the background).
+    case authorized
+    /// Provisional authorization: notifications arrive quietly.
+    case provisional
+    case ephemeral
+
+    /// Whether a posted notification can be presented as a user-visible alert.
+    var canPresentAlert: Bool {
+        switch self {
+        case .authorized, .provisional, .ephemeral: true
+        case .denied, .notDetermined: false
+        }
+    }
+}
+
 public enum ConversationTitleOrigin: String, Sendable, Codable, CaseIterable, Hashable {
     case autoPending
     case automatic

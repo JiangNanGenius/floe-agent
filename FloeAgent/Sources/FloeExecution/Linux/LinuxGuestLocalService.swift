@@ -156,6 +156,12 @@ public protocol LinuxGuestLocalServiceControlling: Sendable {
     func stopLocalService(_ handle: LinuxGuestLocalServiceHandle) async
     /// Stops every service of one environment (environment stop/delete).
     func stopLocalServices(environmentID: String) async
+    /// Number of managed services currently recorded for one environment.
+    func activeLocalServiceCount(environmentID: String) async -> Int
+}
+
+public extension LinuxGuestLocalServiceControlling {
+    func activeLocalServiceCount(environmentID: String) async -> Int { 0 }
 }
 
 public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling {
@@ -346,6 +352,10 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         for handle in owned {
             await stopLocalService(handle)
         }
+    }
+
+    public func activeLocalServiceCount(environmentID: String) async -> Int {
+        active.values.lazy.filter { $0.environmentID == environmentID }.count
     }
 
     /// Used on app teardown: every guest is about to be destroyed.

@@ -7,9 +7,23 @@ import FloeCore
 /// Lets the user choose how an agent run stays alive when the app is
 /// backgrounded: continued processing, inline-to-system PiP progress, or
 /// screen sharing with an operation guide.
+///
+/// The default path is the compliant system continued-processing task (the
+/// system Live Activity). Status Picture-in-Picture is an *opt-in* surface
+/// behind `StatusPiPReleaseGate`; when the gate disables it, the PiP row is
+/// hidden and a PiP choice degrades to standard processing instead of
+/// creating a controller.
 struct BackgroundExecutionSettingsView: View {
     @ObservedObject var center: SettingsCenter
     @ObservedObject var videoService: BackgroundVideoService
+
+    private var statusPiPEnabled: Bool { StatusPiPReleaseGate.isEnabled }
+
+    private var availablePreferences: [BackgroundExecutionPreference] {
+        BackgroundExecutionPreference.allCases.filter {
+            $0 != .pictureInPicture || statusPiPEnabled
+        }
+    }
 
     var body: some View {
         Form {
@@ -20,7 +34,7 @@ struct BackgroundExecutionSettingsView: View {
                         Task { await center.setBackgroundExecution(preference) }
                     }
                 )) {
-                    ForEach(BackgroundExecutionPreference.allCases, id: \.self) { preference in
+                    ForEach(availablePreferences, id: \.self) { preference in
                         Text(preference.title).tag(preference)
                     }
                 }
@@ -28,11 +42,16 @@ struct BackgroundExecutionSettingsView: View {
             } header: {
                 Text("agent.background_execution")
             } footer: {
-                Text(center.backgroundExecution.subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(center.backgroundExecution.subtitle)
+                    if !statusPiPEnabled {
+                        Text("此版本未启用状态画中画：选择画中画会改用普通后台任务（持续处理 + 检查点恢复）。")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
-            if center.backgroundExecution == .pictureInPicture {
+            if center.backgroundExecution == .pictureInPicture, statusPiPEnabled {
                 Section("画中画状态") {
                     Label(
                         videoService.preparationState.localizedDescription,

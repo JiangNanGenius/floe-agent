@@ -171,6 +171,11 @@ public struct ToolResultProvenance: Sendable, Codable, Hashable {
     public var taskID: UUID?
     public var parentCallID: String?
     public var resourceBindings: [ToolResourceBinding]
+    /// Declared execution backend for this tool (CapabilityBackend raw
+    /// value) and the routing/fallback reason. Authored by the runtime from
+    /// the capability router so tool output cannot spoof the backend.
+    public var executionBackend: String?
+    public var executionBackendReason: String?
     public var createdAt: Date
 
     public init(
@@ -180,6 +185,8 @@ public struct ToolResultProvenance: Sendable, Codable, Hashable {
         taskID: UUID? = nil,
         parentCallID: String? = nil,
         resourceBindings: [ToolResourceBinding] = [],
+        executionBackend: String? = nil,
+        executionBackendReason: String? = nil,
         createdAt: Date = Date()
     ) {
         self.sourceID = String(sourceID.prefix(128))
@@ -188,6 +195,8 @@ public struct ToolResultProvenance: Sendable, Codable, Hashable {
         self.taskID = taskID
         self.parentCallID = parentCallID.map { String($0.prefix(256)) }
         self.resourceBindings = Array(resourceBindings.prefix(16))
+        self.executionBackend = executionBackend
+        self.executionBackendReason = executionBackendReason
         self.createdAt = createdAt
     }
 }

@@ -25,6 +25,9 @@ public struct LinuxGuestSessionHandle: Sendable {
     public var isRunning: @Sendable () async -> Bool
     public var addForward: @Sendable (LinuxGuestServiceForward) throws -> Void
     public var removeForward: @Sendable (LinuxGuestServiceForward) throws -> Void
+    /// Latest cumulative emulator-thread CPU sample; nil on scripted/test
+    /// sessions that do not model it.
+    public var emulatorCPUSample: @Sendable () -> LinuxGuestEmulatorCPUSample?
 
     public init(
         transport: any LinuxGuestConsoleTransport,
@@ -33,7 +36,8 @@ public struct LinuxGuestSessionHandle: Sendable {
         close: @escaping @Sendable () async -> Void,
         isRunning: @escaping @Sendable () async -> Bool,
         addForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
-        removeForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void
+        removeForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
+        emulatorCPUSample: @escaping @Sendable () -> LinuxGuestEmulatorCPUSample? = { nil }
     ) {
         self.transport = transport
         self.start = start
@@ -42,6 +46,7 @@ public struct LinuxGuestSessionHandle: Sendable {
         self.isRunning = isRunning
         self.addForward = addForward
         self.removeForward = removeForward
+        self.emulatorCPUSample = emulatorCPUSample
     }
 }
 
@@ -176,6 +181,12 @@ public actor TinyEMULinuxGuestRegistry {
             activeGuestCount: admitted,
             reservedGuestRAMMB: reservedRAM
         )
+    }
+
+    /// Latest cumulative emulator-thread CPU sample for one environment; nil
+    /// when no session exists or the session factory did not supply a sampler.
+    public func emulatorThreadCPUSample(environmentID: String) -> LinuxGuestEmulatorCPUSample? {
+        sessions[environmentID]?.handle.emulatorCPUSample()
     }
 
     /// Guests currently holding an admission slot. Running sessions and starts
@@ -1370,5 +1381,16 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
 
     public func stopLocalServices(environmentID: String) async {
         await localServices.stopLocalServices(environmentID: environmentID)
+    }
+
+    public func activeLocalServiceCount(environmentID: String) async -> Int {
+        await localServices.activeLocalServiceCount(environmentID: environmentID)
+    }
+
+    /// Latest cumulative emulator-thread CPU sample for one environment. The
+    /// metrics sampler derives a host-side emulator CPU fraction from two
+    /// samples; nil means "not measured", never zero.
+    public func emulatorThreadCPUSample(environmentID: String) async -> LinuxGuestEmulatorCPUSample? {
+        await registry.emulatorThreadCPUSample(environmentID: environmentID)
     }
 }
