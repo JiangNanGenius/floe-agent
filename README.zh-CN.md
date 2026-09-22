@@ -100,6 +100,15 @@ GitHub 预发布版本为高级测试者和下游打包者提供未签名 IPA：
 > [!WARNING]
 > GitHub IPA 不是 TestFlight/App Store 安装包，通常不能直接安装。Floe Agent 不提供证书、描述文件或代签服务。
 
+### Feather 安装源
+
+稳定源地址为 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`。官网下载页按钮发出的路由与此逐字节一致：
+
+- Feather：`feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
+- AltStore：`altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
+
+使用自行签名安装的用户请打开[下载页面](https://www.floe-agent.com/#download)，选择「添加到 Feather」或「添加到 AltStore」，也可以把源地址粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此官网是 GitHub 上可用的快速添加入口，上述深链供设备端直接使用。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)；GitHub 提供未签名 IPA、校验文件和来源证明，TestFlight 为独立分发渠道。
+
 ### 从源码构建
 
 需要 macOS、包含 iOS 26 SDK 或更新版本的完整 Xcode、Swift 6.2+ 与 XcodeGen。当前发布目标中的 iOS 27 Foundation Models 路径必须使用 Xcode 27 编译。
@@ -217,7 +226,3 @@ Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方�
 1.7 界面更新加入「通用 → 自动/日间/夜间」外观、项目与会话容器管理，以及可折叠的思考与工具调用组。功能可用性和测试版验收进展见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 
 工程文件预览已在工作区文件与 IDE 中提供：[格式矩阵与当前验证状态](docs/FLOE_ENGINEERING_VIEWERS.md)。DXF/DWG 支持本机线／圆／文字编辑与受保护保存；三维／PCB 预览可附带解析信息生成 AI 审阅附件。CAD 往返与独立 DWG 读取已在合成样本上通过；原生 App 验收与 KiCad 集成仍待完成。
-
-### Feather 安装源
-
-使用自行签名安装的用户请打开[下载页面](https://www.floe-agent.com/#download)，选择「添加到 Feather」或「添加到 AltStore」，也可以把源地址粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此官网是当前可用的快速添加入口。稳定源地址为 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`；手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)。GitHub 提供未签名 IPA、校验文件和来源证明；TestFlight 为独立分发渠道。

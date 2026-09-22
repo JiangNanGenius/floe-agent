@@ -482,3 +482,21 @@ re-pinned; then the App build, a real PPTX edit/save/close/reopen and the
 original-file write-back need the user's physical-device acceptance. The pinned
 framework still predates this source, so `pin_office_host_artifact.py --check`
 reports SOURCE AHEAD OF ARTIFACT and the release gate fails closed.
+
+### Rebuild and pin update (2026-09-22)
+
+- `office-native-host` [run 35668651442](https://github.com/JiangNanGenius/floe-agent/actions/runs/35668651442)
+  (`c4ff0dde`) rebuilt the host from this source and passed the real framework
+  compile/link plus the Swift import check; commit `f0ca71a7` re-pinned
+  `FloeAgent/ThirdParty/Collabora/engine.lock.json` to that artifact
+  (`archiveSHA256 cd423813…542ca`), so `main` at that commit no longer reports
+  SOURCE AHEAD OF ARTIFACT for the host contract described above.
+- The framework's `capabilityQualification` receipts remain all `false`
+  (`embeddedEditorPassed`, `pptxVisibleRenderPassed`, `deviceRoundtripPassed`,
+  `originalFileWritebackPassed`), so the release gate still refuses to claim a
+  qualified Office capability and every device check listed above stays open.
+- The first cloud App regression after the pin failed on a simulator-only
+  compile error (`OfficeDocumentEditorView.swift:730/740`, host types used
+  outside `canImport(FloeOfficeNative)`); `67a37db3` guards both watchdogs and
+  adds focused regression coverage. The full-App simulator build re-run is the
+  remaining cloud gate and had not completed at audit time.

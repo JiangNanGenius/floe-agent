@@ -104,7 +104,12 @@ GitHub prereleases include an unsigned IPA for advanced testers and downstream p
 
 ### Feather source
 
-The stable Floe feed is published at `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`. Open the [download page](https://www.floe-agent.com/#download) and choose **Add to Feather** or **Add to AltStore**, or paste the source URL into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the website is the working quick-add entry. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md).
+The stable Floe feed is published at `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`. The official download page fires exactly these routes from its buttons:
+
+- Feather: `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
+- AltStore: `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
+
+Open the [download page](https://www.floe-agent.com/#download) and choose **Add to Feather** or **Add to AltStore**, or paste the source URL into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the website is the working quick-add entry and the two routes above are documented for direct on-device use. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md).
 
 ### Build from source
 
@@ -168,7 +173,7 @@ Skills may carry bounded `.py` files plus exact pure-Python package requirements
 
 Floe can create DOCX documents, multi-sheet XLSX workbooks with values and formulas, and 16:9 PPTX decks with slide notes. The document package is generated and checked locally, without a web editor or office-cloud upload. Opening an Office file keeps the system preview as the first layer; **Edit Office document** from a workspace preview opens the standalone full-screen editor, while an open that starts in the IDE file tree keeps the IDE's embedded document tab. Word text, spreadsheet cells/formulas, PowerPoint text, speaker notes, drawing/annotation settings and presentation controls use the local Office engine, and one Office document keeps a single working copy between its preview and editing. Saving applies only changed semantic fields, rewrites the OOXML package atomically, preserves untouched package parts such as styles, media and relationships, checks the original version, and keeps a recoverable draft when saving fails or conflicts. Closing the standalone editor with unsaved changes asks to save, discard or cancel, and Command-S saves in place through the same shared save path for DOCX, XLSX and PPTX. Advanced layout fidelity, charts, macros, ActiveX and full desktop Office parity are not claimed.
 
-For statistics without external packages, `exec.localNumerical` implements bounded R-, Stata- and MATLAB/Octave-compatible expressions, descriptive statistics, quantiles, correlation and simple OLS. It does not claim to bundle the proprietary Stata runtime: PyStata requires a licensed Stata installation, and native-extension packages such as `pyreadstat` must run on a configured host rather than inside the pure-Python iOS package sandbox.
+For statistics without external packages, `exec.localNumerical` implements bounded R-, Stata- and MATLAB/Octave-compatible expressions, descriptive statistics, quantiles, correlation and simple OLS. It does not claim to bundle the proprietary Stata runtime: PyStata requires a licensed Stata installation, and native-extension packages such as `pyreadstat` need a guest-installable riscv64 build or an audited pure-Python wheel rather than a bundled iOS payload.
 
 ### Archive and credential sync
 

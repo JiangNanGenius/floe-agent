@@ -1,5 +1,17 @@
 # Floe 1.7 文档维护清单
 
+## 2026-09-22 侧载入口与 219 之后现状复核 / Sideload and post-219 audit
+
+本轮只修改公开文档（`README.md`、`README.zh-CN.md` 与 `docs/`），不改代码、工作流、标签、`feather.json` 或 `Local/` 私有内容：
+
+- 按钮复核：双语 README 顶部的 **Add to Feather / Add to AltStore**（中文「添加到 Feather / 添加到 AltStore」）按钮继续指向官网下载页 `https://www.floe-agent.com/#download`。GitHub 的 Markdown 过滤会同时移除 HTML 与 Markdown 写法中的 `feather://`、`altstore://` 链接（已用 GitHub Markdown API 实测：两种写法都只剩纯文本），所以 GitHub 上唯一可点击的快速添加入口就是官网，官网 chooser 再从页面发出真正的深链。
+- 与官网逐字节对照：线上 `assets/index-CFo2eGcE.js` 中官网按钮使用 `feather://source/${SOURCE_URL}` 与 `altstore://source?url=${encodeURIComponent(SOURCE_URL)}`，`SOURCE_URL` 为 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`。双语 README 的 Feather 安装源章节与 [FEATHER_SOURCE.md](FEATHER_SOURCE.md) 已记录两条完整深链（Feather 形式直接拼接，AltStore 形式为百分号编码），并注明 GitHub 会移除自定义 scheme。线上 `feather.json` 与仓库内文件逐字节一致（build 219）。
+- 导航：中文 README 的「Feather 安装源」章节从文件末尾移回「开始使用」，与英文版顺序一致；文档索引补充 [FEATHER_SOURCE.md](FEATHER_SOURCE.md) 与 [FLOE_156_FEEDBACK_REPAIR.md](FLOE_156_FEEDBACK_REPAIR.md) 两个入口。
+- 219 之后的 Office 事实：演示文稿宿主已由 office-native-host 运行 35668651442（`c4ff0dde`）重新编译链接，并在 `f0ca71a7` 重新固定；`engine.lock.json` 的 `capabilityQualification` 四项设备回执仍全部为 false，真机往返与写回未取得证据。双语使用指南、[FLOE_1_7_COMPATIBILITY.md](FLOE_1_7_COMPATIBILITY.md) 与 [FLOE_156_FEEDBACK_REPAIR.md](FLOE_156_FEEDBACK_REPAIR.md) 已按此改写；模拟器编译守卫修复（`67a37db3`）只记录定向检查通过，完整 App 云端门禁在复核时仍在运行。
+- 运行时措辞：使用指南中「Node 宿主」改为客体 Node；`pyreadstat`/PyStata 与「纯 Python iOS 沙箱」的旧描述改为 Linux 客体 riscv64 构建或可信 SSH 主机。双语 README、使用指南与索引继续明确 App 不含原生 Python/Node/Ruby 载荷，语言与包由 Linux 客体或签名 WASI 目录提供。
+- 明确留待后续证据：不宣称 Build 220 已构建、已上传、已被 Apple 处理、可安装、通过真机验收或已发布（见 [docs/README.md](README.md) 同一说明）。
+- 本轮检查：`test_readme_source_links.py`（4 项通过）、`test_feather_source.py`（4 项通过）、`test_native_runtime_free_audit.py`（5 项通过）；深链字面量与官网构造逐字节对照、AltStore 深链解码回稳定源地址、改动文档相对链接与 `git diff --check` 均通过。
+
 ## 2026-09-22 Build 219 公开文档审计 / Build 219 public-doc audit
 
 本轮把公开文档的“当前状态”对齐到 Build 219（TinyEMU/Linux 主要本地运行时），不修改任何代码、工作流、发布标签、`feather.json` 或私有文件：
