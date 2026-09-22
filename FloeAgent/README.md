@@ -43,8 +43,10 @@ python3 -m unittest discover -s FloeAgent/scripts/tests -p test_readme_source_li
 `check-net` is the network-free native check for the guest's first-boot
 resolver/interfaces/git-safe-directory files and the `net=up|partial|down`
 status vocabulary; the ioctl and resolver-probe side is Linux-only and needs a
-booted guest. `test_readme_source_links.py` keeps the README quick-add buttons
-on GitHub-safe `https` targets and pins the shared Feather source URL.
+booted guest. `test_readme_source_links.py` keeps the README quick-add badges
+linked to the official HTTPS quick-add endpoints (`/add/feather`,
+`/add/altstore`), the badge assets present, the release download link separate
+and GitHub-safe, and pins the shared Feather source URL.
 
 Since the Phase 2 TinyEMU migration there is no bundled CPython/NodeMobile
 build input: local Python/Node execute inside each environment's TinyEMU

@@ -21,10 +21,10 @@
 ![Floe Agent new-task workspace on iPad](docs/images/floe-agent-new-task-ipad.webp)
 
 <p align="center">
-  <a href="https://www.floe-agent.com/#download"><strong>Add to Feather</strong></a>
-  ·
-  <a href="https://www.floe-agent.com/#download"><strong>Add to AltStore</strong></a>
-  ·
+  <a href="https://www.floe-agent.com/add/feather"><img src="docs/images/badge-add-to-feather.svg" alt="Add to Feather" width="190"></a>
+  &nbsp;
+  <a href="https://www.floe-agent.com/add/altstore"><img src="docs/images/badge-add-to-altstore.svg" alt="Add to AltStore" width="200"></a>
+  &nbsp;
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>Download releases</strong></a>
 </p>
 
@@ -104,12 +104,12 @@ GitHub prereleases include an unsigned IPA for advanced testers and downstream p
 
 ### Feather source
 
-The stable Floe feed is published at `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`. The official download page fires exactly these routes from its buttons:
+The stable Floe feed is published at `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`. Tap a badge above (or open the same official quick-add endpoints from the [download page](https://www.floe-agent.com/#download)). Each endpoint tries the exact route on your device and then shows the manual steps and download links:
 
-- Feather: `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
-- AltStore: `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
+- Feather: `https://www.floe-agent.com/add/feather` → `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
+- AltStore: `https://www.floe-agent.com/add/altstore` → `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
 
-Open the [download page](https://www.floe-agent.com/#download) and choose **Add to Feather** or **Add to AltStore**, or paste the source URL into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the website is the working quick-add entry and the two routes above are documented for direct on-device use. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md).
+You can also paste the source URL directly into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the README badges point at the official HTTPS endpoints, which perform the custom-scheme launch and always render a readable fallback instead of a dead link. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md).
 
 ### Build from source
 

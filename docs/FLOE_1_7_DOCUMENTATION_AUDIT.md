@@ -1,5 +1,13 @@
 # Floe 1.7 文档维护清单
 
+## 2026-09-22 官网快速添加 HTTPS 端点与 README 徽章 / Official quick-add HTTPS endpoints and README badges
+
+本轮补齐侧载快速添加链路：官网（`Local/Private/official-service`，私有）新增两个固定公网 HTTPS 入口 `https://www.floe-agent.com/add/feather` 与 `https://www.floe-agent.com/add/altstore`。每个入口在设备上先尝试与已验证目标逐字节一致的深链（`feather://source/<stable-source-url>`、`altstore://source?url=<percent-encoded>`，源地址 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`），随后始终显示可手动复制的源地址、「打开 App」按钮、下载页与 GitHub 发布链接；未知应用名返回 404，内联启动脚本绑定逐响应 CSP nonce。官网下载页 chooser 的 Feather／AltStore 项改为路由到这两个端点。已通过源站与公网域名实测：两端点 200 且含精确深链、回退内容与 `no-store`／`noindex`／nonce CSP 响应头。
+
+- 双语 README 顶部改为两张徽章图片（`docs/images/badge-add-to-feather.svg`、`docs/images/badge-add-to-altstore.svg`），分别直连上述两个 HTTPS 端点；「下载发布版本 / Download releases」保留为独立文字链接。README「Feather 安装源 / Feather source」章节与 [FEATHER_SOURCE.md](FEATHER_SOURCE.md) 同步改写：GitHub 仍只渲染 `http`/`https`/`mailto`，因此徽章指向 HTTPS 端点，由端点完成自定义 scheme 启动与可读回退。
+- 测试：`FloeAgent/scripts/tests/test_readme_source_links.py` 改为钉住徽章→端点契约（锚点 href、本地徽章资源存在、下载链接独立、scheme 白名单）、源地址、Feed 形状与文档一致性，共 5 项通过；另用 GitHub Markdown API 实测渲染后徽章锚点 href 存活。
+- 明确不做：不改动发布标签、`feather.json`、TestFlight 状态；不宣称端点在任何具体设备上完成过真实拉起（真机验收仍属用户）。
+
 ## 2026-09-22 Build 222：Runtime v2 与专项修复 / Runtime v2 and focused repairs
 
 Build 222 documents the versioned Runtime v2 layout, content-addressed shared images, per-environment CoW/data ownership, migration recovery points, one-writer leases, four-VM queue, dynamic memory budget and Linux/MLX arbitration. It also records the local-model multi-turn tool repair and bounded PPT opening behavior. All four shipping targets move to 1.7.0 (222); release notes and bilingual TestFlight notes are added. Current evidence is source-level only: `FloeExecution` Swift 6 object compilation and seven focused PPT policy tests. Cloud distribution and physical-device results remain separate.

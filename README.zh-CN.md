@@ -21,10 +21,10 @@
 ![Floe Agent 在 iPad 上的新建任务界面](docs/images/floe-agent-new-task-ipad.webp)
 
 <p align="center">
-  <a href="https://www.floe-agent.com/#download"><strong>添加到 Feather</strong></a>
-  ·
-  <a href="https://www.floe-agent.com/#download"><strong>添加到 AltStore</strong></a>
-  ·
+  <a href="https://www.floe-agent.com/add/feather"><img src="docs/images/badge-add-to-feather.svg" alt="添加到 Feather" width="190"></a>
+  &nbsp;
+  <a href="https://www.floe-agent.com/add/altstore"><img src="docs/images/badge-add-to-altstore.svg" alt="添加到 AltStore" width="200"></a>
+  &nbsp;
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>下载发布版本</strong></a>
 </p>
 
@@ -102,12 +102,12 @@ GitHub 预发布版本为高级测试者和下游打包者提供未签名 IPA：
 
 ### Feather 安装源
 
-稳定源地址为 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`。官网下载页按钮发出的路由与此逐字节一致：
+稳定源地址为 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`。点击上方徽章（或在[下载页面](https://www.floe-agent.com/#download)打开相同的官方快速添加入口）即可：每个入口会先在设备上尝试对应深链，随后显示手动步骤与下载链接：
 
-- Feather：`feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
-- AltStore：`altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
+- Feather：`https://www.floe-agent.com/add/feather` → `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
+- AltStore：`https://www.floe-agent.com/add/altstore` → `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
 
-使用自行签名安装的用户请打开[下载页面](https://www.floe-agent.com/#download)，选择「添加到 Feather」或「添加到 AltStore」，也可以把源地址粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此官网是 GitHub 上可用的快速添加入口，上述深链供设备端直接使用。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)；GitHub 提供未签名 IPA、校验文件和来源证明，TestFlight 为独立分发渠道。
+也可以把源地址直接粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此 README 徽章指向官方 HTTPS 入口：由官网完成自定义 scheme 启动，并在无法打开时显示清晰的手动回退，而不是死链。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)；GitHub 提供未签名 IPA、校验文件和来源证明，TestFlight 为独立分发渠道。
 
 ### 从源码构建
 
