@@ -23,6 +23,11 @@
  */
 #include "json.h"
 
+/* FLOE-SMP: opaque RISC-V CPU state (riscv_cpu.h); the machine class
+ * per-hart hooks below return it without this header needing the full
+ * definition. */
+struct RISCVCPUState;
+
 typedef struct FBDevice FBDevice;
 
 typedef void SimpleFBDrawFunc(FBDevice *fb_dev, void *opaque,
@@ -102,7 +107,13 @@ typedef struct {
     char *cmdline; /* bios or kernel command line */
     BOOL accel_enable; /* enable acceleration (KVM) */
     char *input_device; /* NULL means no input */
-    
+
+    /* FLOE-SMP: number of RISC-V harts (0 or 1 = single hart, the default
+     * and bit-compatible behavior; 2 = dual hart with per-hart host threads
+     * driven by the embedder). Clamped to RISCV_SMP_MAX_HARTS by the
+     * machine. */
+    int vcpu_count;
+
     /* kernel, bios and other auxiliary files */
     VMFileEntry files[VM_FILE_COUNT];
 } VirtMachineParams;
@@ -129,6 +140,17 @@ struct VirtMachineClass {
     void (*vm_send_mouse_event)(VirtMachine *s1, int dx, int dy, int dz,
                                 unsigned int buttons);
     void (*vm_send_key_event)(VirtMachine *s1, BOOL is_down, uint16_t key_code);
+    /* FLOE-SMP: per-hart execution hooks so the embedder can drive every
+     * hart from its own host thread. get_cpu_count returns the number of
+     * harts (>= 1); get_cpu returns the machine-owned CPU state of hart
+     * cpu_idx (NULL when out of range; borrow, do not free); interp_cpu
+     * interprets one hart for max_exec_cycle cycles. Machines without SMP
+     * support leave these NULL. */
+    int (*virt_machine_get_cpu_count)(VirtMachine *s);
+    struct RISCVCPUState *(*virt_machine_get_cpu)(VirtMachine *s,
+                                                  int cpu_idx);
+    void (*virt_machine_interp_cpu)(VirtMachine *s, int cpu_idx,
+                                    int max_exec_cycle);
 };
 
 extern const VirtMachineClass riscv_machine_class;
@@ -155,6 +177,25 @@ static inline int virt_machine_get_sleep_duration(VirtMachine *s, int delay)
 static inline void virt_machine_interp(VirtMachine *s, int max_exec_cycle)
 {
     s->vmc->virt_machine_interp(s, max_exec_cycle);
+}
+/* FLOE-SMP: per-hart wrappers (NULL hooks on UP-only machines). */
+static inline int virt_machine_get_cpu_count(VirtMachine *s)
+{
+    if (!s->vmc->virt_machine_get_cpu_count)
+        return 1;
+    return s->vmc->virt_machine_get_cpu_count(s);
+}
+static inline struct RISCVCPUState *virt_machine_get_cpu(VirtMachine *s,
+                                                         int cpu_idx)
+{
+    if (!s->vmc->virt_machine_get_cpu)
+        return NULL;
+    return s->vmc->virt_machine_get_cpu(s, cpu_idx);
+}
+static inline void virt_machine_interp_cpu(VirtMachine *s, int cpu_idx,
+                                           int max_exec_cycle)
+{
+    s->vmc->virt_machine_interp_cpu(s, cpu_idx, max_exec_cycle);
 }
 static inline BOOL vm_mouse_is_absolute(VirtMachine *s)
 {

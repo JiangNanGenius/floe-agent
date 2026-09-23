@@ -43,6 +43,28 @@
 
 typedef struct RISCVCPUState RISCVCPUState;
 
+/* FLOE-SMP: upper bound of harts per machine (the Floe adapter currently
+ * exposes at most 2; the machine code is generic up to this bound). */
+#define RISCV_SMP_MAX_HARTS 8
+
+/* FLOE-SMP: state shared by every hart of one machine. Owned and
+ * initialized by the machine (riscv_machine.c); attached to each CPU with
+ * riscv_cpu_smp_attach(). When nb_harts > 1 the CPU core takes
+ * atomic_lock (a spinlock: int, 0 = free) around every guest-atomic
+ * (LR/SC/AMO) sequence, around every plain guest-RAM store, and around
+ * every DMA write, so all overlapping writers and reservation
+ * establishment are totally ordered and the LR/SC protocol is correct by
+ * construction; device_lock serializes individual device MMIO callbacks
+ * (never around the interpreter loop). With nb_harts == 1 all fast paths
+ * stay identical to the upstream single-hart behavior. atomic_lock is an
+ * int * here so this header stays free of pthread.h. */
+typedef struct RISCVSMPCpuArray {
+    int nb_harts;
+    RISCVCPUState *cpus[RISCV_SMP_MAX_HARTS];
+    void *atomic_lock;
+    void *device_lock;
+} RISCVSMPCpuArray;
+
 typedef struct {
     RISCVCPUState *(*riscv_cpu_init)(PhysMemoryMap *mem_map);
     void (*riscv_cpu_end)(RISCVCPUState *s);
@@ -55,6 +77,9 @@ typedef struct {
     uint32_t (*riscv_cpu_get_misa)(RISCVCPUState *s);
     void (*riscv_cpu_flush_tlb_write_range_ram)(RISCVCPUState *s,
                                                 uint8_t *ram_ptr, size_t ram_size);
+    /* FLOE-SMP */
+    void (*riscv_cpu_set_mhartid)(RISCVCPUState *s, uint64_t hartid);
+    void (*riscv_cpu_smp_attach)(RISCVCPUState *s, RISCVSMPCpuArray *smp);
 } RISCVCPUClass;
 
 typedef struct {
@@ -113,6 +138,16 @@ static inline void riscv_cpu_flush_tlb_write_range_ram(RISCVCPUState *s,
 {
     const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
     c->riscv_cpu_flush_tlb_write_range_ram(s, ram_ptr, ram_size);
+}
+static inline void riscv_cpu_set_mhartid(RISCVCPUState *s, uint64_t hartid)
+{
+    const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
+    c->riscv_cpu_set_mhartid(s, hartid);
+}
+static inline void riscv_cpu_smp_attach(RISCVCPUState *s, RISCVSMPCpuArray *smp)
+{
+    const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
+    c->riscv_cpu_smp_attach(s, smp);
 }
 
 #endif /* RISCV_CPU_H */

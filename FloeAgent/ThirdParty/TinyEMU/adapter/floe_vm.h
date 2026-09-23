@@ -24,6 +24,18 @@
  * through the callback from within run_slice (do not call floe_vm_destroy
  * from that callback; stop the worker first).
  *
+ * FLOE-SMP: with cfg->vcpu_count == 2 the adapter spawns one host thread
+ * per hart at create time. run_slice then drives both harts through a
+ * per-slice barrier (both harts interpret the same cycle budget on their
+ * own threads, then the slice ends); RAM and devices are shared, guest
+ * atomics (LR/SC/AMO) are serialized machine-wide only around the atomic
+ * sequence, device MMIO is serialized per callback (never around the
+ * interpreter loop), and each hart has its own mhartid/CLINT/PLIC state
+ * (IPI via CLINT msip, per-hart timecmp, per-context PLIC claim/complete).
+ * floe_vm_destroy joins every hart thread BEFORE ending the machine and
+ * before closing the disk FILE. vcpu_count 0/1 (the default) keeps the
+ * exact single-hart behavior: no hart threads, inline interpretation.
+ *
  * Lifecycle contract (verified by Qualification/TinyEMULinux):
  *  - create/destroy are repeatable: destroy releases the guest RAM, disk
  *    FILE handles + snapshot tables, 9p FS devices + tags, slirp state
@@ -59,6 +71,8 @@ typedef struct FloeVM FloeVM;
 
 #define FLOE_VM_MAX_SHARES 4
 #define FLOE_VM_MAX_HOSTFWD 16
+/* FLOE-SMP: hart count ceiling of this adapter/engine pair. */
+#define FLOE_VM_MAX_VCPU 2
 
 typedef struct {
     const char *tag;       /* 9p mount tag visible to the guest */
@@ -76,6 +90,13 @@ typedef struct {
     FloeVMShare shares[FLOE_VM_MAX_SHARES]; /* virtio-9p shares */
     int share_count;
     int net_enable;             /* 1 = slirp user-mode networking (10.0.2.0/24) */
+    /* FLOE-SMP: 0 or 1 = single hart (default; bit-compatible behavior),
+     * 2 = dual hart true parallel (one host thread per hart). Values
+     * above FLOE_VM_MAX_VCPU are rejected by floe_vm_create. Only enable
+     * 2 for guests whose kernel+firmware actually support SMP (an SMP-
+     * capable image manifest); a UP guest parks the second hart in its
+     * firmware and gains nothing. */
+    int vcpu_count;
 } FloeVMConfig;
 
 /* guest console output callback, invoked synchronously inside run_slice */
@@ -117,8 +138,39 @@ int floe_vm_hostfwd_add(FloeVM *vm, int is_udp, uint32_t host_ipv4,
 int floe_vm_hostfwd_remove(FloeVM *vm, int is_udp, uint32_t host_ipv4,
                            int host_port);
 
+/* FLOE-SMP: runtime/threading statistics contract for resource owners
+ * (the Swift/LinuxGuest resource pool reads these to account host threads
+ * and per-hart progress). All fields are snapshots, not atomic
+ * transactions; hart_insns is the retired-instruction counter of each
+ * hart (0 for absent harts). */
+typedef struct {
+    int vcpu_count;                    /* configured harts (1 or 2) */
+    int host_threads;                  /* hart worker threads spawned (0 in UP mode) */
+    uint64_t hart_insns[FLOE_VM_MAX_VCPU];   /* retired insns per hart */
+    int hart_powered_down[FLOE_VM_MAX_VCPU]; /* hart in WFI power-down */
+} FloeVMStats;
+
+/* FLOE-SMP: link-time capability query of this adapter/engine pair.
+ * floe_vm_max_vcpu_count() returns FLOE_VM_MAX_VCPU (2);
+ * floe_vm_smp_capable() returns 1 when the linked engine implements the
+ * per-hart machine hooks (i.e. dual-hart VMs can be created). NOTE: an
+ * engine capability is NOT guest compatibility -- see the vcpu_count
+ * comment in FloeVMConfig for the guest-side requirement. */
+int floe_vm_max_vcpu_count(void);
+int floe_vm_smp_capable(void);
+
+/* Fill the statistics snapshot. Serialized with run_slice/destroy via
+ * the per-VM api_lock (bounded by one in-flight slice); per-hart counters
+ * are engine atomics. Callable from any thread while the caller holds
+ * its own reference to the VM; NOT from the console output callback
+ * (same rule as floe_vm_destroy). Returns 0 on success, <0 on bad args.
+ */
+int floe_vm_get_stats(FloeVM *vm, FloeVMStats *out);
+
 /* Stop and free the VM; waits for an in-flight run_slice on this VM to
-   return. Do not call it from the console output callback. */
+   return. Do not call it from the console output callback. FLOE-SMP: any
+   hart worker threads are stopped and joined before the machine is ended
+   and before the disk FILE handles are closed. */
 void floe_vm_destroy(FloeVM *vm);
 
 const char *floe_vm_engine_version(void); /* TinyEMU core version string */

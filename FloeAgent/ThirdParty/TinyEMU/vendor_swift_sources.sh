@@ -79,7 +79,8 @@ PATCHES="0001-htif-poweroff-callback.patch \
 0006-slirp-per-instance-state.patch \
 0007-9p-export-root-containment.patch \
 0008-recoverable-guest-fault-paths.patch \
-0009-9p-unlinkat-xattr-semantics.patch"
+0009-9p-unlinkat-xattr-semantics.patch \
+0010-smp-dual-hart.patch"
 
 # slirp declares its own BSD structs (ipovly/tcpcb/sbuf/udphdr/arphdr/icmp)
 # whose tags collide with Darwin SDK umbrella-module headers when compiled

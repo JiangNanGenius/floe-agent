@@ -219,7 +219,7 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
     s->n_cycles = n_cycles1;
 
     /* check pending interrupts */
-    if (unlikely((s->mip & s->mie) != 0)) {
+    if (unlikely((riscv_cpu_atomic_get_mip(s) & s->mie) != 0)) {
         if (raise_interrupt(s)) {
             s->n_cycles--; 
             goto done_interp;
@@ -249,7 +249,7 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
                 goto the_end;
 
             /* check pending interrupts */
-            if (unlikely((s->mip & s->mie) != 0)) {
+            if (unlikely((riscv_cpu_atomic_get_mip(s) & s->mie) != 0)) {
                 if (raise_interrupt(s)) {
                     s->n_cycles--; 
                     goto the_end;
@@ -1232,7 +1232,7 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
             funct3 &= 3;
             switch(funct3) {
             case 1: /* csrrw */
-                s->insn_counter = GET_INSN_COUNTER();
+                __atomic_store_n(&s->insn_counter, GET_INSN_COUNTER(), __ATOMIC_RELAXED);
                 if (csr_read(s, &val2, imm, TRUE))
                     goto illegal_insn;
                 val2 = (intx_t)val2;
@@ -1251,7 +1251,7 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
                 break;
             case 2: /* csrrs */
             case 3: /* csrrc */
-                s->insn_counter = GET_INSN_COUNTER();
+                __atomic_store_n(&s->insn_counter, GET_INSN_COUNTER(), __ATOMIC_RELAXED);
                 if (csr_read(s, &val2, imm, (rs1 != 0)))
                     goto illegal_insn;
                 val2 = (intx_t)val2;
@@ -1317,10 +1317,21 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
                         goto illegal_insn;
                     /* go to power down if no enabled interrupts are
                        pending */
-                    if ((s->mip & s->mie) == 0) {
-                        s->power_down_flag = TRUE;
-                        s->pc = GET_PC() + 4;
-                        goto done_interp;
+                    if ((riscv_cpu_atomic_get_mip(s) & s->mie) == 0) {
+                        /* FLOE-SMP: another hart may raise an interrupt
+                           between the check and the sleep; mark
+                           power-down with a SEQ_CST store and re-check,
+                           so an IPI delivered in that window clears the
+                           flag (see riscv_cpu_set_mip) instead of being
+                           lost. */
+                        __atomic_store_n(&s->power_down_flag, TRUE,
+                                         __ATOMIC_SEQ_CST);
+                        if ((riscv_cpu_atomic_get_mip(s) & s->mie) == 0) {
+                            s->pc = GET_PC() + 4;
+                            goto done_interp;
+                        }
+                        __atomic_store_n(&s->power_down_flag, FALSE,
+                                         __ATOMIC_SEQ_CST);
                     }
                     break;
                 default:
@@ -1354,12 +1365,15 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
             case 0: /* fence */
                 /* FLOE-EMBED: Execute FENCE/FENCE.TSO and reserved fm
                    encodings with the stronger ordinary-fence semantics.
-                   This single-hart interpreter completes guest memory and
-                   device accesses in program order, so no extra ordering
-                   work is needed here; unused rs1/rd fields are ignored.
-                   Upstream TinyEMU trapped FENCE.TSO (0x8330000f), which is
-                   what Debian 13's libapt-pkg executes -- apt's http and
-                   https methods died with SIGILL inside libapt-pkg. */
+                   The interpreter completes each hart's guest memory and
+                   device accesses in program order; on SMP machines the
+                   RAM is one physically coherent array accessed with
+                   C11 atomics and device MMIO is serialized under the
+                   machine device lock, so fences stay ordering hints and
+                   need no extra work. Unused rs1/rd fields are ignored.
+                   Upstream TinyEMU trapped FENCE.TSO (0x8330000f), which
+                   is what Debian 13's libapt-pkg executes -- apt's http
+                   and https methods died with SIGILL inside libapt-pkg. */
                 break;
             case 1: /* fence.i */
                 /* FLOE-EMBED: Zifencei requires ignoring the unused
@@ -1389,6 +1403,47 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
                                                                         \
                 addr = s->reg[rs1];                                     \
                 funct3 = insn >> 27;                                    \
+                if (s->smp && s->smp->nb_harts > 1) {                   \
+                    /* FLOE-SMP: cross-hart atomics go through the \
+                       machine-wide lock helpers (reservations, store \
+                       invalidation); the legacy single-hart path below \
+                       is bit-identical to upstream. */                 \
+                    int __ret;                                          \
+                    if (funct3 == 2) { /* lr.w */                       \
+                        uint64_t __v;                                   \
+                        if (rs2 != 0)                                   \
+                            goto illegal_insn;                          \
+                        __ret = riscv_smp_lr(s, addr, &__v,             \
+                                             (size) == 32 ? 2 : 3);     \
+                        if (__ret)                                      \
+                            goto mmu_exception;                         \
+                        val = (int ## size ## _t)__v;                   \
+                    } else if (funct3 == 3) { /* sc.w */                \
+                        int __st;                                       \
+                        __ret = riscv_smp_sc(s, addr, s->reg[rs2],      \
+                                             (size) == 32 ? 2 : 3,      \
+                                             &__st);                    \
+                        if (__ret)                                      \
+                            goto mmu_exception;                         \
+                        val = __st;                                     \
+                    } else {                                            \
+                        uint64_t __v;                                   \
+                        __ret = riscv_smp_amo(s, addr, &__v,            \
+                                              s->reg[rs2],              \
+                                              (size) == 32 ? 2 : 3,     \
+                                              funct3);                  \
+                        if (__ret == -2)                                \
+                            goto illegal_insn;                          \
+                        if (__ret)                                      \
+                            goto mmu_exception;                         \
+                        val = (int ## size ## _t)__v;                   \
+                    }                                                   \
+                    /* The rd write and the PC advance happen in the shared \
+                       tail below (floe_op_a_done); do NOT emit NEXT_INSN \
+                       here: a break would only leave the inner width \
+                       switch and the tail would advance the PC twice. */ \
+                    goto floe_op_a_done;                                \
+                }                                                       \
                 switch(funct3) {                                        \
                 case 2: /* lr.w */                                      \
                     if (rs2 != 0)                                       \
@@ -1479,6 +1534,7 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
             default:
                 goto illegal_insn;
             }
+        floe_op_a_done:
             if (rd != 0)
                 s->reg[rd] = val;
             NEXT_INSN;
@@ -1732,8 +1788,8 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
     }
     /* we exit because XLEN may have changed */
  done_interp:
-the_end:
-    s->insn_counter = GET_INSN_COUNTER();
+ the_end:
+    __atomic_store_n(&s->insn_counter, GET_INSN_COUNTER(), __ATOMIC_RELAXED);
 #if 0
     printf("done interp %lx int=%x mstatus=%lx prv=%d\n",
            (uint64_t)s->insn_counter, s->mip & s->mie, (uint64_t)s->mstatus,

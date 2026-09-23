@@ -77,6 +77,13 @@ struct PhysMemoryMap {
     void *opaque;
     void (*flush_tlb_write_range)(void *opaque, uint8_t *ram_addr,
                                   size_t ram_size);
+    /* FLOE-SMP: shared SMP block of the machine owning this map (NULL
+     * on single-hart machines) and the DMA write hook: devices call it
+     * after writing guest RAM so overlapping LR/SC reservations of the
+     * harts are invalidated (lock-free; safe under the device lock).
+     * Registered by the CPU through riscv_cpu_smp_attach. */
+    void *smp;
+    void (*smp_dma_note_store)(void *smp, uint8_t *host_ptr, size_t len);
 };
 
 

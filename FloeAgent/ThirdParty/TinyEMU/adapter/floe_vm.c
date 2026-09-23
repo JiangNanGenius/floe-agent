@@ -34,6 +34,7 @@
 #include "iomem.h"
 #include "virtio.h" /* also brings in unguarded fs.h — do not include fs.h directly */
 #include "machine.h"
+#include "riscv_cpu.h" /* FLOE-SMP: per-hart cycle/power stats */
 #include "floe_vm.h"
 
 #ifdef CONFIG_SLIRP
@@ -350,6 +351,27 @@ struct FloeVM {
     pthread_mutex_t api_lock;
     /* cache for the lock-free poweroff query (updated under api_lock) */
     int poweroff_seen;
+    /* FLOE-SMP: hart count (1 or 2). With 2, every hart is driven by its
+       own host thread (hart_thread[i]) through the hart_bar slice
+       barrier: run_slice publishes one generation with a cycle budget,
+       both harts interpret concurrently, the slice ends when every hart
+       checked back in. Hart threads never touch api_lock and never run
+       outside a published slice. */
+    int vcpu_count;
+    int hart_threads_spawned;
+    pthread_t hart_thread[FLOE_VM_MAX_VCPU];
+    struct {
+        FloeVM *vm;
+        int idx;
+    } hart_arg[FLOE_VM_MAX_VCPU];
+    struct {
+        pthread_mutex_t lock;
+        pthread_cond_t cond;
+        unsigned generation;
+        int pending; /* harts not yet checked in for this generation */
+        int stop;
+        int budget;
+    } hart_bar;
 #ifdef CONFIG_SLIRP
     EthernetDevice *net;
     Slirp *slirp; /* this VM's own instance (patch 0006) */
@@ -358,6 +380,59 @@ struct FloeVM {
     int hostfwd_count;
 #endif
 };
+
+/* FLOE-SMP: one host thread per hart (only spawned when vcpu_count == 2).
+ * The thread interprets its hart for the published budget, then checks
+ * back in; it blocks on the barrier condvar between slices and exits on
+ * stop (set by floe_vm_destroy before it joins the threads). */
+static void *floe_hart_thread(void *arg)
+{
+    struct {
+        FloeVM *vm;
+        int idx;
+    } *ha = arg;
+    FloeVM *vm = ha->vm;
+    unsigned seen_gen = 0;
+    int idx = ha->idx;
+    for (;;) {
+        int budget;
+        pthread_mutex_lock(&vm->hart_bar.lock);
+        while (!vm->hart_bar.stop && vm->hart_bar.generation == seen_gen)
+            pthread_cond_wait(&vm->hart_bar.cond, &vm->hart_bar.lock);
+        if (vm->hart_bar.stop) {
+            pthread_mutex_unlock(&vm->hart_bar.lock);
+            break;
+        }
+        seen_gen = vm->hart_bar.generation;
+        budget = vm->hart_bar.budget;
+        pthread_mutex_unlock(&vm->hart_bar.lock);
+
+        virt_machine_interp_cpu(vm->m, idx, budget);
+
+        pthread_mutex_lock(&vm->hart_bar.lock);
+        if (--vm->hart_bar.pending == 0)
+            pthread_cond_broadcast(&vm->hart_bar.cond);
+        pthread_mutex_unlock(&vm->hart_bar.lock);
+    }
+    return NULL;
+}
+
+/* FLOE-SMP: stop and join every hart thread. Called with api_lock held
+ * (so no slice is in flight) BEFORE virt_machine_end and before any disk
+ * FILE handle is closed. */
+static void floe_vm_stop_hart_threads(FloeVM *vm)
+{
+    int i;
+    if (!vm->hart_threads_spawned)
+        return;
+    pthread_mutex_lock(&vm->hart_bar.lock);
+    vm->hart_bar.stop = 1;
+    pthread_cond_broadcast(&vm->hart_bar.cond);
+    pthread_mutex_unlock(&vm->hart_bar.lock);
+    for (i = 0; i < vm->vcpu_count; i++)
+        pthread_join(vm->hart_thread[i], NULL);
+    vm->hart_threads_spawned = 0;
+}
 
 /* Free everything the adapter itself allocated (partial state allowed).
  * The VirtMachine, if created, is ended separately by the caller. */
@@ -451,10 +526,17 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
                 (unsigned long long)cfg->ram_mb);
         return NULL;
     }
+    /* FLOE-SMP: 0/1 = single hart (default), 2 = dual hart. */
+    if (cfg->vcpu_count < 0 || cfg->vcpu_count > FLOE_VM_MAX_VCPU) {
+        fprintf(stderr, "floe_vm: vcpu_count=%d not supported (max %d)\n",
+                cfg->vcpu_count, FLOE_VM_MAX_VCPU);
+        return NULL;
+    }
 
     vm = mallocz(sizeof(*vm));
     if (!vm)
         return NULL;
+    vm->vcpu_count = cfg->vcpu_count > 1 ? cfg->vcpu_count : 1;
     /* Per-VM locks. Nothing here is thread-local: create may run on the
        main thread while run_slice runs later on a worker thread. */
     pthread_mutex_init(&vm->console.lock, NULL);
@@ -472,6 +554,7 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
     p->ram_size = cfg->ram_mb << 20;
     p->rtc_real_time = TRUE;
     p->console = &vm->console_dev;
+    p->vcpu_count = vm->vcpu_count;
     if (cfg->cmdline)
         p->cmdline = strdup(cfg->cmdline);
 
@@ -537,6 +620,40 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
     if (!vm->m) {
         fprintf(stderr, "floe_vm: machine init failed\n");
         goto fail;
+    }
+
+    /* FLOE-SMP: spawn one host thread per hart for a dual-hart VM. The
+       threads park on the barrier condvar until the first run_slice
+       publishes a generation; destroy stops and joins them before ending
+       the machine. */
+    if (vm->vcpu_count > 1) {
+        pthread_mutex_init(&vm->hart_bar.lock, NULL);
+        pthread_cond_init(&vm->hart_bar.cond, NULL);
+        vm->hart_bar.generation = 0;
+        vm->hart_bar.pending = 0;
+        vm->hart_bar.stop = 0;
+        for (i = 0; i < vm->vcpu_count; i++) {
+            vm->hart_arg[i].vm = vm;
+            vm->hart_arg[i].idx = i;
+            if (pthread_create(&vm->hart_thread[i], NULL, floe_hart_thread,
+                               &vm->hart_arg[i]) != 0) {
+                fprintf(stderr, "floe_vm: cannot spawn hart thread %d\n", i);
+                /* stop and join the already-spawned threads, then tear
+                   the machine down through the common fail path */
+                pthread_mutex_lock(&vm->hart_bar.lock);
+                vm->hart_bar.stop = 1;
+                pthread_cond_broadcast(&vm->hart_bar.cond);
+                pthread_mutex_unlock(&vm->hart_bar.lock);
+                while (--i >= 0)
+                    pthread_join(vm->hart_thread[i], NULL);
+                pthread_mutex_destroy(&vm->hart_bar.lock);
+                pthread_cond_destroy(&vm->hart_bar.cond);
+                virt_machine_end(vm->m);
+                vm->m = NULL;
+                goto fail;
+            }
+        }
+        vm->hart_threads_spawned = 1;
     }
 
     if (vm->m->net)
@@ -632,7 +749,22 @@ int floe_vm_run_slice(FloeVM *vm, int timeout_ms)
     }
 
     if (rc == 0) {
-        virt_machine_interp(m, FLOE_MAX_EXEC_CYCLE);
+        if (vm->hart_threads_spawned) {
+            /* FLOE-SMP: publish one slice generation and wait until every
+               hart checked back in. Hart threads interpret concurrently
+               on their own host threads; RAM/devices are shared, guest
+               atomics and device MMIO are serialized inside the engine. */
+            pthread_mutex_lock(&vm->hart_bar.lock);
+            vm->hart_bar.pending = vm->vcpu_count;
+            vm->hart_bar.budget = FLOE_MAX_EXEC_CYCLE;
+            vm->hart_bar.generation++;
+            pthread_cond_broadcast(&vm->hart_bar.cond);
+            while (vm->hart_bar.pending > 0)
+                pthread_cond_wait(&vm->hart_bar.cond, &vm->hart_bar.lock);
+            pthread_mutex_unlock(&vm->hart_bar.lock);
+        } else {
+            virt_machine_interp(m, FLOE_MAX_EXEC_CYCLE);
+        }
         rc = riscv_machine_poweroff_requested(m) ? 1 : 0;
         if (rc == 1)
             __atomic_store_n(&vm->poweroff_seen, 1, __ATOMIC_RELAXED);
@@ -732,6 +864,15 @@ void floe_vm_destroy(FloeVM *vm)
      * output callback: that runs inside run_slice on the same thread and
      * the api_lock is not recursive. */
     pthread_mutex_lock(&vm->api_lock);
+    /* FLOE-SMP: stop and join every hart thread BEFORE ending the machine
+       (they interpret machine state) and before floe_vm_free_resources
+       closes the disk FILE handles. */
+    floe_vm_stop_hart_threads(vm);
+    if (vm->vcpu_count > 1) {
+        /* the barrier was initialized at create when vcpu_count > 1 */
+        pthread_mutex_destroy(&vm->hart_bar.lock);
+        pthread_cond_destroy(&vm->hart_bar.cond);
+    }
     if (vm->m) {
         virt_machine_end(vm->m);
         vm->m = NULL;
@@ -741,6 +882,52 @@ void floe_vm_destroy(FloeVM *vm)
     pthread_mutex_destroy(&vm->api_lock);
     pthread_mutex_destroy(&vm->console.lock);
     free(vm);
+}
+
+int floe_vm_max_vcpu_count(void)
+{
+    return FLOE_VM_MAX_VCPU;
+}
+
+int floe_vm_smp_capable(void)
+{
+    /* This adapter and the engine are built from one source revision;
+       the per-hart machine hooks exist whenever this adapter links. */
+    return 1;
+}
+
+int floe_vm_get_stats(FloeVM *vm, FloeVMStats *out)
+{
+    int i, n;
+    if (!vm || !out)
+        return -1;
+    memset(out, 0, sizeof(*out));
+    /* Sampling contract: api_lock serializes the snapshot against
+       run_slice/destroy (same discipline as hostfwd_add/remove), so the
+       machine and per-hart CPU states stay alive and consistent for the
+       whole read; the wait is bounded by one in-flight slice. The
+       per-hart counters themselves are read with engine atomics
+       (retired-insn counter and power-down flag are __atomic fields).
+       Callable from any thread while the VM is alive; NOT from the
+       console output callback (that runs inside run_slice holding
+       api_lock), and the caller must hold its own reference to the VM
+       (a lock cannot fix use-after-destroy). */
+    pthread_mutex_lock(&vm->api_lock);
+    out->vcpu_count = vm->vcpu_count;
+    out->host_threads = vm->hart_threads_spawned ? vm->vcpu_count : 0;
+    if (vm->m && vm->m->vmc->virt_machine_get_cpu_count) {
+        n = vm->m->vmc->virt_machine_get_cpu_count(vm->m);
+        for (i = 0; i < n && i < FLOE_VM_MAX_VCPU; i++) {
+            RISCVCPUState *cpu = vm->m->vmc->virt_machine_get_cpu(vm->m, i);
+            if (cpu) {
+                out->hart_insns[i] = riscv_cpu_get_cycles(cpu);
+                out->hart_powered_down[i] =
+                    riscv_cpu_get_power_down(cpu) ? 1 : 0;
+            }
+        }
+    }
+    pthread_mutex_unlock(&vm->api_lock);
+    return 0;
 }
 
 const char *floe_vm_engine_version(void)

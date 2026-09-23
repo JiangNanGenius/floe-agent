@@ -303,11 +303,14 @@ static uint16_t virtio_read16(VIRTIODevice *s, virtio_phys_addr_t addr)
     ptr = s->get_ram_ptr(s, addr, FALSE);
     if (!ptr)
         return 0;
-    return *(uint16_t *)ptr;
+    /* FLOE-SMP: relaxed atomic; the CPU harts access the same guest RAM
+       concurrently (C11 data-race freedom, same codegen as the plain
+       access on the supported hosts). */
+    return __atomic_load_n((uint16_t *)ptr, __ATOMIC_RELAXED);
 }
 
 static void virtio_write16(VIRTIODevice *s, virtio_phys_addr_t addr,
-                           uint16_t val)
+                            uint16_t val)
 {
     uint8_t *ptr;
     if (addr & 1)
@@ -315,11 +318,15 @@ static void virtio_write16(VIRTIODevice *s, virtio_phys_addr_t addr,
     ptr = s->get_ram_ptr(s, addr, TRUE);
     if (!ptr)
         return;
-    *(uint16_t *)ptr = val;
+    __atomic_store_n((uint16_t *)ptr, val, __ATOMIC_RELAXED);
+    /* FLOE-SMP: DMA writes to guest RAM invalidate overlapping hart
+       LR/SC reservations (lock-free hook, safe under the device lock). */
+    if (s->mem_map->smp_dma_note_store)
+        s->mem_map->smp_dma_note_store(s->mem_map->smp, ptr, 2);
 }
 
 static void virtio_write32(VIRTIODevice *s, virtio_phys_addr_t addr,
-                           uint32_t val)
+                            uint32_t val)
 {
     uint8_t *ptr;
     if (addr & 3)
@@ -327,7 +334,34 @@ static void virtio_write32(VIRTIODevice *s, virtio_phys_addr_t addr,
     ptr = s->get_ram_ptr(s, addr, TRUE);
     if (!ptr)
         return;
-    *(uint32_t *)ptr = val;
+    __atomic_store_n((uint32_t *)ptr, val, __ATOMIC_RELAXED);
+    if (s->mem_map->smp_dma_note_store)
+        s->mem_map->smp_dma_note_store(s->mem_map->smp, ptr, 4);
+}
+
+/* FLOE-SMP: DMA copies between host buffers and guest RAM. Word-chunked
+ * relaxed atomic accesses keep the device side race-free against the
+ * CPU harts' atomic RAM accesses without changing the generated code on
+ * the supported 64-bit hosts. */
+static void floe_atomic_copy(uint8_t *dst, const uint8_t *src, int count)
+{
+    if ((((uintptr_t)dst | (uintptr_t)src) & 7) == 0) {
+        while (count >= 8) {
+            uint64_t v = __atomic_load_n((const uint64_t *)src,
+                                         __ATOMIC_RELAXED);
+            __atomic_store_n((uint64_t *)dst, v, __ATOMIC_RELAXED);
+            dst += 8;
+            src += 8;
+            count -= 8;
+        }
+    }
+    while (count > 0) {
+        uint8_t v = __atomic_load_n(src, __ATOMIC_RELAXED);
+        __atomic_store_n(dst, v, __ATOMIC_RELAXED);
+        dst++;
+        src++;
+        count--;
+    }
 }
 
 static int virtio_memcpy_from_ram(VIRTIODevice *s, uint8_t *buf,
@@ -341,7 +375,7 @@ static int virtio_memcpy_from_ram(VIRTIODevice *s, uint8_t *buf,
         ptr = s->get_ram_ptr(s, addr, FALSE);
         if (!ptr)
             return -1;
-        memcpy(buf, ptr, l);
+        floe_atomic_copy(buf, ptr, l);
         addr += l;
         buf += l;
         count -= l;
@@ -349,7 +383,7 @@ static int virtio_memcpy_from_ram(VIRTIODevice *s, uint8_t *buf,
     return 0;
 }
 
-static int virtio_memcpy_to_ram(VIRTIODevice *s, virtio_phys_addr_t addr, 
+static int virtio_memcpy_to_ram(VIRTIODevice *s, virtio_phys_addr_t addr,
                                 const uint8_t *buf, int count)
 {
     uint8_t *ptr;
@@ -360,7 +394,11 @@ static int virtio_memcpy_to_ram(VIRTIODevice *s, virtio_phys_addr_t addr,
         ptr = s->get_ram_ptr(s, addr, TRUE);
         if (!ptr)
             return -1;
-        memcpy(ptr, buf, l);
+        floe_atomic_copy(ptr, buf, l);
+        /* FLOE-SMP: DMA writes to guest RAM invalidate overlapping hart
+           LR/SC reservations (lock-free hook, safe under device lock). */
+        if (s->mem_map->smp_dma_note_store)
+            s->mem_map->smp_dma_note_store(s->mem_map->smp, ptr, l);
         addr += l;
         buf += l;
         count -= l;

@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "cutils.h"
 #include "iomem.h"
@@ -44,19 +45,32 @@ typedef struct RISCVMachine {
     VirtMachine common;
     PhysMemoryMap *mem_map;
     int max_xlen;
-    RISCVCPUState *cpu_state;
+    RISCVCPUState *cpu_state; /* == cpus[0] */
+    /* FLOE-SMP: per-hart CPU states sharing mem_map (RAM + devices).
+       Hart i owns cpus[i]; the embedder drives each hart from its own
+       host thread through the per-hart machine-class hooks. cpu_state
+       stays as the hart-0 alias for the legacy single-hart paths. */
+    RISCVCPUState *cpus[RISCV_SMP_MAX_HARTS];
+    int nb_harts;
+    RISCVSMPCpuArray smp;
+    int smp_atomic_lock; /* spinlock, 0 = free */
+    pthread_mutex_t smp_device_lock;
     uint64_t ram_size;
     /* RTC */
     BOOL rtc_real_time;
     uint64_t rtc_start_time;
-    uint64_t timecmp;
+    /* FLOE-SMP: per-hart CLINT compare values and software-interrupt
+       pending bits (hart i: msip[i] bit 0 <-> MIP_MSIP of cpus[i]). */
+    uint64_t timecmp[RISCV_SMP_MAX_HARTS];
+    uint32_t msip[RISCV_SMP_MAX_HARTS];
     /* PLIC */
     uint32_t plic_pending_irq, plic_served_irq;
     IRQSignal plic_irq[32]; /* IRQ 0 is not used */
     /* HTIF */
     uint64_t htif_tohost, htif_fromhost;
 
-    /* FLOE-EMBED: set instead of exit(0) on guest poweroff */
+    /* FLOE-EMBED: set instead of exit(0) on guest poweroff. Atomic:
+       written under the device lock, read by the embedder's run thread. */
     BOOL poweroff_requested;
 
     VIRTIODevice *keyboard_dev;
@@ -137,8 +151,9 @@ static void htif_handle_cmd(RISCVMachine *s)
     cmd = (s->htif_tohost >> 48) & 0xff;
     if (s->htif_tohost == 1) {
         /* shuthost -- FLOE-EMBED: a library must not exit(0) the host
-           process; record the request, the embedder ends the VM. */
-        s->poweroff_requested = TRUE;
+           process; record the request, the embedder ends the VM.
+           Atomic: written under the device lock, read cross-thread. */
+        __atomic_store_n(&s->poweroff_requested, TRUE, __ATOMIC_SEQ_CST);
     } else if (device == 1 && cmd == 1) {
         uint8_t buf[1];
         buf[0] = s->htif_tohost & 0xff;
@@ -195,66 +210,97 @@ static void htif_poll(RISCVMachine *s)
 }
 #endif
 
+/* FLOE-SMP: the CLINT decodes per-hart msip (0x0 + 4*hart) and
+ * timecmp (0x4000 + 8*hart) registers; mtime (0xbff8) is shared. The
+ * per-hart decode reduces exactly to the upstream hart-0 behavior when
+ * nb_harts == 1. */
 static uint32_t clint_read(void *opaque, uint32_t offset, int size_log2)
 {
     RISCVMachine *m = opaque;
     uint32_t val;
 
     assert(size_log2 == 2);
-    switch(offset) {
-    case 0xbff8:
-        val = rtc_get_time(m);
-        break;
-    case 0xbffc:
-        val = rtc_get_time(m) >> 32;
-        break;
-    case 0x4000:
-        val = m->timecmp;
-        break;
-    case 0x4004:
-        val = m->timecmp >> 32;
-        break;
-    default:
-        val = 0;
-        break;
+    if (offset < 4 * RISCV_SMP_MAX_HARTS) {
+        int hart = offset >> 2;
+        val = (hart < m->nb_harts) ? (m->msip[hart] & 1) : 0;
+    } else if (offset >= 0x4000 &&
+               offset < 0x4000 + 8 * RISCV_SMP_MAX_HARTS) {
+        int hart = (offset - 0x4000) >> 3;
+        if (hart < m->nb_harts)
+            val = (offset & 4) ? (m->timecmp[hart] >> 32) : m->timecmp[hart];
+        else
+            val = 0;
+    } else {
+        switch(offset) {
+        case 0xbff8:
+            val = rtc_get_time(m);
+            break;
+        case 0xbffc:
+            val = rtc_get_time(m) >> 32;
+            break;
+        default:
+            val = 0;
+            break;
+        }
     }
     return val;
 }
  
 static void clint_write(void *opaque, uint32_t offset, uint32_t val,
-                      int size_log2)
+                       int size_log2)
 {
     RISCVMachine *m = opaque;
 
     assert(size_log2 == 2);
-    switch(offset) {
-    case 0x4000:
-        m->timecmp = (m->timecmp & ~0xffffffff) | val;
-        riscv_cpu_reset_mip(m->cpu_state, MIP_MTIP);
-        break;
-    case 0x4004:
-        m->timecmp = (m->timecmp & 0xffffffff) | ((uint64_t)val << 32);
-        riscv_cpu_reset_mip(m->cpu_state, MIP_MTIP);
-        break;
-    default:
-        break;
+    if (offset < 4 * RISCV_SMP_MAX_HARTS) {
+        /* per-hart msip: IPI doorbell for hart (offset >> 2) */
+        int hart = offset >> 2;
+        if (hart < m->nb_harts) {
+            m->msip[hart] = val & 1;
+            if (val & 1)
+                riscv_cpu_set_mip(m->cpus[hart], MIP_MSIP);
+            else
+                riscv_cpu_reset_mip(m->cpus[hart], MIP_MSIP);
+        }
+    } else if (offset >= 0x4000 &&
+               offset < 0x4000 + 8 * RISCV_SMP_MAX_HARTS) {
+        int hart = (offset - 0x4000) >> 3;
+        if (hart < m->nb_harts) {
+            if (offset & 4)
+                m->timecmp[hart] = (m->timecmp[hart] & 0xffffffff) |
+                    ((uint64_t)val << 32);
+            else
+                m->timecmp[hart] = (m->timecmp[hart] & ~0xffffffff) | val;
+            riscv_cpu_reset_mip(m->cpus[hart], MIP_MTIP);
+        }
     }
 }
 
 static void plic_update_mip(RISCVMachine *s)
 {
-    RISCVCPUState *cpu = s->cpu_state;
+    /* FLOE-SMP: level-triggered external interrupts are broadcast to
+       every hart (M + S); the claim register arbitrates which hart
+       actually serves each source, under the machine device lock. */
     uint32_t mask;
+    int i;
     mask = s->plic_pending_irq & ~s->plic_served_irq;
-    if (mask) {
-        riscv_cpu_set_mip(cpu, MIP_MEIP | MIP_SEIP);
-    } else {
-        riscv_cpu_reset_mip(cpu, MIP_MEIP | MIP_SEIP);
+    for(i = 0; i < s->nb_harts; i++) {
+        if (mask) {
+            riscv_cpu_set_mip(s->cpus[i], MIP_MEIP | MIP_SEIP);
+        } else {
+            riscv_cpu_reset_mip(s->cpus[i], MIP_MEIP | MIP_SEIP);
+        }
     }
 }
 
 #define PLIC_HART_BASE 0x200000
 #define PLIC_HART_SIZE 0x1000
+/* FLOE-SMP: one S and one M context per hart, in FDT interrupts-extended
+ * order (S-ext 9 first, M-ext 11 second): context = 2*hart + (0=S,1=M).
+ * Claim/complete accept every context; sources are not enable/priority
+ * masked (same simplification as upstream single-hart TinyEMU), which is
+ * sufficient because any hart may serve any level-triggered source. */
+#define PLIC_CONTEXTS(m) (2 * (m)->nb_harts)
 
 static uint32_t plic_read(void *opaque, uint32_t offset, int size_log2)
 {
@@ -262,44 +308,45 @@ static uint32_t plic_read(void *opaque, uint32_t offset, int size_log2)
     uint32_t val, mask;
     int i;
     assert(size_log2 == 2);
-    switch(offset) {
-    case PLIC_HART_BASE:
-        val = 0;
-        break;
-    case PLIC_HART_BASE + 4:
-        mask = s->plic_pending_irq & ~s->plic_served_irq;
-        if (mask != 0) {
-            i = ctz32(mask);
-            s->plic_served_irq |= 1 << i;
-            plic_update_mip(s);
-            val = i + 1;
+    if (offset >= PLIC_HART_BASE &&
+        offset < PLIC_HART_BASE + PLIC_CONTEXTS(s) * PLIC_HART_SIZE) {
+        uint32_t ctx_off = offset & (PLIC_HART_SIZE - 1);
+        if (ctx_off == 4) {
+            /* claim: first claimant serves the lowest pending source */
+            mask = s->plic_pending_irq & ~s->plic_served_irq;
+            if (mask != 0) {
+                i = ctz32(mask);
+                s->plic_served_irq |= 1 << i;
+                plic_update_mip(s);
+                val = i + 1;
+            } else {
+                val = 0;
+            }
         } else {
             val = 0;
         }
-        break;
-    default:
-        val = 0;
-        break;
+        return val;
     }
-    return val;
+    return 0;
 }
 
 static void plic_write(void *opaque, uint32_t offset, uint32_t val,
                        int size_log2)
 {
     RISCVMachine *s = opaque;
-    
+
     assert(size_log2 == 2);
-    switch(offset) {
-    case PLIC_HART_BASE + 4:
-        val--;
-        if (val < 32) {
-            s->plic_served_irq &= ~(1 << val);
-            plic_update_mip(s);
+    if (offset >= PLIC_HART_BASE &&
+        offset < PLIC_HART_BASE + PLIC_CONTEXTS(s) * PLIC_HART_SIZE) {
+        uint32_t ctx_off = offset & (PLIC_HART_SIZE - 1);
+        if (ctx_off == 4) {
+            /* complete */
+            val--;
+            if (val < 32) {
+                s->plic_served_irq &= ~(1 << val);
+                plic_update_mip(s);
+            }
         }
-        break;
-    default:
-        break;
     }
 }
 
@@ -593,34 +640,29 @@ static int riscv_build_fdt(RISCVMachine *m, uint8_t *dst,
                            const char *cmd_line)
 {
     FDTState *s;
-    int size, max_xlen, i, cur_phandle, intc_phandle, plic_phandle;
+    int size, max_xlen, i, cur_phandle, plic_phandle;
+    int intc_phandle[RISCV_SMP_MAX_HARTS];
     char isa_string[128], *q;
     uint32_t misa;
-    uint32_t tab[4];
+    uint32_t tab[4 * RISCV_SMP_MAX_HARTS];
     FBDevice *fb_dev;
-    
+
     s = fdt_init();
 
     cur_phandle = 1;
-    
+
     fdt_begin_node(s, "");
     fdt_prop_u32(s, "#address-cells", 2);
     fdt_prop_u32(s, "#size-cells", 2);
     fdt_prop_str(s, "compatible", "ucbbar,riscvemu-bar_dev");
     fdt_prop_str(s, "model", "ucbbar,riscvemu-bare");
 
-    /* CPU list */
+    /* CPU list (FLOE-SMP: one node per hart; nb_harts == 1 emits exactly
+       the upstream single-cpu tree) */
     fdt_begin_node(s, "cpus");
     fdt_prop_u32(s, "#address-cells", 1);
     fdt_prop_u32(s, "#size-cells", 0);
     fdt_prop_u32(s, "timebase-frequency", RTC_FREQ);
-
-    /* cpu */
-    fdt_begin_node_num(s, "cpu", 0);
-    fdt_prop_str(s, "device_type", "cpu");
-    fdt_prop_u32(s, "reg", 0);
-    fdt_prop_str(s, "status", "okay");
-    fdt_prop_str(s, "compatible", "riscv");
 
     max_xlen = m->max_xlen;
     misa = riscv_cpu_get_misa(m->cpu_state);
@@ -631,21 +673,30 @@ static int riscv_build_fdt(RISCVMachine *m, uint8_t *dst,
             *q++ = 'a' + i;
     }
     *q = '\0';
-    fdt_prop_str(s, "riscv,isa", isa_string);
-    
-    fdt_prop_str(s, "mmu-type", max_xlen <= 32 ? "riscv,sv32" : "riscv,sv48");
-    fdt_prop_u32(s, "clock-frequency", 2000000000);
 
-    fdt_begin_node(s, "interrupt-controller");
-    fdt_prop_u32(s, "#interrupt-cells", 1);
-    fdt_prop(s, "interrupt-controller", NULL, 0);
-    fdt_prop_str(s, "compatible", "riscv,cpu-intc");
-    intc_phandle = cur_phandle++;
-    fdt_prop_u32(s, "phandle", intc_phandle);
-    fdt_end_node(s); /* interrupt-controller */
-    
-    fdt_end_node(s); /* cpu */
-    
+    for(i = 0; i < m->nb_harts; i++) {
+        fdt_begin_node_num(s, "cpu", i);
+        fdt_prop_str(s, "device_type", "cpu");
+        fdt_prop_u32(s, "reg", i);
+        fdt_prop_str(s, "status", "okay");
+        fdt_prop_str(s, "compatible", "riscv");
+
+        fdt_prop_str(s, "riscv,isa", isa_string);
+
+        fdt_prop_str(s, "mmu-type", max_xlen <= 32 ? "riscv,sv32" : "riscv,sv48");
+        fdt_prop_u32(s, "clock-frequency", 2000000000);
+
+        fdt_begin_node(s, "interrupt-controller");
+        fdt_prop_u32(s, "#interrupt-cells", 1);
+        fdt_prop(s, "interrupt-controller", NULL, 0);
+        fdt_prop_str(s, "compatible", "riscv,cpu-intc");
+        intc_phandle[i] = cur_phandle++;
+        fdt_prop_u32(s, "phandle", intc_phandle[i]);
+        fdt_end_node(s); /* interrupt-controller */
+
+        fdt_end_node(s); /* cpu */
+    }
+
     fdt_end_node(s); /* cpus */
 
     fdt_begin_node_num(s, "memory", RAM_BASE_ADDR);
@@ -672,14 +723,17 @@ static int riscv_build_fdt(RISCVMachine *m, uint8_t *dst,
     fdt_begin_node_num(s, "clint", CLINT_BASE_ADDR);
     fdt_prop_str(s, "compatible", "riscv,clint0");
 
-    tab[0] = intc_phandle;
-    tab[1] = 3; /* M IPI irq */
-    tab[2] = intc_phandle;
-    tab[3] = 7; /* M timer irq */
-    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4);
+    /* FLOE-SMP: per hart: M IPI irq + M timer irq */
+    for(i = 0; i < m->nb_harts; i++) {
+        tab[4 * i + 0] = intc_phandle[i];
+        tab[4 * i + 1] = 3; /* M IPI irq */
+        tab[4 * i + 2] = intc_phandle[i];
+        tab[4 * i + 3] = 7; /* M timer irq */
+    }
+    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4 * m->nb_harts);
 
     fdt_prop_tab_u64_2(s, "reg", CLINT_BASE_ADDR, CLINT_SIZE);
-    
+
     fdt_end_node(s); /* clint */
 
     fdt_begin_node_num(s, "plic", PLIC_BASE_ADDR);
@@ -689,11 +743,14 @@ static int riscv_build_fdt(RISCVMachine *m, uint8_t *dst,
     fdt_prop_u32(s, "riscv,ndev", 31);
     fdt_prop_tab_u64_2(s, "reg", PLIC_BASE_ADDR, PLIC_SIZE);
 
-    tab[0] = intc_phandle;
-    tab[1] = 9; /* S ext irq */
-    tab[2] = intc_phandle;
-    tab[3] = 11; /* M ext irq */
-    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4);
+    /* FLOE-SMP: per hart: S ext irq + M ext irq */
+    for(i = 0; i < m->nb_harts; i++) {
+        tab[4 * i + 0] = intc_phandle[i];
+        tab[4 * i + 1] = 9; /* S ext irq */
+        tab[4 * i + 2] = intc_phandle[i];
+        tab[4 * i + 3] = 11; /* M ext irq */
+    }
+    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4 * m->nb_harts);
 
     plic_phandle = cur_phandle++;
     fdt_prop_u32(s, "phandle", plic_phandle);
@@ -825,12 +882,30 @@ static int copy_bios(RISCVMachine *s, const uint8_t *buf, int buf_len,
 static void riscv_flush_tlb_write_range(void *opaque, uint8_t *ram_addr,
                                         size_t ram_size)
 {
+    /* FLOE-SMP: the write TLBs of every hart cache this RAM range. */
     RISCVMachine *s = opaque;
-    riscv_cpu_flush_tlb_write_range_ram(s->cpu_state, ram_addr, ram_size);
+    int i;
+    for(i = 0; i < s->nb_harts; i++)
+        riscv_cpu_flush_tlb_write_range_ram(s->cpus[i], ram_addr, ram_size);
 }
 
 static void riscv_machine_set_defaults(VirtMachineParams *p)
 {
+}
+
+/* FLOE-SMP: end every created hart and destroy the machine locks.
+ * Used by the init failure paths and by riscv_machine_end (the embedder
+ * has already joined its hart threads before calling virt_machine_end). */
+static void riscv_machine_release_cpus(RISCVMachine *s)
+{
+    int i;
+    for(i = 0; i < s->nb_harts; i++) {
+        if (s->cpus[i]) {
+            riscv_cpu_end(s->cpus[i]);
+            s->cpus[i] = NULL;
+        }
+    }
+    pthread_mutex_destroy(&s->smp_device_lock);
 }
 
 static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
@@ -861,12 +936,39 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
     s->mem_map->opaque = s;
     s->mem_map->flush_tlb_write_range = riscv_flush_tlb_write_range;
 
-    s->cpu_state = riscv_cpu_init(s->mem_map, max_xlen);
-    if (!s->cpu_state) {
-        vm_error("unsupported max_xlen=%d\n", max_xlen);
-        /* XXX: should free resources */
-        return NULL;
+    /* FLOE-SMP: create one CPU state per hart (0/1 vcpu_count = single
+       hart, the default and bit-compatible behavior). Every hart shares
+       mem_map (RAM + devices) and the machine SMP block; hart i gets
+       mhartid == i so the reset ROM's a0 handshake works unchanged. */
+    {
+        int nb_harts = p->vcpu_count;
+        if (nb_harts <= 0)
+            nb_harts = 1;
+        if (nb_harts > RISCV_SMP_MAX_HARTS)
+            nb_harts = RISCV_SMP_MAX_HARTS;
+        s->nb_harts = nb_harts;
     }
+    s->smp_atomic_lock = 0;
+    pthread_mutex_init(&s->smp_device_lock, NULL);
+    s->smp.nb_harts = s->nb_harts;
+    s->smp.atomic_lock = &s->smp_atomic_lock;
+    s->smp.device_lock = &s->smp_device_lock;
+    for(i = 0; i < s->nb_harts; i++) {
+        s->cpus[i] = riscv_cpu_init(s->mem_map, max_xlen);
+        if (!s->cpus[i]) {
+            vm_error("unsupported max_xlen=%d\n", max_xlen);
+            while (--i >= 0)
+                riscv_cpu_end(s->cpus[i]);
+            pthread_mutex_destroy(&s->smp_device_lock);
+            phys_mem_map_end(s->mem_map);
+            free(s);
+            return NULL;
+        }
+        riscv_cpu_set_mhartid(s->cpus[i], i);
+        riscv_cpu_smp_attach(s->cpus[i], &s->smp);
+        s->smp.cpus[i] = s->cpus[i];
+    }
+    s->cpu_state = s->cpus[0];
     /* RAM */
     ram_flags = 0;
     /* FLOE-EMBED: cpu_register_ram returns NULL on allocation failure
@@ -876,7 +978,7 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
         !cpu_register_ram(s->mem_map, 0x00000000, LOW_RAM_SIZE, 0)) {
         vm_error("floe: could not allocate guest RAM (%llu MB)\n",
                  (unsigned long long)(p->ram_size >> 20));
-        riscv_cpu_end(s->cpu_state);
+        riscv_machine_release_cpus(s);
         phys_mem_map_end(s->mem_map);
         free(s);
         return NULL;
@@ -993,7 +1095,7 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
                   p->files[VM_FILE_KERNEL].buf, p->files[VM_FILE_KERNEL].len,
                   p->files[VM_FILE_INITRD].buf, p->files[VM_FILE_INITRD].len,
                   p->cmdline) < 0) {
-        riscv_cpu_end(s->cpu_state);
+        riscv_machine_release_cpus(s);
         phys_mem_map_end(s->mem_map);
         free(s);
         return NULL;
@@ -1006,14 +1108,15 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
 int riscv_machine_poweroff_requested(VirtMachine *s1)
 {
     RISCVMachine *s = (RISCVMachine *)s1;
-    return s->poweroff_requested;
+    return __atomic_load_n(&s->poweroff_requested, __ATOMIC_SEQ_CST);
 }
 
 static void riscv_machine_end(VirtMachine *s1)
 {
     RISCVMachine *s = (RISCVMachine *)s1;
-    /* XXX: stop all */
-    riscv_cpu_end(s->cpu_state);
+    /* FLOE-SMP: the embedder joined all hart threads before ending the
+       machine (adapter destroy order: stop+join harts, then end). */
+    riscv_machine_release_cpus(s);
     phys_mem_map_end(s->mem_map);
     free(s);
 }
@@ -1022,24 +1125,30 @@ static void riscv_machine_end(VirtMachine *s1)
 static int riscv_machine_get_sleep_duration(VirtMachine *s1, int delay)
 {
     RISCVMachine *m = (RISCVMachine *)s1;
-    RISCVCPUState *s = m->cpu_state;
-    int64_t delay1;
-    
-    /* wait for an event: the only asynchronous event is the RTC timer */
-    if (!(riscv_cpu_get_mip(s) & MIP_MTIP)) {
-        delay1 = m->timecmp - rtc_get_time(m);
-        if (delay1 <= 0) {
-            riscv_cpu_set_mip(s, MIP_MTIP);
-            delay = 0;
-        } else {
-            /* convert delay to ms */
-            delay1 = delay1 / (RTC_FREQ / 1000);
-            if (delay1 < delay)
-                delay = delay1;
+    int64_t delay1, now;
+    int i;
+
+    /* wait for an event: the only asynchronous event is the RTC timer.
+       FLOE-SMP: the sleep delay is the minimum over all harts -- a hart
+       with a due timer or an active (non-WFI) hart forces delay 0. */
+    now = rtc_get_time(m);
+    for(i = 0; i < m->nb_harts; i++) {
+        RISCVCPUState *s = m->cpus[i];
+        if (!(riscv_cpu_get_mip(s) & MIP_MTIP)) {
+            delay1 = m->timecmp[i] - now;
+            if (delay1 <= 0) {
+                riscv_cpu_set_mip(s, MIP_MTIP);
+                delay = 0;
+            } else {
+                /* convert delay to ms */
+                delay1 = delay1 / (RTC_FREQ / 1000);
+                if (delay1 < delay)
+                    delay = delay1;
+            }
         }
+        if (!riscv_cpu_get_power_down(s))
+            delay = 0;
     }
-    if (!riscv_cpu_get_power_down(s))
-        delay = 0;
     return delay;
 }
 
@@ -1047,6 +1156,28 @@ static void riscv_machine_interp(VirtMachine *s1, int max_exec_cycle)
 {
     RISCVMachine *s = (RISCVMachine *)s1;
     riscv_cpu_interp(s->cpu_state, max_exec_cycle);
+}
+
+/* FLOE-SMP: per-hart hooks for the embedder's hart host threads. */
+static int riscv_machine_get_cpu_count(VirtMachine *s1)
+{
+    return ((RISCVMachine *)s1)->nb_harts;
+}
+
+static RISCVCPUState *riscv_machine_get_cpu(VirtMachine *s1, int cpu_idx)
+{
+    RISCVMachine *s = (RISCVMachine *)s1;
+    if (cpu_idx < 0 || cpu_idx >= s->nb_harts)
+        return NULL;
+    return s->cpus[cpu_idx];
+}
+
+static void riscv_machine_interp_cpu(VirtMachine *s1, int cpu_idx,
+                                     int max_exec_cycle)
+{
+    RISCVMachine *s = (RISCVMachine *)s1;
+    if (cpu_idx >= 0 && cpu_idx < s->nb_harts)
+        riscv_cpu_interp(s->cpus[cpu_idx], max_exec_cycle);
 }
 
 static void riscv_vm_send_key_event(VirtMachine *s1, BOOL is_down,
@@ -1082,4 +1213,7 @@ const VirtMachineClass riscv_machine_class = {
     riscv_vm_mouse_is_absolute,
     riscv_vm_send_mouse_event,
     riscv_vm_send_key_event,
+    riscv_machine_get_cpu_count,
+    riscv_machine_get_cpu,
+    riscv_machine_interp_cpu,
 };

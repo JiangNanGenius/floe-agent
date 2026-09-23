@@ -1,0 +1,1892 @@
+diff -ruN a/iomem.h b/iomem.h
+--- a/iomem.h	2026-09-23 11:01:47
++++ b/iomem.h	2026-09-23 12:20:45
+@@ -77,6 +77,13 @@
+     void *opaque;
+     void (*flush_tlb_write_range)(void *opaque, uint8_t *ram_addr,
+                                   size_t ram_size);
++    /* FLOE-SMP: shared SMP block of the machine owning this map (NULL
++     * on single-hart machines) and the DMA write hook: devices call it
++     * after writing guest RAM so overlapping LR/SC reservations of the
++     * harts are invalidated (lock-free; safe under the device lock).
++     * Registered by the CPU through riscv_cpu_smp_attach. */
++    void *smp;
++    void (*smp_dma_note_store)(void *smp, uint8_t *host_ptr, size_t len);
+ };
+ 
+ 
+diff -ruN a/machine.h b/machine.h
+--- a/machine.h	2026-09-23 11:01:47
++++ b/machine.h	2026-09-23 11:14:39
+@@ -23,6 +23,11 @@
+  */
+ #include "json.h"
+ 
++/* FLOE-SMP: opaque RISC-V CPU state (riscv_cpu.h); the machine class
++ * per-hart hooks below return it without this header needing the full
++ * definition. */
++struct RISCVCPUState;
++
+ typedef struct FBDevice FBDevice;
+ 
+ typedef void SimpleFBDrawFunc(FBDevice *fb_dev, void *opaque,
+@@ -102,7 +107,13 @@
+     char *cmdline; /* bios or kernel command line */
+     BOOL accel_enable; /* enable acceleration (KVM) */
+     char *input_device; /* NULL means no input */
+-    
++
++    /* FLOE-SMP: number of RISC-V harts (0 or 1 = single hart, the default
++     * and bit-compatible behavior; 2 = dual hart with per-hart host threads
++     * driven by the embedder). Clamped to RISCV_SMP_MAX_HARTS by the
++     * machine. */
++    int vcpu_count;
++
+     /* kernel, bios and other auxiliary files */
+     VMFileEntry files[VM_FILE_COUNT];
+ } VirtMachineParams;
+@@ -129,6 +140,17 @@
+     void (*vm_send_mouse_event)(VirtMachine *s1, int dx, int dy, int dz,
+                                 unsigned int buttons);
+     void (*vm_send_key_event)(VirtMachine *s1, BOOL is_down, uint16_t key_code);
++    /* FLOE-SMP: per-hart execution hooks so the embedder can drive every
++     * hart from its own host thread. get_cpu_count returns the number of
++     * harts (>= 1); get_cpu returns the machine-owned CPU state of hart
++     * cpu_idx (NULL when out of range; borrow, do not free); interp_cpu
++     * interprets one hart for max_exec_cycle cycles. Machines without SMP
++     * support leave these NULL. */
++    int (*virt_machine_get_cpu_count)(VirtMachine *s);
++    struct RISCVCPUState *(*virt_machine_get_cpu)(VirtMachine *s,
++                                                  int cpu_idx);
++    void (*virt_machine_interp_cpu)(VirtMachine *s, int cpu_idx,
++                                    int max_exec_cycle);
+ };
+ 
+ extern const VirtMachineClass riscv_machine_class;
+@@ -155,6 +177,25 @@
+ static inline void virt_machine_interp(VirtMachine *s, int max_exec_cycle)
+ {
+     s->vmc->virt_machine_interp(s, max_exec_cycle);
++}
++/* FLOE-SMP: per-hart wrappers (NULL hooks on UP-only machines). */
++static inline int virt_machine_get_cpu_count(VirtMachine *s)
++{
++    if (!s->vmc->virt_machine_get_cpu_count)
++        return 1;
++    return s->vmc->virt_machine_get_cpu_count(s);
++}
++static inline struct RISCVCPUState *virt_machine_get_cpu(VirtMachine *s,
++                                                         int cpu_idx)
++{
++    if (!s->vmc->virt_machine_get_cpu)
++        return NULL;
++    return s->vmc->virt_machine_get_cpu(s, cpu_idx);
++}
++static inline void virt_machine_interp_cpu(VirtMachine *s, int cpu_idx,
++                                           int max_exec_cycle)
++{
++    s->vmc->virt_machine_interp_cpu(s, cpu_idx, max_exec_cycle);
+ }
+ static inline BOOL vm_mouse_is_absolute(VirtMachine *s)
+ {
+diff -ruN a/riscv_cpu.c b/riscv_cpu.c
+--- a/riscv_cpu.c	2026-09-23 11:01:47
++++ b/riscv_cpu.c	2026-09-23 12:49:15
+@@ -28,6 +28,7 @@
+ #include <inttypes.h>
+ #include <assert.h>
+ #include <fcntl.h>
++#include <pthread.h>
+ 
+ #include "cutils.h"
+ #include "iomem.h"
+@@ -149,16 +150,62 @@
+     abort();
+ }
+ 
++/* FLOE-SMP: mip and power_down_flag are written by other harts (CLINT
++ * msip/timecmp writes, PLIC, IPI delivery) while the owning hart reads
++ * them for its interrupt check or WFI. Lock-free atomics keep the UP
++ * behavior identical while making the SMP cross-hart accesses race-free
++ * in the C11 memory model. */
++static inline uint32_t riscv_cpu_atomic_get_mip(RISCVCPUState *s)
++{
++    return __atomic_load_n(&s->mip, __ATOMIC_SEQ_CST);
++}
++
++static inline void riscv_cpu_atomic_write_mip_masked(RISCVCPUState *s,
++                                                     uint32_t mask,
++                                                     uint32_t val)
++{
++    uint32_t old, desired;
++    old = __atomic_load_n(&s->mip, __ATOMIC_SEQ_CST);
++    do {
++        desired = (old & ~mask) | (val & mask);
++    } while (!__atomic_compare_exchange_n(&s->mip, &old, desired, 0,
++                                          __ATOMIC_SEQ_CST,
++                                          __ATOMIC_SEQ_CST));
++}
++
++/* FLOE-SMP: the machine-wide device lock serializes individual device
++ * MMIO callbacks between the hart host threads. It is never held around
++ * the interpreter loop, only around one read_func/write_func invocation,
++ * so RAM-heavy workloads keep running in parallel; a 9p/disk callback
++ * simply serializes with another hart's MMIO access. */
++static inline pthread_mutex_t *riscv_smp_device_lock(RISCVCPUState *s)
++{
++    if (s->smp && s->smp->nb_harts > 1)
++        return (pthread_mutex_t *)s->smp->device_lock;
++    return NULL;
++}
++
+ /* addr must be aligned. Only RAM accesses are supported */
++/* FLOE-SMP: relaxed atomic accesses; page-table words are shared between
++ * harts and must not be plain C data races. Writes additionally
++ * invalidate overlapping LR/SC reservations of the other harts inside
++ * the atomic lock whenever a reservation is live (the reservation is
++ * keyed by host address, and this helper has the host pointer). */
+ #define PHYS_MEM_READ_WRITE(size, uint_type) \
+ static __maybe_unused inline void phys_write_u ## size(RISCVCPUState *s, target_ulong addr,\
+                                         uint_type val)                   \
+ {\
+     PhysMemoryRange *pr = get_phys_mem_range(s->mem_map, addr);\
++    uint_type *ptr;\
+     if (!pr || !pr->is_ram)\
+         return;\
+-    *(uint_type *)(pr->phys_mem + \
+-                 (uintptr_t)(addr - pr->addr)) = val;\
++    ptr = (uint_type *)(pr->phys_mem + \
++                        (uintptr_t)(addr - pr->addr));\
++    if (unlikely(s->smp && !s->in_smp_atomic)) { \
++        riscv_smp_locked_store(s, (uint8_t *)ptr, val, size == 32 ? 2 : 3); \
++    } else {\
++        __atomic_store_n(ptr, val, __ATOMIC_RELAXED);\
++    }\
+ }\
+ \
+ static __maybe_unused inline uint_type phys_read_u ## size(RISCVCPUState *s, target_ulong addr) \
+@@ -166,8 +213,8 @@
+     PhysMemoryRange *pr = get_phys_mem_range(s->mem_map, addr);\
+     if (!pr || !pr->is_ram)\
+         return 0;\
+-    return *(uint_type *)(pr->phys_mem + \
+-                          (uintptr_t)(addr - pr->addr));     \
++    return __atomic_load_n((uint_type *)(pr->phys_mem + \
++                          (uintptr_t)(addr - pr->addr)), __ATOMIC_RELAXED);     \
+ }
+ 
+ PHYS_MEM_READ_WRITE(8, uint8_t)
+@@ -387,29 +434,32 @@
+             s->tlb_read[tlb_idx].mem_addend = (uintptr_t)ptr - addr;
+             switch(size_log2) {
+             case 0:
+-                ret = *(uint8_t *)ptr;
++                ret = FLOE_RAM_LOAD((uint8_t *)ptr);
+                 break;
+             case 1:
+-                ret = *(uint16_t *)ptr;
++                ret = FLOE_RAM_LOAD((uint16_t *)ptr);
+                 break;
+             case 2:
+-                ret = *(uint32_t *)ptr;
++                ret = FLOE_RAM_LOAD((uint32_t *)ptr);
+                 break;
+ #if MLEN >= 64
+             case 3:
+-                ret = *(uint64_t *)ptr;
++                ret = FLOE_RAM_LOAD((uint64_t *)ptr);
+                 break;
+ #endif
+ #if MLEN >= 128
+             case 4:
+-                ret = *(uint128_t *)ptr;
++                ret = FLOE_RAM_LOAD((uint128_t *)ptr);
+                 break;
+ #endif
+             default:
+                 abort();
+             }
+         } else {
++            pthread_mutex_t *dev_lock = riscv_smp_device_lock(s);
+             offset = paddr - pr->addr;
++            if (dev_lock)
++                pthread_mutex_lock(dev_lock);
+             if (((pr->devio_flags >> size_log2) & 1) != 0) {
+                 ret = pr->read_func(pr->opaque, offset, size_log2);
+             }
+@@ -429,6 +479,8 @@
+ #endif
+                 ret = 0;
+             }
++            if (dev_lock)
++                pthread_mutex_unlock(dev_lock);
+         }
+     }
+     *pval = ret;
+@@ -472,31 +524,40 @@
+             ptr = pr->phys_mem + (uintptr_t)(paddr - pr->addr);
+             s->tlb_write[tlb_idx].vaddr = addr & ~PG_MASK;
+             s->tlb_write[tlb_idx].mem_addend = (uintptr_t)ptr - addr;
++            /* FLOE-SMP: every guest-RAM store is linearized through the
++               atomic lock (no lock-free fast path). */
++            if (unlikely(s->smp && !s->in_smp_atomic)) {
++                riscv_smp_locked_store(s, ptr, val, size_log2);
++                return 0;
++            }
+             switch(size_log2) {
+             case 0:
+-                *(uint8_t *)ptr = val;
++                FLOE_RAM_STORE((uint8_t *)ptr, val);
+                 break;
+             case 1:
+-                *(uint16_t *)ptr = val;
++                FLOE_RAM_STORE((uint16_t *)ptr, val);
+                 break;
+             case 2:
+-                *(uint32_t *)ptr = val;
++                FLOE_RAM_STORE((uint32_t *)ptr, val);
+                 break;
+ #if MLEN >= 64
+             case 3:
+-                *(uint64_t *)ptr = val;
++                FLOE_RAM_STORE((uint64_t *)ptr, val);
+                 break;
+ #endif
+ #if MLEN >= 128
+             case 4:
+-                *(uint128_t *)ptr = val;
++                FLOE_RAM_STORE((uint128_t *)ptr, val);
+                 break;
+ #endif
+             default:
+                 abort();
+             }
+         } else {
++            pthread_mutex_t *dev_lock = riscv_smp_device_lock(s);
+             offset = paddr - pr->addr;
++            if (dev_lock)
++                pthread_mutex_lock(dev_lock);
+             if (((pr->devio_flags >> size_log2) & 1) != 0) {
+                 pr->write_func(pr->opaque, offset, val, size_log2);
+             }
+@@ -516,6 +577,8 @@
+                 printf(" width=%d bits\n", 1 << (3 + size_log2));
+ #endif
+             }
++            if (dev_lock)
++                pthread_mutex_unlock(dev_lock);
+         }
+     }
+     return 0;
+@@ -531,7 +594,13 @@
+ #if defined(EMSCRIPTEN)
+     return ((uint16_t *)ptr)[0] | (((uint16_t *)ptr)[1] << 16);
+ #else
+-    return ((struct unaligned_u32 *)ptr)->u32;
++    /* FLOE-SMP: atomic halves so a code write from another hart cannot
++       tear the fetch in the C11 model (RVC instructions may be 2-byte
++       aligned; the guest synchronizes modification/execution with
++       fence.i exactly as on hardware). */
++    uint32_t lo = __atomic_load_n((uint16_t *)ptr, __ATOMIC_RELAXED);
++    uint32_t hi = __atomic_load_n((uint16_t *)(ptr + 2), __ATOMIC_RELAXED);
++    return lo | (hi << 16);
+ #endif
+ }
+ 
+@@ -580,7 +649,8 @@
+         if (target_read_insn_slow(s, &ptr, addr))
+             return -1;
+     }
+-    *pinsn = *(uint16_t *)ptr;
++    /* FLOE-SMP: relaxed atomic fetch (see get_insn32). */
++    *pinsn = __atomic_load_n((uint16_t *)ptr, __ATOMIC_RELAXED);
+     return 0;
+ }
+ 
+@@ -595,6 +665,430 @@
+     }
+ }
+ 
++/*******************************************************/
++/* FLOE-SMP: cross-hart guest atomics. The interpreter calls these only
++ * when the machine runs more than one hart.
++ *
++ * Synchronization protocol (one lock, proven by construction):
++ *  - atomic_lock is a spinlock taken around EVERY operation that can
++ *    conflict with the LR/SC/AMO protocol: every plain guest-RAM store
++ *    (TLB fast path, slow path, page-table writes), every LR/SC/AMO
++ *    sequence, and every DMA write. There is deliberately NO lock-free
++ *    store fast path: a check-then-store race would let a store slip
++ *    between an LR and its SC while the LR has already returned the old
++ *    value (not linearizable).
++ *  - Reservations are keyed by HOST address: the same physical guest
++ *    memory always maps to the same host pointer, so virtual aliases of
++ *    one page cannot evade invalidation. Reservation fields are only
++ *    read/written under the lock (no torn reads for DMA).
++ *  - AMOs on guest RAM are read-modify-writes inside the lock; the
++ *    individual host accesses are relaxed atomics (single-copy atomic on
++ *    the supported hosts), which also keeps the C11 model race-free.
++ *  - MMIO atomics do NOT take the atomic lock (they are not RAM and the
++ *    reservation protocol does not apply); their device accesses are
++ *    serialized per-access by the device lock. This keeps a single lock
++ *    order: device -> atomic (DMA invalidation), never atomic -> device.
++ *  - DMA (virtio) takes the atomic lock under the device lock to
++ *    invalidate overlapping reservations after writing guest RAM. */
++
++static inline void smp_spin_lock(RISCVSMPCpuArray *smp)
++{
++    int *lock = (int *)smp->atomic_lock;
++    while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE))
++        ;
++}
++
++static inline void smp_spin_unlock(RISCVSMPCpuArray *smp)
++{
++    __atomic_store_n((int *)smp->atomic_lock, 0, __ATOMIC_RELEASE);
++}
++
++static inline BOOL smp_res_overlap_host(const RISCVCPUState *o,
++                                        uintptr_t host_addr, size_t len)
++{
++    uintptr_t a0 = host_addr, a1 = host_addr + len;
++    uintptr_t b0 = o->load_res_addr;
++    uintptr_t b1 = b0 + ((uintptr_t)1 << o->load_res_size_log2);
++    return a0 < b1 && b0 < a1;
++}
++
++/* invalidate every OTHER hart's reservation overlapping [ptr, len).
++ * Caller holds the atomic lock. */
++static void smp_invalidate_others_locked(RISCVCPUState *s, uintptr_t host_addr,
++                                         size_t len)
++{
++    RISCVSMPCpuArray *smp = s->smp;
++    int i;
++    for (i = 0; i < smp->nb_harts; i++) {
++        RISCVCPUState *o = smp->cpus[i];
++        if (o != s && o->load_res_valid &&
++            smp_res_overlap_host(o, host_addr, len)) {
++            o->load_res_valid = FALSE;
++        }
++    }
++}
++
++/* store to guest RAM + invalidate overlapping reservations, all inside
++ * the atomic lock. This is the ONLY guest-RAM store path on an SMP
++ * machine (every store is linearized here). */
++static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
++                                   mem_uint_t val, int size_log2)
++{
++    smp_spin_lock(s->smp);
++    switch(size_log2) {
++    case 0:
++        FLOE_RAM_STORE((uint8_t *)host_ptr, (uint8_t)val);
++        break;
++    case 1:
++        FLOE_RAM_STORE((uint16_t *)host_ptr, (uint16_t)val);
++        break;
++    case 2:
++        FLOE_RAM_STORE((uint32_t *)host_ptr, (uint32_t)val);
++        break;
++#if MLEN >= 64
++    case 3:
++        FLOE_RAM_STORE((uint64_t *)host_ptr, (uint64_t)val);
++        break;
++#endif
++    default:
++        /* 128-bit instantiation (RV128, not built by Floe) */
++        *(mem_uint_t *)host_ptr = val;
++        break;
++    }
++    smp_invalidate_others_locked(s, (uintptr_t)host_ptr,
++                                 (size_t)1 << size_log2);
++    smp_spin_unlock(s->smp);
++}
++
++/* DMA hook for virtio devices (runs under the device lock; takes the
++ * atomic lock to invalidate reservations). Width-specific: attached to
++ * the shared SMP block by riscv_cpu_smp_attach. */
++static void glue(riscv_smp_dma_note_store, MAX_XLEN)(void *smp1,
++                                                     uint8_t *host_ptr,
++                                                     size_t len)
++{
++    RISCVSMPCpuArray *smp = smp1;
++    int i;
++    if (!smp || smp->nb_harts <= 1)
++        return;
++    smp_spin_lock(smp);
++    for (i = 0; i < smp->nb_harts; i++) {
++        RISCVCPUState *o = smp->cpus[i];
++        if (o->load_res_valid &&
++            smp_res_overlap_host(o, (uintptr_t)host_ptr, len)) {
++            o->load_res_valid = FALSE;
++        }
++    }
++    smp_spin_unlock(smp);
++}
++
++/* resolve a guest RAM access to its host pointer, updating the TLB like
++ * the slow paths do. Returns NULL on an MMU fault (pending_exception is
++ * set) or when the access is not to RAM. */
++static uint8_t *riscv_smp_ram_host_ptr(RISCVCPUState *s, target_ulong addr,
++                                       int size_log2, BOOL is_write)
++{
++    uint32_t tlb_idx;
++    target_ulong paddr;
++    PhysMemoryRange *pr;
++    uint8_t *ptr;
++
++    tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);
++    if (is_write) {
++        if (likely(s->tlb_write[tlb_idx].vaddr ==
++                   (addr & ~(PG_MASK & ~((1 << size_log2) - 1)))))
++            return (uint8_t *)(s->tlb_write[tlb_idx].mem_addend +
++                               (uintptr_t)addr);
++    } else {
++        if (likely(s->tlb_read[tlb_idx].vaddr ==
++                   (addr & ~(PG_MASK & ~((1 << size_log2) - 1)))))
++            return (uint8_t *)(s->tlb_read[tlb_idx].mem_addend +
++                               (uintptr_t)addr);
++    }
++    if (get_phys_addr(s, &paddr, addr, is_write ? ACCESS_WRITE : ACCESS_READ))
++        return NULL;
++    pr = get_phys_mem_range(s->mem_map, paddr);
++    if (!pr || !pr->is_ram)
++        return NULL;
++    phys_mem_set_dirty_bit(pr, paddr - pr->addr);
++    ptr = pr->phys_mem + (uintptr_t)(paddr - pr->addr);
++    if (is_write) {
++        s->tlb_write[tlb_idx].vaddr = addr & ~PG_MASK;
++        s->tlb_write[tlb_idx].mem_addend = (uintptr_t)ptr - addr;
++    } else {
++        s->tlb_read[tlb_idx].vaddr = addr & ~PG_MASK;
++        s->tlb_read[tlb_idx].mem_addend = (uintptr_t)ptr - addr;
++    }
++    return ptr;
++}
++
++/* host-atomic read-modify-write on guest RAM; *pold receives the value
++ * before the operation. Returns 0, or -2 on an illegal AMO selector. */
++static int smp_host_rmw_u32(uint32_t *ptr, uint32_t *pold, uint32_t val2,
++                            uint32_t op27)
++{
++    uint32_t old;
++    switch(op27) {
++    case 1: /* amoswap.w */
++        old = __atomic_exchange_n(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0: /* amoadd.w */
++        old = __atomic_fetch_add(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 4: /* amoxor.w */
++        old = __atomic_fetch_xor(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0xc: /* amoand.w */
++        old = __atomic_fetch_and(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0x8: /* amoor.w */
++        old = __atomic_fetch_or(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0x10: /* amomin.w */
++    case 0x14: /* amomax.w */
++    case 0x18: /* amominu.w */
++    case 0x1c: /* amomaxu.w */
++        old = __atomic_load_n(ptr, __ATOMIC_RELAXED);
++        for (;;) {
++            uint32_t desired;
++            switch(op27) {
++            case 0x10:
++                desired = (int32_t)old < (int32_t)val2 ? old : val2;
++                break;
++            case 0x14:
++                desired = (int32_t)old > (int32_t)val2 ? old : val2;
++                break;
++            case 0x18:
++                desired = old < val2 ? old : val2;
++                break;
++            default: /* 0x1c */
++                desired = old > val2 ? old : val2;
++                break;
++            }
++            if (__atomic_compare_exchange_n(ptr, &old, desired, 0,
++                                            __ATOMIC_RELAXED,
++                                            __ATOMIC_RELAXED))
++                break;
++        }
++        break;
++    default:
++        return -2;
++    }
++    *pold = old;
++    return 0;
++}
++
++static int smp_host_rmw_u64(uint64_t *ptr, uint64_t *pold, uint64_t val2,
++                            uint32_t op27)
++{
++    uint64_t old;
++    switch(op27) {
++    case 1: /* amoswap.d */
++        old = __atomic_exchange_n(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0: /* amoadd.d */
++        old = __atomic_fetch_add(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 4: /* amoxor.d */
++        old = __atomic_fetch_xor(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0xc: /* amoand.d */
++        old = __atomic_fetch_and(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0x8: /* amoor.d */
++        old = __atomic_fetch_or(ptr, val2, __ATOMIC_RELAXED);
++        break;
++    case 0x10: /* amomin.d */
++    case 0x14: /* amomax.d */
++    case 0x18: /* amominu.d */
++    case 0x1c: /* amomaxu.d */
++        old = __atomic_load_n(ptr, __ATOMIC_RELAXED);
++        for (;;) {
++            uint64_t desired;
++            switch(op27) {
++            case 0x10:
++                desired = (int64_t)old < (int64_t)val2 ? old : val2;
++                break;
++            case 0x14:
++                desired = (int64_t)old > (int64_t)val2 ? old : val2;
++                break;
++            case 0x18:
++                desired = old < val2 ? old : val2;
++                break;
++            default: /* 0x1c */
++                desired = old > val2 ? old : val2;
++                break;
++            }
++            if (__atomic_compare_exchange_n(ptr, &old, desired, 0,
++                                            __ATOMIC_RELAXED,
++                                            __ATOMIC_RELAXED))
++                break;
++        }
++        break;
++    default:
++        return -2;
++    }
++    *pold = old;
++    return 0;
++}
++
++static int riscv_smp_lr(RISCVCPUState *s, target_ulong addr, uint64_t *pval,
++                        int size_log2)
++{
++    uint8_t *ptr;
++    smp_spin_lock(s->smp);
++    s->in_smp_atomic = TRUE;
++    ptr = riscv_smp_ram_host_ptr(s, addr, size_log2, FALSE);
++    if (ptr) {
++        if (size_log2 == 2) {
++            uint32_t v = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
++            *pval = (uint64_t)(int64_t)(int32_t)v; /* LR.W sign-extends */
++        } else {
++            *pval = __atomic_load_n((uint64_t *)ptr, __ATOMIC_RELAXED);
++        }
++        s->load_res_addr = (uintptr_t)ptr;
++        s->load_res_size_log2 = size_log2;
++        s->load_res_valid = TRUE;
++    } else {
++        int ret;
++        /* MMIO or fault: read through the generic path (no reservation
++         * is taken on non-RAM, so a following SC fails, which is
++         * spec-safe). */
++        if (size_log2 == 2) {
++            uint32_t v;
++            ret = target_read_u32(s, &v, addr);
++            *pval = (uint64_t)(int64_t)(int32_t)v;
++        } else {
++            uint64_t v;
++            ret = target_read_u64(s, &v, addr);
++            *pval = v;
++        }
++        s->load_res_valid = FALSE;
++        s->in_smp_atomic = FALSE;
++        smp_spin_unlock(s->smp);
++        return ret;
++    }
++    s->in_smp_atomic = FALSE;
++    smp_spin_unlock(s->smp);
++    return 0;
++}
++
++static int riscv_smp_sc(RISCVCPUState *s, target_ulong addr, uint64_t val,
++                        int size_log2, int *pstatus)
++{
++    uint8_t *ptr;
++    int status = 1; /* spec: SC fails unless the reservation matches */
++    smp_spin_lock(s->smp);
++    s->in_smp_atomic = TRUE;
++    ptr = riscv_smp_ram_host_ptr(s, addr, size_log2, TRUE);
++    if (ptr) {
++        if (s->load_res_valid &&
++            s->load_res_addr == (uintptr_t)ptr &&
++            s->load_res_size_log2 == size_log2) {
++            if (size_log2 == 2)
++                __atomic_store_n((uint32_t *)ptr, (uint32_t)val,
++                                 __ATOMIC_RELAXED);
++            else
++                __atomic_store_n((uint64_t *)ptr, val, __ATOMIC_RELAXED);
++            smp_invalidate_others_locked(s, (uintptr_t)ptr,
++                                         (size_t)1 << size_log2);
++            status = 0;
++        }
++    } else if (s->pending_exception >= 0) {
++        /* the address faults: propagate the guest MMU fault */
++        s->in_smp_atomic = FALSE;
++        smp_spin_unlock(s->smp);
++        *pstatus = 1;
++        return -1;
++    }
++    /* MMIO SC or failed SC: no store; the reservation is consumed by
++     * every SC attempt (spec). */
++    s->load_res_valid = FALSE;
++    s->in_smp_atomic = FALSE;
++    smp_spin_unlock(s->smp);
++    *pstatus = status;
++    return 0;
++}
++
++static int riscv_smp_amo(RISCVCPUState *s, target_ulong addr, uint64_t *pval,
++                         uint64_t val2, int size_log2, uint32_t op27)
++{
++    uint8_t *ptr;
++    int ret;
++
++    ptr = riscv_smp_ram_host_ptr(s, addr, size_log2, TRUE);
++    if (!ptr) {
++        if (s->pending_exception >= 0)
++            return -1; /* guest MMU fault */
++        /* MMIO / non-RAM: RMW through the generic path (device lock
++         * per access; the reservation protocol does not apply). */
++        if (size_log2 == 2) {
++            uint32_t r, w;
++            ret = target_read_u32(s, &r, addr);
++            if (ret)
++                goto mmio_done;
++            *pval = (uint64_t)(int64_t)(int32_t)r;
++            w = (uint32_t)val2;
++            switch(op27) {
++            case 1: break;
++            case 0: w = r + w; break;
++            case 4: w = r ^ w; break;
++            case 0xc: w = r & w; break;
++            case 8: w = r | w; break;
++            case 0x10: if ((int32_t)r < (int32_t)w) w = r; break;
++            case 0x14: if ((int32_t)r > (int32_t)w) w = r; break;
++            case 0x18: if (r < w) w = r; break;
++            case 0x1c: if (r > w) w = r; break;
++            default: ret = -2; goto mmio_done;
++            }
++            ret = target_write_u32(s, addr, w);
++        } else {
++            uint64_t r, w;
++            ret = target_read_u64(s, &r, addr);
++            if (ret)
++                goto mmio_done;
++            *pval = r;
++            w = val2;
++            switch(op27) {
++            case 1: break;
++            case 0: w = r + w; break;
++            case 4: w = r ^ w; break;
++            case 0xc: w = r & w; break;
++            case 8: w = r | w; break;
++            case 0x10: if ((int64_t)r < (int64_t)w) w = r; break;
++            case 0x14: if ((int64_t)r > (int64_t)w) w = r; break;
++            case 0x18: if (r < w) w = r; break;
++            case 0x1c: if (r > w) w = r; break;
++            default: ret = -2; goto mmio_done;
++            }
++            ret = target_write_u64(s, addr, w);
++        }
++        if (ret == 0)
++            smp_invalidate_others_locked(s, (uintptr_t)ptr,
++                                         (size_t)1 << size_log2);
++    mmio_done:
++        return ret;
++    }
++
++    /* guest RAM AMO: single host-atomic RMW. With a live reservation
++     * elsewhere, take the lock so the invalidation is linearizable;
++     * otherwise run lock-free (a concurrently established reservation is
++     * ordered after this AMO and owes no invalidation). */
++    smp_spin_lock(s->smp);
++    s->in_smp_atomic = TRUE;
++    ret = (size_log2 == 2)
++        ? smp_host_rmw_u32((uint32_t *)ptr, (uint32_t *)pval,
++                           (uint32_t)val2, op27)
++        : smp_host_rmw_u64((uint64_t *)ptr, pval, val2, op27);
++    if (ret == 0)
++        smp_invalidate_others_locked(s, (uintptr_t)ptr,
++                                     (size_t)1 << size_log2);
++    s->in_smp_atomic = FALSE;
++    smp_spin_unlock(s->smp);
++    return ret;
++}
++
++
+ static void tlb_flush_all(RISCVCPUState *s)
+ {
+     tlb_init(s);
+@@ -786,7 +1280,7 @@
+         val = s->stval;
+         break;
+     case 0x144: /* sip */
+-        val = s->mip & s->mideleg;
++        val = riscv_cpu_atomic_get_mip(s) & s->mideleg;
+         break;
+     case 0x180:
+         val = s->satp;
+@@ -826,7 +1320,7 @@
+         val = s->mtval;
+         break;
+     case 0x344:
+-        val = s->mip;
++        val = riscv_cpu_atomic_get_mip(s);
+         break;
+     case 0xb00: /* mcycle */
+     case 0xb02: /* minstret */
+@@ -930,7 +1424,7 @@
+         break;
+     case 0x144: /* sip */
+         mask = s->mideleg;
+-        s->mip = (s->mip & ~mask) | (val & mask);
++        riscv_cpu_atomic_write_mip_masked(s, mask, val);
+         break;
+     case 0x180:
+         /* no ASID implemented */
+@@ -1007,7 +1501,7 @@
+         break;
+     case 0x344:
+         mask = MIP_SSIP | MIP_STIP;
+-        s->mip = (s->mip & ~mask) | (val & mask);
++        riscv_cpu_atomic_write_mip_masked(s, mask, val);
+         break;
+     default:
+ #ifdef DUMP_INVALID_CSR
+@@ -1160,7 +1654,7 @@
+ {
+     uint32_t pending_ints, enabled_ints;
+ 
+-    pending_ints = s->mip & s->mie;
++    pending_ints = riscv_cpu_atomic_get_mip(s) & s->mie;
+     if (pending_ints == 0)
+         return 0;
+ 
+@@ -1234,7 +1728,7 @@
+     uint64_t timeout;
+ 
+     timeout = s->insn_counter + n_cycles;
+-    while (!s->power_down_flag &&
++    while (!__atomic_load_n(&s->power_down_flag, __ATOMIC_SEQ_CST) &&
+            (int)(timeout - s->insn_counter) > 0) {
+         n_cycles = timeout - s->insn_counter;
+         switch(s->cur_xlen) {
+@@ -1260,30 +1754,36 @@
+ /* Note: the value is not accurate when called in riscv_cpu_interp() */
+ static uint64_t glue(riscv_cpu_get_cycles, MAX_XLEN)(RISCVCPUState *s)
+ {
+-    return s->insn_counter;
++    /* FLOE-SMP: relaxed atomic load; the stats reader may be another
++       host thread. */
++    return __atomic_load_n(&s->insn_counter, __ATOMIC_RELAXED);
+ }
+ 
+ static void glue(riscv_cpu_set_mip, MAX_XLEN)(RISCVCPUState *s, uint32_t mask)
+ {
+-    s->mip |= mask;
+-    /* exit from power down if an interrupt is pending */
+-    if (s->power_down_flag && (s->mip & s->mie) != 0)
+-        s->power_down_flag = FALSE;
++    __atomic_fetch_or(&s->mip, mask, __ATOMIC_SEQ_CST);
++    /* exit from power down if an interrupt is pending. The SEQ_CST
++     * store pairs with the WFI check-and-recheck in the interpreter so
++     * an interrupt raised between the WFI's check and its sleep cannot
++     * be lost (FLOE-SMP). */
++    if (__atomic_load_n(&s->power_down_flag, __ATOMIC_SEQ_CST) &&
++        (__atomic_load_n(&s->mip, __ATOMIC_SEQ_CST) & s->mie) != 0)
++        __atomic_store_n(&s->power_down_flag, FALSE, __ATOMIC_SEQ_CST);
+ }
+ 
+ static void glue(riscv_cpu_reset_mip, MAX_XLEN)(RISCVCPUState *s, uint32_t mask)
+ {
+-    s->mip &= ~mask;
++    __atomic_fetch_and(&s->mip, ~mask, __ATOMIC_SEQ_CST);
+ }
+ 
+ static uint32_t glue(riscv_cpu_get_mip, MAX_XLEN)(RISCVCPUState *s)
+ {
+-    return s->mip;
++    return __atomic_load_n(&s->mip, __ATOMIC_SEQ_CST);
+ }
+ 
+ static BOOL glue(riscv_cpu_get_power_down, MAX_XLEN)(RISCVCPUState *s)
+ {
+-    return s->power_down_flag;
++    return __atomic_load_n(&s->power_down_flag, __ATOMIC_SEQ_CST);
+ }
+ 
+ static RISCVCPUState *glue(riscv_cpu_init, MAX_XLEN)(PhysMemoryMap *mem_map)
+@@ -1332,6 +1832,23 @@
+     return s->misa;
+ }
+ 
++/* FLOE-SMP */
++static void glue(riscv_cpu_set_mhartid, MAX_XLEN)(RISCVCPUState *s,
++                                                  uint64_t hartid)
++{
++    s->mhartid = hartid;
++}
++
++/* FLOE-SMP */
++static void glue(riscv_cpu_smp_attach, MAX_XLEN)(RISCVCPUState *s,
++                                                 RISCVSMPCpuArray *smp)
++{
++    s->smp = smp;
++    /* publish the DMA invalidation hook to the devices on this map */
++    s->mem_map->smp = smp;
++    s->mem_map->smp_dma_note_store = glue(riscv_smp_dma_note_store, MAX_XLEN);
++}
++
+ const RISCVCPUClass glue(riscv_cpu_class, MAX_XLEN) = {
+     glue(riscv_cpu_init, MAX_XLEN),
+     glue(riscv_cpu_end, MAX_XLEN),
+@@ -1343,6 +1860,8 @@
+     glue(riscv_cpu_get_power_down, MAX_XLEN),
+     glue(riscv_cpu_get_misa, MAX_XLEN),
+     glue(riscv_cpu_flush_tlb_write_range_ram, MAX_XLEN),
++    glue(riscv_cpu_set_mhartid, MAX_XLEN),
++    glue(riscv_cpu_smp_attach, MAX_XLEN),
+ };
+ 
+ #if CONFIG_RISCV_MAX_XLEN == MAX_XLEN
+diff -ruN a/riscv_cpu.h b/riscv_cpu.h
+--- a/riscv_cpu.h	2026-09-23 11:01:47
++++ b/riscv_cpu.h	2026-09-23 12:47:23
+@@ -43,6 +43,28 @@
+ 
+ typedef struct RISCVCPUState RISCVCPUState;
+ 
++/* FLOE-SMP: upper bound of harts per machine (the Floe adapter currently
++ * exposes at most 2; the machine code is generic up to this bound). */
++#define RISCV_SMP_MAX_HARTS 8
++
++/* FLOE-SMP: state shared by every hart of one machine. Owned and
++ * initialized by the machine (riscv_machine.c); attached to each CPU with
++ * riscv_cpu_smp_attach(). When nb_harts > 1 the CPU core takes
++ * atomic_lock (a spinlock: int, 0 = free) around every guest-atomic
++ * (LR/SC/AMO) sequence, around every plain guest-RAM store, and around
++ * every DMA write, so all overlapping writers and reservation
++ * establishment are totally ordered and the LR/SC protocol is correct by
++ * construction; device_lock serializes individual device MMIO callbacks
++ * (never around the interpreter loop). With nb_harts == 1 all fast paths
++ * stay identical to the upstream single-hart behavior. atomic_lock is an
++ * int * here so this header stays free of pthread.h. */
++typedef struct RISCVSMPCpuArray {
++    int nb_harts;
++    RISCVCPUState *cpus[RISCV_SMP_MAX_HARTS];
++    void *atomic_lock;
++    void *device_lock;
++} RISCVSMPCpuArray;
++
+ typedef struct {
+     RISCVCPUState *(*riscv_cpu_init)(PhysMemoryMap *mem_map);
+     void (*riscv_cpu_end)(RISCVCPUState *s);
+@@ -55,6 +77,9 @@
+     uint32_t (*riscv_cpu_get_misa)(RISCVCPUState *s);
+     void (*riscv_cpu_flush_tlb_write_range_ram)(RISCVCPUState *s,
+                                                 uint8_t *ram_ptr, size_t ram_size);
++    /* FLOE-SMP */
++    void (*riscv_cpu_set_mhartid)(RISCVCPUState *s, uint64_t hartid);
++    void (*riscv_cpu_smp_attach)(RISCVCPUState *s, RISCVSMPCpuArray *smp);
+ } RISCVCPUClass;
+ 
+ typedef struct {
+@@ -113,6 +138,16 @@
+ {
+     const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
+     c->riscv_cpu_flush_tlb_write_range_ram(s, ram_ptr, ram_size);
++}
++static inline void riscv_cpu_set_mhartid(RISCVCPUState *s, uint64_t hartid)
++{
++    const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
++    c->riscv_cpu_set_mhartid(s, hartid);
++}
++static inline void riscv_cpu_smp_attach(RISCVCPUState *s, RISCVSMPCpuArray *smp)
++{
++    const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
++    c->riscv_cpu_smp_attach(s, smp);
+ }
+ 
+ #endif /* RISCV_CPU_H */
+diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
+--- a/riscv_cpu_priv.h	2026-09-23 11:01:47
++++ b/riscv_cpu_priv.h	2026-09-23 12:47:40
+@@ -231,8 +231,23 @@
+ #endif
+     uint32_t scounteren;
+ 
+-    target_ulong load_res; /* for atomic LR/SC */
++    target_ulong load_res; /* for atomic LR/SC (upstream single-hart path) */
+ 
++    /* FLOE-SMP: shared SMP block (NULL when the machine runs one hart;
++       attached by the machine before the first slice) and this hart's
++       LR/SC reservation. load_res_addr is the HOST address of the
++       reserved guest RAM (same physical memory <=> same host pointer,
++       so virtual aliases of one page are covered); the valid flag is
++       atomic (release on set, CAS on clear from other harts).
++       in_smp_atomic marks that this thread holds the machine atomic
++       lock, so nested store paths skip the locked-store/invalidation
++       walk (which would self-deadlock). */
++    RISCVSMPCpuArray *smp;
++    target_ulong load_res_addr;
++    int load_res_size_log2;
++    BOOL load_res_valid;
++    BOOL in_smp_atomic;
++
+     PhysMemoryMap *mem_map;
+ 
+     TLBEntry tlb_read[TLB_SIZE];
+@@ -248,6 +263,56 @@
+ DLL_PUBLIC int target_write_slow(RISCVCPUState *s, target_ulong addr,
+                                  mem_uint_t val, int size_log2);
+ 
++/* FLOE-SMP: guest-atomic support. Defined in riscv_cpu.c (static: this
++ * header is only included by riscv_cpu.c, which is compiled once per
++ * XLEN).
++ *
++ * riscv_smp_locked_store: store to guest RAM + invalidate overlapping
++ * reservations of the other harts, all inside the machine atomic lock
++ * (a spinlock). EVERY guest-RAM store on an SMP machine goes through
++ * here, so all overlapping writers (plain stores, SC, AMO, page-table
++ * writes, DMA) and the reservation establishment are totally ordered and
++ * the LR/SC protocol is correct by construction -- there is deliberately
++ * NO lock-free store fast path (a check-then-store race would let a
++ * store slip between an LR and its SC). Reservations are keyed by HOST
++ * address (same physical guest memory <=> same host pointer, so virtual
++ * aliases of one physical page cannot evade invalidation).
++ */
++static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
++                                   mem_uint_t val, int size_log2);
++
++/* FLOE-SMP: guest-atomic helpers used by the interpreter template when
++ * the machine runs more than one hart. Return 0 on success, -1 on a
++ * guest MMU fault (pending_exception set), -2 (AMO only) on an illegal
++ * AMO selector. */
++static int riscv_smp_lr(RISCVCPUState *s, target_ulong addr,
++                        uint64_t *pval, int size_log2);
++static int riscv_smp_sc(RISCVCPUState *s, target_ulong addr,
++                        uint64_t val, int size_log2, int *pstatus);
++static int riscv_smp_amo(RISCVCPUState *s, target_ulong addr,
++                         uint64_t *pval, uint64_t val2, int size_log2,
++                         uint32_t op27);
++
++/* FLOE-SMP: guest RAM words are shared between the hart host threads, so
++ * every RAM access must be a C11 atomic operation to keep the formally
++ * defined memory model (plain concurrent accesses would be data races).
++ * __ATOMIC_RELAXED is sufficient: the harts share one physically
++ * coherent RAM array and the guest's own fence/atomic instructions
++ * provide the ordering. On the supported 64-bit hosts these builtins
++ * compile to the same single load/store as the upstream plain accesses
++ * for the aligned addresses used by the atomic/fast paths; RISC-V
++ * misaligned accesses are architecturally not single-copy atomic, so
++ * alignment remains the guest's synchronization responsibility exactly as
++ * on hardware. The 128-bit instantiation (RV128 only, not built by Floe)
++ * keeps the upstream plain accesses. */
++#if MLEN > 64
++#define FLOE_RAM_LOAD(ptr) (*(ptr))
++#define FLOE_RAM_STORE(ptr, v) (*(ptr) = (v))
++#else
++#define FLOE_RAM_LOAD(ptr) __atomic_load_n((ptr), __ATOMIC_RELAXED)
++#define FLOE_RAM_STORE(ptr, v) __atomic_store_n((ptr), (v), __ATOMIC_RELAXED)
++#endif
++
+ /* return 0 if OK, != 0 if exception */
+ #define TARGET_READ_WRITE(size, uint_type, size_log2)                   \
+ static inline __exception int target_read_u ## size(RISCVCPUState *s, uint_type *pval, target_ulong addr)                              \
+@@ -255,7 +320,7 @@
+     uint32_t tlb_idx;\
+     tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);\
+     if (likely(s->tlb_read[tlb_idx].vaddr == (addr & ~(PG_MASK & ~((size / 8) - 1))))) { \
+-        *pval = *(uint_type *)(s->tlb_read[tlb_idx].mem_addend + (uintptr_t)addr);\
++        *pval = FLOE_RAM_LOAD((uint_type *)(s->tlb_read[tlb_idx].mem_addend + (uintptr_t)addr));\
+     } else {\
+         mem_uint_t val;\
+         int ret;\
+@@ -273,7 +338,14 @@
+     uint32_t tlb_idx;\
+     tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);\
+     if (likely(s->tlb_write[tlb_idx].vaddr == (addr & ~(PG_MASK & ~((size / 8) - 1))))) { \
+-        *(uint_type *)(s->tlb_write[tlb_idx].mem_addend + (uintptr_t)addr) = val;\
++        uint_type *__floe_ptr = (uint_type *)(s->tlb_write[tlb_idx].mem_addend + (uintptr_t)addr); \
++        /* FLOE-SMP: every guest-RAM store is linearized through the \
++           machine atomic lock (no lock-free fast path, see \
++           riscv_smp_locked_store). */ \
++        if (unlikely(s->smp && !s->in_smp_atomic)) \
++            riscv_smp_locked_store(s, (uint8_t *)__floe_ptr, val, size_log2); \
++        else \
++            FLOE_RAM_STORE(__floe_ptr, val); \
+         return 0;\
+     } else {\
+         return target_write_slow(s, addr, val, size_log2);\
+diff -ruN a/riscv_cpu_template.h b/riscv_cpu_template.h
+--- a/riscv_cpu_template.h	2026-09-23 11:01:47
++++ b/riscv_cpu_template.h	2026-09-23 13:56:20
+@@ -219,7 +219,7 @@
+     s->n_cycles = n_cycles1;
+ 
+     /* check pending interrupts */
+-    if (unlikely((s->mip & s->mie) != 0)) {
++    if (unlikely((riscv_cpu_atomic_get_mip(s) & s->mie) != 0)) {
+         if (raise_interrupt(s)) {
+             s->n_cycles--; 
+             goto done_interp;
+@@ -249,7 +249,7 @@
+                 goto the_end;
+ 
+             /* check pending interrupts */
+-            if (unlikely((s->mip & s->mie) != 0)) {
++            if (unlikely((riscv_cpu_atomic_get_mip(s) & s->mie) != 0)) {
+                 if (raise_interrupt(s)) {
+                     s->n_cycles--; 
+                     goto the_end;
+@@ -1232,7 +1232,7 @@
+             funct3 &= 3;
+             switch(funct3) {
+             case 1: /* csrrw */
+-                s->insn_counter = GET_INSN_COUNTER();
++                __atomic_store_n(&s->insn_counter, GET_INSN_COUNTER(), __ATOMIC_RELAXED);
+                 if (csr_read(s, &val2, imm, TRUE))
+                     goto illegal_insn;
+                 val2 = (intx_t)val2;
+@@ -1251,7 +1251,7 @@
+                 break;
+             case 2: /* csrrs */
+             case 3: /* csrrc */
+-                s->insn_counter = GET_INSN_COUNTER();
++                __atomic_store_n(&s->insn_counter, GET_INSN_COUNTER(), __ATOMIC_RELAXED);
+                 if (csr_read(s, &val2, imm, (rs1 != 0)))
+                     goto illegal_insn;
+                 val2 = (intx_t)val2;
+@@ -1317,10 +1317,21 @@
+                         goto illegal_insn;
+                     /* go to power down if no enabled interrupts are
+                        pending */
+-                    if ((s->mip & s->mie) == 0) {
+-                        s->power_down_flag = TRUE;
+-                        s->pc = GET_PC() + 4;
+-                        goto done_interp;
++                    if ((riscv_cpu_atomic_get_mip(s) & s->mie) == 0) {
++                        /* FLOE-SMP: another hart may raise an interrupt
++                           between the check and the sleep; mark
++                           power-down with a SEQ_CST store and re-check,
++                           so an IPI delivered in that window clears the
++                           flag (see riscv_cpu_set_mip) instead of being
++                           lost. */
++                        __atomic_store_n(&s->power_down_flag, TRUE,
++                                         __ATOMIC_SEQ_CST);
++                        if ((riscv_cpu_atomic_get_mip(s) & s->mie) == 0) {
++                            s->pc = GET_PC() + 4;
++                            goto done_interp;
++                        }
++                        __atomic_store_n(&s->power_down_flag, FALSE,
++                                         __ATOMIC_SEQ_CST);
+                     }
+                     break;
+                 default:
+@@ -1354,12 +1365,15 @@
+             case 0: /* fence */
+                 /* FLOE-EMBED: Execute FENCE/FENCE.TSO and reserved fm
+                    encodings with the stronger ordinary-fence semantics.
+-                   This single-hart interpreter completes guest memory and
+-                   device accesses in program order, so no extra ordering
+-                   work is needed here; unused rs1/rd fields are ignored.
+-                   Upstream TinyEMU trapped FENCE.TSO (0x8330000f), which is
+-                   what Debian 13's libapt-pkg executes -- apt's http and
+-                   https methods died with SIGILL inside libapt-pkg. */
++                   The interpreter completes each hart's guest memory and
++                   device accesses in program order; on SMP machines the
++                   RAM is one physically coherent array accessed with
++                   C11 atomics and device MMIO is serialized under the
++                   machine device lock, so fences stay ordering hints and
++                   need no extra work. Unused rs1/rd fields are ignored.
++                   Upstream TinyEMU trapped FENCE.TSO (0x8330000f), which
++                   is what Debian 13's libapt-pkg executes -- apt's http
++                   and https methods died with SIGILL inside libapt-pkg. */
+                 break;
+             case 1: /* fence.i */
+                 /* FLOE-EMBED: Zifencei requires ignoring the unused
+@@ -1389,6 +1403,47 @@
+                                                                         \
+                 addr = s->reg[rs1];                                     \
+                 funct3 = insn >> 27;                                    \
++                if (s->smp && s->smp->nb_harts > 1) {                   \
++                    /* FLOE-SMP: cross-hart atomics go through the \
++                       machine-wide lock helpers (reservations, store \
++                       invalidation); the legacy single-hart path below \
++                       is bit-identical to upstream. */                 \
++                    int __ret;                                          \
++                    if (funct3 == 2) { /* lr.w */                       \
++                        uint64_t __v;                                   \
++                        if (rs2 != 0)                                   \
++                            goto illegal_insn;                          \
++                        __ret = riscv_smp_lr(s, addr, &__v,             \
++                                             (size) == 32 ? 2 : 3);     \
++                        if (__ret)                                      \
++                            goto mmu_exception;                         \
++                        val = (int ## size ## _t)__v;                   \
++                    } else if (funct3 == 3) { /* sc.w */                \
++                        int __st;                                       \
++                        __ret = riscv_smp_sc(s, addr, s->reg[rs2],      \
++                                             (size) == 32 ? 2 : 3,      \
++                                             &__st);                    \
++                        if (__ret)                                      \
++                            goto mmu_exception;                         \
++                        val = __st;                                     \
++                    } else {                                            \
++                        uint64_t __v;                                   \
++                        __ret = riscv_smp_amo(s, addr, &__v,            \
++                                              s->reg[rs2],              \
++                                              (size) == 32 ? 2 : 3,     \
++                                              funct3);                  \
++                        if (__ret == -2)                                \
++                            goto illegal_insn;                          \
++                        if (__ret)                                      \
++                            goto mmu_exception;                         \
++                        val = (int ## size ## _t)__v;                   \
++                    }                                                   \
++                    /* The rd write and the PC advance happen in the shared \
++                       tail below (floe_op_a_done); do NOT emit NEXT_INSN \
++                       here: a break would only leave the inner width \
++                       switch and the tail would advance the PC twice. */ \
++                    goto floe_op_a_done;                                \
++                }                                                       \
+                 switch(funct3) {                                        \
+                 case 2: /* lr.w */                                      \
+                     if (rs2 != 0)                                       \
+@@ -1479,6 +1534,7 @@
+             default:
+                 goto illegal_insn;
+             }
++        floe_op_a_done:
+             if (rd != 0)
+                 s->reg[rd] = val;
+             NEXT_INSN;
+@@ -1732,8 +1788,8 @@
+     }
+     /* we exit because XLEN may have changed */
+  done_interp:
+-the_end:
+-    s->insn_counter = GET_INSN_COUNTER();
++ the_end:
++    __atomic_store_n(&s->insn_counter, GET_INSN_COUNTER(), __ATOMIC_RELAXED);
+ #if 0
+     printf("done interp %lx int=%x mstatus=%lx prv=%d\n",
+            (uint64_t)s->insn_counter, s->mip & s->mie, (uint64_t)s->mstatus,
+diff -ruN a/riscv_machine.c b/riscv_machine.c
+--- a/riscv_machine.c	2026-09-23 11:01:47
++++ b/riscv_machine.c	2026-09-23 12:49:40
+@@ -31,6 +31,7 @@
+ #include <errno.h>
+ #include <unistd.h>
+ #include <time.h>
++#include <pthread.h>
+ 
+ #include "cutils.h"
+ #include "iomem.h"
+@@ -44,19 +45,32 @@
+     VirtMachine common;
+     PhysMemoryMap *mem_map;
+     int max_xlen;
+-    RISCVCPUState *cpu_state;
++    RISCVCPUState *cpu_state; /* == cpus[0] */
++    /* FLOE-SMP: per-hart CPU states sharing mem_map (RAM + devices).
++       Hart i owns cpus[i]; the embedder drives each hart from its own
++       host thread through the per-hart machine-class hooks. cpu_state
++       stays as the hart-0 alias for the legacy single-hart paths. */
++    RISCVCPUState *cpus[RISCV_SMP_MAX_HARTS];
++    int nb_harts;
++    RISCVSMPCpuArray smp;
++    int smp_atomic_lock; /* spinlock, 0 = free */
++    pthread_mutex_t smp_device_lock;
+     uint64_t ram_size;
+     /* RTC */
+     BOOL rtc_real_time;
+     uint64_t rtc_start_time;
+-    uint64_t timecmp;
++    /* FLOE-SMP: per-hart CLINT compare values and software-interrupt
++       pending bits (hart i: msip[i] bit 0 <-> MIP_MSIP of cpus[i]). */
++    uint64_t timecmp[RISCV_SMP_MAX_HARTS];
++    uint32_t msip[RISCV_SMP_MAX_HARTS];
+     /* PLIC */
+     uint32_t plic_pending_irq, plic_served_irq;
+     IRQSignal plic_irq[32]; /* IRQ 0 is not used */
+     /* HTIF */
+     uint64_t htif_tohost, htif_fromhost;
+ 
+-    /* FLOE-EMBED: set instead of exit(0) on guest poweroff */
++    /* FLOE-EMBED: set instead of exit(0) on guest poweroff. Atomic:
++       written under the device lock, read by the embedder's run thread. */
+     BOOL poweroff_requested;
+ 
+     VIRTIODevice *keyboard_dev;
+@@ -137,8 +151,9 @@
+     cmd = (s->htif_tohost >> 48) & 0xff;
+     if (s->htif_tohost == 1) {
+         /* shuthost -- FLOE-EMBED: a library must not exit(0) the host
+-           process; record the request, the embedder ends the VM. */
+-        s->poweroff_requested = TRUE;
++           process; record the request, the embedder ends the VM.
++           Atomic: written under the device lock, read cross-thread. */
++        __atomic_store_n(&s->poweroff_requested, TRUE, __ATOMIC_SEQ_CST);
+     } else if (device == 1 && cmd == 1) {
+         uint8_t buf[1];
+         buf[0] = s->htif_tohost & 0xff;
+@@ -195,66 +210,97 @@
+ }
+ #endif
+ 
++/* FLOE-SMP: the CLINT decodes per-hart msip (0x0 + 4*hart) and
++ * timecmp (0x4000 + 8*hart) registers; mtime (0xbff8) is shared. The
++ * per-hart decode reduces exactly to the upstream hart-0 behavior when
++ * nb_harts == 1. */
+ static uint32_t clint_read(void *opaque, uint32_t offset, int size_log2)
+ {
+     RISCVMachine *m = opaque;
+     uint32_t val;
+ 
+     assert(size_log2 == 2);
+-    switch(offset) {
+-    case 0xbff8:
+-        val = rtc_get_time(m);
+-        break;
+-    case 0xbffc:
+-        val = rtc_get_time(m) >> 32;
+-        break;
+-    case 0x4000:
+-        val = m->timecmp;
+-        break;
+-    case 0x4004:
+-        val = m->timecmp >> 32;
+-        break;
+-    default:
+-        val = 0;
+-        break;
++    if (offset < 4 * RISCV_SMP_MAX_HARTS) {
++        int hart = offset >> 2;
++        val = (hart < m->nb_harts) ? (m->msip[hart] & 1) : 0;
++    } else if (offset >= 0x4000 &&
++               offset < 0x4000 + 8 * RISCV_SMP_MAX_HARTS) {
++        int hart = (offset - 0x4000) >> 3;
++        if (hart < m->nb_harts)
++            val = (offset & 4) ? (m->timecmp[hart] >> 32) : m->timecmp[hart];
++        else
++            val = 0;
++    } else {
++        switch(offset) {
++        case 0xbff8:
++            val = rtc_get_time(m);
++            break;
++        case 0xbffc:
++            val = rtc_get_time(m) >> 32;
++            break;
++        default:
++            val = 0;
++            break;
++        }
+     }
+     return val;
+ }
+  
+ static void clint_write(void *opaque, uint32_t offset, uint32_t val,
+-                      int size_log2)
++                       int size_log2)
+ {
+     RISCVMachine *m = opaque;
+ 
+     assert(size_log2 == 2);
+-    switch(offset) {
+-    case 0x4000:
+-        m->timecmp = (m->timecmp & ~0xffffffff) | val;
+-        riscv_cpu_reset_mip(m->cpu_state, MIP_MTIP);
+-        break;
+-    case 0x4004:
+-        m->timecmp = (m->timecmp & 0xffffffff) | ((uint64_t)val << 32);
+-        riscv_cpu_reset_mip(m->cpu_state, MIP_MTIP);
+-        break;
+-    default:
+-        break;
++    if (offset < 4 * RISCV_SMP_MAX_HARTS) {
++        /* per-hart msip: IPI doorbell for hart (offset >> 2) */
++        int hart = offset >> 2;
++        if (hart < m->nb_harts) {
++            m->msip[hart] = val & 1;
++            if (val & 1)
++                riscv_cpu_set_mip(m->cpus[hart], MIP_MSIP);
++            else
++                riscv_cpu_reset_mip(m->cpus[hart], MIP_MSIP);
++        }
++    } else if (offset >= 0x4000 &&
++               offset < 0x4000 + 8 * RISCV_SMP_MAX_HARTS) {
++        int hart = (offset - 0x4000) >> 3;
++        if (hart < m->nb_harts) {
++            if (offset & 4)
++                m->timecmp[hart] = (m->timecmp[hart] & 0xffffffff) |
++                    ((uint64_t)val << 32);
++            else
++                m->timecmp[hart] = (m->timecmp[hart] & ~0xffffffff) | val;
++            riscv_cpu_reset_mip(m->cpus[hart], MIP_MTIP);
++        }
+     }
+ }
+ 
+ static void plic_update_mip(RISCVMachine *s)
+ {
+-    RISCVCPUState *cpu = s->cpu_state;
++    /* FLOE-SMP: level-triggered external interrupts are broadcast to
++       every hart (M + S); the claim register arbitrates which hart
++       actually serves each source, under the machine device lock. */
+     uint32_t mask;
++    int i;
+     mask = s->plic_pending_irq & ~s->plic_served_irq;
+-    if (mask) {
+-        riscv_cpu_set_mip(cpu, MIP_MEIP | MIP_SEIP);
+-    } else {
+-        riscv_cpu_reset_mip(cpu, MIP_MEIP | MIP_SEIP);
++    for(i = 0; i < s->nb_harts; i++) {
++        if (mask) {
++            riscv_cpu_set_mip(s->cpus[i], MIP_MEIP | MIP_SEIP);
++        } else {
++            riscv_cpu_reset_mip(s->cpus[i], MIP_MEIP | MIP_SEIP);
++        }
+     }
+ }
+ 
+ #define PLIC_HART_BASE 0x200000
+ #define PLIC_HART_SIZE 0x1000
++/* FLOE-SMP: one S and one M context per hart, in FDT interrupts-extended
++ * order (S-ext 9 first, M-ext 11 second): context = 2*hart + (0=S,1=M).
++ * Claim/complete accept every context; sources are not enable/priority
++ * masked (same simplification as upstream single-hart TinyEMU), which is
++ * sufficient because any hart may serve any level-triggered source. */
++#define PLIC_CONTEXTS(m) (2 * (m)->nb_harts)
+ 
+ static uint32_t plic_read(void *opaque, uint32_t offset, int size_log2)
+ {
+@@ -262,44 +308,45 @@
+     uint32_t val, mask;
+     int i;
+     assert(size_log2 == 2);
+-    switch(offset) {
+-    case PLIC_HART_BASE:
+-        val = 0;
+-        break;
+-    case PLIC_HART_BASE + 4:
+-        mask = s->plic_pending_irq & ~s->plic_served_irq;
+-        if (mask != 0) {
+-            i = ctz32(mask);
+-            s->plic_served_irq |= 1 << i;
+-            plic_update_mip(s);
+-            val = i + 1;
++    if (offset >= PLIC_HART_BASE &&
++        offset < PLIC_HART_BASE + PLIC_CONTEXTS(s) * PLIC_HART_SIZE) {
++        uint32_t ctx_off = offset & (PLIC_HART_SIZE - 1);
++        if (ctx_off == 4) {
++            /* claim: first claimant serves the lowest pending source */
++            mask = s->plic_pending_irq & ~s->plic_served_irq;
++            if (mask != 0) {
++                i = ctz32(mask);
++                s->plic_served_irq |= 1 << i;
++                plic_update_mip(s);
++                val = i + 1;
++            } else {
++                val = 0;
++            }
+         } else {
+             val = 0;
+         }
+-        break;
+-    default:
+-        val = 0;
+-        break;
++        return val;
+     }
+-    return val;
++    return 0;
+ }
+ 
+ static void plic_write(void *opaque, uint32_t offset, uint32_t val,
+                        int size_log2)
+ {
+     RISCVMachine *s = opaque;
+-    
++
+     assert(size_log2 == 2);
+-    switch(offset) {
+-    case PLIC_HART_BASE + 4:
+-        val--;
+-        if (val < 32) {
+-            s->plic_served_irq &= ~(1 << val);
+-            plic_update_mip(s);
++    if (offset >= PLIC_HART_BASE &&
++        offset < PLIC_HART_BASE + PLIC_CONTEXTS(s) * PLIC_HART_SIZE) {
++        uint32_t ctx_off = offset & (PLIC_HART_SIZE - 1);
++        if (ctx_off == 4) {
++            /* complete */
++            val--;
++            if (val < 32) {
++                s->plic_served_irq &= ~(1 << val);
++                plic_update_mip(s);
++            }
+         }
+-        break;
+-    default:
+-        break;
+     }
+ }
+ 
+@@ -593,35 +640,30 @@
+                            const char *cmd_line)
+ {
+     FDTState *s;
+-    int size, max_xlen, i, cur_phandle, intc_phandle, plic_phandle;
++    int size, max_xlen, i, cur_phandle, plic_phandle;
++    int intc_phandle[RISCV_SMP_MAX_HARTS];
+     char isa_string[128], *q;
+     uint32_t misa;
+-    uint32_t tab[4];
++    uint32_t tab[4 * RISCV_SMP_MAX_HARTS];
+     FBDevice *fb_dev;
+-    
++
+     s = fdt_init();
+ 
+     cur_phandle = 1;
+-    
++
+     fdt_begin_node(s, "");
+     fdt_prop_u32(s, "#address-cells", 2);
+     fdt_prop_u32(s, "#size-cells", 2);
+     fdt_prop_str(s, "compatible", "ucbbar,riscvemu-bar_dev");
+     fdt_prop_str(s, "model", "ucbbar,riscvemu-bare");
+ 
+-    /* CPU list */
++    /* CPU list (FLOE-SMP: one node per hart; nb_harts == 1 emits exactly
++       the upstream single-cpu tree) */
+     fdt_begin_node(s, "cpus");
+     fdt_prop_u32(s, "#address-cells", 1);
+     fdt_prop_u32(s, "#size-cells", 0);
+     fdt_prop_u32(s, "timebase-frequency", RTC_FREQ);
+ 
+-    /* cpu */
+-    fdt_begin_node_num(s, "cpu", 0);
+-    fdt_prop_str(s, "device_type", "cpu");
+-    fdt_prop_u32(s, "reg", 0);
+-    fdt_prop_str(s, "status", "okay");
+-    fdt_prop_str(s, "compatible", "riscv");
+-
+     max_xlen = m->max_xlen;
+     misa = riscv_cpu_get_misa(m->cpu_state);
+     q = isa_string;
+@@ -631,21 +673,30 @@
+             *q++ = 'a' + i;
+     }
+     *q = '\0';
+-    fdt_prop_str(s, "riscv,isa", isa_string);
+-    
+-    fdt_prop_str(s, "mmu-type", max_xlen <= 32 ? "riscv,sv32" : "riscv,sv48");
+-    fdt_prop_u32(s, "clock-frequency", 2000000000);
+ 
+-    fdt_begin_node(s, "interrupt-controller");
+-    fdt_prop_u32(s, "#interrupt-cells", 1);
+-    fdt_prop(s, "interrupt-controller", NULL, 0);
+-    fdt_prop_str(s, "compatible", "riscv,cpu-intc");
+-    intc_phandle = cur_phandle++;
+-    fdt_prop_u32(s, "phandle", intc_phandle);
+-    fdt_end_node(s); /* interrupt-controller */
+-    
+-    fdt_end_node(s); /* cpu */
+-    
++    for(i = 0; i < m->nb_harts; i++) {
++        fdt_begin_node_num(s, "cpu", i);
++        fdt_prop_str(s, "device_type", "cpu");
++        fdt_prop_u32(s, "reg", i);
++        fdt_prop_str(s, "status", "okay");
++        fdt_prop_str(s, "compatible", "riscv");
++
++        fdt_prop_str(s, "riscv,isa", isa_string);
++
++        fdt_prop_str(s, "mmu-type", max_xlen <= 32 ? "riscv,sv32" : "riscv,sv48");
++        fdt_prop_u32(s, "clock-frequency", 2000000000);
++
++        fdt_begin_node(s, "interrupt-controller");
++        fdt_prop_u32(s, "#interrupt-cells", 1);
++        fdt_prop(s, "interrupt-controller", NULL, 0);
++        fdt_prop_str(s, "compatible", "riscv,cpu-intc");
++        intc_phandle[i] = cur_phandle++;
++        fdt_prop_u32(s, "phandle", intc_phandle[i]);
++        fdt_end_node(s); /* interrupt-controller */
++
++        fdt_end_node(s); /* cpu */
++    }
++
+     fdt_end_node(s); /* cpus */
+ 
+     fdt_begin_node_num(s, "memory", RAM_BASE_ADDR);
+@@ -672,14 +723,17 @@
+     fdt_begin_node_num(s, "clint", CLINT_BASE_ADDR);
+     fdt_prop_str(s, "compatible", "riscv,clint0");
+ 
+-    tab[0] = intc_phandle;
+-    tab[1] = 3; /* M IPI irq */
+-    tab[2] = intc_phandle;
+-    tab[3] = 7; /* M timer irq */
+-    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4);
++    /* FLOE-SMP: per hart: M IPI irq + M timer irq */
++    for(i = 0; i < m->nb_harts; i++) {
++        tab[4 * i + 0] = intc_phandle[i];
++        tab[4 * i + 1] = 3; /* M IPI irq */
++        tab[4 * i + 2] = intc_phandle[i];
++        tab[4 * i + 3] = 7; /* M timer irq */
++    }
++    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4 * m->nb_harts);
+ 
+     fdt_prop_tab_u64_2(s, "reg", CLINT_BASE_ADDR, CLINT_SIZE);
+-    
++
+     fdt_end_node(s); /* clint */
+ 
+     fdt_begin_node_num(s, "plic", PLIC_BASE_ADDR);
+@@ -689,11 +743,14 @@
+     fdt_prop_u32(s, "riscv,ndev", 31);
+     fdt_prop_tab_u64_2(s, "reg", PLIC_BASE_ADDR, PLIC_SIZE);
+ 
+-    tab[0] = intc_phandle;
+-    tab[1] = 9; /* S ext irq */
+-    tab[2] = intc_phandle;
+-    tab[3] = 11; /* M ext irq */
+-    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4);
++    /* FLOE-SMP: per hart: S ext irq + M ext irq */
++    for(i = 0; i < m->nb_harts; i++) {
++        tab[4 * i + 0] = intc_phandle[i];
++        tab[4 * i + 1] = 9; /* S ext irq */
++        tab[4 * i + 2] = intc_phandle[i];
++        tab[4 * i + 3] = 11; /* M ext irq */
++    }
++    fdt_prop_tab_u32(s, "interrupts-extended", tab, 4 * m->nb_harts);
+ 
+     plic_phandle = cur_phandle++;
+     fdt_prop_u32(s, "phandle", plic_phandle);
+@@ -825,14 +882,32 @@
+ static void riscv_flush_tlb_write_range(void *opaque, uint8_t *ram_addr,
+                                         size_t ram_size)
+ {
++    /* FLOE-SMP: the write TLBs of every hart cache this RAM range. */
+     RISCVMachine *s = opaque;
+-    riscv_cpu_flush_tlb_write_range_ram(s->cpu_state, ram_addr, ram_size);
++    int i;
++    for(i = 0; i < s->nb_harts; i++)
++        riscv_cpu_flush_tlb_write_range_ram(s->cpus[i], ram_addr, ram_size);
+ }
+ 
+ static void riscv_machine_set_defaults(VirtMachineParams *p)
+ {
+ }
+ 
++/* FLOE-SMP: end every created hart and destroy the machine locks.
++ * Used by the init failure paths and by riscv_machine_end (the embedder
++ * has already joined its hart threads before calling virt_machine_end). */
++static void riscv_machine_release_cpus(RISCVMachine *s)
++{
++    int i;
++    for(i = 0; i < s->nb_harts; i++) {
++        if (s->cpus[i]) {
++            riscv_cpu_end(s->cpus[i]);
++            s->cpus[i] = NULL;
++        }
++    }
++    pthread_mutex_destroy(&s->smp_device_lock);
++}
++
+ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
+ {
+     RISCVMachine *s;
+@@ -861,12 +936,39 @@
+     s->mem_map->opaque = s;
+     s->mem_map->flush_tlb_write_range = riscv_flush_tlb_write_range;
+ 
+-    s->cpu_state = riscv_cpu_init(s->mem_map, max_xlen);
+-    if (!s->cpu_state) {
+-        vm_error("unsupported max_xlen=%d\n", max_xlen);
+-        /* XXX: should free resources */
+-        return NULL;
++    /* FLOE-SMP: create one CPU state per hart (0/1 vcpu_count = single
++       hart, the default and bit-compatible behavior). Every hart shares
++       mem_map (RAM + devices) and the machine SMP block; hart i gets
++       mhartid == i so the reset ROM's a0 handshake works unchanged. */
++    {
++        int nb_harts = p->vcpu_count;
++        if (nb_harts <= 0)
++            nb_harts = 1;
++        if (nb_harts > RISCV_SMP_MAX_HARTS)
++            nb_harts = RISCV_SMP_MAX_HARTS;
++        s->nb_harts = nb_harts;
+     }
++    s->smp_atomic_lock = 0;
++    pthread_mutex_init(&s->smp_device_lock, NULL);
++    s->smp.nb_harts = s->nb_harts;
++    s->smp.atomic_lock = &s->smp_atomic_lock;
++    s->smp.device_lock = &s->smp_device_lock;
++    for(i = 0; i < s->nb_harts; i++) {
++        s->cpus[i] = riscv_cpu_init(s->mem_map, max_xlen);
++        if (!s->cpus[i]) {
++            vm_error("unsupported max_xlen=%d\n", max_xlen);
++            while (--i >= 0)
++                riscv_cpu_end(s->cpus[i]);
++            pthread_mutex_destroy(&s->smp_device_lock);
++            phys_mem_map_end(s->mem_map);
++            free(s);
++            return NULL;
++        }
++        riscv_cpu_set_mhartid(s->cpus[i], i);
++        riscv_cpu_smp_attach(s->cpus[i], &s->smp);
++        s->smp.cpus[i] = s->cpus[i];
++    }
++    s->cpu_state = s->cpus[0];
+     /* RAM */
+     ram_flags = 0;
+     /* FLOE-EMBED: cpu_register_ram returns NULL on allocation failure
+@@ -876,7 +978,7 @@
+         !cpu_register_ram(s->mem_map, 0x00000000, LOW_RAM_SIZE, 0)) {
+         vm_error("floe: could not allocate guest RAM (%llu MB)\n",
+                  (unsigned long long)(p->ram_size >> 20));
+-        riscv_cpu_end(s->cpu_state);
++        riscv_machine_release_cpus(s);
+         phys_mem_map_end(s->mem_map);
+         free(s);
+         return NULL;
+@@ -993,7 +1095,7 @@
+                   p->files[VM_FILE_KERNEL].buf, p->files[VM_FILE_KERNEL].len,
+                   p->files[VM_FILE_INITRD].buf, p->files[VM_FILE_INITRD].len,
+                   p->cmdline) < 0) {
+-        riscv_cpu_end(s->cpu_state);
++        riscv_machine_release_cpus(s);
+         phys_mem_map_end(s->mem_map);
+         free(s);
+         return NULL;
+@@ -1006,14 +1108,15 @@
+ int riscv_machine_poweroff_requested(VirtMachine *s1)
+ {
+     RISCVMachine *s = (RISCVMachine *)s1;
+-    return s->poweroff_requested;
++    return __atomic_load_n(&s->poweroff_requested, __ATOMIC_SEQ_CST);
+ }
+ 
+ static void riscv_machine_end(VirtMachine *s1)
+ {
+     RISCVMachine *s = (RISCVMachine *)s1;
+-    /* XXX: stop all */
+-    riscv_cpu_end(s->cpu_state);
++    /* FLOE-SMP: the embedder joined all hart threads before ending the
++       machine (adapter destroy order: stop+join harts, then end). */
++    riscv_machine_release_cpus(s);
+     phys_mem_map_end(s->mem_map);
+     free(s);
+ }
+@@ -1022,24 +1125,30 @@
+ static int riscv_machine_get_sleep_duration(VirtMachine *s1, int delay)
+ {
+     RISCVMachine *m = (RISCVMachine *)s1;
+-    RISCVCPUState *s = m->cpu_state;
+-    int64_t delay1;
+-    
+-    /* wait for an event: the only asynchronous event is the RTC timer */
+-    if (!(riscv_cpu_get_mip(s) & MIP_MTIP)) {
+-        delay1 = m->timecmp - rtc_get_time(m);
+-        if (delay1 <= 0) {
+-            riscv_cpu_set_mip(s, MIP_MTIP);
+-            delay = 0;
+-        } else {
+-            /* convert delay to ms */
+-            delay1 = delay1 / (RTC_FREQ / 1000);
+-            if (delay1 < delay)
+-                delay = delay1;
++    int64_t delay1, now;
++    int i;
++
++    /* wait for an event: the only asynchronous event is the RTC timer.
++       FLOE-SMP: the sleep delay is the minimum over all harts -- a hart
++       with a due timer or an active (non-WFI) hart forces delay 0. */
++    now = rtc_get_time(m);
++    for(i = 0; i < m->nb_harts; i++) {
++        RISCVCPUState *s = m->cpus[i];
++        if (!(riscv_cpu_get_mip(s) & MIP_MTIP)) {
++            delay1 = m->timecmp[i] - now;
++            if (delay1 <= 0) {
++                riscv_cpu_set_mip(s, MIP_MTIP);
++                delay = 0;
++            } else {
++                /* convert delay to ms */
++                delay1 = delay1 / (RTC_FREQ / 1000);
++                if (delay1 < delay)
++                    delay = delay1;
++            }
+         }
++        if (!riscv_cpu_get_power_down(s))
++            delay = 0;
+     }
+-    if (!riscv_cpu_get_power_down(s))
+-        delay = 0;
+     return delay;
+ }
+ 
+@@ -1049,6 +1158,28 @@
+     riscv_cpu_interp(s->cpu_state, max_exec_cycle);
+ }
+ 
++/* FLOE-SMP: per-hart hooks for the embedder's hart host threads. */
++static int riscv_machine_get_cpu_count(VirtMachine *s1)
++{
++    return ((RISCVMachine *)s1)->nb_harts;
++}
++
++static RISCVCPUState *riscv_machine_get_cpu(VirtMachine *s1, int cpu_idx)
++{
++    RISCVMachine *s = (RISCVMachine *)s1;
++    if (cpu_idx < 0 || cpu_idx >= s->nb_harts)
++        return NULL;
++    return s->cpus[cpu_idx];
++}
++
++static void riscv_machine_interp_cpu(VirtMachine *s1, int cpu_idx,
++                                     int max_exec_cycle)
++{
++    RISCVMachine *s = (RISCVMachine *)s1;
++    if (cpu_idx >= 0 && cpu_idx < s->nb_harts)
++        riscv_cpu_interp(s->cpus[cpu_idx], max_exec_cycle);
++}
++
+ static void riscv_vm_send_key_event(VirtMachine *s1, BOOL is_down,
+                                     uint16_t key_code)
+ {
+@@ -1082,4 +1213,7 @@
+     riscv_vm_mouse_is_absolute,
+     riscv_vm_send_mouse_event,
+     riscv_vm_send_key_event,
++    riscv_machine_get_cpu_count,
++    riscv_machine_get_cpu,
++    riscv_machine_interp_cpu,
+ };
+diff -ruN a/virtio.c b/virtio.c
+--- a/virtio.c	2026-09-23 11:01:47
++++ b/virtio.c	2026-09-23 12:21:03
+@@ -303,11 +303,14 @@
+     ptr = s->get_ram_ptr(s, addr, FALSE);
+     if (!ptr)
+         return 0;
+-    return *(uint16_t *)ptr;
++    /* FLOE-SMP: relaxed atomic; the CPU harts access the same guest RAM
++       concurrently (C11 data-race freedom, same codegen as the plain
++       access on the supported hosts). */
++    return __atomic_load_n((uint16_t *)ptr, __ATOMIC_RELAXED);
+ }
+ 
+ static void virtio_write16(VIRTIODevice *s, virtio_phys_addr_t addr,
+-                           uint16_t val)
++                            uint16_t val)
+ {
+     uint8_t *ptr;
+     if (addr & 1)
+@@ -315,11 +318,15 @@
+     ptr = s->get_ram_ptr(s, addr, TRUE);
+     if (!ptr)
+         return;
+-    *(uint16_t *)ptr = val;
++    __atomic_store_n((uint16_t *)ptr, val, __ATOMIC_RELAXED);
++    /* FLOE-SMP: DMA writes to guest RAM invalidate overlapping hart
++       LR/SC reservations (lock-free hook, safe under the device lock). */
++    if (s->mem_map->smp_dma_note_store)
++        s->mem_map->smp_dma_note_store(s->mem_map->smp, ptr, 2);
+ }
+ 
+ static void virtio_write32(VIRTIODevice *s, virtio_phys_addr_t addr,
+-                           uint32_t val)
++                            uint32_t val)
+ {
+     uint8_t *ptr;
+     if (addr & 3)
+@@ -327,9 +334,36 @@
+     ptr = s->get_ram_ptr(s, addr, TRUE);
+     if (!ptr)
+         return;
+-    *(uint32_t *)ptr = val;
++    __atomic_store_n((uint32_t *)ptr, val, __ATOMIC_RELAXED);
++    if (s->mem_map->smp_dma_note_store)
++        s->mem_map->smp_dma_note_store(s->mem_map->smp, ptr, 4);
+ }
+ 
++/* FLOE-SMP: DMA copies between host buffers and guest RAM. Word-chunked
++ * relaxed atomic accesses keep the device side race-free against the
++ * CPU harts' atomic RAM accesses without changing the generated code on
++ * the supported 64-bit hosts. */
++static void floe_atomic_copy(uint8_t *dst, const uint8_t *src, int count)
++{
++    if ((((uintptr_t)dst | (uintptr_t)src) & 7) == 0) {
++        while (count >= 8) {
++            uint64_t v = __atomic_load_n((const uint64_t *)src,
++                                         __ATOMIC_RELAXED);
++            __atomic_store_n((uint64_t *)dst, v, __ATOMIC_RELAXED);
++            dst += 8;
++            src += 8;
++            count -= 8;
++        }
++    }
++    while (count > 0) {
++        uint8_t v = __atomic_load_n(src, __ATOMIC_RELAXED);
++        __atomic_store_n(dst, v, __ATOMIC_RELAXED);
++        dst++;
++        src++;
++        count--;
++    }
++}
++
+ static int virtio_memcpy_from_ram(VIRTIODevice *s, uint8_t *buf,
+                                   virtio_phys_addr_t addr, int count)
+ {
+@@ -341,7 +375,7 @@
+         ptr = s->get_ram_ptr(s, addr, FALSE);
+         if (!ptr)
+             return -1;
+-        memcpy(buf, ptr, l);
++        floe_atomic_copy(buf, ptr, l);
+         addr += l;
+         buf += l;
+         count -= l;
+@@ -349,7 +383,7 @@
+     return 0;
+ }
+ 
+-static int virtio_memcpy_to_ram(VIRTIODevice *s, virtio_phys_addr_t addr, 
++static int virtio_memcpy_to_ram(VIRTIODevice *s, virtio_phys_addr_t addr,
+                                 const uint8_t *buf, int count)
+ {
+     uint8_t *ptr;
+@@ -360,7 +394,11 @@
+         ptr = s->get_ram_ptr(s, addr, TRUE);
+         if (!ptr)
+             return -1;
+-        memcpy(ptr, buf, l);
++        floe_atomic_copy(ptr, buf, l);
++        /* FLOE-SMP: DMA writes to guest RAM invalidate overlapping hart
++           LR/SC reservations (lock-free hook, safe under device lock). */
++        if (s->mem_map->smp_dma_note_store)
++            s->mem_map->smp_dma_note_store(s->mem_map->smp, ptr, l);
+         addr += l;
+         buf += l;
+         count -= l;

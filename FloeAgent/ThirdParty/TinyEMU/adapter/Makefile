@@ -1,9 +1,10 @@
 # Floe embeddable TinyEMU qualification build.
 #
 # Builds libfloevm.a from the pristine, pinned TinyEMU 2019-12-21 sources
-# plus one documented patch (patches/0001-htif-poweroff-callback.patch) and
-# the Floe MPL adapter (adapter/floe_vm.c). Optionally builds the
-# qualification host (floe_vm_host) when HOST_DIR is set.
+# plus the documented patch series in patches/ (applied in sorted order;
+# see PROVENANCE.json) and the Floe MPL adapter (adapter/floe_vm.c).
+# Optionally builds the qualification host (floe_vm_host) when HOST_DIR is
+# set.
 #
 # Trimmed configuration: RV64 only, virtio console/block/9p + slirp user
 # networking. Excluded on purpose: SDL, x86 emulator, RV128, the
@@ -89,6 +90,9 @@ $(BUILD)/.prepared: $(PATCHES) | $(BUILD)/.dir
 	grep -q "fs_valid_name" $(BUILD)/fs_disk.c
 	grep -q "flds_valid" $(BUILD)/slirp/slirp.h
 	grep -q "VIRTIO_BLK_S_UNSUPP" $(BUILD)/virtio.c
+	grep -q "FLOE-SMP" $(BUILD)/riscv_machine.c
+	grep -q "FLOE-SMP" $(BUILD)/riscv_cpu.c
+	grep -q "virt_machine_interp_cpu" $(BUILD)/machine.h
 	touch $@
 
 $(BUILD)/riscv_machine.o: $(BUILD)/.prepared
@@ -125,8 +129,12 @@ $(BUILD)/riscv_cpu64.o: $(BUILD)/.prepared
 $(BUILD)/riscv_cpu32.o: $(BUILD)/.prepared
 	$(CC) $(CFLAGS) -DMAX_XLEN=32 -c -o $@ $(BUILD)/riscv_cpu.c
 
-$(BUILD)/floe_vm.o: $(ADAPTER)floe_vm.c $(ADAPTER)floe_vm.h | $(BUILD)/.dir
-	$(CC) $(CFLAGS) -c -o $@ $<
+# The adapter includes engine headers (machine.h, riscv_cpu.h); it must
+# see the PATCHED copies in $(BUILD), not the pristine ones in
+# $(TINYEMU_SRC), so $(BUILD) is searched first (CFLAGS puts the pristine
+# tree on the include path).
+$(BUILD)/floe_vm.o: $(ADAPTER)floe_vm.c $(ADAPTER)floe_vm.h $(BUILD)/.prepared | $(BUILD)/.dir
+	$(CC) -I$(BUILD) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/libfloevm.a: $(OBJS) $(BUILD)/floe_vm.o
 	ar rcs $@ $^

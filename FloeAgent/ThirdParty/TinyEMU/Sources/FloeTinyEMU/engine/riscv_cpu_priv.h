@@ -231,7 +231,22 @@ struct RISCVCPUState {
 #endif
     uint32_t scounteren;
 
-    target_ulong load_res; /* for atomic LR/SC */
+    target_ulong load_res; /* for atomic LR/SC (upstream single-hart path) */
+
+    /* FLOE-SMP: shared SMP block (NULL when the machine runs one hart;
+       attached by the machine before the first slice) and this hart's
+       LR/SC reservation. load_res_addr is the HOST address of the
+       reserved guest RAM (same physical memory <=> same host pointer,
+       so virtual aliases of one page are covered); the valid flag is
+       atomic (release on set, CAS on clear from other harts).
+       in_smp_atomic marks that this thread holds the machine atomic
+       lock, so nested store paths skip the locked-store/invalidation
+       walk (which would self-deadlock). */
+    RISCVSMPCpuArray *smp;
+    target_ulong load_res_addr;
+    int load_res_size_log2;
+    BOOL load_res_valid;
+    BOOL in_smp_atomic;
 
     PhysMemoryMap *mem_map;
 
@@ -248,6 +263,56 @@ DLL_PUBLIC int target_read_slow(RISCVCPUState *s, mem_uint_t *pval,
 DLL_PUBLIC int target_write_slow(RISCVCPUState *s, target_ulong addr,
                                  mem_uint_t val, int size_log2);
 
+/* FLOE-SMP: guest-atomic support. Defined in riscv_cpu.c (static: this
+ * header is only included by riscv_cpu.c, which is compiled once per
+ * XLEN).
+ *
+ * riscv_smp_locked_store: store to guest RAM + invalidate overlapping
+ * reservations of the other harts, all inside the machine atomic lock
+ * (a spinlock). EVERY guest-RAM store on an SMP machine goes through
+ * here, so all overlapping writers (plain stores, SC, AMO, page-table
+ * writes, DMA) and the reservation establishment are totally ordered and
+ * the LR/SC protocol is correct by construction -- there is deliberately
+ * NO lock-free store fast path (a check-then-store race would let a
+ * store slip between an LR and its SC). Reservations are keyed by HOST
+ * address (same physical guest memory <=> same host pointer, so virtual
+ * aliases of one physical page cannot evade invalidation).
+ */
+static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
+                                   mem_uint_t val, int size_log2);
+
+/* FLOE-SMP: guest-atomic helpers used by the interpreter template when
+ * the machine runs more than one hart. Return 0 on success, -1 on a
+ * guest MMU fault (pending_exception set), -2 (AMO only) on an illegal
+ * AMO selector. */
+static int riscv_smp_lr(RISCVCPUState *s, target_ulong addr,
+                        uint64_t *pval, int size_log2);
+static int riscv_smp_sc(RISCVCPUState *s, target_ulong addr,
+                        uint64_t val, int size_log2, int *pstatus);
+static int riscv_smp_amo(RISCVCPUState *s, target_ulong addr,
+                         uint64_t *pval, uint64_t val2, int size_log2,
+                         uint32_t op27);
+
+/* FLOE-SMP: guest RAM words are shared between the hart host threads, so
+ * every RAM access must be a C11 atomic operation to keep the formally
+ * defined memory model (plain concurrent accesses would be data races).
+ * __ATOMIC_RELAXED is sufficient: the harts share one physically
+ * coherent RAM array and the guest's own fence/atomic instructions
+ * provide the ordering. On the supported 64-bit hosts these builtins
+ * compile to the same single load/store as the upstream plain accesses
+ * for the aligned addresses used by the atomic/fast paths; RISC-V
+ * misaligned accesses are architecturally not single-copy atomic, so
+ * alignment remains the guest's synchronization responsibility exactly as
+ * on hardware. The 128-bit instantiation (RV128 only, not built by Floe)
+ * keeps the upstream plain accesses. */
+#if MLEN > 64
+#define FLOE_RAM_LOAD(ptr) (*(ptr))
+#define FLOE_RAM_STORE(ptr, v) (*(ptr) = (v))
+#else
+#define FLOE_RAM_LOAD(ptr) __atomic_load_n((ptr), __ATOMIC_RELAXED)
+#define FLOE_RAM_STORE(ptr, v) __atomic_store_n((ptr), (v), __ATOMIC_RELAXED)
+#endif
+
 /* return 0 if OK, != 0 if exception */
 #define TARGET_READ_WRITE(size, uint_type, size_log2)                   \
 static inline __exception int target_read_u ## size(RISCVCPUState *s, uint_type *pval, target_ulong addr)                              \
@@ -255,7 +320,7 @@ static inline __exception int target_read_u ## size(RISCVCPUState *s, uint_type 
     uint32_t tlb_idx;\
     tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);\
     if (likely(s->tlb_read[tlb_idx].vaddr == (addr & ~(PG_MASK & ~((size / 8) - 1))))) { \
-        *pval = *(uint_type *)(s->tlb_read[tlb_idx].mem_addend + (uintptr_t)addr);\
+        *pval = FLOE_RAM_LOAD((uint_type *)(s->tlb_read[tlb_idx].mem_addend + (uintptr_t)addr));\
     } else {\
         mem_uint_t val;\
         int ret;\
@@ -273,7 +338,14 @@ static inline __exception int target_write_u ## size(RISCVCPUState *s, target_ul
     uint32_t tlb_idx;\
     tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);\
     if (likely(s->tlb_write[tlb_idx].vaddr == (addr & ~(PG_MASK & ~((size / 8) - 1))))) { \
-        *(uint_type *)(s->tlb_write[tlb_idx].mem_addend + (uintptr_t)addr) = val;\
+        uint_type *__floe_ptr = (uint_type *)(s->tlb_write[tlb_idx].mem_addend + (uintptr_t)addr); \
+        /* FLOE-SMP: every guest-RAM store is linearized through the \
+           machine atomic lock (no lock-free fast path, see \
+           riscv_smp_locked_store). */ \
+        if (unlikely(s->smp && !s->in_smp_atomic)) \
+            riscv_smp_locked_store(s, (uint8_t *)__floe_ptr, val, size_log2); \
+        else \
+            FLOE_RAM_STORE(__floe_ptr, val); \
         return 0;\
     } else {\
         return target_write_slow(s, addr, val, size_log2);\
